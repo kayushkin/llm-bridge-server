@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/store"
+	"github.com/kayushkin/llm-bridge/msg"
 )
 
 // Pairing of dual-emitted copies.

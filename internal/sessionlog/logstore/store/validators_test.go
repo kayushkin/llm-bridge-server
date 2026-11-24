@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 )
@@ -13,7 +14,7 @@ func storeEvent(t *testing.T, s *Store, sessionID, typ, text string) int64 {
 		"bridge_session_id": sessionID,
 		"result":            map[string]any{"text": text},
 	})
-	id, err := s.StoreEvent(sessionID, typ, body)
+	id, err := s.StoreEvent(context.Background(), sessionID, typ, body)
 	if err != nil {
 		t.Fatalf("StoreEvent: %v", err)
 	}

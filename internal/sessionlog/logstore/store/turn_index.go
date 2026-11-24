@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 )
 
@@ -41,60 +42,7 @@ import (
 // output as opaque JSON, so the entry shape has one definition (server.Entry) and
 // no column copy of it that could drift.
 
-// turnIndexMigration creates the derived tables. Every statement is idempotent.
-const turnIndexMigration = `
-	CREATE TABLE IF NOT EXISTS turn_index_sessions (
-		session_id               TEXT PRIMARY KEY,
-		index_version            INTEGER NOT NULL,
-		indexed_through_event_id INTEGER NOT NULL,
-		last_turn_id             TEXT NOT NULL,
-		next_turn_seq            INTEGER NOT NULL
-	) WITHOUT ROWID;
-
-	CREATE TABLE IF NOT EXISTS event_turns (
-		event_id   INTEGER PRIMARY KEY,
-		session_id TEXT NOT NULL,
-		turn_seq   INTEGER NOT NULL
-	);
-	CREATE INDEX IF NOT EXISTS idx_event_turns_session_turn
-		ON event_turns(session_id, turn_seq, event_id);
-
-	CREATE TABLE IF NOT EXISTS turns (
-		session_id                    TEXT    NOT NULL,
-		turn_seq                      INTEGER NOT NULL,
-		turn_id                       TEXT    NOT NULL,
-		first_event_id                INTEGER NOT NULL,
-		last_event_id                 INTEGER NOT NULL,
-		event_count                   INTEGER NOT NULL,
-		has_user_message              INTEGER NOT NULL DEFAULT 0,
-		materializer_version          INTEGER NOT NULL DEFAULT 0,
-		materialized_through_event_id INTEGER NOT NULL DEFAULT 0,
-		turn_json                     TEXT    NOT NULL DEFAULT '',
-		source_groups_json            TEXT    NOT NULL DEFAULT '',
-		aggregate_sources_json        TEXT    NOT NULL DEFAULT '',
-		dedup_fingerprint             TEXT    NOT NULL DEFAULT '',
-		PRIMARY KEY (session_id, turn_seq)
-	) WITHOUT ROWID;
-	CREATE UNIQUE INDEX IF NOT EXISTS idx_turns_session_turn_id ON turns(session_id, turn_id);
-	CREATE INDEX IF NOT EXISTS idx_turns_session_prompt ON turns(session_id, has_user_message, turn_seq);
-
-	CREATE TABLE IF NOT EXISTS turn_entries (
-		session_id TEXT    NOT NULL,
-		turn_seq   INTEGER NOT NULL,
-		event_id   INTEGER NOT NULL,
-		entry_json TEXT    NOT NULL,
-		PRIMARY KEY (session_id, turn_seq, event_id)
-	) WITHOUT ROWID;
-
-	CREATE TABLE IF NOT EXISTS dedup_candidates (
-		event_id   INTEGER PRIMARY KEY,
-		session_id TEXT    NOT NULL,
-		turn_seq   INTEGER NOT NULL,
-		key_hash   TEXT    NOT NULL,
-		source     TEXT    NOT NULL
-	);
-	CREATE INDEX IF NOT EXISTS idx_dedup_candidates_session ON dedup_candidates(session_id, event_id);
-`
+// The tables are made by migrations/0001_create_events_turn_index_and_usage_projections.sql.
 
 // turnIndexRulesVersion names the turn assignment rule in this file. Bump it when
 // that rule changes: every session's index is then rebuilt, on its next read or by
@@ -187,7 +135,7 @@ func (s *Store) indexEventInTx(tx *sql.Tx, sessionID string, eventID int64, even
 	var indexedThrough int64
 	var version int
 	err := tx.QueryRow(
-		`SELECT index_version, indexed_through_event_id, last_turn_id, next_turn_seq FROM turn_index_sessions WHERE session_id=?`,
+		`SELECT index_version, indexed_through_event_id, last_turn_id, next_turn_seq FROM turn_index_sessions WHERE session_id = $1`,
 		sessionID,
 	).Scan(&version, &indexedThrough, &st.lastTurnID, &st.nextTurnSeq)
 	if err == nil && version != s.turnIndexVersion {
@@ -201,7 +149,7 @@ func (s *Store) indexEventInTx(tx *sql.Tx, sessionID string, eventID int64, even
 		// waiting for BuildTurnIndex.
 		var olderEventExists bool
 		if err := tx.QueryRow(
-			`SELECT EXISTS(SELECT 1 FROM events WHERE session_id=? AND id < ?)`, sessionID, eventID,
+			`SELECT EXISTS(SELECT 1 FROM events WHERE session_id = $1 AND id < $2)`, sessionID, eventID,
 		).Scan(&olderEventExists); err != nil {
 			return fmt.Errorf("check for older events: %w", err)
 		}
@@ -210,7 +158,7 @@ func (s *Store) indexEventInTx(tx *sql.Tx, sessionID string, eventID int64, even
 		}
 		st = sessionTurnState{nextTurnSeq: 1}
 		if _, err := tx.Exec(
-			`INSERT INTO turn_index_sessions (session_id, index_version, indexed_through_event_id, last_turn_id, next_turn_seq) VALUES (?,?,0,'',1)`,
+			`INSERT INTO turn_index_sessions (session_id, index_version, indexed_through_event_id, last_turn_id, next_turn_seq) VALUES ($1, $2, 0, '', 1)`,
 			sessionID, s.turnIndexVersion,
 		); err != nil {
 			return fmt.Errorf("open turn index: %w", err)
@@ -227,7 +175,7 @@ func (s *Store) indexEventInTx(tx *sql.Tx, sessionID string, eventID int64, even
 		return err
 	}
 	_, err = tx.Exec(
-		`UPDATE turn_index_sessions SET indexed_through_event_id=?, last_turn_id=?, next_turn_seq=? WHERE session_id=?`,
+		`UPDATE turn_index_sessions SET indexed_through_event_id = $1, last_turn_id = $2, next_turn_seq = $3 WHERE session_id = $4`,
 		eventID, st.lastTurnID, st.nextTurnSeq, sessionID,
 	)
 	return err
@@ -238,19 +186,16 @@ func (s *Store) indexEventInTx(tx *sql.Tx, sessionID string, eventID int64, even
 // types that are never candidates.
 func (s *Store) writeEventTurn(db execer, sessionID string, st *sessionTurnState, eventID int64, eventType, rawTurnID string, data []byte) error {
 	turnID := st.assignTurn(eventID, rawTurnID)
-	isPrompt := 0
-	if eventType == "user_message" {
-		isPrompt = 1
-	}
+	isPrompt := eventType == "user_message"
 	var turnSeq int64
-	err := db.QueryRow(`SELECT turn_seq FROM turns WHERE session_id=? AND turn_id=?`, sessionID, turnID).Scan(&turnSeq)
+	err := db.QueryRow(`SELECT turn_seq FROM turns WHERE session_id = $1 AND turn_id = $2`, sessionID, turnID).Scan(&turnSeq)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		turnSeq = st.nextTurnSeq
 		st.nextTurnSeq++
 		if _, err := db.Exec(
 			`INSERT INTO turns (session_id, turn_seq, turn_id, first_event_id, last_event_id, event_count, has_user_message)
-			 VALUES (?,?,?,?,?,1,?)`,
+			 VALUES ($1, $2, $3, $4, $5, 1, $6)`,
 			sessionID, turnSeq, turnID, eventID, eventID, isPrompt,
 		); err != nil {
 			return fmt.Errorf("open turn %q: %w", turnID, err)
@@ -259,15 +204,15 @@ func (s *Store) writeEventTurn(db execer, sessionID string, st *sessionTurnState
 		return fmt.Errorf("find turn %q: %w", turnID, err)
 	default:
 		if _, err := db.Exec(
-			`UPDATE turns SET last_event_id=?, event_count=event_count+1, has_user_message=MAX(has_user_message, ?)
-			 WHERE session_id=? AND turn_seq=?`,
+			`UPDATE turns SET last_event_id = $1, event_count = event_count + 1, has_user_message = has_user_message OR $2
+			 WHERE session_id = $3 AND turn_seq = $4`,
 			eventID, isPrompt, sessionID, turnSeq,
 		); err != nil {
 			return fmt.Errorf("extend turn %q: %w", turnID, err)
 		}
 	}
 	if _, err := db.Exec(
-		`INSERT INTO event_turns (event_id, session_id, turn_seq) VALUES (?,?,?)`,
+		`INSERT INTO event_turns (event_id, session_id, turn_seq) VALUES ($1, $2, $3)`,
 		eventID, sessionID, turnSeq,
 	); err != nil {
 		return fmt.Errorf("index event %d: %w", eventID, err)
@@ -279,7 +224,7 @@ func (s *Store) writeEventTurn(db execer, sessionID string, st *sessionTurnState
 		}
 		if ok {
 			if _, err := db.Exec(
-				`INSERT INTO dedup_candidates (event_id, session_id, turn_seq, key_hash, source) VALUES (?,?,?,?,?)`,
+				`INSERT INTO dedup_candidates (event_id, session_id, turn_seq, key_hash, source) VALUES ($1, $2, $3, $4, $5)`,
 				eventID, sessionID, turnSeq, keyHash, source,
 			); err != nil {
 				return fmt.Errorf("record dedup candidate %d: %w", eventID, err)
@@ -293,7 +238,7 @@ func (s *Store) writeEventTurn(db execer, sessionID string, st *sessionTurnState
 func (s *Store) TurnIndexCurrent(sessionID string) (bool, error) {
 	var exists bool
 	err := s.reader.QueryRow(
-		`SELECT EXISTS(SELECT 1 FROM turn_index_sessions WHERE session_id=? AND index_version=?)`,
+		`SELECT EXISTS(SELECT 1 FROM turn_index_sessions WHERE session_id = $1 AND index_version = $2)`,
 		sessionID, s.turnIndexVersion,
 	).Scan(&exists)
 	return exists, err
@@ -370,7 +315,7 @@ func (s *Store) BuildTurnIndex(sessionID string) error {
 		}
 	}
 	if _, err := tx.Exec(
-		`INSERT INTO turn_index_sessions (session_id, index_version, indexed_through_event_id, last_turn_id, next_turn_seq) VALUES (?,?,?,?,?)`,
+		`INSERT INTO turn_index_sessions (session_id, index_version, indexed_through_event_id, last_turn_id, next_turn_seq) VALUES ($1, $2, $3, $4, $5)`,
 		sessionID, s.turnIndexVersion, through, st.lastTurnID, st.nextTurnSeq,
 	); err != nil {
 		return fmt.Errorf("mark turn index current: %w", err)
@@ -385,11 +330,11 @@ func (s *Store) deletePartialTurnIndex(sessionID string) error {
 	}
 	defer tx.Rollback()
 	for _, q := range []string{
-		`DELETE FROM turn_index_sessions WHERE session_id=?`,
-		`DELETE FROM dedup_candidates WHERE session_id=?`,
-		`DELETE FROM event_turns WHERE session_id=?`,
-		`DELETE FROM turn_entries WHERE session_id=?`,
-		`DELETE FROM turns WHERE session_id=?`,
+		`DELETE FROM turn_index_sessions WHERE session_id = $1`,
+		`DELETE FROM dedup_candidates WHERE session_id = $1`,
+		`DELETE FROM event_turns WHERE session_id = $1`,
+		`DELETE FROM turn_entries WHERE session_id = $1`,
+		`DELETE FROM turns WHERE session_id = $1`,
 	} {
 		if _, err := tx.Exec(q, sessionID); err != nil {
 			return fmt.Errorf("clear partial turn index: %w", err)
@@ -410,13 +355,16 @@ type querier interface {
 }
 
 // readEventTurnFields reads the next events of a session after `afterID`, with
-// only the fields the index needs. json_extract keeps the event body inside
-// SQLite rather than copying 14 KB stream frames into Go to read one string.
+// only the fields the index needs. Reading turn_id in SQL keeps the event body
+// inside Postgres rather than copying 14 KB stream frames into Go to read one
+// string. A turn_id that is not a JSON string is not a turn id the builder
+// would read either (msg.Event.TurnID is a string), so it counts as absent.
 func readEventTurnFields(db querier, sessionID string, afterID int64, limit int) ([]eventTurnRow, error) {
 	rows, err := db.Query(
-		`SELECT id, type, COALESCE(json_extract(data, '$.turn_id'), ''),
-		        CASE WHEN type IN ('user_message', 'result') THEN data END
-		 FROM events WHERE session_id=? AND id > ? ORDER BY id LIMIT ?`,
+		`SELECT id, type,
+		        CASE WHEN json_typeof(data->'turn_id') = 'string' THEN data->>'turn_id' ELSE '' END,
+		        CASE WHEN type IN ('user_message', 'result') THEN data::text END
+		 FROM events WHERE session_id = $1 AND id > $2 ORDER BY id LIMIT $3`,
 		sessionID, afterID, limit,
 	)
 	if err != nil {
@@ -426,18 +374,12 @@ func readEventTurnFields(db querier, sessionID string, afterID int64, limit int)
 	var out []eventTurnRow
 	for rows.Next() {
 		var r eventTurnRow
-		var turnID any
 		var data sql.NullString
-		if err := rows.Scan(&r.id, &r.eventType, &turnID, &data); err != nil {
+		if err := rows.Scan(&r.id, &r.eventType, &r.turnID, &data); err != nil {
 			return nil, err
 		}
 		if data.Valid {
 			r.data = []byte(data.String)
-		}
-		// A turn_id that is not a JSON string is not a turn id the builder would
-		// read either (msg.Event.TurnID is a string), so it counts as absent.
-		if s, ok := turnID.(string); ok {
-			r.turnID = s
 		}
 		out = append(out, r)
 	}
@@ -449,8 +391,8 @@ func readEventTurnFields(db querier, sessionID string, afterID int64, limit int)
 func (s *Store) SessionsAwaitingTurnIndex(limit int) ([]string, error) {
 	rows, err := s.reader.Query(
 		`SELECT s.session_id FROM sessions s
-		 WHERE NOT EXISTS (SELECT 1 FROM turn_index_sessions t WHERE t.session_id = s.session_id AND t.index_version = ?)
-		 ORDER BY s.last_active DESC LIMIT ?`,
+		 WHERE NOT EXISTS (SELECT 1 FROM turn_index_sessions t WHERE t.session_id = s.session_id AND t.index_version = $1)
+		 ORDER BY s.last_active DESC LIMIT $2`,
 		s.turnIndexVersion, limit,
 	)
 	if err != nil {
@@ -501,13 +443,11 @@ func scanStoredTurns(rows *sql.Rows) ([]StoredTurn, error) {
 	var out []StoredTurn
 	for rows.Next() {
 		var t StoredTurn
-		var hasPrompt int
-		if err := rows.Scan(&t.Seq, &t.TurnID, &t.FirstEventID, &t.LastEventID, &t.EventCount, &hasPrompt,
+		if err := rows.Scan(&t.Seq, &t.TurnID, &t.FirstEventID, &t.LastEventID, &t.EventCount, &t.HasUserMessage,
 			&t.MaterializerVersion, &t.MaterializedThroughEventID, &t.TurnJSON, &t.SourceGroupsJSON, &t.AggregateSourcesJSON,
 			&t.DedupFingerprint); err != nil {
 			return nil, err
 		}
-		t.HasUserMessage = hasPrompt == 1
 		out = append(out, t)
 	}
 	return out, rows.Err()
@@ -533,7 +473,7 @@ func (s *Store) TurnWindow(sessionID string, limitTurns int, beforeEventID int64
 	if beforeEventID > 0 {
 		var seq sql.NullInt64
 		err := s.reader.QueryRow(
-			`SELECT turn_seq FROM event_turns WHERE event_id=? AND session_id=?`, beforeEventID, sessionID,
+			`SELECT turn_seq FROM event_turns WHERE event_id = $1 AND session_id = $2`, beforeEventID, sessionID,
 		).Scan(&seq)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
@@ -541,7 +481,7 @@ func (s *Store) TurnWindow(sessionID string, limitTurns int, beforeEventID int64
 			// "rows with a smaller id", so take the turn of the newest event below it
 			// and include that turn.
 			err = s.reader.QueryRow(
-				`SELECT turn_seq FROM event_turns WHERE session_id=? AND event_id < ? ORDER BY event_id DESC LIMIT 1`,
+				`SELECT turn_seq FROM event_turns WHERE session_id = $1 AND event_id < $2 ORDER BY event_id DESC LIMIT 1`,
 				sessionID, beforeEventID,
 			).Scan(&seq)
 			if errors.Is(err, sql.ErrNoRows) {
@@ -557,24 +497,27 @@ func (s *Store) TurnWindow(sessionID string, limitTurns int, beforeEventID int64
 			beforeSeq = seq.Int64
 		}
 	}
+	// The session is $1 and the upper bound, when there is one, $2; the
+	// statements below add their own arguments after those.
 	bound := ""
 	args := []any{sessionID}
 	if beforeSeq > 0 {
-		bound = ` AND turn_seq < ?`
+		bound = ` AND turn_seq < $2`
 		args = append(args, beforeSeq)
 	}
+	next := "$" + strconv.Itoa(len(args)+1)
 
 	// Lower bound: the limitTurns-th newest prompt turn in range.
 	var startSeq sql.NullInt64
 	err := s.reader.QueryRow(
-		`SELECT turn_seq FROM turns WHERE session_id=? AND has_user_message=1`+bound+
-			` ORDER BY turn_seq DESC LIMIT 1 OFFSET ?`,
+		`SELECT turn_seq FROM turns WHERE session_id = $1 AND has_user_message`+bound+
+			` ORDER BY turn_seq DESC LIMIT 1 OFFSET `+next,
 		append(args, limitTurns-1)...,
 	).Scan(&startSeq)
 	if errors.Is(err, sql.ErrNoRows) {
 		var promptTurns int
 		if err := s.reader.QueryRow(
-			`SELECT COUNT(*) FROM turns WHERE session_id=? AND has_user_message=1`+bound, args...,
+			`SELECT COUNT(*) FROM turns WHERE session_id = $1 AND has_user_message`+bound, args...,
 		).Scan(&promptTurns); err != nil {
 			return nil, false, err
 		}
@@ -582,7 +525,7 @@ func (s *Store) TurnWindow(sessionID string, limitTurns int, beforeEventID int64
 			startSeq = sql.NullInt64{Int64: 1, Valid: true} // fewer prompts than asked: everything in range
 		} else {
 			err = s.reader.QueryRow(
-				`SELECT turn_seq FROM turns WHERE session_id=?`+bound+` ORDER BY turn_seq DESC LIMIT 1 OFFSET ?`,
+				`SELECT turn_seq FROM turns WHERE session_id = $1`+bound+` ORDER BY turn_seq DESC LIMIT 1 OFFSET `+next,
 				append(args, limitTurns-1)...,
 			).Scan(&startSeq)
 			if errors.Is(err, sql.ErrNoRows) {
@@ -596,9 +539,8 @@ func (s *Store) TurnWindow(sessionID string, limitTurns int, beforeEventID int64
 	}
 
 	rows, err := s.reader.Query(
-		`SELECT `+storedTurnColumns+` FROM turns WHERE session_id=? AND turn_seq >= ?`+
-			bound+` ORDER BY turn_seq`,
-		append([]any{sessionID, startSeq.Int64}, args[1:]...)...,
+		`SELECT `+storedTurnColumns+` FROM turns WHERE session_id = $1`+bound+` AND turn_seq >= `+next+` ORDER BY turn_seq`,
+		append(args, startSeq.Int64)...,
 	)
 	if err != nil {
 		return nil, false, err
@@ -610,7 +552,7 @@ func (s *Store) TurnWindow(sessionID string, limitTurns int, beforeEventID int64
 	more := false
 	if startSeq.Int64 > 1 {
 		if err := s.reader.QueryRow(
-			`SELECT EXISTS(SELECT 1 FROM turns WHERE session_id=? AND turn_seq < ?)`, sessionID, startSeq.Int64,
+			`SELECT EXISTS(SELECT 1 FROM turns WHERE session_id = $1 AND turn_seq < $2)`, sessionID, startSeq.Int64,
 		).Scan(&more); err != nil {
 			return nil, false, err
 		}
@@ -621,7 +563,7 @@ func (s *Store) TurnWindow(sessionID string, limitTurns int, beforeEventID int64
 // NewestTurns returns up to `limit` of a session's newest turns, newest first.
 func (s *Store) NewestTurns(sessionID string, limit int) ([]StoredTurn, error) {
 	rows, err := s.reader.Query(
-		`SELECT `+storedTurnColumns+` FROM turns WHERE session_id=? ORDER BY turn_seq DESC LIMIT ?`,
+		`SELECT `+storedTurnColumns+` FROM turns WHERE session_id = $1 ORDER BY turn_seq DESC LIMIT $2`,
 		sessionID, limit,
 	)
 	if err != nil {
@@ -633,7 +575,7 @@ func (s *Store) NewestTurns(sessionID string, limit int) ([]StoredTurn, error) {
 // DedupCandidates returns every dual-emit candidate of a session, in event order.
 func (s *Store) DedupCandidates(sessionID string) ([]DedupCandidate, error) {
 	rows, err := s.reader.Query(
-		`SELECT event_id, turn_seq, key_hash, source FROM dedup_candidates WHERE session_id=? ORDER BY event_id`,
+		`SELECT event_id, turn_seq, key_hash, source FROM dedup_candidates WHERE session_id = $1 ORDER BY event_id`,
 		sessionID,
 	)
 	if err != nil {
@@ -656,7 +598,7 @@ func (s *Store) DedupCandidates(sessionID string) ([]DedupCandidate, error) {
 func (s *Store) TurnEvents(sessionID string, turn StoredTurn) ([]EventRow, error) {
 	rows, err := s.reader.Query(
 		`SELECT e.id, e.type, e.data FROM event_turns t JOIN events e ON e.id = t.event_id
-		 WHERE t.session_id=? AND t.turn_seq=? ORDER BY t.event_id`,
+		 WHERE t.session_id = $1 AND t.turn_seq = $2 ORDER BY t.event_id`,
 		sessionID, turn.Seq,
 	)
 	if err != nil {
@@ -683,8 +625,8 @@ func (s *Store) TurnEventsTail(sessionID string, turn StoredTurn, max int) ([]Ev
 	rows, err := s.reader.Query(
 		`SELECT id, type, data FROM (
 			SELECT e.id, e.type, e.data FROM event_turns t JOIN events e ON e.id = t.event_id
-			WHERE t.session_id=? AND t.turn_seq=? ORDER BY t.event_id DESC LIMIT ?
-		) ORDER BY id`,
+			WHERE t.session_id = $1 AND t.turn_seq = $2 ORDER BY t.event_id DESC LIMIT $3
+		) tail ORDER BY id`,
 		sessionID, turn.Seq, max,
 	)
 	if err != nil {
@@ -732,20 +674,20 @@ func (s *Store) ReplaceMaterializedTurn(sessionID string, m MaterializedTurn) er
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`DELETE FROM turn_entries WHERE session_id=? AND turn_seq=?`, sessionID, m.Seq); err != nil {
+	if _, err := tx.Exec(`DELETE FROM turn_entries WHERE session_id = $1 AND turn_seq = $2`, sessionID, m.Seq); err != nil {
 		return fmt.Errorf("clear stored entries: %w", err)
 	}
 	for _, e := range m.Entries {
 		if _, err := tx.Exec(
-			`INSERT INTO turn_entries (session_id, turn_seq, event_id, entry_json) VALUES (?,?,?,?)`,
+			`INSERT INTO turn_entries (session_id, turn_seq, event_id, entry_json) VALUES ($1, $2, $3, $4)`,
 			sessionID, m.Seq, e.EventID, e.EntryJSON,
 		); err != nil {
 			return fmt.Errorf("store entry for event %d: %w", e.EventID, err)
 		}
 	}
 	res, err := tx.Exec(
-		`UPDATE turns SET materializer_version=?, materialized_through_event_id=?, turn_json=?,
-		 source_groups_json=?, aggregate_sources_json=?, dedup_fingerprint=? WHERE session_id=? AND turn_seq=?`,
+		`UPDATE turns SET materializer_version = $1, materialized_through_event_id = $2, turn_json = $3,
+		 source_groups_json = $4, aggregate_sources_json = $5, dedup_fingerprint = $6 WHERE session_id = $7 AND turn_seq = $8`,
 		m.Version, m.ThroughEventID, m.TurnJSON, m.SourceGroupsJSON, m.AggregateSourcesJSON, m.DedupFingerprint, sessionID, m.Seq,
 	)
 	if err != nil {
@@ -761,7 +703,7 @@ func (s *Store) ReplaceMaterializedTurn(sessionID string, m MaterializedTurn) er
 func (s *Store) StoredEntries(sessionID string, firstSeq, lastSeq int64) ([]StoredEntry, error) {
 	rows, err := s.reader.Query(
 		`SELECT event_id, entry_json FROM turn_entries
-		 WHERE session_id=? AND turn_seq BETWEEN ? AND ? ORDER BY event_id`,
+		 WHERE session_id = $1 AND turn_seq BETWEEN $2 AND $3 ORDER BY event_id`,
 		sessionID, firstSeq, lastSeq,
 	)
 	if err != nil {
@@ -785,12 +727,8 @@ func (s *Store) EventsByID(sessionID string, ids []int64) (map[int64][]byte, err
 	if len(ids) == 0 {
 		return out, nil
 	}
-	args := []any{sessionID}
-	for _, id := range ids {
-		args = append(args, id)
-	}
 	rows, err := s.reader.Query(
-		`SELECT id, data FROM events WHERE session_id=? AND id IN (`+placeholders(len(ids))+`)`, args...,
+		`SELECT id, data FROM events WHERE session_id = $1 AND id = ANY($2)`, sessionID, ids,
 	)
 	if err != nil {
 		return nil, err
@@ -811,8 +749,8 @@ func (s *Store) EventsByID(sessionID string, ids []int64) (map[int64][]byte, err
 func (s *Store) TurnOfEvent(sessionID string, eventID int64) (StoredTurn, bool, error) {
 	rows, err := s.reader.Query(
 		`SELECT `+storedTurnColumns+` FROM turns
-		 WHERE session_id=? AND turn_seq = (SELECT turn_seq FROM event_turns WHERE event_id=? AND session_id=?)`,
-		sessionID, eventID, sessionID,
+		 WHERE session_id = $1 AND turn_seq = (SELECT turn_seq FROM event_turns WHERE event_id = $2 AND session_id = $1)`,
+		sessionID, eventID,
 	)
 	if err != nil {
 		return StoredTurn{}, false, err

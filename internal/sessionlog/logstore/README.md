@@ -1,73 +1,40 @@
 # log-store
 
-Durable event log for the [llm-bridge](https://github.com/kayushkin/llm-bridge) ecosystem.
+The session event log of llm-bridge-server: every `msg.Event` of every session,
+the turns each is placed in, the stored reading pages, search and per-session
+token totals. It came into this repo with its history from the standalone
+log-store (github.com/kayushkin/log-store) and runs inside the bridge, as the
+`session_log` package of the consolidation plan.
 
-Persists every `msg.Event` from agent sessions into SQLite, the only record of what
-happened. Each event is placed in its turn as it is stored, each turn's reading page
-is built once and stored, and pages are served from those rows. Forwards result
-statistics to [logstack](https://github.com/kayushkin/logstack).
+## Where it runs
 
-```
-  llm-bridge-server (or any HTTP client)
-            │ HTTP
-  ┌─────────▼──────────────────────────────────────────────────────┐
-  │ log-store                                                      │
-  │   POST /events ─────────── store event + place it in its turn  │
-  │   GET  /messages?limit= ── reading page, from stored turns     │
-  │   GET  /messages/raw ───── every event of those turns          │
-  │   GET  /entries/{id} ───── one entry with full tool payloads   │
-  │   GET  /events?after=N ─── raw events, oldest first            │
-  │            │                                                   │
-  │   SQLite (WAL): events (the record) + derived, rebuildable:    │
-  │   turn_index_sessions, event_turns, turns, turn_entries,       │
-  │   dedup_candidates, sessions (per-session totals),             │
-  │   session_api_call_usage (API calls per query source),         │
-  │   session_usage_by_hour, session_api_call_usage_by_hour        │
-  └────────────┬───────────────────────────────────────────────────┘
-               │ result events
-               ▼
-            logstack
-```
+- **Storage:** Postgres, in the module's own schema `session_log` and role
+  `session_log_module` (`store.Module()`, migrations in `store/migrations/`),
+  through the bridge's `postgresstorage` package and the setting
+  `database.postgres_url` (`LLMBRIDGE_POSTGRES_URL`). The store keeps two pools:
+  a writer of one connection, which the turn index relies on (see
+  `store/turn_index.go`), and a reader of eight whose transactions are read only.
+- **The bridge's own calls are in process.** The harness manager writes and
+  reads events through `server.Server`'s `PushEvent`, `GetTurnState`,
+  `ListEvents` and `SessionsHoldingHarnessSessionID`, the same methods the HTTP
+  client in `client/` offers; the bridge's session routes (`/sessions/{id}/messages`,
+  `/messages/raw`, `/entries/{eventId}`, `/entries/{eventId}/images/{index}`,
+  `/sessions/search`, `/sessions/aggregates`, `/sessions/validators`,
+  `/sessions/recent-bundle`) answer from its handler in process.
+- **Its own routes** are mounted at `/log-store/` with the same paths behind the
+  prefix (`/log-store/api/v1/events`, `/log-store/health`, …), operator only:
+  every session's events, with no owner on a row, and an ingest route that
+  writes into any session.
+- **Import:** `llm-bridge-server import-log-store -sqlite <copy of events.db>`
+  copies every table of a standalone log-store's SQLite file, with every event
+  id, body and time, by COPY in one transaction. It refuses a module that holds
+  any row, and a file whose projection backfills have not finished.
+- **Logstack:** result statistics go to logstack at `session_log.logstack_url`
+  (`LLMBRIDGE_SESSION_LOG_LOGSTACK_URL`); empty forwards nothing.
 
-## Quick start
-
-### Build and run
-
-```bash
-go build -o log-store ./cmd/log-store
-./log-store
-```
-
-The server listens on `:8175` by default.
-
-### Deploy as a systemd service
-
-```bash
-./deploy.sh
-```
-
-Builds the binary, installs to `~/bin/log-store`, and restarts the `log-store.service` unit.
-
-### Ingest an event
-
-```bash
-curl -X POST http://localhost:8175/api/v1/events \
-  -H 'Content-Type: application/json' \
-  -d '{"session_id": "abc123", "type": "result", ...}'
-```
-
-### Read a session
-
-```bash
-# The newest 30 turns as a reading page; tool payloads shortened to 2 KB
-curl 'http://localhost:8175/api/v1/sessions/abc123/messages?limit=30&payload=preview'
-
-# One entry with its tool input and output in full
-curl http://localhost:8175/api/v1/sessions/abc123/entries/4242
-
-# Raw events, oldest first (after=0 for all of them)
-curl 'http://localhost:8175/api/v1/sessions/abc123/events?after=42'
-```
+The standalone service's command, unit, deploy script and settings
+(`LOG_STORE_LISTEN_ADDR`, `LOG_STORE_DB_PATH`, `LOG_STORE_LOGSTACK_URL`, and its
+`GET /settings`) are gone from this copy; the bridge's own settings describe it.
 
 ## API
 
@@ -82,16 +49,15 @@ curl 'http://localhost:8175/api/v1/sessions/abc123/events?after=42'
 | `GET` | `/api/v1/sessions/validators?ids=` | `{maxEventId, eventCount, updatedAt}` per session, from the turn index |
 | `GET` | `/api/v1/sessions/{id}/events?after=N&types=` | Raw events with row id > N, `event_id` spliced in |
 | `GET` | `/api/v1/sessions/{id}/turn-state` | Whether a turn is in flight |
-| `GET` | `/api/v1/sessions/search?q=` | Sessions whose events contain `q` |
+| `GET` | `/api/v1/sessions/search?q=&since=&until=&limit=` | Sessions whose events contain `q`, case ignored (`ILIKE`, `%` and `_` as wildcards, as SQLite's `LIKE`); `since`/`until` (RFC 3339) bound it to a window of events |
 | `GET` | `/api/v1/sessions/aggregates?since=` | Per-session turn, duration and token totals from two records: the result events' input, output, cache read and cache write tokens (the main conversation's finished turns), and `api_call_usage`, the `api_call` events summed per `query_source` (every model call the harness reported, a subagent's included). With no `since`: every session's whole-life totals, and no cost — a session's whole-life cost is llm-bridge-server's `spend_usd`. With `since` (an RFC 3339 time): only the sessions that used anything from the clock hour holding that time on, with what each did from then on and `session_cost_usd`, how much its `session_cost` total grew in the window; 400 for a `since` that does not parse |
 | `GET` | `/api/v1/sessions/by-harness-id?harness_session_id=` | Sessions holding a harness session id |
 | `GET` | `/health` | `{"status": "ok"}` plus forwarder state |
-| `GET` | `/settings` | Every environment variable the service reads, with the value in force and its source; read-only |
 
 ### Stored turns
 
-Pages are not rebuilt from events on each read. `internal/store/turn_index.go` places
-every event in its turn when it is stored; `internal/server/stored_turns.go` builds a
+Pages are not rebuilt from events on each read. `store/turn_index.go` places
+every event in its turn when it is stored; `server/stored_turns.go` builds a
 turn once with the builder in `turnmodel.go`, stores the projected result, and rebuilds
 it only when the turn gains an event, a dual-emitted copy changes what it pairs with
 (`dedup.go`), or `materializerVersion` changes. Everything but `events` is derived and
@@ -102,68 +68,29 @@ background at startup, newest first.
 
 `sessions` holds each session's result-event sums and `session_api_call_usage` its
 `api_call` events summed per query source; `StoreEvent` adds each new event to both
-(`internal/store/token_usage.go`). The cache columns and the API call table were added
-after millions of events were stored, so one background pass at startup adds the older
-events: `projection_backfills` holds the event id it works up to and when it finished.
-Until it finishes, older sessions' aggregates are short of their cache tokens and API
-call totals. It reads for about a minute on a 20 GB database and runs beside the
-service, never before it, because llm-bridge-server drops an event it has failed to
-push for 30 seconds.
+(`store/token_usage.go`). `session_usage_by_hour` and `session_api_call_usage_by_hour`
+hold the same counts per session and clock hour (`store/usage_by_hour.go`), plus the
+highest `session_cost` total seen in the hour, and `?since=` sums them. An event
+belongs to the hour of its `events.created_at`.
 
-Those totals are since a session began, so they cannot say what was used in the last
-day. `session_usage_by_hour` and `session_api_call_usage_by_hour` hold the same counts
-per session and clock hour (`internal/store/usage_by_hour.go`), plus the highest
-`session_cost` total seen in the hour, and `?since=` sums them. An event belongs to the
-hour of its `events.created_at`. They are filled the same way: `StoreEvent` adds each
-new event, and a second background pass, after the first, adds the older ones. That
-pass writes a few hundred sessions per transaction and records the last session it
-wrote, so the single writer is never held for long and an interrupted pass is taken up
-where it stopped.
-
-## Configuration
-
-All configuration is via environment variables.
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LOG_STORE_LISTEN_ADDR` | `:8175` | HTTP listen address |
-| `LOG_STORE_DB_PATH` | `~/.config/log-store/events.db` | SQLite database path |
-| `LOG_STORE_LOGSTACK_URL` | `http://localhost:8081` | Logstack URL for forwarding result statistics |
-
-All three are declared once in `internal/config` with llm-bridge `servicesettings`, and
-`GET /settings` describes them with the value in force. A new variable is declared there or
-`TestEveryEnvironmentVariableTheServiceReadsIsDeclared` fails. A set variable that starts with
-`LOG_STORE_LISTEN`, `LOG_STORE_DB` or `LOG_STORE_LOGSTACK` and is not one of the three is a
-misspelling, and stops the service at startup; `deploy.sh` checks the running service's
-environment for one before it stops it. Declare nothing `Editable` and no secret: every route
-here is open.
-
-> ⚠️ **The default matches logstack's *code* default, not necessarily your deployment.**
-> logstack reads `LOGSTACK_PORT` and defaults it to `8081`; if your logstack unit
-> overrides that port, `LOG_STORE_LOGSTACK_URL` must be overridden to match. On this
-> host logstack runs on `8088` and `8081` belongs to bookstack, so the default pointed
-> log-store at the wrong service entirely — 8,088 result events were POSTed to the book
-> library and 404'd away between 2026-09-02 and 2026-09-04. `log-store.service` now
-> sets `8088` explicitly. Startup runs a preflight probe that says so loudly if the
-> configured URL is not a logstack.
+In SQLite the cache columns and these tables were added after millions of events were
+stored, and two background passes added the older events (`projection_backfills`). In
+Postgres they exist from the module's first migration, so there is no such pass; the
+import copies them from a file whose passes finished. A sessions row whose seed failed
+is rebuilt from its events by `RebuildMissingSessionRows`, which the bridge runs at
+start beside its work.
 
 ## Storage
 
-`events` is the record: one row per event, stored verbatim, indexed by `session_id`
-and `(session_id, type)`. The other tables are derived from it — see
+`events` is the record: one row per event, its body in a `json` column, which keeps
+the text exactly as it was sent and checks only that it is JSON (an ingest that is not
+UTF-8 is refused with 400, since Postgres keeps no other text). It is indexed by
+`(session_id, id)` and `(session_id, type, id)`. Session ids and query sources compare
+by bytes (`COLLATE "C"`), as in SQLite. The other tables are derived from it — see
 [Stored turns](#stored-turns).
 
 ## Client library
 
-The `client` package provides an HTTP client for pushing events:
-
-```go
-import "github.com/kayushkin/log-store/client"
-
-c := client.New("http://localhost:8175")
-id, err := c.PushEvent(event)
-```
-
-## Part of the llm-bridge ecosystem
-
-log-store is an optional store in the [llm-bridge](https://github.com/kayushkin/llm-bridge) ecosystem. llm-bridge-server proxies the messages, raw and entry endpoints to log-store when `LLMBRIDGE_LOG_STORE_URL` is configured. See the [llm-bridge README](https://github.com/kayushkin/llm-bridge) for the full picture.
+The `client` package is the HTTP client of the standalone service's routes and the
+types the bridge's in-process calls share with it (`TurnState`, `HeldSession`,
+`EventRejectedError`). The bridge's tests use it against fake log-stores.

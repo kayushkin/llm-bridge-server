@@ -4,25 +4,20 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge/msg"
 	ls "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/logstack"
-	"github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/store"
+	"github.com/kayushkin/llm-bridge/msg"
 )
 
 // serverWithForwarder wires a Server whose forwarder points at logstackURL.
 func serverWithForwarder(t *testing.T, logstackURL string) (*Server, *ls.Forwarder) {
 	t.Helper()
-	s, err := store.New(filepath.Join(t.TempDir(), "log-store.db"))
-	if err != nil {
-		t.Fatalf("store.New: %v", err)
-	}
+	s := newTestStore(t)
 	t.Cleanup(func() { s.Close() })
 
 	f := ls.NewForwarder(logstackURL)
-	return New(s, f, newTestSettings(t, map[string]string{"LOG_STORE_LOGSTACK_URL": logstackURL})), f
+	return New(s, f), f
 }
 
 func getHealth(t *testing.T, srv *Server) (int, map[string]any) {

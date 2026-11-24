@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -15,7 +16,7 @@ func TestAggregatesCarryCacheTokensAndAPICallUsagePerQuerySource(t *testing.T) {
 	srv, s := newTestServer(t)
 	store := func(sessionID, eventType, data string) {
 		t.Helper()
-		if _, err := s.StoreEvent(sessionID, eventType, []byte(data)); err != nil {
+		if _, err := s.StoreEvent(context.Background(), sessionID, eventType, []byte(data)); err != nil {
 			t.Fatalf("StoreEvent: %v", err)
 		}
 	}
@@ -72,7 +73,7 @@ func TestAggregatesSinceListWhatASessionDidInTheWindow(t *testing.T) {
 	srv, s := newTestServer(t)
 	store := func(sessionID, eventType, data string) {
 		t.Helper()
-		if _, err := s.StoreEvent(sessionID, eventType, []byte(data)); err != nil {
+		if _, err := s.StoreEvent(context.Background(), sessionID, eventType, []byte(data)); err != nil {
 			t.Fatalf("StoreEvent: %v", err)
 		}
 	}

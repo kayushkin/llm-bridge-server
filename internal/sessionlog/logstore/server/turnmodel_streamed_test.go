@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/store"
+	"github.com/kayushkin/llm-bridge/msg"
 )
 
 // textDelta is one streamed fragment of an assistant message's text, as

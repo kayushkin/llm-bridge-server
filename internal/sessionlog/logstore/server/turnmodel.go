@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/store"
+	"github.com/kayushkin/llm-bridge/msg"
 )
 
 // The wire types below mirror chat-core/src/net/types.ts EXACTLY (camelCase
@@ -429,15 +429,15 @@ func buildTurnModel(sessionID string, rows []store.EventRow, more bool) TurnMode
 // pick the latest across its turns — the same last-value-wins buildTurnModel
 // applies over a page of events.
 type aggregateSources struct {
-	SpendEventID   int64                   `json:"spendEventId,omitempty"`
-	Spend          *msg.APISpendTotalEvent `json:"spend,omitempty"`
+	SpendEventID int64                   `json:"spendEventId,omitempty"`
+	Spend        *msg.APISpendTotalEvent `json:"spend,omitempty"`
 	// CostEventID and Cost are the latest session_cost: the session's cost
 	// estimate, which is what totalUsd shows whenever the page holds one.
-	CostEventID int64                 `json:"costEventId,omitempty"`
-	Cost        *msg.SessionCostEvent `json:"cost,omitempty"`
-	ContextEventID int64                   `json:"contextEventId,omitempty"`
-	ContextTokens  int                     `json:"contextTokens,omitempty"`
-	ContextLimit   int                     `json:"contextLimit,omitempty"`
+	CostEventID    int64                 `json:"costEventId,omitempty"`
+	Cost           *msg.SessionCostEvent `json:"cost,omitempty"`
+	ContextEventID int64                 `json:"contextEventId,omitempty"`
+	ContextTokens  int                   `json:"contextTokens,omitempty"`
+	ContextLimit   int                   `json:"contextLimit,omitempty"`
 }
 
 // buildTurnModelWithAggregateSources is buildTurnModel with the dual-emit pairs

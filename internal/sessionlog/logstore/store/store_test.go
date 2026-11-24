@@ -1,24 +1,30 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 )
 
-// newTestStore opens a Store backed by a throwaway SQLite file under the test's
-// temp dir. The dir is created by New (it MkdirAll's the parent), so we point at
-// a nested path to exercise that too. Cleanup closes the handle.
+// newTestStore opens a Store on a Postgres database of the test's own, with the
+// module provisioned and migrated, as the server opens it.
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
-	dbPath := filepath.Join(t.TempDir(), "nested", "log-store.db")
-	s, err := New(dbPath)
+	module, err := Module()
 	if err != nil {
-		t.Fatalf("New: %v", err)
+		t.Fatalf("Module: %v", err)
 	}
+	database := postgrestest.NewDatabase(t, module)
+	writer := database.Open(module)
+	reader, err := OpenReader(context.Background(), database.URL(), module)
+	if err != nil {
+		t.Fatalf("OpenReader: %v", err)
+	}
+	s := New(writer, reader)
 	t.Cleanup(func() {
 		if err := s.Close(); err != nil {
 			t.Errorf("Close: %v", err)
@@ -49,11 +55,11 @@ func resultEvent(inTok, outTok int64, costUSD float64, durMS int64, model string
 func TestNewCreatesSchemaAndClose(t *testing.T) {
 	s := newTestStore(t)
 
-	// Both tables must exist after New() runs migrate().
+	// Both tables must exist once the module is migrated.
 	for _, tbl := range []string{"events", "sessions"} {
 		var name string
 		err := s.reader.QueryRow(
-			`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, tbl,
+			`SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = $1`, tbl,
 		).Scan(&name)
 		if err != nil {
 			t.Fatalf("expected table %q to exist: %v", tbl, err)
@@ -73,26 +79,14 @@ func TestNewCreatesSchemaAndClose(t *testing.T) {
 	}
 }
 
-func TestNewInvalidPath(t *testing.T) {
-	// A path whose parent can't be created (a file standing in for a dir)
-	// should surface an error rather than silently succeeding.
-	f := filepath.Join(t.TempDir(), "afile")
-	if err := os.WriteFile(f, []byte("x"), 0644); err != nil {
-		t.Fatalf("setup: %v", err)
-	}
-	if _, err := New(filepath.Join(f, "child", "db.sqlite")); err == nil {
-		t.Fatal("expected error opening db under a non-directory parent, got nil")
-	}
-}
-
 func TestStoreEventPersistsAndAssignsIDs(t *testing.T) {
 	s := newTestStore(t)
 
-	id1, err := s.StoreEvent("sess-a", "user_message", []byte(`{"text":"hi"}`))
+	id1, err := s.StoreEvent(context.Background(), "sess-a", "user_message", []byte(`{"text":"hi"}`))
 	if err != nil {
 		t.Fatalf("StoreEvent 1: %v", err)
 	}
-	id2, err := s.StoreEvent("sess-a", "assistant", []byte(`{"text":"yo"}`))
+	id2, err := s.StoreEvent(context.Background(), "sess-a", "assistant", []byte(`{"text":"yo"}`))
 	if err != nil {
 		t.Fatalf("StoreEvent 2: %v", err)
 	}
@@ -126,13 +120,13 @@ func TestStoreEventPersistsAndAssignsIDs(t *testing.T) {
 
 func TestListEventsTypeFilterAndIsolation(t *testing.T) {
 	s := newTestStore(t)
-	if _, err := s.StoreEvent("sess-a", "user_message", []byte(`{"n":1}`)); err != nil {
+	if _, err := s.StoreEvent(context.Background(), "sess-a", "user_message", []byte(`{"n":1}`)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.StoreEvent("sess-a", "result", resultEvent(10, 5, 0.01, 100, "opus")); err != nil {
+	if _, err := s.StoreEvent(context.Background(), "sess-a", "result", resultEvent(10, 5, 0.01, 100, "opus")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.StoreEvent("sess-b", "user_message", []byte(`{"n":2}`)); err != nil {
+	if _, err := s.StoreEvent(context.Background(), "sess-b", "user_message", []byte(`{"n":2}`)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -157,11 +151,11 @@ func TestListEventsTypeFilterAndIsolation(t *testing.T) {
 
 func TestListEventsSinceID(t *testing.T) {
 	s := newTestStore(t)
-	id1, _ := s.StoreEvent("s", "user_message", []byte(`{"n":1}`))
-	id2, _ := s.StoreEvent("s", "assistant", []byte(`{"n":2}`))
-	id3, _ := s.StoreEvent("s", "result", resultEvent(1, 1, 0, 0, "m"))
+	id1, _ := s.StoreEvent(context.Background(), "s", "user_message", []byte(`{"n":1}`))
+	id2, _ := s.StoreEvent(context.Background(), "s", "assistant", []byte(`{"n":2}`))
+	id3, _ := s.StoreEvent(context.Background(), "s", "result", resultEvent(1, 1, 0, 0, "m"))
 
-	got, err := s.ListEventsSinceID("s", int(id1), nil)
+	got, err := s.ListEventsSinceID("s", id1, nil)
 	if err != nil {
 		t.Fatalf("ListEventsSinceID: %v", err)
 	}
@@ -180,7 +174,7 @@ func TestListEventsSinceID(t *testing.T) {
 	}
 
 	// Nothing after the last id.
-	tail, err := s.ListEventsSinceID("s", int(id3), nil)
+	tail, err := s.ListEventsSinceID("s", id3, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,16 +187,16 @@ func TestSessionProjectionFromEvents(t *testing.T) {
 	s := newTestStore(t)
 
 	// Two user turns and two result events for one session.
-	if _, err := s.StoreEvent("sess-p", "user_message", []byte(`{}`)); err != nil {
+	if _, err := s.StoreEvent(context.Background(), "sess-p", "user_message", []byte(`{}`)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.StoreEvent("sess-p", "result", resultEvent(100, 40, 0.02, 1500, "claude-opus")); err != nil {
+	if _, err := s.StoreEvent(context.Background(), "sess-p", "result", resultEvent(100, 40, 0.02, 1500, "claude-opus")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.StoreEvent("sess-p", "user_message", []byte(`{}`)); err != nil {
+	if _, err := s.StoreEvent(context.Background(), "sess-p", "user_message", []byte(`{}`)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.StoreEvent("sess-p", "result", resultEvent(50, 10, 0.03, 500, "claude-sonnet")); err != nil {
+	if _, err := s.StoreEvent(context.Background(), "sess-p", "result", resultEvent(50, 10, 0.03, 500, "claude-sonnet")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -238,7 +232,7 @@ func TestSessionProjectionFromEvents(t *testing.T) {
 func TestListSessionAggregatesOmitsUsageless(t *testing.T) {
 	s := newTestStore(t)
 	// A session with only a user_message (no result → no usage) must not appear.
-	if _, err := s.StoreEvent("no-usage", "user_message", []byte(`{}`)); err != nil {
+	if _, err := s.StoreEvent(context.Background(), "no-usage", "user_message", []byte(`{}`)); err != nil {
 		t.Fatal(err)
 	}
 	aggs, err := s.ListSessionAggregates()
@@ -263,7 +257,7 @@ func TestTurnState(t *testing.T) {
 	}
 
 	// user_message with no terminator → in flight.
-	umID, _ := s.StoreEvent("t", "user_message", []byte(`{}`))
+	umID, _ := s.StoreEvent(context.Background(), "t", "user_message", []byte(`{}`))
 	ts, err = s.TurnState("t")
 	if err != nil {
 		t.Fatal(err)
@@ -276,7 +270,7 @@ func TestTurnState(t *testing.T) {
 	}
 
 	// result terminates the turn → no longer in flight.
-	termID, _ := s.StoreEvent("t", "result", resultEvent(1, 1, 0, 0, "m"))
+	termID, _ := s.StoreEvent(context.Background(), "t", "result", resultEvent(1, 1, 0, 0, "m"))
 	ts, err = s.TurnState("t")
 	if err != nil {
 		t.Fatal(err)
@@ -289,12 +283,12 @@ func TestTurnState(t *testing.T) {
 	}
 
 	// error also terminates (and a later user_message re-opens flight).
-	s.StoreEvent("t", "user_message", []byte(`{}`))
+	s.StoreEvent(context.Background(), "t", "user_message", []byte(`{}`))
 	ts, _ = s.TurnState("t")
 	if !ts.InFlight {
 		t.Errorf("expected in-flight after second user_message")
 	}
-	s.StoreEvent("t", "error", []byte(`{}`))
+	s.StoreEvent(context.Background(), "t", "error", []byte(`{}`))
 	ts, _ = s.TurnState("t")
 	if ts.InFlight {
 		t.Errorf("expected not in-flight after error terminator")
@@ -303,9 +297,9 @@ func TestTurnState(t *testing.T) {
 
 func TestSessionIDs(t *testing.T) {
 	s := newTestStore(t)
-	s.StoreEvent("b", "user_message", []byte(`{}`))
-	s.StoreEvent("a", "user_message", []byte(`{}`))
-	s.StoreEvent("a", "result", resultEvent(1, 1, 0, 0, "m"))
+	s.StoreEvent(context.Background(), "b", "user_message", []byte(`{}`))
+	s.StoreEvent(context.Background(), "a", "user_message", []byte(`{}`))
+	s.StoreEvent(context.Background(), "a", "result", resultEvent(1, 1, 0, 0, "m"))
 
 	ids, err := s.SessionIDs()
 	if err != nil {
@@ -325,9 +319,9 @@ func TestSessionIDs(t *testing.T) {
 
 func TestSearchSessions(t *testing.T) {
 	s := newTestStore(t)
-	s.StoreEvent("s1", "user_message", []byte(`{"text":"needle here"}`))
-	s.StoreEvent("s1", "assistant", []byte(`{"text":"needle again"}`))
-	s.StoreEvent("s2", "user_message", []byte(`{"text":"unrelated"}`))
+	s.StoreEvent(context.Background(), "s1", "user_message", []byte(`{"text":"needle here"}`))
+	s.StoreEvent(context.Background(), "s1", "assistant", []byte(`{"text":"needle again"}`))
+	s.StoreEvent(context.Background(), "s2", "user_message", []byte(`{"text":"unrelated"}`))
 
 	hits, err := s.SearchSessions("needle", 10)
 	if err != nil {
@@ -353,58 +347,38 @@ func TestSearchSessions(t *testing.T) {
 	}
 }
 
-func TestProjectionSurvivesReopenWithBackfill(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "ls.db")
+// A session whose sessions row is missing (its seed failed after the event
+// committed) gets the row back, rebuilt from its events.
+func TestRebuildMissingSessionRowsRebuildsFromEvents(t *testing.T) {
+	s := newTestStore(t)
+	s.StoreEvent(context.Background(), "sess", "user_message", harnessEvent("cc-uuid-old", "hi"))
+	s.StoreEvent(context.Background(), "sess", "result", resultEvent(7, 3, 0.5, 99, "mdl"))
+	s.StoreEvent(context.Background(), "kept", "user_message", []byte(`{}`))
 
-	s1, err := New(dbPath)
-	if err != nil {
-		t.Fatalf("New 1: %v", err)
-	}
-	s1.StoreEvent("sess", "user_message", []byte(`{}`))
-	s1.StoreEvent("sess", "result", resultEvent(7, 3, 0.5, 99, "mdl"))
-
-	// Drop the projection rows so reopening must rebuild them from events.
-	if _, err := s1.writer.Exec(`DELETE FROM sessions`); err != nil {
+	if _, err := s.writer.Exec(`DELETE FROM sessions WHERE session_id = 'sess'`); err != nil {
 		t.Fatalf("delete sessions: %v", err)
 	}
-	if err := s1.Close(); err != nil {
-		t.Fatalf("Close 1: %v", err)
-	}
-
-	s2, err := New(dbPath)
+	rebuilt, err := s.RebuildMissingSessionRows()
 	if err != nil {
-		t.Fatalf("New 2 (reopen): %v", err)
+		t.Fatalf("RebuildMissingSessionRows: %v", err)
 	}
-	defer s2.Close()
-
-	aggs, err := s2.ListSessionAggregates()
+	if rebuilt != 1 {
+		t.Fatalf("rebuilt %d rows, want 1", rebuilt)
+	}
+	aggs, err := s.ListSessionAggregates()
 	if err != nil {
-		t.Fatalf("ListSessionAggregates after reopen: %v", err)
+		t.Fatalf("ListSessionAggregates: %v", err)
 	}
 	if len(aggs) != 1 {
-		t.Fatalf("backfill produced %d rows, want 1", len(aggs))
+		t.Fatalf("got %d aggregate rows, want 1", len(aggs))
 	}
 	a := aggs[0]
 	if a.Turns != 1 || a.InputTokens != 7 || a.OutputTokens != 3 || a.Model != "mdl" {
-		t.Errorf("backfilled aggregate = %+v, want turns=1 in=7 out=3 model=mdl", a)
+		t.Errorf("rebuilt aggregate = %+v, want turns=1 in=7 out=3 model=mdl", a)
 	}
-}
-
-func TestPlaceholders(t *testing.T) {
-	cases := map[int]string{
-		0: "",
-		1: "?",
-		3: "?,?,?",
-	}
-	for n, want := range cases {
-		if got := placeholders(n); got != want {
-			t.Errorf("placeholders(%d) = %q, want %q", n, got, want)
-		}
-	}
-	// Negative is treated as zero.
-	if got := placeholders(-1); got != "" {
-		t.Errorf("placeholders(-1) = %q, want empty", got)
+	held, err := s.SessionsHoldingHarnessSessionID("cc-uuid-old")
+	if err != nil || len(held) != 1 || held[0].SessionID != "sess" {
+		t.Errorf("the rebuilt row does not carry the harness id: %+v %v", held, err)
 	}
 }
 
@@ -457,7 +431,7 @@ func TestInjectEventID(t *testing.T) {
 // connection that then accepted the write. The behavior is the contract.
 func TestAWriteThroughTheReaderPoolIsRefused(t *testing.T) {
 	s := newTestStore(t)
-	if _, err := s.StoreEvent("sess", "user_message", []byte(`{}`)); err != nil {
+	if _, err := s.StoreEvent(context.Background(), "sess", "user_message", []byte(`{}`)); err != nil {
 		t.Fatalf("seed StoreEvent: %v", err)
 	}
 
@@ -472,7 +446,7 @@ func TestAWriteThroughTheReaderPoolIsRefused(t *testing.T) {
 			defer wg.Done()
 			<-start
 			if _, err := s.reader.Exec(
-				`INSERT INTO events (session_id, type, data) VALUES (?,?,?)`,
+				`INSERT INTO events (session_id, type, data) VALUES ($1, $2, $3)`,
 				"smuggled", "user_message", `{}`,
 			); err == nil {
 				mu.Lock()
@@ -507,7 +481,7 @@ func TestAWriteThroughTheReaderPoolIsRefused(t *testing.T) {
 func TestALongReadDoesNotStallAWrite(t *testing.T) {
 	s := newTestStore(t)
 	for i := 0; i < 500; i++ {
-		if _, err := s.StoreEvent("sess", "stream", []byte(`{}`)); err != nil {
+		if _, err := s.StoreEvent(context.Background(), "sess", "stream", []byte(`{}`)); err != nil {
 			t.Fatalf("seed StoreEvent %d: %v", i, err)
 		}
 	}
@@ -525,7 +499,7 @@ func TestALongReadDoesNotStallAWrite(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := s.StoreEvent("sess", "user_message", []byte(`{}`))
+		_, err := s.StoreEvent(context.Background(), "sess", "user_message", []byte(`{}`))
 		done <- err
 	}()
 
@@ -539,8 +513,7 @@ func TestALongReadDoesNotStallAWrite(t *testing.T) {
 	}
 
 	// The reader must also still be usable after the write, and must see it:
-	// two handles on one WAL file, so a read opened later has to observe rows
-	// the writer committed in between.
+	// a read opened later has to observe rows the writer committed in between.
 	rows.Close()
 	var n int
 	if err := s.reader.QueryRow(
@@ -575,11 +548,11 @@ func harnessEvent(harnessSessionID, text string) []byte {
 // the events is what still matches a real session row.
 func TestSearchSessionsReportsHarnessSessionID(t *testing.T) {
 	s := newTestStore(t)
-	s.StoreEvent("br_phantom", "user_message", harnessEvent("cc-uuid-1", "needle here"))
-	s.StoreEvent("br_phantom", "assistant", harnessEvent("cc-uuid-1", "needle again"))
+	s.StoreEvent(context.Background(), "br_phantom", "user_message", harnessEvent("cc-uuid-1", "needle here"))
+	s.StoreEvent(context.Background(), "br_phantom", "assistant", harnessEvent("cc-uuid-1", "needle again"))
 	// A session whose events name no harness id at all — 1,675 of the live
 	// host's 11,640. It must still come back as a hit, just without the id.
-	s.StoreEvent("no_harness_id", "user_message", []byte(`{"text":"needle too"}`))
+	s.StoreEvent(context.Background(), "no_harness_id", "user_message", []byte(`{"text":"needle too"}`))
 
 	hits, err := s.SearchSessions("needle", 10)
 	if err != nil {
@@ -616,8 +589,8 @@ func TestSearchSessionsReportsHarnessSessionID(t *testing.T) {
 // moved on.
 func TestHarnessSessionIDTracksLatest(t *testing.T) {
 	s := newTestStore(t)
-	s.StoreEvent("br_1", "user_message", harnessEvent("cc-uuid-first", "needle"))
-	s.StoreEvent("br_1", "result", harnessEvent("cc-uuid-second", "needle"))
+	s.StoreEvent(context.Background(), "br_1", "user_message", harnessEvent("cc-uuid-first", "needle"))
+	s.StoreEvent(context.Background(), "br_1", "result", harnessEvent("cc-uuid-second", "needle"))
 
 	hits, err := s.SearchSessions("needle", 10)
 	if err != nil {
@@ -630,7 +603,7 @@ func TestHarnessSessionIDTracksLatest(t *testing.T) {
 		t.Errorf("harness id = %q, want cc-uuid-second (the latest)", hits[0].HarnessSessionID)
 	}
 	// An event that names no id must not blank out the one already recorded.
-	s.StoreEvent("br_1", "assistant", []byte(`{"text":"needle, no harness id"}`))
+	s.StoreEvent(context.Background(), "br_1", "assistant", []byte(`{"text":"needle, no harness id"}`))
 	hits, err = s.SearchSessions("needle", 10)
 	if err != nil {
 		t.Fatalf("SearchSessions: %v", err)
@@ -640,69 +613,20 @@ func TestHarnessSessionIDTracksLatest(t *testing.T) {
 	}
 }
 
-// The live database predates the column, so the value of this change rests
-// entirely on the backfill: without it every already-stored session stays
-// unresolvable forever. Reopening is what runs it.
-func TestHarnessSessionIDBackfilledOnReopen(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "log-store.db")
-
-	s1, err := New(dbPath)
-	if err != nil {
-		t.Fatalf("New 1: %v", err)
-	}
-	s1.StoreEvent("br_old", "user_message", harnessEvent("cc-uuid-superseded", "needle"))
-	s1.StoreEvent("br_old", "result", harnessEvent("cc-uuid-old", "needle"))
-	if err := s1.Close(); err != nil {
-		t.Fatalf("Close 1: %v", err)
-	}
-
-	// Drop the column and its index to reproduce a pre-migration database
-	// holding real events, then reopen and let migrate() do the import.
-	pre, err := New(dbPath)
-	if err != nil {
-		t.Fatalf("New pre: %v", err)
-	}
-	if _, err := pre.writer.Exec(`DROP INDEX IF EXISTS idx_sessions_harness_session_id`); err != nil {
-		t.Fatalf("drop index: %v", err)
-	}
-	if _, err := pre.writer.Exec(`ALTER TABLE sessions DROP COLUMN harness_session_id`); err != nil {
-		t.Fatalf("drop column: %v", err)
-	}
-	if err := pre.Close(); err != nil {
-		t.Fatalf("Close pre: %v", err)
-	}
-
-	s2, err := New(dbPath)
-	if err != nil {
-		t.Fatalf("New 2: %v", err)
-	}
-	defer s2.Close()
-	hits, err := s2.SearchSessions("needle", 10)
-	if err != nil {
-		t.Fatalf("SearchSessions: %v", err)
-	}
-	if len(hits) != 1 {
-		t.Fatalf("got %d hits, want 1", len(hits))
-	}
-	if hits[0].HarnessSessionID != "cc-uuid-old" {
-		t.Errorf("harness id = %q after reopen, want cc-uuid-old — the backfill did not run", hits[0].HarnessSessionID)
-	}
-}
-
 // The dedupe key an importer needs. Discovery decides a transcript is new by
 // asking its own database and writes the answer into log-store; the check has
 // to be answerable by the store that holds the write, and the harness id is
 // the only id both services agree on.
 func TestSessionsHoldingHarnessSessionID(t *testing.T) {
 	s := newTestStore(t)
-	s.StoreEvent("br_first", "user_message", harnessEvent("cc-uuid-held", "one"))
-	s.StoreEvent("br_first", "assistant", harnessEvent("cc-uuid-held", "two"))
+	s.StoreEvent(context.Background(), "br_first", "user_message", harnessEvent("cc-uuid-held", "one"))
+	s.StoreEvent(context.Background(), "br_first", "assistant", harnessEvent("cc-uuid-held", "two"))
 	// The same harness session imported a second time under a fresh bridge
 	// id — 103 harness sessions on the live host carry more than one.
-	s.StoreEvent("br_duplicate", "user_message", harnessEvent("cc-uuid-held", "one"))
+	s.StoreEvent(context.Background(), "br_duplicate", "user_message", harnessEvent("cc-uuid-held", "one"))
 	// An unrelated session, and one whose events name no harness id.
-	s.StoreEvent("br_other", "user_message", harnessEvent("cc-uuid-other", "x"))
-	s.StoreEvent("br_anonymous", "user_message", []byte(`{"text":"y"}`))
+	s.StoreEvent(context.Background(), "br_other", "user_message", harnessEvent("cc-uuid-other", "x"))
+	s.StoreEvent(context.Background(), "br_anonymous", "user_message", []byte(`{"text":"y"}`))
 
 	held, err := s.SessionsHoldingHarnessSessionID("cc-uuid-held")
 	if err != nil {
@@ -731,13 +655,13 @@ func TestSessionsHoldingHarnessSessionID(t *testing.T) {
 	}
 }
 
-// '' is a stored value, not a wildcard: every session whose events name no
-// harness id carries it. Answering a lookup for '' would report unrelated
+// ” is a stored value, not a wildcard: every session whose events name no
+// harness id carries it. Answering a lookup for ” would report unrelated
 // transcripts as a match and talk an importer out of a real import.
 func TestSessionsHoldingHarnessSessionIDRefusesEmpty(t *testing.T) {
 	s := newTestStore(t)
-	s.StoreEvent("br_anonymous_a", "user_message", []byte(`{"text":"a"}`))
-	s.StoreEvent("br_anonymous_b", "user_message", []byte(`{"text":"b"}`))
+	s.StoreEvent(context.Background(), "br_anonymous_a", "user_message", []byte(`{"text":"a"}`))
+	s.StoreEvent(context.Background(), "br_anonymous_b", "user_message", []byte(`{"text":"b"}`))
 
 	held, err := s.SessionsHoldingHarnessSessionID("")
 	if err == nil {
@@ -753,8 +677,8 @@ func TestSessionsHoldingHarnessSessionIDRefusesEmpty(t *testing.T) {
 // agree with that, or an importer asks about the id it holds and is told no.
 func TestSessionsHoldingHarnessSessionIDFollowsTheLatestID(t *testing.T) {
 	s := newTestStore(t)
-	s.StoreEvent("br_resumed", "user_message", harnessEvent("cc-uuid-before", "one"))
-	s.StoreEvent("br_resumed", "user_message", harnessEvent("cc-uuid-after", "two"))
+	s.StoreEvent(context.Background(), "br_resumed", "user_message", harnessEvent("cc-uuid-before", "one"))
+	s.StoreEvent(context.Background(), "br_resumed", "user_message", harnessEvent("cc-uuid-after", "two"))
 
 	after, err := s.SessionsHoldingHarnessSessionID("cc-uuid-after")
 	if err != nil {
@@ -775,33 +699,6 @@ func TestSessionsHoldingHarnessSessionIDFollowsTheLatestID(t *testing.T) {
 	}
 }
 
-
-// A database created before cost_usd was removed loses the column on the next
-// start, and its other totals survive.
-func TestMigrationDropsTheSessionsCostColumn(t *testing.T) {
-	s := newTestStore(t)
-	if _, err := s.StoreEvent("sess-old", "result", resultEvent(10, 5, 0.40, 100, "m")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.writer.Exec(`ALTER TABLE sessions ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0`); err != nil {
-		t.Fatalf("recreate the old column: %v", err)
-	}
-	if err := s.migrate(); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-	var present int
-	if err := s.reader.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='cost_usd'`).Scan(&present); err != nil {
-		t.Fatal(err)
-	}
-	if present != 0 {
-		t.Fatal("sessions.cost_usd still present after migrate")
-	}
-	aggs, err := s.ListSessionAggregates()
-	if err != nil || len(aggs) != 1 || aggs[0].InputTokens != 10 {
-		t.Fatalf("aggregates after the drop: %+v %v", aggs, err)
-	}
-}
-
 // A Codex session imported from disk stores the AGENTS.md instructions Codex
 // loaded as a user_message event. A search must find what the person and the
 // agent said, never a word that only those instructions contain.
@@ -811,25 +708,25 @@ func TestSearchSessionsSkipsUserMessagesCodexInjected(t *testing.T) {
 	environment := `{"type":"user_message","harness":"codex","result":{"text":"  <environment_context>\n<cwd>/work/acmewidgets</cwd>\n</environment_context>"}}`
 	typed := `{"type":"user_message","harness":"codex","result":{"text":"which acmewidgets orders are open?"}}`
 	reply := `{"type":"assistant","harness":"codex","result":{"text":"Looking at acmewidgets now."}}`
-	if _, err := s.StoreEvent("only-injected", "user_message", []byte(injected)); err != nil {
+	if _, err := s.StoreEvent(context.Background(), "only-injected", "user_message", []byte(injected)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.StoreEvent("only-injected", "user_message", []byte(environment)); err != nil {
+	if _, err := s.StoreEvent(context.Background(), "only-injected", "user_message", []byte(environment)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.StoreEvent("real", "user_message", []byte(injected)); err != nil {
+	if _, err := s.StoreEvent(context.Background(), "real", "user_message", []byte(injected)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.StoreEvent("real", "user_message", []byte(typed)); err != nil {
+	if _, err := s.StoreEvent(context.Background(), "real", "user_message", []byte(typed)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.StoreEvent("real", "assistant", []byte(reply)); err != nil {
+	if _, err := s.StoreEvent(context.Background(), "real", "assistant", []byte(reply)); err != nil {
 		t.Fatal(err)
 	}
 	// An agent's reply that quotes the marker is not injected: only a user
 	// message that begins with one is.
 	quoted := `{"type":"assistant","harness":"codex","result":{"text":"# AGENTS.md instructions mention acmewidgets"}}`
-	if _, err := s.StoreEvent("quoted", "assistant", []byte(quoted)); err != nil {
+	if _, err := s.StoreEvent(context.Background(), "quoted", "assistant", []byte(quoted)); err != nil {
 		t.Fatal(err)
 	}
 

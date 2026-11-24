@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -23,7 +24,7 @@ func ingestJSON(t *testing.T, s *store.Store, sessionID, typ string, body map[st
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, err := s.StoreEvent(sessionID, typ, data)
+	id, err := s.StoreEvent(context.Background(), sessionID, typ, data)
 	if err != nil {
 		t.Fatalf("StoreEvent: %v", err)
 	}
@@ -273,7 +274,7 @@ func TestTurnMaterializer_BuildsTurnsWhenTheyEnd(t *testing.T) {
 // rebuilt on its next read. Either way, then update both constants below.
 const (
 	fingerprintedMaterializerVersion = 7
-	materializerRulesFingerprint     = "da66381e008959fc31a65342d00169b367ee392ef03052646e89c3142263c36c"
+	materializerRulesFingerprint     = "8afb1292d8f59ec15edd0efc20deef955289d2f70c448c23e2f2e8e7fcf079b4"
 )
 
 func TestMaterializerVersionTracksTheRules(t *testing.T) {

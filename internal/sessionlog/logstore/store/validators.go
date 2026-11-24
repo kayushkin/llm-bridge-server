@@ -57,7 +57,7 @@ func (s *Store) validator(id string) (SessionValidator, error) {
 	}
 	var maxID, count int64
 	if err := s.reader.QueryRow(
-		`SELECT COALESCE(MAX(last_event_id), 0), COALESCE(SUM(event_count), 0) FROM turns WHERE session_id=?`, id,
+		`SELECT COALESCE(MAX(last_event_id), 0), COALESCE(SUM(event_count), 0)::bigint FROM turns WHERE session_id = $1`, id,
 	).Scan(&maxID, &count); err != nil {
 		return SessionValidator{}, err
 	}
@@ -65,9 +65,8 @@ func (s *Store) validator(id string) (SessionValidator, error) {
 	if maxID == 0 {
 		return v, nil
 	}
-	// created_at is declared DATETIME, so the driver returns it parsed.
 	var t time.Time
-	if err := s.reader.QueryRow(`SELECT created_at FROM events WHERE id=?`, maxID).Scan(&t); err != nil {
+	if err := s.reader.QueryRow(`SELECT created_at FROM events WHERE id = $1`, maxID).Scan(&t); err != nil {
 		return SessionValidator{}, fmt.Errorf("newest event of %s: %w", id, err)
 	}
 	v.UpdatedAt = t.UTC()

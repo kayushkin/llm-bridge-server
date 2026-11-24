@@ -1,10 +1,11 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 
 	"github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/store"
@@ -12,14 +13,29 @@ import (
 
 // newTestServer wires a Server over a throwaway store. No forwarder: none of
 // the read paths touch it, and a nil one keeps logstack out of a unit test.
+// newTestStore opens the store on a Postgres database of the test's own, with
+// the module provisioned and migrated, as the server opens it.
+func newTestStore(t *testing.T) *store.Store {
+	t.Helper()
+	module, err := store.Module()
+	if err != nil {
+		t.Fatalf("store.Module: %v", err)
+	}
+	database := postgrestest.NewDatabase(t, module)
+	writer := database.Open(module)
+	reader, err := store.OpenReader(context.Background(), database.URL(), module)
+	if err != nil {
+		t.Fatalf("store.OpenReader: %v", err)
+	}
+	s := store.New(writer, reader)
+	t.Cleanup(func() { s.Close() })
+	return s
+}
+
 func newTestServer(t *testing.T) (*Server, *store.Store) {
 	t.Helper()
-	s, err := store.New(filepath.Join(t.TempDir(), "log-store.db"))
-	if err != nil {
-		t.Fatalf("store.New: %v", err)
-	}
-	t.Cleanup(func() { s.Close() })
-	return New(s, nil, newTestSettings(t, nil)), s
+	s := newTestStore(t)
+	return New(s, nil), s
 }
 
 func harnessBody(t *testing.T, harnessSessionID string) []byte {
@@ -58,9 +74,9 @@ func getByHarnessID(t *testing.T, srv *Server, query string) (*httptest.Response
 // that matters is in another process.
 func TestSessionsByHarnessIDOverHTTP(t *testing.T) {
 	srv, st := newTestServer(t)
-	st.StoreEvent("br_held", "user_message", harnessBody(t, "cc-uuid-held"))
-	st.StoreEvent("br_held", "assistant", harnessBody(t, "cc-uuid-held"))
-	st.StoreEvent("br_other", "user_message", harnessBody(t, "cc-uuid-other"))
+	st.StoreEvent(context.Background(), "br_held", "user_message", harnessBody(t, "cc-uuid-held"))
+	st.StoreEvent(context.Background(), "br_held", "assistant", harnessBody(t, "cc-uuid-held"))
+	st.StoreEvent(context.Background(), "br_other", "user_message", harnessBody(t, "cc-uuid-other"))
 
 	rec, out := getByHarnessID(t, srv, "?harness_session_id=cc-uuid-held")
 	if rec.Code != http.StatusOK {
@@ -82,7 +98,7 @@ func TestSessionsByHarnessIDOverHTTP(t *testing.T) {
 // null still works, but one that iterates a decoded field does not.
 func TestSessionsByHarnessIDUnknownIsEmptyList(t *testing.T) {
 	srv, st := newTestServer(t)
-	st.StoreEvent("br_held", "user_message", harnessBody(t, "cc-uuid-held"))
+	st.StoreEvent(context.Background(), "br_held", "user_message", harnessBody(t, "cc-uuid-held"))
 
 	rec, out := getByHarnessID(t, srv, "?harness_session_id=cc-uuid-never-seen")
 	if rec.Code != http.StatusOK {
@@ -102,10 +118,10 @@ func TestSessionsByHarnessIDUnknownIsEmptyList(t *testing.T) {
 
 // A missing id is a 400. Answering it as "no match" would tell an importer to
 // import, which is the behavior this endpoint exists to stop; answering it as
-// a lookup for '' would report every id-less transcript on the host.
+// a lookup for ” would report every id-less transcript on the host.
 func TestSessionsByHarnessIDRequiresTheID(t *testing.T) {
 	srv, st := newTestServer(t)
-	st.StoreEvent("br_anonymous", "user_message", []byte(`{"text":"no harness id here"}`))
+	st.StoreEvent(context.Background(), "br_anonymous", "user_message", []byte(`{"text":"no harness id here"}`))
 
 	for _, query := range []string{"", "?harness_session_id="} {
 		rec, _ := getByHarnessID(t, srv, query)
@@ -120,7 +136,7 @@ func TestSessionsByHarnessIDRequiresTheID(t *testing.T) {
 // all is the assertion; the sibling routes still resolving is the rest of it.
 func TestRoutesDoNotCollide(t *testing.T) {
 	srv, st := newTestServer(t)
-	st.StoreEvent("br_held", "user_message", harnessBody(t, "cc-uuid-held"))
+	st.StoreEvent(context.Background(), "br_held", "user_message", harnessBody(t, "cc-uuid-held"))
 
 	for _, path := range []string{
 		"/api/v1/sessions/br_held/messages?limit=30",

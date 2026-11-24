@@ -1,18 +1,34 @@
 package store
 
 import (
+	"context"
 	"database/sql"
+	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
-	"os"
-	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 	"github.com/kayushkin/llm-bridge/msg"
-	_ "modernc.org/sqlite"
 )
+
+//go:embed migrations/*.sql
+var migrationFiles embed.FS
+
+// Module is the Postgres schema and role the session event log keeps its
+// records in, with the migrations that build them. The schema is named for the
+// plan's session_log package, which this store becomes.
+func Module() (postgresstorage.Module, error) {
+	migrations, err := postgresstorage.MigrationsFromFiles(migrationFiles, "migrations")
+	if err != nil {
+		return postgresstorage.Module{}, err
+	}
+	return postgresstorage.Module{Schema: "session_log", Role: "session_log_module", Migrations: migrations}, nil
+}
 
 // readerPoolSize bounds how many queries run at once. Reads here are not
 // small — one /messages call over the largest real session scans 13,776 rows
@@ -22,24 +38,17 @@ import (
 const readerPoolSize = 8
 
 type Store struct {
-	// writer runs every INSERT and UPDATE through a single connection.
-	// modernc.org/sqlite treats each pooled connection as an independent
-	// writer, so more than one still hits SQLITE_BUSY (5) under concurrent
-	// ingest and silently drops events when the caller swallows the 500.
+	// writer runs every INSERT and UPDATE through a single connection. The turn
+	// index depends on it: BuildTurnIndex marks a session current in the same
+	// write that reads its last unindexed events, and only a single writer
+	// keeps an event from landing between the two (see turn_index.go). It also
+	// keeps event ids in the order of their created_at, which the windowed
+	// search relies on.
 	writer *sql.DB
 
-	// reader runs every SELECT on its own pool. Under WAL a reader never
-	// blocks the writer, so a query can no longer stall event ingest for
-	// every live session. Measured on the live 1.9GB database: draining the
-	// largest session's events holds its connection for 573ms, and while
-	// reads and writes shared this one connection that was 573ms in which
-	// no session anywhere could log an event. Opened query_only so a write
-	// routed here fails loudly instead of quietly competing for the lock.
-	//
-	// Honest about the size of the win: an end-to-end A/B (sustained reads
-	// against old and new binaries on a copy of the live database) could
-	// not separate them — the effect sits inside the noise of a busy box.
-	// This is a correctness change, not a measured speedup.
+	// reader runs every SELECT on its own pool, so a long read never holds the
+	// writer. Its connections open read only (default_transaction_read_only),
+	// so a write routed here fails loudly instead of competing with the writer.
 	reader *sql.DB
 
 	// turnIndexLocks keeps two builds of one session's turn index from running at
@@ -52,273 +61,114 @@ type Store struct {
 	turnIndexVersion int
 }
 
-// busyTimeoutMillisecondsWanted is how long a connection waits for a lock
-// before giving up. Named so both pools' DSNs and the check that proves the
-// writer's took effect cannot drift apart.
-const busyTimeoutMillisecondsWanted = 5000
-
-func New(dbPath string) (*Store, error) {
-	dir := filepath.Dir(dbPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, fmt.Errorf("create db dir: %w", err)
-	}
-	writer, err := sql.Open("sqlite", fmt.Sprintf("%s?_pragma=busy_timeout(%d)", dbPath, busyTimeoutMillisecondsWanted))
-	if err != nil {
-		return nil, err
-	}
-	// journal_mode is a property of the database file, so this one Exec sets
-	// WAL for the reader pool too. busy_timeout is per-connection, so both
-	// pools carry their own in the DSN — a one-shot Exec would reach only
-	// whichever connection the pool happened to hand out. The writer is capped
-	// at one connection below, which used to make the Exec form work by
-	// accident; it stops working the moment that connection is replaced.
-	if _, err := writer.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		writer.Close()
-		return nil, fmt.Errorf("enable WAL: %w", err)
-	}
-	// An unrecognized DSN key is silently ignored by this driver, so prove the
-	// setting actually took effect instead of trusting the connection string.
-	var writerBusyTimeoutMilliseconds int
-	if err := writer.QueryRow("PRAGMA busy_timeout").Scan(&writerBusyTimeoutMilliseconds); err != nil {
-		writer.Close()
-		return nil, fmt.Errorf("read writer busy_timeout pragma: %w", err)
-	}
-	if writerBusyTimeoutMilliseconds != busyTimeoutMillisecondsWanted {
-		writer.Close()
-		return nil, fmt.Errorf("writer busy_timeout is %d, want %d: the DSN did not take effect",
-			writerBusyTimeoutMilliseconds, busyTimeoutMillisecondsWanted)
-	}
+// New builds the store over the module's pools: writer, provisioned and
+// migrated (postgresstorage.Provision, Open, Migrate), and reader, from
+// OpenReader. The store takes both and closes them in Close.
+func New(writer, reader *sql.DB) *Store {
 	writer.SetMaxOpenConns(1)
-
-	// modernc applies _pragma= to every connection it opens, which a one-shot
-	// Exec on a pool cannot do — query_only and busy_timeout are both
-	// per-connection. Verified by behavior, not by reading the pragma back:
-	// TestAWriteThroughTheReaderPoolIsRefused drives 40 concurrent writes
-	// through this handle and every one must fail.
-	reader, err := sql.Open("sqlite", fmt.Sprintf("%s?_pragma=query_only(1)&_pragma=busy_timeout(%d)",
-		dbPath, busyTimeoutMillisecondsWanted))
-	if err != nil {
-		writer.Close()
-		return nil, err
-	}
 	reader.SetMaxOpenConns(readerPoolSize)
+	return &Store{writer: writer, reader: reader, turnIndexVersion: turnIndexRulesVersion * 1000}
+}
 
-	s := &Store{writer: writer, reader: reader, turnIndexVersion: turnIndexRulesVersion * 1000}
-	if err := s.migrate(); err != nil {
-		writer.Close()
-		reader.Close()
+// OpenReader opens the module's read-only pool on the Postgres at url: the
+// module's role and schema, with every transaction read only.
+func OpenReader(ctx context.Context, url string, module postgresstorage.Module) (*sql.DB, error) {
+	readOnlyURL, err := withRuntimeParameter(url, "default_transaction_read_only", "on")
+	if err != nil {
 		return nil, err
 	}
-	return s, nil
+	return postgresstorage.Open(ctx, readOnlyURL, module)
+}
+
+// withRuntimeParameter adds a session setting to a Postgres connection
+// string, in either of its two forms. pgx passes a parameter it does not know
+// to the server as a setting.
+func withRuntimeParameter(connectionString, name, value string) (string, error) {
+	if strings.Contains(connectionString, "://") {
+		separator := "?"
+		if strings.Contains(connectionString, "?") {
+			separator = "&"
+		}
+		return connectionString + separator + name + "=" + value, nil
+	}
+	if strings.TrimSpace(connectionString) == "" {
+		return "", errors.New("log-store: the Postgres connection string is empty")
+	}
+	return connectionString + " " + name + "=" + value, nil
 }
 
 func (s *Store) Close() error {
-	rerr := s.reader.Close()
-	if err := s.writer.Close(); err != nil {
-		return err
-	}
-	return rerr
+	return errors.Join(s.reader.Close(), s.writer.Close())
 }
 
-func (s *Store) migrate() error {
-	if _, err := s.writer.Exec(`
-		CREATE TABLE IF NOT EXISTS events (
-			id         INTEGER PRIMARY KEY AUTOINCREMENT,
-			session_id TEXT NOT NULL,
-			type       TEXT NOT NULL,
-			data       TEXT NOT NULL,
-			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-		);
-		CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
-		CREATE INDEX IF NOT EXISTS idx_events_session_type ON events(session_id, type);
-	`); err != nil {
-		return err
-	}
-	// sessions projection — per-session rollup of token / cost / turn / model
-	// totals derived from the events table. Maintained synchronously by
-	// StoreEvent so reads are O(1) instead of O(events). Always rebuildable
-	// from events; backfilled below if rows are missing.
-	if _, err := s.writer.Exec(`
-		CREATE TABLE IF NOT EXISTS sessions (
-			session_id    TEXT PRIMARY KEY,
-			turn_count    INTEGER NOT NULL DEFAULT 0,
-			input_tokens  INTEGER NOT NULL DEFAULT 0,
-			output_tokens INTEGER NOT NULL DEFAULT 0,
-			duration_ms   INTEGER NOT NULL DEFAULT 0,
-			model         TEXT    NOT NULL DEFAULT '',
-			started_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			last_active   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			ended_at      DATETIME
-		);
-		CREATE INDEX IF NOT EXISTS idx_sessions_last_active ON sessions(last_active);
-	`); err != nil {
-		return err
-	}
-	if err := s.migrateHarnessSessionID(); err != nil {
-		return err
-	}
-	if _, err := s.writer.Exec(turnIndexMigration); err != nil {
-		return fmt.Errorf("create turn index tables: %w", err)
-	}
-	if err := s.dropSessionsCostColumn(); err != nil {
-		return err
-	}
-	if err := s.migrateTokenUsageProjections(); err != nil {
-		return err
-	}
-	if err := s.migrateUsageByHourProjections(); err != nil {
-		return err
-	}
-	// The cache columns of a row rebuilt below must not count an event the
-	// pending token usage backfill will add later. See token_usage.go.
-	cacheTokensCountedAfterEventID, err := s.eventIDTheTokenUsageBackfillStillOwes()
-	if err != nil {
-		return err
-	}
-	// Backfill from events for any session not already projected. Runs once
-	// per session — guarded by NOT IN to skip already-populated sessions.
-	if _, err := s.writer.Exec(`
+// RebuildMissingSessionRows adds the sessions row of every session that has
+// events and no row, from its events. StoreEvent seeds the row of a new
+// session after the event commits, so a failed seed leaves a session without
+// one; this repairs it. It reads every session id in the events index, so the
+// server runs it beside its work at start, not before it.
+func (s *Store) RebuildMissingSessionRows() (int64, error) {
+	result, err := s.writer.Exec(`
 		INSERT INTO sessions (
 			session_id, turn_count, input_tokens, output_tokens,
 			cache_read_tokens, cache_write_tokens,
-			duration_ms, model, started_at, last_active, ended_at
+			duration_ms, model, harness_session_id, started_at, last_active, ended_at
 		)
 		SELECT
 			e.session_id,
-			COALESCE(SUM(CASE WHEN e.type = 'user_message' THEN 1 ELSE 0 END), 0)               AS turn_count,
-			COALESCE(SUM(CASE WHEN e.type = 'result' THEN json_extract(e.data, '$.result.usage.input_tokens') ELSE 0 END), 0)  AS input_tokens,
-			COALESCE(SUM(CASE WHEN e.type = 'result' THEN json_extract(e.data, '$.result.usage.output_tokens') ELSE 0 END), 0) AS output_tokens,
-			COALESCE(SUM(CASE WHEN e.type = 'result' AND e.id > ?1 THEN json_extract(e.data, '$.result.usage.cache_read_tokens') ELSE 0 END), 0)  AS cache_read_tokens,
-			COALESCE(SUM(CASE WHEN e.type = 'result' AND e.id > ?1 THEN json_extract(e.data, '$.result.usage.cache_write_tokens') ELSE 0 END), 0) AS cache_write_tokens,
-			COALESCE(SUM(CASE WHEN e.type = 'result' THEN json_extract(e.data, '$.result.duration_ms') ELSE 0 END), 0)         AS duration_ms,
+			COUNT(*) FILTER (WHERE e.type = 'user_message'),
+			COALESCE(SUM(json_number(e.data->'result'->'usage'->'input_tokens')) FILTER (WHERE e.type = 'result'), 0)::bigint,
+			COALESCE(SUM(json_number(e.data->'result'->'usage'->'output_tokens')) FILTER (WHERE e.type = 'result'), 0)::bigint,
+			COALESCE(SUM(json_number(e.data->'result'->'usage'->'cache_read_tokens')) FILTER (WHERE e.type = 'result'), 0)::bigint,
+			COALESCE(SUM(json_number(e.data->'result'->'usage'->'cache_write_tokens')) FILTER (WHERE e.type = 'result'), 0)::bigint,
+			COALESCE(SUM(json_number(e.data->'result'->'duration_ms')) FILTER (WHERE e.type = 'result'), 0)::bigint,
 			COALESCE((
-				SELECT json_extract(e2.data, '$.result.model')
+				SELECT e2.data->'result'->>'model'
 				FROM events e2
-				WHERE e2.session_id = e.session_id
-				  AND e2.type = 'result'
-				  AND json_extract(e2.data, '$.result.model') IS NOT NULL
+				WHERE e2.session_id = e.session_id AND e2.type = 'result'
+				  AND e2.data->'result'->>'model' IS NOT NULL
 				ORDER BY e2.id DESC LIMIT 1
-			), '') AS model,
-			MIN(e.created_at)                                                                   AS started_at,
-			MAX(e.created_at)                                                                   AS last_active,
-			(
-				SELECT MAX(e3.created_at) FROM events e3
-				WHERE e3.session_id = e.session_id AND e3.type IN ('result','error')
-			)                                                                                   AS ended_at
+			), ''),
+			COALESCE((
+				SELECT e3.data->>'harness_session_id'
+				FROM events e3
+				WHERE e3.session_id = e.session_id
+				  AND COALESCE(e3.data->>'harness_session_id', '') <> ''
+				ORDER BY e3.id DESC LIMIT 1
+			), ''),
+			MIN(e.created_at),
+			MAX(e.created_at),
+			MAX(e.created_at) FILTER (WHERE e.type IN ('result', 'error'))
 		FROM events e
-		WHERE e.session_id NOT IN (SELECT session_id FROM sessions)
+		WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.session_id = e.session_id)
 		GROUP BY e.session_id
-	`, cacheTokensCountedAfterEventID); err != nil {
-		return fmt.Errorf("backfill sessions projection: %w", err)
-	}
-	return nil
-}
-
-// dropSessionsCostColumn removes the sessions projection's cost_usd.
-//
-// It summed result.cost.total_usd per turn, and Claude Code reports that figure
-// cumulatively for its CLI process, so it counted the same spending again every
-// turn: $267.71 for a session whose calls cost $97.60 (measured 2026-09-16). A
-// session's cost is llm-bridge-server's estimate (sessions.spend_usd there, the
-// session_cost event here); this store keeps no second, wrong one.
-func (s *Store) dropSessionsCostColumn() error {
-	var present int
-	if err := s.writer.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='cost_usd'`).Scan(&present); err != nil {
-		return fmt.Errorf("inspect sessions columns: %w", err)
-	}
-	if present == 0 {
-		return nil
-	}
-	if _, err := s.writer.Exec(`ALTER TABLE sessions DROP COLUMN cost_usd`); err != nil {
-		return fmt.Errorf("drop sessions.cost_usd: %w", err)
-	}
-	return nil
-}
-
-// migrateHarnessSessionID adds the sessions projection's harness_session_id
-// column and backfills it from the events that already carry the id.
-//
-// Why the column exists at all: log-store keys everything on one opaque
-// session_id — whatever the writer handed it. In practice that is sometimes
-// llm-bridge-server's bridge_id and sometimes the harness-native id, and a
-// third of this host's rows carry a bridge_id the gateway has since deleted
-// as a phantom. A consumer that takes a search hit's session_id straight to
-// the gateway's GET /sessions/{id} therefore gets a 404 for a session that
-// very much exists — measured on this host at 4,083 of 11,640 sessions
-// (35%), against only 4 that are genuinely unrecoverable.
-//
-// Every one of those events already names its harness_session_id, and the
-// gateway keys a unique index on that same column. Publishing the id
-// log-store already stores is what makes a hit resolvable, and it needs no
-// knowledge of the gateway's session set — so it adds no coupling between
-// the two services. log-store still does not resolve anything itself; it
-// reports both ids and lets the consumer join.
-//
-// The backfill is deliberately tied to the ALTER: `ADD COLUMN` fails once
-// the column exists, and that error is the signal that the one-shot import
-// has already run. The alternative — guarding on the column still being
-// empty — would re-scan every event of every session that legitimately has
-// no harness id on every single boot, forever. Both statements share one
-// transaction so a failed backfill rolls the column back and retries on the
-// next boot rather than leaving the table half-migrated.
-func (s *Store) migrateHarnessSessionID() error {
-	tx, err := s.writer.Begin()
+		ON CONFLICT (session_id) DO NOTHING`)
 	if err != nil {
-		return fmt.Errorf("begin harness_session_id migration: %w", err)
+		return 0, fmt.Errorf("rebuild missing sessions rows: %w", err)
 	}
-	defer tx.Rollback()
-
-	if _, err := tx.Exec(`ALTER TABLE sessions ADD COLUMN harness_session_id TEXT NOT NULL DEFAULT ''`); err != nil {
-		// Column already present: the backfill ran on an earlier boot.
-		return nil
-	}
-	// Latest wins, not first. A resumed or forked Claude Code session reports
-	// a new harness uuid partway through its event stream, and the gateway's
-	// sessions row holds the current one — 11 sessions on this host have more
-	// than one. Taking MAX(id) is what keeps the two stores agreeing.
-	if _, err := tx.Exec(`
-		UPDATE sessions SET harness_session_id = COALESCE((
-			SELECT json_extract(e.data, '$.harness_session_id')
-			FROM events e
-			WHERE e.session_id = sessions.session_id
-			  AND json_extract(e.data, '$.harness_session_id') IS NOT NULL
-			  AND json_extract(e.data, '$.harness_session_id') != ''
-			ORDER BY e.id DESC LIMIT 1
-		), '')
-	`); err != nil {
-		return fmt.Errorf("backfill harness_session_id: %w", err)
-	}
-	if _, err := tx.Exec(
-		`CREATE INDEX IF NOT EXISTS idx_sessions_harness_session_id
-		 ON sessions(harness_session_id) WHERE harness_session_id != ''`,
-	); err != nil {
-		return fmt.Errorf("index harness_session_id: %w", err)
-	}
-	return tx.Commit()
+	return result.RowsAffected()
 }
 
 // StoreEvent persists a raw event and updates the per-session projection.
 // The projection is a derived cache; failure to update is logged but does
 // not fail the underlying event insert (the event is still queryable; the
-// next StoreEvent call rolls forward correctly, and on next boot migrate()
-// will not re-backfill an already-present row).
-func (s *Store) StoreEvent(sessionID, eventType string, data []byte) (int64, error) {
+// next StoreEvent call rolls forward correctly, and RebuildMissingSessionRows
+// adds a row whose seed failed).
+//
+// ctx bounds the insert: an insert it cancels may still have been stored, as
+// a commit that is cut off cannot say whether it landed.
+func (s *Store) StoreEvent(ctx context.Context, sessionID, eventType string, data []byte) (int64, error) {
 	// The event and its place in the turn index are written together, so the index
 	// can never hold an event the table does not, or miss one it does.
-	tx, err := s.writer.Begin()
+	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Rollback()
-	result, err := tx.Exec(
-		`INSERT INTO events (session_id, type, data) VALUES (?,?,?)`,
+	var id int64
+	if err := tx.QueryRowContext(ctx,
+		`INSERT INTO events (session_id, type, data) VALUES ($1, $2, $3) RETURNING id`,
 		sessionID, eventType, string(data),
-	)
-	if err != nil {
-		return 0, err
-	}
-	id, err := result.LastInsertId()
-	if err != nil {
+	).Scan(&id); err != nil {
 		return 0, err
 	}
 	if err := s.indexEventInTx(tx, sessionID, id, eventType, data); err != nil {
@@ -344,16 +194,16 @@ func (s *Store) StoreEvent(sessionID, eventType string, data []byte) (int64, err
 func (s *Store) updateSessionProjection(sessionID, eventType string, data []byte) error {
 	// Ensure the row exists. INSERT OR IGNORE is a no-op for established
 	// sessions; for the first event of a new session it seeds started_at /
-	// last_active to NOW().
+	// last_active to now().
 	if _, err := s.writer.Exec(
-		`INSERT OR IGNORE INTO sessions (session_id) VALUES (?)`,
+		`INSERT INTO sessions (session_id) VALUES ($1) ON CONFLICT (session_id) DO NOTHING`,
 		sessionID,
 	); err != nil {
 		return fmt.Errorf("seed sessions row: %w", err)
 	}
 	// Bump last_active on every event regardless of type.
 	if _, err := s.writer.Exec(
-		`UPDATE sessions SET last_active = CURRENT_TIMESTAMP WHERE session_id = ?`,
+		`UPDATE sessions SET last_active = now() WHERE session_id = $1`,
 		sessionID,
 	); err != nil {
 		return fmt.Errorf("touch last_active: %w", err)
@@ -366,9 +216,9 @@ func (s *Store) updateSessionProjection(sessionID, eventType string, data []byte
 	// MAX(id) backfill and the gateway's own row.
 	if harnessSessionID := harnessSessionIDOf(data); harnessSessionID != "" {
 		if _, err := s.writer.Exec(
-			`UPDATE sessions SET harness_session_id = ?
-			 WHERE session_id = ? AND harness_session_id != ?`,
-			harnessSessionID, sessionID, harnessSessionID,
+			`UPDATE sessions SET harness_session_id = $1
+			 WHERE session_id = $2 AND harness_session_id <> $1`,
+			harnessSessionID, sessionID,
 		); err != nil {
 			return fmt.Errorf("set harness_session_id: %w", err)
 		}
@@ -376,7 +226,7 @@ func (s *Store) updateSessionProjection(sessionID, eventType string, data []byte
 	switch eventType {
 	case "user_message":
 		_, err := s.writer.Exec(
-			`UPDATE sessions SET turn_count = turn_count + 1 WHERE session_id = ?`,
+			`UPDATE sessions SET turn_count = turn_count + 1 WHERE session_id = $1`,
 			sessionID,
 		)
 		return err
@@ -402,27 +252,27 @@ func (s *Store) updateSessionProjection(sessionID, eventType string, data []byte
 			// Still set ended_at — the event terminated the turn even if
 			// the body was malformed.
 			_, err := s.writer.Exec(
-				`UPDATE sessions SET ended_at = CURRENT_TIMESTAMP WHERE session_id = ?`,
+				`UPDATE sessions SET ended_at = now() WHERE session_id = $1`,
 				sessionID,
 			)
 			return err
 		}
 		_, err := s.writer.Exec(
 			`UPDATE sessions SET
-				input_tokens = input_tokens + ?,
-				output_tokens = output_tokens + ?,
-				cache_read_tokens = cache_read_tokens + ?,
-				cache_write_tokens = cache_write_tokens + ?,
-				duration_ms = duration_ms + ?,
-				model = CASE WHEN ? != '' THEN ? ELSE model END,
-				ended_at = CURRENT_TIMESTAMP
-			WHERE session_id = ?`,
+				input_tokens = input_tokens + $1,
+				output_tokens = output_tokens + $2,
+				cache_read_tokens = cache_read_tokens + $3,
+				cache_write_tokens = cache_write_tokens + $4,
+				duration_ms = duration_ms + $5,
+				model = CASE WHEN $6 <> '' THEN $6 ELSE model END,
+				ended_at = now()
+			WHERE session_id = $7`,
 			ev.Result.Usage.InputTokens,
 			ev.Result.Usage.OutputTokens,
 			ev.Result.Usage.CacheReadTokens,
 			ev.Result.Usage.CacheWriteTokens,
 			ev.Result.DurationMS,
-			ev.Result.Model, ev.Result.Model,
+			ev.Result.Model,
 			sessionID,
 		)
 		return err
@@ -430,7 +280,7 @@ func (s *Store) updateSessionProjection(sessionID, eventType string, data []byte
 		return s.addAPICallToSessionUsage(sessionID, data)
 	case "error":
 		_, err := s.writer.Exec(
-			`UPDATE sessions SET ended_at = CURRENT_TIMESTAMP WHERE session_id = ?`,
+			`UPDATE sessions SET ended_at = now() WHERE session_id = $1`,
 			sessionID,
 		)
 		return err
@@ -442,14 +292,12 @@ func (s *Store) updateSessionProjection(sessionID, eventType string, data []byte
 // oldest first. Each event's JSON is decorated with an "event_id" field carrying
 // its row id, so a client can track the high-water mark and dedupe against a
 // stream replay. If types is non-empty, only events of those types are returned.
-func (s *Store) ListEventsSinceID(sessionID string, afterID int, types []string) ([]json.RawMessage, error) {
-	q := `SELECT id, data FROM events WHERE session_id=? AND id > ?`
+func (s *Store) ListEventsSinceID(sessionID string, afterID int64, types []string) ([]json.RawMessage, error) {
+	q := `SELECT id, data FROM events WHERE session_id = $1 AND id > $2`
 	args := []any{sessionID, afterID}
 	if len(types) > 0 {
-		q += ` AND type IN (` + placeholders(len(types)) + `)`
-		for _, t := range types {
-			args = append(args, t)
-		}
+		q += ` AND type = ANY($3)`
+		args = append(args, types)
 	}
 	q += ` ORDER BY id ASC`
 	rows, err := s.reader.Query(q, args...)
@@ -467,20 +315,6 @@ func (s *Store) ListEventsSinceID(sessionID string, afterID int, types []string)
 		events = append(events, injectEventID([]byte(data), rowID))
 	}
 	return events, rows.Err()
-}
-
-func placeholders(n int) string {
-	if n <= 0 {
-		return ""
-	}
-	out := make([]byte, 0, n*2-1)
-	for i := 0; i < n; i++ {
-		if i > 0 {
-			out = append(out, ',')
-		}
-		out = append(out, '?')
-	}
-	return string(out)
 }
 
 // injectEventID splices an "event_id":<rowID> field into an event's top-level
@@ -554,6 +388,10 @@ func (s *Store) SearchSessionsInWindow(query string, limit int, since, until tim
 	}
 	idConditions := ""
 	args := []any{query}
+	nextArgument := func(value any) string {
+		args = append(args, value)
+		return "$" + strconv.Itoa(len(args))
+	}
 	if !since.IsZero() {
 		lo, ok, err := s.firstEventIDAtOrAfter(since)
 		if err != nil {
@@ -562,8 +400,7 @@ func (s *Store) SearchSessionsInWindow(query string, limit int, since, until tim
 		if !ok {
 			return []SearchHit{}, nil // every event predates the window
 		}
-		idConditions += " AND id >= ?"
-		args = append(args, lo)
+		idConditions += " AND id >= " + nextArgument(lo)
 	}
 	if !until.IsZero() {
 		hi, ok, err := s.firstEventIDAtOrAfter(until)
@@ -571,22 +408,19 @@ func (s *Store) SearchSessionsInWindow(query string, limit int, since, until tim
 			return nil, err
 		}
 		if ok {
-			idConditions += " AND id < ?"
-			args = append(args, hi)
+			idConditions += " AND id < " + nextArgument(hi)
 		}
 		// No event at or after `until` means the window's right edge is past
 		// the end of the table — unbounded on that side, correctly.
 	}
-	injectedCondition, injectedArgs := injectedUserMessageExclusion()
-	idConditions += injectedCondition
-	args = append(args, injectedArgs...)
-	args = append(args, limit)
-	// The join sits outside the LIMIT, not inside it. Joining in the same
-	// SELECT as the GROUP BY makes SQLite look up the projection once per
-	// matched group — 8,138 seeks for a whole-corpus query on this host, and
-	// measurably 1.1s of the 3.9s it then took. Feeding it the already-
-	// truncated result costs at most `limit` seeks instead, which brought the
-	// same query back to 2.86s against 2.74s before the column existed.
+	idConditions += injectedUserMessageExclusion(nextArgument)
+	limitArgument := nextArgument(limit)
+	// The join sits outside the LIMIT, not inside it, so the projection is
+	// looked up at most `limit` times rather than once per matched group.
+	//
+	// ILIKE with no escape character is SQLite's LIKE: case is ignored, % and
+	// _ in the query match as wildcards, and a backslash is an ordinary
+	// character. (SQLite folds only ASCII letters; ILIKE folds every letter.)
 	//
 	// LEFT JOIN, not JOIN: a session with events but no projection row must
 	// still appear as a hit with an empty harness id, exactly as it did
@@ -596,10 +430,10 @@ func (s *Store) SearchSessionsInWindow(query string, limit int, since, until tim
 		 FROM (
 			SELECT session_id, COUNT(*) AS match_count, MAX(id) AS last_event_id
 			FROM events
-			WHERE data LIKE '%' || ? || '%'`+idConditions+`
+			WHERE data::text ILIKE '%' || $1 || '%' ESCAPE ''`+idConditions+`
 			GROUP BY session_id
 			ORDER BY last_event_id DESC
-			LIMIT ?
+			LIMIT `+limitArgument+`
 		 ) hit
 		 LEFT JOIN sessions s ON s.session_id = hit.session_id
 		 ORDER BY hit.last_event_id DESC`,
@@ -629,22 +463,19 @@ func (s *Store) SearchSessionsInWindow(query string, limit int, since, until tim
 // begins is llm-bridge's (msg.CodexInjectedTextPrefixes), the same one the
 // harness wrapper and the server use, so the three agree on what counts.
 //
-// The condition is appended after the LIKE, so SQLite reads the event's JSON
-// only for rows whose raw text already matched.
-func injectedUserMessageExclusion() (string, []any) {
+// The condition is appended after the match, so Postgres reads the event's
+// JSON only for rows whose raw text already matched. nextArgument adds a value
+// to the query and answers its placeholder.
+func injectedUserMessageExclusion(nextArgument func(any) string) string {
 	prefixes := msg.CodexInjectedTextPrefixes()
 	if len(prefixes) == 0 {
-		return "", nil
+		return ""
 	}
 	tests := make([]string, len(prefixes))
-	args := make([]any, 0, 2*len(prefixes))
 	for i, prefix := range prefixes {
-		tests[i] = "substr(injected_text, 1, length(?)) = ?"
-		args = append(args, prefix, prefix)
+		tests[i] = "starts_with(ltrim(COALESCE(data->'result'->>'text', ''), E' \\t\\n\\r'), " + nextArgument(prefix) + ")"
 	}
-	condition := " AND NOT (type = 'user_message' AND EXISTS (SELECT 1 FROM (SELECT ltrim(COALESCE(json_extract(data, '$.result.text'), ''), ' ' || char(9, 10, 13)) AS injected_text) WHERE " +
-		strings.Join(tests, " OR ") + "))"
-	return condition, args
+	return " AND NOT (type = 'user_message' AND (" + strings.Join(tests, " OR ") + "))"
 }
 
 // firstEventIDAtOrAfter finds the smallest event id whose created_at is at or
@@ -652,10 +483,10 @@ func injectedUserMessageExclusion() (string, []any) {
 // primary key instead of a full scan against the unindexed created_at column.
 // ok=false means no event is that late (t is past the end of the table).
 func (s *Store) firstEventIDAtOrAfter(t time.Time) (int64, bool, error) {
-	// created_at is stored as CURRENT_TIMESTAMP text ("YYYY-MM-DD HH:MM:SS",
-	// UTC); comparing in that exact shape keeps the comparison textual and
-	// index-free on both sides.
-	want := t.UTC().Format("2006-01-02 15:04:05")
+	// SQLite kept created_at to the second and compared it to t written to the
+	// second. Truncating t keeps that: an event in the same second as t is at
+	// or after it.
+	want := t.UTC().Truncate(time.Second)
 	var loID, hiID int64
 	err := s.reader.QueryRow(`SELECT COALESCE(MIN(id),0), COALESCE(MAX(id),0) FROM events`).Scan(&loID, &hiID)
 	if err != nil {
@@ -664,36 +495,37 @@ func (s *Store) firstEventIDAtOrAfter(t time.Time) (int64, bool, error) {
 	if hiID == 0 {
 		return 0, false, nil
 	}
-	at := func(id int64) (int64, string, error) {
+	at := func(id int64) (int64, time.Time, error) {
 		var gotID int64
-		var created string
+		var created time.Time
 		err := s.reader.QueryRow(
-			`SELECT id, created_at FROM events WHERE id >= ? ORDER BY id LIMIT 1`, id,
+			`SELECT id, created_at FROM events WHERE id >= $1 ORDER BY id LIMIT 1`, id,
 		).Scan(&gotID, &created)
 		return gotID, created, err
 	}
-	if _, created, err := at(hiID); err != nil || created < want {
+	if _, created, err := at(hiID); err != nil || created.Before(want) {
 		return 0, false, err // the newest event still predates t
 	}
 	lo, hi := loID, hiID // invariant: answer is in (lo, hi] once at(lo) < want
 	if _, created, err := at(lo); err != nil {
 		return 0, false, err
-	} else if created >= want {
+	} else if !created.Before(want) {
 		return lo, true, nil
 	}
+	// The search is over the id space, not the ids present: at(x) reads the
+	// first event at or after x, so "at(x) is at or after t" only turns from
+	// false to true as x grows, gaps or not. hi may end up an id no event
+	// has, which is as good a bound as the next one present. Postgres leaves
+	// gaps in an identity column (a rolled-back insert keeps its number), and
+	// the earlier form, which set hi to the id found, never ended on one.
 	for lo+1 < hi {
 		mid := lo + (hi-lo)/2
 		gotID, created, err := at(mid)
 		if err != nil {
 			return 0, false, err
 		}
-		if created >= want {
-			hi = gotID
-			if gotID < mid {
-				hi = mid
-			}
-		} else if gotID >= hi {
-			break // the probe skipped past hi through an id gap; hi stands
+		if !created.Before(want) {
+			hi = mid
 		} else {
 			lo = gotID
 		}
@@ -728,6 +560,13 @@ type HeldSession struct {
 	LastActive string `json:"last_active"`
 }
 
+// lastActiveText writes a last-activity stamp as the SQLite store answered
+// it: the driver handed back its DATETIME as a time, and database/sql wrote
+// that into a string as RFC 3339 with nanoseconds.
+func lastActiveText(lastActive time.Time) string {
+	return lastActive.UTC().Format(time.RFC3339Nano)
+}
+
 // SessionsHoldingHarnessSessionID answers "do you already hold this
 // harness session's transcript?" — the question llm-bridge-server's
 // discovery has to ask before importing one.
@@ -741,7 +580,7 @@ type HeldSession struct {
 // the harness-native one.
 //
 // An empty id is refused rather than answered. Sessions whose events name no
-// harness id all carry '' in the projection, so treating '' as a lookup key
+// harness id all carry ” in the projection, so treating ” as a lookup key
 // would report thousands of unrelated transcripts as a match and suppress a
 // real import (the partial index deliberately excludes them too).
 //
@@ -755,7 +594,7 @@ func (s *Store) SessionsHoldingHarnessSessionID(harnessSessionID string) ([]Held
 		        (SELECT COUNT(*) FROM events e WHERE e.session_id = s.session_id),
 		        s.last_active
 		 FROM sessions s
-		 WHERE s.harness_session_id = ?
+		 WHERE s.harness_session_id = $1
 		 ORDER BY s.last_active DESC`,
 		harnessSessionID,
 	)
@@ -766,9 +605,11 @@ func (s *Store) SessionsHoldingHarnessSessionID(harnessSessionID string) ([]Held
 	var held []HeldSession
 	for rows.Next() {
 		var h HeldSession
-		if err := rows.Scan(&h.SessionID, &h.EventCount, &h.LastActive); err != nil {
+		var lastActive time.Time
+		if err := rows.Scan(&h.SessionID, &h.EventCount, &lastActive); err != nil {
 			return nil, err
 		}
+		h.LastActive = lastActiveText(lastActive)
 		held = append(held, h)
 	}
 	return held, rows.Err()
@@ -853,14 +694,14 @@ type TurnState struct {
 func (s *Store) TurnState(sessionID string) (TurnState, error) {
 	var ts TurnState
 	row := s.reader.QueryRow(
-		`SELECT COALESCE(MAX(id), 0) FROM events WHERE session_id=? AND type='user_message'`,
+		`SELECT COALESCE(MAX(id), 0) FROM events WHERE session_id = $1 AND type = 'user_message'`,
 		sessionID,
 	)
 	if err := row.Scan(&ts.LastUserMessageEventID); err != nil {
 		return ts, err
 	}
 	row = s.reader.QueryRow(
-		`SELECT COALESCE(MAX(id), 0) FROM events WHERE session_id=? AND type IN ('result','error')`,
+		`SELECT COALESCE(MAX(id), 0) FROM events WHERE session_id = $1 AND type IN ('result','error')`,
 		sessionID,
 	)
 	if err := row.Scan(&ts.LastTerminatorEventID); err != nil {

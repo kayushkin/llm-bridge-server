@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -14,7 +15,7 @@ func storeTurnEvent(t *testing.T, s *Store, sessionID, typ, turnID string) int64
 		body["turn_id"] = turnID
 	}
 	data, _ := json.Marshal(body)
-	id, err := s.StoreEvent(sessionID, typ, data)
+	id, err := s.StoreEvent(context.Background(), sessionID, typ, data)
 	if err != nil {
 		t.Fatalf("StoreEvent: %v", err)
 	}
@@ -30,11 +31,10 @@ func insertUnindexedEvent(t *testing.T, s *Store, sessionID, typ, turnID string)
 		body["turn_id"] = turnID
 	}
 	data, _ := json.Marshal(body)
-	res, err := s.writer.Exec(`INSERT INTO events (session_id, type, data) VALUES (?,?,?)`, sessionID, typ, string(data))
-	if err != nil {
+	var id int64
+	if err := s.writer.QueryRow(`INSERT INTO events (session_id, type, data) VALUES ($1, $2, $3) RETURNING id`, sessionID, typ, string(data)).Scan(&id); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	id, _ := res.LastInsertId()
 	return id
 }
 
@@ -49,7 +49,7 @@ func readAssignments(t *testing.T, s *Store, sessionID string) []turnAssignment 
 	rows, err := s.reader.Query(
 		`SELECT et.event_id, et.turn_seq, tu.turn_id FROM event_turns et
 		 JOIN turns tu ON tu.session_id = et.session_id AND tu.turn_seq = et.turn_seq
-		 WHERE et.session_id=? ORDER BY et.event_id`, sessionID)
+		 WHERE et.session_id = $1 ORDER BY et.event_id`, sessionID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,10 +157,10 @@ func TestTurnIndex_ChunkedBuildAndPartialLeftovers(t *testing.T) {
 		insertUnindexedEvent(t, s, sess, typ, fmt.Sprintf("turn-%d", i/500))
 	}
 	// Leftovers of an interrupted build: a wrong turn and a stray assignment.
-	if _, err := s.writer.Exec(`INSERT INTO turns (session_id, turn_seq, turn_id, first_event_id, last_event_id, event_count) VALUES (?,99,'stale',1,1,1)`, sess); err != nil {
+	if _, err := s.writer.Exec(`INSERT INTO turns (session_id, turn_seq, turn_id, first_event_id, last_event_id, event_count) VALUES ($1, 99, 'stale', 1, 1, 1)`, sess); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.writer.Exec(`INSERT INTO event_turns (event_id, session_id, turn_seq) VALUES (1,?,99)`, sess); err != nil {
+	if _, err := s.writer.Exec(`INSERT INTO event_turns (event_id, session_id, turn_seq) VALUES (1, $1, 99)`, sess); err != nil {
 		t.Fatal(err)
 	}
 
@@ -172,7 +172,7 @@ func TestTurnIndex_ChunkedBuildAndPartialLeftovers(t *testing.T) {
 		t.Fatalf("indexed %d events, want %d", len(got), n)
 	}
 	var turnCount int
-	if err := s.reader.QueryRow(`SELECT COUNT(*) FROM turns WHERE session_id=?`, sess).Scan(&turnCount); err != nil {
+	if err := s.reader.QueryRow(`SELECT COUNT(*) FROM turns WHERE session_id = $1`, sess).Scan(&turnCount); err != nil {
 		t.Fatal(err)
 	}
 	if want := (n + 499) / 500; turnCount != want {

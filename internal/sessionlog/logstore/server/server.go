@@ -1,19 +1,22 @@
 package server
 
 import (
-	"fmt"
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/client"
 	ls "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/logstack"
 	"github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/store"
 	"github.com/kayushkin/llm-bridge/msg"
-	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
 type Server struct {
@@ -23,12 +26,9 @@ type Server struct {
 	materializer *turnMaterializer
 }
 
-// New builds the server over s. settings is what GET /settings describes; a nil
-// one panics here, at boot, rather than at the first read of the route.
-func New(s *store.Store, forwarder *ls.Forwarder, settings *servicesettings.Registry) *Server {
-	if settings == nil {
-		panic("log-store: server.New needs the settings registry that GET /settings serves")
-	}
+// New builds the server over s. forwarder sends result statistics to logstack;
+// nil sends none.
+func New(s *store.Store, forwarder *ls.Forwarder) *Server {
 	// The turn index records dual-emit candidates by the rule in dedup.go. Set before
 	// anything is served, so no event is indexed without it.
 	s.SetDedupCandidates(dedupCandidateOf, dedupCandidateVersion)
@@ -58,14 +58,44 @@ func New(s *store.Store, forwarder *ls.Forwarder, settings *servicesettings.Regi
 	// Go's ServeMux PANICS at registration on an ambiguous pair.
 	srv.mux.HandleFunc("GET /api/v1/sessions/by-harness-id", srv.handleSessionsByHarnessID)
 	srv.mux.HandleFunc("GET /health", srv.handleHealth)
-	// Read-only, and as open as every other route. PUT /settings/{key} is not
-	// mounted: no setting is Editable, so there is nothing a write could change.
-	srv.mux.Handle("GET /settings", servicesettings.Handler(settings, "/settings"))
 	return srv
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
+}
+
+// ingestEventBody stores one event as it was sent, places it in its turn, and
+// forwards a result event to logstack. body is stored verbatim, never
+// re-serialized.
+func (s *Server) ingestEventBody(ctx context.Context, body []byte) (int64, error) {
+	// Postgres keeps text only in UTF-8, so a body that is not would fail the
+	// insert every time it was sent.
+	if !utf8.Valid(body) {
+		return 0, &client.EventRejectedError{Reason: "event JSON is not UTF-8"}
+	}
+	// Parse just enough to extract session_id and type for indexing
+	var ev msg.Event
+	if err := json.Unmarshal(body, &ev); err != nil {
+		return 0, &client.EventRejectedError{Reason: "invalid event JSON"}
+	}
+	if ev.BridgeSessionID == "" {
+		return 0, &client.EventRejectedError{Reason: "missing bridge_session_id"}
+	}
+	storeID := ev.BridgeSessionID
+
+	rowID, err := s.store.StoreEvent(ctx, storeID, string(ev.Type), body)
+	if err != nil {
+		return 0, err
+	}
+
+	s.materializer.noteEvent(storeID, ev.Type)
+
+	// Forward result events to logstack
+	if s.forwarder != nil && ev.Type == msg.EventResult && ev.Result != nil {
+		s.forwarder.Forward(ev)
+	}
+	return rowID, nil
 }
 
 // handleIngestEvent accepts a single msg.Event, stores it verbatim, and forwards result events to logstack.
@@ -75,38 +105,76 @@ func (s *Server) handleIngestEvent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"read body"}`, http.StatusBadRequest)
 		return
 	}
-
-	// Parse just enough to extract session_id and type for indexing
-	var ev msg.Event
-	if err := json.Unmarshal(body, &ev); err != nil {
-		http.Error(w, `{"error":"invalid event JSON"}`, http.StatusBadRequest)
+	// Not the request's context: a caller that hangs up after sending the event
+	// must not take the insert down with it.
+	rowID, err := s.ingestEventBody(context.WithoutCancel(r.Context()), body)
+	var rejected *client.EventRejectedError
+	if errors.As(err, &rejected) {
+		writeJSONStatus(w, http.StatusBadRequest, map[string]string{"error": rejected.Reason})
 		return
 	}
-
-	if ev.BridgeSessionID == "" {
-		http.Error(w, `{"error":"missing bridge_session_id"}`, http.StatusBadRequest)
-		return
-	}
-	storeID := ev.BridgeSessionID
-
-	// Store the raw body verbatim — no re-serialization
-	rowID, err := s.store.StoreEvent(storeID, string(ev.Type), body)
 	if err != nil {
 		log.Printf("[log-store] store error: %v", err)
 		http.Error(w, `{"error":"store failed"}`, http.StatusInternalServerError)
 		return
 	}
 
-	s.materializer.noteEvent(storeID, ev.Type)
-
-	// Forward result events to logstack
-	if ev.Type == msg.EventResult && ev.Result != nil {
-		s.forwarder.Forward(ev)
-	}
-
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]int64{"id": rowID})
+}
+
+// pushTimeout bounds one in-process push, as the HTTP client's 5-second
+// timeout bounded one over the network.
+const pushTimeout = 5 * time.Second
+
+// PushEvent stores ev in this process: the same JSON the HTTP client posts,
+// stored by the same path POST /api/v1/events takes. A refused event comes
+// back as *client.EventRejectedError. A push that outlives pushTimeout comes back as
+// context.DeadlineExceeded, and may have been stored.
+func (s *Server) PushEvent(ev msg.Event) (int64, error) {
+	data, err := json.Marshal(ev)
+	if err != nil {
+		return 0, &client.EventRejectedError{Reason: fmt.Sprintf("marshal event: %v", err)}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), pushTimeout)
+	defer cancel()
+	return s.ingestEventBody(ctx, data)
+}
+
+// GetTurnState answers what GET /api/v1/sessions/{id}/turn-state answers, in
+// this process.
+func (s *Server) GetTurnState(sessionID string) (client.TurnState, error) {
+	ts, err := s.store.TurnState(sessionID)
+	if err != nil {
+		return client.TurnState{}, err
+	}
+	return client.TurnState{
+		LastUserMessageEventID: ts.LastUserMessageEventID,
+		LastTerminatorEventID:  ts.LastTerminatorEventID,
+		InFlight:               ts.InFlight,
+	}, nil
+}
+
+// ListEvents answers what GET /api/v1/sessions/{id}/events answers, in this
+// process: the session's events after afterID, oldest first, each with
+// event_id spliced in, of the given types (nil for every type).
+func (s *Server) ListEvents(sessionID string, afterID int64, types []string) ([]json.RawMessage, error) {
+	return s.store.ListEventsSinceID(sessionID, afterID, types)
+}
+
+// SessionsHoldingHarnessSessionID answers what GET
+// /api/v1/sessions/by-harness-id answers, in this process.
+func (s *Server) SessionsHoldingHarnessSessionID(harnessSessionID string) ([]client.HeldSession, error) {
+	held, err := s.store.SessionsHoldingHarnessSessionID(harnessSessionID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]client.HeldSession, 0, len(held))
+	for _, h := range held {
+		out = append(out, client.HeldSession{SessionID: h.SessionID, EventCount: h.EventCount, LastActive: h.LastActive})
+	}
+	return out, nil
 }
 
 // handleMessages returns the reading page of a session: its newest `limit` turns,
@@ -356,9 +424,9 @@ func splitIDs(raw string) []string {
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	afterStr := r.URL.Query().Get("after")
-	afterID := 0
+	var afterID int64
 	if afterStr != "" {
-		afterID, _ = strconv.Atoi(afterStr)
+		afterID, _ = strconv.ParseInt(afterStr, 10, 64)
 	}
 
 	events, err := s.store.ListEventsSinceID(id, afterID, parseTypes(r))
@@ -459,7 +527,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 // own database whether a session is new and writes the answer's consequence
 // here. A caller can now put the question to the store that owns the write.
 //
-// A missing or empty harness_session_id is a 400, not an empty list: '' is
+// A missing or empty harness_session_id is a 400, not an empty list: ” is
 // what every session whose events name no harness id carries, so answering
 // it would be answering a different question.
 func (s *Server) handleSessionsByHarnessID(w http.ResponseWriter, r *http.Request) {
@@ -571,5 +639,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 func writeJSON(w http.ResponseWriter, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(v)
+}
+
+func writeJSONStatus(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
 }

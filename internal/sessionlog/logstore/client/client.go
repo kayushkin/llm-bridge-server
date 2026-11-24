@@ -42,6 +42,18 @@ func (e *StatusError) Error() string {
 	return fmt.Sprintf("log-store error: %s - %s", e.Status, e.Body)
 }
 
+// EventRejectedError is an event log-store refuses whatever the state of its
+// database: the same event sent again is refused the same way. The log-store
+// module in the server answers it in process; its HTTP route answers it with
+// 400, which this client reports as a StatusError.
+type EventRejectedError struct {
+	Reason string
+}
+
+func (e *EventRejectedError) Error() string {
+	return "log-store rejected the event: " + e.Reason
+}
+
 // PushEvent sends a single event to log-store. Returns the stored row ID.
 // An HTTP error status comes back as a *StatusError; a transport failure
 // (refused, reset, timed out) comes back wrapped from net/http.
@@ -157,7 +169,7 @@ type HeldSession struct {
 // transcripts into the production store: the check lived in a database the
 // store could not see.
 //
-// An empty id is refused here rather than sent, because '' is a real stored
+// An empty id is refused here rather than sent, because ” is a real stored
 // value (every session whose events name no harness id) and would match
 // thousands of unrelated rows.
 func (c *Client) SessionsHoldingHarnessSessionID(harnessSessionID string) ([]HeldSession, error) {

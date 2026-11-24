@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -13,13 +14,13 @@ import (
 
 func storeAt(t *testing.T, s *Store, session, data, createdAt string) {
 	t.Helper()
-	if _, err := s.StoreEvent(session, "user_message", []byte(data)); err != nil {
+	if _, err := s.StoreEvent(context.Background(), session, "user_message", []byte(data)); err != nil {
 		t.Fatalf("StoreEvent: %v", err)
 	}
-	// Backdate the row just written: StoreEvent stamps CURRENT_TIMESTAMP, and
+	// Backdate the row just written: StoreEvent stamps now(), and
 	// the window under test needs rows spread over days, not microseconds.
 	if _, err := s.writer.Exec(
-		`UPDATE events SET created_at = ? WHERE id = (SELECT MAX(id) FROM events)`, createdAt,
+		`UPDATE events SET created_at = $1::timestamp AT TIME ZONE 'UTC' WHERE id = (SELECT MAX(id) FROM events)`, createdAt,
 	); err != nil {
 		t.Fatalf("backdate: %v", err)
 	}
@@ -109,5 +110,32 @@ func TestUntilPastTheTableLeavesTheRightEdgeOpen(t *testing.T) {
 	}
 	if got := hitIDs(hits); len(got) != 1 || got[0] != "s_new" {
 		t.Fatalf("want [s_new], got %v", got)
+	}
+}
+
+// Event ids may have gaps: Postgres keeps the number of a rolled-back insert.
+// The window's edges must still be found, and the search must end.
+func TestAWindowIsFoundAcrossGapsInTheEventIDs(t *testing.T) {
+	s := windowFixture(t)
+	if _, err := s.writer.Exec(`UPDATE events SET id = id * 1000`); err != nil {
+		t.Fatalf("spread the ids: %v", err)
+	}
+	since := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
+	until := time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC)
+	done := make(chan []SearchHit, 1)
+	go func() {
+		hits, err := s.SearchSessionsInWindow("needle", 100, since, until)
+		if err != nil {
+			t.Errorf("SearchSessionsInWindow: %v", err)
+		}
+		done <- hits
+	}()
+	select {
+	case hits := <-done:
+		if got := hitIDs(hits); len(got) != 1 || got[0] != "s_mid" {
+			t.Errorf("hits = %v, want [s_mid]", got)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the windowed search did not end on ids with gaps")
 	}
 }

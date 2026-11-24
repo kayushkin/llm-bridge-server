@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/store"
+	"github.com/kayushkin/llm-bridge/msg"
 )
 
 // A 1x1 PNG, base64.
@@ -104,7 +105,7 @@ func storeEvent(t *testing.T, s *store.Store, sessionID string, ev msg.Event) in
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, err := s.StoreEvent(sessionID, string(ev.Type), data)
+	id, err := s.StoreEvent(context.Background(), sessionID, string(ev.Type), data)
 	if err != nil {
 		t.Fatal(err)
 	}
