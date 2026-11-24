@@ -1,0 +1,21 @@
+[Unit]
+Description=bundle-store — curated session bundles (skills and tools) with repo and task resolution
+After=network.target
+
+# A systemd user unit: install it to ~/.config/systemd/user/ and the binary to
+# ~/bin. %h is the user's home directory, so nothing here names a user.
+[Service]
+Type=simple
+ExecStart=%h/bin/bundle-store
+
+# Loopback, deliberately. The service has no auth of its own; put a front door
+# that adds it in front. settings.go defaults to the same address, so an empty
+# environment is safe too.
+Environment=BUNDLE_STORE_ADDR=127.0.0.1:8307
+
+WorkingDirectory=%h
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
