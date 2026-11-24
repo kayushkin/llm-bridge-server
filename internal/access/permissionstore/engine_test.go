@@ -1,41 +1,43 @@
-package permstore
+package permissionstore
 
 import (
+	"context"
 	"encoding/json"
-	"path/filepath"
 	"testing"
+
+	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 )
 
-// newTestStore opens a fresh DB in a temp dir and wipes the seed rules so
+// testContext is the context every store call in these tests runs under.
+var testContext = context.Background()
+
+// newTestStore opens a fresh database and wipes the seed rules so
 // engine unit tests start from a clean slate. Use newSeededTestStore when
 // the seed defaults are what's under test.
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
 	s := newSeededTestStore(t)
-	if _, err := s.DB().Exec(`DELETE FROM rules`); err != nil {
+	if _, err := s.db.Exec(`DELETE FROM rules`); err != nil {
 		t.Fatalf("wipe rules: %v", err)
 	}
 	return s
 }
 
-// newSeededTestStore opens a fresh DB with migrateV2 applied — i.e. the
-// default seed rules are present. Used by tests that exercise seed
-// behavior end-to-end.
+// newSeededTestStore gives the test a store on a Postgres database of its own
+// with every migration applied — so the default seed rules are present.
 func newSeededTestStore(t *testing.T) *Store {
 	t.Helper()
-	dir := t.TempDir()
-	s, err := Open(filepath.Join(dir, "permission-store.db"))
+	module, err := Module()
 	if err != nil {
-		t.Fatalf("open store: %v", err)
+		t.Fatalf("module: %v", err)
 	}
-	t.Cleanup(func() { _ = s.Close() })
-	return s
+	return New(postgrestest.NewDatabase(t, module).Open(module))
 }
 
 func evaluate(t *testing.T, eng *Engine, tool, command string) EvaluateResponse {
 	t.Helper()
 	input, _ := json.Marshal(map[string]string{"command": command})
-	resp, err := eng.Evaluate(EvaluateRequest{
+	resp, err := eng.Evaluate(testContext, EvaluateRequest{
 		BridgeID: "test",
 		Tool:     tool,
 		Input:    input,
@@ -48,7 +50,7 @@ func evaluate(t *testing.T, eng *Engine, tool, command string) EvaluateResponse 
 
 func mustCreateRule(t *testing.T, s *Store, r Rule) {
 	t.Helper()
-	if _, err := s.CreateRule(r); err != nil {
+	if _, err := s.CreateRule(testContext, r); err != nil {
 		t.Fatalf("create rule: %v", err)
 	}
 }
@@ -121,13 +123,13 @@ func TestEngine_ScopeCascade_InstanceBeatsGlobal(t *testing.T) {
 	eng := NewEngine(s)
 
 	input, _ := json.Marshal(map[string]string{"command": "git status"})
-	resp, _ := eng.Evaluate(EvaluateRequest{InstanceID: "i1", Tool: "Bash", Input: input})
+	resp, _ := eng.Evaluate(testContext, EvaluateRequest{InstanceID: "i1", Tool: "Bash", Input: input})
 	if resp.Outcome != OutcomeDeny {
 		t.Errorf("instance-scope rule must win over global, got %s", resp.Outcome)
 	}
 
 	// Different instance → falls through to global allow.
-	resp2, _ := eng.Evaluate(EvaluateRequest{InstanceID: "i2", Tool: "Bash", Input: input})
+	resp2, _ := eng.Evaluate(testContext, EvaluateRequest{InstanceID: "i2", Tool: "Bash", Input: input})
 	if resp2.Outcome != OutcomeAllow {
 		t.Errorf("non-matching instance scope should not apply, got %s", resp2.Outcome)
 	}
@@ -168,7 +170,7 @@ func TestEngine_AuditWritten(t *testing.T) {
 	eng := NewEngine(s)
 	evaluate(t, eng, "Bash", "git status")
 
-	entries, err := s.ListAudit(ListAuditFilter{Limit: 10})
+	entries, err := s.ListAudit(testContext, ListAuditFilter{Limit: 10})
 	if err != nil {
 		t.Fatalf("list audit: %v", err)
 	}

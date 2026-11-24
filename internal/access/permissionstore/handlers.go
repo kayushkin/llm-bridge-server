@@ -1,4 +1,4 @@
-package server
+package permissionstore
 
 import (
 	"database/sql"
@@ -7,36 +7,62 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-
-	permstore "github.com/kayushkin/llm-bridge-server/internal/access/permissionstore"
 )
+
+// Handlers answers permission-store's routes: GET /healthz, GET and POST
+// /rules, GET, PATCH and DELETE /rules/{id}, POST /evaluate and GET /audit.
+// The server it is mounted in registers each under its own prefix and decides
+// who may call them; these handlers check no caller.
+type Handlers struct {
+	store  *Store
+	engine *Engine
+}
+
+// NewHandlers answers the routes from store. engine must be the one the
+// server's own tool-call gate evaluates with, because a rule write here drops
+// its compiled patterns.
+func NewHandlers(store *Store, engine *Engine) *Handlers {
+	if store == nil || engine == nil {
+		panic("permission-store: NewHandlers needs a Store and the Engine the server evaluates with")
+	}
+	return &Handlers{store: store, engine: engine}
+}
 
 // --- health -------------------------------------------------------------
 
-func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
+// Health answers {"status":"ok","rules":N}. The standalone store named its
+// database file here; a module has none.
+func (s *Handlers) Health(w http.ResponseWriter, r *http.Request) {
+	rules, err := s.store.ListRules(r.Context(), "")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status": "ok",
-		"db":     s.store.Path(),
+		"rules":  len(rules),
 	})
 }
 
 // --- rules CRUD ---------------------------------------------------------
 
-func (s *Server) handleListRules(w http.ResponseWriter, r *http.Request) {
+// ListRules answers its route.
+func (s *Handlers) ListRules(w http.ResponseWriter, r *http.Request) {
 	scope := r.URL.Query().Get("scope")
-	rules, err := s.store.ListRules(scope)
+	rules, err := s.store.ListRules(r.Context(), scope)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	if rules == nil {
-		rules = []permstore.Rule{}
+		rules = []Rule{}
 	}
 	writeJSON(w, http.StatusOK, rules)
 }
 
-func (s *Server) handleCreateRule(w http.ResponseWriter, r *http.Request) {
-	var rule permstore.Rule
+// CreateRule answers its route.
+func (s *Handlers) CreateRule(w http.ResponseWriter, r *http.Request) {
+	var rule Rule
 	if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("decode body: %w", err))
 		return
@@ -45,7 +71,7 @@ func (s *Server) handleCreateRule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	created, err := s.store.CreateRule(rule)
+	created, err := s.store.CreateRule(r.Context(), rule)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -54,9 +80,10 @@ func (s *Server) handleCreateRule(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, created)
 }
 
-func (s *Server) handleGetRule(w http.ResponseWriter, r *http.Request) {
+// GetRule answers its route.
+func (s *Handlers) GetRule(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	rule, err := s.store.GetRule(id)
+	rule, err := s.store.GetRule(r.Context(), id)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeError(w, http.StatusNotFound, fmt.Errorf("rule %q not found", id))
 		return
@@ -68,9 +95,10 @@ func (s *Server) handleGetRule(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, rule)
 }
 
-func (s *Server) handleUpdateRule(w http.ResponseWriter, r *http.Request) {
+// UpdateRule answers its route.
+func (s *Handlers) UpdateRule(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	existing, err := s.store.GetRule(id)
+	existing, err := s.store.GetRule(r.Context(), id)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeError(w, http.StatusNotFound, fmt.Errorf("rule %q not found", id))
 		return
@@ -112,7 +140,7 @@ func (s *Server) handleUpdateRule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	updated, err := s.store.UpdateRule(merged)
+	updated, err := s.store.UpdateRule(r.Context(), merged)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -121,9 +149,10 @@ func (s *Server) handleUpdateRule(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, updated)
 }
 
-func (s *Server) handleDeleteRule(w http.ResponseWriter, r *http.Request) {
+// DeleteRule answers its route.
+func (s *Handlers) DeleteRule(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if err := s.store.DeleteRule(id); err != nil {
+	if err := s.store.DeleteRule(r.Context(), id); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -133,8 +162,9 @@ func (s *Server) handleDeleteRule(w http.ResponseWriter, r *http.Request) {
 
 // --- evaluate -----------------------------------------------------------
 
-func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
-	var req permstore.EvaluateRequest
+// Evaluate answers its route.
+func (s *Handlers) Evaluate(w http.ResponseWriter, r *http.Request) {
+	var req EvaluateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("decode body: %w", err))
 		return
@@ -143,7 +173,7 @@ func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("tool is required"))
 		return
 	}
-	resp, err := s.engine.Evaluate(req)
+	resp, err := s.engine.Evaluate(r.Context(), req)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -153,11 +183,12 @@ func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
 
 // --- audit --------------------------------------------------------------
 
-func (s *Server) handleListAudit(w http.ResponseWriter, r *http.Request) {
+// ListAudit answers its route.
+func (s *Handlers) ListAudit(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	offset, _ := strconv.Atoi(q.Get("offset"))
-	entries, err := s.store.ListAudit(permstore.ListAuditFilter{
+	entries, err := s.store.ListAudit(r.Context(), ListAuditFilter{
 		BridgeID:   q.Get("bridge_id"),
 		InstanceID: q.Get("instance_id"),
 		Tool:       q.Get("tool"),
@@ -170,7 +201,7 @@ func (s *Server) handleListAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if entries == nil {
-		entries = []permstore.AuditEntry{}
+		entries = []AuditEntry{}
 	}
 	writeJSON(w, http.StatusOK, entries)
 }
@@ -192,9 +223,9 @@ func writeError(w http.ResponseWriter, status int, err error) {
 
 // validateRule enforces field semantics the SQL layer can't (CHECK
 // constraints would work too, but Go-side gives nicer error messages).
-func validateRule(r permstore.Rule) error {
+func validateRule(r Rule) error {
 	switch r.Outcome {
-	case permstore.OutcomeAllow, permstore.OutcomeDeny, permstore.OutcomeAsk:
+	case OutcomeAllow, OutcomeDeny, OutcomeAsk:
 	default:
 		return fmt.Errorf("outcome must be allow / deny / ask, got %q", r.Outcome)
 	}

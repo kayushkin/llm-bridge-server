@@ -1,19 +1,20 @@
-// Package permstore is the canonical rule engine for tool-call gating across
-// the llm-bridge harness ecosystem. SQLite-backed: rules + audit log live in
-// one database. The store is paired with engine.go (the cascade evaluator)
-// and internal/server (the HTTP surface).
-package permstore
+// Package permissionstore is the rule engine for tool-call gating across the
+// llm-bridge harnesses: rules, the verdict on one tool call, and an audit row
+// for every verdict. The store keeps both in Postgres, in the schema of
+// Module, through postgresstorage; engine.go is the cascade evaluator and
+// handlers.go the HTTP surface the server mounts.
+package permissionstore
 
 import (
+	"context"
 	"database/sql"
+	"embed"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 )
 
 // --- Domain types -------------------------------------------------------
@@ -79,211 +80,33 @@ type AuditEntry struct {
 
 // --- Store --------------------------------------------------------------
 
-// dsnParams configures every connection modernc.org/sqlite opens.
-//
-// _pragma=NAME(VALUE) is the ONLY pragma syntax this driver understands, and it
-// silently ignores DSN keys it does not recognize rather than rejecting them.
-// This store shipped with the mattn-style "?_journal_mode=WAL&_busy_timeout=5000",
-// which applied neither and said nothing: the live database at
-// ~/.config/permission-store/permission-store.db read byte 18 of its header as 1,
-// the rollback journal, and every contended statement failed on the spot instead
-// of waiting the 5 seconds this line claimed to ask for.
-//
-// journal_mode is deliberately not in here. It is a property of the file rather
-// than of a connection, and changing it needs a lock the driver cannot wait for
-// where it replays DSN pragmas. See switchJournalMode.
-const dsnParams = "_pragma=busy_timeout(5000)"
+//go:embed migrations/*.sql
+var migrationFiles embed.FS
 
-// busyTimeoutMilliseconds is how long a contended statement waits for a lock. It
-// is the value spelled into dsnParams above, named here so the conversion below
-// can be given the same patience rather than a second number of its own.
-const busyTimeoutMilliseconds = 5000
-
-// journalMode is the journal this database ends up in. WAL lets readers run
-// while a writer holds the file, which is the whole reason to convert at all.
-const journalMode = "WAL"
-
-// switchJournalMode moves the database file into journalMode, waiting out
-// another process converting the same fresh file.
-//
-// Switching a rollback-journal database into WAL takes a brief exclusive lock,
-// and that one statement is the only part of opening a store that busy_timeout
-// cannot mediate. Measured in memory-store, four connections racing to convert
-// one fresh file, 160 opens per row:
-//
-//	journal_mode alone              120 failed
-//	busy_timeout + journal_mode       1 failed, after 2ms
-//	busy_timeout(30000) + same        2 failed, after 1ms
-//
-// The third row is the finding: six times the timeout changes nothing and the
-// failure still lands in a millisecond, so the wait is never being entered.
-// SQLite declines to run the busy handler when a connection has to upgrade a
-// lock it already holds, because waiting there is how two connections deadlock;
-// it returns SQLITE_BUSY on the spot instead. A longer timeout has nothing to
-// give, so the wait has to be ours.
-//
-// Retrying converges because the race is only ever over the first conversion:
-// once any process has won it the file is in WAL, and every later connection
-// reads the mode back instead of changing it.
-func switchJournalMode(db *sql.DB) error {
-	deadline := time.Now().Add(busyTimeoutMilliseconds * time.Millisecond)
-
-	var settled string
-	var err error
-	for backoff := time.Millisecond; ; backoff += time.Millisecond {
-		err = db.QueryRow("PRAGMA journal_mode(" + journalMode + ")").Scan(&settled)
-		if err == nil && strings.EqualFold(settled, journalMode) {
-			return nil
-		}
-		if !time.Now().Add(backoff).Before(deadline) {
-			break
-		}
-		time.Sleep(backoff)
-	}
-
+// Module is the Postgres schema and role the store keeps its rules and audit
+// in, with the migrations that build them and insert the default rules.
+func Module() (postgresstorage.Module, error) {
+	migrations, err := postgresstorage.MigrationsFromFiles(migrationFiles, "migrations")
 	if err != nil {
-		return fmt.Errorf("switch journal mode to %s: %w", journalMode, err)
+		return postgresstorage.Module{}, err
 	}
-	// A lost race can also come back quietly, reporting the mode it stayed on
-	// rather than an error, and a database left on the rollback journal is the
-	// serialized queue WAL exists to prevent.
-	return fmt.Errorf("journal mode settled on %q, want %s", settled, journalMode)
+	return postgresstorage.Module{Schema: "permissions", Role: "permissions_module", Migrations: migrations}, nil
 }
 
-// Store wraps the SQLite handle and exposes typed accessors. Concurrency:
-// modernc.org/sqlite + WAL still leaks SQLITE_BUSY under concurrent writers,
-// so the connection pool is pinned to 1.
+// Store keeps the rules and the audit in the module's schema.
 type Store struct {
-	db   *sql.DB
-	path string
+	db *sql.DB
 }
 
-// DefaultPath returns the canonical on-disk location for the database.
-func DefaultPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "permission-store", "permission-store.db")
-}
+// New returns the store on db, a pool Module's schema has been migrated on.
+func New(db *sql.DB) *Store { return &Store{db: db} }
 
-// Open opens or creates the store at path (DefaultPath when empty), running
-// migrations to head.
-func Open(path string) (*Store, error) {
-	if path == "" {
-		path = DefaultPath()
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
-	}
+const ruleColumns = `id, scope, priority, tool, pattern, outcome, message, enabled, created_at, updated_at`
 
-	db, err := sql.Open("sqlite", path+"?"+dsnParams)
-	if err != nil {
-		return nil, fmt.Errorf("open db: %w", err)
-	}
-	db.SetMaxOpenConns(1)
-
-	if err := switchJournalMode(db); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("open db: %w", err)
-	}
-
-	s := &Store{db: db, path: path}
-	if err := s.migrate(); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("migrate: %w", err)
-	}
-	return s, nil
-}
-
-// Close releases the database handle.
-func (s *Store) Close() error { return s.db.Close() }
-
-// Path returns the on-disk database path.
-func (s *Store) Path() string { return s.path }
-
-// DB returns the underlying handle for tests / advanced callers.
-func (s *Store) DB() *sql.DB { return s.db }
-
-// --- Migrations ---------------------------------------------------------
-
-func (s *Store) migrate() error {
-	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY)`); err != nil {
-		return fmt.Errorf("schema_version table: %w", err)
-	}
-	var current int
-	if err := s.db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_version`).Scan(&current); err != nil {
-		return fmt.Errorf("read schema_version: %w", err)
-	}
-	migrations := []func() error{
-		s.migrateV1,
-		s.migrateV2,
-	}
-	for i := current; i < len(migrations); i++ {
-		if err := migrations[i](); err != nil {
-			return fmt.Errorf("migration v%d: %w", i+1, err)
-		}
-		if _, err := s.db.Exec(`INSERT INTO schema_version (version) VALUES (?)`, i+1); err != nil {
-			return fmt.Errorf("record schema_version v%d: %w", i+1, err)
-		}
-	}
-	return nil
-}
-
-// migrateV2 inserts the default seed rules. Runs once per database (once
-// schema_version records v2, this never fires again — user-deleted seeds
-// stay deleted, edits stay edited). Use the future /seed endpoint or
-// explicit DB reset to re-apply.
-func (s *Store) migrateV2() error {
-	now := nowTS()
-	for _, r := range SeedV1Rules() {
-		enabled := 0
-		if r.Enabled {
-			enabled = 1
-		}
-		_, err := s.db.Exec(
-			`INSERT INTO rules (id, scope, priority, tool, pattern, outcome, message, enabled, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			r.ID, r.Scope, r.Priority, r.Tool, r.Pattern, r.Outcome, r.Message, enabled, now, now,
-		)
-		if err != nil {
-			return fmt.Errorf("insert seed %q: %w", r.ID, err)
-		}
-	}
-	return nil
-}
-
-func (s *Store) migrateV1() error {
-	_, err := s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS rules (
-			id          TEXT PRIMARY KEY,
-			scope       TEXT NOT NULL,
-			priority    INTEGER NOT NULL DEFAULT 100,
-			tool        TEXT NOT NULL,
-			pattern     TEXT NOT NULL DEFAULT '',
-			outcome     TEXT NOT NULL,
-			message     TEXT NOT NULL DEFAULT '',
-			enabled     INTEGER NOT NULL DEFAULT 1,
-			created_at  TEXT NOT NULL,
-			updated_at  TEXT NOT NULL
-		);
-		CREATE INDEX IF NOT EXISTS idx_rules_scope_priority ON rules(scope, priority);
-		CREATE INDEX IF NOT EXISTS idx_rules_tool ON rules(tool);
-
-		CREATE TABLE IF NOT EXISTS audit (
-			id              TEXT PRIMARY KEY,
-			ts              TEXT NOT NULL,
-			bridge_id       TEXT NOT NULL DEFAULT '',
-			instance_id     TEXT NOT NULL DEFAULT '',
-			tool            TEXT NOT NULL,
-			input_json      TEXT NOT NULL DEFAULT '',
-			atoms_json      TEXT NOT NULL DEFAULT '',
-			outcome         TEXT NOT NULL,
-			matched_rule_id TEXT NOT NULL DEFAULT '',
-			resolved_by     TEXT NOT NULL DEFAULT ''
-		);
-		CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit(ts);
-		CREATE INDEX IF NOT EXISTS idx_audit_bridge ON audit(bridge_id);
-		CREATE INDEX IF NOT EXISTS idx_audit_instance ON audit(instance_id);
-	`)
-	return err
+func scanRule(scan func(...any) error) (Rule, error) {
+	var r Rule
+	err := scan(&r.ID, &r.Scope, &r.Priority, &r.Tool, &r.Pattern, &r.Outcome, &r.Message, &r.Enabled, &r.CreatedAt, &r.UpdatedAt)
+	return r, err
 }
 
 // --- Rule CRUD ----------------------------------------------------------
@@ -291,64 +114,48 @@ func (s *Store) migrateV1() error {
 // ListRules returns rules in the cascade order the engine consumes:
 // instance scope → bridge scope → global, each ordered by (priority asc, id asc).
 // Filters: scope is one of "" (all), "global", "bridge:<id>", "instance:<id>".
-func (s *Store) ListRules(scope string) ([]Rule, error) {
-	q := `SELECT id, scope, priority, tool, pattern, outcome, message, enabled, created_at, updated_at FROM rules`
+func (s *Store) ListRules(ctx context.Context, scope string) ([]Rule, error) {
+	q := `SELECT ` + ruleColumns + ` FROM rules`
 	args := []any{}
 	if scope != "" {
-		q += ` WHERE scope = ?`
+		q += ` WHERE scope = $1`
 		args = append(args, scope)
 	}
-	q += ` ORDER BY scope, priority, id`
-	rows, err := s.db.Query(q, args...)
+	// COLLATE "C" orders by bytes, as SQLite's BINARY did.
+	q += ` ORDER BY scope COLLATE "C", priority, id COLLATE "C"`
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query rules: %w", err)
 	}
 	defer rows.Close()
 	var out []Rule
 	for rows.Next() {
-		var r Rule
-		var enabled int
-		if err := rows.Scan(&r.ID, &r.Scope, &r.Priority, &r.Tool, &r.Pattern, &r.Outcome, &r.Message, &enabled, &r.CreatedAt, &r.UpdatedAt); err != nil {
+		r, err := scanRule(rows.Scan)
+		if err != nil {
 			return nil, fmt.Errorf("scan rule: %w", err)
 		}
-		r.Enabled = enabled != 0
 		out = append(out, r)
 	}
 	return out, rows.Err()
 }
 
 // GetRule returns one rule by id, or sql.ErrNoRows if missing.
-func (s *Store) GetRule(id string) (Rule, error) {
-	var r Rule
-	var enabled int
-	err := s.db.QueryRow(
-		`SELECT id, scope, priority, tool, pattern, outcome, message, enabled, created_at, updated_at FROM rules WHERE id = ?`,
-		id,
-	).Scan(&r.ID, &r.Scope, &r.Priority, &r.Tool, &r.Pattern, &r.Outcome, &r.Message, &enabled, &r.CreatedAt, &r.UpdatedAt)
-	if err != nil {
-		return Rule{}, err
-	}
-	r.Enabled = enabled != 0
-	return r, nil
+func (s *Store) GetRule(ctx context.Context, id string) (Rule, error) {
+	return scanRule(s.db.QueryRowContext(ctx, `SELECT `+ruleColumns+` FROM rules WHERE id = $1`, id).Scan)
 }
 
 // CreateRule inserts a rule. The caller supplies id; if empty, one is minted
 // from time + random suffix. Timestamps are stamped here.
-func (s *Store) CreateRule(r Rule) (Rule, error) {
+func (s *Store) CreateRule(ctx context.Context, r Rule) (Rule, error) {
 	if r.ID == "" {
 		r.ID = newID("rule")
 	}
 	now := nowTS()
 	r.CreatedAt = now
 	r.UpdatedAt = now
-	enabled := 0
-	if r.Enabled {
-		enabled = 1
-	}
-	_, err := s.db.Exec(
-		`INSERT INTO rules (id, scope, priority, tool, pattern, outcome, message, enabled, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.Scope, r.Priority, r.Tool, r.Pattern, r.Outcome, r.Message, enabled, r.CreatedAt, r.UpdatedAt,
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO rules (`+ruleColumns+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		r.ID, r.Scope, r.Priority, r.Tool, r.Pattern, r.Outcome, r.Message, r.Enabled, r.CreatedAt, r.UpdatedAt,
 	)
 	if err != nil {
 		return Rule{}, fmt.Errorf("insert rule: %w", err)
@@ -356,18 +163,14 @@ func (s *Store) CreateRule(r Rule) (Rule, error) {
 	return r, nil
 }
 
-// UpdateRule applies a partial patch. Empty / zero fields in patch are
-// preserved as-is in the row (no nil-vs-zero ambiguity at this layer — the
-// HTTP handler decides what's a meaningful patch).
-func (s *Store) UpdateRule(r Rule) (Rule, error) {
+// UpdateRule writes every field of r but created_at over the row with r's id.
+// The HTTP handler merges a partial patch into the stored rule first, so r
+// carries the stored created_at.
+func (s *Store) UpdateRule(ctx context.Context, r Rule) (Rule, error) {
 	r.UpdatedAt = nowTS()
-	enabled := 0
-	if r.Enabled {
-		enabled = 1
-	}
-	res, err := s.db.Exec(
-		`UPDATE rules SET scope=?, priority=?, tool=?, pattern=?, outcome=?, message=?, enabled=?, updated_at=? WHERE id=?`,
-		r.Scope, r.Priority, r.Tool, r.Pattern, r.Outcome, r.Message, enabled, r.UpdatedAt, r.ID,
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE rules SET scope = $1, priority = $2, tool = $3, pattern = $4, outcome = $5, message = $6, enabled = $7, updated_at = $8 WHERE id = $9`,
+		r.Scope, r.Priority, r.Tool, r.Pattern, r.Outcome, r.Message, r.Enabled, r.UpdatedAt, r.ID,
 	)
 	if err != nil {
 		return Rule{}, fmt.Errorf("update rule: %w", err)
@@ -383,9 +186,8 @@ func (s *Store) UpdateRule(r Rule) (Rule, error) {
 }
 
 // DeleteRule removes a rule by id. Missing id is not an error.
-func (s *Store) DeleteRule(id string) error {
-	_, err := s.db.Exec(`DELETE FROM rules WHERE id = ?`, id)
-	if err != nil {
+func (s *Store) DeleteRule(ctx context.Context, id string) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM rules WHERE id = $1`, id); err != nil {
 		return fmt.Errorf("delete rule: %w", err)
 	}
 	return nil
@@ -394,16 +196,16 @@ func (s *Store) DeleteRule(id string) error {
 // --- Audit --------------------------------------------------------------
 
 // InsertAudit appends one entry to the audit log. id and ts are stamped here.
-func (s *Store) InsertAudit(e AuditEntry) (AuditEntry, error) {
+func (s *Store) InsertAudit(ctx context.Context, e AuditEntry) (AuditEntry, error) {
 	if e.ID == "" {
 		e.ID = newID("aud")
 	}
 	if e.TS == "" {
 		e.TS = nowTS()
 	}
-	_, err := s.db.Exec(
+	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO audit (id, ts, bridge_id, instance_id, tool, input_json, atoms_json, outcome, matched_rule_id, resolved_by)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 		e.ID, e.TS, e.BridgeID, e.InstanceID, e.Tool, string(e.InputJSON), string(e.AtomsJSON), e.Outcome, e.MatchedRuleID, e.ResolvedBy,
 	)
 	if err != nil {
@@ -422,36 +224,37 @@ type ListAuditFilter struct {
 	Offset     int
 }
 
-// ListAudit returns audit entries matching the filter, newest first.
-func (s *Store) ListAudit(f ListAuditFilter) ([]AuditEntry, error) {
+// ListAudit returns audit entries matching the filter, newest first. ts is
+// compared and ordered as text, byte by byte, as the standalone store did;
+// rows with the same ts come newest written first.
+func (s *Store) ListAudit(ctx context.Context, f ListAuditFilter) ([]AuditEntry, error) {
 	if f.Limit <= 0 {
 		f.Limit = 100
 	}
 	q := `SELECT id, ts, bridge_id, instance_id, tool, input_json, atoms_json, outcome, matched_rule_id, resolved_by FROM audit`
 	args := []any{}
 	where := []string{}
+	placeholder := func(value any) string {
+		args = append(args, value)
+		return fmt.Sprintf("$%d", len(args))
+	}
 	if f.BridgeID != "" {
-		where = append(where, "bridge_id = ?")
-		args = append(args, f.BridgeID)
+		where = append(where, "bridge_id = "+placeholder(f.BridgeID))
 	}
 	if f.InstanceID != "" {
-		where = append(where, "instance_id = ?")
-		args = append(args, f.InstanceID)
+		where = append(where, "instance_id = "+placeholder(f.InstanceID))
 	}
 	if f.Tool != "" {
-		where = append(where, "tool = ?")
-		args = append(args, f.Tool)
+		where = append(where, "tool = "+placeholder(f.Tool))
 	}
 	if f.Since != "" {
-		where = append(where, "ts >= ?")
-		args = append(args, f.Since)
+		where = append(where, `ts COLLATE "C" >= `+placeholder(f.Since))
 	}
 	if len(where) > 0 {
-		q += " WHERE " + joinAnd(where)
+		q += " WHERE " + strings.Join(where, " AND ")
 	}
-	q += " ORDER BY ts DESC LIMIT ? OFFSET ?"
-	args = append(args, f.Limit, f.Offset)
-	rows, err := s.db.Query(q, args...)
+	q += ` ORDER BY ts COLLATE "C" DESC, number DESC LIMIT ` + placeholder(f.Limit) + ` OFFSET ` + placeholder(f.Offset)
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query audit: %w", err)
 	}
@@ -484,15 +287,4 @@ func nowTS() string {
 
 func newID(prefix string) string {
 	return fmt.Sprintf("%s_%d_%s", prefix, time.Now().UnixNano(), randHex(4))
-}
-
-func joinAnd(parts []string) string {
-	out := ""
-	for i, p := range parts {
-		if i > 0 {
-			out += " AND "
-		}
-		out += p
-	}
-	return out
 }

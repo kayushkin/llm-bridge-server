@@ -1,8 +1,10 @@
-package permstore
+package permissionstore
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"regexp"
 	"sort"
 	"strings"
@@ -21,10 +23,10 @@ type EvaluateRequest struct {
 
 // EvaluateResponse is the engine's verdict.
 type EvaluateResponse struct {
-	Outcome       string           `json:"outcome"`           // "allow" | "deny" | "ask"
-	MatchedRuleID string           `json:"matched_rule_id,omitempty"`
-	Atoms         []splitter.Atom  `json:"atoms"`
-	Message       string           `json:"message,omitempty"`
+	Outcome       string          `json:"outcome"` // "allow" | "deny" | "ask"
+	MatchedRuleID string          `json:"matched_rule_id,omitempty"`
+	Atoms         []splitter.Atom `json:"atoms"`
+	Message       string          `json:"message,omitempty"`
 }
 
 // Sentinel rule ids surfaced when no real rule matches:
@@ -65,10 +67,10 @@ func (e *Engine) InvalidateCache() {
 //
 // Outcome precedence across atoms (Bash splits to multiple): deny > ask >
 // allow. The first deny short-circuits.
-func (e *Engine) Evaluate(req EvaluateRequest) (EvaluateResponse, error) {
+func (e *Engine) Evaluate(ctx context.Context, req EvaluateRequest) (EvaluateResponse, error) {
 	atoms := atomsFor(req.Tool, req.Input)
 
-	rules, err := e.cascade(req.BridgeID, req.InstanceID)
+	rules, err := e.cascade(ctx, req.BridgeID, req.InstanceID)
 	if err != nil {
 		// Store unreachable → ask, per locked design (never silently allow).
 		resp := EvaluateResponse{
@@ -77,12 +79,12 @@ func (e *Engine) Evaluate(req EvaluateRequest) (EvaluateResponse, error) {
 			Atoms:         atoms,
 			Message:       fmt.Sprintf("rule store error: %v", err),
 		}
-		e.writeAudit(req, atoms, resp)
+		e.writeAudit(ctx, req, atoms, resp)
 		return resp, nil
 	}
 
 	resp := e.evaluateAtoms(req.Tool, atoms, rules)
-	e.writeAudit(req, atoms, resp)
+	e.writeAudit(ctx, req, atoms, resp)
 	return resp, nil
 }
 
@@ -199,8 +201,8 @@ func (e *Engine) compile(pattern string) *regexp.Regexp {
 // cascade returns rules in evaluation order: instance scope first (most
 // specific), then bridge, then global. Within each scope, lower priority
 // wins; ties broken by id.
-func (e *Engine) cascade(bridgeID, instanceID string) ([]Rule, error) {
-	all, err := e.store.ListRules("")
+func (e *Engine) cascade(ctx context.Context, bridgeID, instanceID string) ([]Rule, error) {
+	all, err := e.store.ListRules(ctx, "")
 	if err != nil {
 		return nil, err
 	}
@@ -278,9 +280,9 @@ func atomsFor(tool string, input json.RawMessage) []splitter.Atom {
 	}}
 }
 
-func (e *Engine) writeAudit(req EvaluateRequest, atoms []splitter.Atom, resp EvaluateResponse) {
+func (e *Engine) writeAudit(ctx context.Context, req EvaluateRequest, atoms []splitter.Atom, resp EvaluateResponse) {
 	atomsJSON, _ := json.Marshal(atoms)
-	_, err := e.store.InsertAudit(AuditEntry{
+	_, err := e.store.InsertAudit(ctx, AuditEntry{
 		BridgeID:      req.BridgeID,
 		InstanceID:    req.InstanceID,
 		Tool:          req.Tool,
@@ -290,9 +292,9 @@ func (e *Engine) writeAudit(req EvaluateRequest, atoms []splitter.Atom, resp Eva
 		MatchedRuleID: resp.MatchedRuleID,
 	})
 	if err != nil {
-		// Audit write failure is logged at the caller (HTTP handler) — we
-		// don't fail the evaluation, since denying a call because we couldn't
-		// log it would be worse than the gap in the audit trail.
-		fmt.Printf("[permission-store] audit insert failed: %v\n", err)
+		// The evaluation is not failed for it, since denying a call because
+		// it could not be logged would be worse than the gap in the audit
+		// trail; the gap is logged loudly instead.
+		log.Printf("[permission-store] audit insert failed, so this verdict has no audit row: %v", err)
 	}
 }

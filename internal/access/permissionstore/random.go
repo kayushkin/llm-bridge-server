@@ -1,4 +1,4 @@
-package permstore
+package permissionstore
 
 import (
 	"crypto/rand"

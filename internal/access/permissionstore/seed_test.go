@@ -1,16 +1,50 @@
-package permstore
+package permissionstore
 
 import (
 	"encoding/json"
 	"regexp"
+	"strings"
 	"testing"
+	"time"
 )
+
+// seedRules is the rules a freshly migrated module starts with: the default
+// rules migration 0002 inserts.
+func seedRules(t *testing.T) []Rule {
+	t.Helper()
+	rules, err := newSeededTestStore(t).ListRules(testContext, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rules
+}
+
+// TestANewModuleStartsWithTheDefaultRules pins what a new install gets: the
+// eighteen seed-v1 rules, all global and enabled, stamped once.
+func TestANewModuleStartsWithTheDefaultRules(t *testing.T) {
+	rules := seedRules(t)
+	if len(rules) != 18 {
+		t.Fatalf("a new module holds %d rules, want the 18 defaults", len(rules))
+	}
+	for _, r := range rules {
+		if !strings.HasPrefix(r.ID, "seed-v1-") || r.Scope != ScopeGlobal || !r.Enabled || r.CreatedAt == "" || r.CreatedAt != r.UpdatedAt {
+			t.Fatalf("default rule %+v", r)
+		}
+		if _, err := time.Parse(time.RFC3339Nano, r.CreatedAt); err != nil {
+			t.Fatalf("rule %s is stamped %q, which is not RFC 3339: %v", r.ID, r.CreatedAt, err)
+		}
+	}
+	deny, err := newSeededTestStore(t).GetRule(testContext, "seed-v1-deny-bash-rm-rf-abs")
+	if err != nil || deny.Pattern != `^rm\s+-rf?\s+/` || deny.Priority != 50 || deny.Outcome != OutcomeDeny {
+		t.Fatalf("the rm -rf rule = %+v, %v", deny, err)
+	}
+}
 
 // TestSeedV1_RegexAllCompile is a sanity check — every seed pattern must
 // be a valid RE2 regex, otherwise the engine silently skips the rule and
 // the seed effectively isn't there.
 func TestSeedV1_RegexAllCompile(t *testing.T) {
-	for _, r := range SeedV1Rules() {
+	for _, r := range seedRules(t) {
 		if r.Pattern == "" {
 			continue
 		}
@@ -23,7 +57,7 @@ func TestSeedV1_RegexAllCompile(t *testing.T) {
 // TestSeedV1_OutcomesAreValid catches typos that would otherwise propagate
 // silently into the DB and trip the HTTP handler's validation.
 func TestSeedV1_OutcomesAreValid(t *testing.T) {
-	for _, r := range SeedV1Rules() {
+	for _, r := range seedRules(t) {
 		switch r.Outcome {
 		case OutcomeAllow, OutcomeDeny, OutcomeAsk:
 		default:
@@ -74,7 +108,7 @@ func TestSeedV1_EngineBehavior(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			input, _ := json.Marshal(map[string]string{"command": tc.command})
-			resp, err := eng.Evaluate(EvaluateRequest{Tool: tc.tool, Input: input})
+			resp, err := eng.Evaluate(testContext, EvaluateRequest{Tool: tc.tool, Input: input})
 			if err != nil {
 				t.Fatalf("evaluate: %v", err)
 			}
