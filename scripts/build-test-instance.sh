@@ -6,8 +6,8 @@
 # The server, the runner and the mock harness come from this repo, with the
 # front end built first so it is compiled into the server; the server holds
 # principal-store, grant-store, permission-store, tool-store, kanban-store and
-# the other stores moved into it. log-store and reference-store come from
-# their own repos beside this one, as they are checked out there.
+# the other stores moved into it, log-store among them. reference-store comes
+# from its own repo beside this one, as it is checked out there.
 #
 # The runner's disk-usage and computer-use helpers are left out on purpose. A
 # runner in WSL installs them into the Windows user's own app data, where the
@@ -49,7 +49,6 @@ for wrapper in llm-bridge-claudecode llm-bridge-codex; do
   (cd "$PARENT_DIR/$wrapper" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$OUT/$wrapper" .)
 done
 
-build_pure log-store
 build_pure reference-store
 
 cp "$REPO_DIR/scripts/test-instance.sh" "$OUT/test-instance.sh"

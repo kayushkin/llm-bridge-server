@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	logstoreclient "github.com/kayushkin/log-store/client"
 	"log"
 	"net/http"
 	"strconv"
@@ -1532,8 +1531,8 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 	// runs the identical import loop, so one HTTP call against an instance
 	// with an empty DB writes just as many permanent rows into log-store.
 	if len(sessions) > 0 {
-		log.Printf("[discover] %d sessions on disk; any not already in this instance's DB will have their transcripts imported into log-store at %s",
-			len(sessions), s.cfg.LogStoreURL)
+		log.Printf("[discover] %d sessions on disk; any not already in this instance's DB will have their transcripts imported into the session log",
+			len(sessions))
 	}
 
 	// Persist discovered sessions to the store so they appear in GET /sessions
@@ -1590,7 +1589,7 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 		// the session was first discovered).
 		needsImport := inserted && ds.HarnessSessionID != ""
 		if !inserted && ds.HarnessSessionID != "" {
-			held, err := logstoreclient.New(s.cfg.LogStoreURL).SessionsHoldingHarnessSessionID(ds.HarnessSessionID)
+			held, err := s.harness.SessionsHoldingHarnessSessionID(ds.HarnessSessionID)
 			if err != nil {
 				log.Printf("[discover] cannot check stored history for %s: %v", ds.HarnessSessionID, err)
 				writeJSONError(w, http.StatusBadGateway, "log_store_unavailable", err.Error())

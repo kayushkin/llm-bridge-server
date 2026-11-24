@@ -108,7 +108,7 @@ func TestStoredSettingsMoveOffTheRetiredKeysAtStart(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	cfg := &config.Config{ImagesDir: t.TempDir(), BridgePrefsPath: filepath.Join(t.TempDir(), "prefs.json"), LogStoreURL: "http://localhost:0"}
+	cfg := &config.Config{ImagesDir: t.TempDir(), BridgePrefsPath: filepath.Join(t.TempDir(), "prefs.json")}
 	testAuthorizationConfig(cfg)
 	srv := New(st, nil, nil, nil, nil, nil, nil, cfg)
 	held, err := st.ServiceSettingValues().Load()

@@ -65,6 +65,9 @@ func main() {
 		case "import-kanban-store":
 			importKanbanStoreCmd(os.Args[2:])
 			return
+		case "import-log-store":
+			importLogStoreCmd(os.Args[2:])
+			return
 		case "import-principal-store", "import-grant-store", "import-sign-in-store", "import-permission-store":
 			importAccessStoreCmd(os.Args[1], os.Args[2:])
 			return
@@ -72,7 +75,7 @@ func main() {
 			makeSignInLinkCmd(os.Args[2:])
 			return
 		case "-h", "--help":
-			fmt.Fprintln(os.Stderr, "usage: llm-bridge-server [mint-enroll [-ttl 15m] | import-prediction-store -sqlite <file> | import-principal-store|import-grant-store|import-sign-in-store|import-permission-store -sqlite <file> | make-sign-in-link <principal id> | import-noteboard -sqlite <file> | import-project-store -sqlite <file> | import-kanban-store -sqlite <file> | import-tool-store -sqlite <file> | import-skill-store -sqlite <file> | import-bundle-store -sqlite <file> | import-repo-store -sqlite <file> | import-work-graph-store -sqlite <file> | import-file-store -sqlite <file> -blobs <directory> [-carry copy|link]]")
+			fmt.Fprintln(os.Stderr, "usage: llm-bridge-server [mint-enroll [-ttl 15m] | import-prediction-store -sqlite <file> | import-principal-store|import-grant-store|import-sign-in-store|import-permission-store -sqlite <file> | make-sign-in-link <principal id> | import-noteboard -sqlite <file> | import-project-store -sqlite <file> | import-kanban-store -sqlite <file> | import-log-store -sqlite <file> | import-tool-store -sqlite <file> | import-skill-store -sqlite <file> | import-bundle-store -sqlite <file> | import-repo-store -sqlite <file> | import-work-graph-store -sqlite <file> | import-file-store -sqlite <file> -blobs <directory> [-carry copy|link]]")
 			os.Exit(0)
 		}
 	}
@@ -113,17 +116,13 @@ func main() {
 	}
 	log.Printf("every route is gated (service token or login session); principals, grants, sign-in and tool-call rules are the access stores in this process, and kanban-store is in this process too, at /kanban/ and /kanban-store/, all on Postgres")
 
-	// Say where the two stores that outlive this process are, before writing
-	// to either. The local DB is per-instance and disposable; log-store is
-	// remote, shared and permanent, and its URL has a live-host default, so
-	// an instance that isolates LLMBRIDGE_DB_PATH and stops there is still
-	// pointed at the production event log. Nothing used to say so: every
-	// other store below logs where it loaded from, and log-store — the only
-	// one whose writes cannot be thrown away with a temp directory — booted
-	// silently. See AutoDiscover, which turns that into thousands of
-	// permanent writes seconds after boot.
-	log.Printf("bridge db %s | log-store %s (remote, shared, permanent — set LLMBRIDGE_LOG_STORE_URL to isolate an instance)",
-		cfg.DBPath, cfg.LogStoreURL)
+	// Say where the bridge database is before writing to it. The session
+	// event log (log-store) is the session_log module in Postgres, opened
+	// below; an instance that isolates LLMBRIDGE_DB_PATH and not
+	// LLMBRIDGE_POSTGRES_URL still writes into the shared event log, and
+	// AutoDiscover turns that into thousands of permanent writes seconds
+	// after boot.
+	log.Printf("bridge db %s | session event log: the session_log module in the Postgres of %s", cfg.DBPath, config.PostgresURLEnvironmentVariable)
 
 	st, err := store.New(cfg.DBPath)
 	if err != nil {
@@ -227,6 +226,14 @@ func main() {
 	defer accessStores.Close()
 	srv.EnableAccess(accessStores)
 	log.Printf("postgres: access open, served at /principal-store/, /grant-store/, /sign-in-store/ and /permission-store/")
+
+	// log-store: every session event. Nothing below may start or resume a
+	// session before it is the harness manager's session event log.
+	closeSessionLog, err := enableSessionLog(context.Background(), cfg, srv)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	defer closeSessionLog()
 
 	// The modules that keep their records in Postgres. With no URL they are
 	// off and their routes answer 503; with one, a module that cannot be

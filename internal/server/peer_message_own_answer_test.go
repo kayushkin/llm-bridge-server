@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -41,7 +40,8 @@ func statusesAnswering(t *testing.T, server *peerTestServer, id string) []msg.Pe
 func TestASessionsOwnFailedStatusAnswersTheRequestAndNoAutomaticOneFollows(t *testing.T) {
 	buildMockHarnessOnPath(t)
 	logStore := fakeLogStore(t).URL
-	accepting, initiating, acceptingID, initiatingID := connectedPairByDialingOut(t, func(cfg *config.Config) { cfg.LogStoreURL = logStore })
+	accepting, initiating, acceptingID, initiatingID := connectedPairByDialingOut(t)
+	enableLogStoreAt(t, accepting.server, logStore)
 	sent, approved := approvedRequestOnAccepting(t, accepting, initiating, acceptingID, initiatingID)
 
 	own := decodeAnswer[msg.PeerMessage](t, accepting.requestAsAdministrator(t, "POST", "/peer-connections/"+acceptingID+"/messages",
@@ -65,7 +65,8 @@ func TestASessionsOwnFailedStatusAnswersTheRequestAndNoAutomaticOneFollows(t *te
 func TestARequestWhoseSessionSaysNothingStillReportsItsReply(t *testing.T) {
 	buildMockHarnessOnPath(t)
 	logStore := fakeLogStore(t).URL
-	accepting, initiating, acceptingID, initiatingID := connectedPairByDialingOut(t, func(cfg *config.Config) { cfg.LogStoreURL = logStore })
+	accepting, initiating, acceptingID, initiatingID := connectedPairByDialingOut(t)
+	enableLogStoreAt(t, accepting.server, logStore)
 	sent, approved := approvedRequestOnAccepting(t, accepting, initiating, acceptingID, initiatingID)
 	frame := framedPeerRequestPrompt(approved, mustPeerConnection(t, accepting, acceptingID), approved.Body)
 	if !strings.Contains(frame, "bridge-peer status "+acceptingID+" --in-reply-to "+approved.ID+" --result failed") {

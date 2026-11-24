@@ -91,12 +91,12 @@ func testServerWithFileStore(t *testing.T) (*Server, *store.Store, *fakeFileStor
 	cfg := &config.Config{
 		ImagesDir:       filepath.Join(dir, "images"),
 		BridgePrefsPath: filepath.Join(dir, "prefs.json"),
-		LogStoreURL:     fakeLogStore(t).URL,
 		SessionFilesDir: sessionFilesDir,
 		ListenAddr:      "127.0.0.1:8160",
 	}
 	testAuthorizationConfig(cfg)
 	srv := New(st, nil, nil, nil, nil, testModelStore(t), nil, cfg)
+	enableLogStoreAt(t, srv, fakeLogStore(t).URL)
 	srv.fileStore = filestoreclient.New(fileStoreHandler)
 	return srv, st, fake, sessionFilesDir
 }

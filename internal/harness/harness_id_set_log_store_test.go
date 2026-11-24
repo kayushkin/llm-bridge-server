@@ -40,7 +40,7 @@ func TestHarnessIDSetReachesLogStoreAheadOfTheEventThatCarriedIt(t *testing.T) {
 	close(proc.ch)
 	drainUntilClosed(t, sub)
 
-	raw, err := m.logStore.ListEvents(bridgeID, 0, nil)
+	raw, err := m.sessionEventLog().ListEvents(bridgeID, 0, nil)
 	if err != nil {
 		t.Fatalf("list log-store events: %v", err)
 	}

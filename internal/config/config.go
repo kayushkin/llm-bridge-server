@@ -83,7 +83,6 @@ type Config struct {
 	SchedulerURL    string
 	BridgePrefsPath string
 	ConformancePath string
-	LogStoreURL     string
 	// PublicURL is the externally-reachable bridge URL that runners use
 	// to fetch backend binaries listed in HarnessService.BinaryURL. Empty
 	// → manifests fall back to the runner's own server_url, which works
@@ -444,7 +443,6 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		SchedulerURL:                          settings.String("scheduler.url"),
 		BridgePrefsPath:                       settings.String("bridge_preferences.path"),
 		ConformancePath:                       settings.String("conformance.path"),
-		LogStoreURL:                           settings.String("log_store.url"),
 		PublicURL:                             settings.String("public_url"),
 		AuthStoreURL:                          settings.String("auth_store.url"),
 		AuthStoreToken:                        settings.String("auth_store.token"),
@@ -516,7 +514,6 @@ func (c *Config) GuardedAddresses() map[string]string {
 		"ModelStoreDB":     c.ModelStoreDB,
 		"BridgePrefsPath":  c.BridgePrefsPath,
 		"ConformancePath":  c.ConformancePath,
-		"LogStoreURL":      c.LogStoreURL,
 		"MailstackURL":     c.MailstackURL,
 		"HealthcheckURL":   c.HealthcheckURL,
 		"UsageStoreURL":    c.UsageStoreURL,

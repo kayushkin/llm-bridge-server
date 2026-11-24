@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
+	logstore "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/client"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
-	logstore "github.com/kayushkin/log-store/client"
 )
 
 // recordingPusher stands in for the log-store client. It records what it
@@ -290,7 +290,7 @@ func newSlowLogStoreManager(t *testing.T, delay time.Duration) (*Manager, *slowL
 	ls := httptest.NewServer(slow)
 	t.Cleanup(ls.Close)
 
-	return NewManager(st, ls.URL, "http://127.0.0.1:0", "", 0, nil), slow
+	return newManagerOnLogStoreURL(st, ls.URL, "http://127.0.0.1:0", "", 0, nil), slow
 }
 
 // The defect this change exists to remove: the log-store POST sat in
@@ -376,7 +376,7 @@ func drainUntilClosed(t *testing.T, sub chan StoredEvent) {
 // eventsInLogStore counts stream events log-store holds for the session.
 // Test-only helper; reads through the same client the manager uses.
 func (m *Manager) eventsInLogStore(bridgeID string) int {
-	evs, err := m.logStore.ListEvents(bridgeID, 0, []string{"stream"})
+	evs, err := m.sessionEventLog().ListEvents(bridgeID, 0, []string{"stream"})
 	if err != nil {
 		return 0
 	}

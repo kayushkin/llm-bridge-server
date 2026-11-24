@@ -29,7 +29,7 @@ func TestAStatusWhoseWriteRolledBackReachesNeitherLogStoreNorSubscribers(t *test
 	logStore := newLogStoreStub()
 	logStoreServer := httptest.NewServer(logStore)
 	t.Cleanup(logStoreServer.Close)
-	m := NewManager(st, logStoreServer.URL, "http://127.0.0.1:0", "", 0, nil)
+	m := newManagerOnLogStoreURL(st, logStoreServer.URL, "http://127.0.0.1:0", "", 0, nil)
 
 	const hookOnlyID = "br_hook_only_no_sessions_row"
 	subscriber := m.Subscribe(hookOnlyID)

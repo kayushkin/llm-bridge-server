@@ -13,7 +13,7 @@ import (
 // readEvents / watchPTYExit.
 
 func TestKillAndWaitForCleanupWaitsForTheExitCleanup(t *testing.T) {
-	m := NewManager(nil, "", "", "", 0, nil)
+	m := newManagerOnLogStoreURL(nil, "", "", "", 0, nil)
 	release := make(chan struct{})
 
 	m.mu.Lock()
@@ -42,7 +42,7 @@ func TestKillAndWaitForCleanupWaitsForTheExitCleanup(t *testing.T) {
 }
 
 func TestKillAndWaitForCleanupReportsACleanupThatDoesNotFinish(t *testing.T) {
-	m := NewManager(nil, "", "", "", 0, nil)
+	m := newManagerOnLogStoreURL(nil, "", "", "", 0, nil)
 	release := make(chan struct{})
 	defer close(release)
 
@@ -57,14 +57,14 @@ func TestKillAndWaitForCleanupReportsACleanupThatDoesNotFinish(t *testing.T) {
 }
 
 func TestKillAndWaitForCleanupReturnsAtOnceWithNoProcess(t *testing.T) {
-	m := NewManager(nil, "", "", "", 0, nil)
+	m := newManagerOnLogStoreURL(nil, "", "", "", 0, nil)
 	if err := m.KillAndWaitForCleanup("br_never_started", time.Second); err != nil {
 		t.Fatalf("KillAndWaitForCleanup with no process: %v", err)
 	}
 }
 
 func TestAFinishedCleanupLeavesTheNewerProcessesChannel(t *testing.T) {
-	m := NewManager(nil, "", "", "", 0, nil)
+	m := newManagerOnLogStoreURL(nil, "", "", "", 0, nil)
 
 	m.mu.Lock()
 	older := m.trackProcessCleanupLocked("br_test")

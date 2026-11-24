@@ -2,7 +2,11 @@ package server
 
 import (
 	"bytes"
+	"net/http/httputil"
+	"net/url"
+
 	"encoding/json"
+	logstoreclient "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/client"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -45,11 +49,11 @@ func testServerWithLogStore(t *testing.T, logStoreURL string) (*Server, *store.S
 	cfg := &config.Config{
 		ImagesDir:       filepath.Join(dir, "images"),
 		BridgePrefsPath: filepath.Join(dir, "prefs.json"),
-		LogStoreURL:     logStoreURL,
 	}
 	testAuthorizationConfig(cfg)
 
 	srv := New(st, nil, nil, nil, nil, testModelStore(t), nil, cfg)
+	enableLogStoreAt(t, srv, logStoreURL)
 	return srv, st
 }
 
@@ -109,12 +113,29 @@ func testServerWithInstanceAndLogStore(t *testing.T, harness msg.Harness, logSto
 	cfg := &config.Config{
 		ImagesDir:       filepath.Join(dir, "images"),
 		BridgePrefsPath: filepath.Join(dir, "prefs.json"),
-		LogStoreURL:     logStoreURL,
 	}
 	testAuthorizationConfig(cfg)
 
 	srv := New(st, nil, nil, hs, nil, testModelStore(t), nil, cfg)
+	enableLogStoreAt(t, srv, logStoreURL)
 	return srv, st, inst.ID
+}
+
+// enableLogStoreAt serves the server's session log from the log-store at
+// logStoreURL, a fake a test runs: its routes through a reverse proxy, and the
+// harness manager's writes and reads through the log-store HTTP client. The
+// deliberately unreachable "http://localhost:0" leaves the server with none,
+// so every write is refused at once.
+func enableLogStoreAt(t *testing.T, srv *Server, logStoreURL string) {
+	t.Helper()
+	if logStoreURL == "http://localhost:0" {
+		return
+	}
+	target, err := url.Parse(logStoreURL)
+	if err != nil {
+		t.Fatalf("log-store URL %q: %v", logStoreURL, err)
+	}
+	srv.EnableSessionLog(httputil.NewSingleHostReverseProxy(target), logstoreclient.New(logStoreURL))
 }
 
 func doJSON(t *testing.T, srv http.Handler, method, path string, body any) *http.Response {
@@ -863,7 +884,7 @@ func TestModels_NotRegistered(t *testing.T) {
 		t.Fatalf("new store: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	cfg := &config.Config{ImagesDir: filepath.Join(dir, "images"), BridgePrefsPath: filepath.Join(dir, "prefs.json"), LogStoreURL: "http://localhost:0"}
+	cfg := &config.Config{ImagesDir: filepath.Join(dir, "images"), BridgePrefsPath: filepath.Join(dir, "prefs.json")}
 	testAuthorizationConfig(cfg)
 	srv := New(st, nil, nil, nil, nil, nil, nil, cfg)
 
@@ -1022,7 +1043,6 @@ func TestNew_ReconcilesFolderRegistryFromSourceMappings(t *testing.T) {
 	cfg := &config.Config{
 		ImagesDir:       filepath.Join(dir, "images"),
 		BridgePrefsPath: filepath.Join(dir, "prefs.json"),
-		LogStoreURL:     "http://localhost:0",
 		PurposeFolders: map[string]string{
 			"autoworker": "Scheduled",
 			"scheduler":  "Scheduled",

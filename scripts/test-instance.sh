@@ -26,8 +26,9 @@
 #   principal-store, grant-store, sign-in-store, permission-store, tool-store,
 #   skill-store, bundle-store, noteboard, kanban-store, project-store and
 #   prediction-store in its own process, in Postgres modules, each under
-#   /<store>/ (kanban-store under /kanban/ and /kanban-store/)
-#   log-store and reference-store, each its own unit. reference-store reaches
+#   /<store>/ (kanban-store under /kanban/ and /kanban-store/), and log-store,
+#   the session event log, under /log-store/
+#   reference-store, its own unit. reference-store reaches
 #   the stores the server holds through its prefixes, with the server's
 #   service token, because the server answers nothing without a credential
 #   a Postgres of its own (llm-bridge-test-postgres), data under data/postgres,
@@ -55,10 +56,10 @@ set -euo pipefail
 ROOT="${BRIDGE_TEST_INSTANCE_DIR:-$HOME/.local/opt/llm-bridge-test}"
 UNIT_DIR="$HOME/.config/systemd/user"
 UNIT_PREFIX="llm-bridge-test"
-STORES=(log-store reference-store)
+STORES=(reference-store)
 # The stores the server now holds, which an older instance ran as units of its
 # own. Only install's import and the unit clean-up name them.
-RETIRED_STORES=(principal-store grant-store tool-store permission-store kanban-store)
+RETIRED_STORES=(principal-store grant-store tool-store permission-store kanban-store log-store)
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 POSTGRES_BIN="${BRIDGE_TEST_POSTGRES_BIN:-/usr/lib/postgresql/18/bin}"
 # The login the server provisions its Postgres modules as, and its database.
@@ -190,6 +191,7 @@ retired_store_database() { # <store>
   case "$1" in
     permission-store) echo "$ROOT/data/permission-store.db" ;;
     kanban-store)     echo "$ROOT/data/kanban-store.db" ;;
+    log-store)        echo "$ROOT/data/log-store.db" ;;
     *)                echo "$ROOT/home/.config/$1/$1.db" ;;
   esac
 }
@@ -263,13 +265,12 @@ install_instance() {
     grep -q "^$1=" "$ROOT/env/ports.env" || echo "$1=$2" >> "$ROOT/env/ports.env"
   }
   add_port BRIDGE_PORT "$base"
-  add_port LOG_STORE_PORT $((base + 15))
   add_port REFERENCE_STORE_PORT $((base + 183))
   # A real Postgres is on 5432, below the server's port, so there is no offset
   # to keep; 18432 says which it is.
   add_port POSTGRES_PORT $((base + 272))
   # The retired stores' ports go: nothing listens on them any more.
-  sed -i -E '/^(TOOL_STORE|PRINCIPAL_STORE|GRANT_STORE|PERMISSION_STORE|KANBAN_STORE)_PORT=/d' "$ROOT/env/ports.env"
+  sed -i -E '/^(TOOL_STORE|PRINCIPAL_STORE|GRANT_STORE|PERMISSION_STORE|KANBAN_STORE|LOG_STORE)_PORT=/d' "$ROOT/env/ports.env"
   load_settings
   local nowhere="http://127.0.0.1:1"
 
@@ -319,7 +320,6 @@ LLMBRIDGE_CONFORMANCE_PATH=$ROOT/data/conformance.json
 LLMBRIDGE_IMAGES_DIR=$ROOT/data/images
 LLMBRIDGE_SESSION_FILES_DIR=$ROOT/data/session-files
 LLMBRIDGE_RUNNER_ASSETS_DIR=$ROOT/runner-assets
-LLMBRIDGE_LOG_STORE_URL=http://127.0.0.1:$LOG_STORE_PORT
 LLMBRIDGE_SKILL_STORE_DATA_DIRECTORY=$ROOT/data/skill-store
 LLMBRIDGE_LOCAL_TOOLS_PINCHTAB_URL=$nowhere
 LLMBRIDGE_REFERENCE_STORE_URL=http://127.0.0.1:$REFERENCE_STORE_PORT
@@ -328,11 +328,6 @@ EOF
 
   # One file per store: a store refuses to start when a variable carrying its
   # own prefix is set that it does not declare.
-  cat > "$ROOT/env/log-store.env" <<EOF
-LOG_STORE_LISTEN_ADDR=127.0.0.1:$LOG_STORE_PORT
-LOG_STORE_DB_PATH=$ROOT/data/log-store.db
-LOG_STORE_LOGSTACK_URL=$nowhere
-EOF
   # reference-store looks records up in every store the server holds, and reads
   # who may see what from its principal-store and grant-store.
   local hosted="principal-store grant-store tool-store skill-store bundle-store noteboard kanban-store project-store prediction-store" urls="llm-bridge-server:$BASE" service
@@ -411,10 +406,6 @@ EOF
   make_postgres_login_and_database
   import_retired_stores
   remove_retired_store_units
-
-  step "starting log-store"
-  systemctl --user enable --now "$UNIT_PREFIX-log-store.service" >/dev/null 2>&1
-  wait_for log-store "http://127.0.0.1:$LOG_STORE_PORT/health"
 
   step "starting the server"
   systemctl --user enable --now "$UNIT_PREFIX.service" >/dev/null 2>&1

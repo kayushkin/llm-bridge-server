@@ -247,8 +247,8 @@ func (s *Server) serveSessionsValidators(w http.ResponseWriter, r *http.Request,
 	// caller's behalf, against a log-store the caller may not be able to reach.
 	// log-store reads this back with r.URL.Query().Get("ids") and splits on ",",
 	// so an escaped comma round-trips.
-	target := s.cfg.LogStoreURL + "/api/v1/sessions/validators?" + url.Values{"ids": {ids}}.Encode()
-	resp, err := http.Get(target)
+	target := logStoreBaseURL + "/api/v1/sessions/validators?" + url.Values{"ids": {ids}}.Encode()
+	resp, err := s.getFromLogStore(target)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("log-store unreachable: %v", err), http.StatusBadGateway)
 		return
@@ -391,8 +391,8 @@ func (s *Server) fetchBundleModels(ids []string, turns int) (map[string]json.Raw
 		// 2026-09-16 — while the same sessions' /messages pages did not.
 		"payload": {"preview"},
 	}
-	target := s.cfg.LogStoreURL + "/api/v1/sessions/bundle?" + q.Encode()
-	resp, err := http.Get(target)
+	target := logStoreBaseURL + "/api/v1/sessions/bundle?" + q.Encode()
+	resp, err := s.getFromLogStore(target)
 	if err != nil {
 		return nil, err
 	}

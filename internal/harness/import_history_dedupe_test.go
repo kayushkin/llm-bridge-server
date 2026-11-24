@@ -12,7 +12,10 @@ import (
 	"sync/atomic"
 	"testing"
 
+	logstoreserver "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/server"
+	logstorestore "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/store"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
+	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -21,7 +24,7 @@ import (
 func seedTranscript(t *testing.T, m *Manager, bridgeSessionID, harnessSessionID string) {
 	t.Helper()
 	ev := msg.Event{Type: msg.EventUserMessage, BridgeSessionID: bridgeSessionID, HarnessSessionID: harnessSessionID}
-	if _, err := m.logStore.PushEvent(ev); err != nil {
+	if _, err := m.sessionEventLog().PushEvent(ev); err != nil {
 		t.Fatalf("seed log-store: %v", err)
 	}
 }
@@ -117,7 +120,7 @@ func TestLogStoreUnreachableFailsOpen(t *testing.T) {
 	}))
 	t.Cleanup(broken.Close)
 
-	m := NewManager(st, broken.URL, "http://127.0.0.1:0", "", 0, nil)
+	m := newManagerOnLogStoreURL(st, broken.URL, "http://127.0.0.1:0", "", 0, nil)
 	if _, held := m.logStoreAlreadyHoldsTranscript("cc-uuid-anything"); held {
 		t.Error("an erroring log-store reported the transcript as held; the guard must fail open")
 	}
@@ -143,7 +146,7 @@ func TestSessionRowWithNoEventsIsNotHeld(t *testing.T) {
 	}))
 	t.Cleanup(empty.Close)
 
-	m := NewManager(st, empty.URL, "http://127.0.0.1:0", "", 0, nil)
+	m := newManagerOnLogStoreURL(st, empty.URL, "http://127.0.0.1:0", "", 0, nil)
 	if _, held := m.logStoreAlreadyHoldsTranscript("cc-uuid-ghost"); held {
 		t.Error("a session row with zero events reported the transcript as held")
 	}
@@ -167,7 +170,7 @@ func TestGuardAsksAboutTheHarnessID(t *testing.T) {
 	}))
 	t.Cleanup(spy.Close)
 
-	m := NewManager(st, spy.URL, "http://127.0.0.1:0", "", 0, nil)
+	m := newManagerOnLogStoreURL(st, spy.URL, "http://127.0.0.1:0", "", 0, nil)
 	m.logStoreAlreadyHoldsTranscript("cc-uuid-asked-about")
 
 	select {
@@ -200,7 +203,7 @@ func TestGuardDoesNotAskAboutAnEmptyHarnessID(t *testing.T) {
 	}))
 	t.Cleanup(spy.Close)
 
-	m := NewManager(st, spy.URL, "http://127.0.0.1:0", "", 0, nil)
+	m := newManagerOnLogStoreURL(st, spy.URL, "http://127.0.0.1:0", "", 0, nil)
 	if _, held := m.logStoreAlreadyHoldsTranscript(""); held {
 		t.Error("an empty harness id reported a held transcript")
 	}
@@ -209,40 +212,32 @@ func TestGuardDoesNotAskAboutAnEmptyHarnessID(t *testing.T) {
 	}
 }
 
-// realLogStoreURL is the address of a REAL log-store the canary script booted
-// for this run. Empty means the cross-service check is not being asked for.
-//
-// It exists because every other test here talks to logStoreStub, a
-// hand-written mirror of log-store's HTTP surface living in this repo. A
-// mirror agrees with itself forever: if log-store renames the field, moves the
-// route or changes what an unknown id returns, the stub keeps answering the
-// old way and the guard keeps passing while the live gateway re-imports
-// everything on disk. This is the only check in the package that would notice.
-const realLogStoreURLEnv = "LLMBRIDGE_CANARY_LOG_STORE_URL"
-
-// Drives the guard against a real log-store. Run by
-// scripts/import-dedupe-canary.sh, which boots one on a throwaway port and
-// database; skipped otherwise.
+// Every other test here talks to logStoreStub, a hand-written mirror of
+// log-store's HTTP surface. A mirror agrees with itself forever: if log-store
+// renames the field or changes what an unknown id returns, the stub keeps
+// answering the old way and the guard keeps passing while the gateway
+// re-imports everything on disk. This test drives the guard against the real
+// log-store module, in this process, on a Postgres database of its own.
 func TestImportHistoryAgainstRealLogStore(t *testing.T) {
-	url := os.Getenv(realLogStoreURLEnv)
-	if url == "" {
-		t.Skipf("%s not set; run scripts/import-dedupe-canary.sh for the cross-service check", realLogStoreURLEnv)
+	module, err := logstorestore.Module()
+	if err != nil {
+		t.Fatal(err)
 	}
-	// The production log-store is the one store whose writes cannot be thrown
-	// away with a temp directory, and this test writes events. Refusing the
-	// default URL is not paranoia: an isolated canary that left
-	// LLMBRIDGE_LOG_STORE_URL unset is exactly how 2,863 duplicate sessions
-	// reached it on 2026-08-01.
-	if strings.Contains(url, ":8175") {
-		t.Fatalf("%s=%s points at the production log-store; boot a throwaway one", realLogStoreURLEnv, url)
+	database := postgrestest.NewDatabase(t, module)
+	reader, err := logstorestore.OpenReader(context.Background(), database.URL(), module)
+	if err != nil {
+		t.Fatal(err)
 	}
+	logStore := logstorestore.New(database.Open(module), reader)
+	t.Cleanup(func() { logStore.Close() })
 
 	st, err := store.New(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	m := NewManager(st, url, "http://127.0.0.1:0", "", 0, nil)
+	m := NewManager(st, "http://127.0.0.1:0", "", 0, nil)
+	m.SetSessionEventLog(logstoreserver.New(logStore, nil))
 
 	harnessSessionID := fmt.Sprintf("canary-harness-%d", os.Getpid())
 	seedTranscript(t, m, "br_canary_first_import", harnessSessionID)

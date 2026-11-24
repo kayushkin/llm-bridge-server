@@ -245,7 +245,7 @@ func newManagerForWorkingDirTest(t *testing.T) *Manager {
 		t.Fatalf("store.New: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	return NewManager(st, "", "", "", 0, nil)
+	return newManagerOnLogStoreURL(st, "", "", "", 0, nil)
 }
 
 // installFakeHarnessOnPath puts a stand-in wrapper binary under the name the

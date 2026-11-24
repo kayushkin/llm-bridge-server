@@ -146,7 +146,6 @@ func newGatedTestServerConfigured(t *testing.T, grantsByPrincipal map[string]map
 	cfg := &config.Config{
 		ImagesDir:       filepath.Join(directory, "images"),
 		BridgePrefsPath: filepath.Join(directory, "prefs.json"),
-		LogStoreURL:     "http://localhost:0",
 		PublicURL:       gatedTestServerPublicURL,
 	}
 	testAuthorizationConfig(cfg)
@@ -384,6 +383,17 @@ func TestAnAdministratorReachesTheOperatorRoutesAndTheStoreProxies(t *testing.T)
 // administrator through a trusted caller, must all answer every session.
 func TestAnAdministratorListsEverySessionWhoeverOwnsIt(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
+	// A log-store whose bundle answers an empty model for every id it is
+	// asked for, so the recent bundle carries exactly the sessions asked.
+	bundleLogStore := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		models := map[string]json.RawMessage{}
+		for _, id := range strings.Split(r.URL.Query().Get("ids"), ",") {
+			models[id] = json.RawMessage(`{}`)
+		}
+		json.NewEncoder(w).Encode(models)
+	}))
+	t.Cleanup(bundleLogStore.Close)
+	enableLogStoreAt(t, gated.server, bundleLogStore.URL)
 	administratorCookie := gated.loginAs(t, administratorTestPrincipalID)
 	firstCookie := gated.loginAs(t, firstTestPrincipalID)
 

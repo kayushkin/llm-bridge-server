@@ -7,12 +7,11 @@
 #   <parent>/
 #     llm-bridge-server/   (this repo)
 #     llm-bridge/
-#     log-store/
 #     agent-store/
 #     ...
 #
-# harness-store, hook-store and snapshot-store are no longer siblings: they
-# live in this repo under internal/.
+# harness-store, hook-store, snapshot-store and log-store are no longer
+# siblings: they live in this repo under internal/.
 #
 # Re-running is safe: existing checkouts are left alone (the script prints
 # "exists" and continues). A sibling with no published GitHub remote is
@@ -27,9 +26,6 @@ PARENT_DIR="$(dirname "$REPO_DIR")"
 declare -A SIBLINGS=(
   # --- core sibling Go modules (referenced by go.mod replace block) ---
   [llm-bridge]="https://github.com/kayushkin/llm-bridge.git"
-  [log-store]="https://github.com/kayushkin/log-store.git"
-  # logstack is a transitive dep — log-store's go.mod has `replace ../logstack`.
-  [logstack]="https://github.com/kayushkin/logstack.git"
   [agent-store]="https://github.com/kayushkin/agent-store.git"
   [bus]="https://github.com/kayushkin/bus.git"
   [memory-store]="https://github.com/kayushkin/memory-store.git"
@@ -39,7 +35,7 @@ declare -A SIBLINGS=(
 
 # Order matters only for human-readable output.
 ORDER=(
-  llm-bridge log-store logstack agent-store bus memory-store
+  llm-bridge agent-store bus memory-store
   aiauth model-store
 )
 
