@@ -2,12 +2,11 @@ package referencestore
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -51,39 +50,6 @@ func TestPatternsMatchTheWholeID(t *testing.T) {
 		if row.Matches(id) {
 			t.Errorf("prediction matches %q", id)
 		}
-	}
-}
-
-// Every service a type names has an address in the unit, and every page site
-// one too, so the deployed service starts.
-func TestTheUnitAddressesEveryService(t *testing.T) {
-	unit, err := os.ReadFile("reference-store.service")
-	if err != nil {
-		t.Fatal(err)
-	}
-	read := func(variable string) map[string]string {
-		match := regexp.MustCompile(`(?m)^Environment=` + variable + `=(.*)$`).FindSubmatch(unit)
-		if match == nil {
-			t.Fatalf("the unit sets no %s", variable)
-		}
-		pairs := map[string]string{}
-		for _, pair := range strings.Split(string(match[1]), ",") {
-			key, value, _ := strings.Cut(pair, ":")
-			pairs[strings.TrimSpace(key)] = strings.TrimSpace(value)
-		}
-		return pairs
-	}
-	serviceURLs, siteURLs := read("REFERENCE_STORE_SERVICE_URLS"), read("REFERENCE_STORE_SITE_URLS")
-	for _, row := range Types {
-		if (row.Get != "" || row.Search != "") && serviceURLs[row.Service] == "" {
-			t.Errorf("unit has no address for %s", row.Service)
-		}
-		if row.PageSite != "" && siteURLs[row.PageSite] == "" {
-			t.Errorf("unit has no address for site %s", row.PageSite)
-		}
-	}
-	if err := ValidateReferenceConfiguration(Types, serviceURLs, siteURLs); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -136,26 +102,48 @@ func newStores(t *testing.T) *stores {
 		}
 		w.Write([]byte(`{"session_id":"` + r.PathValue("id") + `","display_name":"a chat"}`))
 	})
-	mux.HandleFunc("GET /principals/{id}", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"id":"` + r.PathValue("id") + `","is_administrator":` + map[bool]string{true: "true", false: "false"}[r.PathValue("id") == "principal_000001"] + `}`))
-	})
-	mux.HandleFunc("GET /principals/{id}/effective", func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get(PrincipalIDHeader) != r.PathValue("id") {
-			http.Error(w, "a principal reads only its own", http.StatusForbidden)
-			return
-		}
-		switch r.PathValue("id") {
-		case "principal_000002":
-			w.Write([]byte(`[{"relation":"can_see_references","resource_type":"reference_type","resource_id":"prediction"},
-				{"relation":"can_see_references","resource_type":"reference","resource_id":"person_000007"},
-				{"relation":"can_see_references","resource_type":"reference_type","resource_id":"person","revoked_at":5}]`))
-		default:
-			w.Write([]byte(`[]`))
-		}
-	})
 	s.server = httptest.NewServer(mux)
 	t.Cleanup(s.server.Close)
 	return s
+}
+
+// fakeAccess is principal-store and grant-store: principal_000001 is an
+// administrator, principal_000002 holds a type grant on prediction, a record
+// grant on person_000007 and a revoked type grant on person, and every other
+// principal holds nothing.
+type fakeAccess struct{}
+
+func (fakeAccess) Standing(_ context.Context, principalID string) (PrincipalStanding, error) {
+	return PrincipalStanding{IsAdministrator: principalID == "principal_000001"}, nil
+}
+
+func (fakeAccess) Grants(_ context.Context, principalID string) ([]HeldGrant, error) {
+	if principalID != "principal_000002" {
+		return nil, nil
+	}
+	return []HeldGrant{
+		{Relation: RelationCanSeeReferences, ResourceType: ResourceTypeReferenceType, ResourceID: "prediction"},
+		{Relation: RelationCanSeeReferences, ResourceType: ResourceTypeReference, ResourceID: "person_000007"},
+		{Relation: RelationCanSeeReferences, ResourceType: ResourceTypeReferenceType, ResourceID: "person", Revoked: true},
+	}, nil
+}
+
+// uncheckedHeader stands in, in these tests, for the internal service: the
+// server this store is mounted in sets the caller from the credential it
+// checked, and testCallers sets it from headers.
+const uncheckedHeader = "X-Test-Unchecked"
+
+// testCallers serves mux with the caller named by the request's headers.
+func testCallers(mux http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		if r.Header.Get(uncheckedHeader) == "yes" {
+			ctx = ContextWithCaller(ctx, Caller{Unchecked: true})
+		} else if principalID := r.Header.Get(PrincipalIDHeader); principalID != "" {
+			ctx = ContextWithCaller(ctx, Caller{PrincipalID: principalID})
+		}
+		mux.ServeHTTP(w, r.WithContext(ctx))
+	})
 }
 
 func newTestServer(t *testing.T) (*httptest.Server, *stores) {
@@ -164,12 +152,12 @@ func newTestServer(t *testing.T) (*httptest.Server, *stores) {
 	resolver := &Resolver{
 		Types: Types, ServiceURLs: urls,
 		Credentials: &Credentials{BridgeServiceToken: "bridge-token", HTTPClient: http.DefaultClient},
-		Access:      &AccessChecker{PrincipalStoreURL: s.server.URL, GrantStoreURL: s.server.URL, HTTPClient: http.DefaultClient, TTL: time.Minute},
+		Access:      &AccessChecker{Directory: fakeAccess{}, TTL: time.Minute},
 		HTTPClient:  http.DefaultClient, RecordTTL: time.Minute, MissTTL: time.Minute, LookupTimeout: 5 * time.Second, Concurrency: 4,
 	}
 	mux := http.NewServeMux()
-	RegisterHandlers(mux, &Server{Resolver: resolver, ServiceToken: "service-token"})
-	server := httptest.NewServer(mux)
+	RegisterHandlers(mux, &Server{Resolver: resolver})
+	server := httptest.NewServer(testCallers(mux))
 	t.Cleanup(server.Close)
 	return server, s
 }
@@ -241,8 +229,8 @@ func TestTheOwnerDecidesASessionAsTheCaller(t *testing.T) {
 
 func TestAnAnswerIsReusedAndAMissIsEmpty(t *testing.T) {
 	server, stores := newTestServer(t)
-	resolveAs(t, server, ServiceTokenHeader, "service-token", "prediction_000001", "prediction_000009")
-	results := resolveAs(t, server, ServiceTokenHeader, "service-token", "prediction_000001", "prediction_000009")
+	resolveAs(t, server, uncheckedHeader, "yes", "prediction_000001", "prediction_000009")
+	results := resolveAs(t, server, uncheckedHeader, "yes", "prediction_000001", "prediction_000009")
 	if got := stores.fetches.Load(); got != 2 {
 		t.Errorf("prediction-store was asked %d times, want 2", got)
 	}
@@ -253,7 +241,7 @@ func TestAnAnswerIsReusedAndAMissIsEmpty(t *testing.T) {
 
 func TestACallerMustBeNamed(t *testing.T) {
 	server, _ := newTestServer(t)
-	for _, header := range []http.Header{{}, {ServiceTokenHeader: {"wrong"}}} {
+	for _, header := range []http.Header{{}, {uncheckedHeader: {"no"}}} {
 		request, _ := http.NewRequest(http.MethodPost, server.URL+"/resolve", strings.NewReader(`{"ids":["prediction_000001"]}`))
 		request.Header = header
 		response, err := http.DefaultClient.Do(request)
@@ -268,7 +256,6 @@ func TestACallerMustBeNamed(t *testing.T) {
 }
 
 func TestAPictureGoesOnlyToWhoMaySeeTheRecord(t *testing.T) {
-	s := newStores(t)
 	photos := http.NewServeMux()
 	photos.HandleFunc("GET /photos/{id}", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"id":"` + r.PathValue("id") + `","description":"a beach"}`))
@@ -282,12 +269,12 @@ func TestAPictureGoesOnlyToWhoMaySeeTheRecord(t *testing.T) {
 	resolver := &Resolver{
 		Types: Types, ServiceURLs: map[string]string{"photo-store": photoStore.URL},
 		Credentials: &Credentials{HTTPClient: http.DefaultClient},
-		Access:      &AccessChecker{PrincipalStoreURL: s.server.URL, GrantStoreURL: s.server.URL, HTTPClient: http.DefaultClient, TTL: time.Minute},
+		Access:      &AccessChecker{Directory: fakeAccess{}, TTL: time.Minute},
 		HTTPClient:  http.DefaultClient, RecordTTL: time.Minute, MissTTL: time.Minute, LookupTimeout: 5 * time.Second, Concurrency: 4,
 	}
 	mux := http.NewServeMux()
-	RegisterHandlers(mux, &Server{Resolver: resolver, ServiceToken: "service-token"})
-	server := httptest.NewServer(mux)
+	RegisterHandlers(mux, &Server{Resolver: resolver})
+	server := httptest.NewServer(testCallers(mux))
 	defer server.Close()
 	get := func(principal string) (int, string, int) {
 		request, _ := http.NewRequest(http.MethodGet, server.URL+"/attachments/photo_000001", nil)

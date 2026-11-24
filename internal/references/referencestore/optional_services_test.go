@@ -9,22 +9,9 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
-func TestPartialDeploymentStartsWithoutInventedAddresses(t *testing.T) {
-	registry, err := NewSettingsRegistry(servicesettings.MapEnvironment(map[string]string{
-		"REFERENCE_STORE_PRINCIPAL_STORE_URL": "http://localhost:12345",
-		"REFERENCE_STORE_GRANT_STORE_URL":     "http://localhost:12346",
-		"REFERENCE_STORE_SERVICE_TOKEN":       "test-service-token",
-	}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := registry.CheckRequired(); err != nil {
-		t.Fatal(err)
-	}
+func TestServiceAndSiteAddressesMustBeAbsolute(t *testing.T) {
 	if err := ValidateReferenceConfiguration(Types, nil, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -61,14 +48,14 @@ func TestSearchReportsUnconfiguredServicesBesideConfiguredResults(t *testing.T) 
 	defer store.Close()
 	resolver := &Resolver{Types: []ReferenceType{*TypeNamed("prediction"), *TypeNamed("person")}, ServiceURLs: map[string]string{"prediction-store": store.URL}, HTTPClient: http.DefaultClient, Credentials: &Credentials{}, LookupTimeout: time.Second}
 	mux := http.NewServeMux()
-	RegisterHandlers(mux, &Server{Resolver: resolver, ServiceToken: "service-token"})
-	server := httptest.NewServer(mux)
+	RegisterHandlers(mux, &Server{Resolver: resolver})
+	server := httptest.NewServer(testCallers(mux))
 	defer server.Close()
 	request, err := http.NewRequest(http.MethodGet, server.URL+"/search?q=test", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	request.Header.Set(ServiceTokenHeader, "service-token")
+	request.Header.Set(uncheckedHeader, "yes")
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatal(err)

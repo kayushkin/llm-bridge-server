@@ -48,12 +48,15 @@ type LookupError struct {
 
 // Resolver looks ids up in the stores that own them.
 type Resolver struct {
-	Types         []ReferenceType
-	ServiceURLs   map[string]string
-	SiteURLs      map[string]string
-	Credentials   *Credentials
-	Access        *AccessChecker
-	HTTPClient    *http.Client
+	Types       []ReferenceType
+	ServiceURLs map[string]string
+	SiteURLs    map[string]string
+	Credentials *Credentials
+	Access      *AccessChecker
+	// HTTPClient asks the services that run apart, at ServiceURLs.
+	HTTPClient *http.Client
+	// InProcess are the services in this process, asked through a handler.
+	InProcess     InProcessServices
 	RecordTTL     time.Duration
 	MissTTL       time.Duration
 	LookupTimeout time.Duration
@@ -215,22 +218,14 @@ func (r *Resolver) cachedFetch(ctx context.Context, key string, row *ReferenceTy
 func (r *Resolver) fetch(ctx context.Context, row *ReferenceType, id string, caller Caller, asCaller bool) (json.RawMessage, bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, r.LookupTimeout)
 	defer cancel()
-	baseURL, err := r.serviceURL(row.Service)
+	request, client, err := r.newRequest(ctx, row, strings.Replace(row.Get, "{id}", url.PathEscape(id), 1))
 	if err != nil {
-		return nil, false, err
-	}
-	target := baseURL + strings.Replace(row.Get, "{id}", url.PathEscape(id), 1)
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
-	if err != nil {
-		return nil, false, err
-	}
-	if err := r.Credentials.Apply(ctx, request, row); err != nil {
 		return nil, false, err
 	}
 	if asCaller {
 		request.Header.Set(PrincipalIDHeader, caller.PrincipalID)
 	}
-	response, err := r.HTTPClient.Do(request)
+	response, err := client.Do(request)
 	if err != nil {
 		return nil, false, err
 	}
@@ -383,19 +378,11 @@ func (r *Resolver) Attachment(ctx context.Context, caller Caller, id string) (st
 	}
 	ctx, cancel := context.WithTimeout(ctx, r.LookupTimeout)
 	defer cancel()
-	baseURL, err := r.serviceURL(row.Service)
+	request, client, err := r.newRequest(ctx, row, strings.Replace(row.Attachment, "{id}", url.PathEscape(id), 1))
 	if err != nil {
 		return "", nil, err
 	}
-	target := baseURL + strings.Replace(row.Attachment, "{id}", url.PathEscape(id), 1)
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
-	if err != nil {
-		return "", nil, err
-	}
-	if err := r.Credentials.Apply(ctx, request, row); err != nil {
-		return "", nil, err
-	}
-	response, err := r.HTTPClient.Do(request)
+	response, err := client.Do(request)
 	if err != nil {
 		return "", nil, err
 	}
@@ -419,6 +406,25 @@ func (r *Resolver) Attachment(ctx context.Context, caller Caller, id string) (st
 		return "", nil, fmt.Errorf("%s answered %q for a picture of %s", row.Service, contentType, id)
 	}
 	return contentType, body, nil
+}
+
+// newRequest is a GET of path on row's service, with the credential the
+// service takes when it runs apart, and the client that reaches it.
+func (r *Resolver) newRequest(ctx context.Context, row *ReferenceType, path string) (*http.Request, *http.Client, error) {
+	endpoint, err := r.endpoint(row.Service)
+	if err != nil {
+		return nil, nil, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.baseURL+path, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !endpoint.inProcess {
+		if err := r.Credentials.Apply(ctx, request, row); err != nil {
+			return nil, nil, err
+		}
+	}
+	return request, endpoint.client, nil
 }
 
 // serviceURL refuses to turn an unconfigured service into a relative request.

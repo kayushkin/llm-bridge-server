@@ -2,7 +2,6 @@ package referencestore
 
 import (
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,13 +13,23 @@ import (
 	"sync"
 )
 
-// Server answers reference-store's routes.
+// ServiceName is how the store names itself to auth-store when it asks for a
+// service's credential.
+const ServiceName = "reference-store"
+
+// PrincipalIDHeader is who an owner-decided lookup is for, sent to the
+// owning service beside its credential.
+const PrincipalIDHeader = "X-Principal-Id"
+
+// Server answers reference-store's routes. Who a request is for comes from
+// its context (ContextWithCaller), set by the server this store is mounted in
+// from the credential it verified; a client cannot set it.
 type Server struct {
-	Resolver     *Resolver
-	ServiceToken string
+	Resolver *Resolver
 }
 
-// RegisterHandlers mounts every route on mux.
+// RegisterHandlers mounts every route on mux at the paths the standalone
+// store answered.
 //
 //	GET  /health
 //	GET  /types            every reference type
@@ -30,15 +39,34 @@ type Server struct {
 //	GET  /search?q=        records of every mentionable type the caller may see
 //	GET  /attachments/{id} a picture of the record, when the caller may see it
 func RegisterHandlers(mux *http.ServeMux, server *Server) {
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-	})
-	mux.HandleFunc("GET /types", server.listTypes)
-	mux.HandleFunc("GET /types/{type}", server.getType)
-	mux.HandleFunc("GET /vocabulary", server.vocabulary)
-	mux.HandleFunc("POST /resolve", server.resolve)
-	mux.HandleFunc("GET /search", server.search)
-	mux.HandleFunc("GET /attachments/{id}", server.attachment)
+	mux.HandleFunc("GET /health", server.Health)
+	mux.HandleFunc("GET /types", server.ListTypes)
+	mux.HandleFunc("GET /types/{type}", server.GetType)
+	mux.HandleFunc("GET /vocabulary", server.Vocabulary)
+	mux.HandleFunc("POST /resolve", server.ResolveIDs)
+	mux.HandleFunc("GET /search", server.Search)
+	mux.HandleFunc("GET /attachments/{id}", server.AttachmentOfRecord)
+}
+
+type callerContextKey struct{}
+
+// ContextWithCaller says who the request is for.
+func ContextWithCaller(ctx context.Context, caller Caller) context.Context {
+	return context.WithValue(ctx, callerContextKey{}, caller)
+}
+
+// CallerFromContext is who the request is for, and false when nobody said.
+func CallerFromContext(ctx context.Context) (Caller, bool) {
+	caller, ok := ctx.Value(callerContextKey{}).(Caller)
+	if !ok || (!caller.Unchecked && caller.PrincipalID == "") {
+		return Caller{}, false
+	}
+	return caller, true
+}
+
+// Health answers that the store is up.
+func (s *Server) Health(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
@@ -57,11 +85,13 @@ func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"error": message})
 }
 
-func (s *Server) listTypes(w http.ResponseWriter, _ *http.Request) {
+// ListTypes is every reference type.
+func (s *Server) ListTypes(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"types": s.Resolver.Types})
 }
 
-func (s *Server) getType(w http.ResponseWriter, r *http.Request) {
+// GetType is one reference type.
+func (s *Server) GetType(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("type")
 	for i := range s.Resolver.Types {
 		if s.Resolver.Types[i].Type == name {
@@ -72,7 +102,8 @@ func (s *Server) getType(w http.ResponseWriter, r *http.Request) {
 	writeError(w, http.StatusNotFound, fmt.Sprintf("no reference type %q", name))
 }
 
-func (s *Server) vocabulary(w http.ResponseWriter, _ *http.Request) {
+// Vocabulary is the formats, access rules and grant names rows use.
+func (s *Server) Vocabulary(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"formats":  Formats,
 		"access":   []Access{AccessByGrant, AccessByOwner},
@@ -84,25 +115,11 @@ func (s *Server) vocabulary(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-// callerOf says who a request is for: the service token's holder acting for
-// nobody, or the principal the gateway named. Neither is a 401.
-func (s *Server) callerOf(r *http.Request) (Caller, bool) {
-	if token := r.Header.Get(ServiceTokenHeader); token != "" {
-		if subtle.ConstantTimeCompare([]byte(token), []byte(s.ServiceToken)) == 1 {
-			return Caller{Unchecked: true}, true
-		}
-		return Caller{}, false
-	}
-	if principalID := r.Header.Get(PrincipalIDHeader); principalID != "" {
-		return Caller{PrincipalID: principalID}, true
-	}
-	return Caller{}, false
-}
+const callerRequired = "sign in, or call as this server's internal service: every route but /health, /types and /vocabulary looks records up for someone"
 
-const callerRequired = "send X-Principal-Id (set by llm-bridge-server's gateway) or X-Reference-Store-Service-Token"
-
-func (s *Server) resolve(w http.ResponseWriter, r *http.Request) {
-	caller, ok := s.callerOf(r)
+// ResolveIDs is POST /resolve: what each id names, for the caller.
+func (s *Server) ResolveIDs(w http.ResponseWriter, r *http.Request) {
+	caller, ok := CallerFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, callerRequired)
 		return
@@ -160,11 +177,11 @@ type searchError struct {
 	Error string `json:"error"`
 }
 
-// search asks every mentionable type the caller may see whole. A type the
+// Search asks every mentionable type the caller may see whole. A type the
 // caller sees only some records of is not searched: a search would list the
 // others.
-func (s *Server) search(w http.ResponseWriter, r *http.Request) {
-	caller, ok := s.callerOf(r)
+func (s *Server) Search(w http.ResponseWriter, r *http.Request) {
+	caller, ok := CallerFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, callerRequired)
 		return
@@ -241,22 +258,14 @@ func (s *Server) mayAskTypeWhole(ctx context.Context, caller Caller, row *Refere
 func (s *Server) searchOne(ctx context.Context, caller Caller, row *ReferenceType, query string) (json.RawMessage, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.Resolver.LookupTimeout)
 	defer cancel()
-	baseURL, err := s.Resolver.serviceURL(row.Service)
+	request, client, err := s.Resolver.newRequest(ctx, row, row.Search+url.QueryEscape(query))
 	if err != nil {
-		return nil, err
-	}
-	target := baseURL + row.Search + url.QueryEscape(query)
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.Resolver.Credentials.Apply(ctx, request, row); err != nil {
 		return nil, err
 	}
 	if row.Access == AccessByOwner && !caller.Unchecked {
 		request.Header.Set(PrincipalIDHeader, caller.PrincipalID)
 	}
-	response, err := s.Resolver.HTTPClient.Do(request)
+	response, err := client.Do(request)
 	if err != nil {
 		return nil, err
 	}
@@ -274,8 +283,10 @@ func (s *Server) searchOne(ctx context.Context, caller Caller, row *ReferenceTyp
 	return body, nil
 }
 
-func (s *Server) attachment(w http.ResponseWriter, r *http.Request) {
-	caller, ok := s.callerOf(r)
+// AttachmentOfRecord is a picture of the record an id names, when the caller
+// may see it.
+func (s *Server) AttachmentOfRecord(w http.ResponseWriter, r *http.Request) {
+	caller, ok := CallerFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, callerRequired)
 		return
