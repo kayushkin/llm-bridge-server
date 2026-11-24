@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -35,10 +36,22 @@ func (testReferenceAccess) Grants(_ context.Context, principalID string) ([]refe
 	return []referencestore.HeldGrant{{Relation: referencestore.RelationCanSeeReferences, ResourceType: referencestore.ResourceTypeReferenceType, ResourceID: "repo"}}, nil
 }
 
+// testRepositoryModules are the three modules' pools and stores a test
+// server serves.
+type testRepositoryModules struct {
+	repoStoreDB, workGraphStoreDB, fileStoreDB *sql.DB
+	repos                                      *repostore.Store
+	files                                      *filestore.Store
+}
+
 // enableRepositoriesAndReferencesOnTestDatabase opens repo-store,
 // work-graph-store and file-store on a Postgres database of the test's own,
 // builds reference-store over this server, and serves all four.
 func enableRepositoriesAndReferencesOnTestDatabase(t *testing.T, server *Server) *repostore.Store {
+	return enableRepositoryModulesOnTestDatabase(t, server).repos
+}
+
+func enableRepositoryModulesOnTestDatabase(t *testing.T, server *Server) testRepositoryModules {
 	t.Helper()
 	repoModule, err := repostore.Module()
 	if err != nil {
@@ -53,15 +66,18 @@ func enableRepositoriesAndReferencesOnTestDatabase(t *testing.T, server *Server)
 		t.Fatal(err)
 	}
 	database := postgrestest.NewDatabase(t, repoModule, workGraphModule, fileModule)
-	repos := repostore.New(database.Open(repoModule))
-	server.EnableRepositories(repos, nil, "no gh in tests", workgraphstore.New(database.Open(workGraphModule)))
-	files, err := filestore.New(database.Open(fileModule), t.TempDir())
+	modules := testRepositoryModules{repoStoreDB: database.Open(repoModule), workGraphStoreDB: database.Open(workGraphModule), fileStoreDB: database.Open(fileModule)}
+	repos := repostore.New(modules.repoStoreDB)
+	modules.repos = repos
+	server.EnableRepositories(repos, nil, "no gh in tests", workgraphstore.New(modules.workGraphStoreDB))
+	files, err := filestore.New(modules.fileStoreDB, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := server.EnableFileStore(files); err != nil {
 		t.Fatal(err)
 	}
+	modules.files = files
 	server.EnableReferenceStore(&referencestore.Resolver{
 		Types:       referencestore.Types,
 		Credentials: &referencestore.Credentials{HTTPClient: http.DefaultClient},
@@ -70,7 +86,7 @@ func enableRepositoriesAndReferencesOnTestDatabase(t *testing.T, server *Server)
 		InProcess:   referencestore.InProcessServices{Handler: server.InProcessReferenceHandler(), PathPrefixes: InProcessReferenceServices},
 		RecordTTL:   time.Minute, MissTTL: time.Second, LookupTimeout: 5 * time.Second, Concurrency: 4,
 	})
-	return repos
+	return modules
 }
 
 func TestTheMovedStoresAnswer503WithNoModule(t *testing.T) {
