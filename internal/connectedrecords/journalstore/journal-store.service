@@ -1,0 +1,22 @@
+[Unit]
+Description=journal-store — the user's own writing: journal entries, posts, notes, notes about people and things, timelines and transcripts
+After=network.target
+
+# A systemd user unit: install it to ~/.config/systemd/user/ and the binary to
+# ~/bin. %h is the user's home directory, so nothing here names a user.
+[Service]
+Type=simple
+ExecStart=%h/bin/journal-store
+
+# Loopback, deliberately. This is private writing and the service has no auth
+# of its own; put a front door that adds it in front. A wildcard bind would put
+# every journal entry on the network for anything that can route to this host.
+# settings.go defaults to the same address, so an empty environment is safe too.
+Environment=JOURNAL_STORE_ADDR=127.0.0.1:8322
+
+WorkingDirectory=%h
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
