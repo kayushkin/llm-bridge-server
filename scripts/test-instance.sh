@@ -14,13 +14,19 @@
 #
 # <folder of binaries> holds llm-bridge-server, llm-bridge-runner,
 # llm-bridge-mock and the seven stores below, built for this machine. The machine itself needs no Go or Node, only systemd user
-# units, curl, jq and sqlite3. Running install again replaces the binaries and
-# restarts; settings, secrets and data are kept.
+# units, curl, jq, sqlite3 and the Postgres 18 server programs (initdb,
+# postgres, pg_isready, psql) in $BRIDGE_TEST_POSTGRES_BIN, by default where the
+# Postgres project's packages put them. Install those with no cluster of the
+# system's own (create_main_cluster = false). Running install again replaces the
+# binaries and restarts; settings, secrets and data are kept.
 #
 # What it runs:
 #   the server, with its front end at /ui/ and demo login switched on
 #   log-store, tool-store, principal-store, grant-store, kanban-store,
 #   reference-store and permission-store, each its own unit
+#   a Postgres of its own (llm-bridge-test-postgres), data under data/postgres,
+#   on 127.0.0.1 and a socket inside the folder, holding database bridge for
+#   the server's login bridge_server, which may create roles
 #   a runner enrolled with this server, offering the mock harness
 #
 # Every address a store would otherwise default to is set here, because the
@@ -39,6 +45,10 @@ UNIT_DIR="$HOME/.config/systemd/user"
 UNIT_PREFIX="llm-bridge-test"
 STORES=(log-store tool-store principal-store grant-store kanban-store reference-store permission-store)
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+POSTGRES_BIN="${BRIDGE_TEST_POSTGRES_BIN:-/usr/lib/postgresql/18/bin}"
+# The login the server provisions its Postgres modules as, and its database.
+POSTGRES_SERVER_LOGIN="bridge_server"
+POSTGRES_DATABASE="bridge"
 
 fail() { echo "ERROR: $*" >&2; exit 1; }
 step() { printf '==> %s\n' "$*"; }
@@ -48,6 +58,7 @@ load_settings() {
   # shellcheck disable=SC1091
   . "$ROOT/env/ports.env"
   BASE="http://127.0.0.1:$BRIDGE_PORT"
+  POSTGRES_SOCKET_DIR="$ROOT/run/postgres"
 }
 
 service_token() {
@@ -68,14 +79,19 @@ wait_for() { # <what> <url>
 
 random_hex() { head -c "$1" /dev/urandom | od -An -tx1 | tr -d ' \n'; }
 
+# write_unit writes a user unit. <binary> is a program in the instance's bin,
+# or an absolute path. Lines for [Unit] come from UNIT_SECTION_LINES, lines
+# for [Service] on stdin.
 write_unit() { # <unit name> <description> <binary> <environment file>... ; extra unit lines on stdin
   local name="$1" description="$2" binary="$3"; shift 3
+  case "$binary" in /*) ;; *) binary="$ROOT/bin/$binary" ;; esac
   {
     echo "[Unit]"
     echo "Description=$description"
+    if [ -n "${UNIT_SECTION_LINES:-}" ]; then printf '%s\n' "$UNIT_SECTION_LINES"; fi
     echo
     echo "[Service]"
-    echo "ExecStart=$ROOT/bin/$binary"
+    echo "ExecStart=$binary"
     echo "WorkingDirectory=$ROOT"
     echo "Environment=HOME=$ROOT/home"
     echo "Environment=XDG_CONFIG_HOME=$ROOT/home/.config"
@@ -92,19 +108,65 @@ write_unit() { # <unit name> <description> <binary> <environment file>... ; extr
   } > "$UNIT_DIR/$name.service"
 }
 
+# prepare_postgres makes the instance's Postgres cluster the first time, and
+# writes its settings and who may sign in every time. Only this machine's user
+# signs in, over the socket inside the folder, as itself (the cluster's
+# superuser) or as the server's login. Nobody has a password, so the TCP
+# listener on 127.0.0.1 lets nobody in.
+prepare_postgres() {
+  local data="$ROOT/data/postgres" user
+  user="$(id -un)"
+  if [ ! -f "$data/PG_VERSION" ]; then
+    step "making the instance's Postgres cluster in $data"
+    "$POSTGRES_BIN/initdb" -D "$data" --encoding=UTF8 --locale=C.UTF-8 --auth-local=peer --auth-host=scram-sha-256 >/dev/null
+    echo "include_if_exists = 'test-instance.conf'" >> "$data/postgresql.conf"
+  fi
+  cat > "$data/test-instance.conf" <<EOF
+# Written by test-instance.sh on every install.
+listen_addresses = '127.0.0.1'
+port = $POSTGRES_PORT
+unix_socket_directories = '$POSTGRES_SOCKET_DIR'
+EOF
+  cat > "$data/pg_hba.conf" <<EOF
+# Written by test-instance.sh on every install.
+local all all                peer map=test_instance
+host  all all 127.0.0.1/32   scram-sha-256
+EOF
+  cat > "$data/pg_ident.conf" <<EOF
+# Written by test-instance.sh on every install.
+test_instance $user $user
+test_instance $user $POSTGRES_SERVER_LOGIN
+EOF
+}
+
+# make_postgres_login_and_database makes the server's login and its database
+# when they are missing. The login may create roles, which the server needs to
+# provision each module's role and schema, and is not a superuser.
+make_postgres_login_and_database() {
+  "$POSTGRES_BIN/psql" -q -X -v ON_ERROR_STOP=1 -h "$POSTGRES_SOCKET_DIR" -p "$POSTGRES_PORT" -d postgres <<EOF
+SELECT 'CREATE ROLE $POSTGRES_SERVER_LOGIN LOGIN CREATEROLE'
+  WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '$POSTGRES_SERVER_LOGIN') \\gexec
+SELECT 'CREATE DATABASE $POSTGRES_DATABASE OWNER $POSTGRES_SERVER_LOGIN'
+  WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = '$POSTGRES_DATABASE') \\gexec
+EOF
+}
+
 install_instance() {
   local binaries="${1:-}"
   [ -n "$binaries" ] && [ -d "$binaries" ] || fail "usage: $0 install <folder of binaries>"
   for tool in systemctl curl jq sqlite3; do
     command -v "$tool" >/dev/null 2>&1 || fail "this machine has no $tool"
   done
+  for program in initdb postgres pg_isready psql; do
+    [ -x "$POSTGRES_BIN/$program" ] || fail "$POSTGRES_BIN/$program is missing: install the Postgres 18 server packages, with no system cluster, or set BRIDGE_TEST_POSTGRES_BIN"
+  done
   for binary in llm-bridge-server llm-bridge-runner llm-bridge-mock "${STORES[@]}"; do
     [ -x "$binaries/$binary" ] || fail "$binaries/$binary is missing or not executable"
   done
 
   step "laying out $ROOT"
-  mkdir -p "$ROOT"/{bin,data,env,home,runner,runner-assets} "$UNIT_DIR"
-  chmod 700 "$ROOT" "$ROOT/env"
+  mkdir -p "$ROOT"/{bin,data,env,home,runner,runner-assets,run/postgres} "$UNIT_DIR"
+  chmod 700 "$ROOT" "$ROOT/env" "$ROOT/run/postgres"
 
   # Ports keep a real install's offsets from the server's port. A key already
   # in ports.env keeps its value, so an instance installed before a store was
@@ -124,6 +186,9 @@ install_instance() {
   add_port PERMISSION_STORE_PORT $((base + 144))
   add_port KANBAN_STORE_PORT $((base + 145))
   add_port REFERENCE_STORE_PORT $((base + 183))
+  # A real Postgres is on 5432, below the server's port, so there is no offset
+  # to keep; 18432 says which it is.
+  add_port POSTGRES_PORT $((base + 272))
   load_settings
   local nowhere="http://127.0.0.1:1"
 
@@ -172,6 +237,7 @@ LLMBRIDGE_GRANT_STORE_URL=http://127.0.0.1:$GRANT_STORE_PORT
 LLMBRIDGE_KANBAN_STORE_URL=http://127.0.0.1:$KANBAN_STORE_PORT
 LLMBRIDGE_REFERENCE_STORE_URL=http://127.0.0.1:$REFERENCE_STORE_PORT
 LLMBRIDGE_PERMISSION_STORE_URL=http://127.0.0.1:$PERMISSION_STORE_PORT
+LLMBRIDGE_POSTGRES_URL=postgres://$POSTGRES_SERVER_LOGIN@/$POSTGRES_DATABASE?host=$POSTGRES_SOCKET_DIR&port=$POSTGRES_PORT
 EOF
 
   # One file per store: a store refuses to start when a variable carrying its
@@ -218,6 +284,9 @@ EOF
   step "stopping what is running, to replace the binaries"
   systemctl --user stop "$UNIT_PREFIX-runner.service" "$UNIT_PREFIX.service" 2>/dev/null || true
   for store in "${STORES[@]}"; do systemctl --user stop "$UNIT_PREFIX-$store.service" 2>/dev/null || true; done
+  systemctl --user stop "$UNIT_PREFIX-postgres.service" 2>/dev/null || true
+
+  prepare_postgres
 
   step "installing binaries"
   for binary in llm-bridge-server llm-bridge-runner llm-bridge-mock "${STORES[@]}"; do
@@ -249,6 +318,14 @@ EOF
         write_unit "$UNIT_PREFIX-$store" "llm-bridge test instance: $store" "$store" "$ROOT/env/$store.env" </dev/null ;;
     esac
   done
+  write_unit "$UNIT_PREFIX-postgres" "llm-bridge test instance: its Postgres" "$POSTGRES_BIN/postgres -D $ROOT/data/postgres" <<EOF
+Type=notify
+KillMode=mixed
+KillSignal=SIGINT
+TimeoutSec=120
+EOF
+  UNIT_SECTION_LINES="Wants=$UNIT_PREFIX-postgres.service
+After=$UNIT_PREFIX-postgres.service" \
   write_unit "$UNIT_PREFIX" "llm-bridge test instance: the server" llm-bridge-server "$ROOT/env/server.env" "$ROOT/env/secrets.env" <<EOF
 EOF
   # The runner's own environment reaches every harness it starts, so this is
@@ -261,6 +338,16 @@ EOF
 Environment=LLMBRIDGE_RUNNER_CONFIG=$ROOT/runner/config.json
 EOF
   systemctl --user daemon-reload
+
+  step "starting Postgres"
+  systemctl --user enable --now "$UNIT_PREFIX-postgres.service" >/dev/null 2>&1
+  for _ in $(seq 1 100); do
+    "$POSTGRES_BIN/pg_isready" -q -h "$POSTGRES_SOCKET_DIR" -p "$POSTGRES_PORT" && break
+    sleep 0.2
+  done
+  "$POSTGRES_BIN/pg_isready" -q -h "$POSTGRES_SOCKET_DIR" -p "$POSTGRES_PORT" ||
+    fail "Postgres did not answer on $POSTGRES_SOCKET_DIR port $POSTGRES_PORT; see: journalctl --user -u $UNIT_PREFIX-postgres -n 50"
+  make_postgres_login_and_database
 
   step "starting the stores"
   for store in "${STORES[@]}"; do systemctl --user enable --now "$UNIT_PREFIX-$store.service" >/dev/null 2>&1; done
@@ -312,10 +399,11 @@ EOF
 status_instance() {
   load_settings
   echo "test instance in $ROOT"
-  for unit in "$UNIT_PREFIX" "$UNIT_PREFIX-runner" $(printf "$UNIT_PREFIX-%s " "${STORES[@]}"); do
+  for unit in "$UNIT_PREFIX" "$UNIT_PREFIX-runner" "$UNIT_PREFIX-postgres" $(printf "$UNIT_PREFIX-%s " "${STORES[@]}"); do
     printf '  %-36s %s\n' "$unit" "$(systemctl --user is-active "$unit.service" 2>/dev/null || true)"
   done
   echo "  server:     $BASE   (front end: $BASE/ui/)"
+  echo "  postgres:   127.0.0.1:$POSTGRES_PORT and $POSTGRES_SOCKET_DIR, database $POSTGRES_DATABASE as $POSTGRES_SERVER_LOGIN"
   local real_home file
   real_home="$(getent passwd "$(id -un)" | cut -d: -f6)"
   for file in "${LOGIN_FILES[@]}"; do
@@ -402,7 +490,7 @@ use_machine_logins() {
 
 uninstall_instance() {
   step "stopping and removing the units"
-  for unit in "$UNIT_PREFIX-runner" "$UNIT_PREFIX" $(printf "$UNIT_PREFIX-%s " "${STORES[@]}"); do
+  for unit in "$UNIT_PREFIX-runner" "$UNIT_PREFIX" $(printf "$UNIT_PREFIX-%s " "${STORES[@]}") "$UNIT_PREFIX-postgres"; do
     systemctl --user disable --now "$unit.service" >/dev/null 2>&1 || true
     rm -f "$UNIT_DIR/$unit.service"
   done
