@@ -1,7 +1,6 @@
 package modelstore
 
 import (
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -10,11 +9,12 @@ import (
 // assignment has something valid to point at.
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
-	s, err := Open(filepath.Join(t.TempDir(), "roles.db"))
-	if err != nil {
-		t.Fatalf("open: %v", err)
+	s := tempStore(t)
+	for _, p := range []Provider{{ID: "anthropic", Name: "Anthropic"}, {ID: "openai", Name: "OpenAI"}} {
+		if err := s.AddProvider(p); err != nil {
+			t.Fatalf("seed provider %s: %v", p.ID, err)
+		}
 	}
-	t.Cleanup(func() { s.Close() })
 	for _, m := range []Model{
 		{ID: "claude-fable-5-1", Provider: "anthropic", Name: "Fable 5.1", MaxTokens: 1000000, Enabled: true},
 		{ID: "gpt-5.6-luna", Provider: "openai", Name: "Luna", MaxTokens: 400000, Enabled: true},

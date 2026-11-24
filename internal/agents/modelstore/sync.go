@@ -509,8 +509,8 @@ func truncateAtRuneBoundaryWithEllipsis(s string, maxBytes int) string {
 // provider: everything a sync run must carry over from the row already in the
 // store instead of taking from the API answer.
 //
-// It exists because AddModel writes with INSERT OR REPLACE, which deletes the
-// old row and inserts a fresh one, so a field this method forgets is not merely
+// It exists because AddModel overwrites every column of the row already
+// there with the model it is given, so a field this method forgets is not merely
 // left stale — it is erased on the next sync, silently, for every model the
 // provider still lists. That is not hypothetical: short_name was reported
 // disappearing from the live store before the copy existed.

@@ -1,34 +1,31 @@
-package main
+package modelstore
 
 import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
-
-	ms "github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
 )
 
-func newTestServer(t *testing.T) (*ms.Store, *httptest.Server) {
+// newTestServer serves the routes on their own mux, with no prefix, as the
+// standalone `ms serve` did.
+func newTestServer(t *testing.T) (*Store, *httptest.Server) {
 	t.Helper()
-	store, err := ms.Open(filepath.Join(t.TempDir(), "store.db"))
-	if err != nil {
+	store := tempStore(t)
+	if err := store.AddProvider(Provider{ID: "anthropic", Name: "Anthropic"}); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { store.Close() })
-	if err := store.AddProvider(ms.Provider{ID: "anthropic", Name: "Anthropic"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.AddModel(ms.Model{
+	if err := store.AddModel(Model{
 		ID: "claude-fable-5-1", Provider: "anthropic", Name: "Claude Fable 5.1",
 		ShortName: "fable-5.1", MaxTokens: 1000000,
 		InputCost: 10, OutputCost: 50, Enabled: true, Priority: 5,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(newServeHandler(store))
+	mux := http.NewServeMux()
+	NewHandlers(store).Register(mux, "")
+	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	return store, server
 }
@@ -98,23 +95,9 @@ func TestServeToggleUnknownModelIs400(t *testing.T) {
 	}
 }
 
-func TestServeCredentialRoutesAreGoneNot404(t *testing.T) {
-	_, server := newTestServer(t)
-	for _, path := range []string{"/api/credentials", "/api/credentials/toggle", "/api/models/test"} {
-		resp, err := http.Get(server.URL + path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusGone {
-			t.Errorf("%s: expected 410 Gone, got %d", path, resp.StatusCode)
-		}
-	}
-}
-
 func TestServeRolesGetSetResolve(t *testing.T) {
 	store, server := newTestServer(t)
-	if err := store.SetRole(ms.RoleDefault, "claude-fable-5-1"); err != nil {
+	if err := store.SetRole(RoleDefault, "claude-fable-5-1"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -134,8 +117,8 @@ func TestServeRolesGetSetResolve(t *testing.T) {
 	if listed.Roles["default"] != "claude-fable-5-1" {
 		t.Fatalf("default role = %q, want claude-fable-5-1", listed.Roles["default"])
 	}
-	if len(listed.Canonical) != len(ms.CanonicalRoles) {
-		t.Fatalf("canonical roles = %v, want %v", listed.Canonical, ms.CanonicalRoles)
+	if len(listed.Canonical) != len(CanonicalRoles) {
+		t.Fatalf("canonical roles = %v, want %v", listed.Canonical, CanonicalRoles)
 	}
 
 	// GET /api/roles/{role} resolves to the full model.
@@ -144,7 +127,7 @@ func TestServeRolesGetSetResolve(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp2.Body.Close()
-	var m ms.Model
+	var m Model
 	if err := json.NewDecoder(resp2.Body).Decode(&m); err != nil {
 		t.Fatal(err)
 	}

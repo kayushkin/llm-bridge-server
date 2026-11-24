@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strconv"
@@ -8,8 +9,31 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/agents/aiauth"
 	ms "github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
+	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 	"github.com/spf13/cobra"
 )
+
+// postgresURL is the --postgres-url flag, which every command needs.
+var postgresURL string
+
+// openStore opens the registry's Postgres module, which the bridge provisions
+// and migrates at start. This command never migrates it, so a binary older
+// than the bridge cannot change its tables. The returned function closes the
+// pool.
+func openStore() (*ms.Store, func(), error) {
+	if postgresURL == "" {
+		return nil, nil, fmt.Errorf("--postgres-url is required: the registry lives in the bridge's Postgres")
+	}
+	module, err := ms.Module()
+	if err != nil {
+		return nil, nil, err
+	}
+	db, err := postgresstorage.Open(context.Background(), postgresURL, module)
+	if err != nil {
+		return nil, nil, err
+	}
+	return ms.New(db), func() { db.Close() }, nil
+}
 
 func main() {
 	root := &cobra.Command{
@@ -17,18 +41,19 @@ func main() {
 		Short: "Model store — centralized model registry",
 	}
 
-	root.AddCommand(newServeCommand())
+	root.PersistentFlags().StringVar(&postgresURL, "postgres-url", "",
+		"the Postgres the bridge keeps the registry in (its database.postgres_url); the bridge must have started once on it, which makes the module")
 
 	// providers
 	providersCommand := &cobra.Command{
 		Use:   "providers",
 		Short: "List configured providers",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := ms.Open("")
+			store, closeStore, err := openStore()
 			if err != nil {
 				return err
 			}
-			defer store.Close()
+			defer closeStore()
 
 			providers, err := store.Providers()
 			if err != nil {
@@ -50,11 +75,11 @@ func main() {
 model row. Registering an existing id replaces its name.`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := ms.Open("")
+			store, closeStore, err := openStore()
 			if err != nil {
 				return err
 			}
-			defer store.Close()
+			defer closeStore()
 
 			if err := store.AddProvider(ms.Provider{ID: args[0], Name: args[1]}); err != nil {
 				return err
@@ -70,11 +95,11 @@ model row. Registering an existing id replaces its name.`,
 		Use:   "models [provider]",
 		Short: "List available models",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := ms.Open("")
+			store, closeStore, err := openStore()
 			if err != nil {
 				return err
 			}
-			defer store.Close()
+			defer closeStore()
 
 			providers, _ := store.Providers()
 			for _, p := range providers {
@@ -108,11 +133,11 @@ model row. Registering an existing id replaces its name.`,
 		Short: "Resolve a model and show its details",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := ms.Open("")
+			store, closeStore, err := openStore()
 			if err != nil {
 				return err
 			}
-			defer store.Close()
+			defer closeStore()
 
 			model, err := store.ResolveModel(args[0])
 			if err != nil {
@@ -135,11 +160,11 @@ model row. Registering an existing id replaces its name.`,
 		Use:   "seed",
 		Short: "Seed default providers and models",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := ms.Open("")
+			store, closeStore, err := openStore()
 			if err != nil {
 				return err
 			}
-			defer store.Close()
+			defer closeStore()
 
 			if err := store.Seed(); err != nil {
 				return err
@@ -159,11 +184,11 @@ New models are added with default priority 100 and estimated costs.
 
 Requires API keys via environment variables (ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY) or aiauth profiles.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := ms.Open("")
+			store, closeStore, err := openStore()
 			if err != nil {
 				return err
 			}
-			defer store.Close()
+			defer closeStore()
 
 			providers := args
 			if len(providers) == 0 {
@@ -214,11 +239,11 @@ Requires API keys via environment variables (ANTHROPIC_API_KEY, OPENAI_API_KEY, 
 		Short: "Enable a model",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := ms.Open("")
+			store, closeStore, err := openStore()
 			if err != nil {
 				return err
 			}
-			defer store.Close()
+			defer closeStore()
 			if err := store.SetEnabled(args[0], true); err != nil {
 				return err
 			}
@@ -232,11 +257,11 @@ Requires API keys via environment variables (ANTHROPIC_API_KEY, OPENAI_API_KEY, 
 		Short: "Disable a model",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := ms.Open("")
+			store, closeStore, err := openStore()
 			if err != nil {
 				return err
 			}
-			defer store.Close()
+			defer closeStore()
 			if err := store.SetEnabled(args[0], false); err != nil {
 				return err
 			}
@@ -259,11 +284,11 @@ Requires API keys via environment variables (ANTHROPIC_API_KEY, OPENAI_API_KEY, 
 			if err != nil {
 				return fmt.Errorf("output cost %q is not a number: %w", args[2], err)
 			}
-			store, err := ms.Open("")
+			store, closeStore, err := openStore()
 			if err != nil {
 				return err
 			}
-			defer store.Close()
+			defer closeStore()
 			if err := store.SetCost(args[0], in, out); err != nil {
 				return err
 			}
@@ -285,11 +310,11 @@ Requires API keys via environment variables (ANTHROPIC_API_KEY, OPENAI_API_KEY, 
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			providerID, modelID := args[0], args[1]
-			store, err := ms.Open("")
+			store, closeStore, err := openStore()
 			if err != nil {
 				return err
 			}
-			defer store.Close()
+			defer closeStore()
 
 			providers, err := store.Providers()
 			if err != nil {
@@ -342,11 +367,11 @@ Requires API keys via environment variables (ANTHROPIC_API_KEY, OPENAI_API_KEY, 
 			if err != nil {
 				return fmt.Errorf("priority %q is not an integer: %w", args[1], err)
 			}
-			store, err := ms.Open("")
+			store, closeStore, err := openStore()
 			if err != nil {
 				return err
 			}
-			defer store.Close()
+			defer closeStore()
 			if err := store.SetPriority(args[0], p); err != nil {
 				return err
 			}
@@ -361,11 +386,11 @@ Requires API keys via environment variables (ANTHROPIC_API_KEY, OPENAI_API_KEY, 
 		Short: "Set a model's short display nickname (e.g. opus-4.6)",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := ms.Open("")
+			store, closeStore, err := openStore()
 			if err != nil {
 				return err
 			}
-			defer store.Close()
+			defer closeStore()
 			if err := store.SetShortName(args[0], args[1]); err != nil {
 				return err
 			}
@@ -384,11 +409,11 @@ Requires API keys via environment variables (ANTHROPIC_API_KEY, OPENAI_API_KEY, 
 		Short: "Point an alias at a model",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := ms.Open("")
+			store, closeStore, err := openStore()
 			if err != nil {
 				return err
 			}
-			defer store.Close()
+			defer closeStore()
 			if err := store.AddAlias(args[0], args[1]); err != nil {
 				return err
 			}
@@ -401,11 +426,11 @@ Requires API keys via environment variables (ANTHROPIC_API_KEY, OPENAI_API_KEY, 
 		Short: "Remove an alias",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := ms.Open("")
+			store, closeStore, err := openStore()
 			if err != nil {
 				return err
 			}
-			defer store.Close()
+			defer closeStore()
 			if err := store.RemoveAlias(args[0]); err != nil {
 				return err
 			}
@@ -425,11 +450,11 @@ Requires API keys via environment variables (ANTHROPIC_API_KEY, OPENAI_API_KEY, 
 		Short: "List role assignments",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := ms.Open("")
+			store, closeStore, err := openStore()
 			if err != nil {
 				return err
 			}
-			defer store.Close()
+			defer closeStore()
 			roles, err := store.Roles()
 			if err != nil {
 				return err
@@ -449,11 +474,11 @@ Requires API keys via environment variables (ANTHROPIC_API_KEY, OPENAI_API_KEY, 
 		Short: "Point a role at a model",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := ms.Open("")
+			store, closeStore, err := openStore()
 			if err != nil {
 				return err
 			}
-			defer store.Close()
+			defer closeStore()
 			if err := store.SetRole(args[0], args[1]); err != nil {
 				return err
 			}
@@ -466,11 +491,11 @@ Requires API keys via environment variables (ANTHROPIC_API_KEY, OPENAI_API_KEY, 
 		Short: "Clear a role assignment",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := ms.Open("")
+			store, closeStore, err := openStore()
 			if err != nil {
 				return err
 			}
-			defer store.Close()
+			defer closeStore()
 			if err := store.RemoveRole(args[0]); err != nil {
 				return err
 			}
@@ -486,11 +511,11 @@ Requires API keys via environment variables (ANTHROPIC_API_KEY, OPENAI_API_KEY, 
 		Short: "Delete a model and its aliases",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := ms.Open("")
+			store, closeStore, err := openStore()
 			if err != nil {
 				return err
 			}
-			defer store.Close()
+			defer closeStore()
 			if err := store.DeleteModel(args[0]); err != nil {
 				return err
 			}

@@ -2,17 +2,17 @@ package modelstore
 
 import (
 	"database/sql"
-	"fmt"
-	"os"
-	"path/filepath"
+	"embed"
 
-	_ "modernc.org/sqlite"
+	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 )
 
-// Store is the model/provider registry.
+//go:embed migrations/*.sql
+var migrationFiles embed.FS
+
+// Store is the model/provider registry, kept in the Postgres module models.
 type Store struct {
-	db   *sql.DB
-	path string
+	db *sql.DB
 }
 
 // Provider represents a model provider (Anthropic, OpenAI, etc).
@@ -47,86 +47,20 @@ type ModelStatus struct {
 	Health *ModelHealth `json:"health"`
 }
 
-// DefaultPath returns the default store path.
-func DefaultPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "model-store", "store.db")
-}
-
-// Open opens or creates a model store.
-func Open(path string) (*Store, error) {
-	if path == "" {
-		path = DefaultPath()
-	}
-	os.MkdirAll(filepath.Dir(path), 0755)
-
-	db, err := sql.Open("sqlite", path)
+// Module is the Postgres schema and role the registry keeps its records in,
+// with the migrations that build them.
+func Module() (postgresstorage.Module, error) {
+	migrations, err := postgresstorage.MigrationsFromFiles(migrationFiles, "migrations")
 	if err != nil {
-		return nil, fmt.Errorf("open db: %w", err)
+		return postgresstorage.Module{}, err
 	}
-
-	s := &Store{db: db, path: path}
-	if err := s.migrate(); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("migrate: %w", err)
-	}
-
-	return s, nil
+	return postgresstorage.Module{Schema: "models", Role: "models_module", Migrations: migrations}, nil
 }
 
-// Close closes the store.
-func (s *Store) Close() error {
-	return s.db.Close()
-}
-
-func (s *Store) migrate() error {
-	_, err := s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS providers (
-			id   TEXT PRIMARY KEY,
-			name TEXT NOT NULL
-		);
-
-		CREATE TABLE IF NOT EXISTS models (
-			id TEXT PRIMARY KEY,
-			provider TEXT NOT NULL REFERENCES providers(id),
-			name TEXT NOT NULL,
-			max_tokens INTEGER DEFAULT 200000,
-			input_cost REAL DEFAULT 0,
-			output_cost REAL DEFAULT 0,
-			enabled INTEGER DEFAULT 1,
-			priority INTEGER DEFAULT 100,
-			short_name TEXT DEFAULT ''
-		);
-
-		CREATE TABLE IF NOT EXISTS model_aliases (
-			alias TEXT PRIMARY KEY,
-			model_id TEXT NOT NULL REFERENCES models(id)
-		);
-
-		CREATE TABLE IF NOT EXISTS model_roles (
-			role TEXT PRIMARY KEY,
-			model_id TEXT NOT NULL REFERENCES models(id)
-		);
-
-		CREATE TABLE IF NOT EXISTS model_role_fallbacks (
-			role TEXT NOT NULL REFERENCES model_roles(role),
-			position INTEGER NOT NULL,
-			model_id TEXT NOT NULL REFERENCES models(id),
-			PRIMARY KEY (role, position),
-			UNIQUE (role, model_id)
-		);
-	`)
-	if err != nil {
-		return err
-	}
-
-	// Add columns to existing databases (safe to run multiple times)
-	s.db.Exec(`ALTER TABLE models ADD COLUMN enabled INTEGER DEFAULT 1`)
-	s.db.Exec(`ALTER TABLE models ADD COLUMN priority INTEGER DEFAULT 100`)
-	s.db.Exec(`ALTER TABLE models ADD COLUMN short_name TEXT DEFAULT ''`)
-
-	return nil
-}
+// New returns the registry over db, the module's pool from
+// postgresstorage.Open. The server provisions, migrates and opens the module;
+// whoever opened the pool closes it.
+func New(db *sql.DB) *Store { return &Store{db: db} }
 
 // ProviderFor returns the provider ID for a model.
 // This is useful for auth-store to resolve credentials by provider.

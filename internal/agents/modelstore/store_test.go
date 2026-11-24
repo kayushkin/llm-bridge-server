@@ -1,23 +1,22 @@
 package modelstore
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 )
 
+// tempStore gives the test a registry on a Postgres database of its own, made
+// from a template with the module migrated (postgresstorage/postgrestest).
 func tempStore(t *testing.T) *Store {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "test.db")
-	s, err := Open(path)
+	module, err := Module()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("module: %v", err)
 	}
-	t.Cleanup(func() { s.Close() })
-	return s
+	database := postgrestest.NewDatabase(t, module)
+	return New(database.Open(module))
 }
 
 // seedProviderWithModels registers one provider plus the given models.
@@ -526,17 +525,8 @@ func TestModelHealthIsUnknown(t *testing.T) {
 }
 
 func TestFreshDB(t *testing.T) {
-	// Ensure Open works on a completely fresh path
-	path := filepath.Join(t.TempDir(), "fresh.db")
-	s, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		t.Error("DB file should exist")
-	}
+	// A freshly migrated module is empty and takes the seed.
+	s := tempStore(t)
 
 	// Should be able to seed and use
 	if err := s.Seed(); err != nil {

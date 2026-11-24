@@ -3,7 +3,7 @@ package modelstore
 // Seed populates the store with known providers and models.
 //
 // ⚠️ Re-running this is NOT safe on a store someone has configured. It writes
-// every model below through AddModel, which is INSERT OR REPLACE, so each row
+// every model below through AddModel, which overwrites every column, so each row
 // listed here is replaced wholesale by the literal in this file: a priority the
 // user changed, a model they disabled, a cost they corrected, an alias they added
 // and a short name they set are all reset to whatever is written below. Unlike a

@@ -8,7 +8,7 @@ import (
 type ModelHealth struct {
 	Model          string    `json:"model"`
 	LastSuccessAt  time.Time `json:"last_success_at,omitempty"`
-	LastSuccessMs  int64     `json:"last_success_ms,omitempty"`  // response duration
+	LastSuccessMs  int64     `json:"last_success_ms,omitempty"` // response duration
 	AvgResponseMs  int64     `json:"avg_response_ms,omitempty"` // rolling average
 	LastErrorAt    time.Time `json:"last_error_at,omitempty"`
 	LastError      string    `json:"last_error,omitempty"`
@@ -54,33 +54,15 @@ func (h *ModelHealth) IsUnknown() bool {
 	return h == nil || (h.LastSuccessAt.IsZero() && h.LastErrorAt.IsZero())
 }
 
-// migrateHealth adds the model_health table if it doesn't exist.
-func (s *Store) migrateHealth() error {
-	_, err := s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS model_health (
-			model TEXT PRIMARY KEY,
-			last_success_at INTEGER DEFAULT 0,
-			last_success_ms INTEGER DEFAULT 0,
-			avg_response_ms INTEGER DEFAULT 0,
-			last_error_at INTEGER DEFAULT 0,
-			last_error TEXT DEFAULT '',
-			consecutive_errors INTEGER DEFAULT 0
-		);
-	`)
-	return err
-}
-
 // GetHealth returns the health record for a model.
 func (s *Store) GetHealth(model string) *ModelHealth {
-	s.migrateHealth()
-
 	h := &ModelHealth{Model: model}
 	var successAt, errorAt int64
 
 	err := s.db.QueryRow(`
 		SELECT last_success_at, last_success_ms, avg_response_ms,
 		       last_error_at, last_error, consecutive_errors
-		FROM model_health WHERE model = ?
+		FROM model_health WHERE model = $1
 	`, model).Scan(
 		&successAt, &h.LastSuccessMs, &h.AvgResponseMs,
 		&errorAt, &h.LastError, &h.ConsecutiveErr,
@@ -100,8 +82,6 @@ func (s *Store) GetHealth(model string) *ModelHealth {
 
 // RecordSuccess records a successful model response.
 func (s *Store) RecordSuccess(model string, durationMs int64) {
-	s.migrateHealth()
-
 	// Get existing avg for rolling average
 	existing := s.GetHealth(model)
 	avg := durationMs
@@ -113,28 +93,26 @@ func (s *Store) RecordSuccess(model string, durationMs int64) {
 	now := time.Now().Unix()
 	s.db.Exec(`
 		INSERT INTO model_health (model, last_success_at, last_success_ms, avg_response_ms, last_error_at, last_error, consecutive_errors)
-		VALUES (?, ?, ?, ?, 0, '', 0)
-		ON CONFLICT(model) DO UPDATE SET
-			last_success_at = ?,
-			last_success_ms = ?,
-			avg_response_ms = ?,
+		VALUES ($1, $2, $3, $4, 0, '', 0)
+		ON CONFLICT (model) DO UPDATE SET
+			last_success_at = excluded.last_success_at,
+			last_success_ms = excluded.last_success_ms,
+			avg_response_ms = excluded.avg_response_ms,
 			last_error_at = 0,
 			last_error = '',
 			consecutive_errors = 0
-	`, model, now, durationMs, avg, now, durationMs, avg)
+	`, model, now, durationMs, avg)
 }
 
 // RecordError records a failed model response.
 func (s *Store) RecordError(model string, errMsg string) {
-	s.migrateHealth()
-
 	now := time.Now().Unix()
 	s.db.Exec(`
 		INSERT INTO model_health (model, last_success_at, last_success_ms, avg_response_ms, last_error_at, last_error, consecutive_errors)
-		VALUES (?, 0, 0, 0, ?, ?, 1)
-		ON CONFLICT(model) DO UPDATE SET
-			last_error_at = ?,
-			last_error = ?,
-			consecutive_errors = consecutive_errors + 1
-	`, model, now, errMsg, now, errMsg)
+		VALUES ($1, 0, 0, 0, $2, $3, 1)
+		ON CONFLICT (model) DO UPDATE SET
+			last_error_at = excluded.last_error_at,
+			last_error = excluded.last_error,
+			consecutive_errors = model_health.consecutive_errors + 1
+	`, model, now, errMsg)
 }

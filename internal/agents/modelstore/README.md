@@ -2,7 +2,7 @@
 
 Centralized model registry for AI agents. Tracks providers, models, aliases, pricing, and health — shared across the [llm-bridge](https://github.com/kayushkin/llm-bridge) ecosystem and any other consumer.
 
-One SQLite database at `~/.config/model-store/store.db`. Import the Go library directly, use the `ms` CLI, or run `ms serve` for the HTTP API on `:8155` (what `model-store.service` does).
+It is a module of llm-bridge-server: its records live in Postgres (schema `models`, role `models_module`, built by `migrations/`), the server uses the library in process, and the HTTP routes the standalone `ms serve` answered on `:8155` are mounted at `/model-store/`, the same paths behind that prefix (`/model-store/api/models`, `/model-store/api/roles`…). `llm-bridge-server import-model-store -sqlite <file>` copies a standalone store's SQLite file into the module. The `ms` command line opens the module directly and needs `--postgres-url`, the bridge's `database.postgres_url`; the bridge must have started on it once, since that is what makes and migrates the module.
 
 ## Features
 
@@ -58,8 +58,7 @@ Requires API keys via environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KE
 ```go
 import ms "github.com/kayushkin/model-store"
 
-store, _ := ms.Open("")  // default path
-defer store.Close()
+store := ms.New(db)  // db: the module's pool, from postgresstorage.Open
 
 // List providers and models
 providers, _ := store.Providers()
@@ -95,39 +94,7 @@ result, _ := store.SyncProvider("anthropic", apiKey)
 
 ## Schema
 
-```sql
-CREATE TABLE providers (
-    id   TEXT PRIMARY KEY,     -- "anthropic", "openai", "google", ...
-    name TEXT NOT NULL          -- display name
-);
-
-CREATE TABLE models (
-    id          TEXT PRIMARY KEY,   -- "claude-sonnet-4-5-20250929"
-    provider    TEXT NOT NULL,      -- references providers(id)
-    name        TEXT NOT NULL,      -- display name
-    short_name  TEXT,              -- terse nickname for dense UI ("sonnet-4.5")
-    max_tokens  INTEGER,           -- context window
-    input_cost  REAL,              -- $ per million tokens
-    output_cost REAL,              -- $ per million tokens
-    enabled     INTEGER,           -- 1 = available, 0 = disabled
-    priority    INTEGER            -- failover order (lower = preferred)
-);
-
-CREATE TABLE model_aliases (
-    alias    TEXT PRIMARY KEY,     -- "sonnet", "haiku", "4o"
-    model_id TEXT NOT NULL         -- references models(id)
-);
-
-CREATE TABLE model_health (
-    model             TEXT PRIMARY KEY,
-    last_success_at   INTEGER,     -- unix timestamp
-    last_success_ms   INTEGER,     -- response duration
-    avg_response_ms   INTEGER,     -- exponential moving average
-    last_error_at     INTEGER,     -- unix timestamp
-    last_error        TEXT,
-    consecutive_errors INTEGER
-);
-```
+`migrations/0001_create_the_model_registry.sql` is the schema: `providers`, `models`, `model_aliases`, `model_roles`, `model_role_fallbacks`, `model_health` (unix seconds, 0 for never) and `usage`, the old daily token counts an orchestrator once wrote, kept by the import and read by nothing here. Text keys sort byte by byte, and providers and a model's aliases list in the order they were first written. Foreign keys are enforced, which the standalone SQLite store never did: a model needs its provider, and an alias, role or fallback its model.
 
 ## Part of the llm-bridge ecosystem
 
