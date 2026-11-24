@@ -1,0 +1,21 @@
+[Unit]
+Description=eval-store — judged runs of several models on a fixed set of real model calls
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/home/kayushkincom/bin/eval-store serve
+# Loopback only: cases hold real mail and the routes take no credential.
+Environment=EVAL_STORE_ADDR=127.0.0.1:8323
+Environment=EVAL_STORE_LLM_BRIDGE_URL=http://localhost:8160
+Environment=EVAL_STORE_MODEL_STORE_URL=http://localhost:8155
+Environment=EVAL_STORE_USAGE_STORE_URL=http://localhost:8185
+# LLMBRIDGE_SERVICE_TOKEN and EVAL_STORE_ORGANIZATION_ID
+# come from host-local drop-ins in eval-store.service.d/, never from this file.
+Environment=HOME=/home/kayushkincom
+WorkingDirectory=/home/kayushkincom
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
