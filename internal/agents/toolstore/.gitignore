@@ -1,0 +1,46 @@
+# Built binaries, anchored to the repo root. Without the leading slash this
+# would also match the SOURCE directory cmd/tool-store/, so a new .go file
+# added there would be silently unversionable — `git add` would refuse it while
+# `git status` stayed clean. The !*.go negation below cannot rescue that: git
+# will not re-include a file inside an excluded directory.
+/tool-store
+/bin/
+
+# Runtime data. The service's SQLite lives under ~/.config/tool-store/, but a
+# stray dev copy in the tree should never be committed.
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Byte-compiled Python from the sabotage scorers under scripts/. Every scorer
+# run rewrites these, so without the rule the tree is dirty the moment anyone
+# scores anything here — and a dirty tree is the signal an unattended pass reads
+# as "another agent is working in this repo, leave it alone". An accidental
+# artifact would be manufacturing the indicator we use to stay out of each
+# other's way; skill-store committed one and paid exactly that cost.
+__pycache__/
+*.pyc
+
+# Host-local config (machine-specific systemd drop-ins, dev secrets, etc.).
+# Put anything that should never leave this machine under ./.local/
+/.local/
+
+# Defensive: never accidentally commit credentials.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_rsa*
+credentials.*
+secrets.*
+
+# The globs above target secret *data* files, but they also match source
+# (credentials.* once swallowed llm-bridge-server's internal/harness/credentials.go,
+# leaving the committed tree unbuildable while `git status` stayed clean).
+# Source is never a secret. Files under /.local/ stay ignored — git cannot
+# re-include through an excluded directory.
+!*.go
+!*.sql
+__pycache__/
