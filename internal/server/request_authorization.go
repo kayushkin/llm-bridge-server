@@ -476,8 +476,8 @@ var routeAccessRules = map[string]routeAccessRule{
 	"GET /agents/{slug}":                 catalogRoute("one agent-store agent, unfiltered by can_run_as"),
 
 	// Identity-carrying store proxies.
-	kanbanProxyMountPrefix + "/":         {class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "kanban-store as the caller's principal"},
-	kanbanStoreProxyMountPrefix + "/":    {class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "kanban-store, rooted, as the caller's principal"},
+	kanbanProxyMountPrefix + "/":         {class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "kanban-store, in this process, as the caller's principal or the internal service"},
+	kanbanStoreProxyMountPrefix + "/":    {class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "kanban-store at its root, in this process, as the caller's principal or the internal service"},
 	mailstackProxyMountPrefix + "/":      {class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "mailstack as the caller's principal"},
 	referenceStoreProxyMountPrefix + "/": {class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "reference-store as the caller's principal"},
 

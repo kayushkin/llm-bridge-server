@@ -1,7 +1,14 @@
-// Package kanbanclient is a minimal HTTP client for kanban-store. bridge-server
-// uses it to answer which noteboard todo a session is linked to, to read that
-// card's text and links when it triages a worker's question, and to record on
-// the card's timeline that the card is waiting on an answer.
+// Package kanbanclient is kanban-store as this server reads and writes it: it
+// answers which noteboard todo a session is linked to, reads that card's text
+// and links when it triages a worker's question, records on the card's
+// timeline that the card is waiting on an answer, and reads a board's
+// defaults and classification.
+//
+// kanban-store runs in this process (internal/tasktracking/kanbanstore), and
+// every call here is served by its own handler with no socket between
+// (inprocesshttp), so each answer and refusal is exactly what the store's
+// routes give. A call is made as the internal service, unrestricted, unless
+// it names a principal, and then the store's board grants decide.
 //
 // kanban-store owns that link. A card id in kanban-store IS a noteboard item
 // id — cards have no rows of their own, only placements and links against the
@@ -17,60 +24,36 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
-	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/inprocesshttp"
+	kanbanapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/api"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// Client is a kanban-store reverse-lookup caller. Safe for concurrent use.
+// Client is kanban-store in this process. Safe for concurrent use.
 type Client struct {
 	baseURL string
 	http    *http.Client
 }
 
-// New constructs a Client. baseURL is the kanban-store root (e.g.
-// "http://localhost:8305").
-// ServiceTokenHeader is where kanban-store reads an internal service's token,
-// and ServiceTokenEnvironmentVariable is where this server's unit carries it.
-// kanban-store gates every route: without the token every lookup here is a 401,
-// and a signal is minted with no linked todo.
-const (
-	ServiceTokenHeader              = "X-Kanban-Store-Service-Token"
-	ServiceTokenEnvironmentVariable = "KANBAN_STORE_SERVICE_TOKEN"
-)
+// inProcessBaseURL is the address the client's requests are written to. No
+// request leaves the process, so it names nothing on the network.
+const inProcessBaseURL = "http://kanban-store.in-process"
 
-// serviceTokenTransport puts the token on every request this client makes, so a
-// lookup added later carries it too.
-type serviceTokenTransport struct {
-	token string
-	base  http.RoundTripper
+// New builds a client whose requests kanban-store's handler serves in this
+// process.
+func New(handler http.Handler) *Client {
+	return &Client{
+		baseURL: inProcessBaseURL,
+		http:    &http.Client{Transport: inprocesshttp.Transport{Handler: handler}},
+	}
 }
 
-func (t *serviceTokenTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	cloned := request.Clone(request.Context())
-	cloned.Header.Set(ServiceTokenHeader, t.token)
-	return t.base.RoundTrip(cloned)
-}
-
-// New builds a client that authenticates as an internal service with the token
-// in KANBAN_STORE_SERVICE_TOKEN. An empty token is left off rather than sent
-// blank, so kanban-store's 401 names the missing header.
-func New(baseURL string) *Client {
-	client := &Client{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		// Loopback HTTP against a SQLite reverse index — typically
-		// sub-millisecond. The timeout is a ceiling so a wedged store fails
-		// the lookup quickly instead of holding up whatever raised the
-		// signal.
-		http: &http.Client{Timeout: 3 * time.Second},
-	}
-	if token := os.Getenv(ServiceTokenEnvironmentVariable); token != "" {
-		client.http.Transport = &serviceTokenTransport{token: token, base: http.DefaultTransport}
-	}
-	return client
+// asInternalService is ctx carrying the internal service as the caller.
+func asInternalService(ctx context.Context) context.Context {
+	return kanbanapi.ContextWithCaller(ctx, kanbanapi.Caller{InternalService: true})
 }
 
 // entityCard is one row of GET /api/entities/{type}/{ref}/cards. The route
@@ -197,7 +180,7 @@ func (c *Client) PostCardEvent(ctx context.Context, cardID string, event CardEve
 		return fmt.Errorf("encode card event: %w", err)
 	}
 	endpoint := fmt.Sprintf("%s/api/cards/%s/events", c.baseURL, url.PathEscape(cardID))
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(payload)))
+	req, err := http.NewRequestWithContext(asInternalService(ctx), http.MethodPost, endpoint, strings.NewReader(string(payload)))
 	if err != nil {
 		return fmt.Errorf("build card event request: %w", err)
 	}
@@ -217,7 +200,7 @@ func (c *Client) PostCardEvent(ctx context.Context, cardID string, event CardEve
 // get performs one GET and returns the body of a 200, or an error naming
 // what was being looked up.
 func (c *Client) get(ctx context.Context, endpoint, what string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	req, err := http.NewRequestWithContext(asInternalService(ctx), http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build %s request: %w", what, err)
 	}
@@ -327,11 +310,6 @@ func (c *Client) EffectiveDefaults(ctx context.Context, boardID, cardID string, 
 	return &out, nil
 }
 
-// principalIDHeader is where kanban-store reads the principal a request acts
-// as. It is believed only without the service token, which wins when both
-// are sent — so a read as a principal goes out without the token.
-const principalIDHeader = "X-Principal-Id"
-
 // ErrBoardHasNoTaxonomy is a board kanban-store has, with no taxonomy set.
 var ErrBoardHasNoTaxonomy = errors.New("board has no taxonomy")
 
@@ -370,14 +348,16 @@ func (c *Client) BoardTaxonomy(ctx context.Context, boardID, principalID string)
 	return *classification.Taxonomy, strconv.FormatInt(classification.TaxonomyRevision, 10), nil
 }
 
-// getAsPrincipal is get with X-Principal-Id and without the service token.
+// getAsPrincipal is get made as principalID, whose board grants decide.
 func (c *Client) getAsPrincipal(ctx context.Context, endpoint, principalID, what string) ([]byte, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if principalID == "" {
+		return nil, fmt.Errorf("%s: a read as a principal names one", what)
+	}
+	request, err := http.NewRequestWithContext(kanbanapi.ContextWithCaller(ctx, kanbanapi.Caller{PrincipalID: principalID}), http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build %s request: %w", what, err)
 	}
-	request.Header.Set(principalIDHeader, principalID)
-	response, err := (&http.Client{Timeout: c.http.Timeout}).Do(request)
+	response, err := c.http.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("kanban-store %s: %w", what, err)
 	}

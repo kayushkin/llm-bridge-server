@@ -3,20 +3,7 @@ package server
 import (
 	"context"
 	"log"
-
-	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
 )
-
-// newKanbanClient builds the kanban-store client, or returns nil when no URL
-// is configured. Nil means the link lookup is off: every signal is minted
-// with an empty LinkedTodoID, which is the honest answer when the service
-// that owns the link cannot be asked.
-func newKanbanClient(baseURL string) *kanbanclient.Client {
-	if baseURL == "" {
-		return nil
-	}
-	return kanbanclient.New(baseURL)
-}
 
 // linkedTodoForSession resolves the noteboard todo this session is linked to,
 // for stamping onto a signal at mint time. Returns "" when there is no link,

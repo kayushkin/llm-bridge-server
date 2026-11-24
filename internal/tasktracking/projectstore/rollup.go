@@ -245,7 +245,7 @@ func (owners *Owners) ProjectCards(ctx context.Context, projectID string) ([]Pro
 		} `json:"item"`
 		WorkState *string `json:"work_state"`
 	}
-	if err := owners.getJSON(ctx, owners.KanbanStoreURL+"/api/entities/project/"+url.PathEscape(projectID)+"/cards", owners.kanbanHeaders(), &rows); err != nil {
+	if err := owners.getKanbanJSON(ctx, "/api/entities/project/"+url.PathEscape(projectID)+"/cards", &rows); err != nil {
 		return nil, fmt.Errorf("cards linked to %s: %w", projectID, err)
 	}
 	cards := []ProjectCard{}
