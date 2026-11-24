@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	peoplestore "github.com/kayushkin/people-store"
+	peoplestore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/peoplestore"
 )
 
 const allContacts = "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Alice Example\r\nN:Example;Alice;;;\r\n" +

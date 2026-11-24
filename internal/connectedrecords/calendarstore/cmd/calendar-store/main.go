@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	calendarstore "github.com/kayushkin/calendar-store"
+	calendarstore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/calendarstore"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 

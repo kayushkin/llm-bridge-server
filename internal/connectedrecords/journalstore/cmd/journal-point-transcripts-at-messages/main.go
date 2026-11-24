@@ -25,7 +25,7 @@ import (
 	"strings"
 	"time"
 
-	journalstore "github.com/kayushkin/journal-store"
+	journalstore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/journalstore"
 )
 
 // MovedTag marks an entry whose body now points at message-store.

@@ -11,7 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/kayushkin/journal-store/internal/transcripttext"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/journalstore/internal/transcripttext"
 )
 
 // PostsFile is where the export keeps the user's own posts, under

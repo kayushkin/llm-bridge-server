@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"time"
 
-	journalstore "github.com/kayushkin/journal-store"
+	journalstore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/journalstore"
 )
 
 // Post sends one batch. With dryRun the store counts and writes nothing.

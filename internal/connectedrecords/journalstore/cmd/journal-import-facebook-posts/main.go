@@ -18,9 +18,9 @@ import (
 	"os"
 	"path/filepath"
 
-	journalstore "github.com/kayushkin/journal-store"
-	"github.com/kayushkin/journal-store/internal/facebookexport"
-	"github.com/kayushkin/journal-store/internal/importclient"
+	journalstore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/journalstore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/journalstore/internal/facebookexport"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/journalstore/internal/importclient"
 )
 
 func main() {

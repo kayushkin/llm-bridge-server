@@ -7,7 +7,7 @@ import (
 	"time"
 	"unicode"
 
-	peoplestore "github.com/kayushkin/people-store"
+	peoplestore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/peoplestore"
 )
 
 // contactPhone is one TEL as the card wrote it and, when it could be put in

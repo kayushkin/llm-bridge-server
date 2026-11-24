@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	journalstore "github.com/kayushkin/journal-store"
+	journalstore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/journalstore"
 )
 
 // The whole path from a directory of made-up files to stored entries, run

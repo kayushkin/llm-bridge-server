@@ -31,7 +31,7 @@ import (
 	"strings"
 	"time"
 
-	journalstore "github.com/kayushkin/journal-store"
+	journalstore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/journalstore"
 	"github.com/teambition/rrule-go"
 )
 

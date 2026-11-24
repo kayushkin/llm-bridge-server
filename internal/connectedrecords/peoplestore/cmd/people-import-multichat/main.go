@@ -39,7 +39,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	peoplestore "github.com/kayushkin/people-store"
+	peoplestore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/peoplestore"
 )
 
 const authStoreProvider = "multichat"

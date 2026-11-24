@@ -21,9 +21,9 @@ import (
 	"os"
 	"time"
 
-	journalstore "github.com/kayushkin/journal-store"
-	"github.com/kayushkin/journal-store/internal/fileimport"
-	"github.com/kayushkin/journal-store/internal/importclient"
+	journalstore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/journalstore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/journalstore/internal/fileimport"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/journalstore/internal/importclient"
 )
 
 func main() {
