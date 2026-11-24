@@ -39,30 +39,6 @@ func (p *ProviderLimits) IsStale() bool {
 	return time.Now().Unix() > *p.StaleAfter
 }
 
-// migrateLimits creates the limit_snapshots table.
-func (s *Store) migrateLimits() error {
-	_, err := s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS limit_snapshots (
-			id             INTEGER PRIMARY KEY AUTOINCREMENT,
-			snapshot_at    INTEGER NOT NULL,
-			provider       TEXT NOT NULL,
-			window_key     TEXT NOT NULL,
-			used_percent   REAL NOT NULL,
-			window_minutes INTEGER,
-			resets_at      INTEGER,
-			plan_type      TEXT,
-			tier           TEXT,
-			source         TEXT NOT NULL,
-			raw_json       TEXT
-		);
-		CREATE INDEX IF NOT EXISTS idx_limit_snapshots_lookup
-			ON limit_snapshots(provider, window_key, snapshot_at DESC);
-		CREATE INDEX IF NOT EXISTS idx_limit_snapshots_at
-			ON limit_snapshots(snapshot_at DESC);
-	`)
-	return err
-}
-
 // SaveLimits persists a full provider snapshot. One row per window.
 // snapshot_at must be set on the input; if zero, time.Now() is used.
 func (s *Store) SaveLimits(p ProviderLimits, rawJSON []byte) error {
@@ -82,7 +58,7 @@ func (s *Store) SaveLimits(p ProviderLimits, rawJSON []byte) error {
 	stmt, err := tx.Prepare(`
 		INSERT INTO limit_snapshots
 			(snapshot_at, provider, window_key, used_percent, window_minutes, resets_at, plan_type, tier, source, raw_json)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 	`)
 	if err != nil {
 		return err
@@ -108,20 +84,22 @@ func (s *Store) SaveLimits(p ProviderLimits, rawJSON []byte) error {
 // Returns nil (no error) if no snapshot exists.
 func (s *Store) LatestLimits(provider string) (*ProviderLimits, error) {
 	// Find the snapshot_at of the most recent set of rows for this provider.
-	var snapAt int64
-	err := s.db.QueryRow(
-		`SELECT MAX(snapshot_at) FROM limit_snapshots WHERE provider = ?`, provider,
-	).Scan(&snapAt)
-	if err == sql.ErrNoRows || snapAt == 0 {
-		return nil, nil
-	}
-	if err != nil {
+	// MAX over no rows is NULL: a provider never read has no snapshot.
+	var newest sql.NullInt64
+	if err := s.db.QueryRow(
+		`SELECT MAX(snapshot_at) FROM limit_snapshots WHERE provider = $1`, provider,
+	).Scan(&newest); err != nil {
 		return nil, err
 	}
+	if !newest.Valid || newest.Int64 == 0 {
+		return nil, nil
+	}
+	snapAt := newest.Int64
 
 	rows, err := s.db.Query(`
 		SELECT window_key, used_percent, window_minutes, resets_at, plan_type, tier, source
-		FROM limit_snapshots WHERE provider = ? AND snapshot_at = ?
+		FROM limit_snapshots WHERE provider = $1 AND snapshot_at = $2
+		ORDER BY window_key
 	`, provider, snapAt)
 	if err != nil {
 		return nil, err
@@ -188,21 +166,21 @@ func (s *Store) HistoryLimits(f LimitHistoryFilter) ([]LimitHistoryRow, error) {
 		return nil, fmt.Errorf("provider is required")
 	}
 	q := `SELECT snapshot_at, window_key, used_percent, window_minutes, resets_at, plan_type, source
-	      FROM limit_snapshots WHERE provider = ?`
+	      FROM limit_snapshots WHERE provider = $1`
 	args := []interface{}{f.Provider}
 	if f.Window != "" {
-		q += " AND window_key = ?"
 		args = append(args, f.Window)
+		q += fmt.Sprintf(" AND window_key = $%d", len(args))
 	}
 	if f.Since > 0 {
-		q += " AND snapshot_at >= ?"
 		args = append(args, f.Since)
+		q += fmt.Sprintf(" AND snapshot_at >= $%d", len(args))
 	}
 	if f.Until > 0 {
-		q += " AND snapshot_at <= ?"
 		args = append(args, f.Until)
+		q += fmt.Sprintf(" AND snapshot_at <= $%d", len(args))
 	}
-	q += " ORDER BY snapshot_at ASC"
+	q += " ORDER BY snapshot_at ASC, id ASC"
 	if f.Limit > 0 {
 		q += fmt.Sprintf(" LIMIT %d", f.Limit)
 	}

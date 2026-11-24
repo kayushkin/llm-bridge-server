@@ -6,9 +6,7 @@ import (
 )
 
 // The spend tables are the money half of this store: what each API key cost,
-// what credit was bought, and therefore what is left. Measured on `main` with a
-// panic() at function entry, every function in this file except migrateSpend
-// left `go test ./...` green — nothing executed them at all.
+// what credit was bought, and therefore what is left.
 
 // day renders a unix second as the YYYY-MM-DD UTC key spend_daily is stored on,
 // so a test can say "three days ago" without duplicating the format string the
@@ -31,83 +29,6 @@ func saveKey(t *testing.T, s *Store, m KeyMeta) {
 	t.Helper()
 	if err := s.SaveKeyMeta(m); err != nil {
 		t.Fatalf("SaveKeyMeta(%s/%s): %v", m.Provider, m.APIKeyID, err)
-	}
-}
-
-// ---- containsAny ----
-
-func TestContainsAnyReportsWhichOfSeveralSubstringsIsPresent(t *testing.T) {
-	if !containsAny("CREATE TABLE spend_keys (total_usd_30d REAL)", "total_usd_24h", "total_usd_30d") {
-		t.Fatal("the second substring is present and containsAny said no")
-	}
-	if !containsAny("total_usd_24h", "total_usd_24h") {
-		t.Fatal("the only substring is present and containsAny said no")
-	}
-	if containsAny("CREATE TABLE spend_keys (fetched_at INTEGER)", "total_usd_24h", "total_usd_30d") {
-		t.Fatal("neither substring is present and containsAny said yes")
-	}
-}
-
-func TestContainsAnyWithNoSubstringsIsFalse(t *testing.T) {
-	// The empty case decides what migrateSpend does with a schema it was given
-	// nothing to look for: it must not read as a match and drop a live table.
-	if containsAny("anything at all") {
-		t.Fatal("containsAny with no substrings must be false, not vacuously true")
-	}
-}
-
-// ---- migrateSpend ----
-
-func TestMigrateSpendDropsTheSupersededTotalsLayout(t *testing.T) {
-	s := newTestStore(t)
-	if _, err := s.db.Exec(`DROP TABLE spend_keys`); err != nil {
-		t.Fatalf("drop: %v", err)
-	}
-	// The layout migrateSpend exists to remove: per-window totals frozen onto
-	// the key row instead of computed from spend_daily.
-	_, err := s.db.Exec(`
-		CREATE TABLE spend_keys (
-			provider TEXT NOT NULL, api_key_id TEXT NOT NULL,
-			total_usd_24h REAL, total_usd_7d REAL, total_usd_30d REAL,
-			fetched_at INTEGER NOT NULL,
-			PRIMARY KEY (provider, api_key_id));
-		INSERT INTO spend_keys VALUES ('anthropic', 'key_old', 1, 2, 3, 100);`)
-	if err != nil {
-		t.Fatalf("create old layout: %v", err)
-	}
-
-	if err := s.migrateSpend(); err != nil {
-		t.Fatalf("migrateSpend: %v", err)
-	}
-
-	// The old row is gone with the old table, and the new layout accepts a write.
-	saveKey(t, s, KeyMeta{Provider: "anthropic", APIKeyID: "key_new", APIKeyName: "new", FetchedAt: 7})
-	metas, err := s.ListKeyMeta("anthropic")
-	if err != nil {
-		t.Fatalf("ListKeyMeta: %v", err)
-	}
-	if len(metas) != 1 || metas[0].APIKeyID != "key_new" {
-		t.Fatalf("want only the new key after the drop, got %+v", metas)
-	}
-}
-
-func TestMigrateSpendKeepsTheCurrentLayoutAndItsRows(t *testing.T) {
-	s := newTestStore(t)
-	saveKey(t, s, KeyMeta{Provider: "anthropic", APIKeyID: "key_a", APIKeyName: "a", FetchedAt: 5})
-
-	// Re-running the migration on an up-to-date schema must not be destructive:
-	// Open() calls it on every start, so a drop here would wipe spend history
-	// on each restart.
-	if err := s.migrateSpend(); err != nil {
-		t.Fatalf("migrateSpend: %v", err)
-	}
-
-	metas, err := s.ListKeyMeta("anthropic")
-	if err != nil {
-		t.Fatalf("ListKeyMeta: %v", err)
-	}
-	if len(metas) != 1 || metas[0].APIKeyID != "key_a" {
-		t.Fatalf("re-running the migration lost the row: %+v", metas)
 	}
 }
 

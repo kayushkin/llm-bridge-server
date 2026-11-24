@@ -1,10 +1,11 @@
-package server
+package httpapi
 
 import (
 	"bytes"
 	"log"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A failed store read inside assembleProvider used to be invisible. Three of
@@ -41,11 +42,12 @@ func captureLog(t *testing.T) *bytes.Buffer {
 // it makes fails. This is measurement (a) from card 0e5d003c.
 func unreadableSpendServer(t *testing.T) *Server {
 	t.Helper()
-	srv, store := newSpendServer(t)
+	store, pool := newTestUsageStoreAndPool(t)
+	srv := New(store, nil, nil, nil, nil, time.Hour, SpendCollectors{})
 	saveMeta(t, store, "anthropic", "k1", "primary")
 	saveSpend(t, store, "anthropic", "k1", daysAgoDate(0), 250)
-	if err := store.Close(); err != nil {
-		t.Fatalf("Close store: %v", err)
+	if err := pool.Close(); err != nil {
+		t.Fatalf("Close the store's pool: %v", err)
 	}
 	return srv
 }

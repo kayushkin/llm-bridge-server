@@ -25,13 +25,13 @@ const (
 
 // Window names exposed in ProviderLimits.Windows.
 const (
-	WindowFiveHour      = "five_hour"
-	WindowSevenDay      = "seven_day"
-	WindowSevenDayOAuth = "seven_day_oauth_apps"
-	WindowSevenDayOpus  = "seven_day_opus"
+	WindowFiveHour       = "five_hour"
+	WindowSevenDay       = "seven_day"
+	WindowSevenDayOAuth  = "seven_day_oauth_apps"
+	WindowSevenDayOpus   = "seven_day_opus"
 	WindowSevenDaySonnet = "seven_day_sonnet"
 	WindowSevenDayCowork = "seven_day_cowork"
-	WindowExtraUsage    = "extra_usage"
+	WindowExtraUsage     = "extra_usage"
 )
 
 // rawWindow matches the wire format. Utilization is 0–100. resets_at is ISO-8601.

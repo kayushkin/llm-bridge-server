@@ -3,18 +3,8 @@ package usagestore
 import (
 	"database/sql"
 	"fmt"
-	"strings"
 	"time"
 )
-
-func containsAny(s string, subs ...string) bool {
-	for _, sub := range subs {
-		if strings.Contains(s, sub) {
-			return true
-		}
-	}
-	return false
-}
 
 // KeyMeta is the per-API-key metadata snapshot. One row per (provider,
 // api_key_id), upserted on every refresh. Daily spend lives in spend_daily —
@@ -50,55 +40,6 @@ type Topup struct {
 	CreatedAt  int64   `json:"created_at"`
 }
 
-// migrateSpend creates the spend tables. The old spend_keys layout had
-// columns total_usd_24h/7d/30d on the same row; we now compute totals from
-// spend_daily at read time, so drop the old table if it has those columns.
-func (s *Store) migrateSpend() error {
-	var oldSchema string
-	s.db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='spend_keys'`).Scan(&oldSchema)
-	if oldSchema != "" && containsAny(oldSchema, "total_usd_24h", "total_usd_30d") {
-		if _, err := s.db.Exec(`DROP TABLE spend_keys`); err != nil {
-			return fmt.Errorf("drop old spend_keys: %w", err)
-		}
-	}
-
-	_, err := s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS spend_keys (
-			provider       TEXT NOT NULL,
-			api_key_id     TEXT NOT NULL,
-			api_key_name   TEXT NOT NULL DEFAULT '',
-			api_key_hint   TEXT NOT NULL DEFAULT '',
-			api_key_status TEXT NOT NULL DEFAULT '',
-			raw_json       TEXT,
-			fetched_at     INTEGER NOT NULL,
-			PRIMARY KEY (provider, api_key_id)
-		);
-
-		CREATE TABLE IF NOT EXISTS spend_daily (
-			provider    TEXT NOT NULL,
-			api_key_id  TEXT NOT NULL,
-			date        TEXT NOT NULL,
-			total_usd   REAL NOT NULL,
-			fetched_at  INTEGER NOT NULL,
-			PRIMARY KEY (provider, api_key_id, date)
-		);
-		CREATE INDEX IF NOT EXISTS idx_spend_daily_provider_date
-			ON spend_daily(provider, date);
-
-		CREATE TABLE IF NOT EXISTS spend_topups (
-			id          INTEGER PRIMARY KEY AUTOINCREMENT,
-			provider    TEXT NOT NULL,
-			amount_usd  REAL NOT NULL,
-			occurred_at INTEGER NOT NULL,
-			note        TEXT NOT NULL DEFAULT '',
-			created_at  INTEGER NOT NULL
-		);
-		CREATE INDEX IF NOT EXISTS idx_spend_topups_lookup
-			ON spend_topups(provider, occurred_at ASC);
-	`)
-	return err
-}
-
 // SaveKeyMeta upserts the metadata + raw JSON for one API key.
 func (s *Store) SaveKeyMeta(m KeyMeta) error {
 	if m.Provider == "" || m.APIKeyID == "" {
@@ -110,7 +51,7 @@ func (s *Store) SaveKeyMeta(m KeyMeta) error {
 	_, err := s.db.Exec(`
 		INSERT INTO spend_keys
 			(provider, api_key_id, api_key_name, api_key_hint, api_key_status, raw_json, fetched_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT(provider, api_key_id) DO UPDATE SET
 			api_key_name   = excluded.api_key_name,
 			api_key_hint   = excluded.api_key_hint,
@@ -130,7 +71,7 @@ func (s *Store) SaveDailySpend(d DailySpend) error {
 	_, err := s.db.Exec(`
 		INSERT INTO spend_daily
 			(provider, api_key_id, date, total_usd, fetched_at)
-		VALUES (?, ?, ?, ?, ?)
+		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT(provider, api_key_id, date) DO UPDATE SET
 			total_usd  = excluded.total_usd,
 			fetched_at = excluded.fetched_at`,
@@ -144,7 +85,7 @@ func (s *Store) SaveDailySpend(d DailySpend) error {
 func (s *Store) ListKeyMeta(provider string) ([]KeyMeta, error) {
 	rows, err := s.db.Query(`
 		SELECT provider, api_key_id, api_key_name, api_key_hint, api_key_status, fetched_at
-		FROM spend_keys WHERE provider = ?
+		FROM spend_keys WHERE provider = $1
 		ORDER BY (api_key_status = 'active') DESC, api_key_name ASC`,
 		provider,
 	)
@@ -170,7 +111,7 @@ func (s *Store) ListKeyMeta(provider string) ([]KeyMeta, error) {
 func (s *Store) LatestKeyRaw(provider, apiKeyID string) (string, error) {
 	var raw sql.NullString
 	err := s.db.QueryRow(`
-		SELECT raw_json FROM spend_keys WHERE provider = ? AND api_key_id = ?`,
+		SELECT raw_json FROM spend_keys WHERE provider = $1 AND api_key_id = $2`,
 		provider, apiKeyID,
 	).Scan(&raw)
 	if err == sql.ErrNoRows {
@@ -192,13 +133,13 @@ func (s *Store) SumSpendSince(provider, apiKeyID string, sinceUnix int64) (float
 	if apiKeyID == "" {
 		err = s.db.QueryRow(`
 			SELECT COALESCE(SUM(total_usd), 0) FROM spend_daily
-			WHERE provider = ? AND date >= ?`,
+			WHERE provider = $1 AND date >= $2`,
 			provider, since,
 		).Scan(&total)
 	} else {
 		err = s.db.QueryRow(`
 			SELECT COALESCE(SUM(total_usd), 0) FROM spend_daily
-			WHERE provider = ? AND api_key_id = ? AND date >= ?`,
+			WHERE provider = $1 AND api_key_id = $2 AND date >= $3`,
 			provider, apiKeyID, since,
 		).Scan(&total)
 	}
@@ -213,7 +154,7 @@ func (s *Store) PerKeyTotals(provider string, sinceUnix int64) (map[string]float
 	since := time.Unix(sinceUnix, 0).UTC().Format("2006-01-02")
 	rows, err := s.db.Query(`
 		SELECT api_key_id, SUM(total_usd) FROM spend_daily
-		WHERE provider = ? AND date >= ?
+		WHERE provider = $1 AND date >= $2
 		GROUP BY api_key_id`,
 		provider, since,
 	)
@@ -250,22 +191,20 @@ func (s *Store) AddTopup(t Topup) (int64, error) {
 	if t.CreatedAt == 0 {
 		t.CreatedAt = time.Now().Unix()
 	}
-	res, err := s.db.Exec(`
+	var id int64
+	err := s.db.QueryRow(`
 		INSERT INTO spend_topups (provider, amount_usd, occurred_at, note, created_at)
-		VALUES (?, ?, ?, ?, ?)`,
+		VALUES ($1, $2, $3, $4, $5) RETURNING id`,
 		t.Provider, t.AmountUSD, t.OccurredAt, t.Note, t.CreatedAt,
-	)
-	if err != nil {
-		return 0, err
-	}
-	return res.LastInsertId()
+	).Scan(&id)
+	return id, err
 }
 
 // ListTopups returns top-ups for a provider, ordered earliest first.
 func (s *Store) ListTopups(provider string) ([]Topup, error) {
 	rows, err := s.db.Query(`
 		SELECT id, provider, amount_usd, occurred_at, note, created_at
-		FROM spend_topups WHERE provider = ?
+		FROM spend_topups WHERE provider = $1
 		ORDER BY occurred_at ASC, id ASC`,
 		provider,
 	)
@@ -289,6 +228,6 @@ func (s *Store) ListTopups(provider string) ([]Topup, error) {
 
 // DeleteTopup removes one top-up by ID. No-op if not found.
 func (s *Store) DeleteTopup(id int64) error {
-	_, err := s.db.Exec(`DELETE FROM spend_topups WHERE id = ?`, id)
+	_, err := s.db.Exec(`DELETE FROM spend_topups WHERE id = $1`, id)
 	return err
 }

@@ -1,58 +1,34 @@
-package server
+package httpapi
 
 import (
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/kayushkin/llm-bridge/servicesettings"
 	usagestore "github.com/kayushkin/llm-bridge-server/internal/agents/usagestore"
-	"github.com/kayushkin/llm-bridge-server/internal/agents/usagestore/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/usagestore/spend"
 )
 
 // The /api/usage/spend/keys mechanism is what the Usage page reads to answer
-// "what has this cost and what credit is left". Measured on `main` with a
-// panic() at function entry, every function exercised here left `go test ./...`
-// green — the census named assembleProvider and nothing executed any of them.
+// "what has this cost and what credit is left".
 
 func newSpendServer(t *testing.T) (*Server, *usagestore.Store) {
 	t.Helper()
-	store, err := usagestore.Open(filepath.Join(t.TempDir(), "usage.db"))
-	if err != nil {
-		t.Fatalf("Open store: %v", err)
-	}
-	t.Cleanup(func() { store.Close() })
-	return New(store, filepath.Join(t.TempDir(), "tokens.db"), nil, nil, nil, time.Hour, SpendCollectors{}, emptySettingsRegistry(t)), store
+	store := newTestUsageStore(t)
+	return New(store, nil, nil, nil, nil, time.Hour, SpendCollectors{}), store
 }
 
 // newConfiguredSpendServer carries a non-nil Anthropic collector, which is the
 // only thing that makes the anthropic account report itself as configured.
 func newConfiguredSpendServer(t *testing.T) (*Server, *usagestore.Store) {
 	t.Helper()
-	store, err := usagestore.Open(filepath.Join(t.TempDir(), "usage.db"))
-	if err != nil {
-		t.Fatalf("Open store: %v", err)
-	}
-	t.Cleanup(func() { store.Close() })
+	store := newTestUsageStore(t)
 	collectors := SpendCollectors{Anthropic: &spend.AnthropicKeyCollector{}}
-	return New(store, filepath.Join(t.TempDir(), "tokens.db"), nil, nil, nil, time.Hour, collectors, emptySettingsRegistry(t)), store
-}
-
-// emptySettingsRegistry is the registry New requires, built from an empty
-// environment: these tests exercise spend, not configuration.
-func emptySettingsRegistry(t *testing.T) *servicesettings.Registry {
-	t.Helper()
-	registry, err := config.NewSettingsRegistry(servicesettings.MapEnvironment(map[string]string{}))
-	if err != nil {
-		t.Fatalf("settings registry: %v", err)
-	}
-	return registry
+	return New(store, nil, nil, nil, nil, time.Hour, collectors), store
 }
 
 func daysAgoDate(n int) string {
@@ -858,37 +834,6 @@ func TestPersistAnthropicFailsLoudlyAndNamesTheKeyItChokedOn(t *testing.T) {
 }
 
 // ---- the surface every route sits behind ----
-
-func TestServeHTTPAnswersAPreflightWithoutReachingARoute(t *testing.T) {
-	srv, _ := newSpendServer(t)
-	rec := do(t, srv, "OPTIONS", "/api/usage/spend/keys", "")
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("want 204 for a preflight, got %d", rec.Code)
-	}
-	if rec.Body.Len() != 0 {
-		t.Fatalf("a preflight answered with a body: %s", rec.Body.String())
-	}
-}
-
-func TestServeHTTPAllowsTheBrowserToCallEveryMethodTheRoutesUse(t *testing.T) {
-	// The dashboard is served from another origin, so the routes are only
-	// reachable if these three headers are present — and DELETE is the one a
-	// GET/POST-only list would quietly drop.
-	srv, _ := newSpendServer(t)
-	rec := do(t, srv, "GET", "/api/usage/spend/keys", "")
-	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
-		t.Fatalf("Allow-Origin is %q", got)
-	}
-	allowed := rec.Header().Get("Access-Control-Allow-Methods")
-	for _, method := range []string{"GET", "POST", "DELETE", "OPTIONS"} {
-		if !strings.Contains(allowed, method) {
-			t.Fatalf("%s is missing from Allow-Methods %q", method, allowed)
-		}
-	}
-	if got := rec.Header().Get("Access-Control-Allow-Headers"); !strings.Contains(got, "Content-Type") {
-		t.Fatalf("Allow-Headers is %q, and the top-up POST sends JSON", got)
-	}
-}
 
 func TestHealthAnswersOK(t *testing.T) {
 	srv, _ := newSpendServer(t)

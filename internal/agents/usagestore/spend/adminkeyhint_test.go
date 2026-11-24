@@ -88,7 +88,7 @@ func TestAdminKeyHintMasksRatherThanCutsAtTheThresholdItself(t *testing.T) {
 // TestAShortAdminKeyDoesNotReachTheWire is the consequence assertion. The hint
 // is published as the admin_key_hint field of GET /api/spend/keys on :8185, so
 // an unmasked short key is served as JSON by a running service rather than
-// merely returned. internal/server cannot be imported here because it imports
+// merely returned. httpapi cannot be imported here because it imports
 // this package, so the mirror struct below carries the same field name and tag.
 func TestAShortAdminKeyDoesNotReachTheWire(t *testing.T) {
 	wire := struct {

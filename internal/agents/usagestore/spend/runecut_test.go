@@ -65,7 +65,7 @@ func TestAdminKeyHintNeverSplitsARuneAtEitherCut(t *testing.T) {
 // (internal/server.ProviderAccount), and encoding/json substitutes U+FFFD for
 // invalid UTF-8 rather than returning an error — so the damage is silent and
 // lands on the wire, not in this package. The mirror struct below carries the
-// same field name and tag; internal/server cannot be imported here because it
+// same field name and tag; httpapi cannot be imported here because it
 // imports this package.
 func TestAdminKeyHintReachesTheWireAsValidUTF8(t *testing.T) {
 	wire := struct {

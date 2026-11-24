@@ -1,40 +1,41 @@
-package server
+// Package httpapi serves usage-store's routes: subscription limits, per-key
+// spend and top-ups, and the old token totals. The server mounts it under
+// /usage-store/ and hands it each request with that prefix taken off, so the
+// paths are the ones the standalone service answered.
+package httpapi
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
-	"github.com/kayushkin/llm-bridge/servicesettings"
 	usagestore "github.com/kayushkin/llm-bridge-server/internal/agents/usagestore"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/usagestore/anthropic"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/usagestore/boundedtext"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/usagestore/codex"
-	"github.com/kayushkin/llm-bridge-server/internal/agents/usagestore/internal/boundedtext"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/usagestore/spend"
-
-	_ "modernc.org/sqlite"
 )
 
-// Server exposes usage-store data over HTTP. All routes live under /api/usage.
+// Server answers usage-store's routes. All but /health live under /api/usage.
 type Server struct {
 	store          *usagestore.Store
-	tokensDBPath   string
+	tokenUsage     TokenUsageReader
 	anthropic      *anthropic.Collector
 	codex          *codex.Reader
 	limitsWatch    LimitsWatch
 	limitsStaleAge time.Duration
 	spendAnthropic *spend.AnthropicKeyCollector // nil when no admin key was discovered
-	settings       *servicesettings.Registry
 	mux            *http.ServeMux
 
-	// Cached per-provider admin-key hint from the most recent spend fetch.
-	// Updated by SaveAdminHint; the server reads it when assembling the
-	// /spend/keys response. Empty until first fetch completes.
-	adminHints map[string]string
+	// The per-provider admin-key hint from the most recent spend fetch,
+	// written by the spend refresher and read by /spend/keys. Empty until the
+	// first fetch completes.
+	adminHintsMutex sync.Mutex
+	adminHints      map[string]string
 }
 
 // LimitsWatch is told when the usage page is being looked at.
@@ -42,26 +43,41 @@ type LimitsWatch interface {
 	MarkWatched()
 }
 
+// TokenUsageTotals is one agent, orchestrator and model's token totals over a
+// period, as GET /api/usage answers them.
+type TokenUsageTotals struct {
+	Agent        string  `json:"agent"`
+	Orchestrator string  `json:"orchestrator"`
+	Model        string  `json:"model"`
+	Messages     int     `json:"messages"`
+	InputTokens  int64   `json:"input_tokens"`
+	OutputTokens int64   `json:"output_tokens"`
+	TotalTokens  int64   `json:"total_tokens"`
+	CostUSD      float64 `json:"cost_usd"`
+}
+
+// TokenUsageReader reads the daily token counts an older orchestrator wrote
+// into model-store: the totals of each agent, orchestrator and model over the
+// last days days, the largest first.
+type TokenUsageReader interface {
+	TokenUsageOverTheLastDays(days int) ([]TokenUsageTotals, error)
+}
+
 type SpendCollectors struct {
 	Anthropic *spend.AnthropicKeyCollector
 }
 
 // New builds the server. limitsStaleAge is how old a limits snapshot may be
-// before responses mark it stale. settings is what GET /settings describes; a
-// nil one panics here, at boot, rather than at the first read of the route.
-func New(s *usagestore.Store, tokensDBPath string, ant *anthropic.Collector, cx *codex.Reader, limitsWatch LimitsWatch, limitsStaleAge time.Duration, sc SpendCollectors, settings *servicesettings.Registry) *Server {
-	if settings == nil {
-		panic("usage-store: server.New needs the settings registry that GET /settings serves")
-	}
+// before responses mark it stale. cx is nil when codex limits are off.
+func New(s *usagestore.Store, tokenUsage TokenUsageReader, ant *anthropic.Collector, cx *codex.Reader, limitsWatch LimitsWatch, limitsStaleAge time.Duration, sc SpendCollectors) *Server {
 	srv := &Server{
 		store:          s,
-		tokensDBPath:   tokensDBPath,
+		tokenUsage:     tokenUsage,
 		anthropic:      ant,
 		codex:          cx,
 		limitsWatch:    limitsWatch,
 		limitsStaleAge: limitsStaleAge,
 		spendAnthropic: sc.Anthropic,
-		settings:       settings,
 		adminHints:     map[string]string{},
 		mux:            http.NewServeMux(),
 	}
@@ -72,7 +88,33 @@ func New(s *usagestore.Store, tokensDBPath string, ant *anthropic.Collector, cx 
 // SaveAdminHint records the per-provider admin-key partial-hint discovered on
 // the latest fetch. Called by the spend refresher after a successful Fetch.
 func (s *Server) SaveAdminHint(provider, hint string) {
+	s.adminHintsMutex.Lock()
+	defer s.adminHintsMutex.Unlock()
 	s.adminHints[provider] = hint
+}
+
+func (s *Server) adminHint(provider string) string {
+	s.adminHintsMutex.Lock()
+	defer s.adminHintsMutex.Unlock()
+	return s.adminHints[provider]
+}
+
+// RoutePatterns are the patterns routes registers, which the server mounts
+// one by one under /usage-store/.
+var RoutePatterns = []string{
+	"GET /api/usage",
+	"GET /api/usage/limits",
+	"GET /api/usage/limits/{provider}",
+	"GET /api/usage/limits/{provider}/history",
+	"POST /api/usage/limits/refresh",
+	"POST /api/usage/limits/watch",
+	"GET /api/usage/spend/keys",
+	"GET /api/usage/spend/keys/{provider}/{api_key_id}/raw",
+	"POST /api/usage/spend/refresh",
+	"GET /api/usage/spend/topups",
+	"POST /api/usage/spend/topups",
+	"DELETE /api/usage/spend/topups/{id}",
+	"GET /health",
 }
 
 func (s *Server) routes() {
@@ -89,81 +131,30 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/usage/spend/topups", s.handleAddTopup)
 	s.mux.HandleFunc("DELETE /api/usage/spend/topups/{id}", s.handleDeleteTopup)
 	s.mux.HandleFunc("GET /health", s.handleHealth)
-	// Read-only, and as open as every other route. PUT /settings/{key} is not
-	// mounted: no setting is Editable, so there is nothing a write could change.
-	s.mux.Handle("GET /settings", servicesettings.Handler(s.settings, "/settings"))
 }
 
+// ServeHTTP answers one request whose path has no /usage-store prefix.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-	if r.Method == "OPTIONS" {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
 	s.mux.ServeHTTP(w, r)
 }
 
 // ---- token-usage aggregates (legacy) ----
 
+// handleUsage answers the totals over the last day, week and month.
 func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
-	db, err := sql.Open("sqlite", s.tokensDBPath+"?mode=ro")
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, fmt.Errorf("open tokens db: %w", err))
+	if s.tokenUsage == nil {
+		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("this server has no model-store to read token usage from"))
 		return
 	}
-	defer db.Close()
-
-	type stats struct {
-		Agent        string  `json:"agent"`
-		Orchestrator string  `json:"orchestrator"`
-		Model        string  `json:"model"`
-		Messages     int     `json:"messages"`
-		InputTokens  int64   `json:"input_tokens"`
-		OutputTokens int64   `json:"output_tokens"`
-		TotalTokens  int64   `json:"total_tokens"`
-		CostUSD      float64 `json:"cost_usd"`
-	}
-
-	// The projection and the grouping must apply the same COALESCE. Grouping on the
-	// raw column while projecting the substitute splits `orchestrator IS NULL` rows
-	// and literal 'inber' rows into two groups that both render as "inber", so one
-	// agent/orchestrator/model appears twice with its totals divided between them.
-	queryPeriod := func(days int) ([]stats, error) {
-		query := `SELECT agent, COALESCE(orchestrator, 'inber'), model,
-			SUM(input_tokens), SUM(output_tokens), SUM(requests), COALESCE(SUM(cost_usd), 0)
-			FROM usage WHERE date >= date('now', ?)
-			GROUP BY agent, COALESCE(orchestrator, 'inber'), model
-			ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC`
-		rows, err := db.Query(query, fmt.Sprintf("-%d days", days))
-		if err != nil {
-			return nil, fmt.Errorf("period query (%d days): %w", days, err)
-		}
-		defer rows.Close()
-
-		out := []stats{}
-		for rows.Next() {
-			var u stats
-			if err := rows.Scan(&u.Agent, &u.Orchestrator, &u.Model,
-				&u.InputTokens, &u.OutputTokens, &u.Messages, &u.CostUSD); err != nil {
-				return nil, fmt.Errorf("scan usage row (%d days): %w", days, err)
-			}
-			u.TotalTokens = u.InputTokens + u.OutputTokens
-			out = append(out, u)
-		}
-		if err := rows.Err(); err != nil {
-			return nil, fmt.Errorf("iterate usage rows (%d days): %w", days, err)
-		}
-		return out, nil
-	}
-
-	periods := map[string]interface{}{}
+	periods := map[string][]TokenUsageTotals{}
 	for name, days := range map[string]int{"day": 1, "week": 7, "month": 30} {
-		rows, err := queryPeriod(days)
+		rows, err := s.tokenUsage.TokenUsageOverTheLastDays(days)
 		if err != nil {
-			writeErr(w, http.StatusInternalServerError, err)
+			writeErr(w, http.StatusInternalServerError, fmt.Errorf("period query (%d days): %w", days, err))
 			return
+		}
+		if rows == nil {
+			rows = []TokenUsageTotals{}
 		}
 		periods[name] = rows
 	}
@@ -350,7 +341,7 @@ func (s *Server) perKeyTotalsLoggingReadFailure(provider, window string, sinceUn
 func (s *Server) assembleProvider(provider string, configured bool) ProviderAccount {
 	out := ProviderAccount{
 		Configured:   configured,
-		AdminKeyHint: s.adminHints[provider],
+		AdminKeyHint: s.adminHint(provider),
 		Topups:       []usagestore.Topup{},
 		Keys:         []KeyRow{},
 	}
