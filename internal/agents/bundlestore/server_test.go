@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// These are the first tests in this repo to go through RegisterHandlers. Until
+// These are the first tests in this repo to go through the route handlers. Until
 // they were written, every route in server.go was executed by nothing: a
 // panic() at the first line of handler.setEnabled left `go test ./...` green.
 //
@@ -22,7 +22,18 @@ func newTestServer(t *testing.T) (*httptest.Server, *Store) {
 	t.Helper()
 	s := openTest(t)
 	mux := http.NewServeMux()
-	RegisterHandlers(mux, s)
+	h := NewHandlers(s)
+	// The patterns the server mounts behind its prefix.
+	mux.HandleFunc("GET /health", h.Health)
+	mux.HandleFunc("GET /bundles", h.ListBundles)
+	mux.HandleFunc("POST /bundles", h.UpsertBundle)
+	mux.HandleFunc("GET /bundles/{id}", h.GetBundle)
+	mux.HandleFunc("DELETE /bundles/{id}", h.DeleteBundle)
+	mux.HandleFunc("POST /bundles/{id}/enable", h.EnableBundle)
+	mux.HandleFunc("POST /bundles/{id}/disable", h.DisableBundle)
+	mux.HandleFunc("GET /bundles/by-name/{name}", h.GetBundleByName)
+	mux.HandleFunc("GET /member-effects", h.MemberEffects)
+	mux.HandleFunc("POST /resolve", h.Resolve)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv, s
@@ -50,7 +61,7 @@ func post(t *testing.T, srv *httptest.Server, path string) (int, string) {
 // on line 136 and nothing else.
 func storedEnabled(t *testing.T, s *Store, id int64) bool {
 	t.Helper()
-	b, err := s.GetBundle(id)
+	b, err := s.GetBundle(testContext, id)
 	if err != nil {
 		t.Fatalf("get bundle %d: %v", id, err)
 	}

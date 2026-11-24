@@ -1,3 +1,7 @@
+-- The schema of the standalone bundle-store's SQLite file, as its last
+-- release wrote it, for the import tests. The live module's schema is
+-- migrations/0001_create_bundles_and_members.sql.
+
 -- bundle-store schema
 -- Curated "bundles": named, inheritable sets of {skills, tools} (plus optional
 -- model/effort defaults) selected for a session by repo + task tags. A bundle

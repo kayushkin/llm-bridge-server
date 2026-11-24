@@ -8,7 +8,7 @@ import (
 
 func mustUpsert(t *testing.T, s *Store, b *Bundle) {
 	t.Helper()
-	if _, err := s.UpsertBundle(b); err != nil {
+	if _, err := s.UpsertBundle(testContext, b); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -70,7 +70,7 @@ func seed(t *testing.T, s *Store) {
 func TestResolveSelectsByTagAndInherits(t *testing.T) {
 	s := openTest(t)
 	seed(t, s)
-	r, err := Resolve(s, ResolveRequest{RepoTags: []string{"go", "react"}})
+	r, err := Resolve(testContext, s, ResolveRequest{RepoTags: []string{"go", "react"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestResolveSelectsByTagAndInherits(t *testing.T) {
 func TestResolveReturnsOwningStoreIDs(t *testing.T) {
 	s := openTest(t)
 	seed(t, s)
-	r, err := Resolve(s, ResolveRequest{RepoTags: []string{"react"}})
+	r, err := Resolve(testContext, s, ResolveRequest{RepoTags: []string{"react"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestResolveDedupesOnIDNotName(t *testing.T) {
 		{Kind: MemberSkill, ID: 4, Name: "claude-api"},   // the same skill again
 		{Kind: MemberSkill, ID: 341, Name: "claude-api"}, // antigravity's, a different skill
 	}})
-	r, err := Resolve(s, ResolveRequest{RepoTags: []string{"x"}})
+	r, err := Resolve(testContext, s, ResolveRequest{RepoTags: []string{"x"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestResolveDedupesOnIDNotName(t *testing.T) {
 func TestResolveConditionGateFires(t *testing.T) {
 	s := openTest(t)
 	seed(t, s)
-	r, err := Resolve(s, ResolveRequest{RepoTags: []string{"react"}, TaskTags: []string{"perf"}})
+	r, err := Resolve(testContext, s, ResolveRequest{RepoTags: []string{"react"}, TaskTags: []string{"perf"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestResolveConditionGateFires(t *testing.T) {
 func TestResolveBaseAlwaysApplies(t *testing.T) {
 	s := openTest(t)
 	seed(t, s)
-	r, err := Resolve(s, ResolveRequest{RepoTags: []string{"haskell-unknown"}})
+	r, err := Resolve(testContext, s, ResolveRequest{RepoTags: []string{"haskell-unknown"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,13 +177,13 @@ func TestResolveCycleDetected(t *testing.T) {
 	s := openTest(t)
 	mustUpsert(t, s, &Bundle{Name: "b", Enabled: true})
 	mustUpsert(t, s, &Bundle{Name: "a", Extends: "b", MatchTags: []string{"x"}, Enabled: true})
-	a, err := s.GetBundleByName("a")
+	a, err := s.GetBundleByName(testContext, "a")
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeBehindTheAPI(t, s, `UPDATE bundles SET extends_id=? WHERE name='b'`, a.ID)
+	writeBehindTheAPI(t, s, `UPDATE bundles SET extends_id=$1 WHERE name='b'`, a.ID)
 
-	_, err = Resolve(s, ResolveRequest{RepoTags: []string{"x"}})
+	_, err = Resolve(testContext, s, ResolveRequest{RepoTags: []string{"x"}})
 	if err == nil {
 		t.Fatal("expected inheritance cycle error")
 	}
@@ -197,9 +197,10 @@ func TestResolveCycleDetected(t *testing.T) {
 func TestResolveMissingParentErrors(t *testing.T) {
 	s := openTest(t)
 	mustUpsert(t, s, &Bundle{Name: "a", MatchTags: []string{"x"}, Enabled: true})
+	dropTheParentForeignKey(t, s)
 	writeBehindTheAPI(t, s, `UPDATE bundles SET extends_id=999999 WHERE name='a'`)
 
-	_, err := Resolve(s, ResolveRequest{RepoTags: []string{"x"}})
+	_, err := Resolve(testContext, s, ResolveRequest{RepoTags: []string{"x"}})
 	if err == nil {
 		t.Fatal("expected missing-parent error")
 	}
@@ -221,14 +222,14 @@ func TestRenamingAParentDoesNotStrandItsChildren(t *testing.T) {
 	// exactly why the stored link must not be the name.
 	writeBehindTheAPI(t, s, `UPDATE bundles SET name='base-renamed' WHERE name='base'`)
 
-	r, err := Resolve(s, ResolveRequest{RepoTags: []string{"react"}})
+	r, err := Resolve(testContext, s, ResolveRequest{RepoTags: []string{"react"}})
 	if err != nil {
 		t.Fatalf("renaming a parent broke resolution for its children: %v", err)
 	}
 	if !hasBundle(r.Bundles, "base-renamed") {
 		t.Fatalf("the renamed parent must still contribute: %+v", r.Bundles)
 	}
-	child, err := s.GetBundleByName("react")
+	child, err := s.GetBundleByName(testContext, "react")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,11 +243,11 @@ func TestRenamingAParentDoesNotStrandItsChildren(t *testing.T) {
 func TestResolveByExplicitBundleIDs(t *testing.T) {
 	s := openTest(t)
 	seed(t, s)
-	goService, err := s.GetBundleByName("go-service")
+	goService, err := s.GetBundleByName(testContext, "go-service")
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := Resolve(s, ResolveRequest{BundleIDs: []int64{goService.ID}, RepoTags: []string{"react"}})
+	r, err := Resolve(testContext, s, ResolveRequest{BundleIDs: []int64{goService.ID}, RepoTags: []string{"react"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,17 +265,17 @@ func TestResolveByExplicitBundleIDs(t *testing.T) {
 func TestResolveByUnknownOrDisabledBundleIDIsLoud(t *testing.T) {
 	s := openTest(t)
 	seed(t, s)
-	if _, err := Resolve(s, ResolveRequest{BundleIDs: []int64{999999}}); !errors.Is(err, ErrBundleNotApplicable) {
+	if _, err := Resolve(testContext, s, ResolveRequest{BundleIDs: []int64{999999}}); !errors.Is(err, ErrBundleNotApplicable) {
 		t.Fatalf("unknown id: want ErrBundleNotApplicable, got %v", err)
 	}
-	goService, err := s.GetBundleByName("go-service")
+	goService, err := s.GetBundleByName(testContext, "go-service")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetEnabled(goService.ID, false); err != nil {
+	if err := s.SetEnabled(testContext, goService.ID, false); err != nil {
 		t.Fatal(err)
 	}
-	_, err = Resolve(s, ResolveRequest{BundleIDs: []int64{goService.ID}})
+	_, err = Resolve(testContext, s, ResolveRequest{BundleIDs: []int64{goService.ID}})
 	if !errors.Is(err, ErrBundleNotApplicable) || !strings.Contains(err.Error(), "disabled") {
 		t.Fatalf("disabled id: want ErrBundleNotApplicable naming disabled, got %v", err)
 	}

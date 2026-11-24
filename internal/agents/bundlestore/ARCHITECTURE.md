@@ -98,8 +98,8 @@ emits tags; skill-store needs tag filtering exposed.
   name kept alongside for display — skill-store carries 13 SKILL.md names from two
   sources each, and installs only by `POST /skills/{id}/install`, so a name is neither
   unique nor actionable. Nothing in bundle-store turns a name into an id: a writer gives
-  the id. `bundle-store -check-members` reads the stored bundles and confirms each member
-  id still exists in its owning store; `deploy.sh` runs it before stopping the service.
+  the id. `CheckMembers` compares the stored bundles with the rows each owning store
+  holds and reports every member id that store no longer carries.
 
 ## Phasing
 
@@ -113,6 +113,6 @@ emits tags; skill-store needs tag filtering exposed.
 
 ## Status
 
-Both stores are built, tested and running as systemd user services. llm-bridge-server
-calls `/resolve` with `bundle_ids` when it starts a session with a chosen bundle, and
-applies the result. Selection by repo and task tags at session start is not wired yet.
+bundle-store is now a module of llm-bridge-server, kept in Postgres and mounted at
+`/bundle-store/`; the server resolves a session's `bundle_id` in process when it starts
+the session, and applies the result. Selection by repo and task tags at session start is not wired yet.

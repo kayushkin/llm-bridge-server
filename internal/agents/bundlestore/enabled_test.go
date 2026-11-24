@@ -18,10 +18,10 @@ func TestSetEnabledTogglesInBothDirections(t *testing.T) {
 	b := &Bundle{Name: "go-service", MatchTags: []string{"go"}, Enabled: true}
 	mustUpsert(t, s, b)
 
-	if err := s.SetEnabled(b.ID, false); err != nil {
+	if err := s.SetEnabled(testContext, b.ID, false); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.GetBundle(b.ID)
+	got, err := s.GetBundle(testContext, b.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,10 +29,10 @@ func TestSetEnabledTogglesInBothDirections(t *testing.T) {
 		t.Fatal("SetEnabled(false) left the bundle enabled")
 	}
 
-	if err := s.SetEnabled(b.ID, true); err != nil {
+	if err := s.SetEnabled(testContext, b.ID, true); err != nil {
 		t.Fatal(err)
 	}
-	got, err = s.GetBundle(b.ID)
+	got, err = s.GetBundle(testContext, b.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +46,7 @@ func TestSetEnabledTogglesInBothDirections(t *testing.T) {
 // above it would report success for a bundle that does not exist.
 func TestSetEnabledOnAMissingBundleIsNotFound(t *testing.T) {
 	s := openTest(t)
-	err := s.SetEnabled(4242, false)
+	err := s.SetEnabled(testContext, 4242, false)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("got %v, want ErrNotFound — a zero-row UPDATE is not an error to SQLite, "+
 			"so this can only come from the RowsAffected check", err)
@@ -60,7 +60,7 @@ func TestSetEnabledOnAMissingBundleIsNotFound(t *testing.T) {
 // bundle that does not exist answered nil.
 func TestDeleteBundleOnAMissingBundleIsNotFound(t *testing.T) {
 	s := openTest(t)
-	err := s.DeleteBundle(4242)
+	err := s.DeleteBundle(testContext, 4242)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("got %v, want ErrNotFound — a DELETE that matches no row is not an error to SQLite", err)
 	}
@@ -73,12 +73,12 @@ func TestSetEnabledStampsUpdatedAt(t *testing.T) {
 	// Move the stored timestamp into the past behind the API so the assertion
 	// does not depend on the clock ticking between two calls in the same
 	// millisecond.
-	writeBehindTheAPI(t, s, `UPDATE bundles SET updated_at=1 WHERE id=?`, b.ID)
+	writeBehindTheAPI(t, s, `UPDATE bundles SET updated_at=1 WHERE id=$1`, b.ID)
 
-	if err := s.SetEnabled(b.ID, false); err != nil {
+	if err := s.SetEnabled(testContext, b.ID, false); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.GetBundle(b.ID)
+	got, err := s.GetBundle(testContext, b.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,14 +109,14 @@ func TestSetEnabledChangesNothingButTheFlagOnOneRow(t *testing.T) {
 	sibling := &Bundle{Name: "base", DisplayName: "Base", Enabled: true}
 	mustUpsert(t, s, sibling)
 
-	before, err := s.GetBundle(target.ID)
+	before, err := s.GetBundle(testContext, target.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetEnabled(target.ID, false); err != nil {
+	if err := s.SetEnabled(testContext, target.ID, false); err != nil {
 		t.Fatal(err)
 	}
-	after, err := s.GetBundle(target.ID)
+	after, err := s.GetBundle(testContext, target.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func TestSetEnabledChangesNothingButTheFlagOnOneRow(t *testing.T) {
 		t.Fatalf("created_at moved: %d -> %d", before.CreatedAt, after.CreatedAt)
 	}
 
-	other, err := s.GetBundle(sibling.ID)
+	other, err := s.GetBundle(testContext, sibling.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,11 +153,11 @@ func TestDisablingHidesTheBundleFromTheEnabledOnlyListingAndNowhereElse(t *testi
 	b := &Bundle{Name: "go-service", MatchTags: []string{"go"}, Enabled: true}
 	mustUpsert(t, s, b)
 
-	if err := s.SetEnabled(b.ID, false); err != nil {
+	if err := s.SetEnabled(testContext, b.ID, false); err != nil {
 		t.Fatal(err)
 	}
 
-	enabled, err := s.ListBundles(ListFilter{EnabledOnly: true})
+	enabled, err := s.ListBundles(testContext, ListFilter{EnabledOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func TestDisablingHidesTheBundleFromTheEnabledOnlyListingAndNowhereElse(t *testi
 		}
 	}
 
-	all, err := s.ListBundles(ListFilter{})
+	all, err := s.ListBundles(testContext, ListFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestADisabledBundleContributesNothingToResolve(t *testing.T) {
 	}
 	mustUpsert(t, s, react)
 
-	resp, err := Resolve(s, ResolveRequest{RepoTags: []string{"react"}})
+	resp, err := Resolve(testContext, s, ResolveRequest{RepoTags: []string{"react"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,10 +208,10 @@ func TestADisabledBundleContributesNothingToResolve(t *testing.T) {
 		t.Fatalf("fixture is broken: enabled bundle did not contribute (%+v)", resp)
 	}
 
-	if err := s.SetEnabled(react.ID, false); err != nil {
+	if err := s.SetEnabled(testContext, react.ID, false); err != nil {
 		t.Fatal(err)
 	}
-	resp, err = Resolve(s, ResolveRequest{RepoTags: []string{"react"}})
+	resp, err = Resolve(testContext, s, ResolveRequest{RepoTags: []string{"react"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,10 +255,10 @@ func TestADisabledParentStillContributesThroughInheritance(t *testing.T) {
 		Members:   []Member{{Kind: MemberTool, ID: toolPlaywright, Name: "playwright"}},
 	})
 
-	if err := s.SetEnabled(base.ID, false); err != nil {
+	if err := s.SetEnabled(testContext, base.ID, false); err != nil {
 		t.Fatal(err)
 	}
-	resp, err := Resolve(s, ResolveRequest{RepoTags: []string{"react"}})
+	resp, err := Resolve(testContext, s, ResolveRequest{RepoTags: []string{"react"}})
 	if err != nil {
 		t.Fatal(err)
 	}

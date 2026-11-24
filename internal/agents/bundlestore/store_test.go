@@ -1,56 +1,62 @@
 package bundlestore
 
 import (
-	"database/sql"
+	"context"
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 )
 
+// testContext is the context every store call in these tests runs under.
+var testContext = context.Background()
+
+// openTest gives the test a store on a Postgres database of its own, made from
+// a template with the module migrated (postgresstorage/postgrestest).
 func openTest(t *testing.T) *Store {
 	t.Helper()
-	s, err := Open(filepath.Join(t.TempDir(), "bs"))
+	module, err := Module()
 	if err != nil {
-		t.Fatalf("open: %v", err)
+		t.Fatalf("module: %v", err)
 	}
-	t.Cleanup(func() { s.Close() })
-	return s
+	database := postgrestest.NewDatabase(t, module)
+	return New(database.Open(module))
 }
 
-// writeBehindTheAPI runs a statement against the store's database file on a
-// separate connection with foreign keys off, so a test can create a row the API
-// refuses to create. Everything reachable through UpsertBundle is written
-// through UpsertBundle; this is only for proving what the read-side guards do
-// when they meet a row that did not come that way.
+// writeBehindTheAPI runs a statement straight against the module's tables, so
+// a test can make a row the API refuses to make. Everything reachable through
+// UpsertBundle is written through UpsertBundle; this is only for proving what
+// the read-side guards do when they meet a row that did not come that way.
 func writeBehindTheAPI(t *testing.T, s *Store, stmt string, args ...any) {
 	t.Helper()
-	db, err := sql.Open("sqlite3", filepath.Join(s.DataDir(), "bundle-store.db")+"?_busy_timeout=5000")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if _, err := db.Exec(stmt, args...); err != nil {
+	if _, err := s.db.ExecContext(testContext, stmt, args...); err != nil {
 		t.Fatalf("%s: %v", stmt, err)
 	}
 }
 
-// expectTheDatabaseToRefuse runs a statement on its own connection with foreign
-// keys ON and asserts SQLite itself rejects it. DeleteBundle looks for children
-// in Go before it issues the DELETE, and that check would pass just as happily
+// dropTheParentForeignKey takes the inheritance foreign key off the test's own
+// database, for a test that needs a link to a parent that does not exist: a
+// row the database would otherwise refuse, as it would come from a file
+// written by hand.
+func dropTheParentForeignKey(t *testing.T, s *Store) {
+	t.Helper()
+	writeBehindTheAPI(t, s, `ALTER TABLE bundles DROP CONSTRAINT bundles_extends_id_fkey`)
+}
+
+// expectTheDatabaseToRefuse runs a statement and asserts Postgres itself
+// rejects it with a RESTRICT refusal (23001). DeleteBundle looks for children in
+// Go before it issues the DELETE, and that check would pass just as happily
 // against ON DELETE SET NULL — so a test that only calls DeleteBundle proves the
 // Go guard and says nothing about the schema clause underneath it. This is how
 // the clause gets tested.
 func expectTheDatabaseToRefuse(t *testing.T, s *Store, stmt string, args ...any) {
 	t.Helper()
-	db, err := sql.Open("sqlite3", filepath.Join(s.DataDir(), "bundle-store.db")+"?_foreign_keys=on&_busy_timeout=5000")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if _, err := db.Exec(stmt, args...); err == nil {
+	_, err := s.db.ExecContext(testContext, stmt, args...)
+	if err == nil {
 		t.Fatalf("the database accepted %q — the foreign key is missing or is not RESTRICT", stmt)
-	} else if !strings.Contains(err.Error(), "FOREIGN KEY constraint failed") {
+	}
+	if !hasPostgresCode(err, restrictViolation) {
 		t.Fatalf("%s: want a foreign key refusal, got: %v", stmt, err)
 	}
 }
@@ -69,21 +75,21 @@ func TestUpsertBundleRoundtrip(t *testing.T) {
 		},
 		Enabled: true,
 	}
-	inserted, err := s.UpsertBundle(b)
+	inserted, err := s.UpsertBundle(testContext, b)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !inserted {
 		t.Fatal("expected insert")
 	}
-	got, err := s.GetBundleByName("react")
+	got, err := s.GetBundleByName(testContext, "react")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.Extends != "base" {
 		t.Fatalf("extends not roundtripped: %q", got.Extends)
 	}
-	base, err := s.GetBundleByName("base")
+	base, err := s.GetBundleByName(testContext, "base")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +115,7 @@ func TestMemberReplacementOnUpdate(t *testing.T) {
 	mustUpsert(t, s, b)
 	b.Members = []Member{{Kind: MemberSkill, ID: 3, Name: "c"}}
 	mustUpsert(t, s, b)
-	got, err := s.GetBundleByName("x")
+	got, err := s.GetBundleByName(testContext, "x")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +134,7 @@ func TestMemberReplacementOnUpdate(t *testing.T) {
 func TestInvalidMemberKindRejected(t *testing.T) {
 	s := openTest(t)
 	b := &Bundle{Name: "bad", Members: []Member{{Kind: "frobnicate", ID: 1, Name: "x"}}}
-	_, err := s.UpsertBundle(b)
+	_, err := s.UpsertBundle(testContext, b)
 	if err == nil {
 		t.Fatal("expected validation error for invalid member kind")
 	}
@@ -149,14 +155,14 @@ func TestInvalidMemberKindRejected(t *testing.T) {
 func TestMemberWithoutIDRejected(t *testing.T) {
 	s := openTest(t)
 	b := &Bundle{Name: "nameonly", Members: []Member{{Kind: MemberSkill, Name: "claude-api"}}}
-	_, err := s.UpsertBundle(b)
+	_, err := s.UpsertBundle(testContext, b)
 	if err == nil {
 		t.Fatal("expected a member carrying only a name to be rejected")
 	}
 	if !strings.Contains(err.Error(), "skill-store") {
 		t.Fatalf("error should send the author to the owning store, got: %v", err)
 	}
-	if _, err := s.GetBundleByName("nameonly"); err != ErrNotFound {
+	if _, err := s.GetBundleByName(testContext, "nameonly"); err != ErrNotFound {
 		t.Fatalf("a rejected bundle must not be half-written: %v", err)
 	}
 }
@@ -167,7 +173,7 @@ func TestDuplicateMemberIDRejected(t *testing.T) {
 		{Kind: MemberSkill, ID: 7, Name: "seven"},
 		{Kind: MemberSkill, ID: 7, Name: "seven again"},
 	}}
-	_, err := s.UpsertBundle(b)
+	_, err := s.UpsertBundle(testContext, b)
 	if err == nil {
 		t.Fatal("expected the same member id listed twice to be rejected")
 	}
@@ -195,7 +201,7 @@ func TestTwoMembersSharingOneNameBothSurvive(t *testing.T) {
 		{Kind: MemberSkill, ID: 341, Name: "claude-api"}, // antigravity
 	}}
 	mustUpsert(t, s, b)
-	got, err := s.GetBundleByName("collide")
+	got, err := s.GetBundleByName(testContext, "collide")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,111 +214,12 @@ func TestListByMatchTag(t *testing.T) {
 	s := openTest(t)
 	mustUpsert(t, s, &Bundle{Name: "react", MatchTags: []string{"react"}, Enabled: true})
 	mustUpsert(t, s, &Bundle{Name: "go-service", MatchTags: []string{"go"}, Enabled: true})
-	got, err := s.ListBundles(ListFilter{Tag: "react"})
+	got, err := s.ListBundles(testContext, ListFilter{Tag: "react"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 1 || got[0].Name != "react" {
 		t.Fatalf("tag filter wrong: %+v", got)
-	}
-}
-
-// A database written before member_id existed must open, must not resolve its
-// name-keyed rows, and must not lose them either — an id cannot be invented
-// from a name, so the rows are kept where an operator can read them back.
-func TestLegacyNameKeyedMembersAreQuarantinedNotDropped(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "bundle-store.db")
-	db, err := sql.Open("sqlite3", dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	legacy := `
-		CREATE TABLE bundles (
-			id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL,
-			display_name TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
-			extends TEXT NOT NULL DEFAULT '', match_tags TEXT NOT NULL DEFAULT '',
-			model TEXT NOT NULL DEFAULT '', effort TEXT NOT NULL DEFAULT '',
-			enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
-		CREATE TABLE bundle_members (
-			bundle_id INTEGER NOT NULL REFERENCES bundles(id) ON DELETE CASCADE,
-			kind TEXT NOT NULL, name TEXT NOT NULL, condition TEXT NOT NULL DEFAULT '',
-			PRIMARY KEY (bundle_id, kind, name), CHECK (kind IN ('skill','tool')));
-		CREATE INDEX idx_bundle_members_bundle ON bundle_members(bundle_id);
-		INSERT INTO bundles (id, name, created_at, updated_at) VALUES (1, 'react', 1, 1);
-		INSERT INTO bundle_members (bundle_id, kind, name) VALUES (1, 'skill', 'browser-automation');
-		INSERT INTO bundle_members (bundle_id, kind, name) VALUES (1, 'tool', 'playwright');
-	`
-	if _, err := db.Exec(legacy); err != nil {
-		t.Fatal(err)
-	}
-	db.Close()
-
-	s, err := Open(dir)
-	if err != nil {
-		t.Fatalf("open a pre-member_id database: %v", err)
-	}
-	defer s.Close()
-
-	if s.QuarantinedMembers != 2 {
-		t.Fatalf("QuarantinedMembers = %d, want 2 — the count is what tells the operator anything moved", s.QuarantinedMembers)
-	}
-	got, err := s.GetBundleByName("react")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got.Members) != 0 {
-		t.Fatalf("name-keyed members must not be resolved, got %+v", got.Members)
-	}
-	var kept int
-	if err := s.db.QueryRow(`SELECT count(*) FROM ` + LegacyMembersTable).Scan(&kept); err != nil {
-		t.Fatalf("legacy rows must still be readable: %v", err)
-	}
-	if kept != 2 {
-		t.Fatalf("legacy rows kept = %d, want 2 — the migration must not destroy data", kept)
-	}
-
-	// The migrated table takes id-carrying members, and keeps its index.
-	mustUpsert(t, s, &Bundle{Name: "react", Enabled: true, Members: []Member{
-		{Kind: MemberSkill, ID: 9001, Name: "browser-automation"},
-	}})
-	var indexed int
-	if err := s.db.QueryRow(
-		`SELECT count(*) FROM sqlite_master WHERE type='index' AND name='idx_bundle_members_bundle' AND tbl_name='bundle_members'`,
-	).Scan(&indexed); err != nil {
-		t.Fatal(err)
-	}
-	if indexed != 1 {
-		t.Fatal("the member index must follow the real table, not stay on the quarantined one")
-	}
-}
-
-func TestOpenIsIdempotentAfterMigration(t *testing.T) {
-	dir := t.TempDir()
-	s, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mustUpsert(t, s, &Bundle{Name: "x", Enabled: true, Members: []Member{{Kind: MemberTool, ID: 13, Name: "playwright"}}})
-	s.Close()
-
-	again, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer again.Close()
-	if again.QuarantinedMembers != 0 {
-		t.Fatalf("a second Open must not re-quarantine: %d", again.QuarantinedMembers)
-	}
-	if again.BackfilledExtendsLinks != 0 {
-		t.Fatalf("a second Open must not re-backfill inheritance links: %d", again.BackfilledExtendsLinks)
-	}
-	got, err := again.GetBundleByName("x")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got.Members) != 1 || got.Members[0].ID != 13 {
-		t.Fatalf("members lost across reopen: %+v", got.Members)
 	}
 }
 
@@ -326,21 +233,21 @@ func TestOpenIsIdempotentAfterMigration(t *testing.T) {
 // the message says what to do about it.
 func TestExtendingAMissingParentRejected(t *testing.T) {
 	s := openTest(t)
-	_, err := s.UpsertBundle(&Bundle{Name: "orphan", Extends: "no-such-parent", Enabled: true})
+	_, err := s.UpsertBundle(testContext, &Bundle{Name: "orphan", Extends: "no-such-parent", Enabled: true})
 	if err == nil {
 		t.Fatal("expected a bundle extending a parent that does not exist to be rejected")
 	}
 	if !strings.Contains(err.Error(), "no-such-parent") {
 		t.Fatalf("the rejection must name the parent it could not find, got: %v", err)
 	}
-	if _, err := s.GetBundleByName("orphan"); err != ErrNotFound {
+	if _, err := s.GetBundleByName(testContext, "orphan"); err != ErrNotFound {
 		t.Fatalf("a rejected bundle must not be half-written: %v", err)
 	}
 }
 
 func TestExtendsIDPointingAtNothingRejected(t *testing.T) {
 	s := openTest(t)
-	_, err := s.UpsertBundle(&Bundle{Name: "orphan", ExtendsID: 999999, Enabled: true})
+	_, err := s.UpsertBundle(testContext, &Bundle{Name: "orphan", ExtendsID: 999999, Enabled: true})
 	if err == nil {
 		t.Fatal("expected an extends_id that names no bundle to be rejected")
 	}
@@ -355,11 +262,11 @@ func TestExtendsIDAndNameDisagreeingRejected(t *testing.T) {
 	s := openTest(t)
 	mustUpsert(t, s, &Bundle{Name: "base", Enabled: true})
 	mustUpsert(t, s, &Bundle{Name: "other", Enabled: true})
-	base, err := s.GetBundleByName("base")
+	base, err := s.GetBundleByName(testContext, "base")
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = s.UpsertBundle(&Bundle{Name: "child", ExtendsID: base.ID, Extends: "other", Enabled: true})
+	_, err = s.UpsertBundle(testContext, &Bundle{Name: "child", ExtendsID: base.ID, Extends: "other", Enabled: true})
 	if err == nil {
 		t.Fatal("expected extends_id and extends naming different bundles to be rejected")
 	}
@@ -373,12 +280,12 @@ func TestExtendsIDAndNameDisagreeingRejected(t *testing.T) {
 func TestExtendsIDAloneIsEnoughAndTheNameComesBack(t *testing.T) {
 	s := openTest(t)
 	mustUpsert(t, s, &Bundle{Name: "base", Enabled: true})
-	base, err := s.GetBundleByName("base")
+	base, err := s.GetBundleByName(testContext, "base")
 	if err != nil {
 		t.Fatal(err)
 	}
 	mustUpsert(t, s, &Bundle{Name: "child", ExtendsID: base.ID, Enabled: true})
-	got, err := s.GetBundleByName("child")
+	got, err := s.GetBundleByName(testContext, "child")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -395,7 +302,7 @@ func TestCycleRefusedAtTheWrite(t *testing.T) {
 	mustUpsert(t, s, &Bundle{Name: "b", Enabled: true})
 	mustUpsert(t, s, &Bundle{Name: "a", Extends: "b", Enabled: true})
 
-	_, err := s.UpsertBundle(&Bundle{Name: "b", Extends: "a", Enabled: true})
+	_, err := s.UpsertBundle(testContext, &Bundle{Name: "b", Extends: "a", Enabled: true})
 	if err == nil {
 		t.Fatal("expected re-parenting b under its own descendant to be rejected")
 	}
@@ -403,7 +310,7 @@ func TestCycleRefusedAtTheWrite(t *testing.T) {
 		t.Fatalf("the rejection must say what is wrong, got: %v", err)
 	}
 	// And it must not have half-applied: b still has no parent.
-	b, err := s.GetBundleByName("b")
+	b, err := s.GetBundleByName(testContext, "b")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -415,7 +322,7 @@ func TestCycleRefusedAtTheWrite(t *testing.T) {
 func TestSelfExtendRefused(t *testing.T) {
 	s := openTest(t)
 	mustUpsert(t, s, &Bundle{Name: "loop", Enabled: true})
-	if _, err := s.UpsertBundle(&Bundle{Name: "loop", Extends: "loop", Enabled: true}); err == nil {
+	if _, err := s.UpsertBundle(testContext, &Bundle{Name: "loop", Extends: "loop", Enabled: true}); err == nil {
 		t.Fatal("expected a bundle extending itself to be rejected")
 	}
 }
@@ -426,128 +333,29 @@ func TestDeletingAnExtendedBundleRefused(t *testing.T) {
 	s := openTest(t)
 	mustUpsert(t, s, &Bundle{Name: "base", Enabled: true})
 	mustUpsert(t, s, &Bundle{Name: "react", Extends: "base", Enabled: true})
-	base, err := s.GetBundleByName("base")
+	base, err := s.GetBundleByName(testContext, "base")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	err = s.DeleteBundle(base.ID)
+	err = s.DeleteBundle(testContext, base.ID)
 	if !errors.Is(err, ErrParentHasChildren) {
 		t.Fatalf("deleting an extended bundle must be refused, got: %v", err)
 	}
 	if !strings.Contains(err.Error(), "react") {
 		t.Fatalf("the refusal must name the children, got: %v", err)
 	}
-	if _, err := s.GetBundleByName("base"); err != nil {
+	if _, err := s.GetBundleByName(testContext, "base"); err != nil {
 		t.Fatalf("the refused delete must not have removed anything: %v", err)
 	}
 
 	// And the schema clause holds on its own, without the Go check in front of
 	// it — which is what makes this RESTRICT rather than SET NULL.
-	expectTheDatabaseToRefuse(t, s, `DELETE FROM bundles WHERE id=?`, base.ID)
+	expectTheDatabaseToRefuse(t, s, `DELETE FROM bundles WHERE id=$1`, base.ID)
 
 	// Cut the link and it deletes.
 	mustUpsert(t, s, &Bundle{Name: "react", Enabled: true})
-	if err := s.DeleteBundle(base.ID); err != nil {
+	if err := s.DeleteBundle(testContext, base.ID); err != nil {
 		t.Fatalf("deleting a bundle nothing extends: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Migrating a database whose inheritance link was the parent's name.
-// ---------------------------------------------------------------------------
-
-// legacyBundlesSchema is the pre-extends_id shape, written out in full so this
-// test keeps meaning something after schema.sql moves on.
-const legacyBundlesSchema = `
-	CREATE TABLE bundles (
-		id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL,
-		display_name TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
-		extends TEXT NOT NULL DEFAULT '', match_tags TEXT NOT NULL DEFAULT '',
-		model TEXT NOT NULL DEFAULT '', effort TEXT NOT NULL DEFAULT '',
-		enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
-	CREATE TABLE bundle_members (
-		bundle_id INTEGER NOT NULL REFERENCES bundles(id) ON DELETE CASCADE,
-		kind TEXT NOT NULL, member_id INTEGER NOT NULL, name TEXT NOT NULL DEFAULT '',
-		condition TEXT NOT NULL DEFAULT '', PRIMARY KEY (bundle_id, kind, member_id),
-		CHECK (kind IN ('skill','tool')), CHECK (member_id > 0));
-`
-
-func writeLegacyDatabase(t *testing.T, dir, extra string) {
-	t.Helper()
-	db, err := sql.Open("sqlite3", filepath.Join(dir, "bundle-store.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if _, err := db.Exec(legacyBundlesSchema + extra); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// This mirrors the live database exactly: three bundles, two of them extending
-// "base" by name.
-func TestLegacyNameJoinedExtendsIsBackfilledToIDs(t *testing.T) {
-	dir := t.TempDir()
-	writeLegacyDatabase(t, dir, `
-		INSERT INTO bundles (id, name, extends, created_at, updated_at) VALUES (1, 'base', '', 1, 1);
-		INSERT INTO bundles (id, name, extends, created_at, updated_at) VALUES (2, 'react', 'base', 1, 1);
-		INSERT INTO bundles (id, name, extends, created_at, updated_at) VALUES (3, 'go-service', 'base', 1, 1);
-	`)
-
-	s, err := Open(dir)
-	if err != nil {
-		t.Fatalf("open a pre-extends_id database: %v", err)
-	}
-	defer s.Close()
-
-	if s.BackfilledExtendsLinks != 2 {
-		t.Fatalf("BackfilledExtendsLinks = %d, want 2 — the count is what tells the operator anything moved", s.BackfilledExtendsLinks)
-	}
-	for _, name := range []string{"react", "go-service"} {
-		got, err := s.GetBundleByName(name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got.ExtendsID != 1 {
-			t.Fatalf("%s should now extend bundle id 1, got %d", name, got.ExtendsID)
-		}
-		if got.Extends != "base" {
-			t.Fatalf("%s should still display its parent's name, got %q", name, got.Extends)
-		}
-	}
-
-	// The old column is gone, so nothing can quietly start reading it again.
-	columns, err := tableColumns(s.db, "bundles")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if columns["extends"] {
-		t.Fatal("the extends name column must be dropped, not left behind to drift out of step with extends_id")
-	}
-
-	// And the column the migration added really carries the foreign key, not
-	// just an integer that happens to hold the right number.
-	expectTheDatabaseToRefuse(t, s, `DELETE FROM bundles WHERE id=1`)
-}
-
-// A name that resolves to no row cannot become an id, and must not become NULL
-// either: NULL is how a root bundle is spelled, so a stranded child would come
-// back looking healthy while inheriting nothing.
-func TestLegacyDanglingExtendsFailsTheOpenLoudly(t *testing.T) {
-	dir := t.TempDir()
-	writeLegacyDatabase(t, dir, `
-		INSERT INTO bundles (id, name, extends, created_at, updated_at) VALUES (1, 'base', '', 1, 1);
-		INSERT INTO bundles (id, name, extends, created_at, updated_at) VALUES (2, 'react', 'base', 1, 1);
-		INSERT INTO bundles (id, name, extends, created_at, updated_at) VALUES (3, 'stray', 'deleted-parent', 1, 1);
-	`)
-
-	s, err := Open(dir)
-	if err == nil {
-		s.Close()
-		t.Fatal("a dangling inheritance link must fail the open, not be silently cleared")
-	}
-	if !strings.Contains(err.Error(), "stray") || !strings.Contains(err.Error(), "deleted-parent") {
-		t.Fatalf("the error must name the child and the parent it wanted, got: %v", err)
 	}
 }

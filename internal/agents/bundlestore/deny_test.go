@@ -1,11 +1,9 @@
 package bundlestore
 
 import (
-	"database/sql"
 	"encoding/json"
 	"io"
 	"net/http"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -21,7 +19,7 @@ const (
 func TestAMemberWrittenWithoutAnEffectIsStoredAsInclude(t *testing.T) {
 	s := openTest(t)
 	mustUpsert(t, s, &Bundle{Name: "x", Enabled: true, Members: []Member{{Kind: MemberTool, ID: toolPlaywright, Name: "playwright"}}})
-	got, err := s.GetBundleByName("x")
+	got, err := s.GetBundleByName(testContext, "x")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +33,7 @@ func TestADeniedToolRoundTrips(t *testing.T) {
 	mustUpsert(t, s, &Bundle{Name: "x", Enabled: true,
 		DeniedReadPaths: []string{"~/.config/**", "/proc/**"},
 		Members:         []Member{{Kind: MemberTool, ID: toolClaudeCodeWrite, Name: "claude_code.Write", Effect: MemberDeny}}})
-	got, err := s.GetBundleByName("x")
+	got, err := s.GetBundleByName(testContext, "x")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +47,7 @@ func TestADeniedToolRoundTrips(t *testing.T) {
 
 func TestOnlyAToolCanBeDenied(t *testing.T) {
 	s := openTest(t)
-	_, err := s.UpsertBundle(&Bundle{Name: "x", Members: []Member{{Kind: MemberSkill, ID: skillBackendPatterns, Effect: MemberDeny}}})
+	_, err := s.UpsertBundle(testContext, &Bundle{Name: "x", Members: []Member{{Kind: MemberSkill, ID: skillBackendPatterns, Effect: MemberDeny}}})
 	if err == nil || !strings.Contains(err.Error(), "only a tool can be denied") {
 		t.Fatalf("a denied skill must be refused, got: %v", err)
 	}
@@ -57,7 +55,7 @@ func TestOnlyAToolCanBeDenied(t *testing.T) {
 
 func TestAnUnknownEffectIsRefused(t *testing.T) {
 	s := openTest(t)
-	_, err := s.UpsertBundle(&Bundle{Name: "x", Members: []Member{{Kind: MemberTool, ID: toolPlaywright, Effect: "restrict"}}})
+	_, err := s.UpsertBundle(testContext, &Bundle{Name: "x", Members: []Member{{Kind: MemberTool, ID: toolPlaywright, Effect: "restrict"}}})
 	if err == nil || !strings.Contains(err.Error(), "include, deny") {
 		t.Fatalf("an unknown effect must be refused, naming the known ones; got: %v", err)
 	}
@@ -65,7 +63,7 @@ func TestAnUnknownEffectIsRefused(t *testing.T) {
 
 func TestOneBundleCannotBothIncludeAndDenyATool(t *testing.T) {
 	s := openTest(t)
-	_, err := s.UpsertBundle(&Bundle{Name: "x", Members: []Member{
+	_, err := s.UpsertBundle(testContext, &Bundle{Name: "x", Members: []Member{
 		{Kind: MemberTool, ID: toolPlaywright},
 		{Kind: MemberTool, ID: toolPlaywright, Effect: MemberDeny},
 	}})
@@ -77,93 +75,35 @@ func TestOneBundleCannotBothIncludeAndDenyATool(t *testing.T) {
 func TestADeniedReadPathMustBeAbsoluteOrUnderHome(t *testing.T) {
 	s := openTest(t)
 	for _, bad := range []string{"", ".env", "config/**", "~user/x", "~"} {
-		if _, err := s.UpsertBundle(&Bundle{Name: "x", DeniedReadPaths: []string{bad}}); err == nil {
+		if _, err := s.UpsertBundle(testContext, &Bundle{Name: "x", DeniedReadPaths: []string{bad}}); err == nil {
 			t.Fatalf("denied read path %q must be refused", bad)
 		}
 	}
-	if _, err := s.UpsertBundle(&Bundle{Name: "x", DeniedReadPaths: []string{"/a", "/a"}}); err == nil {
+	if _, err := s.UpsertBundle(testContext, &Bundle{Name: "x", DeniedReadPaths: []string{"/a", "/a"}}); err == nil {
 		t.Fatal("a path listed twice must be refused")
 	}
 }
 
-// The CHECKs in schema.sql repeat MemberEffects by hand. This keeps them in
+// The CHECKs in the first migration repeat MemberEffects by hand. This keeps them in
 // step: every listed effect is accepted for a tool, deny is refused for a
-// skill, and a value outside the list is refused, by SQLite itself.
+// skill, and a value outside the list is refused, by Postgres itself (23514).
 func TestTheSchemaChecksAgreeWithMemberEffects(t *testing.T) {
 	s := openTest(t)
 	mustUpsert(t, s, &Bundle{Name: "x"})
-	b, _ := s.GetBundleByName("x")
+	b, _ := s.GetBundleByName(testContext, "x")
 	for i, e := range MemberEffects {
-		if _, err := s.db.Exec(`INSERT INTO bundle_members (bundle_id, kind, member_id, effect) VALUES (?, 'tool', ?, ?)`, b.ID, i+1, string(e)); err != nil {
+		if _, err := s.db.Exec(`INSERT INTO bundle_members (bundle_id, kind, member_id, effect) VALUES ($1, 'tool', $2, $3)`, b.ID, i+1, string(e)); err != nil {
 			t.Fatalf("the schema refuses effect %q, which MemberEffects lists: %v", e, err)
 		}
 	}
 	for _, stmt := range []string{
-		`INSERT INTO bundle_members (bundle_id, kind, member_id, effect) VALUES (?, 'tool', 100, 'restrict')`,
-		`INSERT INTO bundle_members (bundle_id, kind, member_id, effect) VALUES (?, 'skill', 100, 'deny')`,
+		`INSERT INTO bundle_members (bundle_id, kind, member_id, effect) VALUES ($1, 'tool', 100, 'restrict')`,
+		`INSERT INTO bundle_members (bundle_id, kind, member_id, effect) VALUES ($1, 'skill', 100, 'deny')`,
 	} {
-		if _, err := s.db.Exec(stmt, b.ID); err == nil || !strings.Contains(err.Error(), "CHECK constraint failed") {
+		if _, err := s.db.Exec(stmt, b.ID); err == nil || !hasPostgresCode(err, "23514") {
 			t.Fatalf("%s: want a CHECK refusal, got %v", stmt, err)
 		}
 	}
-}
-
-// A database written before deny existed keeps every row, and every member
-// comes back as include.
-func TestAPreDenyDatabaseIsMigratedWithEveryRowKept(t *testing.T) {
-	dir := t.TempDir()
-	db, err := sql.Open("sqlite3", filepath.Join(dir, "bundle-store.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	preDeny := `
-		CREATE TABLE bundles (
-			id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL,
-			display_name TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
-			extends_id INTEGER REFERENCES bundles(id) ON DELETE RESTRICT,
-			match_tags TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '', effort TEXT NOT NULL DEFAULT '',
-			enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
-		CREATE TABLE bundle_members (
-			bundle_id INTEGER NOT NULL REFERENCES bundles(id) ON DELETE CASCADE,
-			kind TEXT NOT NULL, member_id INTEGER NOT NULL, name TEXT NOT NULL DEFAULT '',
-			condition TEXT NOT NULL DEFAULT '',
-			PRIMARY KEY (bundle_id, kind, member_id), CHECK (kind IN ('skill','tool')), CHECK (member_id > 0));
-		INSERT INTO bundles (id, name, match_tags, created_at, updated_at) VALUES (1, 'react', '["react"]', 1, 1);
-		INSERT INTO bundle_members (bundle_id, kind, member_id, name) VALUES (1, 'skill', 9002, 'browser-automation');
-		INSERT INTO bundle_members (bundle_id, kind, member_id, name, condition) VALUES (1, 'tool', 14, 'chrome-devtools', 'perf');
-	`
-	if _, err := db.Exec(preDeny); err != nil {
-		t.Fatal(err)
-	}
-	db.Close()
-
-	s, err := Open(dir)
-	if err != nil {
-		t.Fatalf("open a pre-deny database: %v", err)
-	}
-	defer s.Close()
-	got, err := s.GetBundleByName("react")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got.Members) != 2 || got.DeniedReadPaths != nil {
-		t.Fatalf("migrated bundle = %+v", got)
-	}
-	for _, m := range got.Members {
-		if m.Effect != MemberInclude {
-			t.Fatalf("existing member %+v must become include", m)
-		}
-	}
-	// The added columns carry their CHECKs.
-	if _, err := s.db.Exec(`INSERT INTO bundle_members (bundle_id, kind, member_id, effect) VALUES (1, 'skill', 5, 'deny')`); err == nil {
-		t.Fatal("the migrated table accepted a denied skill")
-	}
-	s.Close()
-	again, err := Open(dir)
-	if err != nil {
-		t.Fatalf("a second open of the migrated database: %v", err)
-	}
-	again.Close()
 }
 
 // denySeed: base denies Edit and ~/.secrets/**; react includes playwright and
@@ -190,7 +130,7 @@ func denySeed(t *testing.T, s *Store) {
 func TestResolveWithNothingDeniedReturnsEmptyLists(t *testing.T) {
 	s := openTest(t)
 	seed(t, s)
-	r, err := Resolve(s, ResolveRequest{RepoTags: []string{"react"}})
+	r, err := Resolve(testContext, s, ResolveRequest{RepoTags: []string{"react"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +145,7 @@ func TestResolveWithNothingDeniedReturnsEmptyLists(t *testing.T) {
 func TestResolveCollectsDeniesFromTheWholeChain(t *testing.T) {
 	s := openTest(t)
 	denySeed(t, s)
-	r, err := Resolve(s, ResolveRequest{RepoTags: []string{"react"}})
+	r, err := Resolve(testContext, s, ResolveRequest{RepoTags: []string{"react"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +165,7 @@ func TestResolveCollectsDeniesFromTheWholeChain(t *testing.T) {
 func TestADenyAnywhereWinsOverAnInclude(t *testing.T) {
 	s := openTest(t)
 	denySeed(t, s)
-	byTags, err := Resolve(s, ResolveRequest{RepoTags: []string{"locked"}})
+	byTags, err := Resolve(testContext, s, ResolveRequest{RepoTags: []string{"locked"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,9 +185,9 @@ func TestADenyAnywhereWinsOverAnInclude(t *testing.T) {
 		t.Fatalf("denied_read_paths must be the union in first-seen order, without repeats; got %v", byTags.DeniedReadPaths)
 	}
 
-	locked, _ := s.GetBundleByName("locked-down")
-	react, _ := s.GetBundleByName("react")
-	reversed, err := Resolve(s, ResolveRequest{BundleIDs: []int64{locked.ID, react.ID}})
+	locked, _ := s.GetBundleByName(testContext, "locked-down")
+	react, _ := s.GetBundleByName(testContext, "react")
+	reversed, err := Resolve(testContext, s, ResolveRequest{BundleIDs: []int64{locked.ID, react.ID}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,7 +195,7 @@ func TestADenyAnywhereWinsOverAnInclude(t *testing.T) {
 		t.Fatalf("a bundle applied after the deny must not bring the tool back; tools = %+v", reversed.Tools)
 	}
 
-	withPerf, err := Resolve(s, ResolveRequest{RepoTags: []string{"locked"}, TaskTags: []string{"perf"}})
+	withPerf, err := Resolve(testContext, s, ResolveRequest{RepoTags: []string{"locked"}, TaskTags: []string{"perf"}})
 	if err != nil {
 		t.Fatal(err)
 	}

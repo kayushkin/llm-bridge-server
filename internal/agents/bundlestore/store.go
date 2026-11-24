@@ -1,268 +1,61 @@
 package bundlestore
 
 import (
+	"context"
 	"database/sql"
+	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 )
 
 var ErrNotFound = errors.New("not found")
 
-// DefaultDataDir is ~/.config/bundle-store.
-func DefaultDataDir() string {
-	home, err := os.UserHomeDir()
+//go:embed migrations/*.sql
+var migrationFiles embed.FS
+
+// Module is the Postgres schema and role the store keeps its records in, with
+// the migrations that build them.
+func Module() (postgresstorage.Module, error) {
+	migrations, err := postgresstorage.MigrationsFromFiles(migrationFiles, "migrations")
 	if err != nil {
-		home = "."
+		return postgresstorage.Module{}, err
 	}
-	return filepath.Join(home, ".config", "bundle-store")
+	return postgresstorage.Module{Schema: "bundles", Role: "bundles_module", Migrations: migrations}, nil
 }
 
+// Store keeps the bundles in the module's schema. The server provisions,
+// migrates and opens the module, then hands the pool to New.
 type Store struct {
-	db      *sql.DB
-	dataDir string
-
-	// QuarantinedMembers counts the rows Open moved into LegacyMembersTable
-	// because they were keyed by name and carry no id. Zero on every database
-	// created or opened after that migration ran.
-	QuarantinedMembers int
-
-	// BackfilledExtendsLinks counts the inheritance links Open converted from a
-	// parent's name to that parent's id. Zero on every database created or
-	// opened after that migration ran.
-	BackfilledExtendsLinks int
+	db *sql.DB
 }
 
-// Open opens or creates the store rooted at dataDir. Pass "" for the default.
-func Open(dataDir string) (*Store, error) {
-	if dataDir == "" {
-		dataDir = DefaultDataDir()
-	}
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
-		return nil, fmt.Errorf("mkdir %s: %w", dataDir, err)
-	}
-	dbPath := filepath.Join(dataDir, "bundle-store.db")
-	db, err := sql.Open("sqlite3", dbPath+"?_foreign_keys=on")
-	if err != nil {
-		return nil, fmt.Errorf("open db: %w", err)
-	}
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("enable WAL: %w", err)
-	}
-	quarantined, err := quarantineNameJoinedMembers(db)
-	if err != nil {
-		db.Close()
-		return nil, fmt.Errorf("migrate: %w", err)
-	}
-	backfilled, err := backfillNameJoinedExtends(db)
-	if err != nil {
-		db.Close()
-		return nil, fmt.Errorf("migrate: %w", err)
-	}
-	if _, err := db.Exec(schemaSQL); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("migrate: %w", err)
-	}
-	if err := addDenyColumns(db); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("migrate: %w", err)
-	}
-	return &Store{
-		db:                     db,
-		dataDir:                dataDir,
-		QuarantinedMembers:     quarantined,
-		BackfilledExtendsLinks: backfilled,
-	}, nil
-}
+// New returns the store over db, the module's pool from postgresstorage.Open.
+func New(db *sql.DB) *Store { return &Store{db: db} }
 
-// LegacyMembersTable holds the rows of a bundle_members that predates
-// member_id. They are kept, not dropped: a name cannot be turned into an id
-// without asking the owning store, and this package never asks.
+// LegacyMembersTable holds the members of a standalone store written before
+// member_id existed: a name and no id, so nothing resolves them. The import
+// copies them so an operator can still read them back.
 const LegacyMembersTable = "bundle_members_legacy_name_join"
 
-// quarantineNameJoinedMembers moves a pre-member_id bundle_members table aside
-// so the current schema can create the real one, and reports how many rows went
-// with it. None of those rows carries an id, so none can be resolved;
-// anything hand-curated is still readable in LegacyMembersTable and has to be
-// re-added with the ids its names never carried.
-func quarantineNameJoinedMembers(db *sql.DB) (int, error) {
-	var name string
-	err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name='bundle_members'`).Scan(&name)
-	if err == sql.ErrNoRows {
-		return 0, nil // fresh database: schema.sql creates the current shape
-	}
-	if err != nil {
-		return 0, err
-	}
-	columns, err := tableColumns(db, "bundle_members")
-	if err != nil {
-		return 0, err
-	}
-	if columns["member_id"] {
-		return 0, nil // already migrated
-	}
+// The Postgres error codes DeleteBundle turns into ErrParentHasChildren: an ON
+// DELETE RESTRICT refusal is restrict_violation, and a NO ACTION one would be
+// foreign_key_violation.
+const (
+	restrictViolation   = "23001"
+	foreignKeyViolation = "23503"
+)
 
-	var count int
-	if err := db.QueryRow(`SELECT count(*) FROM bundle_members`).Scan(&count); err != nil {
-		return 0, err
-	}
-	if _, err := db.Exec(`DROP TABLE IF EXISTS ` + LegacyMembersTable); err != nil {
-		return 0, err
-	}
-	// The index has to go before the rename: SQLite keeps it attached to the
-	// renamed table, and schema.sql's CREATE INDEX IF NOT EXISTS would then
-	// find the name taken and leave the real table unindexed.
-	if _, err := db.Exec(`DROP INDEX IF EXISTS idx_bundle_members_bundle`); err != nil {
-		return 0, err
-	}
-	if _, err := db.Exec(`ALTER TABLE bundle_members RENAME TO ` + LegacyMembersTable); err != nil {
-		return 0, err
-	}
-	return count, nil
+func hasPostgresCode(err error, code string) bool {
+	var postgresError *pgconn.PgError
+	return errors.As(err, &postgresError) && postgresError.Code == code
 }
-
-// addDenyColumns brings a database written before deny existed up to the
-// current schema: bundle_members gains effect, and bundles gains
-// denied_read_paths. schema.sql's CREATE TABLE IF NOT EXISTS leaves an existing
-// table alone, so it cannot add them itself.
-//
-// Both are plain ADD COLUMNs. SQLite accepts a CHECK on an added column and
-// tests it against the rows already there, and every existing row takes the
-// default: each member becomes 'include', which is what it always meant, and
-// each bundle denies no paths. No row is rewritten or dropped.
-func addDenyColumns(db *sql.DB) error {
-	members, err := tableColumns(db, "bundle_members")
-	if err != nil {
-		return err
-	}
-	if !members["effect"] {
-		if _, err := db.Exec(`ALTER TABLE bundle_members ADD COLUMN effect TEXT NOT NULL DEFAULT 'include'
-			CHECK (effect IN ('include', 'deny'))
-			CHECK (effect = 'include' OR kind = 'tool')`); err != nil {
-			return fmt.Errorf("add bundle_members.effect: %w", err)
-		}
-	}
-	bundles, err := tableColumns(db, "bundles")
-	if err != nil {
-		return err
-	}
-	if !bundles["denied_read_paths"] {
-		if _, err := db.Exec(`ALTER TABLE bundles ADD COLUMN denied_read_paths TEXT NOT NULL DEFAULT ''`); err != nil {
-			return fmt.Errorf("add bundles.denied_read_paths: %w", err)
-		}
-	}
-	return nil
-}
-
-// tableColumns reports which columns a table has. An absent table has none.
-func tableColumns(db *sql.DB, table string) (map[string]bool, error) {
-	rows, err := db.Query(`SELECT name FROM pragma_table_info(?)`, table)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	columns := map[string]bool{}
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return nil, err
-		}
-		columns[name] = true
-	}
-	return columns, rows.Err()
-}
-
-// backfillNameJoinedExtends converts a pre-extends_id bundles table, whose
-// inheritance link was the parent's name, to the id join, and reports how many
-// links it converted.
-//
-// Unlike the member migration this one CAN be done without asking anyone: the
-// parent is a row in this very table and `bundles.name` is UNIQUE, so each name
-// resolves to exactly one id or to none at all. A name that resolves to none is
-// a dangling link, and this fails the open rather than writing NULL — NULL means
-// "this bundle is a root", and a child that has silently become a root inherits
-// nothing while still looking perfectly healthy. The error names the bundle, the
-// parent it wanted, and the two ways out.
-func backfillNameJoinedExtends(db *sql.DB) (int, error) {
-	columns, err := tableColumns(db, "bundles")
-	if err != nil {
-		return 0, err
-	}
-	if len(columns) == 0 {
-		return 0, nil // fresh database: schema.sql creates the current shape
-	}
-	if columns["extends_id"] {
-		return 0, nil // already migrated
-	}
-	if !columns["extends"] {
-		return 0, fmt.Errorf("bundles has neither extends_id nor extends — refusing to guess at its inheritance links")
-	}
-
-	// SQLite allows adding a column with a REFERENCES clause only when its
-	// default is NULL, which is what a root bundle wants anyway.
-	if _, err := db.Exec(`ALTER TABLE bundles ADD COLUMN extends_id INTEGER REFERENCES bundles(id) ON DELETE RESTRICT`); err != nil {
-		return 0, err
-	}
-	res, err := db.Exec(`
-		UPDATE bundles SET extends_id = (SELECT parent.id FROM bundles parent WHERE parent.name = bundles.extends)
-		WHERE extends <> ''
-	`)
-	if err != nil {
-		return 0, err
-	}
-
-	dangling, err := danglingExtendsNames(db)
-	if err != nil {
-		return 0, err
-	}
-	if len(dangling) > 0 {
-		return 0, fmt.Errorf(
-			"%d inheritance link(s) name a parent bundle that does not exist: %s. "+
-				"They cannot be carried over as ids and will not be silently cleared, because a child "+
-				"whose parent went missing must not come back looking like a root. Either recreate the "+
-				"parent (INSERT INTO bundles …) or cut the link (UPDATE bundles SET extends='' WHERE name=…), "+
-				"then start again",
-			len(dangling), strings.Join(dangling, "; "))
-	}
-
-	if _, err := db.Exec(`ALTER TABLE bundles DROP COLUMN extends`); err != nil {
-		return 0, err
-	}
-	converted, err := res.RowsAffected()
-	if err != nil {
-		return 0, err
-	}
-	return int(converted), nil
-}
-
-// danglingExtendsNames lists "child -> missing parent" for every row whose
-// extends name found no id, in the shape an error message wants.
-func danglingExtendsNames(db *sql.DB) ([]string, error) {
-	rows, err := db.Query(`SELECT name, extends FROM bundles WHERE extends <> '' AND extends_id IS NULL ORDER BY name`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var child, parent string
-		if err := rows.Scan(&child, &parent); err != nil {
-			return nil, err
-		}
-		out = append(out, fmt.Sprintf("bundle %q extends missing %q", child, parent))
-	}
-	return out, rows.Err()
-}
-
-func (s *Store) Close() error    { return s.db.Close() }
-func (s *Store) DataDir() string { return s.dataDir }
 
 func now() int64 { return time.Now().Unix() }
 
@@ -346,7 +139,7 @@ func joinEffects(effects []MemberEffect) string {
 
 // UpsertBundle inserts or updates by name, replacing the full member set in a
 // single transaction. Sets ID on insert.
-func (s *Store) UpsertBundle(b *Bundle) (bool, error) {
+func (s *Store) UpsertBundle(ctx context.Context, b *Bundle) (bool, error) {
 	if err := validate(b); err != nil {
 		return false, err
 	}
@@ -357,60 +150,57 @@ func (s *Store) UpsertBundle(b *Bundle) (bool, error) {
 	matchTags := encodeStrings(b.MatchTags)
 	deniedReadPaths := encodeStrings(b.DeniedReadPaths)
 
-	tx, err := s.db.Begin()
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback()
-
-	// The one place a parent's name becomes a parent's id. It happens once, on
-	// the write, against this store's own table — never again on a read.
-	extendsID, err := resolveExtends(tx, b)
-	if err != nil {
-		return false, err
-	}
-
-	res, err := tx.Exec(`
-		UPDATE bundles SET display_name=?, description=?, extends_id=?, match_tags=?, denied_read_paths=?, model=?, effort=?, enabled=?, updated_at=?
-		WHERE name=?
-	`, b.DisplayName, b.Description, extendsID, matchTags, deniedReadPaths, b.Model, b.Effort, boolToInt(b.Enabled), b.UpdatedAt, b.Name)
-	if err != nil {
-		return false, err
-	}
 	inserted := false
-	if n, _ := res.RowsAffected(); n > 0 {
-		if err := tx.QueryRow(`SELECT id FROM bundles WHERE name=?`, b.Name).Scan(&b.ID); err != nil {
-			return false, err
-		}
-		// Only an update can build a cycle. An insert's parent had to exist
-		// already, and nothing can extend a bundle that did not exist a moment
-		// ago, so a new row is always a leaf.
-		if err := refuseInheritanceCycle(tx, b); err != nil {
-			return false, err
-		}
-	} else {
-		res, err = tx.Exec(`
-			INSERT INTO bundles (name, display_name, description, extends_id, match_tags, denied_read_paths, model, effort, enabled, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, b.Name, b.DisplayName, b.Description, extendsID, matchTags, deniedReadPaths, b.Model, b.Effort, boolToInt(b.Enabled), b.CreatedAt, b.UpdatedAt)
+	err := postgresstorage.InTransaction(ctx, s.db, func(tx *sql.Tx) error {
+		// The one place a parent's name becomes a parent's id. It happens once,
+		// on the write, against this store's own table — never again on a read.
+		extendsID, err := resolveExtends(ctx, tx, b)
 		if err != nil {
-			return false, err
+			return err
 		}
-		b.ID, _ = res.LastInsertId()
-		inserted = true
-	}
 
-	if _, err := tx.Exec(`DELETE FROM bundle_members WHERE bundle_id=?`, b.ID); err != nil {
+		err = tx.QueryRowContext(ctx, `
+			UPDATE bundles SET display_name=$1, description=$2, extends_id=$3, match_tags=$4, denied_read_paths=$5, model=$6, effort=$7, enabled=$8, updated_at=$9
+			WHERE name=$10
+			RETURNING id
+		`, b.DisplayName, b.Description, extendsID, matchTags, deniedReadPaths, b.Model, b.Effort, b.Enabled, b.UpdatedAt, b.Name).Scan(&b.ID)
+		switch {
+		case err == nil:
+			// Only an update can build a cycle. An insert's parent had to
+			// exist already, and nothing can extend a bundle that did not
+			// exist a moment ago, so a new row is always a leaf.
+			if err := refuseInheritanceCycle(ctx, tx, b); err != nil {
+				return err
+			}
+		case errors.Is(err, sql.ErrNoRows):
+			if err := tx.QueryRowContext(ctx, `
+				INSERT INTO bundles (name, display_name, description, extends_id, match_tags, denied_read_paths, model, effort, enabled, created_at, updated_at)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+				RETURNING id
+			`, b.Name, b.DisplayName, b.Description, extendsID, matchTags, deniedReadPaths, b.Model, b.Effort, b.Enabled, b.CreatedAt, b.UpdatedAt).Scan(&b.ID); err != nil {
+				return err
+			}
+			inserted = true
+		default:
+			return err
+		}
+
+		if _, err := tx.ExecContext(ctx, `DELETE FROM bundle_members WHERE bundle_id=$1`, b.ID); err != nil {
+			return err
+		}
+		for _, m := range b.Members {
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO bundle_members (bundle_id, kind, member_id, name, condition, effect) VALUES ($1, $2, $3, $4, $5, $6)
+			`, b.ID, string(m.Kind), m.ID, m.Name, m.Condition, string(m.Effect)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
 		return false, err
 	}
-	for _, m := range b.Members {
-		if _, err := tx.Exec(`
-			INSERT INTO bundle_members (bundle_id, kind, member_id, name, condition, effect) VALUES (?, ?, ?, ?, ?, ?)
-		`, b.ID, string(m.Kind), m.ID, m.Name, m.Condition, string(m.Effect)); err != nil {
-			return false, err
-		}
-	}
-	return inserted, tx.Commit()
+	return inserted, nil
 }
 
 // resolveExtends settles a bundle's inheritance link to the id that will be
@@ -419,15 +209,15 @@ func (s *Store) UpsertBundle(b *Bundle) (bool, error) {
 // anything else — a link that cannot be pinned to an existing row is not
 // written as NULL, because NULL means "root" and a demoted child inherits
 // nothing while still reading as healthy.
-func resolveExtends(tx *sql.Tx, b *Bundle) (any, error) {
+func resolveExtends(ctx context.Context, tx *sql.Tx, b *Bundle) (any, error) {
 	if b.ExtendsID == 0 && b.Extends == "" {
 		return nil, nil
 	}
 
 	if b.ExtendsID > 0 {
 		var name string
-		err := tx.QueryRow(`SELECT name FROM bundles WHERE id=?`, b.ExtendsID).Scan(&name)
-		if err == sql.ErrNoRows {
+		err := tx.QueryRowContext(ctx, `SELECT name FROM bundles WHERE id=$1`, b.ExtendsID).Scan(&name)
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("bundle %s: extends_id %d is not a bundle in this store", b.Name, b.ExtendsID)
 		}
 		if err != nil {
@@ -443,8 +233,8 @@ func resolveExtends(tx *sql.Tx, b *Bundle) (any, error) {
 	}
 
 	var id int64
-	err := tx.QueryRow(`SELECT id FROM bundles WHERE name=?`, b.Extends).Scan(&id)
-	if err == sql.ErrNoRows {
+	err := tx.QueryRowContext(ctx, `SELECT id FROM bundles WHERE name=$1`, b.Extends).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf(
 			"bundle %s: extends %q, which is not a bundle in this store — write the parent first, or pass extends_id if you already have it",
 			b.Name, b.Extends)
@@ -459,9 +249,9 @@ func resolveExtends(tx *sql.Tx, b *Bundle) (any, error) {
 // refuseInheritanceCycle rejects a write that would put a bundle in its own
 // ancestor chain, so the cycle is reported at the write that caused it rather
 // than at some later resolve of an unrelated repository. expandChain keeps its
-// own guard for the rows this one cannot see: a database written before this
-// check existed, or by hand.
-func refuseInheritanceCycle(tx *sql.Tx, b *Bundle) error {
+// own guard for the rows this one cannot see: rows imported from a standalone
+// store, or written by hand.
+func refuseInheritanceCycle(ctx context.Context, tx *sql.Tx, b *Bundle) error {
 	seen := map[int64]bool{}
 	for cur := b.ExtendsID; cur != 0; {
 		if cur == b.ID {
@@ -476,8 +266,8 @@ func refuseInheritanceCycle(tx *sql.Tx, b *Bundle) error {
 		}
 		seen[cur] = true
 		var parent sql.NullInt64
-		err := tx.QueryRow(`SELECT extends_id FROM bundles WHERE id=?`, cur).Scan(&parent)
-		if err == sql.ErrNoRows {
+		err := tx.QueryRowContext(ctx, `SELECT extends_id FROM bundles WHERE id=$1`, cur).Scan(&parent)
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil // the foreign key will refuse this write on its own
 		}
 		if err != nil {
@@ -488,8 +278,12 @@ func refuseInheritanceCycle(tx *sql.Tx, b *Bundle) error {
 	return nil
 }
 
-func (s *Store) loadMembers(bundleID int64) ([]Member, error) {
-	rows, err := s.db.Query(`SELECT kind, member_id, name, condition, effect FROM bundle_members WHERE bundle_id=? ORDER BY kind, name, member_id`, bundleID)
+// Names are ordered byte by byte (COLLATE "C"), as the standalone store's
+// SQLite ordered them, so a list comes back in the same order whatever the
+// database's own collation is.
+
+func (s *Store) loadMembers(ctx context.Context, bundleID int64) ([]Member, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT kind, member_id, name, condition, effect FROM bundle_members WHERE bundle_id=$1 ORDER BY kind COLLATE "C", name COLLATE "C", member_id`, bundleID)
 	if err != nil {
 		return nil, err
 	}
@@ -518,13 +312,13 @@ const bundleSelect = `
 	       b.match_tags, b.denied_read_paths, b.model, b.effort, b.enabled, b.created_at, b.updated_at
 	FROM bundles b LEFT JOIN bundles parent ON parent.id = b.extends_id`
 
-func (s *Store) scanBundle(row interface{ Scan(...any) error }) (*Bundle, error) {
+// scanBundleRow reads one row of bundleSelect, without its members.
+func scanBundleRow(row interface{ Scan(...any) error }) (*Bundle, error) {
 	b := &Bundle{}
 	var matchTags, deniedReadPaths string
-	var enabled int
 	var extendsID sql.NullInt64
-	err := row.Scan(&b.ID, &b.Name, &b.DisplayName, &b.Description, &extendsID, &b.Extends, &matchTags, &deniedReadPaths, &b.Model, &b.Effort, &enabled, &b.CreatedAt, &b.UpdatedAt)
-	if err == sql.ErrNoRows {
+	err := row.Scan(&b.ID, &b.Name, &b.DisplayName, &b.Description, &extendsID, &b.Extends, &matchTags, &deniedReadPaths, &b.Model, &b.Effort, &b.Enabled, &b.CreatedAt, &b.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
@@ -536,25 +330,32 @@ func (s *Store) scanBundle(row interface{ Scan(...any) error }) (*Bundle, error)
 	if err != nil {
 		return nil, fmt.Errorf("bundle %s: denied_read_paths: %w", b.Name, err)
 	}
-	b.Enabled = enabled == 1
-	members, err := s.loadMembers(b.ID)
-	if err != nil {
-		return nil, err
-	}
-	b.Members = members
 	return b, nil
 }
 
-func (s *Store) GetBundle(id int64) (*Bundle, error) {
-	return s.scanBundle(s.db.QueryRow(bundleSelect+` WHERE b.id=?`, id))
+func (s *Store) getOne(ctx context.Context, where string, argument any) (*Bundle, error) {
+	b, err := scanBundleRow(s.db.QueryRowContext(ctx, bundleSelect+` WHERE `+where, argument))
+	if err != nil {
+		return nil, err
+	}
+	if b.Members, err = s.loadMembers(ctx, b.ID); err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
+// GetBundle reads one bundle by id, enabled or not. ErrNotFound when there is
+// no such bundle.
+func (s *Store) GetBundle(ctx context.Context, id int64) (*Bundle, error) {
+	return s.getOne(ctx, `b.id=$1`, id)
 }
 
 // GetBundleByName answers the lookup a human asked for by name — the
 // /bundles/by-name/{name} route.
 // It is not a join: nothing inside this package reads a stored name back to
 // find the row it points at.
-func (s *Store) GetBundleByName(name string) (*Bundle, error) {
-	return s.scanBundle(s.db.QueryRow(bundleSelect+` WHERE b.name=?`, name))
+func (s *Store) GetBundleByName(ctx context.Context, name string) (*Bundle, error) {
+	return s.getOne(ctx, `b.name=$1`, name)
 }
 
 // ListFilter narrows ListBundles.
@@ -564,67 +365,83 @@ type ListFilter struct {
 	Limit       int
 }
 
-func (s *Store) ListBundles(f ListFilter) ([]Bundle, error) {
-	q := bundleSelect + ` WHERE 1=1`
+func (s *Store) ListBundles(ctx context.Context, f ListFilter) ([]Bundle, error) {
+	q := bundleSelect + ` WHERE true`
 	var args []any
 	if f.EnabledOnly {
-		q += ` AND b.enabled = 1`
+		q += ` AND b.enabled`
 	}
 	if f.Tag != "" {
-		q += ` AND b.match_tags LIKE ?`
+		// ILIKE, because SQLite's LIKE, which the standalone store used, is
+		// case-insensitive.
 		args = append(args, `%"`+f.Tag+`"%`)
+		q += fmt.Sprintf(` AND b.match_tags ILIKE $%d`, len(args))
 	}
-	q += ` ORDER BY b.name`
+	q += ` ORDER BY b.name COLLATE "C"`
 	if f.Limit > 0 {
-		q += ` LIMIT ?`
 		args = append(args, f.Limit)
+		q += fmt.Sprintf(` LIMIT $%d`, len(args))
 	}
-	rows, err := s.db.Query(q, args...)
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	var out []Bundle
 	for rows.Next() {
-		b, err := s.scanBundle(rows)
+		b, err := scanBundleRow(rows)
 		if err != nil {
+			rows.Close()
 			return nil, err
 		}
 		out = append(out, *b)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	for i := range out {
+		if out[i].Members, err = s.loadMembers(ctx, out[i].ID); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 // DeleteBundle removes a bundle. A bundle that other bundles extend is refused
 // with ErrParentHasChildren, naming them: the schema says ON DELETE RESTRICT,
 // and the point of RESTRICT is that the operator hears about the children
 // instead of finding them stranded later.
-func (s *Store) DeleteBundle(id int64) error {
-	children, err := s.childBundleNames(id)
+func (s *Store) DeleteBundle(ctx context.Context, id int64) error {
+	children, err := s.childBundleNames(ctx, id)
 	if err != nil {
 		return err
 	}
 	if len(children) > 0 {
 		return fmt.Errorf("%w: %s — reparent or delete them first", ErrParentHasChildren, strings.Join(children, ", "))
 	}
-	res, err := s.db.Exec(`DELETE FROM bundles WHERE id=?`, id)
+	res, err := s.db.ExecContext(ctx, `DELETE FROM bundles WHERE id=$1`, id)
 	if err != nil {
 		// The pre-check above is what produces a useful message, but the
 		// foreign key is the actual guarantee: it also holds against a racing
 		// write that adds a child between the two statements.
-		if strings.Contains(err.Error(), "FOREIGN KEY constraint failed") {
+		if hasPostgresCode(err, restrictViolation) || hasPostgresCode(err, foreignKeyViolation) {
 			return fmt.Errorf("%w: %v", ErrParentHasChildren, err)
 		}
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
 		return ErrNotFound
 	}
 	return nil
 }
 
-func (s *Store) childBundleNames(parentID int64) ([]string, error) {
-	rows, err := s.db.Query(`SELECT name FROM bundles WHERE extends_id=? ORDER BY name`, parentID)
+func (s *Store) childBundleNames(ctx context.Context, parentID int64) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT name FROM bundles WHERE extends_id=$1 ORDER BY name COLLATE "C"`, parentID)
 	if err != nil {
 		return nil, err
 	}
@@ -640,22 +457,19 @@ func (s *Store) childBundleNames(parentID int64) ([]string, error) {
 	return out, rows.Err()
 }
 
-func (s *Store) SetEnabled(id int64, enabled bool) error {
-	res, err := s.db.Exec(`UPDATE bundles SET enabled=?, updated_at=? WHERE id=?`, boolToInt(enabled), now(), id)
+func (s *Store) SetEnabled(ctx context.Context, id int64, enabled bool) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE bundles SET enabled=$1, updated_at=$2 WHERE id=$3`, enabled, now(), id)
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
 		return ErrNotFound
 	}
 	return nil
-}
-
-func boolToInt(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
 }
 
 func encodeStrings(xs []string) string {

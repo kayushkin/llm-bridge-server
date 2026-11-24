@@ -1,45 +1,39 @@
-package main
+package bundlestore
 
 import (
-	"context"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
-
-	bundlestore "github.com/kayushkin/llm-bridge-server/internal/agents/bundlestore"
 )
 
 // The ids below are made up. They model no real skill-store or tool-store.
 
-func checkFixtureBundles() []bundlestore.Bundle {
-	return []bundlestore.Bundle{
+func checkFixtureBundles() []Bundle {
+	return []Bundle{
 		{
 			ID:   1,
 			Name: "frontend",
-			Members: []bundlestore.Member{
-				{Kind: bundlestore.MemberSkill, ID: 501, Name: "web-testing", Effect: bundlestore.MemberInclude},
-				{Kind: bundlestore.MemberTool, ID: 61, Name: "browser", Effect: bundlestore.MemberInclude},
+			Members: []Member{
+				{Kind: MemberSkill, ID: 501, Name: "web-testing", Effect: MemberInclude},
+				{Kind: MemberTool, ID: 61, Name: "browser", Effect: MemberInclude},
 			},
 		},
 		{
 			ID:      2,
 			Name:    "read-only",
 			Enabled: false,
-			Members: []bundlestore.Member{
-				{Kind: bundlestore.MemberTool, ID: 62, Name: "write-file", Effect: bundlestore.MemberDeny},
+			Members: []Member{
+				{Kind: MemberTool, ID: 62, Name: "write-file", Effect: MemberDeny},
 			},
 		},
 	}
 }
 
 func TestCheckPassesWhenEveryStoredMemberIsCarried(t *testing.T) {
-	index := newMemberIndex(
-		[]storeEntry{{ID: 501, Name: "web-testing"}},
-		[]storeEntry{{ID: 61, Name: "browser"}, {ID: 62, Name: "write-file"}},
+	report := CheckMembers(checkFixtureBundles(),
+		[]MemberEntry{{ID: 501, Name: "web-testing"}},
+		[]MemberEntry{{ID: 61, Name: "browser"}, {ID: 62, Name: "write-file"}},
 	)
-	report := checkStoredMembers(index, checkFixtureBundles())
-	if len(report.Missing) != 0 || len(report.Relabeled) != 0 {
+	if report.Failed() || len(report.Relabeled) != 0 {
 		t.Fatalf("every id carried under its stored label must report nothing, got %+v", report)
 	}
 }
@@ -49,12 +43,8 @@ func TestCheckPassesWhenEveryStoredMemberIsCarried(t *testing.T) {
 // missing member is listed, including a deny in a disabled bundle: a deny that
 // points at nothing takes nothing away, and a disabled bundle can come back.
 func TestCheckFailsOnEveryMemberIDTheOwningStoreNoLongerCarries(t *testing.T) {
-	index := newMemberIndex(
-		[]storeEntry{{ID: 501, Name: "web-testing"}},
-		nil,
-	)
-	report := checkStoredMembers(index, checkFixtureBundles())
-	if len(report.Missing) != 2 {
+	report := CheckMembers(checkFixtureBundles(), []MemberEntry{{ID: 501, Name: "web-testing"}}, nil)
+	if len(report.Missing) != 2 || !report.Failed() {
 		t.Fatalf("want both missing tool ids reported, got %d: %v", len(report.Missing), report.Missing)
 	}
 	joined := strings.Join(report.Missing, "\n")
@@ -74,12 +64,11 @@ func TestCheckFailsOnEveryMemberIDTheOwningStoreNoLongerCarries(t *testing.T) {
 // The id is what a bundle means. An id the store still carries under a new
 // name is reported, but it does not fail the check.
 func TestCheckReportsARenamedMemberWithoutFailing(t *testing.T) {
-	index := newMemberIndex(
-		[]storeEntry{{ID: 501, Name: "web-testing-v2"}},
-		[]storeEntry{{ID: 61, Name: "browser"}, {ID: 62, Name: "write-file"}},
+	report := CheckMembers(checkFixtureBundles(),
+		[]MemberEntry{{ID: 501, Name: "web-testing-v2"}},
+		[]MemberEntry{{ID: 61, Name: "browser"}, {ID: 62, Name: "write-file"}},
 	)
-	report := checkStoredMembers(index, checkFixtureBundles())
-	if len(report.Missing) != 0 {
+	if report.Failed() {
 		t.Fatalf("a renamed member must not fail the check: %v", report.Missing)
 	}
 	if len(report.Relabeled) != 1 {
@@ -93,49 +82,31 @@ func TestCheckReportsARenamedMemberWithoutFailing(t *testing.T) {
 }
 
 // A skill and a tool can share an id number: they come from different stores.
-// The index must not let one answer for the other.
+// The check must not let one answer for the other.
 func TestCheckKeepsTheTwoStoresApart(t *testing.T) {
-	index := newMemberIndex(
-		[]storeEntry{{ID: 61, Name: "browser"}},
-		nil,
-	)
-	bundles := []bundlestore.Bundle{{
+	bundles := []Bundle{{
 		Name:    "crossed",
-		Members: []bundlestore.Member{{Kind: bundlestore.MemberTool, ID: 61, Name: "browser"}},
+		Members: []Member{{Kind: MemberTool, ID: 61, Name: "browser"}},
 	}}
-	report := checkStoredMembers(index, bundles)
+	report := CheckMembers(bundles, []MemberEntry{{ID: 61, Name: "browser"}}, nil)
 	if len(report.Missing) != 1 {
 		t.Fatalf("a tool id carried only by skill-store must be missing, got %+v", report)
-	}
-}
-
-func TestFetchEntriesReportsAnUnreachableStoreLoudly(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "down", http.StatusServiceUnavailable)
-	}))
-	defer srv.Close()
-	if _, err := fetchEntries(context.Background(), srv.URL+"/skills"); err == nil {
-		t.Fatal("a non-200 from an owning store must be an error, not an empty index")
 	}
 }
 
 // The check reads the bundles the store holds, so a store that holds none
 // passes with nothing to say.
 func TestCheckOfAnEmptyStorePasses(t *testing.T) {
-	store, err := bundlestore.Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	bundles, err := store.ListBundles(bundlestore.ListFilter{})
+	s := openTest(t)
+	bundles, err := s.ListBundles(testContext, ListFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(bundles) != 0 {
 		t.Fatalf("a fresh store must hold no bundles, got %d", len(bundles))
 	}
-	report := checkStoredMembers(newMemberIndex(nil, nil), bundles)
-	if len(report.Missing) != 0 || len(report.Relabeled) != 0 {
+	report := CheckMembers(bundles, nil, nil)
+	if report.Failed() || len(report.Relabeled) != 0 {
 		t.Fatalf("an empty store must report nothing, got %+v", report)
 	}
 }

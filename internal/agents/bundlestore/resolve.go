@@ -1,6 +1,7 @@
 package bundlestore
 
 import (
+	"context"
 	"errors"
 	"fmt"
 )
@@ -67,8 +68,8 @@ type ResolveResponse struct {
 // order the bundles were applied. A conditional deny applies only when its
 // condition is among the task tags, exactly like a conditional include.
 // Denied read paths from every bundle in the set are unioned.
-func Resolve(s *Store, req ResolveRequest) (*ResolveResponse, error) {
-	all, err := s.ListBundles(ListFilter{EnabledOnly: true})
+func Resolve(ctx context.Context, s *Store, req ResolveRequest) (*ResolveResponse, error) {
+	all, err := s.ListBundles(ctx, ListFilter{EnabledOnly: true})
 	if err != nil {
 		return nil, err
 	}
@@ -89,8 +90,12 @@ func Resolve(s *Store, req ResolveRequest) (*ResolveResponse, error) {
 		for _, id := range req.BundleIDs {
 			b, ok := byID[id]
 			if !ok {
-				if _, err := s.GetBundle(id); err == nil {
+				_, err := s.GetBundle(ctx, id)
+				if err == nil {
 					return nil, fmt.Errorf("%w: bundle id %d is disabled and cannot be applied to a session", ErrBundleNotApplicable, id)
+				}
+				if !errors.Is(err, ErrNotFound) {
+					return nil, fmt.Errorf("resolve: reading bundle id %d: %w", id, err)
 				}
 				return nil, fmt.Errorf("%w: bundle id %d does not exist", ErrBundleNotApplicable, id)
 			}
@@ -112,7 +117,7 @@ func Resolve(s *Store, req ResolveRequest) (*ResolveResponse, error) {
 	deniedReadPaths := newOrderedStringSet()
 
 	for i := range selected {
-		chain, err := expandChain(s, selected[i])
+		chain, err := expandChain(ctx, s, selected[i])
 		if err != nil {
 			return nil, err
 		}
@@ -168,13 +173,13 @@ func Resolve(s *Store, req ResolveRequest) (*ResolveResponse, error) {
 //
 // UpsertBundle refuses both of those at the write, so neither should be
 // reachable through the API. This guard is for the rows that did not come
-// through it: a database written by hand, or one that predates that check.
-func expandChain(s *Store, b Bundle) ([]Bundle, error) {
+// through it: rows imported from a standalone store, or written by hand.
+func expandChain(ctx context.Context, s *Store, b Bundle) ([]Bundle, error) {
 	chain := []Bundle{b}
 	seen := map[int64]bool{b.ID: true}
 	child := b
 	for child.ExtendsID != 0 {
-		parent, err := s.GetBundle(child.ExtendsID)
+		parent, err := s.GetBundle(ctx, child.ExtendsID)
 		if err != nil {
 			return nil, fmt.Errorf("resolve: bundle %q extends bundle id %d, which is missing: %w", child.Name, child.ExtendsID, err)
 		}

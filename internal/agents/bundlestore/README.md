@@ -3,7 +3,9 @@
 A small Go service that keeps curated **session bundles** — named, inheritable
 sets of **skills and tools**, with optional model and effort defaults — and
 composes the right one for a session from the repo's tags and the task's tags,
-at `POST /resolve`. SQLite behind a plain HTTP API.
+at `POST /resolve`. It is a module of llm-bridge-server: its records live in
+Postgres (schema `bundles`, role `bundles_module`) and its routes are mounted at
+`/bundle-store/`, the same paths as the standalone service's behind that prefix.
 
 It is one of the stores of the [llm-bridge](https://github.com/kayushkin/llm-bridge)
 ecosystem. Members are the ids that `skill-store` and `tool-store` assign;
@@ -49,11 +51,11 @@ and no id is a `400`.
 
 A fresh install holds no bundles; create them through `POST /bundles`. The
 owning stores can delete or rename a row without telling bundle-store, so
-`bundle-store -check-members` reads every stored bundle and asks skill-store and
-tool-store about every member id. An id the owning store no longer carries is a
+`CheckMembers` compares every stored bundle with the rows skill-store and
+tool-store hold, by member id. An id the owning store no longer carries is a
 failure line naming the bundle, kind, id and stored name. An id it still carries
 under another name is reported but passes, because the id is what the bundle
-means. `deploy.sh` runs the check before it stops the running instance.
+means.
 
 ## Data model
 
@@ -91,11 +93,11 @@ the bundle may not read, such as `~/.config/**` or `/proc/**`. Each starts with
 paths, not a rule string for any one harness; the harness wrapper turns them
 into its own form.
 
-**Migrating a database written before `member_id`.** An id cannot be derived
-from a name without asking the owning store, and the library never asks — so
-`Open` moves the old rows into `bundle_members_legacy_name_join`, keeps them,
-and reports the count on `Store.QuarantinedMembers`; `cmd/bundle-store` logs it
-at boot. Each such member has to be re-added through `POST /bundles` with its id.
+**Name-keyed members from before `member_id`.** An id cannot be derived from a
+name without asking the owning store, and this package never asks. The
+standalone store moved such rows into `bundle_members_legacy_name_join` and kept
+them; the import copies that table as it is. Nothing resolves those rows. Each
+such member has to be re-added through `POST /bundles` with its id.
 
 **Inheritance is an id too.** `extends_id` points at the parent row; the wire
 type still carries `extends` as the parent's **name**, read back off the parent
@@ -106,14 +108,6 @@ write rather than blowing up later on somebody else's `/resolve`, and so is a
 write that would put a bundle in its own inheritance chain. `ON DELETE RESTRICT`
 refuses to delete a bundle others extend (`409`, naming them); `SET NULL` would
 have turned each child into a root that silently inherits nothing.
-
-**Migrating a database written before `extends_id`.** Unlike the member join
-this one needs nobody's permission: the parent is a row in the same table and
-`bundles.name` is `UNIQUE`, so each name resolves to exactly one id. `Open`
-backfills them, reports the count on `Store.BackfilledExtendsLinks`, and drops
-the old column. A name that resolves to nothing **fails the open**, naming the
-child and the parent it wanted — writing `NULL` there would spell "root", and a
-stranded child would come back looking perfectly healthy.
 
 `condition` gates a member on a **task tag**: e.g. `chrome-devtools` (a perf/debug
 MCP) is only added when the resolve request's `task_tags` include `perf`.
@@ -157,10 +151,13 @@ repo_tags=[go]                      → skills[backend-patterns,sql-pro] tools[]
 
 ## HTTP API
 
+The paths are relative to `/bundle-store/` on llm-bridge-server, where every
+route is an operator route: the rows have no owner, so any caller who could
+write one could change every session's bundle.
+
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/health` | liveness |
-| GET | `/settings` | every environment variable the service reads, with the value in force and its source; read-only |
 | GET | `/bundles?tag=&enabled=true&limit=` | list |
 | POST | `/bundles` | upsert (full member set, transactional) |
 | GET | `/bundles/{id}` · `/bundles/by-name/{name}` | fetch |
@@ -178,59 +175,30 @@ repo_tags=[go]                      → skills[backend-patterns,sql-pro] tools[]
   as the default when agent-store is silent.
 - **`/resolve` is a pure id-join.** Validation that referenced skills/tools still
   exist (against skill-store/tool-store) is deliberately out of scope here — add as a
-  lint endpoint later rather than coupling resolve to those services. The
-  `-check-members` pre-flight does that check outside the server, by id.
+  lint endpoint later rather than coupling resolve to those services.
+  `CheckMembers` does that check outside resolve, by id.
 - **Curation is hand-first.** Bundles are written through the API; a future
   utility-feedback loop (mining log-store for which members were actually used per
   repo/task) should propose changes that are human-approved, never silently mutate.
 
-## Build
+## Build, test and import
 
-bundle-store reads its settings through llm-bridge's `servicesettings` package,
-and `go.mod` points at a checkout beside this one:
-
-```sh
-git clone https://github.com/kayushkin/llm-bridge
-git clone https://github.com/kayushkin/bundle-store
-cd bundle-store
-go test ./...
-go build -o bundle-store ./cmd/bundle-store
-```
-
-`scripts/e2e-smoke.sh` builds the binary and drives every route against stub
-registries and a throwaway database; it never touches a running service.
-
-## Run
+The package builds as part of llm-bridge-server. Its tests run on throwaway
+Postgres databases:
 
 ```sh
-./bundle-store            # listens on 127.0.0.1:8307
-curl -s localhost:8307/health
+export POSTGRESTEST_ADMINISTRATOR_URL="$(scripts/test-postgres.sh start)"   # from the repo root
+go test ./internal/agents/bundlestore/...
 ```
 
-| Variable | Default | |
-|---|---|---|
-| `BUNDLE_STORE_ADDR` | `127.0.0.1:8307` | listen address |
-| `BUNDLE_STORE_DATA_DIR` | `~/.config/bundle-store` | holds `bundle-store.db` (WAL) |
-| `SKILL_STORE_URL` | `http://localhost:8301` | where skill-store answers |
-| `TOOL_STORE_URL` | `http://localhost:8302` | where tool-store answers |
+`ImportStandaloneDatabase` copies a standalone bundle-store's SQLite file into an
+empty module, keeping every id, link, member, time and enabled flag, in one
+transaction. It refuses a file its standalone store never finished migrating
+(members keyed by name, a parent linked by name, or no `effect` column): start
+the standalone store on it once, then import that.
 
-The last two are read only by `bundle-store -check-members`, which checks every
-stored member id against them and exits; the server itself never calls either
-store, and boots without them.
-
-The variables are declared once in `settings.go`, and `GET /settings` describes
-each one with the value in force. A new variable is declared there or
-`TestEveryEnvironmentVariableTheServiceReadsIsDeclared` fails, and a set
-`BUNDLE_STORE_` variable that is not declared there stops the service at boot.
-
-**There is no authentication.** Keep it on loopback, as the default does, and
-put a front door that checks who is asking in front of it if anyone else
-should reach it.
-
-To run it as a systemd user service, copy the binary to `~/bin` and
-`bundle-store.service` to `~/.config/systemd/user/`, then
-`systemctl --user enable --now bundle-store`. `deploy.sh` does this, with
-checks, on a host that runs the llm-bridge deploy gate.
+`scripts/e2e-smoke.sh` drove the standalone binary, which is gone; it is kept
+for reference until the routes have an end-to-end test of their own.
 
 ## License
 
