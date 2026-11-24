@@ -3,6 +3,7 @@ package filestore
 import (
 	"crypto/sha256"
 	"database/sql"
+	"embed"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -13,8 +14,25 @@ import (
 	"sync"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 )
+
+// FileIDPrefix is the type part of a file's public id: file_000001.
+const FileIDPrefix = "file"
+
+//go:embed migrations/*.sql
+var migrationFiles embed.FS
+
+// Module is the Postgres schema and role the store keeps its records in, with
+// the migrations that build them. The bytes are not in it: they are files
+// under the data directory New is given.
+func Module() (postgresstorage.Module, error) {
+	migrations, err := postgresstorage.MigrationsFromFiles(migrationFiles, "migrations")
+	if err != nil {
+		return postgresstorage.Module{}, err
+	}
+	return postgresstorage.Module{Schema: "files", Role: "files_module", Migrations: migrations}, nil
+}
 
 var (
 	// ErrNotFound: no live file has that id.
@@ -25,9 +43,14 @@ var (
 	ErrEmptyFile = errors.New("file is empty")
 )
 
-// Store is the database and the blob directory together. They are one thing:
+// Store is the records and the blob directory together. They are one thing:
 // a row without its blob is a file that cannot be read, so every path that
 // adds or removes either holds blobMutex.
+//
+// The records are in the module's Postgres schema; the bytes are on disk
+// under dataDir/blobs, named by their SHA-256. One process holds a data
+// directory: blobMutex is this process's, so two servers sharing a directory
+// could purge a blob the other is naming.
 type Store struct {
 	db      *sql.DB
 	dataDir string
@@ -37,37 +60,33 @@ type Store struct {
 	blobMutex sync.Mutex
 }
 
-// Open opens (creating if needed) the store under dataDir.
-func Open(dataDir string) (*Store, error) {
+// New wraps a pool opened on the module (postgresstorage.Open), migrated, and
+// the directory the bytes are kept in, which it makes if it is missing.
+func New(db *sql.DB, dataDir string) (*Store, error) {
+	if dataDir == "" {
+		return nil, errors.New("file-store: no data directory to keep the bytes in")
+	}
 	for _, dir := range []string{dataDir, filepath.Join(dataDir, "blobs"), filepath.Join(dataDir, "blobs", "incoming")} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, fmt.Errorf("create %s: %w", dir, err)
 		}
 	}
-	db, err := sql.Open("sqlite3", filepath.Join(dataDir, "file-store.db")+"?_journal_mode=WAL&_busy_timeout=5000&_txlock=immediate")
+	// An upload that died mid-copy left a partial file nobody names.
+	leftovers, err := filepath.Glob(filepath.Join(dataDir, "blobs", "incoming", "*"))
 	if err != nil {
 		return nil, err
 	}
-	// One writer at a time, and seq is read-then-written: a single connection
-	// makes that a sequence nothing else can interleave with.
-	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(schemaSQL); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("apply schema: %w", err)
-	}
-	store := &Store{db: db, dataDir: dataDir}
-	// An upload that died mid-copy left a partial file nobody names.
-	leftovers, _ := filepath.Glob(filepath.Join(dataDir, "blobs", "incoming", "*"))
 	for _, leftover := range leftovers {
-		_ = os.Remove(leftover)
+		if err := os.Remove(leftover); err != nil {
+			return nil, fmt.Errorf("remove the partial upload %s: %w", leftover, err)
+		}
 	}
-	return store, nil
+	return &Store{db: db, dataDir: dataDir}, nil
 }
 
-func (s *Store) Close() error    { return s.db.Close() }
 func (s *Store) DataDir() string { return s.dataDir }
 
-func formatID(seq int64) string { return fmt.Sprintf("file_%06d", seq) }
+func formatID(seq int64) string { return postgresstorage.FormatRecordID(FileIDPrefix, seq) }
 
 // blobPath is where the bytes with this hash live. Two levels of fan-out keep
 // any one directory small.
@@ -144,23 +163,20 @@ func (s *Store) Put(content io.Reader, maximumBytes int64, file NewFile) (*File,
 		Filename: file.Filename, OwnerService: file.OwnerService, OwnerRef: file.OwnerRef,
 		UploadedByPrincipalID: file.UploadedByPrincipalID, CreatedAt: time.Now().Unix(),
 	}
-	// An id is given out once, even to an upload whose insert then fails: a
-	// gap in the numbers is harmless, and a reused id is not. See file_sequence.
+	// The identity column gives each number out once, even to an insert that
+	// then fails: a gap in the numbers is harmless, and a reused id is not.
 	var seq int64
-	if err := s.db.QueryRow(`UPDATE file_sequence SET last_seq = last_seq + 1 WHERE only_row = 1 RETURNING last_seq`).Scan(&seq); err != nil {
-		return nil, fmt.Errorf("take the next file id: %w", err)
-	}
-	stored.ID = formatID(seq)
-	if _, err := s.db.Exec(`INSERT INTO files
-		(id, seq, sha256, size_bytes, content_type, detected_content_type, filename, owner_service, owner_ref, uploaded_by_principal_id, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		stored.ID, seq, stored.SHA256, stored.SizeBytes, stored.ContentType, stored.DetectedContentType, stored.Filename,
-		stored.OwnerService, stored.OwnerRef, stored.UploadedByPrincipalID, stored.CreatedAt); err != nil {
+	if err := s.db.QueryRow(`INSERT INTO files
+		(sha256, size_bytes, content_type, detected_content_type, filename, owner_service, owner_ref, uploaded_by_principal_id, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING seq`,
+		stored.SHA256, stored.SizeBytes, stored.ContentType, stored.DetectedContentType, stored.Filename,
+		stored.OwnerService, stored.OwnerRef, stored.UploadedByPrincipalID, stored.CreatedAt).Scan(&seq); err != nil {
 		// The blob may now be named by no row. It is harmless, it is removed the
 		// next time a row with its hash is purged, and removing it here could
 		// take the bytes of an older row that names the same hash.
 		return nil, fmt.Errorf("record the file: %w", err)
 	}
+	stored.ID = formatID(seq)
 	return stored, nil
 }
 
@@ -180,11 +196,12 @@ func (h *headCapture) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-const fileColumns = `id, sha256, size_bytes, content_type, detected_content_type, filename, owner_service, owner_ref, uploaded_by_principal_id, created_at, deleted_at`
+const fileColumns = `seq, sha256, size_bytes, content_type, detected_content_type, filename, owner_service, owner_ref, uploaded_by_principal_id, created_at, deleted_at`
 
 func scanFile(row interface{ Scan(...any) error }) (*File, error) {
 	var file File
-	err := row.Scan(&file.ID, &file.SHA256, &file.SizeBytes, &file.ContentType, &file.DetectedContentType, &file.Filename,
+	var seq int64
+	err := row.Scan(&seq, &file.SHA256, &file.SizeBytes, &file.ContentType, &file.DetectedContentType, &file.Filename,
 		&file.OwnerService, &file.OwnerRef, &file.UploadedByPrincipalID, &file.CreatedAt, &file.DeletedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -192,16 +209,31 @@ func scanFile(row interface{ Scan(...any) error }) (*File, error) {
 	if err != nil {
 		return nil, err
 	}
+	file.ID = formatID(seq)
 	return &file, nil
+}
+
+// seqOf is the number in a file id. An id that is not the exact form a number
+// makes names no file.
+func seqOf(id string) (int64, error) {
+	seq, err := postgresstorage.ParseRecordID(FileIDPrefix, id)
+	if err != nil || formatID(seq) != id {
+		return 0, ErrNotFound
+	}
+	return seq, nil
 }
 
 // Get reads one file. A deleted file is not found unless includeDeleted.
 func (s *Store) Get(id string, includeDeleted bool) (*File, error) {
-	query := `SELECT ` + fileColumns + ` FROM files WHERE id = ?`
+	seq, err := seqOf(id)
+	if err != nil {
+		return nil, err
+	}
+	query := `SELECT ` + fileColumns + ` FROM files WHERE seq = $1`
 	if !includeDeleted {
 		query += ` AND deleted_at = 0`
 	}
-	return scanFile(s.db.QueryRow(query, id))
+	return scanFile(s.db.QueryRow(query, seq))
 }
 
 // OpenContent opens a live file's bytes. The caller closes it.
@@ -227,19 +259,21 @@ type Filter struct {
 
 // List answers files oldest first.
 func (s *Store) List(filter Filter) ([]*File, error) {
-	query := `SELECT ` + fileColumns + ` FROM files WHERE 1=1`
+	query := `SELECT ` + fileColumns + ` FROM files WHERE true`
 	args := []any{}
-	for column, value := range map[string]string{"owner_service": filter.OwnerService, "owner_ref": filter.OwnerRef, "sha256": filter.SHA256} {
-		if value != "" {
-			query += ` AND ` + column + ` = ?`
-			args = append(args, value)
+	for _, condition := range []struct{ column, value string }{
+		{"owner_service", filter.OwnerService}, {"owner_ref", filter.OwnerRef}, {"sha256", filter.SHA256},
+	} {
+		if condition.value != "" {
+			args = append(args, condition.value)
+			query += fmt.Sprintf(` AND %s = $%d`, condition.column, len(args))
 		}
 	}
 	if !filter.IncludeDeleted {
 		query += ` AND deleted_at = 0`
 	}
-	query += ` ORDER BY seq ASC LIMIT ? OFFSET ?`
 	args = append(args, filter.Limit, filter.Offset)
+	query += fmt.Sprintf(` ORDER BY seq ASC LIMIT $%d OFFSET $%d`, len(args)-1, len(args))
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, err
@@ -273,11 +307,19 @@ func (s *Store) stampDeletedAt(id string, from, to int64) error {
 	if from != 0 {
 		condition = `deleted_at != 0`
 	}
-	result, err := s.db.Exec(`UPDATE files SET deleted_at = ? WHERE id = ? AND `+condition, to, id)
+	seq, err := seqOf(id)
 	if err != nil {
 		return err
 	}
-	if changed, _ := result.RowsAffected(); changed == 0 {
+	result, err := s.db.Exec(`UPDATE files SET deleted_at = $1 WHERE seq = $2 AND `+condition, to, seq)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed == 0 {
 		return ErrNotFound
 	}
 	return nil
@@ -292,11 +334,15 @@ func (s *Store) Purge(id string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := s.db.Exec(`DELETE FROM files WHERE id = ?`, id); err != nil {
+	seq, err := seqOf(file.ID)
+	if err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`DELETE FROM files WHERE seq = $1`, seq); err != nil {
 		return err
 	}
 	var stillNamed int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM files WHERE sha256 = ?`, file.SHA256).Scan(&stillNamed); err != nil {
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM files WHERE sha256 = $1`, file.SHA256).Scan(&stillNamed); err != nil {
 		return err
 	}
 	if stillNamed > 0 {
@@ -314,38 +360,9 @@ func (s *Store) Health() (*Health, error) {
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM files WHERE deleted_at = 0`).Scan(&health.Files); err != nil {
 		return nil, err
 	}
-	if err := s.db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM (SELECT sha256, MAX(size_bytes) AS size_bytes FROM files GROUP BY sha256)`).
+	if err := s.db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM (SELECT sha256, MAX(size_bytes) AS size_bytes FROM files GROUP BY sha256) AS blobs`).
 		Scan(&health.Blobs, &health.BlobBytes); err != nil {
 		return nil, err
 	}
 	return health, nil
-}
-
-// storedSettings keeps the editable behavior settings in this database.
-type storedSettings struct{ db *sql.DB }
-
-// StoredSettings is what servicesettings.AttachStoredValues takes.
-func (s *Store) StoredSettings() *storedSettings { return &storedSettings{db: s.db} }
-
-func (s *storedSettings) Load() (map[string]string, error) {
-	rows, err := s.db.Query(`SELECT key, value FROM service_settings`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	values := map[string]string{}
-	for rows.Next() {
-		var key, value string
-		if err := rows.Scan(&key, &value); err != nil {
-			return nil, err
-		}
-		values[key] = value
-	}
-	return values, rows.Err()
-}
-
-func (s *storedSettings) Save(key, value string) error {
-	_, err := s.db.Exec(`INSERT INTO service_settings (key, value) VALUES (?, ?)
-		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
-	return err
 }
