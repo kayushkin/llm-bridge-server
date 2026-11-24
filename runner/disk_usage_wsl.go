@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-runner/internal/diskusage"
+	"github.com/kayushkin/llm-bridge-server/runner/internal/diskusage"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
