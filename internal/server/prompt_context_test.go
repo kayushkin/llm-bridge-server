@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -21,7 +20,7 @@ import (
 // its noteboard item's tags, and 404 for any other card.
 func fakeKanbanCards(t *testing.T, tagsByCard map[string][]string) *kanbanclient.Client {
 	t.Helper()
-	kanban := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return kanbanclient.New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cardID, ok := strings.CutPrefix(r.URL.Path, "/api/cards/")
 		tags, known := tagsByCard[cardID]
 		if !ok || !known {
@@ -30,8 +29,6 @@ func fakeKanbanCards(t *testing.T, tagsByCard map[string][]string) *kanbanclient
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"card_id": cardID, "item": map[string]any{"id": cardID, "tags": tags}})
 	}))
-	t.Cleanup(kanban.Close)
-	return kanbanclient.New(kanban.URL)
 }
 
 // contextTestAgentStore holds a native_file Claude Code, an inject Codex, and

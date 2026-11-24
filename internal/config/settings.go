@@ -5,7 +5,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
 	"github.com/kayushkin/llm-bridge-server/internal/productiondefaults"
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
@@ -193,8 +192,6 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "The https address other llm-bridge-servers reach this one at, shown beside a connection passphrase so the administrator can give both to the other server. Nothing else reads it; public_url is the address runners and this server's own agents use."},
 		{Key: "reference_store.url", EnvironmentVariable: "LLMBRIDGE_REFERENCE_STORE_URL", Kind: wiring, ValueType: text, Required: true,
 			Description: "reference-store, which says what an id written in prose names and who may see it, mounted at /reference-store/ as the caller. It has no default."},
-		{Key: "kanban_store.url", EnvironmentVariable: "LLMBRIDGE_KANBAN_STORE_URL", Kind: wiring, ValueType: text, Required: true,
-			Description: "kanban-store, which owns the session-to-card link and is mounted at /kanban/. It has no default."},
 		{Key: "chat_links.nats_url", EnvironmentVariable: "LLMBRIDGE_NATS_URL", Kind: wiring, ValueType: text,
 			Description: "NATS, whose messaging.inbound subject multichat publishes what people send our accounts on. Chat links read it through a durable consumer. Empty switches chat links off, and their routes answer 503."},
 		{Key: "multichat.url", EnvironmentVariable: "LLMBRIDGE_MULTICHAT_URL", Kind: wiring, ValueType: text,
@@ -291,8 +288,8 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "What an internal service presents in X-LLM-Bridge-Service-Token to reach the operator routes."},
 		{Key: "grant_store.service_token", EnvironmentVariable: GrantStoreServiceTokenEnvironmentVariable, Kind: secret, ValueType: text,
 			Description: "Not read: grant-store runs in this server. Declared because the shared token file this unit loads still sets it for the standalone grant-store, dash and kanban-store, and it gives unrestricted access to that store: so GET /settings says only whether it is set, and no harness child gets it."},
-		{Key: "kanban_store.service_token", EnvironmentVariable: kanbanclient.ServiceTokenEnvironmentVariable, Kind: secret, ValueType: text,
-			Description: "Sent to kanban-store on the calls this server makes as itself, grant-store's check that a board exists among them."},
+		{Key: "kanban_store.service_token", EnvironmentVariable: KanbanStoreServiceTokenEnvironmentVariable, Kind: secret, ValueType: text,
+			Description: "Not read: kanban-store runs in this server, and the internal service reaches /kanban/ with this server's own service token. Declared because the shared token file this unit loads still sets it for the standalone kanban-store and its callers, and it gives unrestricted access to that store: so GET /settings says only whether it is set, and no harness child gets it."},
 		{Key: "file_store.service_token", EnvironmentVariable: FileStoreServiceTokenEnvironmentVariable, Kind: secret, ValueType: text,
 			Description: "Sent to file-store on every call. It reads every file file-store holds, so it never reaches a harness child."},
 		{Key: "mailstack.token", EnvironmentVariable: "LLMBRIDGE_MAILSTACK_TOKEN", Kind: secret, ValueType: text,
@@ -312,6 +309,7 @@ func SettingDefinitions() []servicesettings.Definition {
 	}
 
 	definitions = append(definitions, taskTrackingSettingDefinitions()...)
+	definitions = append(definitions, kanbanStoreSettingDefinitions()...)
 
 	// One proxy backend per known harness. The variable is per harness, so the
 	// declarations are read off the harness registry rather than listed.

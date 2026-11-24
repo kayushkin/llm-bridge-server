@@ -30,7 +30,6 @@ type ResourceChecker interface {
 const (
 	skillStoreURLVariable     = "SKILL_STORE_URL"
 	toolStoreURLVariable      = "TOOL_STORE_URL"
-	kanbanStoreURLVariable    = "KANBAN_STORE_URL"
 	referenceStoreURLVariable = "REFERENCE_STORE_URL"
 	// referenceStoreServiceTokenVariable is the token reference-store takes
 	// from an internal service to look a record up for nobody. Its name is
@@ -38,12 +37,6 @@ const (
 	referenceStoreServiceTokenVariable = "REFERENCE_STORE_SERVICE_TOKEN"
 	// ReferenceStoreServiceTokenHeader is where reference-store reads it.
 	ReferenceStoreServiceTokenHeader = "X-Reference-Store-Service-Token"
-	// KanbanStoreServiceTokenHeader is the header kanban-store reads its
-	// internal-service token from. Declared in kanban-store's
-	// internal/api/principal_access.go too; the two must match. Without the
-	// token a board check against an enforcing kanban-store is a 401, reported
-	// as the owner being unable to answer — never as the board not existing.
-	KanbanStoreServiceTokenHeader = "X-Kanban-Store-Service-Token"
 )
 
 // ownerCheckTimeout bounds each owner call. A POST waits on it, and the caller is
@@ -55,12 +48,9 @@ const ownerCheckTimeout = 3 * time.Second
 // credential each one that gates its routes is asked with. A token may be
 // empty, which sends none.
 type ResourceOwners struct {
-	SkillStoreURL  string
-	ToolStoreURL   string
-	KanbanStoreURL string
-	// KanbanStoreServiceToken is sent to kanban-store only.
-	KanbanStoreServiceToken string
-	ReferenceStoreURL       string
+	SkillStoreURL     string
+	ToolStoreURL      string
+	ReferenceStoreURL string
 	// ReferenceStoreServiceToken is sent to reference-store only. Without it a
 	// reference check is a 401 reported as the owner being unable to answer.
 	ReferenceStoreServiceToken string
@@ -69,17 +59,15 @@ type ResourceOwners struct {
 // ResourceTypesCheckedOverHTTP are the resource types HTTPResourceChecker
 // asks an owner about. Every other type in ResourceTypes is owned by the
 // server this store is mounted in (agents, instances, machines, peer
-// connections and operation types) or by principal-store beside it, and that
-// server checks them in its own process.
-var ResourceTypesCheckedOverHTTP = []string{ResourceTypeSkill, ResourceTypeTool, ResourceTypeBoard, ResourceTypeReferenceType, ResourceTypeReference}
+// connections and operation types) or by a store beside it in that server
+// (principal-store, kanban-store), and that server checks them in its own
+// process.
+var ResourceTypesCheckedOverHTTP = []string{ResourceTypeSkill, ResourceTypeTool, ResourceTypeReferenceType, ResourceTypeReference}
 
 // HTTPResourceChecker asks the owners that run as services of their own.
 type HTTPResourceChecker struct {
-	skillStoreURL  string
-	toolStoreURL   string
-	kanbanStoreURL string
-	// kanbanStoreServiceToken is sent to kanban-store only, and only when set.
-	kanbanStoreServiceToken    string
+	skillStoreURL              string
+	toolStoreURL               string
 	referenceStoreURL          string
 	referenceStoreServiceToken string
 	client                     *http.Client
@@ -90,8 +78,6 @@ func NewHTTPResourceChecker(owners ResourceOwners) *HTTPResourceChecker {
 	return &HTTPResourceChecker{
 		skillStoreURL:              strings.TrimSuffix(owners.SkillStoreURL, "/"),
 		toolStoreURL:               strings.TrimSuffix(owners.ToolStoreURL, "/"),
-		kanbanStoreURL:             strings.TrimSuffix(owners.KanbanStoreURL, "/"),
-		kanbanStoreServiceToken:    owners.KanbanStoreServiceToken,
 		referenceStoreURL:          strings.TrimSuffix(owners.ReferenceStoreURL, "/"),
 		referenceStoreServiceToken: owners.ReferenceStoreServiceToken,
 		client:                     &http.Client{Timeout: ownerCheckTimeout},
@@ -109,9 +95,6 @@ func (c *HTTPResourceChecker) CheckResourceExists(ctx context.Context, resourceT
 	case ResourceTypeTool:
 		return c.checkByGet(ctx, "tool-store", toolStoreURLVariable,
 			c.toolStoreURL+"/tools/"+url.PathEscape(resourceID))
-	case ResourceTypeBoard:
-		return c.checkByGet(ctx, "kanban-store", kanbanStoreURLVariable,
-			c.kanbanStoreURL+"/api/boards/"+url.PathEscape(resourceID))
 	case ResourceTypeReferenceType:
 		return c.checkByGet(ctx, "reference-store", referenceStoreURLVariable,
 			c.referenceStoreURL+"/types/"+url.PathEscape(resourceID))
@@ -128,9 +111,6 @@ func (c *HTTPResourceChecker) get(ctx context.Context, owner, requestURL string)
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
 		return nil, nil, fmt.Errorf("build GET %s: %w", requestURL, err)
-	}
-	if owner == "kanban-store" && c.kanbanStoreServiceToken != "" {
-		request.Header.Set(KanbanStoreServiceTokenHeader, c.kanbanStoreServiceToken)
 	}
 	if owner == "reference-store" && c.referenceStoreServiceToken != "" {
 		request.Header.Set(ReferenceStoreServiceTokenHeader, c.referenceStoreServiceToken)

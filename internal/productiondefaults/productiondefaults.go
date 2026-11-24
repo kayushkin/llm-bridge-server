@@ -57,13 +57,8 @@ const (
 	MailstackURL   = "http://localhost:8195"
 	HealthcheckURL = "http://localhost:8099"
 	UsageStoreURL  = "http://localhost:8185"
-	// kanban-store, principal-store and grant-store have no default here, and
-	// so no row in the three tables below. Request authorization reads all
-	// three on a gated request and main refuses to start without
-	// LLMBRIDGE_KANBAN_STORE_URL, LLMBRIDGE_PRINCIPAL_STORE_URL and
-	// LLMBRIDGE_GRANT_STORE_URL rather than guessing which service answers on
-	// a port. This guard exists for the fallback a test inherits without
-	// asking; a field with no fallback cannot hand one out.
+	// kanban-store, principal-store and grant-store run in this process, so
+	// they have no address here and no row in the three tables below.
 )
 
 // The on-disk state this gateway owns or shares. These are functions rather

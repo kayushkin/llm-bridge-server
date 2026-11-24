@@ -5,9 +5,9 @@ package server
 // service token for agents, instances, machines, peer connections and
 // operation types, and principal-store for principals. Inside this process
 // those owners are this server's own stores, so they are asked directly, and
-// so are tool-store and skill-store, which also moved into this process. The
-// owners that still run apart (kanban-store and reference-store) are asked
-// over HTTP as before.
+// so are tool-store, skill-store and kanban-store, which also moved into this
+// process. reference-store, which still runs apart, is asked over HTTP as
+// before.
 
 import (
 	"context"
@@ -37,8 +37,6 @@ func (s *Server) grantResourceChecker(principals *principalstore.Store) grantsto
 		server:     s,
 		principals: principals,
 		overHTTP: grantstore.NewHTTPResourceChecker(grantstore.ResourceOwners{
-			KanbanStoreURL:             s.cfg.KanbanStoreURL,
-			KanbanStoreServiceToken:    s.cfg.KanbanStoreServiceToken,
 			ReferenceStoreURL:          s.cfg.ReferenceStoreURL,
 			ReferenceStoreServiceToken: s.cfg.ReferenceStoreServiceToken,
 		}),
@@ -132,6 +130,8 @@ func (checker inProcessResourceChecker) CheckResourceExists(ctx context.Context,
 			known = append(known, string(description.Type))
 		}
 		return fmt.Errorf("%w: this server runs no operation type %q; it runs %s", grantstore.ErrResourceNotFound, resourceID, strings.Join(known, ", "))
+	case grantstore.ResourceTypeBoard:
+		return s.checkKanbanBoardExists(resourceID)
 	case grantstore.ResourceTypePrincipal:
 		if _, err := checker.principals.Get(ctx, resourceID, false); errors.Is(err, principalstore.ErrNotFound) {
 			return notFound("principal-store")

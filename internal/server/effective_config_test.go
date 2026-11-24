@@ -100,7 +100,7 @@ func TestEffectiveConfigAttributesAPinnedModel(t *testing.T) {
 // none, and attributes each to the board or to the tag rule that set it.
 func TestDryRunEffectiveConfigTakesTheBoardsDefaults(t *testing.T) {
 	srv, _, instanceID := testServerWithInstance(t, msg.HarnessClaudeCode)
-	kanban := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	kanban := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/boards/board-1/effective-defaults" || r.URL.Query().Get("tag") != "urgent" {
 			t.Errorf("unexpected kanban-store request %s", r.URL.String())
 			w.WriteHeader(404)
@@ -111,9 +111,8 @@ func TestDryRunEffectiveConfigTakesTheBoardsDefaults(t *testing.T) {
 			"default_instance_id":{"value":"` + instanceID + `","source":{"kind":"board"}},
 			"default_principal_id":{"value":"principal_000007","source":{"kind":"tag_rule","rule_id":"tr_3","rule_tags":["urgent"]}},
 			"default_bundle_id":{"value":"6","source":{"kind":"board"}}}}`))
-	}))
-	t.Cleanup(kanban.Close)
-	srv.kanbanClient = kanbanclient.New(kanban.URL)
+	})
+	srv.kanbanClient = kanbanclient.New(kanban)
 
 	req := httptest.NewRequest("GET", "/effective-config?harness=claude_code&board_id=board-1&tag=urgent", nil)
 	w := httptest.NewRecorder()

@@ -6,8 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
-
 	"github.com/kayushkin/llm-bridge-server/internal/productiondefaults"
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
@@ -111,11 +109,6 @@ type Config struct {
 	LocalToolsPinchtabToken  string
 	LocalToolsBraveAPIKey    string
 	LocalToolsSchedulerToken string
-	// KanbanStoreURL is the base URL of the kanban-store service, which owns
-	// the session↔noteboard-todo link a signal propagates to, and which
-	// /kanban/ proxies to as the calling principal. Required, via
-	// LLMBRIDGE_KANBAN_STORE_URL.
-	KanbanStoreURL string
 	// ReferenceStoreURL is the base URL of reference-store, which
 	// /reference-store/ proxies to as the calling principal. Required, via
 	// LLMBRIDGE_REFERENCE_STORE_URL.
@@ -139,9 +132,8 @@ type Config struct {
 	// reads multichat's token and Discord's client secret from.
 	AuthStoreURL   string
 	AuthStoreToken string
-	// KanbanStoreServiceToken and ReferenceStoreServiceToken are sent when
-	// grant-store checks that a board, a reference or a reference type exists.
-	KanbanStoreServiceToken    string
+	// ReferenceStoreServiceToken is sent when grant-store checks that a
+	// reference or a reference type exists.
 	ReferenceStoreServiceToken string
 	// Sign-in-store's wiring (sign_in.*). SignInPageURL and
 	// SignInCookieDomain empty switch its routes off.
@@ -271,13 +263,13 @@ const (
 	// read with 401, and the real variables were not on the strip list below,
 	// so every harness child inherited both tokens.
 	//
-	// grant-store now runs in this process and this server reads no grant
-	// token, but the shared file still carries GRANT_STORE_SERVICE_TOKEN for
-	// the standalone grant-store, dash and kanban-store until they move, and
-	// this unit still loads that file. It stays on the strip list so no
-	// harness child inherits it.
+	// grant-store and kanban-store now run in this process and this server
+	// reads neither token, but the shared file still carries both for the
+	// standalone stores and their callers until they move, and this unit still
+	// loads that file. They stay on the strip list so no harness child
+	// inherits them.
 	GrantStoreServiceTokenEnvironmentVariable  = "GRANT_STORE_SERVICE_TOKEN"
-	KanbanStoreServiceTokenEnvironmentVariable = kanbanclient.ServiceTokenEnvironmentVariable
+	KanbanStoreServiceTokenEnvironmentVariable = "KANBAN_STORE_SERVICE_TOKEN"
 	// reference-store's own name for the token it takes from an internal
 	// service, in the same shared file. Read here for grant-store's check that
 	// a reference exists; whoever holds it looks any record up for nobody.
@@ -317,9 +309,7 @@ const (
 // per-principal enforcement, and the Entra client secret would let it redeem
 // an authorization code meant for this server, and the Postgres URL would
 // let it reach the modules' tables directly, and the local tools' credentials
-// are this server's own. The kanban token is read by internal/kanbanclient rather than
-// by Load, which is why its name is taken from that package: one spelling,
-// read in one place and stripped in another.
+// are this server's own.
 func SecretEnvironmentVariableNames() []string {
 	return []string{
 		DemoLoginSigningKeyEnvironmentVariable,
@@ -372,12 +362,11 @@ func (c *Config) ValidateRequestAuthorizationCredentials() error {
 }
 
 // ValidateRequestAuthorizationSettings is every setting request authorization
-// needs: the two credentials above, and the three stores a gated request is
-// answered from — principal-store, which says whether the caller is active and
-// an administrator, and the two stores mounted behind the identity-carrying
-// proxies. None of them has a default; a missing one is a startup error naming
-// the variable, because guessing an address here would send a principal's
-// boards to whatever answers on that port.
+// needs: the two credentials above, the Postgres the access stores and
+// kanban-store keep their records in, and reference-store, mounted behind the
+// identity-carrying proxy. None of them has a default; a missing one is a
+// startup error naming the variable, because guessing an address here would
+// send a principal's records to whatever answers on that port.
 //
 // main calls this and refuses to start on an error.
 func (c *Config) ValidateRequestAuthorizationSettings() error {
@@ -390,7 +379,6 @@ func (c *Config) ValidateRequestAuthorizationSettings() error {
 		purpose             string
 	}{
 		{PostgresURLEnvironmentVariable, c.PostgresURL, "the Postgres every caller's principal and grants are read from (access)"},
-		{"LLMBRIDGE_KANBAN_STORE_URL", c.KanbanStoreURL, "the kanban-store /kanban/ forwards to"},
 		{"LLMBRIDGE_REFERENCE_STORE_URL", c.ReferenceStoreURL, "the reference-store /reference-store/ forwards to"},
 	} {
 		if strings.TrimSpace(required.value) == "" {
@@ -469,7 +457,6 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		PublicURL:                             settings.String("public_url"),
 		AuthStoreURL:                          settings.String("auth_store.url"),
 		AuthStoreToken:                        settings.String("auth_store.token"),
-		KanbanStoreServiceToken:               settings.String("kanban_store.service_token"),
 		ReferenceStoreServiceToken:            settings.String("reference_store.service_token"),
 		SignInPageURL:                         settings.String("sign_in.page_url"),
 		SignInCookieDomain:                    settings.String("sign_in.cookie_domain"),
@@ -484,7 +471,6 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		LocalToolsPinchtabToken:               settings.String("local_tools.pinchtab_token"),
 		LocalToolsBraveAPIKey:                 settings.String("local_tools.brave_api_key"),
 		LocalToolsSchedulerToken:              settings.String("local_tools.scheduler_token"),
-		KanbanStoreURL:                        settings.String("kanban_store.url"),
 		ReferenceStoreURL:                     settings.String("reference_store.url"),
 		PostgresURL:                           settings.String("database.postgres_url"),
 		ChatLinksNATSURL:                      settings.String("chat_links.nats_url"),

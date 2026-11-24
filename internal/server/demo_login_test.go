@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
+	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
+	kanbanapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/api"
 )
 
 // fakePrincipalDirectory answers GET /principals/{id} from a set of records
@@ -134,11 +136,25 @@ type recordedKanbanRequest struct {
 	Header         http.Header
 	Body           string
 	HeaderKeyNames []string
+	// Caller is who the store was told the request is from, and Named whether
+	// it was told at all.
+	Caller kanbanapi.Caller
+	Named  bool
 }
 
-// fakeKanbanStore records every request and answers from respond.
+// principalIDsSeen is the principal the store was told the request is from,
+// as a list so a test can say "exactly this one".
+func (recorded recordedKanbanRequest) principalIDsSeen() []string {
+	if !recorded.Named || recorded.Caller.PrincipalID == "" {
+		return nil
+	}
+	return []string{recorded.Caller.PrincipalID}
+}
+
+// fakeKanbanStore stands in for kanban-store's handler in this process: it
+// records every request and the caller it carries, and answers from respond.
 type fakeKanbanStore struct {
-	server   *httptest.Server
+	handler  http.Handler
 	mutex    sync.Mutex
 	requests []recordedKanbanRequest
 	respond  func(w http.ResponseWriter, r *http.Request)
@@ -152,22 +168,31 @@ func newFakeKanbanStore(t *testing.T) *fakeKanbanStore {
 			_, _ = w.Write([]byte(`{"boards":[]}`))
 		},
 	}
-	fake.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	fake.handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var keyNames []string
 		for key := range r.Header {
 			keyNames = append(keyNames, key)
 		}
 		fake.mutex.Lock()
-		fake.requests = append(fake.requests, recordedKanbanRequest{
+		recorded := recordedKanbanRequest{
 			Method: r.Method, EscapedPath: r.URL.EscapedPath(), RawQuery: r.URL.RawQuery,
 			Header: r.Header.Clone(), Body: string(body), HeaderKeyNames: keyNames,
-		})
+		}
+		recorded.Caller, recorded.Named = kanbanapi.CallerFrom(r.Context())
+		fake.requests = append(fake.requests, recorded)
 		fake.mutex.Unlock()
 		fake.respond(w, r)
-	}))
-	t.Cleanup(fake.server.Close)
+	})
 	return fake
+}
+
+// useKanbanStoreHandlerForTests serves /kanban/ and /kanban-store/, and this
+// server's own kanban reads, from handler, as EnableKanbanStore does from the
+// store's.
+func (s *Server) useKanbanStoreHandlerForTests(handler http.Handler) {
+	s.kanbanClient = kanbanclient.New(handler)
+	s.kanbanStore.Store(&kanbanStoreHandlers{handler: handler})
 }
 
 func (fake *fakeKanbanStore) recorded() []recordedKanbanRequest {
@@ -176,7 +201,7 @@ func (fake *fakeKanbanStore) recorded() []recordedKanbanRequest {
 	return append([]recordedKanbanRequest(nil), fake.requests...)
 }
 
-func demoLoginTestServer(t *testing.T, principalStoreURL, kanbanStoreURL string) *Server {
+func demoLoginTestServer(t *testing.T, principalStoreURL string, kanban *fakeKanbanStore) *Server {
 	t.Helper()
 	directory := t.TempDir()
 	bridgeStore, err := store.New(filepath.Join(directory, "test.db"))
@@ -188,11 +213,13 @@ func demoLoginTestServer(t *testing.T, principalStoreURL, kanbanStoreURL string)
 		ImagesDir:       filepath.Join(directory, "images"),
 		BridgePrefsPath: filepath.Join(directory, "prefs.json"),
 		LogStoreURL:     "http://localhost:0",
-		KanbanStoreURL:  kanbanStoreURL,
 	}
 	testAuthorizationConfig(cfg)
 	server := New(bridgeStore, nil, nil, nil, nil, testModelStore(t), nil, cfg)
 	useFakePrincipalStore(server, principalStoreURL)
+	if kanban != nil {
+		server.useKanbanStoreHandlerForTests(kanban.handler)
+	}
 	return server
 }
 
@@ -239,7 +266,7 @@ func addLoginCookie(request *http.Request, cookie *http.Cookie) {
 }
 
 func TestDemoLoginWithAHumanSetsACookieThatAuthPrincipalReads(t *testing.T) {
-	server := demoLoginTestServer(t, standardPrincipalDirectory(t).server.URL, newFakeKanbanStore(t).server.URL)
+	server := demoLoginTestServer(t, standardPrincipalDirectory(t).server.URL, newFakeKanbanStore(t))
 
 	login := demoLogin(t, server, "principal_000001")
 	if login.Code != http.StatusOK {
@@ -291,7 +318,7 @@ func clearedLoginCookieFrom(t *testing.T, recorder *httptest.ResponseRecorder) *
 }
 
 func TestDemoLoginRefusesUnknownGroupDisabledAndMalformedPrincipals(t *testing.T) {
-	server := demoLoginTestServer(t, standardPrincipalDirectory(t).server.URL, newFakeKanbanStore(t).server.URL)
+	server := demoLoginTestServer(t, standardPrincipalDirectory(t).server.URL, newFakeKanbanStore(t))
 	for _, testCase := range []struct {
 		principalID string
 		code        string
@@ -314,7 +341,7 @@ func TestDemoLoginRefusesUnknownGroupDisabledAndMalformedPrincipals(t *testing.T
 
 func TestDemoLoginAnswers502WhenPrincipalStoreIsDown(t *testing.T) {
 	directory := standardPrincipalDirectory(t)
-	server := demoLoginTestServer(t, directory.server.URL, newFakeKanbanStore(t).server.URL)
+	server := demoLoginTestServer(t, directory.server.URL, newFakeKanbanStore(t))
 	directory.server.Close()
 	response := demoLogin(t, server, "principal_000001")
 	if response.Code != http.StatusBadGateway || !strings.Contains(response.Body.String(), "principal_store_unavailable") {
@@ -327,7 +354,7 @@ func TestDemoLoginAnswers502WhenPrincipalStoreIsDown(t *testing.T) {
 
 func TestKanbanProxyWithoutALiveLoginSessionIs401AndReachesNothing(t *testing.T) {
 	kanban := newFakeKanbanStore(t)
-	server := demoLoginTestServer(t, standardPrincipalDirectory(t).server.URL, kanban.server.URL)
+	server := demoLoginTestServer(t, standardPrincipalDirectory(t).server.URL, kanban)
 	cookie := loginCookieFrom(t, demoLogin(t, server, "principal_000001"))
 
 	tampered := *cookie
@@ -388,9 +415,9 @@ func TestKanbanProxyWithoutALiveLoginSessionIs401AndReachesNothing(t *testing.T)
 	}
 }
 
-func TestKanbanProxyCarriesOnlyTheCookiesPrincipalAndNoServiceToken(t *testing.T) {
+func TestKanbanStoreHearsOnlyTheCookiesPrincipalAndNoServiceToken(t *testing.T) {
 	kanban := newFakeKanbanStore(t)
-	server := demoLoginTestServer(t, standardPrincipalDirectory(t).server.URL, kanban.server.URL)
+	server := demoLoginTestServer(t, standardPrincipalDirectory(t).server.URL, kanban)
 	cookie := loginCookieFrom(t, demoLogin(t, server, "principal_000001"))
 
 	request := httptest.NewRequest("GET", "/kanban/boards", nil)
@@ -410,12 +437,12 @@ func TestKanbanProxyCarriesOnlyTheCookiesPrincipalAndNoServiceToken(t *testing.T
 		t.Fatalf("kanban-store received %d requests, want 1", len(got))
 	}
 	seen := got[0]
-	if values := seen.Header.Values("X-Principal-Id"); len(values) != 1 || values[0] != "principal_000001" {
-		t.Fatalf("kanban-store saw X-Principal-Id %v, want exactly [principal_000001]", values)
+	if seen.Caller != (kanbanapi.Caller{PrincipalID: "principal_000001"}) {
+		t.Fatalf("kanban-store was told the caller is %+v, want principal_000001", seen.Caller)
 	}
 	for _, key := range seen.HeaderKeyNames {
-		if strings.EqualFold(key, "X-Kanban-Store-Service-Token") {
-			t.Fatalf("kanban-store saw a service token header %q: %v", key, seen.Header[key])
+		if strings.EqualFold(key, "X-Kanban-Store-Service-Token") || strings.EqualFold(key, "Authorization") {
+			t.Fatalf("kanban-store saw a credential header %q: %v", key, seen.Header[key])
 		}
 	}
 	if cookieHeader := seen.Header.Get("Cookie"); strings.Contains(cookieHeader, loginSessionCookieName) || !strings.Contains(cookieHeader, "unrelated=kept") {
@@ -428,7 +455,7 @@ func TestKanbanProxyCarriesOnlyTheCookiesPrincipalAndNoServiceToken(t *testing.T
 
 func TestKanbanProxyPassesPathQueryBodyAndUpstreamAnswerThroughUnchanged(t *testing.T) {
 	kanban := newFakeKanbanStore(t)
-	server := demoLoginTestServer(t, standardPrincipalDirectory(t).server.URL, kanban.server.URL)
+	server := demoLoginTestServer(t, standardPrincipalDirectory(t).server.URL, kanban)
 	cookie := loginCookieFrom(t, demoLogin(t, server, "principal_000001"))
 
 	escapedPathRequest := httptest.NewRequest("GET", "/kanban/boards/a%2Fb/cards?tag=x&tag=y%20z", nil)
@@ -467,22 +494,22 @@ func TestKanbanProxyPassesPathQueryBodyAndUpstreamAnswerThroughUnchanged(t *test
 	}
 }
 
-func TestKanbanProxyAnswers502WhenKanbanStoreIsDown(t *testing.T) {
-	kanban := newFakeKanbanStore(t)
-	server := demoLoginTestServer(t, standardPrincipalDirectory(t).server.URL, kanban.server.URL)
+func TestKanbanStoreAnswers503WhenItIsOff(t *testing.T) {
+	server := demoLoginTestServer(t, standardPrincipalDirectory(t).server.URL, nil)
 	cookie := loginCookieFrom(t, demoLogin(t, server, "principal_000001"))
-	kanban.server.Close()
-	request := httptest.NewRequest("GET", "/kanban/boards", nil)
-	request.AddCookie(cookie)
-	response := serve(server, request)
-	if response.Code != http.StatusBadGateway || !strings.Contains(response.Body.String(), "kanban_store_unavailable") {
-		t.Fatalf("kanban-store down = %d %s, want 502 kanban_store_unavailable", response.Code, response.Body.String())
+	for _, path := range []string{"/kanban/boards", "/kanban-store/api/boards"} {
+		request := httptest.NewRequest("GET", path, nil)
+		request.AddCookie(cookie)
+		response := serve(server, request)
+		if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "kanban_store_off") {
+			t.Fatalf("%s with kanban-store off = %d %s, want 503 kanban_store_off", path, response.Code, response.Body.String())
+		}
 	}
 }
 
 func TestAClientSentPrincipalHeaderIsRefusedWithoutTheServiceToken(t *testing.T) {
 	kanban := newFakeKanbanStore(t)
-	server := demoLoginTestServer(t, standardPrincipalDirectory(t).server.URL, kanban.server.URL)
+	server := demoLoginTestServer(t, standardPrincipalDirectory(t).server.URL, kanban)
 	cookie := loginCookieFrom(t, demoLogin(t, server, "principal_000001"))
 
 	for name, addHeader := range map[string]func(http.Header){
@@ -508,7 +535,7 @@ func TestAClientSentPrincipalHeaderIsRefusedWithoutTheServiceToken(t *testing.T)
 func TestStartupIsRefusedWithoutEachRequiredSetting(t *testing.T) {
 	complete := config.Config{
 		DemoLoginSigningKey: testSigningKey, ServiceToken: testServiceToken,
-		KanbanStoreURL: "http://kanban.invalid", PostgresURL: "postgres://postgres.invalid/bridge",
+		PostgresURL:       "postgres://postgres.invalid/bridge",
 		ReferenceStoreURL: "http://reference.invalid",
 	}
 	if err := complete.ValidateRequestAuthorizationSettings(); err != nil {
@@ -523,7 +550,6 @@ func TestStartupIsRefusedWithoutEachRequiredSetting(t *testing.T) {
 		"no service token":    {func(c *config.Config) { c.ServiceToken = "" }, "LLMBRIDGE_SERVICE_TOKEN"},
 		"short service token": {func(c *config.Config) { c.ServiceToken = "short" }, "LLMBRIDGE_SERVICE_TOKEN"},
 		"no postgres":         {func(c *config.Config) { c.PostgresURL = "" }, "LLMBRIDGE_POSTGRES_URL"},
-		"no kanban-store":     {func(c *config.Config) { c.KanbanStoreURL = "" }, "LLMBRIDGE_KANBAN_STORE_URL"},
 		"no reference-store":  {func(c *config.Config) { c.ReferenceStoreURL = "" }, "LLMBRIDGE_REFERENCE_STORE_URL"},
 	} {
 		candidate := complete
@@ -577,13 +603,13 @@ func TestNewRefusesAServerThatCouldNotIdentifyACaller(t *testing.T) {
 
 // /kanban-store/ reaches kanban-store at its root, so a client that takes its
 // base path to be kanban-store itself (bridge-ui through a connected server)
-// gets /api/… and /settings without the /api/ that /kanban/ adds.
+// gets /api/… and /health without the /api/ that /kanban/ adds.
 func TestKanbanStoreRootProxyForwardsThePathUnchanged(t *testing.T) {
 	kanban := newFakeKanbanStore(t)
-	server := demoLoginTestServer(t, standardPrincipalDirectory(t).server.URL, kanban.server.URL)
+	server := demoLoginTestServer(t, standardPrincipalDirectory(t).server.URL, kanban)
 	cookie := loginCookieFrom(t, demoLogin(t, server, "principal_000001"))
 
-	for _, path := range []string{"/kanban-store/api/boards/b1/cards?tag=x", "/kanban-store/settings"} {
+	for _, path := range []string{"/kanban-store/api/boards/b1/cards?tag=x", "/kanban-store/health"} {
 		request := httptest.NewRequest("GET", path, nil)
 		request.AddCookie(cookie)
 		if response := serve(server, request); response.Code != http.StatusOK {
@@ -602,10 +628,10 @@ func TestKanbanStoreRootProxyForwardsThePathUnchanged(t *testing.T) {
 	if got[0].EscapedPath != "/api/boards/b1/cards" || got[0].RawQuery != "tag=x" {
 		t.Fatalf("first forwarded as %s ? %s, want /api/boards/b1/cards ? tag=x", got[0].EscapedPath, got[0].RawQuery)
 	}
-	if got[1].EscapedPath != "/settings" {
-		t.Fatalf("second forwarded as %s, want /settings", got[1].EscapedPath)
+	if got[1].EscapedPath != "/health" {
+		t.Fatalf("second forwarded as %s, want /health", got[1].EscapedPath)
 	}
-	if principal := got[0].Header.Get("X-Principal-Id"); principal != "principal_000001" {
-		t.Fatalf("X-Principal-Id = %q, want the login's principal", principal)
+	if got[0].Caller != (kanbanapi.Caller{PrincipalID: "principal_000001"}) {
+		t.Fatalf("caller = %+v, want the login's principal", got[0].Caller)
 	}
 }

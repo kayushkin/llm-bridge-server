@@ -510,7 +510,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	if req.CardID != "" {
 		if s.kanbanClient == nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "kanban_store_not_configured",
-				"card_id was given but this server has no kanban-store to check it with (LLMBRIDGE_KANBAN_STORE_URL)")
+				"card_id was given but this server has no kanban-store to check it with (kanban-store is off)")
 			return
 		}
 		if _, err := s.kanbanClient.CardTags(r.Context(), req.CardID); err != nil {
