@@ -1,0 +1,8 @@
+# Build output at the repo root. The leading slash is load-bearing: a bare
+# `aiauth` also matches the SOURCE DIRECTORY cmd/aiauth/, hiding every file in
+# it from `git add`. cmd/aiauth/main.go is tracked and stays tracked whatever
+# this file says, so nothing was lost — but the next file added beside it would
+# have been skipped in silence.
+/aiauth
+logs/
+.inber/
