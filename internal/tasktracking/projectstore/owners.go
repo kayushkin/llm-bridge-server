@@ -27,11 +27,14 @@ type Owners struct {
 	// work-graph-store's under /work-graph-store. Both run in this process,
 	// so they are asked through their handlers (internal/inprocesshttp), not
 	// over a socket.
-	Repositories            http.Handler
-	KanbanStoreURL          string
-	KanbanStoreServiceToken string
-	SchedulerURL            string
-	HealthcheckURL          string
+	Repositories http.Handler
+	// Kanban carries the calls to kanban-store at KanbanStoreURL. In this
+	// server kanban-store runs in the same process, and Kanban serves each
+	// call with its handler as the internal service, with no socket between.
+	Kanban         *http.Client
+	KanbanStoreURL string
+	SchedulerURL   string
+	HealthcheckURL string
 	// Principals is principal-store, in this process: what a principal link
 	// names.
 	Principals Principals
@@ -53,9 +56,6 @@ type Owners struct {
 // BridgeServiceTokenHeader is how llm-bridge-server recognizes an internal service.
 const BridgeServiceTokenHeader = "X-LLM-Bridge-Service-Token"
 
-// KanbanServiceTokenHeader is how kanban-store recognizes an internal service.
-const KanbanServiceTokenHeader = "X-Kanban-Store-Service-Token"
-
 // repositoriesGetJSON fetches path from repo-store or work-graph-store in
 // this process into target, as getJSON does over HTTP.
 func (owners *Owners) repositoriesGetJSON(ctx context.Context, path string, target any) error {
@@ -68,10 +68,23 @@ func (owners *Owners) repositoriesGetJSON(ctx context.Context, path string, targ
 // getJSON fetches a URL into target. A 404 is ErrNotFound; anything else that
 // is not 200 is ErrOwnerUnavailable.
 func (owners *Owners) getJSON(ctx context.Context, rawURL string, headers map[string]string, target any) error {
+	return fetchJSON(ctx, owners.HTTP, rawURL, headers, target)
+}
+
+// getKanbanJSON is getJSON for a kanban-store path, through Kanban.
+func (owners *Owners) getKanbanJSON(ctx context.Context, path string, target any) error {
+	if owners.Kanban == nil {
+		return fmt.Errorf("%w: this server has no kanban-store to answer %s", ErrOwnerUnavailable, path)
+	}
+	return fetchJSON(ctx, owners.Kanban, owners.KanbanStoreURL+path, nil, target)
+}
+
+// fetchJSON is one GET through client into target.
+func fetchJSON(ctx context.Context, client *http.Client, rawURL string, headers map[string]string, target any) error {
 	if err := ownerAddressIsSet(rawURL); err != nil {
 		return err
 	}
-	return getJSONWith(ctx, owners.HTTP, rawURL, headers, target)
+	return getJSONWith(ctx, client, rawURL, headers, target)
 }
 
 func getJSONWith(ctx context.Context, client *http.Client, rawURL string, headers map[string]string, target any) error {
@@ -110,10 +123,6 @@ func ownerAddressIsSet(rawURL string) error {
 	return nil
 }
 
-func (owners *Owners) kanbanHeaders() map[string]string {
-	return map[string]string{KanbanServiceTokenHeader: owners.KanbanStoreServiceToken}
-}
-
 // Label checks that the entity exists in its store and returns the store's
 // name for it. An entity its store does not have is ErrInvalid.
 func (owners *Owners) Label(ctx context.Context, entityType, entityRef string) (string, error) {
@@ -131,7 +140,7 @@ func (owners *Owners) Label(ctx context.Context, entityType, entityRef string) (
 		var board struct {
 			Name string `json:"name"`
 		}
-		err = owners.getJSON(ctx, owners.KanbanStoreURL+"/api/boards/"+escaped, owners.kanbanHeaders(), &board)
+		err = owners.getKanbanJSON(ctx, "/api/boards/"+escaped, &board)
 		label = board.Name
 	case EntitySchedulerJob:
 		var job struct {

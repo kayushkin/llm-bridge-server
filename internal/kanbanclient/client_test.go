@@ -2,8 +2,8 @@ package kanbanclient
 
 import (
 	"context"
+	kanbanapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/api"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -17,13 +17,13 @@ import (
 // serves. A fixture that ignores the path cannot notice a request aimed at the
 // wrong URL, and this client builds its URL from a caller-supplied id.
 //
-// Verified against the running kanban-store on :8305, because source is a
+// Verified against the running standalone kanban-store, because source is a
 // claim: an unknown session ref returns 200 [], and the escaped path this
 // client sends for an id containing a slash returns 404 {"error":"not found"}.
 func stubKanban(t *testing.T, status int, body string) (*Client, *string) {
 	t.Helper()
 	var gotPath string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// RequestURI is the raw request line. r.URL.Path would show the
 		// server's percent-decoding of it, which is not what this asserts.
 		gotPath = r.RequestURI
@@ -46,9 +46,8 @@ func stubKanban(t *testing.T, status int, body string) (*Client, *string) {
 		}
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(body))
-	}))
-	t.Cleanup(srv.Close)
-	return New(srv.URL), &gotPath
+	})
+	return New(handler), &gotPath
 }
 
 func TestLinkedTodoForSessionTakesTheFirstCard(t *testing.T) {
@@ -265,31 +264,24 @@ func TestLinkedTodoForSessionEscapesTheSessionIDIntoOneSegment(t *testing.T) {
 	}
 }
 
-// TestLookupsCarryTheServiceToken pins the transport: kanban-store gates every
-// route, so without the token every lookup is a 401 and every signal is minted
-// with no linked todo — a quiet loss, not a loud one.
-func TestLookupsCarryTheServiceToken(t *testing.T) {
-	const token = "bridge-test-kanban-service-token-0123456"
-	seen := make(chan string, 2)
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seen <- r.Header.Get(ServiceTokenHeader)
+// TestLookupsAreMadeAsTheInternalService pins who a lookup is made as: the
+// internal service, past every board check, as the standalone store's service
+// token was. Made as nobody, kanban-store answers 401, and every signal would
+// be minted with no linked todo — a quiet loss, not a loud one.
+func TestLookupsAreMadeAsTheInternalService(t *testing.T) {
+	seen := make(chan kanbanapi.Caller, 1)
+	client := New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		caller, named := kanbanapi.CallerFrom(r.Context())
+		if !named {
+			t.Error("the lookup named no caller")
+		}
+		seen <- caller
 		w.Write([]byte(`[]`))
 	}))
-	defer upstream.Close()
-
-	t.Setenv(ServiceTokenEnvironmentVariable, token)
-	if _, err := New(upstream.URL).http.Get(upstream.URL + "/api/entities/session/x/cards"); err != nil {
+	if _, err := client.LinkedTodoForSession(context.Background(), "br_1"); err != nil {
 		t.Fatal(err)
 	}
-	if got := <-seen; got != token {
-		t.Fatalf("header = %q, want the service token", got)
-	}
-
-	t.Setenv(ServiceTokenEnvironmentVariable, "")
-	if _, err := New(upstream.URL).http.Get(upstream.URL + "/api/entities/session/x/cards"); err != nil {
-		t.Fatal(err)
-	}
-	if got := <-seen; got != "" {
-		t.Fatalf("with no token configured the header must be absent, got %q", got)
+	if got := <-seen; !got.InternalService || got.PrincipalID != "" {
+		t.Fatalf("caller = %+v, want the internal service", got)
 	}
 }

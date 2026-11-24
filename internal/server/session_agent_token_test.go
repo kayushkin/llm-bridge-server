@@ -51,7 +51,7 @@ func TestSessionAgentTokenActsAsThePrincipalOnTheKanbanProxyOnly(t *testing.T) {
 	if len(recorded) != 1 {
 		t.Fatalf("kanban-store received %d requests, want 1", len(recorded))
 	}
-	if got := recorded[0].Header.Values("X-Principal-Id"); len(got) != 1 || got[0] != firstTestPrincipalID {
+	if got := recorded[0].principalIDsSeen(); len(got) != 1 || got[0] != firstTestPrincipalID {
 		t.Errorf("kanban-store saw X-Principal-Id %v, want [%s]", got, firstTestPrincipalID)
 	}
 	for _, key := range recorded[0].HeaderKeyNames {

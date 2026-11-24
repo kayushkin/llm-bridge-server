@@ -559,7 +559,7 @@ func (s *Server) handleDryRunEffectiveConfig(w http.ResponseWriter, r *http.Requ
 
 	if subject.BoardID != "" {
 		if s.kanbanClient == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "kanban_store_not_configured", "board_id was given but this server has no kanban-store to read the board's defaults from (LLMBRIDGE_KANBAN_STORE_URL)")
+			writeJSONError(w, http.StatusServiceUnavailable, "kanban_store_not_configured", "board_id was given but this server has no kanban-store to read the board's defaults from (kanban-store is off)")
 			return
 		}
 		resolved, err := s.kanbanClient.EffectiveDefaults(ctx, subject.BoardID, subject.CardID, subject.Tags)

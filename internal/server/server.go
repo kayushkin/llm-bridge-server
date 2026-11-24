@@ -129,9 +129,13 @@ type Server struct {
 	skillStoreForResourceChecks atomic.Pointer[skillstore.Store]
 	bundleStoreHandlers         atomic.Pointer[bundlestore.Handlers]
 	// kanbanClient answers "which noteboard todo is this session linked
-	// to?" when a signal is minted. Nil when kanban-store has no configured
-	// URL, which leaves every signal unlinked rather than guessing.
+	// to?" when a signal is minted, and every other read this server makes of
+	// kanban-store. EnableKanbanStore sets it; nil until then, which leaves
+	// every signal unlinked rather than guessing.
 	kanbanClient *kanbanclient.Client
+	// kanbanStore answers /kanban/ and /kanban-store/ once EnableKanbanStore
+	// has run (kanban_store_routes.go); nil answers them 503.
+	kanbanStore atomic.Pointer[kanbanStoreHandlers]
 	// fileStore keeps the bytes of files shared into sessions, through the
 	// file-store module in this process. Nil until EnableFileStore, which
 	// switches session files off.
@@ -226,7 +230,6 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 		authClient:           authClient,
 		peerSockets:          newPeerSocketRegistry(),
 		peerRequestsInFlight: newPeerRequestsInFlight(),
-		kanbanClient:         newKanbanClient(cfg.KanbanStoreURL),
 		bridgePrefs:          newBridgePrefsStore(cfg.BridgePrefsPath),
 		cfState:              newConformanceState(cfg.ConformancePath),
 		sessionHub:           hub,

@@ -147,7 +147,6 @@ func newGatedTestServerConfigured(t *testing.T, grantsByPrincipal map[string]map
 		ImagesDir:       filepath.Join(directory, "images"),
 		BridgePrefsPath: filepath.Join(directory, "prefs.json"),
 		LogStoreURL:     "http://localhost:0",
-		KanbanStoreURL:  kanban.server.URL,
 		PublicURL:       gatedTestServerPublicURL,
 	}
 	testAuthorizationConfig(cfg)
@@ -162,6 +161,7 @@ func newGatedTestServerConfigured(t *testing.T, grantsByPrincipal map[string]map
 		clock:      &testClock{now: time.Now()},
 	}
 	useFakePrincipalStore(gated.server, principals.server.URL)
+	gated.server.useKanbanStoreHandlerForTests(kanban.handler)
 	gated.server.grantClient = testGrantReaderAt(fakeGrantStoreForPrincipals(t, grantsByPrincipal).URL)
 	gated.server.principalLookupCache.now = gated.clock.Now
 	return gated
@@ -363,7 +363,7 @@ func TestAnAdministratorReachesTheOperatorRoutesAndTheStoreProxies(t *testing.T)
 	if len(recorded) != 1 {
 		t.Fatalf("kanban-store received %d requests, want 1", len(recorded))
 	}
-	if got := recorded[0].Header.Values(principalIdentityHeader); len(got) != 1 || got[0] != administratorTestPrincipalID {
+	if got := recorded[0].principalIDsSeen(); len(got) != 1 || got[0] != administratorTestPrincipalID {
 		t.Errorf("kanban-store saw %s %v, want [%s]: the store makes its own administrator check", principalIdentityHeader, got, administratorTestPrincipalID)
 	}
 
@@ -522,7 +522,7 @@ func TestATrustedCallerMayAssertWhichPrincipalARequestIsFor(t *testing.T) {
 	if len(recorded) != 1 {
 		t.Fatalf("kanban-store received %d requests, want 1", len(recorded))
 	}
-	if got := recorded[0].Header.Values(principalIdentityHeader); len(got) != 1 || got[0] != secondTestPrincipalID {
+	if got := recorded[0].principalIDsSeen(); len(got) != 1 || got[0] != secondTestPrincipalID {
 		t.Errorf("kanban-store saw %s %v, want exactly [%s]", principalIdentityHeader, got, secondTestPrincipalID)
 	}
 	for _, key := range recorded[0].HeaderKeyNames {
@@ -857,9 +857,7 @@ func TestEveryRegisteredRouteIsClassified(t *testing.T) {
 // mux does not have, so a typo in the table cannot leave the real route
 // unclassified while the table looks complete.
 func TestEveryAccessRuleNamesARegisteredRoute(t *testing.T) {
-	server := newServerWithAllStoresConfigured(t, func(cfg *config.Config) {
-		cfg.KanbanStoreURL = "http://kanban-store.invalid"
-	})
+	server := newServerWithAllStoresConfigured(t, nil)
 	wildcard := regexp.MustCompile(`\{[^}]+\}`)
 	for pattern := range routeAccessRules {
 		method, path, hasMethod := strings.Cut(pattern, " ")

@@ -43,7 +43,6 @@ A store that will not open is logged and its routes are not mounted.
 |---|---|
 | principal-store | Who a caller is, and whether they are an administrator |
 | grant-store | Which instances and agents a principal may use, and which tools |
-| kanban-store | A card's tags and a board's defaults; also proxied at `/kanban/` |
 | log-store | Every session's event history, which it stores and projects |
 | auth-store | The credentials bound to an instance |
 | tool-store, bundle-store | The MCP servers a session is offered |
@@ -72,7 +71,6 @@ The server will not start without these five:
 | `LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY` | At least 32 bytes. Signs session agent tokens and session posting tokens. |
 | `LLMBRIDGE_SERVICE_TOKEN` | At least 32 bytes. Internal callers send it as `X-LLM-Bridge-Service-Token`. |
 | `LLMBRIDGE_PRINCIPAL_STORE_URL` | principal-store |
-| `LLMBRIDGE_KANBAN_STORE_URL` | kanban-store |
 | `LLMBRIDGE_GRANT_STORE_URL` | grant-store |
 
 Login has its own optional settings. `LLMBRIDGE_DEMO_LOGIN_ENABLED` (default `true`) switches demo login; set it `false` where people sign in through Entra ID. Entra ID sign-in is on when all four of `LLMBRIDGE_ENTRA_TENANT_ID` (a GUID), `LLMBRIDGE_ENTRA_CLIENT_ID`, `LLMBRIDGE_ENTRA_CLIENT_SECRET` and `LLMBRIDGE_ENTRA_REDIRECT_URL` are set; some but not all is a startup error naming the missing ones. `LLMBRIDGE_ENTRA_AUTHORITY_URL` defaults to `https://login.microsoftonline.com`.
@@ -175,7 +173,7 @@ curl -s -c jar -X POST localhost:8160/auth/demo-login -H 'Content-Type: applicat
 
 ### Store proxies
 
-`/kanban/<rest>` goes to kanban-store `/api/<rest>`, and `/grant-store/<rest>` to grant-store `/<rest>`. Each deletes the caller's `X-Principal-Id`, store tokens, service token, `Authorization` header and cookie, then sets `X-Principal-Id` to the verified principal. ⚠️ **kanban-store believes `X-Principal-Id`**, so users must reach it only through here.
+`/kanban/<rest>` is kanban-store's `/api/<rest>` and `/kanban-store/<rest>` its `/<rest>`. kanban-store runs in this process on its Postgres module (`internal/tasktracking/kanbanstore`), and reads its caller from the request context: the verified principal, narrowed by its board grants, or the internal service (this server's service token naming nobody), unrestricted. No header names the caller, so a forged `X-Principal-Id` or kanban-store service token names nobody. `llm-bridge-server import-kanban-store -sqlite <file>` copies a standalone kanban-store's database into the module. `/grant-store/<rest>` is grant-store's `/<rest>`, in this process the same way. `/mailstack/<rest>` and `/reference-store/<rest>` are still proxied: each deletes the caller's `X-Principal-Id`, store tokens, service token, `Authorization` header and cookie, then sets `X-Principal-Id` to the verified principal.
 
 ### Session agent tokens
 
@@ -406,7 +404,7 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `GET` | `/auth/principal` | Who the login cookie names, and the session's CSRF token | anyone |
 | `GET` | `/auth/sessions` | The caller's login sessions; an administrator names anyone's with principal_id | principal, own logins only |
 | `POST` | `/auth/sessions/{id}/revoke` | End a login session, with a reason | principal, own logins only |
-| `*` | `/kanban-store/` | kanban-store at its root (`/api/…`, `/settings`), as the caller | principal or session agent |
+| `*` | `/kanban-store/` | kanban-store at its root (`/api/…`, `/health`), as the caller | principal or session agent |
 | `*` | `/kanban/` | kanban-store `/api/…`, as the caller | principal or session agent |
 | `*` | `/mailstack/` | mailstack `/…`, as the caller, checked against their mail grants and tickets | principal or session agent |
 | `GET` | `/self` | Who the request acts as: its principal and whether it is an administrator, or the internal service | principal |

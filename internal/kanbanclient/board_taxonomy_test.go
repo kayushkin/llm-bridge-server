@@ -4,18 +4,18 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"net/http/httptest"
+
+	kanbanapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/api"
 	"testing"
 )
 
-func TestBoardTaxonomyReadsAsThePrincipalWithoutTheServiceToken(t *testing.T) {
-	t.Setenv(ServiceTokenEnvironmentVariable, "service-token")
-	var sawPrincipal, sawToken string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sawPrincipal, sawToken = r.Header.Get(principalIDHeader), r.Header.Get(ServiceTokenHeader)
+func TestBoardTaxonomyReadsAsThePrincipalNotTheInternalService(t *testing.T) {
+	var sawCaller kanbanapi.Caller
+	client := New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawCaller, _ = kanbanapi.CallerFrom(r.Context())
 		switch r.URL.Path {
 		case "/api/boards/board-1/classification":
-			if sawToken == "" && sawPrincipal != "principal_000004" {
+			if !sawCaller.InternalService && sawCaller.PrincipalID != "principal_000004" {
 				w.WriteHeader(http.StatusForbidden)
 				return
 			}
@@ -26,18 +26,16 @@ func TestBoardTaxonomyReadsAsThePrincipalWithoutTheServiceToken(t *testing.T) {
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
-	defer server.Close()
-	client := New(server.URL)
 
 	taxonomy, version, err := client.BoardTaxonomy(context.Background(), "board-1", "principal_000004")
-	if err != nil || taxonomy.Name != "t" || version != "3" || len(taxonomy.Axes[0].Values) != 2 || sawToken != "" || sawPrincipal != "principal_000004" {
-		t.Fatalf("as principal: %v %+v %q token=%q principal=%q", err, taxonomy, version, sawToken, sawPrincipal)
+	if err != nil || taxonomy.Name != "t" || version != "3" || len(taxonomy.Axes[0].Values) != 2 || sawCaller != (kanbanapi.Caller{PrincipalID: "principal_000004"}) {
+		t.Fatalf("as principal: %v %+v %q caller=%+v", err, taxonomy, version, sawCaller)
 	}
 	if _, _, err := client.BoardTaxonomy(context.Background(), "board-1", "principal_000009"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("a principal who may not view the board: %v", err)
 	}
-	if _, _, err := client.BoardTaxonomy(context.Background(), "board-1", ""); err != nil || sawToken != "service-token" {
-		t.Fatalf("as the service: %v token=%q", err, sawToken)
+	if _, _, err := client.BoardTaxonomy(context.Background(), "board-1", ""); err != nil || !sawCaller.InternalService {
+		t.Fatalf("as the service: %v caller=%+v", err, sawCaller)
 	}
 	if _, _, err := client.BoardTaxonomy(context.Background(), "board-bare", ""); !errors.Is(err, ErrBoardHasNoTaxonomy) {
 		t.Fatalf("a board with no taxonomy: %v", err)

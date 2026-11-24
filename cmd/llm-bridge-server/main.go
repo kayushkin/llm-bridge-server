@@ -62,6 +62,9 @@ func main() {
 		case "import-project-store":
 			importProjectStoreCmd(os.Args[2:])
 			return
+		case "import-kanban-store":
+			importKanbanStoreCmd(os.Args[2:])
+			return
 		case "import-principal-store", "import-grant-store", "import-sign-in-store", "import-permission-store":
 			importAccessStoreCmd(os.Args[1], os.Args[2:])
 			return
@@ -69,7 +72,7 @@ func main() {
 			makeSignInLinkCmd(os.Args[2:])
 			return
 		case "-h", "--help":
-			fmt.Fprintln(os.Stderr, "usage: llm-bridge-server [mint-enroll [-ttl 15m] | import-prediction-store -sqlite <file> | import-principal-store|import-grant-store|import-sign-in-store|import-permission-store -sqlite <file> | make-sign-in-link <principal id> | import-noteboard -sqlite <file> | import-project-store -sqlite <file> | import-tool-store -sqlite <file> | import-skill-store -sqlite <file> | import-bundle-store -sqlite <file> | import-repo-store -sqlite <file> | import-work-graph-store -sqlite <file> | import-file-store -sqlite <file> -blobs <directory> [-carry copy|link]]")
+			fmt.Fprintln(os.Stderr, "usage: llm-bridge-server [mint-enroll [-ttl 15m] | import-prediction-store -sqlite <file> | import-principal-store|import-grant-store|import-sign-in-store|import-permission-store -sqlite <file> | make-sign-in-link <principal id> | import-noteboard -sqlite <file> | import-project-store -sqlite <file> | import-kanban-store -sqlite <file> | import-tool-store -sqlite <file> | import-skill-store -sqlite <file> | import-bundle-store -sqlite <file> | import-repo-store -sqlite <file> | import-work-graph-store -sqlite <file> | import-file-store -sqlite <file> -blobs <directory> [-carry copy|link]]")
 			os.Exit(0)
 		}
 	}
@@ -108,8 +111,7 @@ func main() {
 	} else {
 		log.Printf("Entra ID sign-in is OFF: no LLMBRIDGE_ENTRA_* settings")
 	}
-	log.Printf("every route is gated (service token or login session); /kanban/ proxies to kanban-store %s carrying X-Principal-Id, so it may not be reachable except through here; principals, grants, sign-in and tool-call rules are the access stores in this process, on Postgres",
-		cfg.KanbanStoreURL)
+	log.Printf("every route is gated (service token or login session); principals, grants, sign-in and tool-call rules are the access stores in this process, and kanban-store is in this process too, at /kanban/ and /kanban-store/, all on Postgres")
 
 	// Say where the two stores that outlive this process are, before writing
 	// to either. The local DB is per-instance and disposable; log-store is
@@ -239,7 +241,7 @@ func main() {
 		defer predictionStoreDB.Close()
 		srv.EnablePredictionStore(predictionstore.New(predictionStoreDB))
 		log.Printf("postgres: prediction-store open, served at /prediction-store/")
-		closeTaskTrackingModules, err := enableTaskTrackingModules(context.Background(), cfg, srv, accessStores.Principals)
+		closeTaskTrackingModules, err := enableTaskTrackingModules(context.Background(), cfg, srv, accessStores)
 		if err != nil {
 			log.Fatalf("%v", err)
 		}

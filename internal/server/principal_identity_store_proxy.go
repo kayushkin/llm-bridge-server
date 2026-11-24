@@ -2,7 +2,7 @@ package server
 
 // Identity-carrying store proxies.
 //
-// kanban-store, mailstack and reference-store trust X-Principal-Id and filter what a caller
+// mailstack and reference-store trust X-Principal-Id and filter what a caller
 // may see and do by it. These proxies are the only place that header is set:
 // from the principal request authorization established (a login cookie, a
 // session agent token, or an X-Principal-Id the internal service asserted with
@@ -25,13 +25,15 @@ import (
 
 const (
 	// kanbanProxyMountPrefix is where kanban-store is mounted; the remainder of
-	// the path is forwarded under kanban-store's /api/.
+	// the path is answered by kanban-store's /api/. kanban-store runs in this
+	// process (kanban_store_routes.go), so it is not proxied: the caller
+	// reaches it through the request context, not a header.
 	kanbanProxyMountPrefix = "/kanban"
 	// kanbanStoreProxyMountPrefix also reaches kanban-store, with the remainder
-	// forwarded under its root, unchanged, like grant-store's: /kanban-store/api/…
-	// reaches /api/… and /kanban-store/settings its settings. A client that
-	// treats a base path as kanban-store itself, as bridge-ui does through a
-	// connected server, uses this one; /kanban/ stays for the agents that call it.
+	// answered at its root, unchanged: /kanban-store/api/… reaches /api/….
+	// A client that treats a base path as kanban-store itself, as bridge-ui
+	// does through a connected server, uses this one; /kanban/ stays for the
+	// agents that call it.
 	kanbanStoreProxyMountPrefix = "/kanban-store"
 	// grantStoreProxyMountPrefix is where grant-store's routes are mounted.
 	// grant-store runs in this process (access_routes.go), so they are not
@@ -86,39 +88,16 @@ type principalIdentityStoreProxy struct {
 	mountPrefix string
 	// upstreamBaseURL is the store's base URL.
 	upstreamBaseURL string
-	// upstreamPathPrefix is prepended to the path after mountPrefix: "/api"
-	// for kanban-store, "" for grant-store.
+	// upstreamPathPrefix is prepended to the path after mountPrefix: "" for
+	// mailstack, the one store still proxied.
 	upstreamPathPrefix string
 	// unavailableErrorCode is the error code of the 502 answered when the
 	// store cannot be reached.
 	unavailableErrorCode string
 	// upstreamAuthorization, when set, is the Authorization header the proxy
 	// presents to the store, after the client's own is deleted. mailstack
-	// takes one bearer for every caller and narrows by X-Principal-Id;
-	// kanban-store and grant-store trust X-Principal-Id alone.
+	// takes one bearer for every caller and narrows by X-Principal-Id.
 	upstreamAuthorization string
-}
-
-func (s *Server) handleKanbanStoreProxyAsPrincipal(w http.ResponseWriter, r *http.Request) {
-	s.serveStoreProxyAsPrincipal(w, r, principalIdentityStoreProxy{
-		storeName:            "kanban-store",
-		mountPrefix:          kanbanProxyMountPrefix,
-		upstreamBaseURL:      s.cfg.KanbanStoreURL,
-		upstreamPathPrefix:   "/api",
-		unavailableErrorCode: "kanban_store_unavailable",
-	})
-}
-
-// handleKanbanStoreRootProxyAsPrincipal forwards /kanban-store/<rest> to
-// kanban-store /<rest>, unchanged.
-func (s *Server) handleKanbanStoreRootProxyAsPrincipal(w http.ResponseWriter, r *http.Request) {
-	s.serveStoreProxyAsPrincipal(w, r, principalIdentityStoreProxy{
-		storeName:            "kanban-store",
-		mountPrefix:          kanbanStoreProxyMountPrefix,
-		upstreamBaseURL:      s.cfg.KanbanStoreURL,
-		upstreamPathPrefix:   "",
-		unavailableErrorCode: "kanban_store_unavailable",
-	})
 }
 
 // handleMailstackProxyAsPrincipal forwards /mailstack/<rest> to mailstack

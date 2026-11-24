@@ -15,8 +15,8 @@ import (
 )
 
 // testServerWithKanban is testServer wired to a stub kanban-store. handler
-// serves the session-cards reverse lookup; pass nil for a store that is
-// configured but unreachable.
+// serves the session-cards reverse lookup in this process; pass nil for a
+// store that answers every request 502, as it does when noteboard is down.
 func testServerWithKanban(t *testing.T, handler http.HandlerFunc) (*Server, *store.Store) {
 	t.Helper()
 	dir := t.TempDir()
@@ -26,21 +26,21 @@ func testServerWithKanban(t *testing.T, handler http.HandlerFunc) (*Server, *sto
 	}
 	t.Cleanup(func() { st.Close() })
 
-	kanbanURL := "http://127.0.0.1:0" // configured, never answers
-	if handler != nil {
-		stub := httptest.NewServer(handler)
-		t.Cleanup(stub.Close)
-		kanbanURL = stub.URL
+	if handler == nil {
+		handler = func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, `{"error":"noteboard did not answer"}`, http.StatusBadGateway)
+		}
 	}
 
 	cfg := &config.Config{
 		ImagesDir:       filepath.Join(dir, "images"),
 		BridgePrefsPath: filepath.Join(dir, "prefs.json"),
 		LogStoreURL:     "http://localhost:0",
-		KanbanStoreURL:  kanbanURL,
 	}
 	testAuthorizationConfig(cfg)
-	return New(st, nil, nil, nil, nil, nil, nil, cfg), st
+	srv := New(st, nil, nil, nil, nil, nil, nil, cfg)
+	srv.useKanbanStoreHandlerForTests(handler)
+	return srv, st
 }
 
 // sessionCardsStub stands in for kanban-store's entity reverse lookup and
@@ -234,12 +234,12 @@ func TestSignalIsStillRecordedWhenTheLookupFails(t *testing.T) {
 	}
 }
 
-// With no kanban-store configured the lookup is off, not broken: no request
+// With no kanban-store enabled the lookup is off, not broken: no request
 // is attempted and every signal is minted unlinked.
 func TestNoKanbanStoreConfiguredMeansNoLookup(t *testing.T) {
 	srv, st := testServer(t)
 	if srv.kanbanClient != nil {
-		t.Fatal("expected no kanban client when KanbanStoreURL is empty")
+		t.Fatal("expected no kanban client on a server that never enabled kanban-store")
 	}
 	sess := newSessionForSignals(t, st, "br_1", msg.SessionTypeAutonomous)
 	srv.recordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))

@@ -5,8 +5,8 @@
 #
 # The server, the runner and the mock harness come from this repo, with the
 # front end built first so it is compiled into the server; the server holds
-# principal-store, grant-store, permission-store, tool-store and the other
-# stores moved into it. log-store, kanban-store and reference-store come from
+# principal-store, grant-store, permission-store, tool-store, kanban-store and
+# the other stores moved into it. log-store and reference-store come from
 # their own repos beside this one, as they are checked out there.
 #
 # The runner's disk-usage and computer-use helpers are left out on purpose. A
@@ -51,18 +51,6 @@ done
 
 build_pure log-store
 build_pure reference-store
-
-# kanban-store uses the SQLite driver that is C code, so it is linked whole
-# (static) instead.
-build_static() { # <repo> <extra build tags>
-  echo "==> Building $1..."
-  (cd "$PARENT_DIR/$1" && CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build \
-    -tags "netgo osusergo sqlite_omit_load_extension $2" \
-    -ldflags '-linkmode external -extldflags "-static"' \
-    -o "$OUT/$1" "./cmd/$1" 2>&1 | grep -v -E 'warning: Using|statically linked applications requires|: in function' || true)
-  [ -x "$OUT/$1" ] || { echo "ERROR: $1 did not build" >&2; exit 1; }
-}
-build_static kanban-store ""
 
 cp "$REPO_DIR/scripts/test-instance.sh" "$OUT/test-instance.sh"
 echo "==> Built into $OUT:"

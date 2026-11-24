@@ -40,7 +40,7 @@ func (c *Client) PublishClassification(ctx context.Context, publication msg.Boar
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/boards/"+url.PathEscape(publication.BoardID)+"/classification/decisions", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(asInternalService(ctx), http.MethodPost, c.baseURL+"/api/boards/"+url.PathEscape(publication.BoardID)+"/classification/decisions", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}

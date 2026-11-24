@@ -87,9 +87,7 @@ func TestRoutesRegisterWithEveryStoreMounted(t *testing.T) {
 // login and the two store proxies add meet the rest of the mux, and that a
 // caller with no credential is refused on them.
 func TestTheLoginAndStoreProxyRoutesAreMountedAndGated(t *testing.T) {
-	srv := newServerWithAllStoresConfigured(t, func(cfg *config.Config) {
-		cfg.KanbanStoreURL = "http://kanban-store.invalid"
-	})
+	srv := newServerWithAllStoresConfigured(t, nil)
 	for _, route := range []struct{ method, path string }{
 		{"GET", "/auth/principal"},
 		{"GET", "/kanban/boards"},
@@ -171,7 +169,9 @@ func newServerWithAllStoresConfigured(t *testing.T, adjustConfig func(*config.Co
 	}
 	testAuthorizationConfig(cfg)
 
-	adjustConfig(cfg)
+	if adjustConfig != nil {
+		adjustConfig(cfg)
+	}
 
 	// New() calls routes(), which is where a conflicting pattern panics.
 	// A panic here fails the test with the conflict named, which is the

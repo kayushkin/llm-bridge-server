@@ -5,16 +5,14 @@ package server
 // service token for agents, instances, machines, peer connections and
 // operation types, and principal-store for principals. Inside this process
 // those owners are this server's own stores, so they are asked directly, and
-// so are tool-store, skill-store and reference-store, which also moved into
-// this process. The owner that still runs apart (kanban-store) is asked over
-// HTTP as before.
+// so are tool-store, skill-store, kanban-store and reference-store, which
+// also moved into this process. No owner is asked over HTTP any more.
 
 import (
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -30,17 +28,12 @@ import (
 type inProcessResourceChecker struct {
 	server     *Server
 	principals *principalstore.Store
-	overHTTP   grantstore.ResourceChecker
 }
 
 func (s *Server) grantResourceChecker(principals *principalstore.Store) grantstore.ResourceChecker {
 	return inProcessResourceChecker{
 		server:     s,
 		principals: principals,
-		overHTTP: grantstore.NewHTTPResourceChecker(grantstore.ResourceOwners{
-			KanbanStoreURL:          s.cfg.KanbanStoreURL,
-			KanbanStoreServiceToken: s.cfg.KanbanStoreServiceToken,
-		}),
 	}
 }
 
@@ -155,6 +148,8 @@ func (checker inProcessResourceChecker) CheckResourceExists(ctx context.Context,
 			return fmt.Errorf("reference-store could not say whether %q names a record: %s: %s", resourceID, lookupErrors[0].Type, lookupErrors[0].Error)
 		}
 		return notFound("reference-store")
+	case grantstore.ResourceTypeBoard:
+		return s.checkKanbanBoardExists(resourceID)
 	case grantstore.ResourceTypePrincipal:
 		if _, err := checker.principals.Get(ctx, resourceID, false); errors.Is(err, principalstore.ErrNotFound) {
 			return notFound("principal-store")
@@ -163,9 +158,6 @@ func (checker inProcessResourceChecker) CheckResourceExists(ctx context.Context,
 		}
 		return nil
 	}
-	if slices.Contains(grantstore.ResourceTypesCheckedOverHTTP, resourceType) {
-		return checker.overHTTP.CheckResourceExists(ctx, resourceType, resourceID)
-	}
-	return fmt.Errorf("no owner check for resource_type %q: grant-store names %s, and each needs an owner here or in ResourceTypesCheckedOverHTTP",
+	return fmt.Errorf("no owner check for resource_type %q: grant-store names %s, and each needs an owner check here",
 		resourceType, strings.Join(grantstore.ResourceTypes, ", "))
 }

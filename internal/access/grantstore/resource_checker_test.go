@@ -11,8 +11,7 @@ import (
 	"time"
 )
 
-// newOwnerServer stands in for skill-store, tool-store and kanban-store at
-// once, answering the way each does live. Any path it does not know gets Go's
+// newOwnerServer stands in for skill-store and tool-store at once, answering the way each does live. Any path it does not know gets Go's
 // unrouted 404, as a real ServeMux would.
 func newOwnerServer(t *testing.T) *httptest.Server {
 	t.Helper()
@@ -26,16 +25,6 @@ func newOwnerServer(t *testing.T) *httptest.Server {
 		case "/tools/4":
 			w.WriteHeader(http.StatusNotFound)
 			w.Write([]byte(`{"error":"tool not found"}`))
-		case "/api/boards/board-exists":
-			if r.Header.Get(KanbanStoreServiceTokenHeader) != "kanban-service-token" {
-				w.WriteHeader(http.StatusUnauthorized)
-				w.Write([]byte(`{"error":"no principal and no service token"}`))
-				return
-			}
-			w.Write([]byte(`{"id":"board-exists"}`))
-		case "/api/boards/board-gone":
-			w.WriteHeader(http.StatusNotFound)
-			w.Write([]byte(`{"error":"not found"}`))
 		case "/tools/boom":
 			http.Error(w, "boom", http.StatusInternalServerError)
 		default:
@@ -47,30 +36,7 @@ func newOwnerServer(t *testing.T) *httptest.Server {
 }
 
 func newCheckerAgainst(srv *httptest.Server) *HTTPResourceChecker {
-	return NewHTTPResourceChecker(ResourceOwners{SkillStoreURL: srv.URL + "/", ToolStoreURL: srv.URL, KanbanStoreURL: srv.URL, KanbanStoreServiceToken: "kanban-service-token"})
-}
-
-// TestBoardCheckSendsTheKanbanServiceToken pins the one owner that is asked
-// with a credential: an enforcing kanban-store answers a bare request with 401,
-// and that must read as an owner that could not answer, not a missing board.
-func TestBoardCheckSendsTheKanbanServiceToken(t *testing.T) {
-	srv := newOwnerServer(t)
-	ctx := context.Background()
-	if err := newCheckerAgainst(srv).CheckResourceExists(ctx, ResourceTypeBoard, "board-exists"); err != nil {
-		t.Fatalf("existing board with the token: %v", err)
-	}
-	err := newCheckerAgainst(srv).CheckResourceExists(ctx, ResourceTypeBoard, "board-gone")
-	if !errors.Is(err, ErrResourceNotFound) {
-		t.Fatalf("missing board: want ErrResourceNotFound, got %v", err)
-	}
-	withoutToken := NewHTTPResourceChecker(ResourceOwners{SkillStoreURL: srv.URL, ToolStoreURL: srv.URL, KanbanStoreURL: srv.URL})
-	err = withoutToken.CheckResourceExists(ctx, ResourceTypeBoard, "board-exists")
-	if err == nil || errors.Is(err, ErrResourceNotFound) {
-		t.Fatalf("board check without the token: want an owner failure that is not ErrResourceNotFound, got %v", err)
-	}
-	if !strings.Contains(err.Error(), "401") {
-		t.Fatalf("board check without the token should quote kanban-store's 401, got %v", err)
-	}
+	return NewHTTPResourceChecker(ResourceOwners{SkillStoreURL: srv.URL + "/", ToolStoreURL: srv.URL})
 }
 
 func TestHTTPCheckerReadsTheOwnersAnswer(t *testing.T) {
@@ -118,7 +84,7 @@ func TestHTTPCheckerReportsAFailingOwnerAsAFailureNotAMissingResource(t *testing
 	gone := httptest.NewServer(http.NotFoundHandler())
 	goneURL := gone.URL
 	gone.Close()
-	err = NewHTTPResourceChecker(ResourceOwners{SkillStoreURL: goneURL, ToolStoreURL: goneURL, KanbanStoreURL: goneURL}).CheckResourceExists(ctx, ResourceTypeSkill, "7")
+	err = NewHTTPResourceChecker(ResourceOwners{SkillStoreURL: goneURL, ToolStoreURL: goneURL}).CheckResourceExists(ctx, ResourceTypeSkill, "7")
 	if err == nil || errors.Is(err, ErrResourceNotFound) || !strings.Contains(err.Error(), "did not answer") {
 		t.Fatalf("unreachable: err = %v", err)
 	}
@@ -132,7 +98,7 @@ func TestHTTPCheckerTimesOut(t *testing.T) {
 		}
 	}))
 	t.Cleanup(slow.Close)
-	checker := NewHTTPResourceChecker(ResourceOwners{SkillStoreURL: slow.URL, ToolStoreURL: slow.URL, KanbanStoreURL: slow.URL})
+	checker := NewHTTPResourceChecker(ResourceOwners{SkillStoreURL: slow.URL, ToolStoreURL: slow.URL})
 	if checker.client.Timeout != ownerCheckTimeout || ownerCheckTimeout != 3*time.Second {
 		t.Fatalf("client timeout = %v, want 3s", checker.client.Timeout)
 	}

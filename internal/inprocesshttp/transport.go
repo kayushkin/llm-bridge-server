@@ -1,9 +1,14 @@
-// Package inprocesshttp hands an HTTP request to a handler in this process
-// instead of sending it over a socket. A client of a store that moved into
-// this server keeps the requests it made and the answers it read, while
-// nothing leaves the process and no credential is presented: the handler is
-// the store's own, reached past the server's route rules, so whoever builds
-// the client decides what it may ask.
+// Package inprocesshttp answers an HTTP client's requests with a handler in
+// this process, with no socket between them.
+//
+// A store that moved into this server keeps the HTTP client its callers were
+// written against: the client's requests, refusals and answers stay exactly
+// what they were, because the store's own handler still makes them. Only the
+// network goes. kanban-store reaches noteboard this way, this server reaches
+// kanban-store and file-store, project-store reaches repo-store and
+// work-graph-store, and reference-store reaches the stores in this process.
+// No credential is presented: whoever builds the client decides which handler
+// it reaches, and so what it may ask.
 package inprocesshttp
 
 import (
@@ -18,12 +23,6 @@ import (
 // path and query; the host names nothing.
 const BaseURL = "http://in-process"
 
-// Transport is an http.RoundTripper over Handler. The answer's body streams
-// as the handler writes it, so a large file is not held in memory.
-type Transport struct {
-	Handler http.Handler
-}
-
 // Client is an http.Client over handler that does not follow redirects, so a
 // caller reads the handler's own answer.
 func Client(handler http.Handler) *http.Client {
@@ -33,14 +32,34 @@ func Client(handler http.Handler) *http.Client {
 	}
 }
 
+// Transport is an http.RoundTripper that serves every request with Handler.
+// The request's context travels with it unchanged, so a value the caller put
+// there (who is calling, a deadline) reaches the handler. The answer's body
+// streams as the handler writes it, so a large file is not held in memory.
+type Transport struct {
+	Handler http.Handler
+}
+
+// RoundTrip serves request with the handler. A request with no body is given
+// an empty one, as a server would. It returns once the handler has written
+// its status, or has returned without writing one (200).
 func (transport Transport) RoundTrip(request *http.Request) (*http.Response, error) {
 	if transport.Handler == nil {
 		return nil, fmt.Errorf("no in-process handler for %s %s", request.Method, request.URL.Path)
 	}
+	served := request.Clone(request.Context())
+	if served.Body == nil {
+		served.Body = http.NoBody
+	}
+	served.RequestURI = request.URL.RequestURI()
+	served.Host = request.URL.Host
 	reader, writer := io.Pipe()
 	answer := &streamingAnswer{header: http.Header{}, body: writer, started: make(chan struct{})}
 	go func() {
 		defer func() {
+			if request.Body != nil {
+				request.Body.Close()
+			}
 			if recovered := recover(); recovered != nil {
 				answer.start(http.StatusInternalServerError)
 				writer.CloseWithError(fmt.Errorf("the in-process handler of %s panicked: %v", request.URL.Path, recovered))
@@ -49,7 +68,7 @@ func (transport Transport) RoundTrip(request *http.Request) (*http.Response, err
 			answer.start(http.StatusOK)
 			writer.Close()
 		}()
-		transport.Handler.ServeHTTP(answer, request)
+		transport.Handler.ServeHTTP(answer, served)
 	}()
 	select {
 	case <-answer.started:
@@ -70,9 +89,9 @@ func (transport Transport) RoundTrip(request *http.Request) (*http.Response, err
 	}, nil
 }
 
-// streamingAnswer is the http.ResponseWriter a handler answers an
-// in-process request into. Its status and headers are taken when the handler
-// first writes, as net/http takes them.
+// streamingAnswer is the http.ResponseWriter a handler answers an in-process
+// request into. Its status and headers are frozen when the handler first
+// writes, as a server sends them then.
 type streamingAnswer struct {
 	header     http.Header
 	sentHeader http.Header

@@ -1,0 +1,17 @@
+bin/
+*.db
+*.db-shm
+*.db-wal
+
+# host-specific config (see ~/.claude memory: .local/ convention)
+/.local/
+
+# defensive
+.env
+.env.*
+*.key
+*.pem
+credentials.json
+
+# npm link target for the generated types package
+ts/node_modules/

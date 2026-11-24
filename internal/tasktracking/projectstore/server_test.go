@@ -116,10 +116,6 @@ func fakeOwners(t *testing.T) *Owners {
 		case "/repos/15":
 			json.NewEncoder(writer).Encode(map[string]any{"id": 15, "name": repoFifteenName()})
 		case "/api/boards/b1":
-			if request.Header.Get(KanbanServiceTokenHeader) != "service-token" {
-				http.Error(writer, "no token", http.StatusUnauthorized)
-				return
-			}
 			json.NewEncoder(writer).Encode(map[string]any{"id": "b1", "name": "Support Desk"})
 		case "/api/status":
 			json.NewEncoder(writer).Encode(map[string]any{"services": []map[string]any{{"name": "dash-server", "unit": "dash-server"}}})
@@ -157,7 +153,7 @@ func fakeOwners(t *testing.T) *Owners {
 		}
 	}))
 	t.Cleanup(server.Close)
-	return &Owners{HTTP: server.Client(), Repositories: repositoriesAtTheirRoots(server.Config.Handler), KanbanStoreURL: server.URL, KanbanStoreServiceToken: "service-token",
+	return &Owners{HTTP: server.Client(), Repositories: repositoriesAtTheirRoots(server.Config.Handler), Kanban: server.Client(), KanbanStoreURL: server.URL,
 		SchedulerURL: server.URL, HealthcheckURL: server.URL, Principals: httpPrincipals{client: server.Client(), url: server.URL}, Noteboard: httpNoteboard{client: server.Client(), url: server.URL}, BridgeURL: server.URL, BridgeServiceToken: "bridge-token",
 		SuggestionModelRole: "balanced", ModelHTTP: server.Client()}
 }
