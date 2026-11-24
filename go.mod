@@ -13,6 +13,7 @@ require (
 	github.com/kayushkin/log-store v0.0.0
 	github.com/kayushkin/memory-store v0.0.0
 	github.com/kayushkin/model-store v0.0.0
+	github.com/mattn/go-sqlite3 v1.14.37
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/nats-io/nats.go v1.49.0
 	github.com/oklog/ulid/v2 v2.1.1
@@ -33,7 +34,6 @@ require (
 	github.com/jackc/puddle/v2 v2.2.3 // indirect
 	github.com/klauspost/compress v1.18.2 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
-	github.com/mattn/go-sqlite3 v1.14.37 // indirect
 	github.com/nats-io/nkeys v0.4.12 // indirect
 	github.com/nats-io/nuid v1.0.1 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect

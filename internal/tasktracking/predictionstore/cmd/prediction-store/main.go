@@ -10,8 +10,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/predictionstore"
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	predictionstore "github.com/kayushkin/prediction-store"
 )
 
 func main() {
