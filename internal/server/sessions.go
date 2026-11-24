@@ -471,7 +471,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	if req.BundleID != "" {
 		if s.bundleClient == nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "bundle_store_not_configured",
-				"bundle_id was given but this server has no bundle-store to check it with (LLMBRIDGE_BUNDLE_STORE_URL)")
+				"bundle_id was given but "+bundleStoreOffMessage+", so it cannot be checked")
 			return
 		}
 		if err := s.bundleClient.CheckExists(r.Context(), req.BundleID); err != nil {

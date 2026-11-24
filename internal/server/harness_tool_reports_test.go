@@ -1,11 +1,12 @@
 package server
 
 import (
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore"
 
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -14,33 +15,22 @@ import (
 // tools do not, since tool-store already owns them.
 func TestASessionsReportedToolsReachToolStoreWithoutItsMCPTools(t *testing.T) {
 	srv, st, instanceID := serverWithHarnessDefaults(t, msg.HarnessDefaults{})
-	var got map[string]any
-	toolStore := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost && r.URL.Path == "/harness-tools/observed" {
-			_ = json.NewDecoder(r.Body).Decode(&got)
-			_ = json.NewEncoder(w).Encode(map[string]any{"created": []string{"NewTool"}, "seen": 2})
-			return
-		}
-		if r.Method == http.MethodGet && r.URL.Path == "/tools" {
-			_ = json.NewEncoder(w).Encode([]any{})
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	t.Cleanup(toolStore.Close)
-	srv.cfg.ToolStoreURL = toolStore.URL
+	toolStore := newFakeToolRegistry(t)
+	toolStore.harnessTools = []map[string]any{}
+	toolStore.created = []string{"NewTool"}
+	srv.toolRegistry = toolStore
 	sess := createSessionForDefaults(t, srv, st, msg.CreateSessionRequest{InstanceID: instanceID})
 
 	srv.onSessionInfo(sess.SessionID, &msg.SessionInfo{Tools: []msg.ToolInfo{{Name: "Read"}, {Name: "mcp__multichat__send"}, {Name: "NewTool"}}})
 
-	if got == nil {
-		t.Fatal("tool-store was not told")
+	if len(toolStore.observed) != 1 {
+		t.Fatalf("tool-store was told %d times, want once", len(toolStore.observed))
 	}
-	if got["harness"] != string(msg.HarnessClaudeCode) {
-		t.Errorf("harness = %v", got["harness"])
+	got := toolStore.observed[0]
+	if got.Harness != string(msg.HarnessClaudeCode) {
+		t.Errorf("harness = %v", got.Harness)
 	}
-	names, _ := json.Marshal(got["tool_names"])
-	if string(names) != `["Read","NewTool"]` {
+	if names := strings.Join(got.ToolNames, ","); names != "Read,NewTool" {
 		t.Errorf("tool_names = %s; want the built-ins only", names)
 	}
 }
@@ -48,13 +38,11 @@ func TestASessionsReportedToolsReachToolStoreWithoutItsMCPTools(t *testing.T) {
 // tool-store refusing the report is an error the caller can log, not a silence.
 func TestAToolStoreThatRefusesTheReportIsAnError(t *testing.T) {
 	srv, _ := testServer(t)
-	toolStore := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, `{"error":"bad name"}`, http.StatusBadRequest)
-	}))
-	t.Cleanup(toolStore.Close)
-	srv.cfg.ToolStoreURL = toolStore.URL
-	_, err := srv.reportObservedHarnessTools(t.Context(), msg.HarnessClaudeCode, []string{"Read"})
-	if err == nil || !strings.Contains(err.Error(), "400") {
-		t.Errorf("err = %v; want the 400", err)
+	toolStore := newFakeToolRegistry(t)
+	toolStore.recordObservedError = fmt.Errorf("%w: tool name %q contains whitespace", toolstore.ErrInvalidObservedHarnessTools, "Bad Name")
+	srv.toolRegistry = toolStore
+	_, err := srv.reportObservedHarnessTools(t.Context(), msg.HarnessClaudeCode, []string{"Bad Name"})
+	if err == nil || !errors.Is(err, toolstore.ErrInvalidObservedHarnessTools) {
+		t.Errorf("err = %v; want the store's refusal", err)
 	}
 }

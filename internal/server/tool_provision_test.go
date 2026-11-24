@@ -2,47 +2,38 @@ package server
 
 import (
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
+	"errors"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// fakeToolStore returns a server that always returns the given JSON body for
-// POST /provision and 404 otherwise.
-func fakeToolStore(t *testing.T, body string) *httptest.Server {
+// fakeToolStore is a tool registry whose provision answers every request
+// naming tools by name with body.
+func fakeToolStore(t *testing.T, body string) *fakeToolRegistry {
 	t.Helper()
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /provision", func(w http.ResponseWriter, r *http.Request) {
-		var req map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), 400)
-			return
+	registry := newFakeToolRegistry(t)
+	registry.provisionAnswer = func(request toolstore.ProvisionRequest) string {
+		if len(request.Tools) == 0 {
+			t.Fatalf("provision request %+v names no tools", request)
 		}
-		if _, ok := req["tools"]; !ok {
-			http.Error(w, "missing tools", 400)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(body))
-	})
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-	return srv
+		return body
+	}
+	return registry
 }
 
-func newServerWithToolStoreURL(url string) *Server {
-	return &Server{cfg: &config.Config{ToolStoreURL: url}}
+func newServerWithToolRegistry(tools toolRegistry) *Server {
+	return &Server{cfg: &config.Config{}, toolRegistry: tools}
 }
 
 func TestInjectMCPConfigNoOpIfKeyAbsent(t *testing.T) {
 	srv := fakeToolStore(t, `{"mcpServers":{}}`)
-	s := newServerWithToolStoreURL(srv.URL)
+	s := newServerWithToolRegistry(srv)
 	sess := &store.Session{
 		Harness:       msg.HarnessClaudeCode,
 		HarnessConfig: json.RawMessage(`{"settings":"{}"}`),
@@ -59,7 +50,7 @@ func TestInjectMCPConfigNoOpIfKeyAbsent(t *testing.T) {
 func TestInjectMCPConfigHappyPath(t *testing.T) {
 	body := `{"mcpServers":{"brave-search":{"command":"npx","args":["-y","x"],"env":{"BRAVE_API_KEY":"k"}}}}`
 	srv := fakeToolStore(t, body)
-	s := newServerWithToolStoreURL(srv.URL)
+	s := newServerWithToolRegistry(srv)
 	sess := &store.Session{
 		Harness:       msg.HarnessClaudeCode,
 		SessionID:     "test-bid",
@@ -95,7 +86,7 @@ func TestInjectMCPConfigHappyPath(t *testing.T) {
 
 func TestInjectMCPConfigEmptyToolListIsNoOp(t *testing.T) {
 	srv := fakeToolStore(t, `{"mcpServers":{}}`)
-	s := newServerWithToolStoreURL(srv.URL)
+	s := newServerWithToolRegistry(srv)
 	sess := &store.Session{
 		Harness:       msg.HarnessClaudeCode,
 		HarnessConfig: json.RawMessage(`{"tool_store_tools":[],"x":"y"}`),
@@ -115,7 +106,7 @@ func TestInjectMCPConfigEmptyToolListIsNoOp(t *testing.T) {
 
 func TestInjectMCPConfigConflictingMCPConfigErrors(t *testing.T) {
 	srv := fakeToolStore(t, `{"mcpServers":{}}`)
-	s := newServerWithToolStoreURL(srv.URL)
+	s := newServerWithToolRegistry(srv)
 	sess := &store.Session{
 		Harness:       msg.HarnessClaudeCode,
 		HarnessConfig: json.RawMessage(`{"tool_store_tools":["x"],"mcp_config":"/some/path"}`),
@@ -128,7 +119,7 @@ func TestInjectMCPConfigConflictingMCPConfigErrors(t *testing.T) {
 
 func TestInjectMCPConfigSkipsAHarnessThatStartsNoMCPServers(t *testing.T) {
 	srv := fakeToolStore(t, `{"mcpServers":{}}`)
-	s := newServerWithToolStoreURL(srv.URL)
+	s := newServerWithToolRegistry(srv)
 	sess := &store.Session{
 		Harness:       msg.HarnessCodex,
 		HarnessConfig: json.RawMessage(`{"tool_store_tools":["x"]}`),
@@ -143,13 +134,9 @@ func TestInjectMCPConfigSkipsAHarnessThatStartsNoMCPServers(t *testing.T) {
 }
 
 func TestInjectMCPConfigUpstreamErrorPropagates(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /provision", func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, `{"error":"tool not found"}`, 400)
-	})
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-	s := newServerWithToolStoreURL(srv.URL)
+	srv := newFakeToolRegistry(t)
+	srv.provisionError = errors.New(`provision: tool "nope" not found`)
+	s := newServerWithToolRegistry(srv)
 	sess := &store.Session{
 		Harness:       msg.HarnessClaudeCode,
 		HarnessConfig: json.RawMessage(`{"tool_store_tools":["nope"]}`),
@@ -165,34 +152,25 @@ func TestInjectMCPConfigUpstreamErrorPropagates(t *testing.T) {
 // These pin the other half of the wire: what a tick on the Tools page does to
 // a session spawned on that instance.
 
-// fakeInstanceToolStore answers POST /provision for instance_id requests,
-// recording the instance it was asked about.
-func fakeInstanceToolStore(t *testing.T, byInstance map[string]string) (*httptest.Server, *[]string) {
+// fakeInstanceToolStore is a tool registry whose provision answers requests
+// by instance id, recording the instance it was asked about. Its opt-in list
+// is empty, as the standalone store answered when it had no rows.
+func fakeInstanceToolStore(t *testing.T, byInstance map[string]string) (*fakeToolRegistry, *[]string) {
 	t.Helper()
 	var asked []string
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /provision", func(w http.ResponseWriter, r *http.Request) {
-		var req map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), 400)
-			return
+	registry := newFakeToolRegistry(t)
+	registry.provisionAnswer = func(request toolstore.ProvisionRequest) string {
+		if request.InstanceID == "" {
+			t.Fatalf("provision request %+v names no instance", request)
 		}
-		id, _ := req["instance_id"].(string)
-		if id == "" {
-			http.Error(w, "missing instance_id", 400)
-			return
-		}
-		asked = append(asked, id)
-		body, ok := byInstance[id]
+		asked = append(asked, request.InstanceID)
+		body, ok := byInstance[request.InstanceID]
 		if !ok {
 			body = `{"mcpServers":{}}`
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(body))
-	})
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-	return srv, &asked
+		return body
+	}
+	return registry, &asked
 }
 
 func mcpConfigPath(t *testing.T, sess *store.Session) string {
@@ -218,7 +196,7 @@ func mcpConfigPath(t *testing.T, sess *store.Session) string {
 func TestInjectMCPConfigProvisionsTheInstanceOptIns(t *testing.T) {
 	body := `{"mcpServers":{"brave-search":{"command":"npx","args":["-y","x"]}}}`
 	srv, asked := fakeInstanceToolStore(t, map[string]string{"inst-1": body})
-	s := newServerWithToolStoreURL(srv.URL)
+	s := newServerWithToolRegistry(srv)
 	sess := &store.Session{
 		Harness:    msg.HarnessClaudeCode,
 		SessionID:  "test-bid",
@@ -248,7 +226,7 @@ func TestInjectMCPConfigProvisionsTheInstanceOptIns(t *testing.T) {
 // Nothing must change about such a session, including its HarnessConfig.
 func TestInjectMCPConfigInstanceWithNoOptInsChangesNothing(t *testing.T) {
 	srv, _ := fakeInstanceToolStore(t, nil)
-	s := newServerWithToolStoreURL(srv.URL)
+	s := newServerWithToolRegistry(srv)
 	sess := &store.Session{
 		Harness:       msg.HarnessClaudeCode,
 		InstanceID:    "inst-untouched",
@@ -267,10 +245,7 @@ func TestInjectMCPConfigInstanceWithNoOptInsChangesNothing(t *testing.T) {
 // the assertion that matters most here: the opposite policy would take every
 // spawn on this box down with tool-store.
 func TestInjectMCPConfigStartsTheSessionWhenToolStoreIsDown(t *testing.T) {
-	srv, _ := fakeInstanceToolStore(t, nil)
-	url := srv.URL
-	srv.Close()
-	s := newServerWithToolStoreURL(url)
+	s := newServerWithToolRegistry(unreachableToolRegistry(t))
 	sess := &store.Session{
 		Harness:    msg.HarnessClaudeCode,
 		InstanceID: "inst-1",
@@ -284,17 +259,13 @@ func TestInjectMCPConfigStartsTheSessionWhenToolStoreIsDown(t *testing.T) {
 }
 
 // A stale opt-in row — a tool since deleted, or one whose credential no longer
-// resolves — makes tool-store answer 4xx. Same reasoning: log it, start the
+// resolves — makes tool-store's provision fail. Same reasoning: log it, start the
 // session. A named request in the same state still aborts, which
 // TestInjectMCPConfigUpstreamErrorPropagates pins.
 func TestInjectMCPConfigStartsTheSessionWhenAnOptInIsStale(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /provision", func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, `{"error":"tool \"gone\" not found"}`, 400)
-	})
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-	s := newServerWithToolStoreURL(srv.URL)
+	srv := newFakeToolRegistry(t)
+	srv.provisionError = errors.New(`provision: tool id 12 not found`)
+	s := newServerWithToolRegistry(srv)
 	sess := &store.Session{Harness: msg.HarnessClaudeCode, InstanceID: "inst-1"}
 	if err := s.injectMCPConfig(sess); err != nil {
 		t.Fatalf("a stale opt-in must not abort the spawn, got: %v", err)
@@ -307,7 +278,7 @@ func TestInjectMCPConfigStartsTheSessionWhenAnOptInIsStale(t *testing.T) {
 func TestInjectMCPConfigEmptyNamedListOptsOutOfInstanceDefaults(t *testing.T) {
 	body := `{"mcpServers":{"brave-search":{"command":"npx"}}}`
 	srv, asked := fakeInstanceToolStore(t, map[string]string{"inst-1": body})
-	s := newServerWithToolStoreURL(srv.URL)
+	s := newServerWithToolRegistry(srv)
 	sess := &store.Session{
 		Harness:       msg.HarnessClaudeCode,
 		InstanceID:    "inst-1",
@@ -328,7 +299,7 @@ func TestInjectMCPConfigEmptyNamedListOptsOutOfInstanceDefaults(t *testing.T) {
 func TestInjectMCPConfigPresetPathWinsOverInstanceDefaults(t *testing.T) {
 	body := `{"mcpServers":{"brave-search":{"command":"npx"}}}`
 	srv, asked := fakeInstanceToolStore(t, map[string]string{"inst-1": body})
-	s := newServerWithToolStoreURL(srv.URL)
+	s := newServerWithToolRegistry(srv)
 	sess := &store.Session{
 		Harness:       msg.HarnessClaudeCode,
 		InstanceID:    "inst-1",
@@ -346,10 +317,10 @@ func TestInjectMCPConfigPresetPathWinsOverInstanceDefaults(t *testing.T) {
 }
 
 // Only harnesses that start the servers they are handed consume mcp_config, so
-// no other harness should cost a round trip to tool-store.
+// no other harness should cost a call into tool-store.
 func TestInjectMCPConfigDoesNotLookUpAHarnessThatStartsNoMCPServers(t *testing.T) {
 	srv, asked := fakeInstanceToolStore(t, nil)
-	s := newServerWithToolStoreURL(srv.URL)
+	s := newServerWithToolRegistry(srv)
 	sess := &store.Session{Harness: msg.HarnessCodex, InstanceID: "inst-1"}
 	if err := s.injectMCPConfig(sess); err != nil {
 		t.Fatalf("err: %v", err)
@@ -366,7 +337,7 @@ func TestInjectMCPConfigDoesNotLookUpAHarnessThatStartsNoMCPServers(t *testing.T
 func TestInjectMCPConfigProvisionsTheInstanceOptInsForInber(t *testing.T) {
 	body := `{"mcpServers":{"bridge":{"command":"bridge-mcp"}}}`
 	srv, asked := fakeInstanceToolStore(t, map[string]string{"inst-inber": body})
-	s := newServerWithToolStoreURL(srv.URL)
+	s := newServerWithToolRegistry(srv)
 	sess := &store.Session{
 		Harness:    msg.HarnessInber,
 		SessionID:  "test-inber",

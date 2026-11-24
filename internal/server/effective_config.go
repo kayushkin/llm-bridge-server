@@ -280,7 +280,7 @@ func (s *Server) effectiveConfigFor(ctx context.Context, sess *store.Session, su
 				setting.Record = "sessions.bundle_id"
 			}
 			if s.bundleClient == nil {
-				warn("the session names bundle %s but this server has no bundle-store to resolve it with (LLMBRIDGE_BUNDLE_STORE_URL); a spawn would be refused", sess.BundleID)
+				warn("the session names bundle %s but %s; a spawn would be refused", sess.BundleID, bundleStoreOffMessage)
 			} else if resolution, err := s.bundleClient.Resolve(ctx, sess.BundleID); err != nil {
 				warn("bundle %s could not be resolved, so a spawn would be refused: %v", sess.BundleID, err)
 			} else {
@@ -405,8 +405,8 @@ func (s *Server) effectiveTools(ctx context.Context, sess *store.Session, cfg ma
 		setting.Layer, setting.Detail = msg.EffectiveLayerNone, fmt.Sprintf("MCP tools are provisioned only for harnesses that start the servers they are handed (claude_code, inber); %s sessions are handed none", sess.Harness)
 		return setting
 	}
-	if s.cfg == nil || s.cfg.ToolStoreURL == "" {
-		setting.Layer, setting.Detail = msg.EffectiveLayerNone, "this server has no tool-store (LLMBRIDGE_TOOL_STORE_URL), so no MCP tools are provisioned"
+	if s.toolRegistry == nil {
+		setting.Layer, setting.Detail = msg.EffectiveLayerNone, toolStoreOffMessage+", so no MCP tools are provisioned"
 		return setting
 	}
 	offer, err := s.resolveToolOffer(ctx, sess, cfg)

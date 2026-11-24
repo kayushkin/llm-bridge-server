@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -48,60 +47,18 @@ func fakeGrantStore(t *testing.T, principalID string, toolIDs []string) *httptes
 	return srv
 }
 
-// fakeToolStoreWithOptIns serves an instance's opt-in list and a /provision
-// that records what it was asked for and answers one server per requested id.
-func fakeToolStoreWithOptIns(t *testing.T, optIns map[string][]map[string]any) (*httptest.Server, *[]map[string]any) {
+// fakeToolStoreWithOptIns is a tool registry serving each instance's opt-in
+// list and a provision that records what it was asked for and answers one
+// server per requested id.
+func fakeToolStoreWithOptIns(t *testing.T, optIns map[string][]map[string]any) (*fakeToolRegistry, *[]map[string]any) {
 	t.Helper()
-	var provisionBodies []map[string]any
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /instances/{id}/tools", func(w http.ResponseWriter, r *http.Request) {
-		rows := optIns[r.PathValue("id")]
-		if rows == nil {
-			rows = []map[string]any{}
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(rows)
-	})
-	mux.HandleFunc("GET /tools", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("kind") != harnessToolKind {
-			http.Error(w, "the fake serves kind=harness only", 400)
-			return
-		}
-		rows := []map[string]any{}
-		for _, row := range harnessToolRowsForTests {
-			if harness := r.URL.Query().Get("harness"); harness == "" || row["harness"] == harness {
-				rows = append(rows, row)
-			}
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(rows)
-	})
-	mux.HandleFunc("POST /provision", func(w http.ResponseWriter, r *http.Request) {
-		var body map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			http.Error(w, err.Error(), 400)
-			return
-		}
-		provisionBodies = append(provisionBodies, body)
-		servers := map[string]any{}
-		if ids, ok := body["tool_ids"].([]any); ok {
-			for _, id := range ids {
-				servers[fmt.Sprintf("tool-%v", id)] = map[string]any{"command": "x"}
-			}
-		}
-		if _, byInstance := body["instance_id"]; byInstance {
-			servers["instance-default"] = map[string]any{"command": "y"}
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"mcpServers": servers})
-	})
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-	return srv, &provisionBodies
+	registry := newFakeToolRegistry(t)
+	registry.instanceTools = optIns
+	return registry, &registry.provisionBodies
 }
 
-func newServerWithGrants(toolStoreURL, grantStoreURL string) *Server {
-	return &Server{cfg: &config.Config{ToolStoreURL: toolStoreURL}, grantClient: grantclient.New(grantStoreURL, ""),
+func newServerWithGrants(tools toolRegistry, grantStoreURL string) *Server {
+	return &Server{cfg: &config.Config{}, toolRegistry: tools, grantClient: grantclient.New(grantStoreURL, ""),
 		principalLookupCache: principalLookupCacheAnswering(humanPrincipalForGrantTests)}
 }
 
@@ -130,7 +87,7 @@ func principalLookupCacheAnswering(principals ...principalclient.Principal) *pri
 	}
 }
 
-// harnessToolRowsForTests is the fake tool-store's harness tools, in
+// harnessToolRowsForTests is the fake tool registry's harness tools, in
 // tool-store's shape: Read and Bash (which runs commands) for claude_code and
 // shell_tool for codex, all enabled.
 var harnessToolRowsForTests = []map[string]any{
@@ -149,7 +106,7 @@ var cliTool7 = map[string]any{"id": 7, "name": "scheduler", "kind": "cli"}
 func TestInjectMCPConfigOffersOnlyGrantedToolsWiredOnTheInstance(t *testing.T) {
 	grants := fakeGrantStore(t, "principal_000001", []string{"13", "7", "99"})
 	tools, asked := fakeToolStoreWithOptIns(t, map[string][]map[string]any{"inst-1": {mcpTool13, mcpTool14, cliTool7}})
-	s := newServerWithGrants(tools.URL, grants.URL)
+	s := newServerWithGrants(tools, grants.URL)
 	sess := &store.Session{Harness: msg.HarnessClaudeCode, SessionID: "br_test", InstanceID: "inst-1", PrincipalID: "principal_000001"}
 
 	if err := s.injectMCPConfig(sess); err != nil {
@@ -174,7 +131,7 @@ func TestInjectMCPConfigOffersOnlyGrantedToolsWiredOnTheInstance(t *testing.T) {
 func TestInjectMCPConfigPrincipalWithNoGrantsGetsTheInstanceOptIns(t *testing.T) {
 	grants := fakeGrantStore(t, "principal_000002", nil)
 	tools, asked := fakeToolStoreWithOptIns(t, map[string][]map[string]any{"inst-1": {mcpTool12}})
-	s := newServerWithGrants(tools.URL, grants.URL)
+	s := newServerWithGrants(tools, grants.URL)
 	sess := &store.Session{Harness: msg.HarnessClaudeCode, SessionID: "br_test", InstanceID: "inst-1", PrincipalID: "principal_000002"}
 
 	if err := s.injectMCPConfig(sess); err != nil {
@@ -195,7 +152,7 @@ func TestInjectMCPConfigPrincipalWithNoGrantsGetsTheInstanceOptIns(t *testing.T)
 func TestInjectMCPConfigNothingBothGrantedAndWiredStartsWithNoServers(t *testing.T) {
 	grants := fakeGrantStore(t, "principal_000001", []string{"13"})
 	tools, asked := fakeToolStoreWithOptIns(t, map[string][]map[string]any{"inst-1": {mcpTool12}})
-	s := newServerWithGrants(tools.URL, grants.URL)
+	s := newServerWithGrants(tools, grants.URL)
 	sess := &store.Session{Harness: msg.HarnessClaudeCode, SessionID: "br_test", InstanceID: "inst-1", PrincipalID: "principal_000001", HarnessConfig: json.RawMessage(`{"settings":"{}"}`)}
 	before := string(sess.HarnessConfig)
 
@@ -217,7 +174,7 @@ func TestInjectMCPConfigAbortsWhenTheGrantsCannotBeRead(t *testing.T) {
 	tools, asked := fakeToolStoreWithOptIns(t, map[string][]map[string]any{"inst-1": {mcpTool13}})
 
 	unknown := fakeGrantStore(t, "principal_000001", []string{"13"})
-	s := newServerWithGrants(tools.URL, unknown.URL)
+	s := newServerWithGrants(tools, unknown.URL)
 	sess := &store.Session{Harness: msg.HarnessClaudeCode, SessionID: "br_test", InstanceID: "inst-1", PrincipalID: "principal_000404"}
 	err := s.injectMCPConfig(sess)
 	if err == nil || !strings.Contains(err.Error(), "principal unknown") {
@@ -227,7 +184,7 @@ func TestInjectMCPConfigAbortsWhenTheGrantsCannotBeRead(t *testing.T) {
 	down := fakeGrantStore(t, "principal_000001", []string{"13"})
 	downURL := down.URL
 	down.Close()
-	s = newServerWithGrants(tools.URL, downURL)
+	s = newServerWithGrants(tools, downURL)
 	sess = &store.Session{Harness: msg.HarnessClaudeCode, SessionID: "br_test", InstanceID: "inst-1", PrincipalID: "principal_000001"}
 	err = s.injectMCPConfig(sess)
 	if err == nil || !strings.Contains(err.Error(), "grant-store unreachable") {
@@ -248,7 +205,7 @@ func TestInjectMCPConfigWithoutAPrincipalNeverAsksGrantStore(t *testing.T) {
 	}))
 	t.Cleanup(grants.Close)
 	tools, _ := fakeToolStoreWithOptIns(t, map[string][]map[string]any{"inst-1": {mcpTool12}})
-	s := newServerWithGrants(tools.URL, grants.URL)
+	s := newServerWithGrants(tools, grants.URL)
 	sess := &store.Session{Harness: msg.HarnessClaudeCode, SessionID: "br_test", InstanceID: "inst-1"}
 	if err := s.injectMCPConfig(sess); err != nil {
 		t.Fatalf("err: %v", err)

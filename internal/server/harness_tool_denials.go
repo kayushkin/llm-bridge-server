@@ -5,12 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
 	"strings"
-	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore"
 	"github.com/kayushkin/llm-bridge-server/internal/bundleclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -82,40 +79,23 @@ var errToolStoreUnavailable = errors.New("tool-store unavailable")
 // harnessTools reads tool-store's harness tools, all of them when harness is
 // empty. tool-store owns the list; nothing here restates it.
 func (s *Server) harnessTools(ctx context.Context, harness msg.Harness) ([]harnessTool, error) {
-	if s.cfg == nil || s.cfg.ToolStoreURL == "" {
-		return nil, fmt.Errorf("this server has no tool-store (LLMBRIDGE_TOOL_STORE_URL) to read harness tools from")
+	if s.toolRegistry == nil {
+		return nil, fmt.Errorf("%s, so there are no harness tools to read", toolStoreOffMessage)
 	}
-	query := url.Values{"kind": {harnessToolKind}}
-	if harness != "" {
-		query.Set("harness", string(harness))
-	}
-	requestURL := s.cfg.ToolStoreURL + "/tools?" + query.Encode()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+	tools, err := s.toolRegistry.ListTools(ctx, toolstore.ListFilter{Kind: toolstore.KindHarness, Harness: string(harness)})
 	if err != nil {
-		return nil, fmt.Errorf("build GET %s: %w", requestURL, err)
+		return nil, fmt.Errorf("%w: listing harness tools: %v", errToolStoreUnavailable, err)
 	}
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
-	if err != nil {
-		return nil, fmt.Errorf("%w: GET %s: %v", errToolStoreUnavailable, requestURL, err)
-	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		return nil, fmt.Errorf("%w: read the response to GET %s: %v", errToolStoreUnavailable, requestURL, err)
-	}
-	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%w: GET %s returned %d: %s", errToolStoreUnavailable, requestURL, response.StatusCode, strings.TrimSpace(string(body)))
-	}
-	var tools []harnessTool
-	if err := json.Unmarshal(body, &tools); err != nil {
-		return nil, fmt.Errorf("%w: GET %s returned unparseable JSON: %v", errToolStoreUnavailable, requestURL, err)
-	}
+	harnessToolsOfTheRegistry := make([]harnessTool, 0, len(tools))
 	for _, t := range tools {
 		if t.HarnessToolName == "" || t.Harness == "" {
 			return nil, fmt.Errorf("tool-store harness tool %d (%s) has no harness or harness_tool_name", t.ID, t.Name)
 		}
+		harnessToolsOfTheRegistry = append(harnessToolsOfTheRegistry, harnessTool{
+			ID: t.ID, Name: t.Name, Harness: t.Harness, HarnessToolName: t.HarnessToolName, Enabled: t.Enabled, Tags: t.Tags,
+		})
 	}
-	return tools, nil
+	return harnessToolsOfTheRegistry, nil
 }
 
 // harnessToolDenials is what tool-store and the bundle take away from a
@@ -136,11 +116,11 @@ type harnessToolDenials struct {
 // harness tool was an MCP tool, which bundle-store already left out of the
 // offer; a harness tool of another harness does not apply to this session.
 func (s *Server) decideHarnessToolDenials(ctx context.Context, harness msg.Harness, bundle *bundleclient.Resolution) (*harnessToolDenials, error) {
-	if s.cfg == nil || s.cfg.ToolStoreURL == "" {
+	if s.toolRegistry == nil {
 		if bundle != nil && (len(bundle.DeniedTools) > 0 || len(bundle.DeniedReadPaths) > 0) {
-			return nil, fmt.Errorf("the session's bundle denies tools or paths, and this server has no tool-store (LLMBRIDGE_TOOL_STORE_URL) to name them with")
+			return nil, fmt.Errorf("the session's bundle denies tools or paths, and %s, so they cannot be named", toolStoreOffMessage)
 		}
-		return &harnessToolDenials{Notes: []string{"this server has no tool-store, so tool-store's master switch was not read"}}, nil
+		return &harnessToolDenials{Notes: []string{toolStoreOffMessage + ", so tool-store's master switch was not read"}}, nil
 	}
 	all, err := s.harnessTools(ctx, "")
 	if err != nil {

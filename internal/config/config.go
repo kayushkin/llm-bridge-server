@@ -93,8 +93,7 @@ type Config struct {
 	// → manifests fall back to the runner's own server_url, which works
 	// when the runner is reaching the bridge over a tunnel on
 	// localhost:port (the WSL-via-SSH-tunnel case).
-	PublicURL    string
-	ToolStoreURL string
+	PublicURL string
 	// PermissionStoreURL is the base URL of the permission-store service
 	// consulted by the PreToolUse permission-prehook handler. Defaults to
 	// localhost:8304.
@@ -111,10 +110,21 @@ type Config struct {
 	PrincipalStoreURL string
 	// DiscoveryPrincipalID explicitly owns local imports; empty leaves them unowned.
 	DiscoveryPrincipalID string
-	// BundleStoreURL is the base URL of bundle-store, asked at session
-	// creation whether a bundle_id names a real bundle and at spawn what it
-	// resolves to. Configured via LLMBRIDGE_BUNDLE_STORE_URL.
-	BundleStoreURL string
+	// SkillStoreDataDirectory holds the files of every skill the skill-store
+	// module records (skills/<id>/) and the sources it clones (repos/<name>/);
+	// the rows are in Postgres. SkillStoreInstallDirectory is where an
+	// installed skill is copied. LLMBRIDGE_SKILL_STORE_DATA_DIRECTORY and
+	// LLMBRIDGE_SKILL_STORE_INSTALL_DIRECTORY.
+	SkillStoreDataDirectory    string
+	SkillStoreInstallDirectory string
+	// LocalToolsPinchtabURL, LocalToolsPinchtabToken, LocalToolsBraveAPIKey
+	// and LocalToolsSchedulerToken are what tool-store's in-process browser,
+	// web_search and scheduler tools are built with; the scheduler tool calls
+	// SchedulerURL.
+	LocalToolsPinchtabURL    string
+	LocalToolsPinchtabToken  string
+	LocalToolsBraveAPIKey    string
+	LocalToolsSchedulerToken string
 	// KanbanStoreURL is the base URL of the kanban-store service, which owns
 	// the session↔noteboard-todo link a signal propagates to, and which
 	// /kanban/ proxies to as the calling principal. Required, via
@@ -276,6 +286,11 @@ const (
 	// and may carry its password. An agent holding it could read and rewrite
 	// every module's tables past every rule this server enforces.
 	PostgresURLEnvironmentVariable = "LLMBRIDGE_POSTGRES_URL"
+	// The credentials tool-store's in-process tools present to PinchTab, Brave
+	// Search and the scheduler. They are this server's, not a harness's.
+	LocalToolsPinchtabTokenEnvironmentVariable  = "LLMBRIDGE_LOCAL_TOOLS_PINCHTAB_TOKEN"
+	LocalToolsBraveAPIKeyEnvironmentVariable    = "LLMBRIDGE_LOCAL_TOOLS_BRAVE_API_KEY"
+	LocalToolsSchedulerTokenEnvironmentVariable = "LLMBRIDGE_LOCAL_TOOLS_SCHEDULER_TOKEN"
 )
 
 // SecretEnvironmentVariableNames lists every environment variable that must
@@ -286,7 +301,8 @@ const (
 // internal caller, a store service token would let it bypass that store's
 // per-principal enforcement, and the Entra client secret would let it redeem
 // an authorization code meant for this server, and the Postgres URL would
-// let it reach the modules' tables directly. The kanban token is read by internal/kanbanclient rather than
+// let it reach the modules' tables directly, and the local tools' credentials
+// are this server's own. The kanban token is read by internal/kanbanclient rather than
 // by Load, which is why its name is taken from that package: one spelling,
 // read in one place and stripped in another.
 func SecretEnvironmentVariableNames() []string {
@@ -298,6 +314,9 @@ func SecretEnvironmentVariableNames() []string {
 		FileStoreServiceTokenEnvironmentVariable,
 		EntraClientSecretEnvironmentVariable,
 		PostgresURLEnvironmentVariable,
+		LocalToolsPinchtabTokenEnvironmentVariable,
+		LocalToolsBraveAPIKeyEnvironmentVariable,
+		LocalToolsSchedulerTokenEnvironmentVariable,
 	}
 }
 
@@ -433,12 +452,16 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		ConformancePath:                  settings.String("conformance.path"),
 		LogStoreURL:                      settings.String("log_store.url"),
 		PublicURL:                        settings.String("public_url"),
-		ToolStoreURL:                     settings.String("tool_store.url"),
 		PermissionStoreURL:               settings.String("permission_store.url"),
 		GrantStoreURL:                    settings.String("grant_store.url"),
 		PrincipalStoreURL:                settings.String("principal_store.url"),
 		DiscoveryPrincipalID:             settings.String("discovery.principal_id"),
-		BundleStoreURL:                   settings.String("bundle_store.url"),
+		SkillStoreDataDirectory:          settings.String("skill_store.data_directory"),
+		SkillStoreInstallDirectory:       settings.String("skill_store.install_directory"),
+		LocalToolsPinchtabURL:            settings.String("local_tools.pinchtab_url"),
+		LocalToolsPinchtabToken:          settings.String("local_tools.pinchtab_token"),
+		LocalToolsBraveAPIKey:            settings.String("local_tools.brave_api_key"),
+		LocalToolsSchedulerToken:         settings.String("local_tools.scheduler_token"),
 		KanbanStoreURL:                   settings.String("kanban_store.url"),
 		ReferenceStoreURL:                settings.String("reference_store.url"),
 		PostgresURL:                      settings.String("database.postgres_url"),
@@ -496,7 +519,6 @@ func (c *Config) GuardedAddresses() map[string]string {
 		"BridgePrefsPath":    c.BridgePrefsPath,
 		"ConformancePath":    c.ConformancePath,
 		"LogStoreURL":        c.LogStoreURL,
-		"ToolStoreURL":       c.ToolStoreURL,
 		"PermissionStoreURL": c.PermissionStoreURL,
 		"MailstackURL":       c.MailstackURL,
 		"HealthcheckURL":     c.HealthcheckURL,

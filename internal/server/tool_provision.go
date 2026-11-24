@@ -1,18 +1,15 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore"
 	"github.com/kayushkin/llm-bridge-server/internal/bundleclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -143,7 +140,7 @@ func (s *Server) resolveToolOffer(ctx context.Context, sess *store.Session, cfg 
 
 func (s *Server) resolveBundleToolOffer(ctx context.Context, sess *store.Session) (*toolOffer, error) {
 	if s.bundleClient == nil {
-		return nil, fmt.Errorf("session %s was started with bundle %s but this server has no bundle-store to resolve it with (LLMBRIDGE_BUNDLE_STORE_URL)", sess.SessionID, sess.BundleID)
+		return nil, fmt.Errorf("session %s was started with bundle %s but %s", sess.SessionID, sess.BundleID, bundleStoreOffMessage)
 	}
 	resolution, err := s.bundleClient.Resolve(ctx, sess.BundleID)
 	if err != nil {
@@ -245,7 +242,7 @@ func (s *Server) resolveGrantedToolOffer(ctx context.Context, sess *store.Sessio
 // --mcp-config. llm-bridge-inber reads the servers out of it and hands them,
 // with the session's LLM_BRIDGE_ environment, to inber-server, which starts
 // them for that session. Any other harness would be handed a config it
-// ignores, at the cost of a round trip to tool-store.
+// ignores, at the cost of a call into tool-store.
 var harnessesThatStartProvisionedMCPServers = map[msg.Harness]bool{
 	msg.HarnessClaudeCode: true,
 	msg.HarnessInber:      true,
@@ -280,7 +277,7 @@ func (s *Server) injectMCPConfig(sess *store.Session) error {
 		if len(offer.Names) == 0 {
 			return s.replaceHarnessConfig(sess, cfg)
 		}
-		path, err := s.writeProvisionedMCPConfig(map[string]any{"tools": offer.Names})
+		path, err := s.writeProvisionedMCPConfig(ctx, toolstore.ProvisionRequest{Tools: offer.Names})
 		if err != nil {
 			return err
 		}
@@ -294,7 +291,7 @@ func (s *Server) injectMCPConfig(sess *store.Session) error {
 				sess.SessionID, sess.BundleID, offer.Resolution.Bundles)
 			return s.replaceHarnessConfig(sess, cfg)
 		}
-		path, err := s.writeProvisionedMCPConfig(map[string]any{"tool_ids": offer.IDs})
+		path, err := s.writeProvisionedMCPConfig(ctx, toolstore.ProvisionRequest{ToolIDs: offer.IDs})
 		if err != nil {
 			return fmt.Errorf("session %s bundle %s: provisioning tools %v failed, so it was not started: %w", sess.SessionID, sess.BundleID, offer.IDs, err)
 		}
@@ -310,7 +307,7 @@ func (s *Server) injectMCPConfig(sess *store.Session) error {
 		if len(offer.IDs) == 0 {
 			return nil
 		}
-		path, err := s.writeProvisionedMCPConfig(map[string]any{"tool_ids": offer.IDs})
+		path, err := s.writeProvisionedMCPConfig(ctx, toolstore.ProvisionRequest{ToolIDs: offer.IDs})
 		if err != nil {
 			return fmt.Errorf("session %s as %s: provisioning granted tools %v failed, so it was not started: %w", sess.SessionID, sess.PrincipalID, offer.IDs, err)
 		}
@@ -326,7 +323,7 @@ func (s *Server) injectMCPConfig(sess *store.Session) error {
 		// Provisioned by instance id, as before: tool-store applies the opt-in
 		// list itself, and a registry outage starts the session with nothing
 		// rather than stopping it.
-		path, err := s.writeProvisionedMCPConfig(map[string]any{"instance_id": sess.InstanceID})
+		path, err := s.writeProvisionedMCPConfig(ctx, toolstore.ProvisionRequest{InstanceID: sess.InstanceID})
 		if err != nil {
 			log.Printf("[tool-store] instance %s opt-ins unavailable for session %s, starting with no MCP servers: %v",
 				sess.InstanceID, sess.SessionID, err)
@@ -361,32 +358,17 @@ func (s *Server) instanceMCPToolIDs(ctx context.Context, instanceID string) ([]i
 }
 
 func (s *Server) instanceMCPTools(ctx context.Context, instanceID string) ([]mcpTool, error) {
-	requestURL := s.cfg.ToolStoreURL + "/instances/" + url.PathEscape(instanceID) + "/tools"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+	if s.toolRegistry == nil {
+		return nil, fmt.Errorf("%s, so instance %s's opt-ins cannot be read", toolStoreOffMessage, instanceID)
+	}
+	tools, err := s.toolRegistry.ListInstanceTools(ctx, instanceID)
 	if err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
-	}
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("call %s: %w", requestURL, err)
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read tool-store response: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("tool-store GET %s returned %d: %s", requestURL, resp.StatusCode, string(body))
-	}
-	var tools []mcpTool
-	if err := json.Unmarshal(body, &tools); err != nil {
-		return nil, fmt.Errorf("tool-store GET %s returned unparseable JSON: %w", requestURL, err)
+		return nil, fmt.Errorf("tool-store could not list instance %s's tools: %w", instanceID, err)
 	}
 	mcp := make([]mcpTool, 0, len(tools))
 	for _, t := range tools {
-		if t.Kind == "mcp" {
-			mcp = append(mcp, t)
+		if t.Kind == toolstore.KindMCP {
+			mcp = append(mcp, mcpTool{ID: t.ID, Name: t.Name, Kind: string(t.Kind)})
 		}
 	}
 	return mcp, nil
@@ -423,45 +405,25 @@ func (s *Server) replaceHarnessConfig(sess *store.Session, cfg map[string]json.R
 	return nil
 }
 
-// writeProvisionedMCPConfig posts body to tool-store's /provision and writes
-// the returned MCP server config to a tmpfile, returning its path. An empty
+// writeProvisionedMCPConfig asks the tool-store module for the MCP server
+// config of request and writes it to a tmpfile, returning its path. An empty
 // returned path means tool-store had no servers to hand back — no file is
 // written, because an --mcp-config pointing at an empty server set is a way to
 // make a harness fail on nothing.
-func (s *Server) writeProvisionedMCPConfig(body map[string]any) (string, error) {
-	payload, err := json.Marshal(body)
+func (s *Server) writeProvisionedMCPConfig(ctx context.Context, request toolstore.ProvisionRequest) (string, error) {
+	if s.toolRegistry == nil {
+		return "", fmt.Errorf("%s, so no tools can be provisioned", toolStoreOffMessage)
+	}
+	provisioned, err := s.toolRegistry.Provision(ctx, request)
 	if err != nil {
-		return "", fmt.Errorf("marshal provision request: %w", err)
-	}
-	url := s.cfg.ToolStoreURL + "/provision"
-	req, err := http.NewRequest("POST", url, bytes.NewReader(payload))
-	if err != nil {
-		return "", fmt.Errorf("build provision request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("call %s: %w", url, err)
-	}
-	defer resp.Body.Close()
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("read tool-store response: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("tool-store /provision returned %d: %s", resp.StatusCode, string(respBody))
-	}
-
-	var provisioned struct {
-		MCPServers map[string]json.RawMessage `json:"mcpServers"`
-	}
-	if err := json.Unmarshal(respBody, &provisioned); err != nil {
-		return "", fmt.Errorf("tool-store /provision returned unparseable JSON: %w", err)
+		return "", fmt.Errorf("tool-store provision: %w", err)
 	}
 	if len(provisioned.MCPServers) == 0 {
 		return "", nil
+	}
+	respBody, err := json.Marshal(provisioned)
+	if err != nil {
+		return "", fmt.Errorf("marshal provisioned MCP config: %w", err)
 	}
 
 	dir := filepath.Join(os.TempDir(), "llm-bridge-mcp")

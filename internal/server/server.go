@@ -15,9 +15,11 @@ import (
 	"time"
 
 	agentstore "github.com/kayushkin/agent-store"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/bundlestore"
 	hookstore "github.com/kayushkin/llm-bridge-server/internal/agents/hookstore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/skillstore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore"
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
-	"github.com/kayushkin/llm-bridge-server/internal/bundleclient"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/filestoreclient"
 	"github.com/kayushkin/llm-bridge-server/internal/grantclient"
@@ -98,8 +100,18 @@ type Server struct {
 	// restartDrain holds new turns while a deploy waits to restart this
 	// server (restart_drain.go).
 	restartDrain restartDrainState
-	// bundleClient checks a bundle_id at creation and resolves it at spawn.
-	bundleClient *bundleclient.Client
+	// bundleClient checks a bundle_id at creation and resolves it at spawn;
+	// nil while the bundle-store module is off (bundle_store_routes.go).
+	bundleClient bundleResolver
+	// toolRegistry answers the tool offer, the harness tool denials and the
+	// harness tool reports; nil while the tool-store module is off
+	// (tool_store_routes.go, tool_registry.go).
+	toolRegistry toolRegistry
+	// The agents stores moved into this process answer their routes once
+	// their Postgres modules are open; nil answers those routes 503.
+	toolStoreHandlers   atomic.Pointer[toolstore.Handlers]
+	skillStoreHandlers  atomic.Pointer[skillstore.Handlers]
+	bundleStoreHandlers atomic.Pointer[bundlestore.Handlers]
 	// kanbanClient answers "which noteboard todo is this session linked
 	// to?" when a signal is minted. Nil when kanban-store has no configured
 	// URL, which leaves every signal unlinked rather than guessing.
@@ -191,7 +203,6 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 		principalClient:      principalclient.New(cfg.PrincipalStoreURL),
 		peerSockets:          newPeerSocketRegistry(),
 		peerRequestsInFlight: newPeerRequestsInFlight(),
-		bundleClient:         bundleclient.New(cfg.BundleStoreURL),
 		kanbanClient:         newKanbanClient(cfg.KanbanStoreURL),
 		bridgePrefs:          newBridgePrefsStore(cfg.BridgePrefsPath),
 		cfState:              newConformanceState(cfg.ConformancePath),
@@ -315,6 +326,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /health", s.handleHealth)
 	s.registerLoginAndStoreProxyRoutes()
 	s.registerPredictionStoreRoutes()
+	s.registerToolStoreRoutes()
+	s.registerSkillStoreRoutes()
+	s.registerBundleStoreRoutes()
 	// This server's own settings, served the way every service serves them.
 	serviceSettingsHandler := servicesettings.Handler(s.settings, "/settings")
 	s.mux.Handle("GET /settings", serviceSettingsHandler)
@@ -633,12 +647,12 @@ func (s *Server) routes() {
 	// fallback for actors outside this process.
 	s.mux.HandleFunc("POST /api/runner/seed/broadcast", s.handleSeedBroadcast)
 
-	// Seed source proxies. Runners hit bridge-server with their bearer
-	// token; bridge-server forwards to the standalone agent-store/skill-store
-	// services. This way the runner has a single base URL and a single
-	// auth credential for all bridge-side data.
+	// Seed source proxy. Runners hit bridge-server with their bearer token;
+	// bridge-server forwards to the standalone agent-store service. This way
+	// the runner has a single base URL and a single auth credential for all
+	// bridge-side data. skill-store's seed routes are answered in process
+	// (registerSkillStoreRoutes).
 	s.mux.Handle("/api/agent-store/", http.HandlerFunc(s.proxyAgentStore))
-	s.mux.Handle("/api/skill-store/", http.HandlerFunc(s.proxySkillStore))
 
 	// Harness backend proxy — service-style harnesses (inber, hermes…)
 	// run their backend once on the bridge host. Wrappers on remote
@@ -1351,18 +1365,14 @@ func (s *Server) handleSeedBroadcast(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// proxyAgentStore and proxySkillStore forward seed-related GET/POSTs from
-// runners to the standalone services on the bridge host. Runner auth
+// proxyAgentStore forwards seed-related GET/POSTs from runners to the
+// standalone agent-store service on the bridge host. Runner auth
 // (bearer token vs. machine row) is validated by checking the Authorization
 // header against harness-store; if it doesn't match a known machine the
 // request is rejected. Cookies/sessions are not forwarded — only seed
 // endpoints accept this path.
 func (s *Server) proxyAgentStore(w http.ResponseWriter, r *http.Request) {
 	s.proxyToStore(w, r, "/api/agent-store", envOrDefault("AGENT_STORE_URL", "http://localhost:8300"))
-}
-
-func (s *Server) proxySkillStore(w http.ResponseWriter, r *http.Request) {
-	s.proxyToStore(w, r, "/api/skill-store", envOrDefault("SKILL_STORE_URL", "http://localhost:8301"))
 }
 
 func (s *Server) proxyToStore(w http.ResponseWriter, r *http.Request, prefix, target string) {

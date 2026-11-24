@@ -7,9 +7,9 @@ import (
 
 func TestUsedByConfigFieldReportsOnlyProductionAddresses(t *testing.T) {
 	used := UsedByConfigField(map[string]string{
-		"LogStoreURL":  LogStoreURL,
-		"ToolStoreURL": "http://localhost:0",
-		"DBPath":       "/tmp/whatever/test.db",
+		"LogStoreURL":        LogStoreURL,
+		"PermissionStoreURL": "http://localhost:0",
+		"DBPath":             "/tmp/whatever/test.db",
 	})
 
 	if len(used) != 1 {
@@ -50,21 +50,21 @@ func TestPanicMessageListsEveryLeakedFieldInAStableOrder(t *testing.T) {
 			t.Fatal("did not panic on two production addresses")
 		}
 		message := recovered.(string)
-		toolStore := strings.Index(message, "ToolStoreURL")
+		permissionStore := strings.Index(message, "PermissionStoreURL")
 		logStore := strings.Index(message, "LogStoreURL")
-		if toolStore < 0 || logStore < 0 {
-			t.Fatalf("message names %d of 2 leaked fields:\n%s", 2-btoi(toolStore < 0)-btoi(logStore < 0), message)
+		if permissionStore < 0 || logStore < 0 {
+			t.Fatalf("message names %d of 2 leaked fields:\n%s", 2-btoi(permissionStore < 0)-btoi(logStore < 0), message)
 		}
 		// Sorted by field name, so the same two leaks always read the same
 		// way and a diff of two failures is meaningful.
-		if logStore > toolStore {
+		if logStore > permissionStore {
 			t.Errorf("fields are not sorted by name:\n%s", message)
 		}
 	}()
 
 	PanicIfUsedUnderTest(map[string]string{
-		"ToolStoreURL": ToolStoreURL,
-		"LogStoreURL":  LogStoreURL,
+		"PermissionStoreURL": PermissionStoreURL,
+		"LogStoreURL":        LogStoreURL,
 	})
 }
 
