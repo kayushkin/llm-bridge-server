@@ -6,11 +6,7 @@ import (
 )
 
 func TestSessionReposCountsEachSessionsRefUpdatesPerRepo(t *testing.T) {
-	store, err := Open(filepath.Join(t.TempDir(), "data"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+	store := newTestStore(t)
 	update := func(at int64, session, gitDirectory string) SpooledRefUpdate {
 		return SpooledRefUpdate{RecordedAtUnixNano: at, SessionID: session, Hook: "reference-transaction", GitSubcommand: "commit",
 			GitCommonDirectory: gitDirectory, WorktreePath: filepath.Dir(gitDirectory), Ref: "refs/heads/main", OldSHA: "a", NewSHA: "b"}

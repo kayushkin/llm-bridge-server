@@ -16,7 +16,7 @@ import (
 // Handlers serves the HTTP routes CONTRACT.md lists.
 type Handlers struct {
 	Store     *Store
-	RepoStore *RepoStoreClient
+	RepoStore RepoDirectory
 }
 
 // RegisterHandlers mounts every route on mux.
@@ -174,7 +174,7 @@ func (handlers *Handlers) activity(writer http.ResponseWriter, request *http.Req
 
 // BuildActivity lists, for every repo a session touched since then, the local
 // branches sessions moved or checked out in that time, with where each stands.
-func BuildActivity(ctx context.Context, store *Store, repoStore *RepoStoreClient, since time.Time) ([]RepoActivity, error) {
+func BuildActivity(ctx context.Context, store *Store, repoStore RepoDirectory, since time.Time) ([]RepoActivity, error) {
 	updates, err := store.ListRefUpdates(RefUpdateFilter{SinceUnixNano: since.UnixNano()})
 	if err != nil {
 		return nil, err

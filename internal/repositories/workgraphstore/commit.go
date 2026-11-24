@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -31,7 +30,7 @@ type CommitAnswer struct {
 // of a repo or commit nobody has wraps ErrNotFound; a short sha that fits two
 // commits, or a GitHub owner/name that two repo-store repos share, wraps
 // ErrAmbiguous; anything that is not a mention wraps errBadRequest.
-func ResolveCommitMention(ctx context.Context, store *Store, repoStore *RepoStoreClient, mention string) (CommitAnswer, error) {
+func ResolveCommitMention(ctx context.Context, store *Store, repoStore RepoDirectory, mention string) (CommitAnswer, error) {
 	match := commitMention.FindStringSubmatch(mention)
 	if match == nil {
 		return CommitAnswer{}, fmt.Errorf("%w: a commit mention is <repo>@<sha> or <owner>/<repo>@<sha>", errBadRequest)
@@ -43,7 +42,7 @@ func ResolveCommitMention(ctx context.Context, store *Store, repoStore *RepoStor
 	if owner == "" {
 		repo, err = repoStore.RepoByName(ctx, name)
 	} else {
-		repo, err = repoStore.RepoByGitHubURL(ctx, "https://github.com/"+owner+"/"+name)
+		repo, err = RepoByGitHubURL(ctx, repoStore, "https://github.com/"+owner+"/"+name)
 	}
 	if err != nil {
 		return CommitAnswer{}, err
@@ -105,17 +104,10 @@ func readCommit(ctx context.Context, repositoryPath, sha string) (Commit, error)
 		OnOriginBranch: strings.TrimSpace(output) != ""}, nil
 }
 
-// RepoByName returns the repo repo-store has under name, or an error wrapping
-// ErrNotFound. repo-store keeps names unique.
-func (client *RepoStoreClient) RepoByName(ctx context.Context, name string) (Repo, error) {
-	var repo Repo
-	return repo, client.get(ctx, "/repos/by-name/"+url.PathEscape(name), &repo)
-}
-
 // RepoByGitHubURL returns the one repo whose github_url is githubURL, compared
 // without regard to case as GitHub compares owner and repo names.
-func (client *RepoStoreClient) RepoByGitHubURL(ctx context.Context, githubURL string) (Repo, error) {
-	repos, err := client.Repos(ctx)
+func RepoByGitHubURL(ctx context.Context, directory RepoDirectory, githubURL string) (Repo, error) {
+	repos, err := directory.Repos(ctx)
 	if err != nil {
 		return Repo{}, err
 	}

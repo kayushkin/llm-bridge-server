@@ -2,19 +2,27 @@ package workgraphstore
 
 import (
 	"database/sql"
-	_ "embed"
+	"embed"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 )
 
-//go:embed schema.sql
-var schemaSQL string
+//go:embed migrations/*.sql
+var migrationFiles embed.FS
+
+// Module is the Postgres schema and role the store keeps its ref updates in,
+// with the migrations that build them.
+func Module() (postgresstorage.Module, error) {
+	migrations, err := postgresstorage.MigrationsFromFiles(migrationFiles, "migrations")
+	if err != nil {
+		return postgresstorage.Module{}, err
+	}
+	return postgresstorage.Module{Schema: "work_graph", Role: "work_graph_module", Migrations: migrations}, nil
+}
 
 // ErrNotFound is returned when a lookup finds nothing.
 var ErrNotFound = errors.New("not found")
@@ -35,34 +43,13 @@ type RefUpdate struct {
 	NewSHA         string `json:"new_sha"`
 }
 
-// Store is the SQLite database of ref updates.
+// Store is the ref updates, in the module's schema.
 type Store struct {
-	database      *sql.DB
-	dataDirectory string
+	database *sql.DB
 }
 
-// Open opens or creates work-graph-store.db in dataDirectory.
-func Open(dataDirectory string) (*Store, error) {
-	if err := os.MkdirAll(dataDirectory, 0o700); err != nil {
-		return nil, err
-	}
-	database, err := sql.Open("sqlite3", filepath.Join(dataDirectory, "work-graph-store.db")+"?_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=on")
-	if err != nil {
-		return nil, err
-	}
-	database.SetMaxOpenConns(1)
-	if _, err := database.Exec(schemaSQL); err != nil {
-		database.Close()
-		return nil, fmt.Errorf("apply schema: %w", err)
-	}
-	return &Store{database: database, dataDirectory: dataDirectory}, nil
-}
-
-// Close closes the database.
-func (store *Store) Close() error { return store.database.Close() }
-
-// DataDirectory is where the database lives.
-func (store *Store) DataDirectory() string { return store.dataDirectory }
+// New wraps a pool opened on the module (postgresstorage.Open), migrated.
+func New(database *sql.DB) *Store { return &Store{database: database} }
 
 // InsertRefUpdates stores updates in one transaction. repoStoreIDs maps a
 // repository path to repo-store's id for it; a path missing from it is stored
@@ -81,14 +68,14 @@ func (store *Store) InsertRefUpdates(updates []SpooledRefUpdate, repoStoreIDs ma
 		}
 		if _, err := transaction.Exec(`INSERT INTO ref_updates
 			(recorded_at_unix_nano, session_id, hook, git_subcommand, repo_store_id, repository_path, worktree_path, ref, old_sha, new_sha)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 			update.RecordedAtUnixNano, update.SessionID, update.Hook, update.GitSubcommand, repoStoreID,
 			repositoryPath, update.WorktreePath, update.Ref, update.OldSHA, update.NewSHA); err != nil {
 			return err
 		}
 	}
 	for repositoryPath, id := range repoStoreIDs {
-		if _, err := transaction.Exec(`UPDATE ref_updates SET repo_store_id = ? WHERE repository_path = ? AND repo_store_id IS NULL`, id, repositoryPath); err != nil {
+		if _, err := transaction.Exec(`UPDATE ref_updates SET repo_store_id = $1 WHERE repository_path = $2 AND repo_store_id IS NULL`, id, repositoryPath); err != nil {
 			return err
 		}
 	}
@@ -108,21 +95,21 @@ type RefUpdateFilter struct {
 func (store *Store) ListRefUpdates(filter RefUpdateFilter) ([]RefUpdate, error) {
 	var conditions []string
 	var arguments []any
+	placeholder := func(value any) string {
+		arguments = append(arguments, value)
+		return fmt.Sprintf("$%d", len(arguments))
+	}
 	if filter.RepoStoreID != 0 {
-		conditions = append(conditions, "repo_store_id = ?")
-		arguments = append(arguments, filter.RepoStoreID)
+		conditions = append(conditions, "repo_store_id = "+placeholder(filter.RepoStoreID))
 	}
 	if filter.SessionID != "" {
-		conditions = append(conditions, "session_id = ?")
-		arguments = append(arguments, filter.SessionID)
+		conditions = append(conditions, "session_id = "+placeholder(filter.SessionID))
 	}
 	if filter.Ref != "" {
-		conditions = append(conditions, "ref = ?")
-		arguments = append(arguments, filter.Ref)
+		conditions = append(conditions, "ref = "+placeholder(filter.Ref))
 	}
 	if filter.SinceUnixNano != 0 {
-		conditions = append(conditions, "recorded_at_unix_nano >= ?")
-		arguments = append(arguments, filter.SinceUnixNano)
+		conditions = append(conditions, "recorded_at_unix_nano >= "+placeholder(filter.SinceUnixNano))
 	}
 	query := `SELECT id, recorded_at_unix_nano, session_id, hook, git_subcommand, COALESCE(repo_store_id, 0),
 		repository_path, worktree_path, ref, old_sha, new_sha FROM ref_updates`
@@ -131,8 +118,7 @@ func (store *Store) ListRefUpdates(filter RefUpdateFilter) ([]RefUpdate, error) 
 	}
 	query += " ORDER BY recorded_at_unix_nano DESC, id DESC"
 	if filter.Limit > 0 {
-		query += " LIMIT ?"
-		arguments = append(arguments, filter.Limit)
+		query += " LIMIT " + placeholder(filter.Limit)
 	}
 	rows, err := store.database.Query(query, arguments...)
 	if err != nil {
@@ -176,52 +162,36 @@ func (store *Store) CommitAuthorships(repoStoreID int64, firstParents map[string
 	for sha := range firstParents {
 		shas = append(shas, sha)
 	}
-	placeholders := make([]string, len(CommitCreatingSubcommands))
-	subcommandArguments := make([]any, len(CommitCreatingSubcommands))
-	for index, subcommand := range CommitCreatingSubcommands {
-		placeholders[index] = "?"
-		subcommandArguments[index] = subcommand
+	// Two arrays, so the statement is the same whatever the number of shas.
+	// A graph asks for a few hundred at most.
+	rows, err := store.database.Query(`SELECT new_sha, old_sha, session_id, git_subcommand, recorded_at_unix_nano FROM ref_updates
+		WHERE repo_store_id = $1 AND new_sha = ANY($2)
+		AND hook = 'reference-transaction' AND (ref = 'HEAD' OR ref LIKE 'refs/heads/%')
+		AND git_subcommand = ANY($3)
+		ORDER BY recorded_at_unix_nano ASC, id ASC`, repoStoreID, shas, CommitCreatingSubcommands)
+	if err != nil {
+		return nil, err
 	}
-	// SQLite caps the number of bound variables; ask in slices.
-	const batch = 400
-	for start := 0; start < len(shas); start += batch {
-		end := min(start+batch, len(shas))
-		shaPlaceholders := strings.Repeat("?,", end-start)
-		shaPlaceholders = shaPlaceholders[:len(shaPlaceholders)-1]
-		arguments := []any{repoStoreID}
-		for _, sha := range shas[start:end] {
-			arguments = append(arguments, sha)
-		}
-		arguments = append(arguments, subcommandArguments...)
-		rows, err := store.database.Query(`SELECT new_sha, old_sha, session_id, git_subcommand, recorded_at_unix_nano FROM ref_updates
-			WHERE repo_store_id = ? AND new_sha IN (`+shaPlaceholders+`)
-			AND hook = 'reference-transaction' AND (ref = 'HEAD' OR ref LIKE 'refs/heads/%')
-			AND git_subcommand IN (`+strings.Join(placeholders, ",")+`)
-			ORDER BY recorded_at_unix_nano ASC, id ASC`, arguments...)
-		if err != nil {
+	defer rows.Close()
+	for rows.Next() {
+		var authorship CommitAuthorship
+		var oldSHA string
+		if err := rows.Scan(&authorship.SHA, &oldSHA, &authorship.SessionID, &authorship.GitSubcommand, &authorship.RecordedAtUnixNano); err != nil {
 			return nil, err
 		}
-		for rows.Next() {
-			var authorship CommitAuthorship
-			var oldSHA string
-			if err := rows.Scan(&authorship.SHA, &oldSHA, &authorship.SessionID, &authorship.GitSubcommand, &authorship.RecordedAtUnixNano); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			firstParent := firstParents[authorship.SHA]
-			if firstParent == "" {
-				firstParent = ZeroSHA
-			}
-			if slices.Contains(FastForwardingSubcommands, authorship.GitSubcommand) && oldSHA != firstParent {
-				continue
-			}
-			if _, seen := authorships[authorship.SHA]; !seen {
-				authorships[authorship.SHA] = authorship
-			}
+		firstParent := firstParents[authorship.SHA]
+		if firstParent == "" {
+			firstParent = ZeroSHA
 		}
-		if err := rows.Close(); err != nil {
-			return nil, err
+		if slices.Contains(FastForwardingSubcommands, authorship.GitSubcommand) && oldSHA != firstParent {
+			continue
 		}
+		if _, seen := authorships[authorship.SHA]; !seen {
+			authorships[authorship.SHA] = authorship
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return authorships, nil
 }
@@ -240,7 +210,7 @@ type SessionRepo struct {
 // session ran, and repos repo-store has no id for, are left out.
 func (store *Store) SessionRepos(sinceUnixNano int64) ([]SessionRepo, error) {
 	rows, err := store.database.Query(`SELECT session_id, repo_store_id, COUNT(*), MAX(recorded_at_unix_nano) FROM ref_updates
-		WHERE session_id != '' AND repo_store_id IS NOT NULL AND recorded_at_unix_nano >= ?
+		WHERE session_id != '' AND repo_store_id IS NOT NULL AND recorded_at_unix_nano >= $1
 		GROUP BY session_id, repo_store_id ORDER BY session_id, repo_store_id`, sinceUnixNano)
 	if err != nil {
 		return nil, err

@@ -9,9 +9,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
-	"net/http"
 	"os"
-	"strconv"
 	"time"
 )
 
@@ -24,7 +22,7 @@ import (
 type Ingester struct {
 	Store     *Store
 	SpoolPath string
-	RepoStore *RepoStoreClient
+	RepoStore RepoDirectory
 	// Interval is the pause between passes.
 	Interval time.Duration
 	// SettleDelay is how long a renamed spool sits before it is read.
@@ -92,7 +90,7 @@ func (ingester *Ingester) Pass(ctx context.Context) error {
 		return err
 	}
 
-	repoStoreIDs, err := ingester.RepoStore.IDsByPath(ctx)
+	repoStoreIDs, err := IDsByPath(ctx, ingester.RepoStore)
 	if err != nil {
 		return fmt.Errorf("ask repo-store which repos it knows: %w", err)
 	}
@@ -112,54 +110,27 @@ type Repo struct {
 	GitHubURL string `json:"github_url,omitempty"`
 }
 
-// RepoStoreClient asks repo-store about repos.
-type RepoStoreClient struct {
-	BaseURL string
-	HTTP    *http.Client
-}
-
-// Repos lists every repo repo-store knows.
-func (client *RepoStoreClient) Repos(ctx context.Context) ([]Repo, error) {
-	var repos []Repo
-	return repos, client.get(ctx, "/repos", &repos)
-}
-
-// Repo returns one repo by id, or an error wrapping ErrNotFound.
-func (client *RepoStoreClient) Repo(ctx context.Context, id int64) (Repo, error) {
-	var repo Repo
-	return repo, client.get(ctx, "/repos/"+strconv.FormatInt(id, 10), &repo)
-}
-
-func (client *RepoStoreClient) get(ctx context.Context, path string, into any) error {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, client.BaseURL+path, nil)
-	if err != nil {
-		return err
-	}
-	response, err := client.HTTP.Do(request)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	if response.StatusCode == http.StatusNotFound {
-		return fmt.Errorf("repo-store GET %s: %w", path, ErrNotFound)
-	}
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("repo-store GET %s: %s", path, response.Status)
-	}
-	if err := json.NewDecoder(response.Body).Decode(into); err != nil {
-		return fmt.Errorf("repo-store GET %s: %w", path, err)
-	}
-	return nil
+// RepoDirectory is the part of repo-store this store reads: which repos it
+// knows, by id and by name. RepoStoreModule answers it from the repo-store
+// module in this process.
+type RepoDirectory interface {
+	// Repos lists every repo repo-store knows.
+	Repos(ctx context.Context) ([]Repo, error)
+	// Repo returns one repo by id, or an error wrapping ErrNotFound.
+	Repo(ctx context.Context, id int64) (Repo, error)
+	// RepoByName returns the repo repo-store has under name, or an error
+	// wrapping ErrNotFound. repo-store keeps names unique.
+	RepoByName(ctx context.Context, name string) (Repo, error)
 }
 
 // IDsByPath maps each repo's path to its id.
-func (client *RepoStoreClient) IDsByPath(ctx context.Context) (map[string]int64, error) {
-	repos, err := client.Repos(ctx)
+func IDsByPath(ctx context.Context, repos RepoDirectory) (map[string]int64, error) {
+	listed, err := repos.Repos(ctx)
 	if err != nil {
 		return nil, err
 	}
-	ids := make(map[string]int64, len(repos))
-	for _, repo := range repos {
+	ids := make(map[string]int64, len(listed))
+	for _, repo := range listed {
 		if repo.Path != "" {
 			ids[repo.Path] = repo.ID
 		}

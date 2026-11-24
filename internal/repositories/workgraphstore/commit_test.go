@@ -44,24 +44,9 @@ func TestCommitsByMentionFindsTheCommitAndItsRepo(t *testing.T) {
 	second := run("rev-parse", "HEAD")
 
 	repo := Repo{ID: 7, Name: "dash", Path: repository, GitHubURL: "https://github.com/kayushkin/dash"}
-	fakeRepoStore := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		switch request.URL.Path {
-		case "/repos":
-			json.NewEncoder(writer).Encode([]Repo{repo, {ID: 8, Name: "other", Path: scratch}})
-		case "/repos/by-name/dash":
-			json.NewEncoder(writer).Encode(repo)
-		default:
-			http.NotFound(writer, request)
-		}
-	}))
-	defer fakeRepoStore.Close()
-	store, err := Open(filepath.Join(scratch, "data"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+	store := newTestStore(t)
 	mux := http.NewServeMux()
-	RegisterHandlers(mux, &Handlers{Store: store, RepoStore: &RepoStoreClient{BaseURL: fakeRepoStore.URL, HTTP: fakeRepoStore.Client()}})
+	RegisterHandlers(mux, &Handlers{Store: store, RepoStore: fakeRepoDirectory{repos: []Repo{repo, {ID: 8, Name: "other", Path: scratch}}}})
 
 	get := func(mention string) (int, CommitAnswer) {
 		t.Helper()

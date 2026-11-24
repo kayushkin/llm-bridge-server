@@ -2,9 +2,6 @@ package workgraphstore
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -97,21 +94,8 @@ func TestTheHookRecordsWhichSessionMadeEachCommit(t *testing.T) {
 	rebasedFeature := run("", repository, "rev-parse", "feature")
 	run("br_first", repository, "merge", "-q", "--ff-only", "feature")
 
-	store, err := Open(filepath.Join(scratch, "data"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	fakeRepoStore := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		repo := Repo{ID: 7, Name: "repo", Path: repository}
-		if request.URL.Path == "/repos" {
-			json.NewEncoder(writer).Encode([]Repo{repo})
-			return
-		}
-		json.NewEncoder(writer).Encode(repo)
-	}))
-	defer fakeRepoStore.Close()
-	repoStore := &RepoStoreClient{BaseURL: fakeRepoStore.URL, HTTP: fakeRepoStore.Client()}
+	store := newTestStore(t)
+	repoStore := fakeRepoDirectory{repos: []Repo{{ID: 7, Name: "repo", Path: repository}}}
 
 	ingester := &Ingester{Store: store, SpoolPath: filepath.Join(home, ".local", "state", "work-graph-store", "ref-updates.jsonl"), RepoStore: repoStore, SettleDelay: time.Millisecond}
 	if err := ingester.Pass(context.Background()); err != nil {
