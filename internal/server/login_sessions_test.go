@@ -289,7 +289,6 @@ func TestDemoLoginSwitchedOffIs404AndSetsNoCookie(t *testing.T) {
 	cfg := &config.Config{
 		ImagesDir:       filepath.Join(directory, "images"),
 		BridgePrefsPath: filepath.Join(directory, "prefs.json"),
-		LogStoreURL:     "http://localhost:0",
 	}
 	testAuthorizationConfig(cfg)
 	cfg.DemoLoginEnabled = false

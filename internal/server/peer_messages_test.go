@@ -67,7 +67,8 @@ func grantPeerLevel(t *testing.T, server *peerTestServer, connectionID, level st
 func TestARequestWaitsForApprovalStartsAFramedSessionAndReportsBack(t *testing.T) {
 	buildMockHarnessOnPath(t)
 	logStore := fakeLogStore(t).URL
-	accepting, initiating, acceptingID, initiatingID := connectedPairByDialingOut(t, func(cfg *config.Config) { cfg.LogStoreURL = logStore })
+	accepting, initiating, acceptingID, initiatingID := connectedPairByDialingOut(t)
+	enableLogStoreAt(t, accepting.server, logStore)
 	// The prompt says "hang", so the mock harness holds the session's turn
 	// open: the only turn end is the one this test reports below, and the
 	// mock's own reply cannot reach the sender first.
@@ -322,7 +323,8 @@ func bearerJSONRequest(t *testing.T, server *peerTestServer, token, method, path
 func TestOnAServerWithAnOrchestratorItPlacesWhatAnAdministratorApproved(t *testing.T) {
 	buildMockHarnessOnPath(t)
 	logStore := fakeLogStore(t).URL
-	accepting, initiating, acceptingID, initiatingID := connectedPairByDialingOut(t, func(cfg *config.Config) { cfg.LogStoreURL = logStore })
+	accepting, initiating, acceptingID, initiatingID := connectedPairByDialingOut(t)
+	enableLogStoreAt(t, accepting.server, logStore)
 	grantPeerLevel(t, accepting, acceptingID, "messages")
 	placingSession := mustSessionOn(t, accepting, "br_orchestrator_home")
 	otherSession := mustSessionOn(t, accepting, "br_someone_else")

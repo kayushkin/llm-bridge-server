@@ -74,7 +74,6 @@ func servicesTestServer(t *testing.T) (*Server, string, string) {
 	cfg := &config.Config{
 		ImagesDir:       filepath.Join(dir, "images"),
 		BridgePrefsPath: filepath.Join(dir, "prefs.json"),
-		LogStoreURL:     "http://localhost:0",
 		HealthcheckURL:  healthcheck.URL,
 	}
 	testAuthorizationConfig(cfg)

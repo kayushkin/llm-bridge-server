@@ -212,8 +212,6 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "the scheduler, which runs the job a scheduler job action names. It has no default; empty refuses those actions."},
 		{Key: "local_tools.pinchtab_url", EnvironmentVariable: "LLMBRIDGE_LOCAL_TOOLS_PINCHTAB_URL", Kind: wiring, ValueType: text, Default: productiondefaults.PinchtabURL,
 			Description: "Where PinchTab answers. tool-store's in-process browser tool sends every action there; a wrong address makes each browser call report a connection error."},
-		{Key: "log_store.url", EnvironmentVariable: "LLMBRIDGE_LOG_STORE_URL", Kind: wiring, ValueType: text, Default: productiondefaults.LogStoreURL,
-			Description: "log-store, which keeps every session event."},
 		{Key: "mailstack.url", EnvironmentVariable: "LLMBRIDGE_MAILSTACK_URL", Kind: wiring, ValueType: text, Default: productiondefaults.MailstackURL,
 			Description: "mailstack, asked for the sender and subject behind a card when triage drafts a customer reply, and the upstream of the /mailstack/ proxy, which forwards a person's mail reads as X-Principal-Id."},
 		{Key: "healthcheck.url", EnvironmentVariable: "LLMBRIDGE_HEALTHCHECK_URL", Kind: wiring, ValueType: text, Default: productiondefaults.HealthcheckURL,
@@ -292,6 +290,7 @@ func SettingDefinitions() []servicesettings.Definition {
 
 	definitions = append(definitions, taskTrackingSettingDefinitions()...)
 	definitions = append(definitions, repositoriesAndReferencesSettingDefinitions()...)
+	definitions = append(definitions, sessionLogSettingDefinitions()...)
 	definitions = append(definitions, kanbanStoreSettingDefinitions()...)
 
 	// One proxy backend per known harness. The variable is per harness, so the

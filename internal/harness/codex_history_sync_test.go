@@ -85,7 +85,7 @@ func TestCodexHistorySyncRestartAndLiveFanout(t *testing.T) {
 	if n, err := m.SyncCodexHistory(context.Background(), "br_sync"); err != nil || n != 0 {
 		t.Fatalf("unchanged: %d %v", n, err)
 	}
-	rows, err := m.logStore.ListEvents("br_sync", 0, nil)
+	rows, err := m.sessionEventLog().ListEvents("br_sync", 0, nil)
 	if err != nil || len(rows) != 2 {
 		t.Fatalf("durable records: %d %v", len(rows), err)
 	}

@@ -101,7 +101,7 @@ func containsEntry(environment []string, entry string) bool {
 }
 
 func TestSessionEnvironmentIsRefusedOverSSHOnly(t *testing.T) {
-	manager := NewManager(nil, "", "", "", 0, nil)
+	manager := newManagerOnLogStoreURL(nil, "", "", "", 0, nil)
 	_, err := manager.StartOnInstance(t.Context(), &store.Session{SessionID: "sess-remote", Harness: msg.HarnessMock},
 		&msg.Instance{ID: "inst-remote", Machine: &msg.Machine{ID: "m-remote", Transport: msg.TransportSSH}}, "", []string{"LLM_BRIDGE_PRINCIPAL_TOKEN=token"})
 	if err == nil || !strings.Contains(err.Error(), "cannot deliver") {

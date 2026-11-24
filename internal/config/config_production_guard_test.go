@@ -37,9 +37,9 @@ func TestLoadPanicsWhenATestWouldGetProductionState(t *testing.T) {
 		// The message has to be actionable on its own: the field that
 		// leaked, the address it leaked to, and the variable that fixes it.
 		for _, want := range []string{
-			"LogStoreURL",
-			productiondefaults.LogStoreURL,
-			"LLMBRIDGE_LOG_STORE_URL",
+			"HealthcheckURL",
+			productiondefaults.HealthcheckURL,
+			"LLMBRIDGE_HEALTHCHECK_URL",
 			"DBPath",
 			productiondefaults.BridgeDatabasePath(),
 			productiondefaults.AllowInTestsEnvironmentVariable,

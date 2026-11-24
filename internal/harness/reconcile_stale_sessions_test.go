@@ -25,7 +25,7 @@ func TestReconcileStaleSessionsSendsTheStoredStatusToLogStore(t *testing.T) {
 	logStore := newLogStoreStub()
 	logStoreServer := httptest.NewServer(logStore)
 	t.Cleanup(logStoreServer.Close)
-	m := NewManager(st, logStoreServer.URL, "http://127.0.0.1:0", "", 0, nil)
+	m := newManagerOnLogStoreURL(st, logStoreServer.URL, "http://127.0.0.1:0", "", 0, nil)
 
 	const staleID, idleID = "br_left_running", "br_already_idle"
 	for id, state := range map[string]msg.SessionState{staleID: msg.SessionRunning, idleID: msg.SessionIdle} {

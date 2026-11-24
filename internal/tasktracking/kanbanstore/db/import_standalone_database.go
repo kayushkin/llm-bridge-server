@@ -169,7 +169,7 @@ func ImportStandaloneDatabase(ctx context.Context, database *sql.DB, sqlitePath 
 	if _, err := os.Stat(sqlitePath); err != nil {
 		return counts, fmt.Errorf("the standalone database: %w", err)
 	}
-	source, err := sql.Open("sqlite3", "file:"+sqlitePath+"?mode=ro")
+	source, err := sql.Open("sqlite", "file:"+sqlitePath+"?mode=ro")
 	if err != nil {
 		return counts, fmt.Errorf("opening %s: %w", sqlitePath, err)
 	}

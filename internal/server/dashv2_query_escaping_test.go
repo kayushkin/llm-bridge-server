@@ -84,10 +84,11 @@ func serverWithLogStore(t *testing.T, logStoreURL string) (*Server, *store.Store
 	cfg := &config.Config{
 		ImagesDir:       filepath.Join(dir, "images"),
 		BridgePrefsPath: filepath.Join(dir, "prefs.json"),
-		LogStoreURL:     logStoreURL,
 	}
 	testAuthorizationConfig(cfg)
-	return New(st, nil, nil, nil, nil, nil, nil, cfg), st
+	srv := New(st, nil, nil, nil, nil, nil, nil, cfg)
+	enableLogStoreAt(t, srv, logStoreURL)
+	return srv, st
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

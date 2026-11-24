@@ -358,7 +358,6 @@ func newLiveBridge(t *testing.T, h liveHarness) *liveBridge {
 	cfg := &config.Config{
 		ImagesDir:       filepath.Join(dir, "images"),
 		BridgePrefsPath: filepath.Join(dir, "prefs.json"),
-		LogStoreURL:     logStore.url,
 		ListenAddr:      listener.Addr().String(),
 	}
 	testAuthorizationConfig(cfg)
@@ -366,6 +365,7 @@ func newLiveBridge(t *testing.T, h liveHarness) *liveBridge {
 	model := liveModelForHarness(t, models, h)
 	t.Logf("%s sessions run on %s", harness, model)
 	srv := New(st, nil, nil, hs, nil, models, nil, cfg)
+	enableLogStoreAt(t, srv, logStore.url)
 
 	ts := httptest.NewUnstartedServer(asInternalService(srv))
 	ts.Listener.Close()

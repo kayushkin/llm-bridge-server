@@ -128,11 +128,11 @@ func (s *Server) fetchFromLogStore(r *http.Request) ([]byte, int, error) {
 	}
 	s.harness.FlushLogStoreWrites(id)
 
-	target := logStoreSessionURL(s.cfg.LogStoreURL, id, endpoint)
+	target := logStoreSessionURL(logStoreBaseURL, id, endpoint)
 	if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery
 	}
-	resp, err := http.Get(target)
+	resp, err := s.getFromLogStore(target)
 	if err != nil {
 		return nil, 0, err
 	}

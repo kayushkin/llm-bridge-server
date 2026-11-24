@@ -149,7 +149,6 @@ func newServerWithAllStoresConfigured(t *testing.T, adjustConfig func(*config.Co
 		ImagesDir:       filepath.Join(dir, "images"),
 		BridgePrefsPath: filepath.Join(dir, "prefs.json"),
 		ConformancePath: filepath.Join(dir, "conformance.json"),
-		LogStoreURL:     "http://localhost:0", // unused here
 	}
 	testAuthorizationConfig(cfg)
 

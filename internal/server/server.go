@@ -74,6 +74,8 @@ type Server struct {
 	// predictionStore answers /prediction-store/ once the Postgres module is
 	// open (prediction_store_routes.go); nil answers those routes 503.
 	predictionStore atomic.Pointer[predictionstore.Handlers]
+	// sessionLog is log-store in this process; see EnableSessionLog.
+	sessionLog atomic.Pointer[sessionLogModule]
 	// noteboard answers /noteboard/ once its Postgres module is open
 	// (noteboard_routes.go); nil answers those routes 503.
 	noteboard atomic.Pointer[noteboardapi.API]
@@ -226,7 +228,7 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 		hookStore:            hks,
 		modelStore:           mds,
 		snapshotStore:        ss,
-		harness:              harness.NewManager(st, cfg.LogStoreURL, cfg.PublicURL, publicBaseURL(cfg.ListenAddr), cfg.PTYRingBufferBytes, authClient),
+		harness:              harness.NewManager(st, cfg.PublicURL, publicBaseURL(cfg.ListenAddr), cfg.PTYRingBufferBytes, authClient),
 		authClient:           authClient,
 		peerSockets:          newPeerSocketRegistry(),
 		peerRequestsInFlight: newPeerRequestsInFlight(),
@@ -347,6 +349,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /health", s.handleHealth)
 	s.registerLoginAndStoreProxyRoutes()
 	s.registerPredictionStoreRoutes()
+	s.registerSessionLogRoutes()
 	s.registerToolStoreRoutes()
 	s.registerSkillStoreRoutes()
 	s.registerAgentsRegistryRoutes()
@@ -720,11 +723,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // handleSearchSessions proxies /sessions/search to log-store's /api/v1/sessions/search.
 func (s *Server) handleSearchSessions(w http.ResponseWriter, r *http.Request) {
-	target := fmt.Sprintf("%s/api/v1/sessions/search", s.cfg.LogStoreURL)
+	target := logStoreBaseURL + "/api/v1/sessions/search"
 	if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery
 	}
-	resp, err := http.Get(target)
+	resp, err := s.getFromLogStore(target)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("log-store unreachable: %v", err), http.StatusBadGateway)
 		return
@@ -743,11 +746,11 @@ func (s *Server) handleSearchSessions(w http.ResponseWriter, r *http.Request) {
 // separate from proxyToLogStore because that handler infers the log-store
 // path from the URL's {id}/{endpoint} shape, which doesn't apply here.
 func (s *Server) handleSessionAggregates(w http.ResponseWriter, r *http.Request) {
-	target := s.cfg.LogStoreURL + "/api/v1/sessions/aggregates"
+	target := logStoreBaseURL + "/api/v1/sessions/aggregates"
 	if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery
 	}
-	resp, err := http.Get(target)
+	resp, err := s.getFromLogStore(target)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("log-store unreachable: %v", err), http.StatusBadGateway)
 		return
@@ -791,12 +794,12 @@ func (s *Server) proxyToLogStore(w http.ResponseWriter, r *http.Request) {
 	// logStoreSessionURL escapes the id, because that is where it becomes a
 	// URL. The lookups above keep the real one. Measured: Go's mux matches on
 	// the escaped path, so an id holding a %2F really does reach this handler.
-	target := logStoreSessionURL(s.cfg.LogStoreURL, id, endpoint)
+	target := logStoreSessionURL(logStoreBaseURL, id, endpoint)
 	if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery
 	}
 
-	resp, err := http.Get(target)
+	resp, err := s.getFromLogStore(target)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("log-store unreachable: %v", err), http.StatusBadGateway)
 		return
@@ -1287,8 +1290,8 @@ func (s *Server) discoverOnce(ctx context.Context) error {
 	// so this one line, before the loop, is the only warning an operator
 	// polling for readiness can actually catch.
 	if len(sessions) > 0 {
-		log.Printf("[auto-discover] %d sessions on disk; any not already in this instance's DB will have their transcripts imported into log-store at %s",
-			len(sessions), s.cfg.LogStoreURL)
+		log.Printf("[auto-discover] %d sessions on disk; any not already in this instance's DB will have their transcripts imported into the session log",
+			len(sessions))
 	}
 
 	var imported, linkedCount, reclassified, filled int

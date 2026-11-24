@@ -11,7 +11,6 @@ require (
 	github.com/jackc/pgx/v5 v5.13.0
 	github.com/kayushkin/bus v0.0.0
 	github.com/kayushkin/llm-bridge v0.0.0
-	github.com/kayushkin/log-store v0.0.0
 	github.com/mattn/go-sqlite3 v1.14.37
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/nats-io/nats.go v1.49.0
@@ -57,7 +56,5 @@ require (
 )
 
 replace github.com/kayushkin/llm-bridge => ../llm-bridge
-
-replace github.com/kayushkin/log-store => ../log-store
 
 replace github.com/kayushkin/bus => ../bus

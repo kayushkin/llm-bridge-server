@@ -11,7 +11,7 @@ For the whole system — which repo owns what, and how the pieces talk — read 
                     │ HTTP, SSE, WebSocket
                     ▼
           ┌──────────────────────┐   HTTP   principal-store, grant-store, kanban-store,
-          │  llm-bridge-server   │ ───────► log-store, auth-store, tool-store, bundle-store,
+          │  llm-bridge-server   │ ───────► auth-store, tool-store, bundle-store,
           │        :8160         │          permission-store, skill-store, healthcheck
           └──────────────────────┘
             │ stdin/stdout NDJSON, pty, SSH, or a runner's WebSocket
@@ -37,13 +37,14 @@ For the whole system — which repo owns what, and how the pieces talk — read 
 
 A store that will not open is logged and its routes are not mounted.
 
+**It keeps every session event** in log-store, which runs in this process as the `session_log` module in Postgres (`internal/sessionlog/logstore`; its README says how). The harness manager writes and reads it in process, the session routes answer from it, and its own routes are under `/log-store/`.
+
 **It asks** these services over HTTP and keeps none of their data:
 
 | Service | Asked for |
 |---|---|
 | principal-store | Who a caller is, and whether they are an administrator |
 | grant-store | Which instances and agents a principal may use, and which tools |
-| log-store | Every session's event history, which it stores and projects |
 | auth-store | The credentials bound to an instance |
 | tool-store, bundle-store | The MCP servers a session is offered |
 | permission-store | Allow or deny on each tool call |
@@ -203,6 +204,7 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | Method | Route | What it does | Who may call |
 |---|---|---|---|
 | `GET` | `/effective-config` | Every setting a session would get, and which layer decides it, before it exists | operator |
+| `*` | `/log-store/` | log-store's own routes (`/log-store/api/v1/…`, `/log-store/health`), answered in this process, for callers written against the standalone service | operator |
 | `GET` | `/session-events` | SSE stream of changes to the session list | principal, own sessions only |
 | `GET` | `/sessions` | List sessions | principal, own sessions only |
 | `POST` | `/sessions` | Create a session; `auto_start` starts it | principal, as itself |

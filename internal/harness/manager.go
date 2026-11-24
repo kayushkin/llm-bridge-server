@@ -15,14 +15,14 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 	"github.com/kayushkin/llm-bridge-server/internal/ids"
-	"github.com/kayushkin/llm-bridge-server/internal/productiondefaults"
+	logstore "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/client"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
-	logstore "github.com/kayushkin/log-store/client"
 )
 
 // sessionMsgState tracks per-session message-id assignment for the manager.
@@ -76,9 +76,9 @@ type Manager struct {
 	ptySidecars         map[string]*ptySidecar        // sessionID → the PTY session's sidecar (ptySidecarStarters; nil for non-PTY sessions)
 	pending             *pendingHooks                 // awaiting_resolution hooks indexed by sessionID, request_id
 	store               *store.Store
-	logStore            *logstore.Client
-	logStoreWrites      *logStoreQueue  // ordered per-session writer; keeps the log-store POST off the SSE fan-out path
-	runners             *RunnerRegistry // optional; nil disables TransportRunner spawns
+	logStore            atomic.Pointer[sessionEventLogHolder] // the session event log (log-store); see SetSessionEventLog
+	logStoreWrites      *logStoreQueue                        // ordered per-session writer; keeps the log-store write off the SSE fan-out path
+	runners             *RunnerRegistry                       // optional; nil disables TransportRunner spawns
 	authClient          *authstoreclient.Client
 	publicServerURL     string                      // public bridge URL runners use for /api/runner/binary fetches
 	localBridgeURL      string                      // localhost URL the per-session OTel sidecar POSTs translated events to; derived from ListenAddr at startup
@@ -232,14 +232,11 @@ func (m *Manager) ApplyDerivedSessionState(bridgeID string, next msg.SessionStat
 //
 // ptyRingBytes is the per-session ring buffer size used for late-attach
 // replay on pty sessions. <=0 falls back to the package default.
-func NewManager(st *store.Store, logStoreURL, publicServerURL, localBridgeURL string, ptyRingBytes int, authClient *authstoreclient.Client) *Manager {
-	// This is the only place in the repo a log-store client is built, so it
-	// is the last point at which a test can be stopped before it writes to
-	// the live event log. config.Load makes the same check, but a test that
-	// builds a config.Config literal by hand never goes through Load.
-	productiondefaults.PanicIfUsedUnderTest(map[string]string{"LogStoreURL": logStoreURL})
-
-	ls := logstore.New(logStoreURL)
+//
+// The manager writes no event until SetSessionEventLog names the session
+// event log: until then every write and read of it fails with
+// ErrSessionEventLogNotEnabled.
+func NewManager(st *store.Store, publicServerURL, localBridgeURL string, ptyRingBytes int, authClient *authstoreclient.Client) *Manager {
 	m := &Manager{
 		processes:        make(map[string]HarnessProcess),
 		processStartedAt: make(map[string]time.Time),
@@ -254,14 +251,13 @@ func NewManager(st *store.Store, logStoreURL, publicServerURL, localBridgeURL st
 		ptyReapedByIdleReaper: make(map[string]bool),
 		pending:               newPendingHooks(),
 		store:                 st,
-		logStore:              ls,
 		runners:               NewRunnerRegistry(),
 		authClient:            authClient,
 		publicServerURL:       publicServerURL,
 		localBridgeURL:        localBridgeURL,
 		ptyRingBytes:          ptyRingBytes,
 	}
-	m.logStoreWrites = newLogStoreQueue(ls.PushEvent)
+	m.logStoreWrites = newLogStoreQueue(func(ev msg.Event) (int64, error) { return m.sessionEventLog().PushEvent(ev) })
 	m.runners.SetHeldSessionsHandler(m.adoptHeldRunnerSessions)
 	return m
 }
@@ -1679,7 +1675,7 @@ func (m *Manager) RecoverInFlightTurn(bridgeID string) (*store.InFlightTurnState
 	// reaches here holding the manager lock, but only on a session's first
 	// event, when the queue the pump just opened is still empty.
 	m.logStoreWrites.Flush(bridgeID)
-	ts, err := m.logStore.GetTurnState(bridgeID)
+	ts, err := m.sessionEventLog().GetTurnState(bridgeID)
 	if err != nil {
 		return nil, fmt.Errorf("turn-state: %w", err)
 	}
@@ -1687,7 +1683,7 @@ func (m *Manager) RecoverInFlightTurn(bridgeID string) (*store.InFlightTurnState
 		return nil, nil
 	}
 
-	userEvents, err := m.logStore.ListEvents(bridgeID, 0, []string{"user_message"})
+	userEvents, err := m.sessionEventLog().ListEvents(bridgeID, 0, []string{"user_message"})
 	if err != nil {
 		return nil, fmt.Errorf("user_message events: %w", err)
 	}
@@ -1707,7 +1703,7 @@ func (m *Manager) RecoverInFlightTurn(bridgeID string) (*store.InFlightTurnState
 	}
 
 	assistTypes := []string{"block", "stream", "thinking", "tool_call", "tool_result", "plan", "approval", "result"}
-	assistEvents, err := m.logStore.ListEvents(bridgeID, int64(ts.LastUserMessageEventID), assistTypes)
+	assistEvents, err := m.sessionEventLog().ListEvents(bridgeID, int64(ts.LastUserMessageEventID), assistTypes)
 	if err != nil {
 		return nil, fmt.Errorf("assistant events: %w", err)
 	}
@@ -1731,14 +1727,14 @@ func (m *Manager) RecoverInFlightTurn(bridgeID string) (*store.InFlightTurnState
 // Replaces store.InterruptedTurn's local-DB query.
 func (m *Manager) InterruptedTurn(bridgeID string) (*store.InterruptedTurn, error) {
 	m.logStoreWrites.Flush(bridgeID)
-	ts, err := m.logStore.GetTurnState(bridgeID)
+	ts, err := m.sessionEventLog().GetTurnState(bridgeID)
 	if err != nil {
 		return nil, fmt.Errorf("turn-state: %w", err)
 	}
 	if !ts.InFlight || ts.LastUserMessageEventID == 0 {
 		return nil, nil
 	}
-	events, err := m.logStore.ListEvents(bridgeID, 0, []string{"user_message"})
+	events, err := m.sessionEventLog().ListEvents(bridgeID, 0, []string{"user_message"})
 	if err != nil {
 		return nil, fmt.Errorf("user_message events: %w", err)
 	}
@@ -1754,7 +1750,7 @@ func (m *Manager) InterruptedTurn(bridgeID string) (*store.InterruptedTurn, erro
 	}
 	// Counted from the user_message that opened the turn, so tool calls from
 	// earlier, completed turns cannot make this turn look like it did work.
-	toolCalls, err := m.logStore.ListEvents(bridgeID, int64(ts.LastUserMessageEventID), []string{"tool_call"})
+	toolCalls, err := m.sessionEventLog().ListEvents(bridgeID, int64(ts.LastUserMessageEventID), []string{"tool_call"})
 	if err != nil {
 		return nil, fmt.Errorf("tool_call events: %w", err)
 	}
@@ -1769,7 +1765,7 @@ func (m *Manager) InterruptedTurn(bridgeID string) (*store.InterruptedTurn, erro
 // Replaces store.RecentTurnTexts.
 func (m *Manager) RecentTurnTexts(bridgeID string, limit int) ([]store.TurnText, error) {
 	m.logStoreWrites.Flush(bridgeID)
-	events, err := m.logStore.ListEvents(bridgeID, 0, []string{"user_message", "result"})
+	events, err := m.sessionEventLog().ListEvents(bridgeID, 0, []string{"user_message", "result"})
 	if err != nil {
 		return nil, fmt.Errorf("events: %w", err)
 	}
@@ -1814,7 +1810,7 @@ func (m *Manager) RecentTurnTexts(bridgeID string, limit int) ([]store.TurnText,
 // store.ListToolCallInputs.
 func (m *Manager) ListToolCallInputs(bridgeID string) ([]json.RawMessage, error) {
 	m.logStoreWrites.Flush(bridgeID)
-	events, err := m.logStore.ListEvents(bridgeID, 0, []string{"tool_call"})
+	events, err := m.sessionEventLog().ListEvents(bridgeID, 0, []string{"tool_call"})
 	if err != nil {
 		return nil, fmt.Errorf("tool_call events: %w", err)
 	}
@@ -1847,7 +1843,7 @@ type ToolEventInOrder struct {
 // session, oldest first, as log-store holds them.
 func (m *Manager) ListToolEventsInOrder(bridgeID string) ([]ToolEventInOrder, error) {
 	m.logStoreWrites.Flush(bridgeID)
-	events, err := m.logStore.ListEvents(bridgeID, 0, []string{"tool_call", "tool_result"})
+	events, err := m.sessionEventLog().ListEvents(bridgeID, 0, []string{"tool_call", "tool_result"})
 	if err != nil {
 		return nil, fmt.Errorf("tool events: %w", err)
 	}
@@ -2270,7 +2266,7 @@ func (m *Manager) ImportHistory(ctx context.Context, bridgeSessionID string, h m
 	var imported int
 	for _, event := range events {
 		event.BridgeSessionID = bridgeSessionID
-		if _, err := m.logStore.PushEvent(event); err != nil {
+		if _, err := m.sessionEventLog().PushEvent(event); err != nil {
 			log.Printf("[import-history] failed to push event: %v", err)
 			continue
 		}
@@ -2310,7 +2306,7 @@ func (m *Manager) logStoreAlreadyHoldsTranscript(harnessSessionID string) (logst
 	if harnessSessionID == "" {
 		return logstore.HeldSession{}, false
 	}
-	held, err := m.logStore.SessionsHoldingHarnessSessionID(harnessSessionID)
+	held, err := m.sessionEventLog().SessionsHoldingHarnessSessionID(harnessSessionID)
 	if err != nil {
 		log.Printf(
 			"[import-history] %s: could not ask log-store whether it already holds this transcript (%v); importing, which may duplicate it",

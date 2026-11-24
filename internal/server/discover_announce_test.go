@@ -40,8 +40,6 @@ func TestDiscoverAnnouncesLogStoreBeforeImporting(t *testing.T) {
 		t.Skip("discover spawns harness binaries; skipping in short mode")
 	}
 
-	const sentinelLogStore = "http://127.0.0.1:1/sentinel-log-store"
-
 	// Discovery walks $HOME and imports one subprocess per session it has
 	// not seen. Against the real home directory that is thousands of them;
 	// against this one it is exactly the rollout planted below, which is
@@ -60,7 +58,6 @@ func TestDiscoverAnnouncesLogStoreBeforeImporting(t *testing.T) {
 	cfg := &config.Config{
 		ImagesDir:       filepath.Join(dir, "images"),
 		BridgePrefsPath: filepath.Join(dir, "prefs.json"),
-		LogStoreURL:     sentinelLogStore,
 	}
 	testAuthorizationConfig(cfg)
 	srv := New(st, nil, nil, nil, nil, nil, nil, cfg)
@@ -115,8 +112,7 @@ func TestDiscoverAnnouncesLogStoreBeforeImporting(t *testing.T) {
 	firstImportLine := -1
 	for i, line := range lines {
 		if announcementLine == -1 &&
-			strings.Contains(line, "will have their transcripts imported into log-store") &&
-			strings.Contains(line, sentinelLogStore) {
+			strings.Contains(line, "will have their transcripts imported into the session log") {
 			announcementLine = i
 		}
 		if firstImportLine == -1 && strings.Contains(line, "imported") &&
@@ -126,8 +122,8 @@ func TestDiscoverAnnouncesLogStoreBeforeImporting(t *testing.T) {
 	}
 
 	if announcementLine == -1 {
-		t.Fatalf("discovery adopted %d sessions without naming the log-store %q it imports their transcripts into; got:\n%s",
-			len(discovered), sentinelLogStore, captured.String())
+		t.Fatalf("discovery adopted %d sessions without saying it imports their transcripts into the session log; got:\n%s",
+			len(discovered), captured.String())
 	}
 	// Only reachable when a transcript actually imported, which needs a
 	// log-store that answers. Kept because "warn after writing" is the

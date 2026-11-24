@@ -5,9 +5,9 @@
 #
 # The server, the runner and the mock harness come from this repo, with the
 # front end built first so it is compiled into the server; the server holds
-# principal-store, grant-store, permission-store, tool-store, kanban-store and
-# the other stores moved into it. log-store and reference-store come from
-# their own repos beside this one, as they are checked out there.
+# principal-store, grant-store, permission-store, tool-store, kanban-store,
+# repo-store, file-store, reference-store, log-store and the other stores
+# moved into it. No store is built from a sibling repo any more.
 #
 # The runner's disk-usage and computer-use helpers are left out on purpose. A
 # runner in WSL installs them into the Windows user's own app data, where the
@@ -36,11 +36,6 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$OUT/llm-bridge-server" ./cmd
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$OUT/llm-bridge-runner" ./runner
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$OUT/llm-bridge-mock" ./cmd/mock-harness
 
-# These use a SQLite driver written in Go, or none, so they build with no C.
-build_pure() { # <repo>
-  echo "==> Building $1..."
-  (cd "$PARENT_DIR/$1" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$OUT/$1" "./cmd/$1")
-}
 # The real harness wrappers. The machine supplies the agent programs
 # themselves (claude, codex) and their logins; scripts/test-instance.sh
 # use-machine-logins links them in.
@@ -49,8 +44,6 @@ for wrapper in llm-bridge-claudecode llm-bridge-codex; do
   (cd "$PARENT_DIR/$wrapper" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$OUT/$wrapper" .)
 done
 
-build_pure log-store
-build_pure reference-store
 
 cp "$REPO_DIR/scripts/test-instance.sh" "$OUT/test-instance.sh"
 echo "==> Built into $OUT:"

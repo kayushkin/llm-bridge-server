@@ -27,7 +27,7 @@ func managerOver(t *testing.T, st *store.Store) *Manager {
 	t.Helper()
 	logStore := httptest.NewServer(newLogStoreStub())
 	t.Cleanup(logStore.Close)
-	return NewManager(st, logStore.URL, "http://127.0.0.1:0", "", 0, nil)
+	return newManagerOnLogStoreURL(st, logStore.URL, "http://127.0.0.1:0", "", 0, nil)
 }
 
 func storeForRunnerTests(t *testing.T) *store.Store {

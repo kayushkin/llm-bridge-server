@@ -167,7 +167,7 @@ export PATH="$HOME/.local/share/mise/shims:$PATH"
 
 echo "==> Building $BIN_NAME..."
 # GOWORK is passed through from the caller's environment. go.mod replaces the
-# sibling modules (../llm-bridge, ../log-store) with their checkouts, and a
+# sibling modules (../llm-bridge and the rest) with their checkouts, and a
 # sibling checked out on somebody's branch can fail this build through no
 # fault of this repo. A go.work that points the replace at a clean worktree
 # is the way to build past that without touching their checkout.
