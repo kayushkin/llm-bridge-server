@@ -1,0 +1,26 @@
+[Unit]
+Description=repo-store — canonical registry of repositories, their detected signature tags, deploy ledger and GitHub pull requests
+After=network.target
+
+# A systemd user unit: install it to ~/.config/systemd/user/ and the binary to
+# ~/bin. %h is the user's home directory, so nothing here names a user.
+[Service]
+Type=simple
+ExecStart=%h/bin/repo-store
+
+# Loopback, deliberately. The service has no auth of its own; put a front door
+# that adds it in front. settings.go defaults to the same address, so an empty
+# environment is safe too.
+Environment=REPO_STORE_ADDR=127.0.0.1:8306
+
+# The gh program that reads pull requests, as the account it is logged in to
+# under $HOME/.config/gh. A user unit's PATH often lacks the directory gh is
+# installed in, so name it in full; change this to wherever yours is.
+Environment=REPO_STORE_GITHUB_CLI=%h/bin/gh
+
+WorkingDirectory=%h
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

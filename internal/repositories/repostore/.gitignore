@@ -1,0 +1,7 @@
+# build output
+/repo-store
+
+# sqlite data
+*.db
+*.db-wal
+*.db-shm
