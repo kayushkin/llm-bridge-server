@@ -5,9 +5,10 @@
 #
 # The server, the runner and the mock harness come from this repo, with the
 # front end built first so it is compiled into the server; the server holds
-# principal-store, grant-store, permission-store, tool-store, kanban-store and
-# the other stores moved into it. log-store and reference-store come from
-# their own repos beside this one, as they are checked out there.
+# principal-store, grant-store, permission-store, tool-store, kanban-store,
+# repo-store, file-store, reference-store and the other stores moved into it.
+# log-store comes from its own repo beside this one, as it is checked out
+# there.
 #
 # The runner's disk-usage and computer-use helpers are left out on purpose. A
 # runner in WSL installs them into the Windows user's own app data, where the
@@ -50,7 +51,6 @@ for wrapper in llm-bridge-claudecode llm-bridge-codex; do
 done
 
 build_pure log-store
-build_pure reference-store
 
 cp "$REPO_DIR/scripts/test-instance.sh" "$OUT/test-instance.sh"
 echo "==> Built into $OUT:"
