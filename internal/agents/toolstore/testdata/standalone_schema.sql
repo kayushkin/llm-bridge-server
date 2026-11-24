@@ -1,4 +1,6 @@
--- tool-store schema
+-- The schema the standalone tool-store kept in SQLite, last as of 2026-11, kept
+-- so the import test can make a file like the ones it reads. The module's own
+-- schema is migrations/0001_create_tools_and_instance_tools.sql.
 -- Registry of tools that can be seeded into harnesses (Claude Code, openclaw,
 -- jig, codex, inber, etc.) via llm-bridge-server. Four kinds (Kinds in tool.go
 -- is the list; a test holds the CHECK below to it):

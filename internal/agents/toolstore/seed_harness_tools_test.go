@@ -1,31 +1,23 @@
-package main
+package toolstore
 
 import (
 	"context"
-	"path/filepath"
 	"reflect"
 	"testing"
-
-	toolstore "github.com/kayushkin/llm-bridge-server/internal/agents/toolstore"
 )
 
-func openSeedTestStore(t *testing.T) *toolstore.Store {
+func openSeedTestStore(t *testing.T) *Store {
 	t.Helper()
-	store, err := toolstore.Open(filepath.Join(t.TempDir(), "ts"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { store.Close() })
-	return store
+	return newTestStore(t)
 }
 
 func TestSeedHarnessToolsCreatesEveryToolEnabled(t *testing.T) {
 	store := openSeedTestStore(t)
-	if err := seedHarnessTools(store); err != nil {
+	if err := seedHarnessTools(testContext, store); err != nil {
 		t.Fatal(err)
 	}
 	for harness, seeds := range map[string][]harnessToolSeed{harnessClaudeCode: claudeCodeTools, harnessCodex: codexTools} {
-		rows, err := store.ListTools(toolstore.ListFilter{Kind: toolstore.KindHarness, Harness: harness})
+		rows, err := store.ListTools(testContext, ListFilter{Kind: KindHarness, Harness: harness})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -45,10 +37,10 @@ func TestSeedHarnessToolsCreatesEveryToolEnabled(t *testing.T) {
 
 func TestSeedHarnessToolsTagsExactlyTheShellRunners(t *testing.T) {
 	store := openSeedTestStore(t)
-	if err := seedHarnessTools(store); err != nil {
+	if err := seedHarnessTools(testContext, store); err != nil {
 		t.Fatal(err)
 	}
-	rows, err := store.ListTools(toolstore.ListFilter{Kind: toolstore.KindHarness, Tag: tagRunsCommands})
+	rows, err := store.ListTools(testContext, ListFilter{Kind: KindHarness, Tag: tagRunsCommands})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,17 +56,17 @@ func TestSeedHarnessToolsTagsExactlyTheShellRunners(t *testing.T) {
 
 func TestSeedHarnessToolsLeavesAnExistingRowExactlyAsItIs(t *testing.T) {
 	store := openSeedTestStore(t)
-	stale := &toolstore.Tool{
-		Name: "claude_code.Bash", Kind: toolstore.KindHarness, Harness: harnessClaudeCode, HarnessToolName: "Bash",
+	stale := &Tool{
+		Name: "claude_code.Bash", Kind: KindHarness, Harness: harnessClaudeCode, HarnessToolName: "Bash",
 		Description: "operator's words", Tags: []string{"old"}, Enabled: false,
 	}
-	if _, err := store.UpsertTool(stale); err != nil {
+	if _, err := store.UpsertTool(testContext, stale); err != nil {
 		t.Fatal(err)
 	}
-	if err := seedHarnessTools(store); err != nil {
+	if err := seedHarnessTools(testContext, store); err != nil {
 		t.Fatal(err)
 	}
-	got, err := store.GetToolByName("claude_code.Bash")
+	got, err := store.GetToolByName(testContext, "claude_code.Bash")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,36 +80,36 @@ func TestSeedHarnessToolsLeavesAnExistingRowExactlyAsItIs(t *testing.T) {
 
 func TestSeedHarnessToolsRefusesANameAnotherKindHolds(t *testing.T) {
 	store := openSeedTestStore(t)
-	if _, err := store.UpsertTool(&toolstore.Tool{Name: "codex.web_search", Kind: toolstore.KindLocal, Local: &toolstore.LocalSpec{Symbol: "x"}}); err != nil {
+	if _, err := store.UpsertTool(testContext, &Tool{Name: "codex.web_search", Kind: KindLocal, Local: &LocalSpec{Symbol: "x"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := seedHarnessTools(store); err == nil {
+	if err := seedHarnessTools(testContext, store); err == nil {
 		t.Fatal("seeder took over a kind=local row")
 	}
 }
 
 func TestSeedHarnessToolsLeavesAToolAHarnessReportedAlone(t *testing.T) {
 	store := openSeedTestStore(t)
-	if err := seedHarnessTools(store); err != nil {
+	if err := seedHarnessTools(testContext, store); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.RecordObservedHarnessTools(context.Background(), toolstore.ObservedHarnessToolsRequest{
+	if _, err := store.RecordObservedHarnessTools(context.Background(), ObservedHarnessToolsRequest{
 		Harness: harnessClaudeCode, ToolNames: []string{"Read", "Frobnicate"},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	reported, err := store.GetToolByName("claude_code.Frobnicate")
+	reported, err := store.GetToolByName(testContext, "claude_code.Frobnicate")
 	if err != nil {
 		t.Fatal(err)
 	}
-	read, err := store.GetToolByName("claude_code.Read")
+	read, err := store.GetToolByName(testContext, "claude_code.Read")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := seedHarnessTools(store); err != nil {
+	if err := seedHarnessTools(testContext, store); err != nil {
 		t.Fatal(err)
 	}
-	reportedAfter, err := store.GetToolByName("claude_code.Frobnicate")
+	reportedAfter, err := store.GetToolByName(testContext, "claude_code.Frobnicate")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +119,7 @@ func TestSeedHarnessToolsLeavesAToolAHarnessReportedAlone(t *testing.T) {
 	if reportedAfter.Enabled {
 		t.Fatal("seeding switched on a tool nobody reviewed")
 	}
-	readAfter, err := store.GetToolByName("claude_code.Read")
+	readAfter, err := store.GetToolByName(testContext, "claude_code.Read")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,15 +132,15 @@ func TestSeedHarnessToolsLeavesAToolAHarnessReportedAlone(t *testing.T) {
 // enabled=false and its unreviewed tag: the seed file does not review it.
 func TestSeedHarnessToolsKeepsAReportedRowOffWhenItsNameIsSeeded(t *testing.T) {
 	store := openSeedTestStore(t)
-	if _, err := store.RecordObservedHarnessTools(context.Background(), toolstore.ObservedHarnessToolsRequest{
+	if _, err := store.RecordObservedHarnessTools(context.Background(), ObservedHarnessToolsRequest{
 		Harness: harnessClaudeCode, ToolNames: []string{"Bash"},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := seedHarnessTools(store); err != nil {
+	if err := seedHarnessTools(testContext, store); err != nil {
 		t.Fatal(err)
 	}
-	bash, err := store.GetToolByName("claude_code.Bash")
+	bash, err := store.GetToolByName(testContext, "claude_code.Bash")
 	if err != nil {
 		t.Fatal(err)
 	}

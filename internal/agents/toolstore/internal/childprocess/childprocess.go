@@ -22,9 +22,10 @@ package childprocess
 import (
 	"bytes"
 	"context"
-	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 	"os/exec"
 	"time"
+
+	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 )
 
 // InterruptToKillGrace is how long a canceled process group has to exit after

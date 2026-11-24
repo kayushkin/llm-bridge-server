@@ -28,16 +28,16 @@ import (
 func TestSetEnabledTrueRestoresATool(t *testing.T) {
 	s := openTest(t)
 	in := &Tool{Name: "shell", Kind: KindLocal, Local: &LocalSpec{Symbol: "x.Shell"}, Enabled: true}
-	if _, err := s.UpsertTool(in); err != nil {
+	if _, err := s.UpsertTool(testContext, in); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	if err := s.SetEnabled(in.ID, false); err != nil {
+	if err := s.SetEnabled(testContext, in.ID, false); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
-	if err := s.SetEnabled(in.ID, true); err != nil {
+	if err := s.SetEnabled(testContext, in.ID, true); err != nil {
 		t.Fatalf("re-enable: %v", err)
 	}
-	got, err := s.GetTool(in.ID)
+	got, err := s.GetTool(testContext, in.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -58,20 +58,20 @@ func TestSetEnabledTrueRestoresATool(t *testing.T) {
 func TestSetEnabledIsIdempotentInBothDirections(t *testing.T) {
 	s := openTest(t)
 	in := &Tool{Name: "shell", Kind: KindLocal, Local: &LocalSpec{Symbol: "x.Shell"}, Enabled: true}
-	if _, err := s.UpsertTool(in); err != nil {
+	if _, err := s.UpsertTool(testContext, in); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
 	// Already enabled; enabling again must not read as a missing row.
-	if err := s.SetEnabled(in.ID, true); err != nil {
+	if err := s.SetEnabled(testContext, in.ID, true); err != nil {
 		t.Fatalf("enable an already-enabled tool: %v", err)
 	}
-	if err := s.SetEnabled(in.ID, false); err != nil {
+	if err := s.SetEnabled(testContext, in.ID, false); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
-	if err := s.SetEnabled(in.ID, false); err != nil {
+	if err := s.SetEnabled(testContext, in.ID, false); err != nil {
 		t.Fatalf("disable an already-disabled tool: %v", err)
 	}
-	got, _ := s.GetTool(in.ID)
+	got, _ := s.GetTool(testContext, in.ID)
 	if got.Enabled {
 		t.Error("tool should be disabled after two disables")
 	}
@@ -82,10 +82,10 @@ func TestSetEnabledIsIdempotentInBothDirections(t *testing.T) {
 // enable path's own not-found branch had never run.
 func TestSetEnabledTrueReportsAMissingTool(t *testing.T) {
 	s := openTest(t)
-	if err := s.SetEnabled(9999, true); !errors.Is(err, ErrNotFound) {
+	if err := s.SetEnabled(testContext, 9999, true); !errors.Is(err, ErrNotFound) {
 		t.Errorf("SetEnabled(missing, true) = %v, want ErrNotFound", err)
 	}
-	if err := s.SetEnabled(9999, false); !errors.Is(err, ErrNotFound) {
+	if err := s.SetEnabled(testContext, 9999, false); !errors.Is(err, ErrNotFound) {
 		t.Errorf("SetEnabled(missing, false) = %v, want ErrNotFound", err)
 	}
 }
@@ -105,26 +105,26 @@ func TestSetEnabledTrueReportsAMissingTool(t *testing.T) {
 func TestGlobalDisableHidesAnInstanceOptInWithoutDestroyingIt(t *testing.T) {
 	s := openInstTest(t)
 	seedTool(t, s, "x", true)
-	if err := s.EnableForInstance("i", "x"); err != nil {
+	if err := s.EnableForInstance(testContext, "i", "x"); err != nil {
 		t.Fatalf("enable for instance: %v", err)
 	}
-	tool, err := s.GetToolByName("x")
+	tool, err := s.GetToolByName(testContext, "x")
 	if err != nil {
 		t.Fatalf("get by name: %v", err)
 	}
 
-	if err := s.SetEnabled(tool.ID, false); err != nil {
+	if err := s.SetEnabled(testContext, tool.ID, false); err != nil {
 		t.Fatalf("disable global: %v", err)
 	}
-	hidden, _ := s.ListInstanceTools("i")
+	hidden, _ := s.ListInstanceTools(testContext, "i")
 	if len(hidden) != 0 {
 		t.Fatalf("globally-disabled tool should be filtered, got %v", hidden)
 	}
 
-	if err := s.SetEnabled(tool.ID, true); err != nil {
+	if err := s.SetEnabled(testContext, tool.ID, true); err != nil {
 		t.Fatalf("re-enable global: %v", err)
 	}
-	restored, err := s.ListInstanceTools("i")
+	restored, err := s.ListInstanceTools(testContext, "i")
 	if err != nil {
 		t.Fatalf("list instance tools: %v", err)
 	}
@@ -139,22 +139,22 @@ func TestGlobalDisableHidesAnInstanceOptInWithoutDestroyingIt(t *testing.T) {
 func TestReEnablingGloballyReopensTheOptInPath(t *testing.T) {
 	s := openInstTest(t)
 	seedTool(t, s, "x", false)
-	tool, err := s.GetToolByName("x")
+	tool, err := s.GetToolByName(testContext, "x")
 	if err != nil {
 		t.Fatalf("get by name: %v", err)
 	}
 
-	if err := s.EnableForInstance("i", "x"); !errors.Is(err, ErrGloballyDisabled) {
+	if err := s.EnableForInstance(testContext, "i", "x"); !errors.Is(err, ErrGloballyDisabled) {
 		t.Fatalf("opt-in while globally disabled = %v, want ErrGloballyDisabled", err)
 	}
 
-	if err := s.SetEnabled(tool.ID, true); err != nil {
+	if err := s.SetEnabled(testContext, tool.ID, true); err != nil {
 		t.Fatalf("enable global: %v", err)
 	}
-	if err := s.EnableForInstance("i", "x"); err != nil {
+	if err := s.EnableForInstance(testContext, "i", "x"); err != nil {
 		t.Fatalf("opt-in after the master switch went back on: %v", err)
 	}
-	tools, _ := s.ListInstanceTools("i")
+	tools, _ := s.ListInstanceTools(testContext, "i")
 	if len(tools) != 1 {
 		t.Fatalf("want 1 tool after opting in, got %d", len(tools))
 	}

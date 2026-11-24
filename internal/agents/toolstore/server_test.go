@@ -6,25 +6,17 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 )
 
 func newServer(t *testing.T) (*httptest.Server, *Store) {
 	t.Helper()
-	dir := t.TempDir()
-	s, err := Open(filepath.Join(dir, "ts"))
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
+	s := newTestStore(t)
 	mux := http.NewServeMux()
-	RegisterHandlers(mux, s, HandlerOptions{})
+	registerTestRoutes(mux, s, HandlerOptions{})
 	srv := httptest.NewServer(mux)
-	t.Cleanup(func() {
-		srv.Close()
-		s.Close()
-	})
+	t.Cleanup(srv.Close)
 	return srv, s
 }
 
@@ -126,15 +118,10 @@ func TestHTTPCRUD(t *testing.T) {
 }
 
 func TestHTTPInvokeLocal(t *testing.T) {
-	dir := t.TempDir()
-	s, err := Open(filepath.Join(dir, "ts"))
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(func() { s.Close() })
+	s := newTestStore(t)
 
 	// Seed a local tool row.
-	if _, err := s.UpsertTool(&Tool{
+	if _, err := s.UpsertTool(testContext, &Tool{
 		Name:        "echo",
 		Description: "test",
 		Kind:        KindLocal,
@@ -145,7 +132,7 @@ func TestHTTPInvokeLocal(t *testing.T) {
 	}
 
 	mux := http.NewServeMux()
-	RegisterHandlers(mux, s, HandlerOptions{
+	registerTestRoutes(mux, s, HandlerOptions{
 		InvokeLocal: func(ctx context.Context, name, input string) (string, error) {
 			return name + ":" + input, nil
 		},
@@ -170,7 +157,7 @@ func TestHTTPInvokeLocal(t *testing.T) {
 
 func TestHTTPInvokeWithoutFunc(t *testing.T) {
 	srv, s := newServer(t)
-	if _, err := s.UpsertTool(&Tool{
+	if _, err := s.UpsertTool(testContext, &Tool{
 		Name:    "x",
 		Kind:    KindLocal,
 		Local:   &LocalSpec{Symbol: "x"},
@@ -187,7 +174,7 @@ func TestHTTPInvokeWithoutFunc(t *testing.T) {
 
 func TestHTTPInvokeMCP(t *testing.T) {
 	srv, s := newServer(t)
-	if _, err := s.UpsertTool(&Tool{
+	if _, err := s.UpsertTool(testContext, &Tool{
 		Name:    "brave",
 		Kind:    KindMCP,
 		MCP:     &MCPSpec{Transport: "stdio", Command: "npx"},
@@ -204,7 +191,7 @@ func TestHTTPInvokeMCP(t *testing.T) {
 
 func TestHTTPInvokeCLI(t *testing.T) {
 	srv, s := newServer(t)
-	if _, err := s.UpsertTool(&Tool{
+	if _, err := s.UpsertTool(testContext, &Tool{
 		Name: "echo-cli",
 		Kind: KindCLI,
 		CLI: &CLISpec{
@@ -231,7 +218,7 @@ func TestHTTPInvokeCLI(t *testing.T) {
 
 func TestHTTPSpec(t *testing.T) {
 	srv, s := newServer(t)
-	if _, err := s.UpsertTool(&Tool{
+	if _, err := s.UpsertTool(testContext, &Tool{
 		Name: "echo-cli",
 		Kind: KindCLI,
 		CLI: &CLISpec{
@@ -255,11 +242,9 @@ func TestHTTPSpec(t *testing.T) {
 }
 
 func TestHTTPListLocals(t *testing.T) {
-	dir := t.TempDir()
-	s, _ := Open(filepath.Join(dir, "ts"))
-	t.Cleanup(func() { s.Close() })
+	s := newTestStore(t)
 	mux := http.NewServeMux()
-	RegisterHandlers(mux, s, HandlerOptions{
+	registerTestRoutes(mux, s, HandlerOptions{
 		ListLocals: func() []LocalDescriptor {
 			return []LocalDescriptor{
 				{Name: "shell", Description: "bash"},
@@ -280,7 +265,7 @@ func TestHTTPListLocals(t *testing.T) {
 
 func TestHTTPInstanceToolsCRUD(t *testing.T) {
 	srv, s := newServer(t)
-	if _, err := s.UpsertTool(&Tool{
+	if _, err := s.UpsertTool(testContext, &Tool{
 		Name:    "brave-search",
 		Kind:    KindMCP,
 		MCP:     &MCPSpec{Transport: "stdio", Command: "npx"},
@@ -341,7 +326,7 @@ func TestHTTPInstanceToolsCRUD(t *testing.T) {
 
 func TestHTTPInstanceToolsRejectsGloballyDisabled(t *testing.T) {
 	srv, s := newServer(t)
-	_, _ = s.UpsertTool(&Tool{
+	_, _ = s.UpsertTool(testContext, &Tool{
 		Name:    "x",
 		Kind:    KindMCP,
 		MCP:     &MCPSpec{Transport: "stdio", Command: "npx"},

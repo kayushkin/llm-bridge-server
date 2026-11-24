@@ -18,7 +18,7 @@ type KindDescriptor struct {
 }
 
 // Kinds is the one list of tool kinds. Kind.Valid, validation errors and
-// GET /kinds all read it; the CHECK on tools.kind in schema.sql is held to it
+// GET /kinds all read it; the CHECK on tools.kind in the migration is held to it
 // by a test.
 var Kinds = []KindDescriptor{
 	{KindMCP, "An external MCP server (stdio, http or sse); the harness launches it from the config POST /provision returns."},
@@ -107,7 +107,7 @@ type CLISpec struct {
 	TimeoutMs    int      `json:"timeout_ms,omitempty"`
 }
 
-// LocalSpec describes a Go function registered into the tool-store binary at
+// LocalSpec describes a Go function compiled into this server at
 // build time. Symbol is the canonical name (e.g. "agentkit/tools.Shell") used
 // to look up the implementation in the in-process registry.
 type LocalSpec struct {

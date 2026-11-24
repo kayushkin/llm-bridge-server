@@ -3,7 +3,6 @@ package toolstore
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -11,18 +10,13 @@ import (
 
 func openProvTest(t *testing.T) *Store {
 	t.Helper()
-	dir := t.TempDir()
-	s, err := Open(filepath.Join(dir, "ts"))
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(func() { s.Close() })
+	s := newTestStore(t)
 	return s
 }
 
 func TestProvisionStdioWithCreds(t *testing.T) {
 	s := openProvTest(t)
-	if _, err := s.UpsertTool(&Tool{
+	if _, err := s.UpsertTool(testContext, &Tool{
 		Name:        "brave-search",
 		Kind:        KindMCP,
 		EnvKeys:     []string{"BRAVE_API_KEY"},
@@ -61,7 +55,7 @@ func TestProvisionStdioWithCreds(t *testing.T) {
 func TestProvisionMissingMapping(t *testing.T) {
 	s := openProvTest(t)
 	// EnvKeys present but Credentials map missing the key
-	_, _ = s.UpsertTool(&Tool{
+	_, _ = s.UpsertTool(testContext, &Tool{
 		Name:    "brave",
 		Kind:    KindMCP,
 		EnvKeys: []string{"BRAVE_API_KEY"},
@@ -78,7 +72,7 @@ func TestProvisionMissingMapping(t *testing.T) {
 
 func TestProvisionResolverError(t *testing.T) {
 	s := openProvTest(t)
-	_, _ = s.UpsertTool(&Tool{
+	_, _ = s.UpsertTool(testContext, &Tool{
 		Name:        "brave",
 		Kind:        KindMCP,
 		EnvKeys:     []string{"BRAVE_API_KEY"},
@@ -96,7 +90,7 @@ func TestProvisionResolverError(t *testing.T) {
 
 func TestProvisionDisabled(t *testing.T) {
 	s := openProvTest(t)
-	_, _ = s.UpsertTool(&Tool{
+	_, _ = s.UpsertTool(testContext, &Tool{
 		Name:    "x",
 		Kind:    KindMCP,
 		MCP:     &MCPSpec{Transport: "stdio", Command: "npx"},
@@ -110,7 +104,7 @@ func TestProvisionDisabled(t *testing.T) {
 
 func TestProvisionRejectsNonMCP(t *testing.T) {
 	s := openProvTest(t)
-	_, _ = s.UpsertTool(&Tool{
+	_, _ = s.UpsertTool(testContext, &Tool{
 		Name:    "shell",
 		Kind:    KindLocal,
 		Local:   &LocalSpec{Symbol: "shell"},
@@ -124,7 +118,7 @@ func TestProvisionRejectsNonMCP(t *testing.T) {
 
 func TestProvisionHTTP(t *testing.T) {
 	s := openProvTest(t)
-	_, _ = s.UpsertTool(&Tool{
+	_, _ = s.UpsertTool(testContext, &Tool{
 		Name:    "remote-mcp",
 		Kind:    KindMCP,
 		MCP:     &MCPSpec{Transport: "http", URL: "https://example.com/mcp"},
@@ -160,7 +154,7 @@ func TestProvisionEmptyToolsRejected(t *testing.T) {
 // disabled MCP tool, and opts the given instance into the first two.
 func seedInstanceOptIns(t *testing.T, s *Store, instanceID string) {
 	t.Helper()
-	if _, err := s.UpsertTool(&Tool{
+	if _, err := s.UpsertTool(testContext, &Tool{
 		Name:    "remote-mcp",
 		Kind:    KindMCP,
 		MCP:     &MCPSpec{Transport: "http", URL: "https://mcp.example.com"},
@@ -168,7 +162,7 @@ func seedInstanceOptIns(t *testing.T, s *Store, instanceID string) {
 	}); err != nil {
 		t.Fatalf("upsert mcp: %v", err)
 	}
-	if _, err := s.UpsertTool(&Tool{
+	if _, err := s.UpsertTool(testContext, &Tool{
 		Name:    "ripgrep",
 		Kind:    KindCLI,
 		CLI:     &CLISpec{Command: "rg"},
@@ -177,7 +171,7 @@ func seedInstanceOptIns(t *testing.T, s *Store, instanceID string) {
 		t.Fatalf("upsert cli: %v", err)
 	}
 	for _, name := range []string{"remote-mcp", "ripgrep"} {
-		if err := s.EnableForInstance(instanceID, name); err != nil {
+		if err := s.EnableForInstance(testContext, instanceID, name); err != nil {
 			t.Fatalf("opt %s in: %v", name, err)
 		}
 	}
@@ -207,11 +201,11 @@ func TestProvisionByInstanceReadsTheOptInList(t *testing.T) {
 func TestProvisionByInstanceIgnoresAToolTheOwnerDisabledGlobally(t *testing.T) {
 	s := openProvTest(t)
 	seedInstanceOptIns(t, s, "inst-1")
-	tool, err := s.GetToolByName("remote-mcp")
+	tool, err := s.GetToolByName(testContext, "remote-mcp")
 	if err != nil {
 		t.Fatalf("lookup: %v", err)
 	}
-	if err := s.SetEnabled(tool.ID, false); err != nil {
+	if err := s.SetEnabled(testContext, tool.ID, false); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
 
@@ -271,7 +265,7 @@ func TestProvisionByNameStillRejectsANonMCPTool(t *testing.T) {
 func TestProvisionByIDBuildsTheSameConfigAsByName(t *testing.T) {
 	s := openProvTest(t)
 	seedInstanceOptIns(t, s, "inst-1")
-	remote, err := s.GetToolByName("remote-mcp")
+	remote, err := s.GetToolByName(testContext, "remote-mcp")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +288,7 @@ func TestProvisionByIDRefusesAMissingIdAndANonMCPTool(t *testing.T) {
 	if _, err := Provision(context.Background(), s, ProvisionRequest{ToolIDs: []int64{999999}}, nil); err == nil || !strings.Contains(err.Error(), "tool id 999999 not found") {
 		t.Fatalf("missing id: err = %v", err)
 	}
-	cli, err := s.GetToolByName("ripgrep")
+	cli, err := s.GetToolByName(testContext, "ripgrep")
 	if err != nil {
 		t.Fatal(err)
 	}

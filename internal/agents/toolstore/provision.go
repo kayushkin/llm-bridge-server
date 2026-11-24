@@ -49,7 +49,7 @@ type MCPServerConfig struct {
 // out (no fallback) if any tool is missing, disabled, or has env-key
 // resolution gaps.
 func Provision(ctx context.Context, s *Store, req ProvisionRequest, resolve ResolveCredentialFunc) (*ProvisionResponse, error) {
-	tools, err := resolveRequestedTools(s, req)
+	tools, err := resolveRequestedTools(ctx, s, req)
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +101,7 @@ func Provision(ctx context.Context, s *Store, req ProvisionRequest, resolve Reso
 // of tool the instance may use — so the MCP subset is selected out of it and
 // the rest left alone. Erroring there would mean one ticked CLI tool wedges
 // MCP provisioning for that instance.
-func resolveRequestedTools(s *Store, req ProvisionRequest) ([]*Tool, error) {
+func resolveRequestedTools(ctx context.Context, s *Store, req ProvisionRequest) ([]*Tool, error) {
 	sources := 0
 	for _, set := range []bool{len(req.Tools) > 0, len(req.ToolIDs) > 0, req.InstanceID != ""} {
 		if set {
@@ -114,7 +114,7 @@ func resolveRequestedTools(s *Store, req ProvisionRequest) ([]*Tool, error) {
 	case len(req.Tools) > 0:
 		tools := make([]*Tool, 0, len(req.Tools))
 		for _, name := range req.Tools {
-			t, err := s.GetToolByName(name)
+			t, err := s.GetToolByName(ctx, name)
 			if err != nil {
 				if errors.Is(err, ErrNotFound) {
 					return nil, fmt.Errorf("provision: tool %q not found", name)
@@ -127,7 +127,7 @@ func resolveRequestedTools(s *Store, req ProvisionRequest) ([]*Tool, error) {
 	case len(req.ToolIDs) > 0:
 		tools := make([]*Tool, 0, len(req.ToolIDs))
 		for _, id := range req.ToolIDs {
-			t, err := s.GetTool(id)
+			t, err := s.GetTool(ctx, id)
 			if err != nil {
 				if errors.Is(err, ErrNotFound) {
 					return nil, fmt.Errorf("provision: tool id %d not found", id)
@@ -138,7 +138,7 @@ func resolveRequestedTools(s *Store, req ProvisionRequest) ([]*Tool, error) {
 		}
 		return tools, nil
 	case req.InstanceID != "":
-		listed, err := s.ListInstanceTools(req.InstanceID)
+		listed, err := s.ListInstanceTools(ctx, req.InstanceID)
 		if err != nil {
 			return nil, fmt.Errorf("provision: list tools for instance %q: %w", req.InstanceID, err)
 		}

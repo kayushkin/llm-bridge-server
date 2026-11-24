@@ -3,7 +3,6 @@ package tools
 import (
 	"context"
 	"fmt"
-	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore/internal/childprocess"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore/schema"
+	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 )
 
 // Shell returns a tool that executes shell commands via bash.

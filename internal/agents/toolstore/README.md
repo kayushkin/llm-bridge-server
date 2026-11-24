@@ -1,10 +1,10 @@
 # tool-store
 
-A registry of tools that can be seeded into AI coding agents and harnesses. Written in Go, with a small SQLite-backed HTTP service.
+A registry of tools that can be seeded into AI coding agents and harnesses. It is a module of [llm-bridge-server](https://github.com/kayushkin/llm-bridge-server): the server keeps its records in Postgres and serves its routes at `/tool-store/`, the same paths the standalone service served on `:8302`, behind the prefix. They are operator routes: the service token, an administrator, or an administrator's session agent token.
 
 AI agents need tools — shell, file editing, search, browsers, custom CLIs, MCP servers. Each harness (Claude Code, Codex, Aider, etc.) configures these differently. tool-store provides one place to register what's available, what each tool's input schema is, and how it's invoked. Harnesses and orchestrators read from tool-store on session bring-up and provision themselves.
 
-Every component is part of the [llm-bridge](https://github.com/kayushkin/llm-bridge) ecosystem. Use it standalone, or as a store inside [llm-bridge-server](https://github.com/kayushkin/llm-bridge-server).
+Every component is part of the [llm-bridge](https://github.com/kayushkin/llm-bridge) ecosystem. Until a host cuts over, the standalone tool-store from the original repository keeps serving `:8302`; the curl examples below use that address, and the same paths work under `/tool-store/` on the server with credentials.
 
 ## How it works
 
@@ -17,7 +17,7 @@ Every component is part of the [llm-bridge](https://github.com/kayushkin/llm-bri
   ║                  tool-store                           ║
   ║                         │                             ║
   ║   ┌─────────────────────▼───────────────────────┐     ║
-  ║   │           HTTP service (:8302)              │     ║
+  ║   │   llm-bridge-server routes (/tool-store/)   │     ║
   ║   │                                             │     ║
   ║   │  Registry: list, upsert, enable/disable,    │     ║
   ║   │    fetch by id or name, fetch spec          │     ║
@@ -27,8 +27,8 @@ Every component is part of the [llm-bridge](https://github.com/kayushkin/llm-bri
   ║   └─────────────────────┬───────────────────────┘     ║
   ║                         │                             ║
   ║   ┌─────────────────────▼───────────────────────┐     ║
-  ║   │              SQLite store                   │     ║
-  ║   │   ~/.config/tool-store/tool-store.db        │     ║
+  ║   │              Postgres module                │     ║
+  ║   │   schema tools, role tools_module           │     ║
   ║   └─────────────────────┬───────────────────────┘     ║
   ║                         │                             ║
   ║   ┌─────────────────────▼───────────────────────┐     ║
@@ -43,12 +43,12 @@ A tool registered in tool-store can be one of four **kinds**, each with a differ
 
 | Kind | What it is | How tool-store handles it |
 |------|------------|---------------------------|
-| `local` | A Go function compiled into the tool-store binary | Invoked in-process via `POST /tools/by-name/{name}/invoke` |
+| `local` | A Go function compiled into the server | Invoked in-process via `POST /tools/by-name/{name}/invoke` |
 | `cli`   | An arbitrary command + argv template | tool-store substitutes `{{var}}` placeholders from the input JSON, execs the binary, and returns stdout |
 | `mcp`   | An external MCP server (stdio / http / sse) | Not invoked here — clients fetch the launcher spec via `/tools/by-name/{name}/spec` and spawn it themselves (e.g. Claude Code via `--mcp-config`) |
 | `harness` | A built-in tool of an agent harness (Claude Code's `Read`, Codex's `shell_tool`) | Not run here, and never — the harness runs it. tool-store records it and its `enabled` flag so a caller can switch it off. `/invoke` and `/spec` answer 409, `/provision` refuses it |
 
-tool-store seeds its own registry on startup with every in-process tool the binary ships and a short list of MCP servers, and every such new row starts **disabled**. It also seeds the built-in tools of Claude Code and Codex as `kind=harness` rows, and those start **enabled**, because the harness offers them unless told otherwise; the seeder only creates harness rows that are missing and never changes one that exists, so the database owns each harness tool's tags, `enabled` flag and description; change a live row with `PATCH /tools/{id}`. Operators (or eventually a UI) explicitly enable a tool when they want it. Existing rows preserve whatever enabled state they have, so a deliberate enable or disable survives restarts. Discovery via `GET /locals` shows what's available regardless of registration state.
+The server seeds the registry at every start (`SeedRegistry`) with every in-process tool compiled in and a short list of MCP servers, and every such new row starts **disabled**. It also seeds the built-in tools of Claude Code and Codex as `kind=harness` rows, and those start **enabled**, because the harness offers them unless told otherwise; the seeder only creates harness rows that are missing and never changes one that exists, so the database owns each harness tool's tags, `enabled` flag and description; change a live row with `PATCH /tools/{id}`. Operators (or eventually a UI) explicitly enable a tool when they want it. Existing rows preserve whatever enabled state they have, so a deliberate enable or disable survives restarts. Discovery via `GET /locals` shows what's available regardless of registration state.
 
 ## What you get
 
@@ -57,7 +57,7 @@ tool-store seeds its own registry on startup with every in-process tool the bina
 | **Unified registry** | One source of truth for tools across harnesses, regardless of kind |
 | **Multi-kind dispatch** | Local Go, arbitrary CLI, and external MCP all sit under one schema |
 | **Safe templating** | `{{var}}` substitution in CLI argv with no shell expansion — no injection vector |
-| **Discovery** | `GET /locals` lists every in-process tool the binary ships, ready to enable |
+| **Discovery** | `GET /locals` lists every in-process tool compiled in, ready to enable |
 | **Idempotent CRUD** | Upsert by name, enable/disable, list with kind/tag/query filters |
 | **No coupling to providers** | Schemas are plain JSON Schema — no Anthropic SDK or other LLM types in the wire format |
 | **Single source of credentials** | Tools declare `env_keys`, never values — secrets resolve at provision time from your existing credential store |
@@ -67,14 +67,17 @@ tool-store seeds its own registry on startup with every in-process tool the bina
 ### `toolstore` — Registry types and HTTP handlers
 
 ```go
-import toolstore "github.com/kayushkin/tool-store"
+import toolstore "github.com/kayushkin/llm-bridge-server/internal/agents/toolstore"
 ```
 
 - `Tool`, `Kind` (`mcp` | `cli` | `local` | `harness`), `Kinds`, `KindDescriptor`, `MCPSpec`, `CLISpec`, `LocalSpec`, `HarnessToolRowName`
-- `Open(dataDir) (*Store, error)` — opens the SQLite-backed store
-- `UpsertTool`, `GetTool`, `GetToolByName`, `ListTools`, `DeleteTool`, `SetEnabled`, `PatchTool`, `RecordObservedHarnessTools`
-- `RegisterHandlers(mux, store, HandlerOptions)` — wires the REST API onto an `*http.ServeMux`
-- `HandlerOptions` — pluggable callbacks: `InvokeLocal`, `ListLocals`. Both optional.
+- `Module()` — the Postgres schema `tools`, role `tools_module` and the embedded migrations; `New(db)` — the store on the module's pool
+- `UpsertTool`, `GetTool`, `GetToolByName`, `ListTools`, `DeleteTool`, `SetEnabled`, `PatchTool`, `RecordObservedHarnessTools`, and the instance opt-in methods, each taking a context first
+- `Provision(ctx, store, request, resolve)` — the MCP config for a set of tools, credentials resolved through `resolve`
+- `SeedRegistry(ctx, store)` — the rows the server writes at start; `InvokeRegisteredLocalTool` and `RegisteredLocalTools` — the in-process tools
+- `NewHandlers(store, HandlerOptions)` — one method per route, which the server mounts under its prefix
+- `HandlerOptions` — pluggable callbacks: `ResolveCredential`, `InvokeLocal`, `ListLocals`. Each optional.
+- `ImportStandaloneDatabase(ctx, db, path)` — copies a standalone tool-store's SQLite file into an empty module, keeping every id (`llm-bridge-server import-tool-store`)
 
 ### `schema` — JSON Schema helpers
 
@@ -107,31 +110,14 @@ The Go-native tool implementations that ship inside `tool-store`. Each is an `Im
 
 Context-bearing tools (`recent_files`, `repo_map`, `scratchpad`, `task_plan`) are exposed as factories rather than auto-registered — they need a per-instance `repoRoot` / `agentName` and are typically wired from above (e.g. by [llm-bridge-server](https://github.com/kayushkin/llm-bridge-server) at session bring-up).
 
-### `cmd/tool-store` — HTTP service
+### Configuration
 
-```bash
-go build ./cmd/tool-store
-./tool-store
-# or via systemd (see deploy.sh)
-```
-
-Starts an HTTP server (default `:8302`) backed by SQLite at `~/.config/tool-store/tool-store.db`. Wires the `tools` package into `RegisterHandlers` so local tools are invokable in-process and discoverable via `GET /locals`.
-
-Environment — every variable is declared once in `settings.go`, and `GET /settings` shows the values in force (a secret shows only whether it is set):
-- `TOOL_STORE_ADDR` — listen address (default `:8302`)
-- `TOOL_STORE_DATA_DIR` — data directory (default `~/.config/tool-store`)
-- `AUTH_STORE_URL`, `AUTH_STORE_TOKEN` — where `POST /provision` resolves credentials (default `http://127.0.0.1:8303`)
-- `PINCHTAB_URL`, `PINCHTAB_TOKEN` — the `browser` tool's PinchTab (default `http://localhost:9867`)
-- `BRAVE_API_KEY` — the in-process `web_search` tool's key
-- `SCHEDULER_URL`, `SCHEDULER_TOKEN` — the `scheduler` tool's scheduler (default `http://localhost:8092`)
-
-A set variable that begins `TOOL_STORE_ADDR` or `TOOL_STORE_DATA_DIR` and is not one of those two stops the start: it is a misspelling.
+The server declares the settings: where auth-store is (for `POST /provision`), and where the `browser`, `web_search` and `scheduler` tools reach PinchTab, Brave and the scheduler (`tools.RegisterToolsThatReachOutsideServices`). This package reads no environment variable of its own.
 
 ## HTTP API
 
 ```
 GET    /health
-GET    /settings                               every environment variable the process reads, and the value in force
 GET    /kinds                                  the tool kinds, each with a one-line description
 GET    /tools                                  ?kind=&harness=&tag=&q=&enabled=true&not_seen_since=&limit=  (a bare JSON array of Tool)
 POST   /tools                                  body: full Tool JSON (upsert by name; never writes last_seen_at)
@@ -183,7 +169,7 @@ curl -s -X POST http://localhost:8302/harness-tools/observed -H 'content-type: a
 - `harness` is passed through as sent (llm-bridge-server owns harness ids). An empty harness, an empty list, or a name that is empty, contains `.` or whitespace, or starts with `mcp__` is a 400 and nothing is written. A name another kind already holds is a 409.
 - One write transaction covers a report and each insert is `ON CONFLICT DO NOTHING`, so sessions reporting the same new name at once make one row and all get 200.
 
-The seeder only creates missing rows from `cmd/tool-store/harness_seeds.go`, so it never re-enables or re-tags any existing row, reported or seeded. If a reported name is later added to the seeds, the row keeps its `enabled=false` and its `unreviewed` tag until a person reviews it.
+The seeder only creates missing rows from `seed_harness_tools.go`, so it never re-enables or re-tags any existing row, reported or seeded. If a reported name is later added to the seeds, the row keeps its `enabled=false` and its `unreviewed` tag until a person reviews it.
 
 To review a tool, replace its tags and, if it should be on, enable it:
 
@@ -301,7 +287,7 @@ POST /sessions
 }
 ```
 
-llm-bridge-server's `injectMCPConfig` step calls `POST :8302/provision`, writes the response to a tmpfile, replaces the field with `mcp_config: <path>`, and the claudecode harness picks the path up via its existing `--mcp-config` flag. No msg-type changes required — the contract rides through the opaque `HarnessConfig` blob. Setting both `tool_store_tools` and `mcp_config` is rejected (single source of truth).
+llm-bridge-server's `injectMCPConfig` step calls `Provision` in process, writes the result to a tmpfile, replaces the field with `mcp_config: <path>`, and the claudecode harness picks the path up via its existing `--mcp-config` flag. No msg-type changes required — the contract rides through the opaque `HarnessConfig` blob. Setting both `tool_store_tools` and `mcp_config` is rejected (single source of truth).
 
 A session that names no tools of its own gets whatever its **instance** has been opted into — the rows the Tools page writes through `POST /instances/{id}/tools/by-name/{name}`. llm-bridge-server asks for those by instance instead of by name:
 

@@ -2,18 +2,12 @@ package toolstore
 
 import (
 	"errors"
-	"path/filepath"
 	"testing"
 )
 
 func openInstTest(t *testing.T) *Store {
 	t.Helper()
-	dir := t.TempDir()
-	s, err := Open(filepath.Join(dir, "ts"))
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(func() { s.Close() })
+	s := newTestStore(t)
 	return s
 }
 
@@ -25,7 +19,7 @@ func seedTool(t *testing.T, s *Store, name string, enabled bool) {
 		MCP:     &MCPSpec{Transport: "stdio", Command: "npx"},
 		Enabled: enabled,
 	}
-	if _, err := s.UpsertTool(in); err != nil {
+	if _, err := s.UpsertTool(testContext, in); err != nil {
 		t.Fatalf("upsert %s: %v", name, err)
 	}
 }
@@ -34,10 +28,10 @@ func TestEnableForInstanceHappyPath(t *testing.T) {
 	s := openInstTest(t)
 	seedTool(t, s, "brave-search", true)
 
-	if err := s.EnableForInstance("inst-1", "brave-search"); err != nil {
+	if err := s.EnableForInstance(testContext, "inst-1", "brave-search"); err != nil {
 		t.Fatalf("enable: %v", err)
 	}
-	tools, err := s.ListInstanceTools("inst-1")
+	tools, err := s.ListInstanceTools(testContext, "inst-1")
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -49,13 +43,13 @@ func TestEnableForInstanceHappyPath(t *testing.T) {
 func TestEnableForInstanceIdempotent(t *testing.T) {
 	s := openInstTest(t)
 	seedTool(t, s, "x", true)
-	if err := s.EnableForInstance("i", "x"); err != nil {
+	if err := s.EnableForInstance(testContext, "i", "x"); err != nil {
 		t.Fatalf("enable 1: %v", err)
 	}
-	if err := s.EnableForInstance("i", "x"); err != nil {
+	if err := s.EnableForInstance(testContext, "i", "x"); err != nil {
 		t.Fatalf("enable 2 (should be no-op): %v", err)
 	}
-	tools, _ := s.ListInstanceTools("i")
+	tools, _ := s.ListInstanceTools(testContext, "i")
 	if len(tools) != 1 {
 		t.Fatalf("expected 1 row after dup enable, got %d", len(tools))
 	}
@@ -64,7 +58,7 @@ func TestEnableForInstanceIdempotent(t *testing.T) {
 func TestEnableForInstanceRejectsGloballyDisabled(t *testing.T) {
 	s := openInstTest(t)
 	seedTool(t, s, "x", false) // global disabled
-	err := s.EnableForInstance("i", "x")
+	err := s.EnableForInstance(testContext, "i", "x")
 	if !errors.Is(err, ErrGloballyDisabled) {
 		t.Fatalf("expected ErrGloballyDisabled, got %v", err)
 	}
@@ -72,7 +66,7 @@ func TestEnableForInstanceRejectsGloballyDisabled(t *testing.T) {
 
 func TestEnableForInstanceMissingTool(t *testing.T) {
 	s := openInstTest(t)
-	err := s.EnableForInstance("i", "nope")
+	err := s.EnableForInstance(testContext, "i", "nope")
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
@@ -81,7 +75,7 @@ func TestEnableForInstanceMissingTool(t *testing.T) {
 func TestEnableForInstanceRequiresInstanceID(t *testing.T) {
 	s := openInstTest(t)
 	seedTool(t, s, "x", true)
-	if err := s.EnableForInstance("", "x"); err == nil {
+	if err := s.EnableForInstance(testContext, "", "x"); err == nil {
 		t.Fatal("expected error for empty instance_id")
 	}
 }
@@ -89,17 +83,17 @@ func TestEnableForInstanceRequiresInstanceID(t *testing.T) {
 func TestDisableForInstance(t *testing.T) {
 	s := openInstTest(t)
 	seedTool(t, s, "x", true)
-	_ = s.EnableForInstance("i", "x")
+	_ = s.EnableForInstance(testContext, "i", "x")
 
-	if err := s.DisableForInstance("i", "x"); err != nil {
+	if err := s.DisableForInstance(testContext, "i", "x"); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
-	tools, _ := s.ListInstanceTools("i")
+	tools, _ := s.ListInstanceTools(testContext, "i")
 	if len(tools) != 0 {
 		t.Fatalf("expected 0 after disable, got %d", len(tools))
 	}
 	// Second disable should error
-	if err := s.DisableForInstance("i", "x"); !errors.Is(err, ErrNotFound) {
+	if err := s.DisableForInstance(testContext, "i", "x"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound on dup disable, got %v", err)
 	}
 }
@@ -107,15 +101,15 @@ func TestDisableForInstance(t *testing.T) {
 func TestListInstanceToolsFiltersGloballyDisabled(t *testing.T) {
 	s := openInstTest(t)
 	seedTool(t, s, "x", true)
-	if err := s.EnableForInstance("i", "x"); err != nil {
+	if err := s.EnableForInstance(testContext, "i", "x"); err != nil {
 		t.Fatalf("enable: %v", err)
 	}
 	// Now globally disable. Per-instance row stays, but list should drop it.
-	got, _ := s.GetToolByName("x")
-	if err := s.SetEnabled(got.ID, false); err != nil {
+	got, _ := s.GetToolByName(testContext, "x")
+	if err := s.SetEnabled(testContext, got.ID, false); err != nil {
 		t.Fatalf("disable global: %v", err)
 	}
-	tools, _ := s.ListInstanceTools("i")
+	tools, _ := s.ListInstanceTools(testContext, "i")
 	if len(tools) != 0 {
 		t.Fatalf("globally-disabled tool should be filtered, got %v", tools)
 	}
@@ -124,10 +118,10 @@ func TestListInstanceToolsFiltersGloballyDisabled(t *testing.T) {
 func TestListInstancesForTool(t *testing.T) {
 	s := openInstTest(t)
 	seedTool(t, s, "x", true)
-	_ = s.EnableForInstance("i1", "x")
-	_ = s.EnableForInstance("i2", "x")
-	_ = s.EnableForInstance("i3", "x")
-	ids, err := s.ListInstancesForTool("x")
+	_ = s.EnableForInstance(testContext, "i1", "x")
+	_ = s.EnableForInstance(testContext, "i2", "x")
+	_ = s.EnableForInstance(testContext, "i3", "x")
+	ids, err := s.ListInstancesForTool(testContext, "x")
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -139,13 +133,13 @@ func TestListInstancesForTool(t *testing.T) {
 func TestCascadeDeleteFromTools(t *testing.T) {
 	s := openInstTest(t)
 	seedTool(t, s, "x", true)
-	got, _ := s.GetToolByName("x")
-	_ = s.EnableForInstance("i", "x")
+	got, _ := s.GetToolByName(testContext, "x")
+	_ = s.EnableForInstance(testContext, "i", "x")
 
-	if err := s.DeleteTool(got.ID); err != nil {
+	if err := s.DeleteTool(testContext, got.ID); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	tools, _ := s.ListInstanceTools("i")
+	tools, _ := s.ListInstanceTools(testContext, "i")
 	if len(tools) != 0 {
 		t.Fatalf("instance_tools row should cascade-delete, got %v", tools)
 	}

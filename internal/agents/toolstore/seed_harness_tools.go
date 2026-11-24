@@ -1,10 +1,9 @@
-package main
+package toolstore
 
 import (
+	"context"
 	"errors"
 	"fmt"
-
-	toolstore "github.com/kayushkin/llm-bridge-server/internal/agents/toolstore"
 )
 
 // Tags on harness tools. A tool is tagged tagReadOnly when it only reads,
@@ -104,7 +103,7 @@ var codexTools = []harnessToolSeed{
 // a change to a seed here reaches a new database only; change a live row with
 // PATCH /tools/{id}. A row a harness reported first (POST
 // /harness-tools/observed) keeps its enabled=false and its unreviewed tag.
-func seedHarnessTools(store *toolstore.Store) error {
+func seedHarnessTools(ctx context.Context, store *Store) error {
 	for _, harness := range []struct {
 		id    string
 		tools []harnessToolSeed
@@ -113,26 +112,26 @@ func seedHarnessTools(store *toolstore.Store) error {
 		{harnessCodex, codexTools},
 	} {
 		for _, seed := range harness.tools {
-			t := toolstore.Tool{
-				Name:            toolstore.HarnessToolRowName(harness.id, seed.harnessToolName),
+			t := Tool{
+				Name:            HarnessToolRowName(harness.id, seed.harnessToolName),
 				Description:     seed.description,
-				Kind:            toolstore.KindHarness,
+				Kind:            KindHarness,
 				Harness:         harness.id,
 				HarnessToolName: seed.harnessToolName,
 				Tags:            seed.tags,
 				Enabled:         true,
 			}
-			existing, err := store.GetToolByName(t.Name)
+			existing, err := store.GetToolByName(ctx, t.Name)
 			switch {
 			case err == nil:
-				if existing.Kind != toolstore.KindHarness {
+				if existing.Kind != KindHarness {
 					return fmt.Errorf("harness tool %s: a kind=%s row already holds that name", t.Name, existing.Kind)
 				}
 				continue
-			case !errors.Is(err, toolstore.ErrNotFound):
+			case !errors.Is(err, ErrNotFound):
 				return fmt.Errorf("lookup harness tool %s: %w", t.Name, err)
 			}
-			if _, err := store.UpsertTool(&t); err != nil {
+			if _, err := store.UpsertTool(ctx, &t); err != nil {
 				return fmt.Errorf("create harness tool %s: %w", t.Name, err)
 			}
 		}

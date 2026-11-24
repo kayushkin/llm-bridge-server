@@ -1,15 +1,14 @@
-package main
+package toolstore
 
 import (
 	"testing"
 
-	toolstore "github.com/kayushkin/llm-bridge-server/internal/agents/toolstore"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore/tools"
 )
 
-func getSeededTool(t *testing.T, s *toolstore.Store, name string) *toolstore.Tool {
+func getSeededTool(t *testing.T, s *Store, name string) *Tool {
 	t.Helper()
-	got, err := s.GetToolByName(name)
+	got, err := s.GetToolByName(testContext, name)
 	if err != nil {
 		t.Fatalf("GetToolByName(%q): %v", name, err)
 	}
@@ -21,7 +20,7 @@ func getSeededTool(t *testing.T, s *toolstore.Store, name string) *toolstore.Too
 func TestSeedLocalToolsWritesARowForEveryRegisteredTool(t *testing.T) {
 	s := openSeedTestStore(t)
 
-	if err := seedLocalTools(s); err != nil {
+	if err := seedLocalTools(testContext, s); err != nil {
 		t.Fatalf("seedLocalTools: %v", err)
 	}
 
@@ -31,8 +30,8 @@ func TestSeedLocalToolsWritesARowForEveryRegisteredTool(t *testing.T) {
 	}
 	for _, impl := range all {
 		got := getSeededTool(t, s, impl.Name)
-		if got.Kind != toolstore.KindLocal {
-			t.Errorf("%s: kind = %q, want %q", impl.Name, got.Kind, toolstore.KindLocal)
+		if got.Kind != KindLocal {
+			t.Errorf("%s: kind = %q, want %q", impl.Name, got.Kind, KindLocal)
 		}
 		if got.Description != impl.Description {
 			t.Errorf("%s: description not taken from code", impl.Name)
@@ -52,7 +51,7 @@ func TestSeedLocalToolsWritesARowForEveryRegisteredTool(t *testing.T) {
 func TestSeedLocalToolsLeavesNewRowsDisabled(t *testing.T) {
 	s := openSeedTestStore(t)
 
-	if err := seedLocalTools(s); err != nil {
+	if err := seedLocalTools(testContext, s); err != nil {
 		t.Fatalf("seedLocalTools: %v", err)
 	}
 
@@ -66,7 +65,7 @@ func TestSeedLocalToolsLeavesNewRowsDisabled(t *testing.T) {
 // The seed runs on every restart, so it must not undo the operator's choice.
 func TestSeedLocalToolsPreservesAnOperatorsEnabledState(t *testing.T) {
 	s := openSeedTestStore(t)
-	if err := seedLocalTools(s); err != nil {
+	if err := seedLocalTools(testContext, s); err != nil {
 		t.Fatalf("first seed: %v", err)
 	}
 
@@ -74,7 +73,7 @@ func TestSeedLocalToolsPreservesAnOperatorsEnabledState(t *testing.T) {
 	name := all[0].Name
 	enabledByOperator := getSeededTool(t, s, name)
 	enabledByOperator.Enabled = true
-	if _, err := s.UpsertTool(enabledByOperator); err != nil {
+	if _, err := s.UpsertTool(testContext, enabledByOperator); err != nil {
 		t.Fatalf("enable %s: %v", name, err)
 	}
 	// A second tool is deliberately left disabled, so this test can tell
@@ -84,7 +83,7 @@ func TestSeedLocalToolsPreservesAnOperatorsEnabledState(t *testing.T) {
 	}
 	untouched := all[1].Name
 
-	if err := seedLocalTools(s); err != nil {
+	if err := seedLocalTools(testContext, s); err != nil {
 		t.Fatalf("second seed: %v", err)
 	}
 
@@ -100,18 +99,18 @@ func TestSeedLocalToolsPreservesAnOperatorsEnabledState(t *testing.T) {
 // what makes this file the canonical source rather than the database.
 func TestSeedLocalToolsRefreshesDescriptionFromCode(t *testing.T) {
 	s := openSeedTestStore(t)
-	if err := seedLocalTools(s); err != nil {
+	if err := seedLocalTools(testContext, s); err != nil {
 		t.Fatalf("first seed: %v", err)
 	}
 
 	name := tools.All()[0].Name
 	stale := getSeededTool(t, s, name)
 	stale.Description = "a stale description no longer in the code"
-	if _, err := s.UpsertTool(stale); err != nil {
+	if _, err := s.UpsertTool(testContext, stale); err != nil {
 		t.Fatalf("write stale description: %v", err)
 	}
 
-	if err := seedLocalTools(s); err != nil {
+	if err := seedLocalTools(testContext, s); err != nil {
 		t.Fatalf("second seed: %v", err)
 	}
 
@@ -127,7 +126,7 @@ func TestSeedLocalToolsRefreshesDescriptionFromCode(t *testing.T) {
 func TestSeedMCPToolsWritesTheCuratedServers(t *testing.T) {
 	s := openSeedTestStore(t)
 
-	if err := seedMCPTools(s); err != nil {
+	if err := seedMCPTools(testContext, s); err != nil {
 		t.Fatalf("seedMCPTools: %v", err)
 	}
 
@@ -135,8 +134,8 @@ func TestSeedMCPToolsWritesTheCuratedServers(t *testing.T) {
 	// takes its expectations from the thing under test cannot see it drift.
 	for _, name := range []string{"brave-search", "playwright", "chrome-devtools"} {
 		got := getSeededTool(t, s, name)
-		if got.Kind != toolstore.KindMCP {
-			t.Errorf("%s: kind = %q, want %q", name, got.Kind, toolstore.KindMCP)
+		if got.Kind != KindMCP {
+			t.Errorf("%s: kind = %q, want %q", name, got.Kind, KindMCP)
 		}
 		if got.MCP == nil {
 			t.Fatalf("%s: no MCP spec stored", name)
@@ -168,17 +167,17 @@ func TestSeedMCPToolsWritesTheCuratedServers(t *testing.T) {
 
 func TestSeedMCPToolsPreservesAnOperatorsEnabledState(t *testing.T) {
 	s := openSeedTestStore(t)
-	if err := seedMCPTools(s); err != nil {
+	if err := seedMCPTools(testContext, s); err != nil {
 		t.Fatalf("first seed: %v", err)
 	}
 
 	enabledByOperator := getSeededTool(t, s, "playwright")
 	enabledByOperator.Enabled = true
-	if _, err := s.UpsertTool(enabledByOperator); err != nil {
+	if _, err := s.UpsertTool(testContext, enabledByOperator); err != nil {
 		t.Fatalf("enable playwright: %v", err)
 	}
 
-	if err := seedMCPTools(s); err != nil {
+	if err := seedMCPTools(testContext, s); err != nil {
 		t.Fatalf("second seed: %v", err)
 	}
 
@@ -199,13 +198,13 @@ func TestSeedingTwiceIsIdempotent(t *testing.T) {
 
 	rowsAfterPass := make([]int, 0, 2)
 	for pass := 1; pass <= 2; pass++ {
-		if err := seedLocalTools(s); err != nil {
+		if err := seedLocalTools(testContext, s); err != nil {
 			t.Fatalf("pass %d seedLocalTools: %v", pass, err)
 		}
-		if err := seedMCPTools(s); err != nil {
+		if err := seedMCPTools(testContext, s); err != nil {
 			t.Fatalf("pass %d seedMCPTools: %v", pass, err)
 		}
-		rows, err := s.ListTools(toolstore.ListFilter{})
+		rows, err := s.ListTools(testContext, ListFilter{})
 		if err != nil {
 			t.Fatalf("pass %d list tools: %v", pass, err)
 		}

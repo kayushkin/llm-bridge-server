@@ -37,10 +37,10 @@ func TestProvisionNamesTheToolItCouldNotFind(t *testing.T) {
 // A lookup that fails for a reason other than "no such tool" must be reported
 // as a lookup failure and must keep the underlying cause, so an operator can
 // tell a typo apart from a broken database. A closed store is the seam: the
-// driver answers with something that is not ErrNotFound.
+// pool answers with something that is not ErrNotFound.
 func TestProvisionSeparatesABrokenLookupFromAMissingTool(t *testing.T) {
 	s := openProvTest(t)
-	if err := s.Close(); err != nil {
+	if err := s.db.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
 	_, err := Provision(context.Background(), s, ProvisionRequest{Tools: []string{"brave"}}, nil)
@@ -56,7 +56,7 @@ func TestProvisionSeparatesABrokenLookupFromAMissingTool(t *testing.T) {
 // fixture's CLI tool also trips a later guard.
 func TestProvisionByNameNamesTheKindItRefused(t *testing.T) {
 	s := openProvTest(t)
-	if _, err := s.UpsertTool(&Tool{
+	if _, err := s.UpsertTool(testContext, &Tool{
 		Name: "ripgrep", Kind: KindCLI, CLI: &CLISpec{Command: "rg"}, Enabled: true,
 	}); err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -67,7 +67,7 @@ func TestProvisionByNameNamesTheKindItRefused(t *testing.T) {
 
 func TestProvisionNamesTheToolThatIsDisabled(t *testing.T) {
 	s := openProvTest(t)
-	if _, err := s.UpsertTool(&Tool{
+	if _, err := s.UpsertTool(testContext, &Tool{
 		Name: "x", Kind: KindMCP, MCP: &MCPSpec{Transport: "stdio", Command: "npx"}, Enabled: false,
 	}); err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -84,12 +84,12 @@ func TestProvisionNamesTheToolThatIsDisabled(t *testing.T) {
 // the suite notices.
 func TestProvisionRefusesAStoredTransportItCannotConfigure(t *testing.T) {
 	s := openProvTest(t)
-	if _, err := s.UpsertTool(&Tool{
+	if _, err := s.UpsertTool(testContext, &Tool{
 		Name: "odd", Kind: KindMCP, MCP: &MCPSpec{Transport: "stdio", Command: "npx"}, Enabled: true,
 	}); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	if _, err := s.DB().Exec(`UPDATE tools SET mcp_transport='grpc' WHERE name='odd'`); err != nil {
+	if _, err := s.db.Exec(`UPDATE tools SET mcp_transport='grpc' WHERE name='odd'`); err != nil {
 		t.Fatalf("age the row: %v", err)
 	}
 	_, err := Provision(context.Background(), s, ProvisionRequest{Tools: []string{"odd"}}, nil)
@@ -102,7 +102,7 @@ func TestProvisionRefusesAStoredTransportItCannotConfigure(t *testing.T) {
 // wording rather than by the fact that something failed.
 func TestResolveEnvRefusesToProvisionWithNoResolver(t *testing.T) {
 	s := openProvTest(t)
-	if _, err := s.UpsertTool(&Tool{
+	if _, err := s.UpsertTool(testContext, &Tool{
 		Name:        "brave",
 		Kind:        KindMCP,
 		EnvKeys:     []string{"BRAVE_API_KEY"},
@@ -118,7 +118,7 @@ func TestResolveEnvRefusesToProvisionWithNoResolver(t *testing.T) {
 
 func TestResolveEnvNamesTheEnvKeyWithNoCredentialsMapping(t *testing.T) {
 	s := openProvTest(t)
-	if _, err := s.UpsertTool(&Tool{
+	if _, err := s.UpsertTool(testContext, &Tool{
 		Name: "brave", Kind: KindMCP, EnvKeys: []string{"BRAVE_API_KEY"},
 		MCP: &MCPSpec{Transport: "stdio", Command: "npx"}, Enabled: true,
 	}); err != nil {
@@ -134,7 +134,7 @@ func TestResolveEnvNamesTheEnvKeyWithNoCredentialsMapping(t *testing.T) {
 // "provision failed".
 func TestResolveEnvKeepsTheResolversCauseAndNamesTheProvider(t *testing.T) {
 	s := openProvTest(t)
-	if _, err := s.UpsertTool(&Tool{
+	if _, err := s.UpsertTool(testContext, &Tool{
 		Name: "brave", Kind: KindMCP, EnvKeys: []string{"BRAVE_API_KEY"},
 		Credentials: map[string]string{"BRAVE_API_KEY": "brave"},
 		MCP:         &MCPSpec{Transport: "stdio", Command: "npx"}, Enabled: true,
@@ -170,7 +170,7 @@ func TestProvisionRefusesARequestNamingNeitherSource(t *testing.T) {
 // of exactly this pair.
 func TestProvisionSeparatesAnUnreadableOptInListFromAnEmptyOne(t *testing.T) {
 	s := openProvTest(t)
-	if err := s.Close(); err != nil {
+	if err := s.db.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
 	_, err := Provision(context.Background(), s, ProvisionRequest{InstanceID: "inst-1"}, nil)
@@ -187,17 +187,17 @@ func TestProvisionSeparatesAnUnreadableOptInListFromAnEmptyOne(t *testing.T) {
 // needs to know.
 func TestAnMCPRowAlwaysCarriesASpecEvenWhenEveryColumnIsBlank(t *testing.T) {
 	s := openProvTest(t)
-	if _, err := s.UpsertTool(&Tool{
+	if _, err := s.UpsertTool(testContext, &Tool{
 		Name: "blank", Kind: KindMCP, MCP: &MCPSpec{Transport: "stdio", Command: "npx"}, Enabled: true,
 	}); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	if _, err := s.DB().Exec(
+	if _, err := s.db.Exec(
 		`UPDATE tools SET mcp_transport='', mcp_command='', mcp_args='', mcp_url='' WHERE name='blank'`,
 	); err != nil {
 		t.Fatalf("blank the mcp columns: %v", err)
 	}
-	tool, err := s.GetToolByName("blank")
+	tool, err := s.GetToolByName(testContext, "blank")
 	if err != nil {
 		t.Fatalf("lookup: %v", err)
 	}

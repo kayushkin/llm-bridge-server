@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -41,7 +40,7 @@ func decodeObserved(t *testing.T, body []byte) ObservedHarnessToolsResponse {
 
 func TestObservedCreatesAnUnknownToolSwitchedOffAndUnreviewed(t *testing.T) {
 	srv, s := newServer(t)
-	if _, err := s.UpsertTool(&Tool{Name: "claude_code.Read", Kind: KindHarness, Harness: "claude_code", HarnessToolName: "Read", Enabled: true, Tags: []string{"read-only"}}); err != nil {
+	if _, err := s.UpsertTool(testContext, &Tool{Name: "claude_code.Read", Kind: KindHarness, Harness: "claude_code", HarnessToolName: "Read", Enabled: true, Tags: []string{"read-only"}}); err != nil {
 		t.Fatal(err)
 	}
 	status, body := postJSON(t, "POST", srv.URL+"/harness-tools/observed", `{"harness":"claude_code","tool_names":["Read","Frobnicate"]}`)
@@ -52,7 +51,7 @@ func TestObservedCreatesAnUnknownToolSwitchedOffAndUnreviewed(t *testing.T) {
 	if !reflect.DeepEqual(response.Created, []string{"Frobnicate"}) || response.Seen != 2 {
 		t.Fatalf("response %+v", response)
 	}
-	created, err := s.GetToolByName("claude_code.Frobnicate")
+	created, err := s.GetToolByName(testContext, "claude_code.Frobnicate")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +64,7 @@ func TestObservedCreatesAnUnknownToolSwitchedOffAndUnreviewed(t *testing.T) {
 	if !strings.Contains(created.Description, "claude_code") || !strings.Contains(created.Description, "nobody has reviewed") {
 		t.Fatalf("description does not say who reported it and that nobody reviewed it: %q", created.Description)
 	}
-	read, err := s.GetToolByName("claude_code.Read")
+	read, err := s.GetToolByName(testContext, "claude_code.Read")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,10 +82,10 @@ func TestObservedAgainOnlyMovesLastSeenAt(t *testing.T) {
 	srv, s := newServer(t)
 	postJSON(t, "POST", srv.URL+"/harness-tools/observed", `{"harness":"claude_code","tool_names":["Frobnicate"]}`)
 	// Age the row so a second report is visibly newer.
-	if _, err := s.DB().Exec(`UPDATE tools SET last_seen_at = 100, updated_at = 100 WHERE name = 'claude_code.Frobnicate'`); err != nil {
+	if _, err := s.db.Exec(`UPDATE tools SET last_seen_at = 100, updated_at = 100 WHERE name = 'claude_code.Frobnicate'`); err != nil {
 		t.Fatal(err)
 	}
-	before := dumpRows(t, s.DB(), `SELECT * FROM tools WHERE name = 'claude_code.Frobnicate'`)
+	before := dumpRows(t, s.db, `SELECT * FROM tools WHERE name = 'claude_code.Frobnicate'`)
 
 	status, body := postJSON(t, "POST", srv.URL+"/harness-tools/observed", `{"harness":"claude_code","tool_names":["Frobnicate","Frobnicate"]}`)
 	if status != 200 {
@@ -96,9 +95,9 @@ func TestObservedAgainOnlyMovesLastSeenAt(t *testing.T) {
 	if len(response.Created) != 0 || response.Seen != 1 {
 		t.Fatalf("response %+v", response)
 	}
-	after := dumpRows(t, s.DB(), `SELECT * FROM tools WHERE name = 'claude_code.Frobnicate'`)
+	after := dumpRows(t, s.db, `SELECT * FROM tools WHERE name = 'claude_code.Frobnicate'`)
 	var lastSeenAt int64
-	s.DB().QueryRow(`SELECT last_seen_at FROM tools WHERE name = 'claude_code.Frobnicate'`).Scan(&lastSeenAt)
+	s.db.QueryRow(`SELECT last_seen_at FROM tools WHERE name = 'claude_code.Frobnicate'`).Scan(&lastSeenAt)
 	if lastSeenAt <= 100 {
 		t.Fatalf("last_seen_at did not move: %d", lastSeenAt)
 	}
@@ -145,7 +144,7 @@ func TestObservedConcurrentFirstReportsOfOneNameMakeOneRowAndAllSucceed(t *testi
 		t.Fatalf("created %d rows in total across reporters, want 3", totalCreated)
 	}
 	var rows int
-	s.DB().QueryRow(`SELECT count(*) FROM tools WHERE kind = 'harness'`).Scan(&rows)
+	s.db.QueryRow(`SELECT count(*) FROM tools WHERE kind = 'harness'`).Scan(&rows)
 	if rows != 3 {
 		t.Fatalf("%d harness rows, want 3", rows)
 	}
@@ -172,7 +171,7 @@ func TestObservedRefusesBadReports(t *testing.T) {
 		}
 	}
 	var rows int
-	s.DB().QueryRow(`SELECT count(*) FROM tools`).Scan(&rows)
+	s.db.QueryRow(`SELECT count(*) FROM tools`).Scan(&rows)
 	if rows != 0 {
 		t.Fatalf("a refused report wrote %d rows", rows)
 	}
@@ -180,7 +179,7 @@ func TestObservedRefusesBadReports(t *testing.T) {
 
 func TestObservedRefusesANameAnotherKindHolds(t *testing.T) {
 	srv, s := newServer(t)
-	if _, err := s.UpsertTool(&Tool{Name: "codex.thing", Kind: KindLocal, Local: &LocalSpec{Symbol: "x"}}); err != nil {
+	if _, err := s.UpsertTool(testContext, &Tool{Name: "codex.thing", Kind: KindLocal, Local: &LocalSpec{Symbol: "x"}}); err != nil {
 		t.Fatal(err)
 	}
 	status, body := postJSON(t, "POST", srv.URL+"/harness-tools/observed", `{"harness":"codex","tool_names":["thing"]}`)
@@ -192,7 +191,7 @@ func TestObservedRefusesANameAnotherKindHolds(t *testing.T) {
 func TestPatchToolChangesOnlyTheFieldsSent(t *testing.T) {
 	srv, s := newServer(t)
 	postJSON(t, "POST", srv.URL+"/harness-tools/observed", `{"harness":"claude_code","tool_names":["Frobnicate"]}`)
-	tool, err := s.GetToolByName("claude_code.Frobnicate")
+	tool, err := s.GetToolByName(testContext, "claude_code.Frobnicate")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +224,7 @@ func TestPatchToolChangesOnlyTheFieldsSent(t *testing.T) {
 	if status, _ := postJSON(t, "PATCH", srv.URL+"/tools/99999", `{"enabled":false}`); status != 404 {
 		t.Errorf("missing tool: status %d, want 404", status)
 	}
-	after, _ := s.GetTool(tool.ID)
+	after, _ := s.GetTool(testContext, tool.ID)
 	if after.Description != "Frobnicates." || !after.Enabled || !reflect.DeepEqual(after.Tags, []string{"effects", "runs-commands"}) {
 		t.Fatalf("a refused patch changed the row: %+v", after)
 	}
@@ -234,15 +233,15 @@ func TestPatchToolChangesOnlyTheFieldsSent(t *testing.T) {
 func TestListNotSeenSince(t *testing.T) {
 	srv, s := newServer(t)
 	for _, name := range []string{"Old", "Recent", "Never"} {
-		if _, err := s.UpsertTool(&Tool{Name: "claude_code." + name, Kind: KindHarness, Harness: "claude_code", HarnessToolName: name}); err != nil {
+		if _, err := s.UpsertTool(testContext, &Tool{Name: "claude_code." + name, Kind: KindHarness, Harness: "claude_code", HarnessToolName: name}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := s.UpsertTool(&Tool{Name: "end_turn", Kind: KindLocal, Local: &LocalSpec{Symbol: "end_turn"}}); err != nil {
+	if _, err := s.UpsertTool(testContext, &Tool{Name: "end_turn", Kind: KindLocal, Local: &LocalSpec{Symbol: "end_turn"}}); err != nil {
 		t.Fatal(err)
 	}
-	s.DB().Exec(`UPDATE tools SET last_seen_at = 1000 WHERE name = 'claude_code.Old'`)
-	s.DB().Exec(`UPDATE tools SET last_seen_at = 5000 WHERE name = 'claude_code.Recent'`)
+	s.db.Exec(`UPDATE tools SET last_seen_at = 1000 WHERE name = 'claude_code.Old'`)
+	s.db.Exec(`UPDATE tools SET last_seen_at = 5000 WHERE name = 'claude_code.Recent'`)
 
 	status, body := postJSON(t, "GET", srv.URL+"/tools?kind=harness&not_seen_since=2000", "")
 	if status != 200 {
@@ -268,55 +267,17 @@ func TestListNotSeenSince(t *testing.T) {
 func TestUpsertNeverTouchesLastSeenAt(t *testing.T) {
 	_, s := newServer(t)
 	tool := &Tool{Name: "claude_code.Read", Kind: KindHarness, Harness: "claude_code", HarnessToolName: "Read"}
-	if _, err := s.UpsertTool(tool); err != nil {
+	if _, err := s.UpsertTool(testContext, tool); err != nil {
 		t.Fatal(err)
 	}
-	s.DB().Exec(`UPDATE tools SET last_seen_at = 1234 WHERE id = ?`, tool.ID)
+	s.db.Exec(`UPDATE tools SET last_seen_at = 1234 WHERE id = $1`, tool.ID)
 	tool.LastSeenAt = 9999
 	tool.Description = "changed"
-	if _, err := s.UpsertTool(tool); err != nil {
+	if _, err := s.UpsertTool(testContext, tool); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := s.GetTool(tool.ID)
+	got, _ := s.GetTool(testContext, tool.ID)
 	if got.LastSeenAt != 1234 {
 		t.Fatalf("upsert wrote last_seen_at: %d", got.LastSeenAt)
-	}
-}
-
-// A database made after the harness kind but before last_seen_at gets the
-// column on open, defined exactly as schema.sql defines it for a new one.
-func TestOpenAddsLastSeenAtAsSchemaDefinesIt(t *testing.T) {
-	dataDir := filepath.Join(t.TempDir(), "ts")
-	s, err := Open(dataDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	fresh := dumpRows(t, s.DB(), `SELECT * FROM pragma_table_info('tools') WHERE name = 'last_seen_at'`)
-	if len(fresh) != 1 {
-		t.Fatalf("a new database has no last_seen_at: %v", fresh)
-	}
-	tool := &Tool{Name: "claude_code.Read", Kind: KindHarness, Harness: "claude_code", HarnessToolName: "Read", Enabled: true}
-	if _, err := s.UpsertTool(tool); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.DB().Exec(`ALTER TABLE tools DROP COLUMN last_seen_at`); err != nil {
-		t.Fatal(err)
-	}
-	s.Close()
-
-	s, err = Open(dataDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	migrated := dumpRows(t, s.DB(), `SELECT * FROM pragma_table_info('tools') WHERE name = 'last_seen_at'`)
-	// cid differs: the added column goes last.
-	strip := func(rows []string) string { return rows[0][strings.Index(rows[0], " "):] }
-	if len(migrated) != 1 || strip(migrated) != strip(fresh) {
-		t.Fatalf("migrated column %v, fresh %v", migrated, fresh)
-	}
-	got, err := s.GetTool(tool.ID)
-	if err != nil || got.LastSeenAt != 0 || !got.Enabled {
-		t.Fatalf("row after migration: %+v, %v", got, err)
 	}
 }

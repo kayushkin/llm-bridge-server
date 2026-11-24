@@ -2,19 +2,13 @@ package toolstore
 
 import (
 	"encoding/json"
-	"path/filepath"
 	"strings"
 	"testing"
 )
 
 func openTest(t *testing.T) *Store {
 	t.Helper()
-	dir := t.TempDir()
-	s, err := Open(filepath.Join(dir, "ts"))
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(func() { s.Close() })
+	s := newTestStore(t)
 	return s
 }
 
@@ -34,7 +28,7 @@ func TestUpsertGetMCP(t *testing.T) {
 		},
 		Enabled: true,
 	}
-	inserted, err := s.UpsertTool(in)
+	inserted, err := s.UpsertTool(testContext, in)
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
@@ -45,7 +39,7 @@ func TestUpsertGetMCP(t *testing.T) {
 		t.Fatal("ID not set after insert")
 	}
 
-	got, err := s.GetToolByName("brave-search")
+	got, err := s.GetToolByName(testContext, "brave-search")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -61,14 +55,14 @@ func TestUpsertGetMCP(t *testing.T) {
 
 	// Update path
 	in.Description = "updated"
-	inserted, err = s.UpsertTool(in)
+	inserted, err = s.UpsertTool(testContext, in)
 	if err != nil {
 		t.Fatalf("re-upsert: %v", err)
 	}
 	if inserted {
 		t.Fatal("expected update on second upsert")
 	}
-	got, _ = s.GetToolByName("brave-search")
+	got, _ = s.GetToolByName(testContext, "brave-search")
 	if got.Description != "updated" {
 		t.Fatalf("update did not stick: %q", got.Description)
 	}
@@ -89,10 +83,10 @@ func TestUpsertCLIWithSchema(t *testing.T) {
 		},
 		Enabled: true,
 	}
-	if _, err := s.UpsertTool(in); err != nil {
+	if _, err := s.UpsertTool(testContext, in); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	got, err := s.GetTool(in.ID)
+	got, err := s.GetTool(testContext, in.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -113,10 +107,10 @@ func TestUpsertLocal(t *testing.T) {
 		Local:       &LocalSpec{Symbol: "agentkit/tools.Shell"},
 		Enabled:     true,
 	}
-	if _, err := s.UpsertTool(in); err != nil {
+	if _, err := s.UpsertTool(testContext, in); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	got, err := s.GetToolByName("shell")
+	got, err := s.GetToolByName(testContext, "shell")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -125,14 +119,14 @@ func TestUpsertLocal(t *testing.T) {
 	}
 }
 
-// The kind check is validate's, not the database's. schema.sql also carries
-// CHECK (kind IN ('mcp', 'cli', 'local')), so a test that asserts only "the
+// The kind check is validate's, not the database's. The migration also carries
+// CHECK (kind IN (...)), so a test that asserts only "the
 // upsert failed" stays green with validate's own check deleted — the driver
 // answers instead, several layers later and with a constraint error the caller
 // cannot act on. Naming validate's wording is what tells the two apart.
 func TestValidationRejectsBadKind(t *testing.T) {
 	s := openTest(t)
-	_, err := s.UpsertTool(&Tool{Name: "x", Kind: "bogus"})
+	_, err := s.UpsertTool(testContext, &Tool{Name: "x", Kind: "bogus"})
 	if err == nil {
 		t.Fatal("expected validation error for unknown kind")
 	}
@@ -161,7 +155,7 @@ func TestValidationRejectsMissingFields(t *testing.T) {
 		{"missing name", &Tool{Kind: KindLocal, Local: &LocalSpec{Symbol: "x"}}, "tool: name is required"},
 	}
 	for _, c := range cases {
-		_, err := s.UpsertTool(c.t)
+		_, err := s.UpsertTool(testContext, c.t)
 		if err == nil {
 			t.Errorf("%s: expected validation error", c.desc)
 			continue
@@ -176,7 +170,7 @@ func TestListFilters(t *testing.T) {
 	s := openTest(t)
 	must := func(t *testing.T, in *Tool) {
 		t.Helper()
-		if _, err := s.UpsertTool(in); err != nil {
+		if _, err := s.UpsertTool(testContext, in); err != nil {
 			t.Fatalf("upsert %s: %v", in.Name, err)
 		}
 	}
@@ -184,27 +178,27 @@ func TestListFilters(t *testing.T) {
 	must(t, &Tool{Name: "grep", Kind: KindLocal, Local: &LocalSpec{Symbol: "x.Grep"}, Tags: []string{"core", "search"}, Enabled: true})
 	must(t, &Tool{Name: "brave-search", Kind: KindMCP, MCP: &MCPSpec{Transport: "stdio", Command: "npx"}, Tags: []string{"search"}, Enabled: false})
 
-	all, err := s.ListTools(ListFilter{})
+	all, err := s.ListTools(testContext, ListFilter{})
 	if err != nil || len(all) != 3 {
 		t.Fatalf("ListTools all: %v len=%d", err, len(all))
 	}
 
-	enabled, _ := s.ListTools(ListFilter{EnabledOnly: true})
+	enabled, _ := s.ListTools(testContext, ListFilter{EnabledOnly: true})
 	if len(enabled) != 2 {
 		t.Fatalf("EnabledOnly: want 2 got %d", len(enabled))
 	}
 
-	mcp, _ := s.ListTools(ListFilter{Kind: KindMCP})
+	mcp, _ := s.ListTools(testContext, ListFilter{Kind: KindMCP})
 	if len(mcp) != 1 || mcp[0].Name != "brave-search" {
 		t.Fatalf("Kind=mcp: %+v", mcp)
 	}
 
-	tagged, _ := s.ListTools(ListFilter{Tag: "search"})
+	tagged, _ := s.ListTools(testContext, ListFilter{Tag: "search"})
 	if len(tagged) != 2 {
 		t.Fatalf("Tag=search: want 2 got %d", len(tagged))
 	}
 
-	q, _ := s.ListTools(ListFilter{Query: "brave"})
+	q, _ := s.ListTools(testContext, ListFilter{Query: "brave"})
 	if len(q) != 1 {
 		t.Fatalf("Query=brave: want 1 got %d", len(q))
 	}
@@ -213,23 +207,23 @@ func TestListFilters(t *testing.T) {
 func TestDeleteAndSetEnabled(t *testing.T) {
 	s := openTest(t)
 	in := &Tool{Name: "shell", Kind: KindLocal, Local: &LocalSpec{Symbol: "x.Shell"}, Enabled: true}
-	if _, err := s.UpsertTool(in); err != nil {
+	if _, err := s.UpsertTool(testContext, in); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	if err := s.SetEnabled(in.ID, false); err != nil {
+	if err := s.SetEnabled(testContext, in.ID, false); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
-	got, _ := s.GetTool(in.ID)
+	got, _ := s.GetTool(testContext, in.ID)
 	if got.Enabled {
 		t.Fatal("expected disabled")
 	}
-	if err := s.DeleteTool(in.ID); err != nil {
+	if err := s.DeleteTool(testContext, in.ID); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	if _, err := s.GetTool(in.ID); err != ErrNotFound {
+	if _, err := s.GetTool(testContext, in.ID); err != ErrNotFound {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
-	if err := s.DeleteTool(in.ID); err != ErrNotFound {
+	if err := s.DeleteTool(testContext, in.ID); err != ErrNotFound {
 		t.Fatalf("expected ErrNotFound on second delete, got %v", err)
 	}
 }

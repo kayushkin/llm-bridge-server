@@ -18,7 +18,7 @@ type InvokeLocalFunc func(ctx context.Context, name, input string) (string, erro
 // discovery on GET /locals.
 type ListLocalsFunc func() []LocalDescriptor
 
-// HandlerOptions wires optional callbacks into RegisterHandlers. Any nil field
+// HandlerOptions wires optional callbacks into NewHandlers. Any nil field
 // disables the corresponding endpoint(s) — the lib never assumes a specific
 // runtime is in-process.
 type HandlerOptions struct {
@@ -27,39 +27,18 @@ type HandlerOptions struct {
 	ResolveCredential ResolveCredentialFunc // POST /provision (env-key resolution)
 }
 
-// RegisterHandlers wires the HTTP API onto mux.
-func RegisterHandlers(mux *http.ServeMux, s *Store, opts HandlerOptions) {
-	h := &handler{s: s, opts: opts}
-
-	mux.HandleFunc("GET /health", h.health)
-	mux.HandleFunc("GET /kinds", h.listKinds)
-
-	mux.HandleFunc("GET /tools", h.listTools)
-	mux.HandleFunc("POST /tools", h.upsertTool)
-	mux.HandleFunc("GET /tools/{id}", h.getTool)
-	mux.HandleFunc("PATCH /tools/{id}", h.patchTool)
-	mux.HandleFunc("DELETE /tools/{id}", h.deleteTool)
-	mux.HandleFunc("POST /tools/{id}/enable", h.enableTool)
-	mux.HandleFunc("POST /tools/{id}/disable", h.disableTool)
-
-	mux.HandleFunc("GET /tools/by-name/{name}", h.getToolByName)
-	mux.HandleFunc("GET /tools/by-name/{name}/spec", h.specByName)
-	mux.HandleFunc("POST /tools/by-name/{name}/invoke", h.invokeByName)
-
-	mux.HandleFunc("POST /harness-tools/observed", h.recordObservedHarnessTools)
-
-	mux.HandleFunc("GET /locals", h.listLocals)
-	mux.HandleFunc("POST /provision", h.provision)
-
-	mux.HandleFunc("GET /instances/{id}/tools", h.listInstanceTools)
-	mux.HandleFunc("POST /instances/{id}/tools/by-name/{name}", h.enableForInstance)
-	mux.HandleFunc("DELETE /instances/{id}/tools/by-name/{name}", h.disableForInstance)
-	mux.HandleFunc("GET /tools/by-name/{name}/instances", h.listInstancesForTool)
-}
-
-type handler struct {
+// Handlers answers the store's HTTP routes. The server that mounts the store
+// registers each method under its own pattern, behind its own prefix and
+// access rules; the paths in the method comments are relative to that prefix.
+type Handlers struct {
 	s    *Store
 	opts HandlerOptions
+}
+
+// NewHandlers returns the route handlers of store, with the callbacks in
+// options.
+func NewHandlers(store *Store, options HandlerOptions) *Handlers {
+	return &Handlers{s: store, opts: options}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -72,11 +51,13 @@ func writeErr(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
-func (h *handler) health(w http.ResponseWriter, _ *http.Request) {
+// Health answers GET /health.
+func (h *Handlers) Health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, map[string]string{"status": "ok"})
 }
 
-func (h *handler) listKinds(w http.ResponseWriter, _ *http.Request) {
+// ListKinds answers GET /kinds.
+func (h *Handlers) ListKinds(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, Kinds)
 }
 
@@ -90,7 +71,8 @@ func refuseHarnessTool(w http.ResponseWriter, t *Tool, route string) bool {
 	return true
 }
 
-func (h *handler) listTools(w http.ResponseWriter, r *http.Request) {
+// ListTools answers GET /tools.
+func (h *Handlers) ListTools(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	f := ListFilter{
 		Kind:        Kind(q.Get("kind")),
@@ -119,7 +101,7 @@ func (h *handler) listTools(w http.ResponseWriter, r *http.Request) {
 		}
 		f.Limit = n
 	}
-	tools, err := h.s.ListTools(f)
+	tools, err := h.s.ListTools(r.Context(), f)
 	if errors.Is(err, ErrNotSeenSinceNeedsHarnessKind) {
 		writeErr(w, 400, err.Error())
 		return
@@ -134,7 +116,8 @@ func (h *handler) listTools(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, tools)
 }
 
-func (h *handler) recordObservedHarnessTools(w http.ResponseWriter, r *http.Request) {
+// RecordObservedHarnessTools answers POST /harness-tools/observed.
+func (h *Handlers) RecordObservedHarnessTools(w http.ResponseWriter, r *http.Request) {
 	var request ObservedHarnessToolsRequest
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
@@ -155,10 +138,10 @@ func (h *handler) recordObservedHarnessTools(w http.ResponseWriter, r *http.Requ
 	}
 }
 
-// patchTool changes any of tags, description and enabled on one tool. An
-// unknown field, a null value or an empty body is a 400, so a misspelled
+// PatchTool answers PATCH /tools/{id}: it changes any of tags, description
+// and enabled on one tool. An unknown field, a null value or an empty body is a 400, so a misspelled
 // field is never taken for "change nothing".
-func (h *handler) patchTool(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) PatchTool(w http.ResponseWriter, r *http.Request) {
 	id, err := parseID(r.PathValue("id"))
 	if err != nil {
 		writeErr(w, 400, err.Error())
@@ -195,7 +178,7 @@ func (h *handler) patchTool(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	tool, err := h.s.PatchTool(id, patch)
+	tool, err := h.s.PatchTool(r.Context(), id, patch)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		writeErr(w, 404, "tool not found")
@@ -208,13 +191,14 @@ func (h *handler) patchTool(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *handler) upsertTool(w http.ResponseWriter, r *http.Request) {
+// UpsertTool answers POST /tools.
+func (h *Handlers) UpsertTool(w http.ResponseWriter, r *http.Request) {
 	var t Tool
 	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
 		writeErr(w, 400, "invalid json: "+err.Error())
 		return
 	}
-	inserted, err := h.s.UpsertTool(&t)
+	inserted, err := h.s.UpsertTool(r.Context(), &t)
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
@@ -226,13 +210,14 @@ func (h *handler) upsertTool(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, status, t)
 }
 
-func (h *handler) getTool(w http.ResponseWriter, r *http.Request) {
+// GetTool answers GET /tools/{id}.
+func (h *Handlers) GetTool(w http.ResponseWriter, r *http.Request) {
 	id, err := parseID(r.PathValue("id"))
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	t, err := h.s.GetTool(id)
+	t, err := h.s.GetTool(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			writeErr(w, 404, "tool not found")
@@ -244,13 +229,14 @@ func (h *handler) getTool(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, t)
 }
 
-func (h *handler) getToolByName(w http.ResponseWriter, r *http.Request) {
+// GetToolByName answers GET /tools/by-name/{name}.
+func (h *Handlers) GetToolByName(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if name == "" {
 		writeErr(w, 400, "name required")
 		return
 	}
-	t, err := h.s.GetToolByName(name)
+	t, err := h.s.GetToolByName(r.Context(), name)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			writeErr(w, 404, "tool not found")
@@ -262,13 +248,14 @@ func (h *handler) getToolByName(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, t)
 }
 
-func (h *handler) deleteTool(w http.ResponseWriter, r *http.Request) {
+// DeleteTool answers DELETE /tools/{id}.
+func (h *Handlers) DeleteTool(w http.ResponseWriter, r *http.Request) {
 	id, err := parseID(r.PathValue("id"))
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	if err := h.s.DeleteTool(id); err != nil {
+	if err := h.s.DeleteTool(r.Context(), id); err != nil {
 		if errors.Is(err, ErrNotFound) {
 			writeErr(w, 404, "tool not found")
 			return
@@ -279,21 +266,23 @@ func (h *handler) deleteTool(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"status": "deleted"})
 }
 
-func (h *handler) enableTool(w http.ResponseWriter, r *http.Request) {
+// EnableTool answers POST /tools/{id}/enable.
+func (h *Handlers) EnableTool(w http.ResponseWriter, r *http.Request) {
 	h.setEnabled(w, r, true)
 }
 
-func (h *handler) disableTool(w http.ResponseWriter, r *http.Request) {
+// DisableTool answers POST /tools/{id}/disable.
+func (h *Handlers) DisableTool(w http.ResponseWriter, r *http.Request) {
 	h.setEnabled(w, r, false)
 }
 
-func (h *handler) setEnabled(w http.ResponseWriter, r *http.Request, v bool) {
+func (h *Handlers) setEnabled(w http.ResponseWriter, r *http.Request, v bool) {
 	id, err := parseID(r.PathValue("id"))
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	if err := h.s.SetEnabled(id, v); err != nil {
+	if err := h.s.SetEnabled(r.Context(), id, v); err != nil {
 		if errors.Is(err, ErrNotFound) {
 			writeErr(w, 404, "tool not found")
 			return
@@ -304,13 +293,14 @@ func (h *handler) setEnabled(w http.ResponseWriter, r *http.Request, v bool) {
 	writeJSON(w, 200, map[string]any{"id": id, "enabled": v})
 }
 
-func (h *handler) invokeByName(w http.ResponseWriter, r *http.Request) {
+// InvokeByName answers POST /tools/by-name/{name}/invoke.
+func (h *Handlers) InvokeByName(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if name == "" {
 		writeErr(w, 400, "name required")
 		return
 	}
-	t, err := h.s.GetToolByName(name)
+	t, err := h.s.GetToolByName(r.Context(), name)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			writeErr(w, 404, "tool not found")
@@ -357,13 +347,14 @@ func (h *handler) invokeByName(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *handler) specByName(w http.ResponseWriter, r *http.Request) {
+// SpecByName answers GET /tools/by-name/{name}/spec.
+func (h *Handlers) SpecByName(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if name == "" {
 		writeErr(w, 400, "name required")
 		return
 	}
-	t, err := h.s.GetToolByName(name)
+	t, err := h.s.GetToolByName(r.Context(), name)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			writeErr(w, 404, "tool not found")
@@ -387,7 +378,8 @@ func (h *handler) specByName(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *handler) provision(w http.ResponseWriter, r *http.Request) {
+// Provision answers POST /provision.
+func (h *Handlers) Provision(w http.ResponseWriter, r *http.Request) {
 	var req ProvisionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, "invalid json: "+err.Error())
@@ -401,13 +393,14 @@ func (h *handler) provision(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, resp)
 }
 
-func (h *handler) listInstanceTools(w http.ResponseWriter, r *http.Request) {
+// ListInstanceTools answers GET /instances/{id}/tools.
+func (h *Handlers) ListInstanceTools(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
 		writeErr(w, 400, "instance id required")
 		return
 	}
-	tools, err := h.s.ListInstanceTools(id)
+	tools, err := h.s.ListInstanceTools(r.Context(), id)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -418,10 +411,11 @@ func (h *handler) listInstanceTools(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, tools)
 }
 
-func (h *handler) enableForInstance(w http.ResponseWriter, r *http.Request) {
+// EnableForInstance answers POST /instances/{id}/tools/by-name/{name}.
+func (h *Handlers) EnableForInstance(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	name := r.PathValue("name")
-	err := h.s.EnableForInstance(id, name)
+	err := h.s.EnableForInstance(r.Context(), id, name)
 	switch {
 	case err == nil:
 		writeJSON(w, 200, map[string]string{"instance_id": id, "tool": name, "status": "enabled"})
@@ -434,10 +428,11 @@ func (h *handler) enableForInstance(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *handler) disableForInstance(w http.ResponseWriter, r *http.Request) {
+// DisableForInstance answers DELETE /instances/{id}/tools/by-name/{name}.
+func (h *Handlers) DisableForInstance(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	name := r.PathValue("name")
-	err := h.s.DisableForInstance(id, name)
+	err := h.s.DisableForInstance(r.Context(), id, name)
 	switch {
 	case err == nil:
 		writeJSON(w, 200, map[string]string{"instance_id": id, "tool": name, "status": "disabled"})
@@ -448,9 +443,10 @@ func (h *handler) disableForInstance(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *handler) listInstancesForTool(w http.ResponseWriter, r *http.Request) {
+// ListInstancesForTool answers GET /tools/by-name/{name}/instances.
+func (h *Handlers) ListInstancesForTool(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	ids, err := h.s.ListInstancesForTool(name)
+	ids, err := h.s.ListInstancesForTool(r.Context(), name)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			writeErr(w, 404, "tool not found")
@@ -465,7 +461,8 @@ func (h *handler) listInstancesForTool(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, ids)
 }
 
-func (h *handler) listLocals(w http.ResponseWriter, _ *http.Request) {
+// ListLocals answers GET /locals.
+func (h *Handlers) ListLocals(w http.ResponseWriter, _ *http.Request) {
 	if h.opts.ListLocals == nil {
 		writeJSON(w, 200, []LocalDescriptor{})
 		return
@@ -494,7 +491,6 @@ func parseID(s string) (int64, error) {
 // "active", which read as if it did. auth-store refreshes an expired OAuth
 // token only when the credential's refresh_mode is "server" and it is not
 // leased; in every other case it answers 200 with the token it has stored and
-// declares the risk in two response fields, expires_at and leased. The
-// resolver in cmd/tool-store reads neither, so the value handed back here can
-// be one auth-store already knows may be stale.
+// declares the risk in two response fields, expires_at and leased. A resolver
+// that reads neither hands back a value auth-store already knows may be stale.
 type ResolveCredentialFunc func(ctx context.Context, provider string) (string, error)

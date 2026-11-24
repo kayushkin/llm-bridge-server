@@ -2,11 +2,14 @@ package toolstore
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 )
 
 // TagUnreviewed marks a harness tool that a harness reported and nobody has
@@ -73,63 +76,67 @@ func unreviewedHarnessToolDescription(harness string, reportedAt int64) string {
 // tagged unreviewed, so a tool nobody registered is switched off everywhere
 // until a person reviews it. One write transaction covers the whole report,
 // and each insert is ON CONFLICT DO NOTHING, so two sessions reporting the
-// same new name at once create one row and both succeed.
+// same new name at once create one row and both succeed: the second insert
+// waits for the first transaction and then does nothing.
 func (s *Store) RecordObservedHarnessTools(ctx context.Context, request ObservedHarnessToolsRequest) (ObservedHarnessToolsResponse, error) {
 	if err := validateObservedHarnessTools(request); err != nil {
 		return ObservedHarnessToolsResponse{}, err
 	}
 	reportedAt := now()
-	transaction, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return ObservedHarnessToolsResponse{}, err
-	}
-	defer transaction.Rollback()
-
 	response := ObservedHarnessToolsResponse{Created: []string{}}
-	alreadyRecorded := map[string]bool{}
-	tags := encodeStrings([]string{TagUnreviewed})
-	for _, harnessToolName := range request.ToolNames {
-		if alreadyRecorded[harnessToolName] {
-			continue
+	err := postgresstorage.InTransaction(ctx, s.db, func(transaction *sql.Tx) error {
+		// Reports take turns, as SQLite's write lock made them: two reports
+		// naming the same new tools in different orders would otherwise wait
+		// on each other's rows, and Postgres would fail one as a deadlock.
+		if _, err := transaction.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('tools.record_observed_harness_tools'))`); err != nil {
+			return fmt.Errorf("waiting for another report of harness tools: %w", err)
 		}
-		alreadyRecorded[harnessToolName] = true
-		rowName := HarnessToolRowName(request.Harness, harnessToolName)
+		alreadyRecorded := map[string]bool{}
+		tags := encodeStrings([]string{TagUnreviewed})
+		for _, harnessToolName := range request.ToolNames {
+			if alreadyRecorded[harnessToolName] {
+				continue
+			}
+			alreadyRecorded[harnessToolName] = true
+			rowName := HarnessToolRowName(request.Harness, harnessToolName)
 
-		inserted, err := transaction.ExecContext(ctx, `
-			INSERT INTO tools (name, description, kind, tags, harness, harness_tool_name, last_seen_at, enabled, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
-			ON CONFLICT (name) DO NOTHING
-		`, rowName, unreviewedHarnessToolDescription(request.Harness, reportedAt), string(KindHarness), tags,
-			request.Harness, harnessToolName, reportedAt, reportedAt, reportedAt)
-		if err != nil {
-			return ObservedHarnessToolsResponse{}, fmt.Errorf("create %s: %w", rowName, err)
-		}
-		insertedCount, err := inserted.RowsAffected()
-		if err != nil {
-			return ObservedHarnessToolsResponse{}, err
-		}
-		if insertedCount == 1 {
-			response.Created = append(response.Created, harnessToolName)
+			inserted, err := transaction.ExecContext(ctx, `
+				INSERT INTO tools (name, description, kind, tags, harness, harness_tool_name, last_seen_at, enabled, created_at, updated_at)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, FALSE, $8, $9)
+				ON CONFLICT (name) DO NOTHING
+			`, rowName, unreviewedHarnessToolDescription(request.Harness, reportedAt), string(KindHarness), tags,
+				request.Harness, harnessToolName, reportedAt, reportedAt, reportedAt)
+			if err != nil {
+				return fmt.Errorf("create %s: %w", rowName, err)
+			}
+			insertedCount, err := inserted.RowsAffected()
+			if err != nil {
+				return err
+			}
+			if insertedCount == 1 {
+				response.Created = append(response.Created, harnessToolName)
+				response.Seen++
+				continue
+			}
+
+			updated, err := transaction.ExecContext(ctx,
+				`UPDATE tools SET last_seen_at = $1 WHERE name = $2 AND kind = $3`,
+				reportedAt, rowName, string(KindHarness))
+			if err != nil {
+				return fmt.Errorf("mark %s seen: %w", rowName, err)
+			}
+			updatedCount, err := updated.RowsAffected()
+			if err != nil {
+				return err
+			}
+			if updatedCount != 1 {
+				return fmt.Errorf("%w: %s", ErrObservedNameHeldByAnotherKind, rowName)
+			}
 			response.Seen++
-			continue
 		}
-
-		updated, err := transaction.ExecContext(ctx,
-			`UPDATE tools SET last_seen_at = ? WHERE name = ? AND kind = ?`,
-			reportedAt, rowName, string(KindHarness))
-		if err != nil {
-			return ObservedHarnessToolsResponse{}, fmt.Errorf("mark %s seen: %w", rowName, err)
-		}
-		updatedCount, err := updated.RowsAffected()
-		if err != nil {
-			return ObservedHarnessToolsResponse{}, err
-		}
-		if updatedCount != 1 {
-			return ObservedHarnessToolsResponse{}, fmt.Errorf("%w: %s", ErrObservedNameHeldByAnotherKind, rowName)
-		}
-		response.Seen++
-	}
-	if err := transaction.Commit(); err != nil {
+		return nil
+	})
+	if err != nil {
 		return ObservedHarnessToolsResponse{}, err
 	}
 	return response, nil
@@ -149,7 +156,7 @@ type ToolPatch struct {
 var ErrInvalidToolPatch = errors.New("invalid tool patch")
 
 // PatchTool changes only the fields patch sets, and returns the row as stored.
-func (s *Store) PatchTool(id int64, patch ToolPatch) (*Tool, error) {
+func (s *Store) PatchTool(ctx context.Context, id int64, patch ToolPatch) (*Tool, error) {
 	var assignments []string
 	var args []any
 	if patch.Tags != nil {
@@ -158,23 +165,24 @@ func (s *Store) PatchTool(id int64, patch ToolPatch) (*Tool, error) {
 				return nil, fmt.Errorf("%w: a tag is empty", ErrInvalidToolPatch)
 			}
 		}
-		assignments = append(assignments, "tags = ?")
 		args = append(args, encodeStrings(*patch.Tags))
+		assignments = append(assignments, fmt.Sprintf("tags = $%d", len(args)))
 	}
 	if patch.Description != nil {
-		assignments = append(assignments, "description = ?")
 		args = append(args, *patch.Description)
+		assignments = append(assignments, fmt.Sprintf("description = $%d", len(args)))
 	}
 	if patch.Enabled != nil {
-		assignments = append(assignments, "enabled = ?")
-		args = append(args, boolToInt(*patch.Enabled))
+		args = append(args, *patch.Enabled)
+		assignments = append(assignments, fmt.Sprintf("enabled = $%d", len(args)))
 	}
 	if len(assignments) == 0 {
 		return nil, fmt.Errorf("%w: it names no field to change; send any of tags, description, enabled", ErrInvalidToolPatch)
 	}
-	assignments = append(assignments, "updated_at = ?")
-	args = append(args, now(), id)
-	result, err := s.db.Exec(`UPDATE tools SET `+strings.Join(assignments, ", ")+` WHERE id = ?`, args...)
+	args = append(args, now())
+	assignments = append(assignments, fmt.Sprintf("updated_at = $%d", len(args)))
+	args = append(args, id)
+	result, err := s.db.ExecContext(ctx, `UPDATE tools SET `+strings.Join(assignments, ", ")+fmt.Sprintf(` WHERE id = $%d`, len(args)), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -183,5 +191,5 @@ func (s *Store) PatchTool(id int64, patch ToolPatch) (*Tool, error) {
 	} else if count == 0 {
 		return nil, ErrNotFound
 	}
-	return s.GetTool(id)
+	return s.GetTool(ctx, id)
 }
