@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 )
 
 // Suggested next steps: a model reads what a project is for and where it
@@ -52,13 +54,19 @@ type Suggestion struct {
 	NoteID string `json:"note_id"`
 }
 
-const suggestionColumns = `id, project_id, title, why, status, model, requested_by, created_at, decided_by, decided_at, note_id`
+const suggestionColumns = `number, project_number, title, why, status, model, requested_by, created_at, decided_by, decided_at, note_id`
 
 func scanSuggestion(row scanner) (Suggestion, error) {
 	var suggestion Suggestion
-	err := row.Scan(&suggestion.ID, &suggestion.ProjectID, &suggestion.Title, &suggestion.Why, &suggestion.Status, &suggestion.Model,
+	var number, projectNumber int64
+	err := row.Scan(&number, &projectNumber, &suggestion.Title, &suggestion.Why, &suggestion.Status, &suggestion.Model,
 		&suggestion.RequestedBy, &suggestion.CreatedAt, &suggestion.DecidedBy, &suggestion.DecidedAt, &suggestion.NoteID)
-	return suggestion, err
+	if err != nil {
+		return Suggestion{}, err
+	}
+	suggestion.ID = postgresstorage.FormatRecordID(SuggestionIDPrefix, number)
+	suggestion.ProjectID = formatProjectID(projectNumber)
+	return suggestion, nil
 }
 
 // Suggestions lists a project's suggestions in one status ("" for all),
@@ -67,18 +75,22 @@ func (store *Store) Suggestions(projectID, status string) ([]Suggestion, error) 
 	if status != "" && !contains(SuggestionStatuses, status) {
 		return nil, fmt.Errorf("%w: status %q is not one of %s", ErrInvalid, status, strings.Join(SuggestionStatuses, ", "))
 	}
-	query := `SELECT ` + suggestionColumns + ` FROM suggestions WHERE project_id = ?`
-	arguments := []any{projectID}
+	suggestions := []Suggestion{}
+	projectNumber, ok := recordNumberOf(ProjectIDPrefix, projectID)
+	if !ok {
+		return suggestions, nil
+	}
+	query := `SELECT ` + suggestionColumns + ` FROM suggestions WHERE project_number = $1`
+	arguments := []any{projectNumber}
 	if status != "" {
-		query += ` AND status = ?`
+		query += ` AND status = $2`
 		arguments = append(arguments, status)
 	}
-	rows, err := store.database.Query(query+` ORDER BY id`, arguments...)
+	rows, err := store.database.Query(query+` ORDER BY number`, arguments...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	suggestions := []Suggestion{}
 	for rows.Next() {
 		suggestion, err := scanSuggestion(rows)
 		if err != nil {
@@ -91,7 +103,11 @@ func (store *Store) Suggestions(projectID, status string) ([]Suggestion, error) 
 
 // Suggestion returns one suggestion.
 func (store *Store) Suggestion(id string) (Suggestion, error) {
-	suggestion, err := scanSuggestion(store.database.QueryRow(`SELECT `+suggestionColumns+` FROM suggestions WHERE id = ?`, id))
+	number, ok := recordNumberOf(SuggestionIDPrefix, id)
+	if !ok {
+		return Suggestion{}, fmt.Errorf("suggestion %s: %w", id, ErrNotFound)
+	}
+	suggestion, err := scanSuggestion(store.database.QueryRow(`SELECT `+suggestionColumns+` FROM suggestions WHERE number = $1`, number))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Suggestion{}, fmt.Errorf("suggestion %s: %w", id, ErrNotFound)
 	}
@@ -107,38 +123,37 @@ type ProposedStep struct {
 // ReplaceProposals stores a new round of suggestions for a project and marks
 // the round before it that nobody decided on as superseded.
 func (store *Store) ReplaceProposals(projectID string, steps []ProposedStep, model, requestedBy string) ([]Suggestion, error) {
-	transaction, err := store.database.Begin()
+	projectNumber, err := projectNumberOf(projectID)
 	if err != nil {
 		return nil, err
 	}
-	defer transaction.Rollback()
-	now := store.now().Unix()
-	if _, err := transaction.Exec(`UPDATE suggestions SET status = ?, decided_at = ? WHERE project_id = ? AND status = ?`,
-		SuggestionSuperseded, now, projectID, SuggestionProposed); err != nil {
-		return nil, err
-	}
-	ids := []string{}
-	for _, step := range steps {
-		title := strings.TrimSpace(step.Title)
-		if title == "" {
-			continue
+	numbers := []int64{}
+	err = store.inTransaction(func(transaction *sql.Tx) error {
+		now := store.now().Unix()
+		if _, err := transaction.Exec(`UPDATE suggestions SET status = $1, decided_at = $2 WHERE project_number = $3 AND status = $4`,
+			SuggestionSuperseded, now, projectNumber, SuggestionProposed); err != nil {
+			return err
 		}
-		id, err := nextID(transaction, "suggestion")
-		if err != nil {
-			return nil, err
+		for _, step := range steps {
+			title := strings.TrimSpace(step.Title)
+			if title == "" {
+				continue
+			}
+			var number int64
+			if err := transaction.QueryRow(`INSERT INTO suggestions (project_number, title, why, status, model, requested_by, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING number`,
+				projectNumber, title, strings.TrimSpace(step.Why), SuggestionProposed, model, requestedBy, now).Scan(&number); err != nil {
+				return err
+			}
+			numbers = append(numbers, number)
 		}
-		if _, err := transaction.Exec(`INSERT INTO suggestions (id, project_id, title, why, status, model, requested_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			id, projectID, title, strings.TrimSpace(step.Why), SuggestionProposed, model, requestedBy, now); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	if err := transaction.Commit(); err != nil {
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
 	suggestions := []Suggestion{}
-	for _, id := range ids {
-		suggestion, err := store.Suggestion(id)
+	for _, number := range numbers {
+		suggestion, err := store.Suggestion(postgresstorage.FormatRecordID(SuggestionIDPrefix, number))
 		if err != nil {
 			return nil, err
 		}
@@ -150,8 +165,12 @@ func (store *Store) ReplaceProposals(projectID string, steps []ProposedStep, mod
 // DecideSuggestion records that a person accepted or dismissed a proposal. A
 // suggestion already decided is a conflict.
 func (store *Store) DecideSuggestion(id, status, decidedBy, noteID string) (Suggestion, error) {
-	result, err := store.database.Exec(`UPDATE suggestions SET status = ?, decided_by = ?, decided_at = ?, note_id = ? WHERE id = ? AND status = ?`,
-		status, decidedBy, store.now().Unix(), noteID, id, SuggestionProposed)
+	number, ok := recordNumberOf(SuggestionIDPrefix, id)
+	if !ok {
+		return Suggestion{}, fmt.Errorf("suggestion %s: %w", id, ErrNotFound)
+	}
+	result, err := store.database.Exec(`UPDATE suggestions SET status = $1, decided_by = $2, decided_at = $3, note_id = $4 WHERE number = $5 AND status = $6`,
+		status, decidedBy, store.now().Unix(), noteID, number, SuggestionProposed)
 	if err != nil {
 		return Suggestion{}, err
 	}
@@ -240,7 +259,7 @@ func SuggestionPrompt(rollup Rollup, activity []ActivityEvent, now time.Time) st
 // SuggestNextSteps asks a model for next steps and stores them as proposals.
 func SuggestNextSteps(ctx context.Context, store *Store, owners *Owners, projectID, requestedBy string) ([]Suggestion, error) {
 	if owners.SuggestionModelRole == "" {
-		return nil, fmt.Errorf("%w: no model role is set for suggestions (PROJECT_STORE_SUGGESTION_MODEL_ROLE)", ErrInvalid)
+		return nil, fmt.Errorf("%w: no model role is set for suggestions (project_store.suggestion_model_role)", ErrInvalid)
 	}
 	rollup, err := BuildRollup(ctx, store, owners, projectID)
 	if err != nil {
@@ -278,7 +297,7 @@ func SuggestNextSteps(ctx context.Context, store *Store, owners *Owners, project
 	return store.ReplaceProposals(projectID, parsed.Suggestions, answer.Model, requestedBy)
 }
 
-func (handlers *Handlers) requestSuggestions(writer http.ResponseWriter, request *http.Request) {
+func (handlers *Handlers) RequestSuggestions(writer http.ResponseWriter, request *http.Request) {
 	fields, err := decodeFields(request, "requested_by")
 	if err != nil {
 		writeError(writer, err)
@@ -301,7 +320,7 @@ func (handlers *Handlers) requestSuggestions(writer http.ResponseWriter, request
 	writeJSON(writer, http.StatusCreated, map[string]any{"suggestions": suggestions})
 }
 
-func (handlers *Handlers) listSuggestions(writer http.ResponseWriter, request *http.Request) {
+func (handlers *Handlers) ListSuggestions(writer http.ResponseWriter, request *http.Request) {
 	query := request.URL.Query()
 	for name := range query {
 		if name != "status" {
@@ -322,7 +341,7 @@ func (handlers *Handlers) listSuggestions(writer http.ResponseWriter, request *h
 	writeJSON(writer, http.StatusOK, map[string]any{"suggestions": suggestions})
 }
 
-func (handlers *Handlers) acceptSuggestion(writer http.ResponseWriter, request *http.Request) {
+func (handlers *Handlers) AcceptSuggestion(writer http.ResponseWriter, request *http.Request) {
 	fields, err := decodeFields(request, "decided_by", "priority")
 	if err != nil {
 		writeError(writer, err)
@@ -368,7 +387,7 @@ func (handlers *Handlers) acceptSuggestion(writer http.ResponseWriter, request *
 	writeJSON(writer, http.StatusOK, map[string]any{"suggestion": decided, "note": note})
 }
 
-func (handlers *Handlers) dismissSuggestion(writer http.ResponseWriter, request *http.Request) {
+func (handlers *Handlers) DismissSuggestion(writer http.ResponseWriter, request *http.Request) {
 	fields, err := decodeFields(request, "decided_by")
 	if err != nil {
 		writeError(writer, err)

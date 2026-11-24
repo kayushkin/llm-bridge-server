@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	sqlite3 "github.com/mattn/go-sqlite3"
+	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 )
 
 // A session filing is what the session filer (session_filer.go) concluded
@@ -117,17 +117,22 @@ type SessionFilerReport struct {
 	Remaining int `json:"remaining"`
 }
 
-const sessionFilingColumns = `id, session_id, session_label, evidence, goal, repo_store_ids, project_id, confidence, why, model, status, link_id, filed_project_id, created_by, created_at, decided_by, decided_at`
+const sessionFilingColumns = `number, session_id, session_label, evidence, goal, repo_store_ids, project_number, confidence, why, model, status, link_id, filed_project_number, created_by, created_at, decided_by, decided_at`
 
 func scanSessionFiling(row scanner) (SessionFiling, error) {
 	var filing SessionFiling
-	var repoStoreIDs string
-	if err := row.Scan(&filing.ID, &filing.SessionID, &filing.SessionLabel, &filing.Evidence, &filing.Goal, &repoStoreIDs, &filing.ProjectID,
-		&filing.Confidence, &filing.Why, &filing.Model, &filing.Status, &filing.LinkID, &filing.FiledProjectID, &filing.CreatedBy,
+	var number int64
+	var repoStoreIDs []byte
+	var projectNumber, filedProjectNumber sql.NullInt64
+	if err := row.Scan(&number, &filing.SessionID, &filing.SessionLabel, &filing.Evidence, &filing.Goal, &repoStoreIDs, &projectNumber,
+		&filing.Confidence, &filing.Why, &filing.Model, &filing.Status, &filing.LinkID, &filedProjectNumber, &filing.CreatedBy,
 		&filing.CreatedAt, &filing.DecidedBy, &filing.DecidedAt); err != nil {
 		return SessionFiling{}, err
 	}
-	if err := json.Unmarshal([]byte(repoStoreIDs), &filing.RepoStoreIDs); err != nil {
+	filing.ID = postgresstorage.FormatRecordID(SessionFilingIDPrefix, number)
+	filing.ProjectID = projectIDOf(projectNumber)
+	filing.FiledProjectID = projectIDOf(filedProjectNumber)
+	if err := json.Unmarshal(repoStoreIDs, &filing.RepoStoreIDs); err != nil {
 		return SessionFiling{}, fmt.Errorf("session filing %s: repo_store_ids %q: %w", filing.ID, repoStoreIDs, err)
 	}
 	if filing.RepoStoreIDs == nil {
@@ -139,19 +144,16 @@ func scanSessionFiling(row scanner) (SessionFiling, error) {
 // insertLinkOrFindIt writes a link inside a transaction, or returns the link
 // already there when the project owns the entity.
 func insertLinkOrFindIt(transaction *sql.Tx, link Link) (Link, error) {
-	result, err := transaction.Exec(`INSERT INTO project_links (project_id, entity_type, entity_ref, label, note, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		link.ProjectID, link.EntityType, link.EntityRef, link.Label, link.Note, link.CreatedBy, link.CreatedAt)
-	var sqliteError sqlite3.Error
-	if errors.As(err, &sqliteError) && sqliteError.ExtendedCode == sqlite3.ErrConstraintUnique {
-		err = transaction.QueryRow(`SELECT id, project_id, entity_type, entity_ref, label, note, created_by, created_at FROM project_links WHERE project_id = ? AND entity_type = ? AND entity_ref = ?`,
-			link.ProjectID, link.EntityType, link.EntityRef).Scan(&link.ID, &link.ProjectID, &link.EntityType, &link.EntityRef, &link.Label, &link.Note, &link.CreatedBy, &link.CreatedAt)
-		return link, err
+	created, inserted, err := insertLink(transaction, link)
+	if err != nil || inserted {
+		return created, err
 	}
+	number, err := projectNumberOf(link.ProjectID)
 	if err != nil {
 		return Link{}, err
 	}
-	link.ID, err = result.LastInsertId()
-	return link, err
+	return scanLink(transaction.QueryRow(`SELECT `+linkColumns+` FROM project_links WHERE project_number = $1 AND entity_type = $2 AND entity_ref = $3`,
+		number, link.EntityType, link.EntityRef))
 }
 
 // sessionFilingLinkNote is the note on a link the filer made: why, how sure,
@@ -178,41 +180,48 @@ func (store *Store) RecordSessionFiling(filing SessionFiling) (SessionFiling, er
 	if err != nil {
 		return SessionFiling{}, err
 	}
-	transaction, err := store.database.Begin()
-	if err != nil {
-		return SessionFiling{}, err
-	}
-	defer transaction.Rollback()
-	now := store.now().Unix()
-	filing.CreatedAt = now
-	if filing.ID, err = nextID(transaction, "session_filing"); err != nil {
-		return SessionFiling{}, err
-	}
-	if filing.Status == SessionFilingFiled {
-		var archivedAt int64
-		err := transaction.QueryRow(`SELECT archived_at FROM projects WHERE id = ?`, filing.ProjectID).Scan(&archivedAt)
-		if errors.Is(err, sql.ErrNoRows) {
-			return SessionFiling{}, fmt.Errorf("%w: project %q does not exist, so nothing can be filed under it", ErrInvalid, filing.ProjectID)
-		} else if err != nil {
-			return SessionFiling{}, err
+	err = store.inTransaction(func(transaction *sql.Tx) error {
+		now := store.now().Unix()
+		filing.CreatedAt = now
+		projectNumber, err := nullableProjectNumber(filing.ProjectID)
+		if err != nil {
+			return err
 		}
+		if filing.Status == SessionFilingFiled {
+			var archivedAt int64
+			err := transaction.QueryRow(`SELECT archived_at FROM projects WHERE number = $1`, projectNumber).Scan(&archivedAt)
+			if errors.Is(err, sql.ErrNoRows) || projectNumber == nil {
+				return fmt.Errorf("%w: project %q does not exist, so nothing can be filed under it", ErrInvalid, filing.ProjectID)
+			} else if err != nil {
+				return err
+			}
+		}
+		if _, err := transaction.Exec(`UPDATE session_filings SET status = $1, decided_by = $2, decided_at = $3 WHERE session_id = $4 AND status = $5`,
+			SessionFilingSuperseded, filing.CreatedBy, now, filing.SessionID, SessionFilingProposed); err != nil {
+			return err
+		}
+		var number int64
+		if err := transaction.QueryRow(`INSERT INTO session_filings (session_id, session_label, evidence, goal, repo_store_ids, project_number, confidence, why, model, status, created_by, created_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING number`,
+			filing.SessionID, filing.SessionLabel, filing.Evidence, filing.Goal, string(repoStoreIDs), projectNumber, filing.Confidence,
+			filing.Why, filing.Model, filing.Status, filing.CreatedBy, now).Scan(&number); err != nil {
+			return err
+		}
+		filing.ID = postgresstorage.FormatRecordID(SessionFilingIDPrefix, number)
+		if filing.Status != SessionFilingFiled {
+			return nil
+		}
+		// The link's note names the filing, so the filing is written first and
+		// told its link after, in the same transaction.
 		link, err := insertLinkOrFindIt(transaction, Link{ProjectID: filing.ProjectID, EntityType: EntitySession, EntityRef: filing.SessionID,
 			Label: filing.SessionLabel, Note: sessionFilingLinkNote(filing), CreatedBy: filing.CreatedBy, CreatedAt: now})
 		if err != nil {
-			return SessionFiling{}, err
+			return err
 		}
-		filing.LinkID, filing.FiledProjectID = link.ID, filing.ProjectID
-	}
-	if _, err := transaction.Exec(`UPDATE session_filings SET status = ?, decided_by = ?, decided_at = ? WHERE session_id = ? AND status = ?`,
-		SessionFilingSuperseded, filing.CreatedBy, now, filing.SessionID, SessionFilingProposed); err != nil {
-		return SessionFiling{}, err
-	}
-	if _, err := transaction.Exec(`INSERT INTO session_filings (`+sessionFilingColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 0)`,
-		filing.ID, filing.SessionID, filing.SessionLabel, filing.Evidence, filing.Goal, string(repoStoreIDs), filing.ProjectID, filing.Confidence,
-		filing.Why, filing.Model, filing.Status, filing.LinkID, filing.FiledProjectID, filing.CreatedBy, now); err != nil {
-		return SessionFiling{}, err
-	}
-	if err := transaction.Commit(); err != nil {
+		_, err = transaction.Exec(`UPDATE session_filings SET link_id = $1, filed_project_number = $2 WHERE number = $3`, link.ID, projectNumber, number)
+		return err
+	})
+	if err != nil {
 		return SessionFiling{}, err
 	}
 	return store.SessionFiling(filing.ID)
@@ -220,7 +229,19 @@ func (store *Store) RecordSessionFiling(filing SessionFiling) (SessionFiling, er
 
 // SessionFiling returns one session filing.
 func (store *Store) SessionFiling(id string) (SessionFiling, error) {
-	filing, err := scanSessionFiling(store.database.QueryRow(`SELECT `+sessionFilingColumns+` FROM session_filings WHERE id = ?`, id))
+	return sessionFilingOn(store.database, id, false)
+}
+
+func sessionFilingOn(handle queryer, id string, forUpdate bool) (SessionFiling, error) {
+	number, ok := recordNumberOf(SessionFilingIDPrefix, id)
+	if !ok {
+		return SessionFiling{}, fmt.Errorf("session filing %s: %w", id, ErrNotFound)
+	}
+	query := `SELECT ` + sessionFilingColumns + ` FROM session_filings WHERE number = $1`
+	if forUpdate {
+		query += ` FOR UPDATE`
+	}
+	filing, err := scanSessionFiling(handle.QueryRow(query, number))
 	if errors.Is(err, sql.ErrNoRows) {
 		return SessionFiling{}, fmt.Errorf("session filing %s: %w", id, ErrNotFound)
 	}
@@ -244,26 +265,31 @@ func (store *Store) SessionFilings(filter SessionFilingFilter) ([]SessionFiling,
 	}
 	var conditions []string
 	var arguments []any
+	placeholder := func(value any) string {
+		arguments = append(arguments, value)
+		return "$" + strconv.Itoa(len(arguments))
+	}
 	if filter.Status != "" {
-		conditions = append(conditions, "status = ?")
-		arguments = append(arguments, filter.Status)
+		conditions = append(conditions, "status = "+placeholder(filter.Status))
 	}
 	if filter.SessionID != "" {
-		conditions = append(conditions, "session_id = ?")
-		arguments = append(arguments, filter.SessionID)
+		conditions = append(conditions, "session_id = "+placeholder(filter.SessionID))
 	}
 	if filter.ProjectID != "" {
-		conditions = append(conditions, "(project_id = ? OR filed_project_id = ?)")
-		arguments = append(arguments, filter.ProjectID, filter.ProjectID)
+		projectNumber, ok := recordNumberOf(ProjectIDPrefix, filter.ProjectID)
+		if !ok {
+			return []SessionFiling{}, nil
+		}
+		number := placeholder(projectNumber)
+		conditions = append(conditions, "(project_number = "+number+" OR filed_project_number = "+number+")")
 	}
 	query := `SELECT ` + sessionFilingColumns + ` FROM session_filings`
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
-	query += " ORDER BY rowid DESC"
+	query += " ORDER BY number DESC"
 	if filter.Limit > 0 {
-		query += " LIMIT ?"
-		arguments = append(arguments, filter.Limit)
+		query += " LIMIT " + placeholder(filter.Limit)
 	}
 	return store.querySessionFilings(query, arguments...)
 }
@@ -289,7 +315,7 @@ func (store *Store) querySessionFilings(query string, arguments ...any) ([]Sessi
 // session id.
 func (store *Store) LatestSessionFilings() (map[string]SessionFiling, error) {
 	filings, err := store.querySessionFilings(`SELECT ` + sessionFilingColumns + ` FROM session_filings
-		WHERE rowid IN (SELECT MAX(rowid) FROM session_filings GROUP BY session_id)`)
+		WHERE number IN (SELECT MAX(number) FROM session_filings GROUP BY session_id)`)
 	if err != nil {
 		return nil, err
 	}
@@ -304,49 +330,52 @@ func (store *Store) LatestSessionFilings() (map[string]SessionFiling, error) {
 // who decided. The caller has checked the session with llm-bridge-server and
 // passes its name as label. A filing already decided is a conflict.
 func (store *Store) AcceptSessionFiling(id, projectID, decidedBy, label string) (SessionFiling, Link, error) {
-	transaction, err := store.database.Begin()
+	var link Link
+	err := store.inTransaction(func(transaction *sql.Tx) error {
+		filing, err := sessionFilingOn(transaction, id, true)
+		if err != nil {
+			return err
+		}
+		if filing.Status != SessionFilingProposed {
+			return fmt.Errorf("%w: session filing %s is already %s", ErrConflict, id, filing.Status)
+		}
+		projectNumber, ok := recordNumberOf(ProjectIDPrefix, projectID)
+		var projectExists int
+		if ok {
+			if err := transaction.QueryRow(`SELECT COUNT(*) FROM projects WHERE number = $1`, projectNumber).Scan(&projectExists); err != nil {
+				return err
+			}
+		}
+		if projectExists == 0 {
+			return fmt.Errorf("%w: project_id %q names no project", ErrInvalid, projectID)
+		}
+		now := store.now().Unix()
+		link, err = insertLinkOrFindIt(transaction, Link{ProjectID: projectID, EntityType: EntitySession, EntityRef: filing.SessionID, Label: label,
+			Note: "accepted " + filing.ID, CreatedBy: decidedBy, CreatedAt: now})
+		if err != nil {
+			return err
+		}
+		filingNumber, _ := recordNumberOf(SessionFilingIDPrefix, id)
+		_, err = transaction.Exec(`UPDATE session_filings SET status = $1, link_id = $2, filed_project_number = $3, decided_by = $4, decided_at = $5 WHERE number = $6`,
+			SessionFilingAccepted, link.ID, projectNumber, decidedBy, now, filingNumber)
+		return err
+	})
 	if err != nil {
 		return SessionFiling{}, Link{}, err
 	}
-	defer transaction.Rollback()
-	filing, err := scanSessionFiling(transaction.QueryRow(`SELECT `+sessionFilingColumns+` FROM session_filings WHERE id = ?`, id))
-	if errors.Is(err, sql.ErrNoRows) {
-		return SessionFiling{}, Link{}, fmt.Errorf("session filing %s: %w", id, ErrNotFound)
-	} else if err != nil {
-		return SessionFiling{}, Link{}, err
-	}
-	if filing.Status != SessionFilingProposed {
-		return SessionFiling{}, Link{}, fmt.Errorf("%w: session filing %s is already %s", ErrConflict, id, filing.Status)
-	}
-	var projectExists int
-	if err := transaction.QueryRow(`SELECT COUNT(*) FROM projects WHERE id = ?`, projectID).Scan(&projectExists); err != nil {
-		return SessionFiling{}, Link{}, err
-	}
-	if projectExists == 0 {
-		return SessionFiling{}, Link{}, fmt.Errorf("%w: project_id %q names no project", ErrInvalid, projectID)
-	}
-	now := store.now().Unix()
-	link, err := insertLinkOrFindIt(transaction, Link{ProjectID: projectID, EntityType: EntitySession, EntityRef: filing.SessionID, Label: label,
-		Note: "accepted " + filing.ID, CreatedBy: decidedBy, CreatedAt: now})
-	if err != nil {
-		return SessionFiling{}, Link{}, err
-	}
-	if _, err := transaction.Exec(`UPDATE session_filings SET status = ?, link_id = ?, filed_project_id = ?, decided_by = ?, decided_at = ? WHERE id = ?`,
-		SessionFilingAccepted, link.ID, projectID, decidedBy, now, id); err != nil {
-		return SessionFiling{}, Link{}, err
-	}
-	if err := transaction.Commit(); err != nil {
-		return SessionFiling{}, Link{}, err
-	}
-	filing, err = store.SessionFiling(id)
+	filing, err := store.SessionFiling(id)
 	return filing, link, err
 }
 
 // DismissSessionFiling records that a person said to leave the session
 // unfiled. A filing already decided is a conflict.
 func (store *Store) DismissSessionFiling(id, decidedBy string) (SessionFiling, error) {
-	result, err := store.database.Exec(`UPDATE session_filings SET status = ?, decided_by = ?, decided_at = ? WHERE id = ? AND status = ?`,
-		SessionFilingDismissed, decidedBy, store.now().Unix(), id, SessionFilingProposed)
+	number, ok := recordNumberOf(SessionFilingIDPrefix, id)
+	if !ok {
+		return SessionFiling{}, fmt.Errorf("session filing %s: %w", id, ErrNotFound)
+	}
+	result, err := store.database.Exec(`UPDATE session_filings SET status = $1, decided_by = $2, decided_at = $3 WHERE number = $4 AND status = $5`,
+		SessionFilingDismissed, decidedBy, store.now().Unix(), number, SessionFilingProposed)
 	if err != nil {
 		return SessionFiling{}, err
 	}
@@ -365,12 +394,12 @@ func (store *Store) DismissSessionFiling(id, decidedBy string) (SessionFiling, e
 // SupersedeProposedSessionFilings closes a session's undecided proposals
 // because someone filed the session directly.
 func (store *Store) SupersedeProposedSessionFilings(sessionID, decidedBy string) error {
-	_, err := store.database.Exec(`UPDATE session_filings SET status = ?, decided_by = ?, decided_at = ? WHERE session_id = ? AND status = ?`,
+	_, err := store.database.Exec(`UPDATE session_filings SET status = $1, decided_by = $2, decided_at = $3 WHERE session_id = $4 AND status = $5`,
 		SessionFilingSuperseded, decidedBy, store.now().Unix(), sessionID, SessionFilingProposed)
 	return err
 }
 
-func (handlers *Handlers) listSessionFilings(writer http.ResponseWriter, request *http.Request) {
+func (handlers *Handlers) ListSessionFilings(writer http.ResponseWriter, request *http.Request) {
 	query := request.URL.Query()
 	for name := range query {
 		if !contains([]string{"status", "session_id", "project_id", "limit"}, name) {
@@ -395,7 +424,7 @@ func (handlers *Handlers) listSessionFilings(writer http.ResponseWriter, request
 	writeJSON(writer, http.StatusOK, map[string]any{"session_filings": filings})
 }
 
-func (handlers *Handlers) acceptSessionFiling(writer http.ResponseWriter, request *http.Request) {
+func (handlers *Handlers) AcceptSessionFiling(writer http.ResponseWriter, request *http.Request) {
 	fields, err := decodeFields(request, "decided_by", "project_id")
 	if err != nil {
 		writeError(writer, err)
@@ -442,7 +471,7 @@ func (handlers *Handlers) acceptSessionFiling(writer http.ResponseWriter, reques
 	writeJSON(writer, http.StatusOK, map[string]any{"session_filing": accepted, "link": link})
 }
 
-func (handlers *Handlers) dismissSessionFiling(writer http.ResponseWriter, request *http.Request) {
+func (handlers *Handlers) DismissSessionFiling(writer http.ResponseWriter, request *http.Request) {
 	fields, err := decodeFields(request, "decided_by")
 	if err != nil {
 		writeError(writer, err)

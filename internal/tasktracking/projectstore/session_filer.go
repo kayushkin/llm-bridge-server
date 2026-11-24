@@ -514,7 +514,7 @@ func (filer *SessionFiler) repoName(ctx context.Context, repoStoreID int64, repo
 // Run does one filing pass. One pass runs at a time; a second is a conflict.
 func (filer *SessionFiler) Run(ctx context.Context, request SessionFilerRunRequest) (SessionFilerReport, error) {
 	if filer.ModelRole == "" {
-		return SessionFilerReport{}, fmt.Errorf("%w: no model role is set for the session filer (PROJECT_STORE_SESSION_FILER_MODEL_ROLE)", ErrInvalid)
+		return SessionFilerReport{}, fmt.Errorf("%w: no model role is set for the session filer (project_store.session_filer.model_role)", ErrInvalid)
 	}
 	if request.SinceDays < 0 || request.SinceDays > MaximumSessionFilerWindowDays {
 		return SessionFilerReport{}, fmt.Errorf("%w: since_days must be from 1 to %d", ErrInvalid, MaximumSessionFilerWindowDays)
@@ -718,7 +718,7 @@ func (filer *SessionFiler) judge(ctx context.Context, session sessionToFile, pro
 	return filer.Store.RecordSessionFiling(filing)
 }
 
-func (handlers *Handlers) runSessionFiler(writer http.ResponseWriter, request *http.Request) {
+func (handlers *Handlers) RunSessionFiler(writer http.ResponseWriter, request *http.Request) {
 	fields, err := decodeFields(request, "since_days", "limit")
 	if err != nil {
 		writeError(writer, err)

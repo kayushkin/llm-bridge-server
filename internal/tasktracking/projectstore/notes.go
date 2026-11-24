@@ -37,8 +37,9 @@ type LinkedNote struct {
 	CompletedAt string `json:"completed_at"`
 }
 
-// noteboardItem is the part of a noteboard item a LinkedNote carries.
-type noteboardItem struct {
+// NoteboardItem is the part of a noteboard item a LinkedNote carries, with its
+// fields as noteboard's API writes them.
+type NoteboardItem struct {
 	ID          string   `json:"id"`
 	Type        string   `json:"type"`
 	Title       string   `json:"title"`
@@ -51,7 +52,7 @@ type noteboardItem struct {
 	CompletedAt *string  `json:"completed_at"`
 }
 
-func (item noteboardItem) linkedNote(linkID int64) LinkedNote {
+func (item NoteboardItem) linkedNote(linkID int64) LinkedNote {
 	note := LinkedNote{LinkID: linkID, NoteID: item.ID, Type: item.Type, Title: item.Title, Status: item.Status, Priority: item.Priority,
 		Tags: item.Tags, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt}
 	if note.Tags == nil {
@@ -82,19 +83,15 @@ func (owners *Owners) LinkedNotes(ctx context.Context, links []Link) ([]LinkedNo
 	if len(ids) == 0 {
 		return notes, missing, nil
 	}
-	var answer struct {
-		Items      []noteboardItem `json:"items"`
-		MissingIDs []string        `json:"missing_ids"`
-	}
-	query := map[string]any{"ids": ids, "include_items": true, "limit": len(ids)}
-	if err := owners.sendJSON(ctx, http.MethodPost, owners.NoteboardURL+"/api/items/query", nil, query, http.StatusOK, &answer); err != nil {
+	found, missingIDs, err := owners.Noteboard.LinkedItems(ctx, ids)
+	if err != nil {
 		return nil, nil, fmt.Errorf("notes linked to the project: %w", err)
 	}
-	for _, item := range answer.Items {
+	for _, item := range found {
 		notes = append(notes, item.linkedNote(linkByNote[item.ID]))
 	}
-	if answer.MissingIDs != nil {
-		missing = answer.MissingIDs
+	if missingIDs != nil {
+		missing = missingIDs
 	}
 	sort.SliceStable(notes, func(left, right int) bool {
 		leftOpen, rightOpen := notes[left].isOpenTodo(), notes[right].isOpenTodo()
@@ -116,6 +113,9 @@ func (note LinkedNote) isOpenTodo() bool { return note.Type == "todo" && note.St
 func (owners *Owners) sendJSON(ctx context.Context, method, rawURL string, headers map[string]string, body any, wantStatus int, target any) error {
 	encoded, err := json.Marshal(body)
 	if err != nil {
+		return err
+	}
+	if err := ownerAddressIsSet(rawURL); err != nil {
 		return err
 	}
 	request, err := http.NewRequestWithContext(ctx, method, rawURL, bytes.NewReader(encoded))
@@ -170,12 +170,8 @@ func AddNextStep(ctx context.Context, store *Store, owners *Owners, projectID st
 	if _, err := store.Project(projectID); err != nil {
 		return LinkedNote{}, err
 	}
-	todo := map[string]any{"type": "todo", "title": step.Title, "body": step.Body, "tags": []string{NextStepTag}}
-	if step.Priority != nil {
-		todo["priority"] = *step.Priority
-	}
-	var item noteboardItem
-	if err := owners.sendJSON(ctx, http.MethodPost, owners.NoteboardURL+"/api/items", nil, todo, http.StatusCreated, &item); err != nil {
+	item, err := owners.Noteboard.CreateTodo(ctx, step.Title, step.Body, []string{NextStepTag}, step.Priority)
+	if err != nil {
 		return LinkedNote{}, fmt.Errorf("make the todo: %w", err)
 	}
 	link, err := store.AddLink(Link{ProjectID: projectID, EntityType: EntityNote, EntityRef: item.ID, Label: item.Title, Note: step.LinkNote, CreatedBy: step.CreatedBy})
@@ -185,7 +181,7 @@ func AddNextStep(ctx context.Context, store *Store, owners *Owners, projectID st
 	return item.linkedNote(link.ID), nil
 }
 
-func (handlers *Handlers) addNextStep(writer http.ResponseWriter, request *http.Request) {
+func (handlers *Handlers) AddNextStep(writer http.ResponseWriter, request *http.Request) {
 	fields, err := decodeFields(request, "title", "body", "priority", "created_by")
 	if err != nil {
 		writeError(writer, err)

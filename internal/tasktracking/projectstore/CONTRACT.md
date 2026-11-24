@@ -1,13 +1,14 @@
 # project-store routes
 
-Rooted at `/`, JSON in and out unless a route says otherwise. Ids are
+Mounted in llm-bridge-server under `/project-store/`, so `GET /projects` is
+`GET /project-store/projects`; every route is an operator route. JSON in and
+out unless a route says otherwise. Ids are
 `project_000001`, handed out once and never reused. A request body or query
 with a field the route does not take is 400. Times are unix seconds.
 
 | Method | Path | What it does |
 |---|---|---|
 | `GET` | `/health` | `{"status":"ok"}` |
-| `GET` | `/settings` | The service's settings, read-only; the kanban token shows only as set or unset |
 | `GET` | `/vocabulary` | `{"kinds":[…],"stages":[…],"default_stage":…,"entity_types":[{"type","service","meaning"}]}` |
 | `GET` | `/projects` | `{"projects":[…]}` by name. Query: `q` (name, goal or id), `kind`, `parent_id`, `include_archived=true` |
 | `POST` | `/projects` | `name` (required), `kind` (`project` default, or `stream`), `parent_id`, `goal`, `done_when`, `stage` (`idea` default), `spend_target_share` (0–1 or null), `created_by`. **201** |
@@ -49,8 +50,8 @@ the filing (`session_filing_000001`) that holds the evidence. A filing records
 no brief, so its name, folder and repos; `none`), the `goal` judged, the
 `repo_store_ids` the session moved refs in, the `project_id` the model picked
 (`""` when none fits), its `confidence` from 0 to 1, `why`, the `model`, and
-`status`. The filer files a pick at or above its minimum confidence (`GET
-/settings`, `session_filer_minimum_confidence`) as `filed`; anything else is
+`status`. The filer files a pick at or above its minimum confidence (the server's
+`project_store.session_filer.minimum_confidence`) as `filed`; anything else is
 `proposed` and waits for accept or dismiss. `nothing_to_file` is a chat with no
 aim: a test message, or one with no name and no brief. A session someone else
 filed is never judged, and filing a session through `POST /projects/{id}/links`

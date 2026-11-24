@@ -229,7 +229,7 @@ func (owners *Owners) repoActivity(ctx context.Context, repoStoreID int64, name 
 	return events, nil
 }
 
-func (handlers *Handlers) projectActivity(writer http.ResponseWriter, request *http.Request) {
+func (handlers *Handlers) ProjectActivity(writer http.ResponseWriter, request *http.Request) {
 	query := request.URL.Query()
 	for name := range query {
 		if name != "days" {

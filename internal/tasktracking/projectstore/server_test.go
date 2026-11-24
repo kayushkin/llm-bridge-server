@@ -149,7 +149,7 @@ func fakeOwners(t *testing.T) *Owners {
 	}))
 	t.Cleanup(server.Close)
 	return &Owners{HTTP: server.Client(), RepoStoreURL: server.URL, KanbanStoreURL: server.URL, KanbanStoreServiceToken: "service-token",
-		SchedulerURL: server.URL, HealthcheckURL: server.URL, PrincipalStoreURL: server.URL, NoteboardURL: server.URL, WorkGraphStoreURL: server.URL, BridgeURL: server.URL, BridgeServiceToken: "bridge-token",
+		SchedulerURL: server.URL, HealthcheckURL: server.URL, PrincipalStoreURL: server.URL, Noteboard: httpNoteboard{client: server.Client(), url: server.URL}, WorkGraphStoreURL: server.URL, BridgeURL: server.URL, BridgeServiceToken: "bridge-token",
 		SuggestionModelRole: "balanced", ModelHTTP: server.Client()}
 }
 
@@ -159,11 +159,7 @@ type client struct {
 }
 
 func newClient(t *testing.T) client {
-	store, err := Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { store.Close() })
+	store := newTestStore(t)
 	mux := http.NewServeMux()
 	RegisterHandlers(mux, &Handlers{Store: store, Owners: fakeOwners(t)})
 	return client{t, mux}

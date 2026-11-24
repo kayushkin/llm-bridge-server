@@ -1,21 +1,84 @@
 package projectstore
 
 import (
+	"context"
 	"database/sql"
-	_ "embed"
+	"embed"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
-	sqlite3 "github.com/mattn/go-sqlite3"
+	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 )
 
-//go:embed schema.sql
-var schemaSQL string
+//go:embed migrations/*.sql
+var migrationFiles embed.FS
+
+// Module is the Postgres schema and role the store keeps its records in, with
+// the migrations that build them.
+func Module() (postgresstorage.Module, error) {
+	migrations, err := postgresstorage.MigrationsFromFiles(migrationFiles, "migrations")
+	if err != nil {
+		return postgresstorage.Module{}, err
+	}
+	return postgresstorage.Module{Schema: "projects", Role: "projects_module", Migrations: migrations}, nil
+}
+
+// The type parts of the public ids: project_000001, suggestion_000001 and
+// session_filing_000001.
+const (
+	ProjectIDPrefix       = "project"
+	SuggestionIDPrefix    = "suggestion"
+	SessionFilingIDPrefix = "session_filing"
+)
+
+func formatProjectID(number int64) string {
+	return postgresstorage.FormatRecordID(ProjectIDPrefix, number)
+}
+
+// recordNumberOf reads the number out of a public id of the type prefix
+// names. An id that is not exactly the form the store writes names no record:
+// project_0000001 is not project_000001, as it was not when the id was a
+// stored string.
+func recordNumberOf(prefix, id string) (int64, bool) {
+	number, err := postgresstorage.ParseRecordID(prefix, id)
+	if err != nil || postgresstorage.FormatRecordID(prefix, number) != id {
+		return 0, false
+	}
+	return number, true
+}
+
+// projectNumberOf is a project id's number, or ErrNotFound for an id that names
+// no project by its form alone.
+func projectNumberOf(id string) (int64, error) {
+	number, ok := recordNumberOf(ProjectIDPrefix, id)
+	if !ok {
+		return 0, fmt.Errorf("project %s: %w", id, ErrNotFound)
+	}
+	return number, nil
+}
+
+// nullableProjectNumber is a stored reference to a project: NULL for "".
+func nullableProjectNumber(id string) (any, error) {
+	if id == "" {
+		return nil, nil
+	}
+	number, ok := recordNumberOf(ProjectIDPrefix, id)
+	if !ok {
+		return nil, fmt.Errorf("%w: %q is not a project id", ErrInvalid, id)
+	}
+	return number, nil
+}
+
+// projectIDOf is the public id of a stored reference to a project; "" for NULL.
+func projectIDOf(number sql.NullInt64) string {
+	if !number.Valid {
+		return ""
+	}
+	return formatProjectID(number.Int64)
+}
 
 // ErrNotFound is returned when a lookup finds nothing.
 var ErrNotFound = errors.New("not found")
@@ -66,45 +129,47 @@ type Change struct {
 	ChangedAt int64  `json:"changed_at"`
 }
 
-// Store is the SQLite database.
+// Store keeps the records in the module's Postgres schema.
 type Store struct {
 	database *sql.DB
 	now      func() time.Time
 }
 
-// Open opens or creates project-store.db in dataDirectory.
-func Open(dataDirectory string) (*Store, error) {
-	if err := os.MkdirAll(dataDirectory, 0o700); err != nil {
-		return nil, err
-	}
-	database, err := sql.Open("sqlite3", filepath.Join(dataDirectory, "project-store.db")+"?_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=on")
-	if err != nil {
-		return nil, err
-	}
-	database.SetMaxOpenConns(1)
-	if _, err := database.Exec(schemaSQL); err != nil {
-		database.Close()
-		return nil, fmt.Errorf("apply schema: %w", err)
-	}
-	return &Store{database: database, now: time.Now}, nil
+// New returns the store over database, the pool postgresstorage.Open gave
+// Module. The schema must already be migrated.
+func New(database *sql.DB) *Store {
+	return &Store{database: database, now: time.Now}
 }
 
-// Close closes the database.
-func (store *Store) Close() error { return store.database.Close() }
+// inTransaction runs work in one transaction.
+func (store *Store) inTransaction(work func(transaction *sql.Tx) error) error {
+	return postgresstorage.InTransaction(context.Background(), store.database, work)
+}
 
-const projectColumns = `id, name, kind, COALESCE(parent_id, ''), goal, done_when, stage, spend_target_share, created_by, created_at, updated_at, archived_at`
+const projectColumns = `number, name, kind, parent_number, goal, done_when, stage, spend_target_share, created_by, created_at, updated_at, archived_at`
 
 type scanner interface{ Scan(...any) error }
 
+type queryer interface {
+	QueryRow(query string, args ...any) *sql.Row
+}
+
 func scanProject(row scanner) (Project, error) {
 	var project Project
+	var number int64
+	var parent sql.NullInt64
 	var share sql.NullFloat64
-	err := row.Scan(&project.ID, &project.Name, &project.Kind, &project.ParentID, &project.Goal, &project.DoneWhen, &project.Stage,
+	err := row.Scan(&number, &project.Name, &project.Kind, &parent, &project.Goal, &project.DoneWhen, &project.Stage,
 		&share, &project.CreatedBy, &project.CreatedAt, &project.UpdatedAt, &project.ArchivedAt)
+	if err != nil {
+		return Project{}, err
+	}
+	project.ID = formatProjectID(number)
+	project.ParentID = projectIDOf(parent)
 	if share.Valid {
 		project.SpendTargetShare = &share.Float64
 	}
-	return project, err
+	return project, nil
 }
 
 // ProjectFields are the fields a caller sets on create or patch. A nil field
@@ -140,33 +205,21 @@ func (store *Store) validate(transaction *sql.Tx, projectID string, fields Proje
 			if ancestor == projectID {
 				return fmt.Errorf("%w: parent_id %s would make the project its own ancestor", ErrInvalid, *fields.ParentID)
 			}
-			var next sql.NullString
-			if err := transaction.QueryRow(`SELECT parent_id FROM projects WHERE id = ?`, ancestor).Scan(&next); err != nil {
+			number, ok := recordNumberOf(ProjectIDPrefix, ancestor)
+			if !ok {
+				return fmt.Errorf("%w: parent_id %s names no project", ErrInvalid, ancestor)
+			}
+			var next sql.NullInt64
+			if err := transaction.QueryRow(`SELECT parent_number FROM projects WHERE number = $1`, number).Scan(&next); err != nil {
 				if errors.Is(err, sql.ErrNoRows) {
 					return fmt.Errorf("%w: parent_id %s names no project", ErrInvalid, ancestor)
 				}
 				return err
 			}
-			ancestor = next.String
+			ancestor = projectIDOf(next)
 		}
 	}
 	return nil
-}
-
-func nextID(transaction *sql.Tx, prefix string) (string, error) {
-	var next int64
-	err := transaction.QueryRow(`SELECT next FROM id_sequences WHERE name = ?`, prefix).Scan(&next)
-	if errors.Is(err, sql.ErrNoRows) {
-		next = 1
-		if _, err := transaction.Exec(`INSERT INTO id_sequences (name, next) VALUES (?, 2)`, prefix); err != nil {
-			return "", err
-		}
-	} else if err != nil {
-		return "", err
-	} else if _, err := transaction.Exec(`UPDATE id_sequences SET next = next + 1 WHERE name = ?`, prefix); err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("%s_%06d", prefix, next), nil
 }
 
 // CreateProject creates a project. Name is required; kind defaults to
@@ -182,47 +235,58 @@ func (store *Store) CreateProject(fields ProjectFields, createdBy string) (Proje
 	if fields.Stage == nil {
 		fields.Stage = &stage
 	}
-	transaction, err := store.database.Begin()
+	var number int64
+	err := store.inTransaction(func(transaction *sql.Tx) error {
+		if err := store.validate(transaction, "", fields); err != nil {
+			return err
+		}
+		now := store.now().Unix()
+		var parent any
+		if fields.ParentID != nil && *fields.ParentID != "" {
+			parentNumber, err := nullableProjectNumber(*fields.ParentID)
+			if err != nil {
+				return err
+			}
+			parent = parentNumber
+		}
+		var goal, doneWhen string
+		if fields.Goal != nil {
+			goal = *fields.Goal
+		}
+		if fields.DoneWhen != nil {
+			doneWhen = *fields.DoneWhen
+		}
+		var share sql.NullFloat64
+		if fields.SpendTargetShare != nil && *fields.SpendTargetShare != nil {
+			share = sql.NullFloat64{Float64: **fields.SpendTargetShare, Valid: true}
+		}
+		return transaction.QueryRow(`INSERT INTO projects (name, kind, parent_number, goal, done_when, stage, spend_target_share, created_by, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING number`,
+			strings.TrimSpace(*fields.Name), *fields.Kind, parent, goal, doneWhen, *fields.Stage, share, createdBy, now, now).Scan(&number)
+	})
 	if err != nil {
 		return Project{}, err
 	}
-	defer transaction.Rollback()
-	if err := store.validate(transaction, "", fields); err != nil {
-		return Project{}, err
-	}
-	id, err := nextID(transaction, "project")
-	if err != nil {
-		return Project{}, err
-	}
-	now := store.now().Unix()
-	var parent, goal, doneWhen sql.NullString
-	if fields.ParentID != nil && *fields.ParentID != "" {
-		parent = sql.NullString{String: *fields.ParentID, Valid: true}
-	}
-	if fields.Goal != nil {
-		goal.String = *fields.Goal
-	}
-	if fields.DoneWhen != nil {
-		doneWhen.String = *fields.DoneWhen
-	}
-	var share sql.NullFloat64
-	if fields.SpendTargetShare != nil && *fields.SpendTargetShare != nil {
-		share = sql.NullFloat64{Float64: **fields.SpendTargetShare, Valid: true}
-	}
-	if _, err := transaction.Exec(`INSERT INTO projects (id, name, kind, parent_id, goal, done_when, stage, spend_target_share, created_by, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, strings.TrimSpace(*fields.Name), *fields.Kind, parent, goal.String, doneWhen.String, *fields.Stage, share, createdBy, now, now); err != nil {
-		return Project{}, err
-	}
-	if err := transaction.Commit(); err != nil {
-		return Project{}, err
-	}
-	return store.Project(id)
+	return store.Project(formatProjectID(number))
 }
 
 // Project returns one project.
 func (store *Store) Project(id string) (Project, error) {
-	project, err := scanProject(store.database.QueryRow(`SELECT `+projectColumns+` FROM projects WHERE id = ?`, id))
+	return projectOn(store.database, id, false)
+}
+
+// projectOn reads one project; forUpdate locks its row until the
+// transaction ends.
+func projectOn(handle queryer, id string, forUpdate bool) (Project, error) {
+	number, err := projectNumberOf(id)
+	if err != nil {
+		return Project{}, err
+	}
+	query := `SELECT ` + projectColumns + ` FROM projects WHERE number = $1`
+	if forUpdate {
+		query += ` FOR UPDATE`
+	}
+	project, err := scanProject(handle.QueryRow(query, number))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Project{}, fmt.Errorf("project %s: %w", id, ErrNotFound)
 	}
@@ -237,31 +301,43 @@ type ProjectFilter struct {
 	IncludeArchived bool
 }
 
-// Projects lists projects by name.
+// Projects lists projects by name, ignoring case in ASCII letters, as
+// SQLite's NOCASE did.
 func (store *Store) Projects(filter ProjectFilter) ([]Project, error) {
 	var conditions []string
 	var arguments []any
+	placeholder := func(value any) string {
+		arguments = append(arguments, value)
+		return "$" + strconv.Itoa(len(arguments))
+	}
 	if !filter.IncludeArchived {
 		conditions = append(conditions, "archived_at = 0")
 	}
 	if filter.Kind != "" {
-		conditions = append(conditions, "kind = ?")
-		arguments = append(arguments, filter.Kind)
+		conditions = append(conditions, "kind = "+placeholder(filter.Kind))
 	}
 	if filter.ParentID != "" {
-		conditions = append(conditions, "parent_id = ?")
-		arguments = append(arguments, filter.ParentID)
+		number, ok := recordNumberOf(ProjectIDPrefix, filter.ParentID)
+		if !ok {
+			return []Project{}, nil
+		}
+		conditions = append(conditions, "parent_number = "+placeholder(number))
 	}
 	if filter.Query != "" {
-		conditions = append(conditions, "(name LIKE ? OR goal LIKE ? OR id = ?)")
-		pattern := "%" + filter.Query + "%"
-		arguments = append(arguments, pattern, pattern, filter.Query)
+		// A pattern with no escape character, as SQLite's LIKE took it:
+		// % and _ in the query still match anything, as they did.
+		pattern := placeholder("%" + filter.Query + "%")
+		condition := "(name ILIKE " + pattern + " ESCAPE '' OR goal ILIKE " + pattern + " ESCAPE ''"
+		if number, ok := recordNumberOf(ProjectIDPrefix, filter.Query); ok {
+			condition += " OR number = " + placeholder(number)
+		}
+		conditions = append(conditions, condition+")")
 	}
 	query := `SELECT ` + projectColumns + ` FROM projects`
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
-	rows, err := store.database.Query(query+" ORDER BY name COLLATE NOCASE, id", arguments...)
+	rows, err := store.database.Query(query+` ORDER BY lower(name COLLATE "C"), number`, arguments...)
 	if err != nil {
 		return nil, err
 	}
@@ -287,88 +363,88 @@ func formatShare(share *float64) string {
 // UpdateProject changes the given fields and records each change.
 // archived true archives, false restores; nil leaves it.
 func (store *Store) UpdateProject(id string, fields ProjectFields, archived *bool, changedBy string) (Project, error) {
-	transaction, err := store.database.Begin()
-	if err != nil {
-		return Project{}, err
-	}
-	defer transaction.Rollback()
-	current, err := scanProject(transaction.QueryRow(`SELECT `+projectColumns+` FROM projects WHERE id = ?`, id))
-	if errors.Is(err, sql.ErrNoRows) {
-		return Project{}, fmt.Errorf("project %s: %w", id, ErrNotFound)
-	} else if err != nil {
-		return Project{}, err
-	}
-	if err := store.validate(transaction, id, fields); err != nil {
-		return Project{}, err
-	}
-	now := store.now().Unix()
-	changed := false
-	record := func(field, column, oldValue, newValue string, value any) error {
-		if oldValue == newValue {
-			return nil
-		}
-		changed = true
-		if _, err := transaction.Exec(`UPDATE projects SET `+column+` = ? WHERE id = ?`, value, id); err != nil {
+	err := store.inTransaction(func(transaction *sql.Tx) error {
+		current, err := projectOn(transaction, id, true)
+		if err != nil {
 			return err
 		}
-		_, err := transaction.Exec(`INSERT INTO project_changes (project_id, field, old_value, new_value, changed_by, changed_at) VALUES (?, ?, ?, ?, ?, ?)`,
-			id, field, oldValue, newValue, changedBy, now)
-		return err
-	}
-	type textField struct {
-		name    string
-		current string
-		next    *string
-	}
-	for _, field := range []textField{{"name", current.Name, fields.Name}, {"kind", current.Kind, fields.Kind}, {"goal", current.Goal, fields.Goal},
-		{"done_when", current.DoneWhen, fields.DoneWhen}, {"stage", current.Stage, fields.Stage}} {
-		if field.next == nil {
-			continue
+		number, err := projectNumberOf(id)
+		if err != nil {
+			return err
 		}
-		next := *field.next
-		if field.name == "name" {
-			next = strings.TrimSpace(next)
+		if err := store.validate(transaction, id, fields); err != nil {
+			return err
 		}
-		if err := record(field.name, field.name, field.current, next, next); err != nil {
-			return Project{}, err
+		now := store.now().Unix()
+		changed := false
+		record := func(field, column, oldValue, newValue string, value any) error {
+			if oldValue == newValue {
+				return nil
+			}
+			changed = true
+			if _, err := transaction.Exec(`UPDATE projects SET `+column+` = $1 WHERE number = $2`, value, number); err != nil {
+				return err
+			}
+			_, err := transaction.Exec(`INSERT INTO project_changes (project_number, field, old_value, new_value, changed_by, changed_at) VALUES ($1, $2, $3, $4, $5, $6)`,
+				number, field, oldValue, newValue, changedBy, now)
+			return err
 		}
-	}
-	if fields.ParentID != nil {
-		var value any
-		if *fields.ParentID != "" {
-			value = *fields.ParentID
+		type textField struct {
+			name    string
+			current string
+			next    *string
 		}
-		if err := record("parent_id", "parent_id", current.ParentID, *fields.ParentID, value); err != nil {
-			return Project{}, err
+		for _, field := range []textField{{"name", current.Name, fields.Name}, {"kind", current.Kind, fields.Kind}, {"goal", current.Goal, fields.Goal},
+			{"done_when", current.DoneWhen, fields.DoneWhen}, {"stage", current.Stage, fields.Stage}} {
+			if field.next == nil {
+				continue
+			}
+			next := *field.next
+			if field.name == "name" {
+				next = strings.TrimSpace(next)
+			}
+			if err := record(field.name, field.name, field.current, next, next); err != nil {
+				return err
+			}
 		}
-	}
-	if fields.SpendTargetShare != nil {
-		var value any
-		if *fields.SpendTargetShare != nil {
-			value = **fields.SpendTargetShare
+		if fields.ParentID != nil {
+			value, err := nullableProjectNumber(*fields.ParentID)
+			if err != nil {
+				return err
+			}
+			if err := record("parent_id", "parent_number", current.ParentID, *fields.ParentID, value); err != nil {
+				return err
+			}
 		}
-		if err := record("spend_target_share", "spend_target_share", formatShare(current.SpendTargetShare), formatShare(*fields.SpendTargetShare), value); err != nil {
-			return Project{}, err
+		if fields.SpendTargetShare != nil {
+			var value any
+			if *fields.SpendTargetShare != nil {
+				value = **fields.SpendTargetShare
+			}
+			if err := record("spend_target_share", "spend_target_share", formatShare(current.SpendTargetShare), formatShare(*fields.SpendTargetShare), value); err != nil {
+				return err
+			}
 		}
-	}
-	if archived != nil {
-		oldValue, newValue, archivedAt := "false", "false", int64(0)
-		if current.ArchivedAt != 0 {
-			oldValue = "true"
+		if archived != nil {
+			oldValue, newValue, archivedAt := "false", "false", int64(0)
+			if current.ArchivedAt != 0 {
+				oldValue = "true"
+			}
+			if *archived {
+				newValue, archivedAt = "true", now
+			}
+			if err := record("archived", "archived_at", oldValue, newValue, archivedAt); err != nil {
+				return err
+			}
 		}
-		if *archived {
-			newValue, archivedAt = "true", now
+		if changed {
+			if _, err := transaction.Exec(`UPDATE projects SET updated_at = $1 WHERE number = $2`, now, number); err != nil {
+				return err
+			}
 		}
-		if err := record("archived", "archived_at", oldValue, newValue, archivedAt); err != nil {
-			return Project{}, err
-		}
-	}
-	if changed {
-		if _, err := transaction.Exec(`UPDATE projects SET updated_at = ? WHERE id = ?`, now, id); err != nil {
-			return Project{}, err
-		}
-	}
-	if err := transaction.Commit(); err != nil {
+		return nil
+	})
+	if err != nil {
 		return Project{}, err
 	}
 	return store.Project(id)
@@ -379,7 +455,11 @@ func (store *Store) Changes(projectID string) ([]Change, error) {
 	if _, err := store.Project(projectID); err != nil {
 		return nil, err
 	}
-	rows, err := store.database.Query(`SELECT id, project_id, field, old_value, new_value, changed_by, changed_at FROM project_changes WHERE project_id = ? ORDER BY id`, projectID)
+	number, err := projectNumberOf(projectID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := store.database.Query(`SELECT id, project_number, field, old_value, new_value, changed_by, changed_at FROM project_changes WHERE project_number = $1 ORDER BY id`, number)
 	if err != nil {
 		return nil, err
 	}
@@ -387,12 +467,46 @@ func (store *Store) Changes(projectID string) ([]Change, error) {
 	changes := []Change{}
 	for rows.Next() {
 		var change Change
-		if err := rows.Scan(&change.ID, &change.ProjectID, &change.Field, &change.OldValue, &change.NewValue, &change.ChangedBy, &change.ChangedAt); err != nil {
+		var projectNumber int64
+		if err := rows.Scan(&change.ID, &projectNumber, &change.Field, &change.OldValue, &change.NewValue, &change.ChangedBy, &change.ChangedAt); err != nil {
 			return nil, err
 		}
+		change.ProjectID = formatProjectID(projectNumber)
 		changes = append(changes, change)
 	}
 	return changes, rows.Err()
+}
+
+const linkColumns = `id, project_number, entity_type, entity_ref, label, note, created_by, created_at`
+
+func scanLink(row scanner) (Link, error) {
+	var link Link
+	var projectNumber int64
+	if err := row.Scan(&link.ID, &projectNumber, &link.EntityType, &link.EntityRef, &link.Label, &link.Note, &link.CreatedBy, &link.CreatedAt); err != nil {
+		return Link{}, err
+	}
+	link.ProjectID = formatProjectID(projectNumber)
+	return link, nil
+}
+
+// insertLink writes a link unless the project owns the entity already, and
+// says whether it wrote one. It never fails on the duplicate, so it leaves a
+// transaction it runs in usable.
+func insertLink(handle queryer, link Link) (Link, bool, error) {
+	number, err := projectNumberOf(link.ProjectID)
+	if err != nil {
+		return Link{}, false, err
+	}
+	err = handle.QueryRow(`INSERT INTO project_links (project_number, entity_type, entity_ref, label, note, created_by, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (project_number, entity_type, entity_ref) DO NOTHING RETURNING id`,
+		number, link.EntityType, link.EntityRef, link.Label, link.Note, link.CreatedBy, link.CreatedAt).Scan(&link.ID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Link{}, false, nil
+	}
+	if err != nil {
+		return Link{}, false, err
+	}
+	return link, true, nil
 }
 
 // AddLink records that a project owns an entity. The caller has checked the
@@ -402,22 +516,23 @@ func (store *Store) AddLink(link Link) (Link, error) {
 		return Link{}, err
 	}
 	link.CreatedAt = store.now().Unix()
-	result, err := store.database.Exec(`INSERT INTO project_links (project_id, entity_type, entity_ref, label, note, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		link.ProjectID, link.EntityType, link.EntityRef, link.Label, link.Note, link.CreatedBy, link.CreatedAt)
-	var sqliteError sqlite3.Error
-	if errors.As(err, &sqliteError) && sqliteError.ExtendedCode == sqlite3.ErrConstraintUnique {
-		return Link{}, fmt.Errorf("%w: %s already owns %s %s", ErrConflict, link.ProjectID, link.EntityType, link.EntityRef)
-	}
+	created, inserted, err := insertLink(store.database, link)
 	if err != nil {
 		return Link{}, err
 	}
-	link.ID, err = result.LastInsertId()
-	return link, err
+	if !inserted {
+		return Link{}, fmt.Errorf("%w: %s already owns %s %s", ErrConflict, link.ProjectID, link.EntityType, link.EntityRef)
+	}
+	return created, nil
 }
 
 // DeleteLink removes one link of a project.
 func (store *Store) DeleteLink(projectID string, linkID int64) error {
-	result, err := store.database.Exec(`DELETE FROM project_links WHERE id = ? AND project_id = ?`, linkID, projectID)
+	number, ok := recordNumberOf(ProjectIDPrefix, projectID)
+	if !ok {
+		return fmt.Errorf("link %d of %s: %w", linkID, projectID, ErrNotFound)
+	}
+	result, err := store.database.Exec(`DELETE FROM project_links WHERE id = $1 AND project_number = $2`, linkID, number)
 	if err != nil {
 		return err
 	}
@@ -440,19 +555,24 @@ type LinkFilter struct {
 func (store *Store) Links(filter LinkFilter) ([]Link, error) {
 	var conditions []string
 	var arguments []any
+	placeholder := func(value any) string {
+		arguments = append(arguments, value)
+		return "$" + strconv.Itoa(len(arguments))
+	}
 	if filter.ProjectID != "" {
-		conditions = append(conditions, "project_id = ?")
-		arguments = append(arguments, filter.ProjectID)
+		number, ok := recordNumberOf(ProjectIDPrefix, filter.ProjectID)
+		if !ok {
+			return []Link{}, nil
+		}
+		conditions = append(conditions, "project_number = "+placeholder(number))
 	}
 	if filter.EntityType != "" {
-		conditions = append(conditions, "entity_type = ?")
-		arguments = append(arguments, filter.EntityType)
+		conditions = append(conditions, "entity_type = "+placeholder(filter.EntityType))
 	}
 	if filter.EntityRef != "" {
-		conditions = append(conditions, "entity_ref = ?")
-		arguments = append(arguments, filter.EntityRef)
+		conditions = append(conditions, "entity_ref = "+placeholder(filter.EntityRef))
 	}
-	query := `SELECT id, project_id, entity_type, entity_ref, label, note, created_by, created_at FROM project_links`
+	query := `SELECT ` + linkColumns + ` FROM project_links`
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
@@ -463,8 +583,8 @@ func (store *Store) Links(filter LinkFilter) ([]Link, error) {
 	defer rows.Close()
 	links := []Link{}
 	for rows.Next() {
-		var link Link
-		if err := rows.Scan(&link.ID, &link.ProjectID, &link.EntityType, &link.EntityRef, &link.Label, &link.Note, &link.CreatedBy, &link.CreatedAt); err != nil {
+		link, err := scanLink(rows)
+		if err != nil {
 			return nil, err
 		}
 		links = append(links, link)

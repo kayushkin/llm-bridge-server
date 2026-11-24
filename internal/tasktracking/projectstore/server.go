@@ -18,36 +18,45 @@ type Handlers struct {
 	SessionFiler *SessionFiler
 }
 
-// RegisterHandlers mounts every route on mux.
+// Health is GET /health.
+func (handlers *Handlers) Health(writer http.ResponseWriter, _ *http.Request) {
+	writeJSON(writer, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// Vocabulary is GET /vocabulary: the kinds, stages, statuses and entity types
+// a caller must not hardcode.
+func (handlers *Handlers) Vocabulary(writer http.ResponseWriter, _ *http.Request) {
+	writeJSON(writer, http.StatusOK, map[string]any{"kinds": Kinds, "stages": Stages, "activity_kinds": ActivityKinds, "suggestion_statuses": SuggestionStatuses,
+		"session_filing_statuses": SessionFilingStatuses, "session_filing_evidence_kinds": SessionFilingEvidenceKinds, "default_stage": DefaultStage, "entity_types": EntityTypes})
+}
+
+// RegisterHandlers mounts every route on mux at the paths the standalone
+// project-store served them, with no prefix and no caller check. The tests use
+// it; the server registers the same methods under its own patterns.
 func RegisterHandlers(mux *http.ServeMux, handlers *Handlers) {
-	mux.HandleFunc("GET /health", func(writer http.ResponseWriter, _ *http.Request) {
-		writeJSON(writer, http.StatusOK, map[string]string{"status": "ok"})
-	})
-	mux.HandleFunc("GET /vocabulary", func(writer http.ResponseWriter, _ *http.Request) {
-		writeJSON(writer, http.StatusOK, map[string]any{"kinds": Kinds, "stages": Stages, "activity_kinds": ActivityKinds, "suggestion_statuses": SuggestionStatuses,
-			"session_filing_statuses": SessionFilingStatuses, "session_filing_evidence_kinds": SessionFilingEvidenceKinds, "default_stage": DefaultStage, "entity_types": EntityTypes})
-	})
-	mux.HandleFunc("GET /projects", handlers.listProjects)
-	mux.HandleFunc("GET /digest", handlers.digest)
-	mux.HandleFunc("GET /projects/{id}/rollup", handlers.projectRollup)
-	mux.HandleFunc("POST /projects", handlers.createProject)
-	mux.HandleFunc("GET /projects/{id}", handlers.getProject)
-	mux.HandleFunc("PATCH /projects/{id}", handlers.patchProject)
-	mux.HandleFunc("GET /projects/{id}/changes", handlers.projectChanges)
-	mux.HandleFunc("GET /projects/{id}/links", handlers.projectLinks)
-	mux.HandleFunc("POST /projects/{id}/links", handlers.addLink)
-	mux.HandleFunc("DELETE /projects/{id}/links/{link_id}", handlers.deleteLink)
-	mux.HandleFunc("GET /links", handlers.findLinks)
-	mux.HandleFunc("GET /projects/{id}/activity", handlers.projectActivity)
-	mux.HandleFunc("POST /projects/{id}/next-steps", handlers.addNextStep)
-	mux.HandleFunc("GET /projects/{id}/suggestions", handlers.listSuggestions)
-	mux.HandleFunc("POST /projects/{id}/suggestions", handlers.requestSuggestions)
-	mux.HandleFunc("POST /suggestions/{suggestion_id}/accept", handlers.acceptSuggestion)
-	mux.HandleFunc("POST /suggestions/{suggestion_id}/dismiss", handlers.dismissSuggestion)
-	mux.HandleFunc("GET /session-filings", handlers.listSessionFilings)
-	mux.HandleFunc("POST /session-filings/run", handlers.runSessionFiler)
-	mux.HandleFunc("POST /session-filings/{session_filing_id}/accept", handlers.acceptSessionFiling)
-	mux.HandleFunc("POST /session-filings/{session_filing_id}/dismiss", handlers.dismissSessionFiling)
+	mux.HandleFunc("GET /health", handlers.Health)
+	mux.HandleFunc("GET /vocabulary", handlers.Vocabulary)
+	mux.HandleFunc("GET /projects", handlers.ListProjects)
+	mux.HandleFunc("GET /digest", handlers.Digest)
+	mux.HandleFunc("GET /projects/{id}/rollup", handlers.ProjectRollup)
+	mux.HandleFunc("POST /projects", handlers.CreateProject)
+	mux.HandleFunc("GET /projects/{id}", handlers.GetProject)
+	mux.HandleFunc("PATCH /projects/{id}", handlers.PatchProject)
+	mux.HandleFunc("GET /projects/{id}/changes", handlers.ProjectChanges)
+	mux.HandleFunc("GET /projects/{id}/links", handlers.ProjectLinks)
+	mux.HandleFunc("POST /projects/{id}/links", handlers.AddLink)
+	mux.HandleFunc("DELETE /projects/{id}/links/{link_id}", handlers.DeleteLink)
+	mux.HandleFunc("GET /links", handlers.FindLinks)
+	mux.HandleFunc("GET /projects/{id}/activity", handlers.ProjectActivity)
+	mux.HandleFunc("POST /projects/{id}/next-steps", handlers.AddNextStep)
+	mux.HandleFunc("GET /projects/{id}/suggestions", handlers.ListSuggestions)
+	mux.HandleFunc("POST /projects/{id}/suggestions", handlers.RequestSuggestions)
+	mux.HandleFunc("POST /suggestions/{suggestion_id}/accept", handlers.AcceptSuggestion)
+	mux.HandleFunc("POST /suggestions/{suggestion_id}/dismiss", handlers.DismissSuggestion)
+	mux.HandleFunc("GET /session-filings", handlers.ListSessionFilings)
+	mux.HandleFunc("POST /session-filings/run", handlers.RunSessionFiler)
+	mux.HandleFunc("POST /session-filings/{session_filing_id}/accept", handlers.AcceptSessionFiling)
+	mux.HandleFunc("POST /session-filings/{session_filing_id}/dismiss", handlers.DismissSessionFiling)
 }
 
 func writeJSON(writer http.ResponseWriter, status int, value any) {
@@ -123,7 +132,7 @@ func projectFieldsOf(fields map[string]json.RawMessage) (ProjectFields, error) {
 	return result, nil
 }
 
-func (handlers *Handlers) listProjects(writer http.ResponseWriter, request *http.Request) {
+func (handlers *Handlers) ListProjects(writer http.ResponseWriter, request *http.Request) {
 	query := request.URL.Query()
 	for name := range query {
 		if !contains([]string{"q", "kind", "parent_id", "include_archived"}, name) {
@@ -139,7 +148,7 @@ func (handlers *Handlers) listProjects(writer http.ResponseWriter, request *http
 	writeJSON(writer, http.StatusOK, map[string]any{"projects": projects})
 }
 
-func (handlers *Handlers) createProject(writer http.ResponseWriter, request *http.Request) {
+func (handlers *Handlers) CreateProject(writer http.ResponseWriter, request *http.Request) {
 	fields, err := decodeFields(request, append(projectFieldNames, "created_by")...)
 	if err != nil {
 		writeError(writer, err)
@@ -167,7 +176,7 @@ func (handlers *Handlers) createProject(writer http.ResponseWriter, request *htt
 	writeJSON(writer, http.StatusCreated, project)
 }
 
-func (handlers *Handlers) getProject(writer http.ResponseWriter, request *http.Request) {
+func (handlers *Handlers) GetProject(writer http.ResponseWriter, request *http.Request) {
 	project, err := handlers.Store.Project(request.PathValue("id"))
 	if err != nil {
 		writeError(writer, err)
@@ -176,7 +185,7 @@ func (handlers *Handlers) getProject(writer http.ResponseWriter, request *http.R
 	writeJSON(writer, http.StatusOK, project)
 }
 
-func (handlers *Handlers) patchProject(writer http.ResponseWriter, request *http.Request) {
+func (handlers *Handlers) PatchProject(writer http.ResponseWriter, request *http.Request) {
 	fields, err := decodeFields(request, append(projectFieldNames, "archived", "changed_by")...)
 	if err != nil {
 		writeError(writer, err)
@@ -211,7 +220,7 @@ func (handlers *Handlers) patchProject(writer http.ResponseWriter, request *http
 	writeJSON(writer, http.StatusOK, project)
 }
 
-func (handlers *Handlers) projectChanges(writer http.ResponseWriter, request *http.Request) {
+func (handlers *Handlers) ProjectChanges(writer http.ResponseWriter, request *http.Request) {
 	changes, err := handlers.Store.Changes(request.PathValue("id"))
 	if err != nil {
 		writeError(writer, err)
@@ -220,7 +229,7 @@ func (handlers *Handlers) projectChanges(writer http.ResponseWriter, request *ht
 	writeJSON(writer, http.StatusOK, map[string]any{"changes": changes})
 }
 
-func (handlers *Handlers) projectLinks(writer http.ResponseWriter, request *http.Request) {
+func (handlers *Handlers) ProjectLinks(writer http.ResponseWriter, request *http.Request) {
 	id := request.PathValue("id")
 	if _, err := handlers.Store.Project(id); err != nil {
 		writeError(writer, err)
@@ -234,7 +243,7 @@ func (handlers *Handlers) projectLinks(writer http.ResponseWriter, request *http
 	writeJSON(writer, http.StatusOK, map[string]any{"links": links})
 }
 
-func (handlers *Handlers) addLink(writer http.ResponseWriter, request *http.Request) {
+func (handlers *Handlers) AddLink(writer http.ResponseWriter, request *http.Request) {
 	fields, err := decodeFields(request, "entity_type", "entity_ref", "note", "created_by")
 	if err != nil {
 		writeError(writer, err)
@@ -283,7 +292,7 @@ func (handlers *Handlers) addLink(writer http.ResponseWriter, request *http.Requ
 	writeJSON(writer, http.StatusCreated, created)
 }
 
-func (handlers *Handlers) deleteLink(writer http.ResponseWriter, request *http.Request) {
+func (handlers *Handlers) DeleteLink(writer http.ResponseWriter, request *http.Request) {
 	linkID, err := strconv.ParseInt(request.PathValue("link_id"), 10, 64)
 	if err != nil {
 		writeError(writer, fmt.Errorf("%w: link id must be a number", ErrInvalid))
@@ -299,7 +308,7 @@ func (handlers *Handlers) deleteLink(writer http.ResponseWriter, request *http.R
 // findLinks is the reverse lookup: which projects own this entity, or, without
 // entity_ref, every link of one type (every filed session, to group a list of
 // sessions by project in one call).
-func (handlers *Handlers) findLinks(writer http.ResponseWriter, request *http.Request) {
+func (handlers *Handlers) FindLinks(writer http.ResponseWriter, request *http.Request) {
 	query := request.URL.Query()
 	filter := LinkFilter{EntityType: query.Get("entity_type"), EntityRef: query.Get("entity_ref")}
 	if filter.EntityType == "" {

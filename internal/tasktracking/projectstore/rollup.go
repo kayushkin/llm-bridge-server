@@ -352,7 +352,7 @@ func (owners *Owners) RepoRollup(ctx context.Context, repoStoreID int64, name st
 	return rollup, nil
 }
 
-func (handlers *Handlers) projectRollup(writer http.ResponseWriter, request *http.Request) {
+func (handlers *Handlers) ProjectRollup(writer http.ResponseWriter, request *http.Request) {
 	rollup, err := BuildRollup(request.Context(), handlers.Store, handlers.Owners, request.PathValue("id"))
 	if err != nil {
 		writeError(writer, err)
@@ -363,7 +363,7 @@ func (handlers *Handlers) projectRollup(writer http.ResponseWriter, request *htt
 
 // digest serves every live project's rollup as text for an agent to read,
 // parents before their children.
-func (handlers *Handlers) digest(writer http.ResponseWriter, request *http.Request) {
+func (handlers *Handlers) Digest(writer http.ResponseWriter, request *http.Request) {
 	projects, err := handlers.Store.Projects(ProjectFilter{})
 	if err != nil {
 		writeError(writer, err)

@@ -175,11 +175,7 @@ func newSessionFilerClient(t *testing.T, bridge *fakeBridge) (client, *time.Time
 	bridge.prompts = map[string]string{}
 	server := httptest.NewServer(bridge.handler(t))
 	t.Cleanup(server.Close)
-	store, err := Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { store.Close() })
+	store := newTestStore(t)
 	storeTime := bridge.now.Add(-4 * time.Hour)
 	store.now = func() time.Time { return storeTime }
 	owners := &Owners{HTTP: server.Client(), ModelHTTP: server.Client(), RepoStoreURL: server.URL, WorkGraphStoreURL: server.URL, BridgeURL: server.URL, BridgeServiceToken: "bridge-token"}
@@ -498,13 +494,9 @@ func TestThePassNeverFilesUnderAProjectTheModelMadeUpAndStopsAtItsLimit(t *testi
 }
 
 func TestAPassIsRefusedWithoutAModelRoleAndWhileAnotherRuns(t *testing.T) {
-	store, err := Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+	store := newTestStore(t)
 	filer := &SessionFiler{Store: store, Owners: &Owners{}, MinimumConfidence: 0.8, Window: time.Hour, SessionsPerPass: 5}
-	if _, err := filer.Run(t.Context(), SessionFilerRunRequest{}); err == nil || !strings.Contains(err.Error(), "PROJECT_STORE_SESSION_FILER_MODEL_ROLE") {
+	if _, err := filer.Run(t.Context(), SessionFilerRunRequest{}); err == nil || !strings.Contains(err.Error(), "project_store.session_filer.model_role") {
 		t.Errorf("a pass with no model role: %v", err)
 	}
 	filer.ModelRole = "balanced"

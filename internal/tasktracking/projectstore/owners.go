@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -26,10 +27,12 @@ type Owners struct {
 	SchedulerURL            string
 	HealthcheckURL          string
 	PrincipalStoreURL       string
-	NoteboardURL            string
-	WorkGraphStoreURL       string
-	BridgeURL               string
-	BridgeServiceToken      string
+	// Noteboard is noteboard itself, in this process: what a note link names
+	// and where a next step is written.
+	Noteboard          Noteboard
+	WorkGraphStoreURL  string
+	BridgeURL          string
+	BridgeServiceToken string
 	// SuggestionModelRole is the model-store role asked for suggested next
 	// steps, through llm-bridge-server's one-shot router.
 	SuggestionModelRole string
@@ -49,6 +52,9 @@ const KanbanServiceTokenHeader = "X-Kanban-Store-Service-Token"
 // getJSON fetches a URL into target. A 404 is ErrNotFound; anything else that
 // is not 200 is ErrOwnerUnavailable.
 func (owners *Owners) getJSON(ctx context.Context, rawURL string, headers map[string]string, target any) error {
+	if err := ownerAddressIsSet(rawURL); err != nil {
+		return err
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return err
@@ -70,6 +76,16 @@ func (owners *Owners) getJSON(ctx context.Context, rawURL string, headers map[st
 	}
 	if err := json.NewDecoder(response.Body).Decode(target); err != nil {
 		return fmt.Errorf("%w: GET %s: %v", ErrOwnerUnavailable, rawURL, err)
+	}
+	return nil
+}
+
+// ownerAddressIsSet refuses a call to a store whose address this server was
+// not given: the URL then starts with a path, and the call fails here, naming
+// what it was for, instead of being sent nowhere.
+func ownerAddressIsSet(rawURL string) error {
+	if strings.HasPrefix(rawURL, "/") {
+		return fmt.Errorf("%w: the address of the store that answers %s is not set on this server", ErrOwnerUnavailable, rawURL)
 	}
 	return nil
 }
@@ -128,11 +144,7 @@ func (owners *Owners) Label(ctx context.Context, entityType, entityRef string) (
 		err = owners.getJSON(ctx, owners.PrincipalStoreURL+"/principals/"+escaped, nil, &principal)
 		label = principal.DisplayName
 	case EntityNote:
-		var item struct {
-			Title string `json:"title"`
-		}
-		err = owners.getJSON(ctx, owners.NoteboardURL+"/api/items/"+escaped, nil, &item)
-		label = item.Title
+		label, err = owners.Noteboard.ItemTitle(ctx, entityRef)
 	case EntitySession:
 		var session struct {
 			DisplayName string `json:"display_name"`
