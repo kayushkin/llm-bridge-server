@@ -1,0 +1,14 @@
+[Unit]
+Description=Model store API
+After=network.target
+
+[Service]
+# `serve` is a subcommand of the ms CLI binary (cmd/ms), installed as
+# ~/bin/model-store by deploy.sh. :8155 is the canonical model-store port —
+# the pre-2026-04-12 server's default of :8150 belongs to forge now.
+ExecStart=/home/kayushkincom/bin/model-store serve --addr :8155
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,20 @@
+# Binaries
+model-store
+/ms
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binaries
+*.test
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# DB files
+*.db
+*.db-shm
+*.db-wal
