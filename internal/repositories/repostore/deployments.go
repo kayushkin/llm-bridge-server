@@ -72,22 +72,10 @@ func (s *Store) RecordDeployment(repoID int64, d *Deployment) error {
 		return err
 	}
 	d.RepoID, d.CreatedAt = repoID, now()
-	res, err := s.db.Exec(`
+	return s.db.QueryRow(`
 		INSERT INTO deployments (repo_id, commit_sha, branch, default_branch, source_path, on_default, dirty, override_reason, refusals, deployed_by, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		repoID, d.CommitSHA, d.Branch, d.DefaultBranch, d.SourcePath, boolInt(d.OnDefault), boolInt(d.Dirty), d.OverrideReason, string(refusals), d.DeployedBy, d.CreatedAt)
-	if err != nil {
-		return err
-	}
-	d.ID, err = res.LastInsertId()
-	return err
-}
-
-func boolInt(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
+		repoID, d.CommitSHA, d.Branch, d.DefaultBranch, d.SourcePath, d.OnDefault, d.Dirty, d.OverrideReason, string(refusals), d.DeployedBy, d.CreatedAt).Scan(&d.ID)
 }
 
 const deploymentColumns = `d.id, d.repo_id, r.name, d.commit_sha, d.branch, d.default_branch, d.source_path, d.on_default, d.dirty, d.override_reason, d.refusals, d.deployed_by, d.created_at`
@@ -96,12 +84,10 @@ type deploymentScanner interface{ Scan(dest ...any) error }
 
 func scanDeployment(row deploymentScanner) (*Deployment, error) {
 	var d Deployment
-	var onDefault, dirty int
 	var refusals string
-	if err := row.Scan(&d.ID, &d.RepoID, &d.RepoName, &d.CommitSHA, &d.Branch, &d.DefaultBranch, &d.SourcePath, &onDefault, &dirty, &d.OverrideReason, &refusals, &d.DeployedBy, &d.CreatedAt); err != nil {
+	if err := row.Scan(&d.ID, &d.RepoID, &d.RepoName, &d.CommitSHA, &d.Branch, &d.DefaultBranch, &d.SourcePath, &d.OnDefault, &d.Dirty, &d.OverrideReason, &refusals, &d.DeployedBy, &d.CreatedAt); err != nil {
 		return nil, err
 	}
-	d.OnDefault, d.Dirty = onDefault == 1, dirty == 1
 	d.Refusals = []string{}
 	if err := json.Unmarshal([]byte(refusals), &d.Refusals); err != nil {
 		return nil, fmt.Errorf("deployment %d refusals: %w", d.ID, err)
@@ -117,7 +103,7 @@ func (s *Store) ListDeployments(repoID int64, limit int) ([]Deployment, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 50
 	}
-	rows, err := s.db.Query(`SELECT `+deploymentColumns+` FROM deployments d JOIN repos r ON r.id=d.repo_id WHERE d.repo_id=? ORDER BY d.id DESC LIMIT ?`, repoID, limit)
+	rows, err := s.db.Query(`SELECT `+deploymentColumns+` FROM deployments d JOIN repos r ON r.id=d.repo_id WHERE d.repo_id=$1 ORDER BY d.id DESC LIMIT $2`, repoID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -128,7 +114,7 @@ func (s *Store) ListDeployments(repoID int64, limit int) ([]Deployment, error) {
 // LatestDeployments returns the newest deployment of every repo that has one.
 func (s *Store) LatestDeployments() ([]Deployment, error) {
 	rows, err := s.db.Query(`SELECT ` + deploymentColumns + ` FROM deployments d JOIN repos r ON r.id=d.repo_id
-		WHERE d.id IN (SELECT MAX(id) FROM deployments GROUP BY repo_id) ORDER BY r.name`)
+		WHERE d.id IN (SELECT MAX(id) FROM deployments GROUP BY repo_id) ORDER BY r.name COLLATE "C"`)
 	if err != nil {
 		return nil, err
 	}

@@ -2,11 +2,9 @@ package repostore
 
 import (
 	"bytes"
-	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strconv"
 	"testing"
 )
@@ -176,60 +174,6 @@ func TestFilteringOffIsNotTheSameQuestionAsFilteringForUnstated(t *testing.T) {
 	}
 	if len(only) != 1 || only[0].Name != "b" {
 		t.Fatalf("unstated filter returned %v, want [b]", repoNames(only))
-	}
-}
-
-// schema.sql is CREATE TABLE IF NOT EXISTS, which does nothing to a table that
-// already exists. Without the ALTER, a column added to the schema reaches a
-// fresh database and never reaches the live one — where every existing row is.
-func TestOpeningADatabaseFromTheOlderSchemaAddsTheColumnAndKeepsItsRows(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "repo-store.db")
-
-	old, err := sql.Open("sqlite3", dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = old.Exec(`
-		CREATE TABLE repos (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			name TEXT UNIQUE NOT NULL,
-			path TEXT NOT NULL DEFAULT '',
-			git_remote TEXT NOT NULL DEFAULT '',
-			description TEXT NOT NULL DEFAULT '',
-			tags TEXT NOT NULL DEFAULT '',
-			tag_overrides TEXT NOT NULL DEFAULT '',
-			created_at INTEGER NOT NULL,
-			updated_at INTEGER NOT NULL
-		);
-		INSERT INTO repos (name, path, tags, created_at, updated_at)
-		VALUES ('dash', '/x/dash', '["go"]', 1, 1);
-	`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := old.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	s, err := Open(dir)
-	if err != nil {
-		t.Fatalf("open a database written by the older schema: %v", err)
-	}
-	defer s.Close()
-
-	got, err := s.GetRepoByName("dash")
-	if err != nil {
-		t.Fatalf("the pre-existing row did not survive the migration: %v", err)
-	}
-	if got.Provenance != ProvenanceUnstated {
-		t.Fatalf("migrated row has provenance %q, want unstated", string(got.Provenance))
-	}
-	if !hasTag(got.EffectiveTags, "go") {
-		t.Fatalf("migrated row lost its tags: %v", got.EffectiveTags)
-	}
-	if _, err := s.SetProvenance(got.ID, ProvenanceOurs); err != nil {
-		t.Fatalf("the added column is not writable: %v", err)
 	}
 }
 

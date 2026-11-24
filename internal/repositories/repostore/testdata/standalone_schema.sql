@@ -1,3 +1,5 @@
+-- The schema of the standalone repo-store's SQLite file, kept so the import
+-- test can make one. The module's own tables are in migrations/.
 -- repo-store schema
 -- Canonical registry of repositories and their detected "signature" (a set of
 -- language/framework/build/test tags). This is stable, session-independent

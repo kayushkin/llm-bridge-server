@@ -3,7 +3,7 @@
 # ./generate-ts.sh after changing a wire type. Only the files that declare
 # wire types are read; the rest hold internals.
 packages:
-  - path: "github.com/kayushkin/work-graph-store"
+  - path: "github.com/kayushkin/llm-bridge-server/internal/repositories/workgraphstore"
     output_path: "ts/model.ts"
     include_files:
       - "graph.go"

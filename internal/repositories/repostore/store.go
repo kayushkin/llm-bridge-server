@@ -2,114 +2,40 @@ package repostore
 
 import (
 	"database/sql"
+	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 )
 
+// ErrNotFound is a repo id, name or path no row has.
 var ErrNotFound = errors.New("not found")
 
-// DefaultDataDir is ~/.config/repo-store.
-func DefaultDataDir() string {
-	home, err := os.UserHomeDir()
+//go:embed migrations/*.sql
+var migrationFiles embed.FS
+
+// Module is the Postgres schema and role the store keeps its records in, with
+// the migrations that build them.
+func Module() (postgresstorage.Module, error) {
+	migrations, err := postgresstorage.MigrationsFromFiles(migrationFiles, "migrations")
 	if err != nil {
-		home = "."
+		return postgresstorage.Module{}, err
 	}
-	return filepath.Join(home, ".config", "repo-store")
+	return postgresstorage.Module{Schema: "repos", Role: "repos_module", Migrations: migrations}, nil
 }
 
+// Store is the registry, the deploy ledger and the pull-request copy, in the
+// module's schema.
 type Store struct {
-	db      *sql.DB
-	dataDir string
+	db *sql.DB
 }
 
-// Open opens or creates the store rooted at dataDir. Pass "" for the default.
-func Open(dataDir string) (*Store, error) {
-	if dataDir == "" {
-		dataDir = DefaultDataDir()
-	}
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
-		return nil, fmt.Errorf("mkdir %s: %w", dataDir, err)
-	}
-	dbPath := filepath.Join(dataDir, "repo-store.db")
-	db, err := sql.Open("sqlite3", dbPath+"?_foreign_keys=on")
-	if err != nil {
-		return nil, fmt.Errorf("open db: %w", err)
-	}
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("enable WAL: %w", err)
-	}
-	// Columns first, then schema.sql. schema.sql creates indexes over columns
-	// it also declares, and an index over a column an older database lacks
-	// cannot be created until the column is there.
-	if err := addMissingColumns(db); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("migrate: %w", err)
-	}
-	if _, err := db.Exec(schemaSQL); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("migrate: %w", err)
-	}
-	return &Store{db: db, dataDir: dataDir}, nil
-}
-
-// addMissingColumns brings a database created by an older schema up to the
-// current one. schema.sql is all CREATE ... IF NOT EXISTS, which creates a
-// missing table and does nothing at all to a table that already exists — so a
-// column added to schema.sql reaches a fresh database and never reaches the
-// live one, which is where every existing row is. Every column here must be
-// nullable or defaulted, because ALTER TABLE ADD COLUMN cannot fill existing
-// rows.
-//
-// A database with no repos table at all is a fresh one: there is nothing to
-// alter, and schema.sql creates the table with every column already on it.
-func addMissingColumns(db *sql.DB) error {
-	want := []struct{ name, ddl string }{
-		{"provenance", `ALTER TABLE repos ADD COLUMN provenance TEXT NOT NULL DEFAULT ''`},
-	}
-	have, err := columnsOf(db, "repos")
-	if err != nil {
-		return err
-	}
-	if len(have) == 0 {
-		return nil
-	}
-	for _, c := range want {
-		if _, ok := have[c.name]; ok {
-			continue
-		}
-		if _, err := db.Exec(c.ddl); err != nil {
-			return fmt.Errorf("add column %s: %w", c.name, err)
-		}
-	}
-	return nil
-}
-
-func columnsOf(db *sql.DB, table string) (map[string]struct{}, error) {
-	rows, err := db.Query(`SELECT name FROM pragma_table_info(?)`, table)
-	if err != nil {
-		return nil, fmt.Errorf("read columns of %s: %w", table, err)
-	}
-	defer rows.Close()
-	out := map[string]struct{}{}
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return nil, err
-		}
-		out[name] = struct{}{}
-	}
-	return out, rows.Err()
-}
-
-func (s *Store) Close() error    { return s.db.Close() }
-func (s *Store) DataDir() string { return s.dataDir }
+// New wraps a pool opened on the module (postgresstorage.Open), migrated.
+func New(db *sql.DB) *Store { return &Store{db: db} }
 
 func now() int64 { return time.Now().Unix() }
 
@@ -139,31 +65,25 @@ func (s *Store) UpsertRepo(r *Repo) (bool, error) {
 	tags := encodeStrings(r.Tags)
 	overrides := encodeStrings(r.TagOverrides)
 
-	res, err := s.db.Exec(`
-		UPDATE repos SET path=?, git_remote=?, description=?, tags=?, tag_overrides=?, updated_at=?
-		WHERE name=?
-	`, r.Path, r.GitRemote, r.Description, tags, overrides, r.UpdatedAt, r.Name)
+	// One statement, so two upserts of one name at once cannot both insert:
+	// the second finds the first's row through the name's unique index. xmax
+	// is 0 only on a row this statement inserted.
+	var inserted bool
+	err := s.db.QueryRow(`
+		INSERT INTO repos (name, path, git_remote, description, tags, tag_overrides, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (name) DO UPDATE SET path=excluded.path, git_remote=excluded.git_remote, description=excluded.description,
+			tags=excluded.tags, tag_overrides=excluded.tag_overrides, updated_at=excluded.updated_at
+		RETURNING id, provenance, (xmax = 0)
+	`, r.Name, r.Path, r.GitRemote, r.Description, tags, overrides, r.CreatedAt, r.UpdatedAt).Scan(&r.ID, &r.Provenance, &inserted)
 	if err != nil {
 		return false, err
 	}
-	if n, _ := res.RowsAffected(); n > 0 {
-		if err := s.db.QueryRow(`SELECT id, provenance FROM repos WHERE name=?`, r.Name).Scan(&r.ID, &r.Provenance); err != nil {
-			return false, err
-		}
+	if !inserted {
 		r.EffectiveTags = unionSorted(r.Tags, r.TagOverrides)
 		r.GitHubURL = GitHubURLOfRemote(r.GitRemote)
 		return false, nil
 	}
-
-	res, err = s.db.Exec(`
-		INSERT INTO repos (name, path, git_remote, description, tags, tag_overrides, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, r.Name, r.Path, r.GitRemote, r.Description, tags, overrides, r.CreatedAt, r.UpdatedAt)
-	if err != nil {
-		return false, err
-	}
-	r.ID, _ = res.LastInsertId()
-	r.Provenance = ProvenanceUnstated
 	r.EffectiveTags = unionSorted(r.Tags, r.TagOverrides)
 	r.GitHubURL = GitHubURLOfRemote(r.GitRemote)
 	return true, nil
@@ -178,11 +98,11 @@ func (s *Store) SetProvenance(id int64, p Provenance) (*Repo, error) {
 	if !p.IsKnown() {
 		return nil, fmt.Errorf("repo: unknown provenance %q", string(p))
 	}
-	// No rows-affected check: an UPDATE that matches nothing is not an error in
-	// SQLite, and the read below already answers ErrNotFound for exactly that
-	// id. A second check here would be a branch no input can reach, reading to
-	// a later maintainer as a case somebody handled.
-	if _, err := s.db.Exec(`UPDATE repos SET provenance=?, updated_at=? WHERE id=?`, string(p), now(), id); err != nil {
+	// No rows-affected check: an UPDATE that matches nothing is not an error,
+	// and the read below already answers ErrNotFound for exactly that id. A
+	// second check here would be a branch no input can reach, reading to a
+	// later maintainer as a case somebody handled.
+	if _, err := s.db.Exec(`UPDATE repos SET provenance=$1, updated_at=$2 WHERE id=$3`, string(p), now(), id); err != nil {
 		return nil, err
 	}
 	return s.GetRepo(id)
@@ -227,21 +147,23 @@ func (s *Store) SetIdentity(id int64, ident RepoIdentity) (*Repo, error) {
 	}
 	defer tx.Rollback()
 
+	// The row is locked for the rest of the transaction, so two renames of
+	// one repo take turns.
 	var exists int64
-	if err := tx.QueryRow(`SELECT id FROM repos WHERE id=?`, id).Scan(&exists); err != nil {
+	if err := tx.QueryRow(`SELECT id FROM repos WHERE id=$1 FOR UPDATE`, id).Scan(&exists); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
 	var other int64
-	switch err := tx.QueryRow(`SELECT id FROM repos WHERE name=? AND id<>?`, ident.Name, id).Scan(&other); {
+	switch err := tx.QueryRow(`SELECT id FROM repos WHERE name=$1 AND id<>$2`, ident.Name, id).Scan(&other); {
 	case err == nil:
 		return nil, fmt.Errorf("%w: %q is repo %d", ErrNameTaken, ident.Name, other)
 	case err != sql.ErrNoRows:
 		return nil, err
 	}
-	switch err := tx.QueryRow(`SELECT id FROM repos WHERE path=? AND id<>?`, ident.Path, id).Scan(&other); {
+	switch err := tx.QueryRow(`SELECT id FROM repos WHERE path=$1 AND id<>$2`, ident.Path, id).Scan(&other); {
 	case err == nil:
 		return nil, fmt.Errorf("%w: %q is repo %d", ErrPathTaken, ident.Path, other)
 	case err != sql.ErrNoRows:
@@ -249,16 +171,16 @@ func (s *Store) SetIdentity(id int64, ident RepoIdentity) (*Repo, error) {
 	}
 
 	if ident.Tags != nil {
-		_, err = tx.Exec(`UPDATE repos SET name=?, path=?, git_remote=?, tags=?, updated_at=? WHERE id=?`,
+		_, err = tx.Exec(`UPDATE repos SET name=$1, path=$2, git_remote=$3, tags=$4, updated_at=$5 WHERE id=$6`,
 			ident.Name, ident.Path, ident.GitRemote, encodeStrings(ident.Tags), now(), id)
 	} else {
-		_, err = tx.Exec(`UPDATE repos SET name=?, path=?, git_remote=?, updated_at=? WHERE id=?`,
+		_, err = tx.Exec(`UPDATE repos SET name=$1, path=$2, git_remote=$3, updated_at=$4 WHERE id=$5`,
 			ident.Name, ident.Path, ident.GitRemote, now(), id)
 	}
 	if err != nil {
 		return nil, err
 	}
-	repo, err := scanRepo(tx.QueryRow(`SELECT `+repoCols+` FROM repos WHERE id=?`, id))
+	repo, err := scanRepo(tx.QueryRow(`SELECT `+repoCols+` FROM repos WHERE id=$1`, id))
 	if err != nil {
 		return nil, err
 	}
@@ -288,15 +210,15 @@ func scanRepo(row interface{ Scan(...any) error }) (*Repo, error) {
 }
 
 func (s *Store) GetRepo(id int64) (*Repo, error) {
-	return scanRepo(s.db.QueryRow(`SELECT `+repoCols+` FROM repos WHERE id=?`, id))
+	return scanRepo(s.db.QueryRow(`SELECT `+repoCols+` FROM repos WHERE id=$1`, id))
 }
 
 func (s *Store) GetRepoByName(name string) (*Repo, error) {
-	return scanRepo(s.db.QueryRow(`SELECT `+repoCols+` FROM repos WHERE name=?`, name))
+	return scanRepo(s.db.QueryRow(`SELECT `+repoCols+` FROM repos WHERE name=$1`, name))
 }
 
 func (s *Store) GetRepoByPath(path string) (*Repo, error) {
-	return scanRepo(s.db.QueryRow(`SELECT `+repoCols+` FROM repos WHERE path=?`, path))
+	return scanRepo(s.db.QueryRow(`SELECT `+repoCols+` FROM repos WHERE path=$1 ORDER BY id LIMIT 1`, path))
 }
 
 // ListFilter narrows ListRepos. Tag matches against the effective tag set
@@ -313,26 +235,30 @@ type ListFilter struct {
 }
 
 func (s *Store) ListRepos(f ListFilter) ([]Repo, error) {
-	q := `SELECT ` + repoCols + ` FROM repos WHERE 1=1`
+	q := `SELECT ` + repoCols + ` FROM repos WHERE true`
 	var args []any
+	placeholder := func(value any) string {
+		args = append(args, value)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	// ILIKE: the filters have always matched without regard to case, as
+	// SQLite's LIKE does for ASCII.
 	if f.Tag != "" {
 		// Match the tag in either detected tags or manual overrides.
-		q += ` AND (tags LIKE ? OR tag_overrides LIKE ?)`
-		args = append(args, `%"`+f.Tag+`"%`, `%"`+f.Tag+`"%`)
+		tag := placeholder(`%"` + f.Tag + `"%`)
+		q += ` AND (tags ILIKE ` + tag + ` OR tag_overrides ILIKE ` + tag + `)`
 	}
 	if f.Provenance != nil {
-		q += ` AND provenance=?`
-		args = append(args, string(*f.Provenance))
+		q += ` AND provenance=` + placeholder(string(*f.Provenance))
 	}
 	if f.Query != "" {
-		like := "%" + f.Query + "%"
-		q += ` AND (name LIKE ? OR description LIKE ? OR path LIKE ?)`
-		args = append(args, like, like, like)
+		like := placeholder("%" + f.Query + "%")
+		q += ` AND (name ILIKE ` + like + ` OR description ILIKE ` + like + ` OR path ILIKE ` + like + `)`
 	}
-	q += ` ORDER BY name`
+	// Byte order, as SQLite sorted names, not the database's language order.
+	q += ` ORDER BY name COLLATE "C"`
 	if f.Limit > 0 {
-		q += ` LIMIT ?`
-		args = append(args, f.Limit)
+		q += ` LIMIT ` + placeholder(f.Limit)
 	}
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
@@ -351,11 +277,15 @@ func (s *Store) ListRepos(f ListFilter) ([]Repo, error) {
 }
 
 func (s *Store) DeleteRepo(id int64) error {
-	res, err := s.db.Exec(`DELETE FROM repos WHERE id=?`, id)
+	res, err := s.db.Exec(`DELETE FROM repos WHERE id=$1`, id)
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
 		return ErrNotFound
 	}
 	return nil

@@ -1,8 +1,9 @@
 package repostore
 
 import (
-	"path/filepath"
 	"testing"
+
+	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 )
 
 func hasTag(tags []string, want string) bool {
@@ -14,14 +15,16 @@ func hasTag(tags []string, want string) bool {
 	return false
 }
 
+// openTest gives the test a store on a Postgres database of its own, made
+// from a template with the module migrated (postgresstorage/postgrestest).
 func openTest(t *testing.T) *Store {
 	t.Helper()
-	s, err := Open(filepath.Join(t.TempDir(), "rs"))
+	module, err := Module()
 	if err != nil {
-		t.Fatalf("open: %v", err)
+		t.Fatalf("module: %v", err)
 	}
-	t.Cleanup(func() { s.Close() })
-	return s
+	database := postgrestest.NewDatabase(t, module)
+	return New(database.Open(module))
 }
 
 func TestUpsertGetRepo(t *testing.T) {
