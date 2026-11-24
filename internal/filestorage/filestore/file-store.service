@@ -1,0 +1,29 @@
+[Unit]
+Description=File Store — uploaded bytes: a ticket's attachment, a mail's attachment, a chat's image
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/home/kayushkincom/bin/file-store
+
+# Loopback, deliberately. This service decides nothing about who may read a
+# file: the service that owns the thing a file hangs on decides, and then
+# fetches the bytes with the service token. A wildcard bind, or a proxy from a
+# browser-facing host, would hand every file to whoever held the token.
+# main.go defaults to the same address.
+Environment=FILE_STORE_ADDR=127.0.0.1:8317
+
+# FILE_STORE_SERVICE_TOKEN is not here: this file is tracked. It comes from the
+# host-local drop-in file-store.service.d/service-token.conf, which reads
+# ~/.config/file-store-tokens.env (mode 600). That file is this service's and
+# its callers' alone — NOT the shared principal-gating file, which
+# llm-bridge-server also reads and whose variables every agent session would
+# inherit.
+
+Environment=HOME=/home/kayushkincom
+WorkingDirectory=/home/kayushkincom/repos/file-store
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,10 @@
+# TypeScript types generated from this store's Go wire types. The Go structs
+# are the source of truth; ts/ is a render of them. Regenerate with
+# ./generate-ts.sh after changing a wire type.
+packages:
+  - path: "github.com/kayushkin/file-store"
+    output_path: "ts/model.ts"
+    type_mappings:
+      "time.Time": "string"
+    include_files:
+      - "file.go"
