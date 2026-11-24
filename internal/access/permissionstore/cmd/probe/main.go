@@ -13,7 +13,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/kayushkin/permission-store/splitter"
+	"github.com/kayushkin/llm-bridge-server/internal/access/permissionstore/splitter"
 )
 
 func main() {

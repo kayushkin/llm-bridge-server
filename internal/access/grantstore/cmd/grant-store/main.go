@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"time"
 
-	grantstore "github.com/kayushkin/grant-store"
+	grantstore "github.com/kayushkin/llm-bridge-server/internal/access/grantstore"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/kayushkin/permission-store/splitter"
+	"github.com/kayushkin/llm-bridge-server/internal/access/permissionstore/splitter"
 )
 
 // EvaluateRequest is the input to the rule engine.

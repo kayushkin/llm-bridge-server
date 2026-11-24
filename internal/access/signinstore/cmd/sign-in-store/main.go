@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	signinstore "github.com/kayushkin/sign-in-store"
+	signinstore "github.com/kayushkin/llm-bridge-server/internal/access/signinstore"
 )
 
 // runCommand runs a command given on the command line instead of the

@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	principalstore "github.com/kayushkin/principal-store"
+	principalstore "github.com/kayushkin/llm-bridge-server/internal/access/principalstore"
 )
 
 func main() {

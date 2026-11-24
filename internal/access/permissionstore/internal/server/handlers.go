@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"strconv"
 
-	permstore "github.com/kayushkin/permission-store"
+	permstore "github.com/kayushkin/llm-bridge-server/internal/access/permissionstore"
 )
 
 // --- health -------------------------------------------------------------

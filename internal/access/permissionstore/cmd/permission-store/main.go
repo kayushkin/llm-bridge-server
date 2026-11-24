@@ -12,8 +12,8 @@ import (
 	"syscall"
 	"time"
 
-	permstore "github.com/kayushkin/permission-store"
-	"github.com/kayushkin/permission-store/internal/server"
+	permstore "github.com/kayushkin/llm-bridge-server/internal/access/permissionstore"
+	"github.com/kayushkin/llm-bridge-server/internal/access/permissionstore/internal/server"
 )
 
 func main() {

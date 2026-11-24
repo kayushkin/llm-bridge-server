@@ -6,7 +6,7 @@ package server
 import (
 	"net/http"
 
-	permstore "github.com/kayushkin/permission-store"
+	permstore "github.com/kayushkin/llm-bridge-server/internal/access/permissionstore"
 )
 
 // Server bundles the engine + store with an http.Handler.
