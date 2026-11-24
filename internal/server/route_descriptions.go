@@ -294,7 +294,6 @@ var routeDescriptions = map[string]routeDescription{
 	"GET /api/runner/binary":                     {routeGroupRunners, "Runner and wrapper binaries (`?os=&arch=&name=`)"},
 	"POST /api/runner/seed/broadcast":            {routeGroupRunners, "Tell every runner to re-sync agent and skill files"},
 	"/log-store/":                                {routeGroupSessions, "log-store's own routes (`/log-store/api/v1/…`, `/log-store/health`), answered in this process, for callers written against the standalone service"},
-	"/api/agent-store/":                          {routeGroupRunners, "Runners read agent-store through this"},
 	"/api/harness-proxy/{harness}/{rest...}":     {routeGroupRunners, "Forward to a harness backend (inber, hermes) on this host. Checks no credential; nothing calls it"},
 	"POST /permission/cc-prehook/{bridge_id}":    {routeGroupRunners, "Claude Code's permission check before each tool call"},
 	"POST /permission/codex-prehook/{bridge_id}": {routeGroupRunners, "The same for codex"},

@@ -3,13 +3,13 @@ package server
 import (
 	"encoding/json"
 	"io"
-	"path/filepath"
 	"strings"
 	"testing"
 
+	modelstore "github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
+	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 	"github.com/kayushkin/llm-bridge/msg"
-	modelstore "github.com/kayushkin/model-store"
 )
 
 // testModelStore opens a throwaway registry seeded with what model resolution
@@ -19,11 +19,7 @@ import (
 // nil store fails resolution loudly by design (see model_selection.go).
 func testModelStore(t *testing.T) *modelstore.Store {
 	t.Helper()
-	mds, err := modelstore.Open(filepath.Join(t.TempDir(), "models.db"))
-	if err != nil {
-		t.Fatalf("open model-store: %v", err)
-	}
-	t.Cleanup(func() { mds.Close() })
+	mds := openTestModelStore(t)
 	if err := mds.AddProvider(modelstore.Provider{ID: "mock", Name: "Mock"}); err != nil {
 		t.Fatalf("seed provider: %v", err)
 	}
@@ -253,4 +249,15 @@ func TestForkCarriesTheParentHarnessConfig(t *testing.T) {
 	if model, _ := pinnedModel(t, row.HarnessConfig); model != "mock-model-alt" {
 		t.Fatalf("fork pinned model = %q; want the parent's mock-model-alt — a fork used to lose it entirely", model)
 	}
+}
+
+// openTestModelStore gives the test an empty registry on a Postgres database of
+// its own (postgresstorage/postgrestest).
+func openTestModelStore(t *testing.T) *modelstore.Store {
+	t.Helper()
+	module, err := modelstore.Module()
+	if err != nil {
+		t.Fatalf("model-store module: %v", err)
+	}
+	return modelstore.New(postgrestest.NewDatabase(t, module).Open(module))
 }

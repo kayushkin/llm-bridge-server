@@ -1,0 +1,192 @@
+#!/usr/bin/env bash
+# model-poll — daily model-store autopilot.
+#
+# Runs `ms sync openai anthropic` (upserts the live provider catalogs,
+# preserving user-set fields and only ADDING genuinely new models at priority
+# 100 with estimated costs), then:
+#
+#   1. OpenAI (gpt / codex / o-series) — AUTO-APPLIED, no confirmation:
+#      - COSTS come from OpenRouter's models API (https://openrouter.ai/api/v1/models),
+#        which mirrors OpenAI's published list price at parity for openai/* models
+#        (cross-checked: gpt-4, gpt-4.1, gpt-5, gpt-5-pro, o1, o3-mini all match
+#        OpenAI's site exactly). ALL OpenAI models are re-priced from it every run,
+#        so the store tracks published pricing and price cuts (e.g. o3 10/40 -> 2/8)
+#        without anyone guessing. A suffix-tier heuristic is used ONLY when a brand
+#        new model isn't on OpenRouter yet, and that case is logged as an ESTIMATE.
+#      - PRIORITY / stale-disable stay a local heuristic (failover preference isn't
+#        published anywhere), applied to NEW models only.
+#
+#   2. Anthropic — NOTIFY ONLY. New Anthropic models are relayed via herald `ask`
+#      but nothing is changed automatically, because the claude_code default runs on
+#      the Claude Max subscription and a silent default swap would move real spend.
+#      (OpenRouter's anthropic prices are API rates, irrelevant to the Max sub, so we
+#      do not touch Anthropic costs.)
+#
+# It does NOT touch the best/default/efficient roles: those live in model-store's
+# model_roles table and are set by the operator with `ms role set` (see step 3).
+#
+# Host-local: depends on ~/bin/ask (herald) and ~/bin/ms. This file is the
+# source; deploy.sh installs it as ~/bin/model-poll, which scheduler job 37 runs
+# daily at 06:00. It calls ~/bin/ms because deploy.sh builds that one: an `ms`
+# built by hand in the repo clone is never rebuilt and runs old sync code.
+set -uo pipefail
+
+MS="$HOME/bin/ms"
+STORE_API=http://localhost:8155/api/models
+OPENROUTER_API=https://openrouter.ai/api/v1/models
+ASK="$HOME/bin/ask"
+PREFS="$HOME/.config/llm-bridge/bridge-prefs.json"
+
+snapshot() {  # "id<TAB>provider" per line, sorted the way comm compares
+  # Python's sort and comm's locale order disagree on "-" and ".", so comm
+  # warned "not in sorted order" and could miss a new model. Sort in the C
+  # locale and compare in it too.
+  curl -sfS "$STORE_API" | python3 -c \
+    'import json,sys; print("\n".join(m["id"]+"\t"+m["provider"] for m in json.load(sys.stdin)))' \
+    | LC_ALL=C sort
+}
+
+claude_default() {  # concrete model id used as the claude_code default
+  python3 -c 'import json;print(json.load(open("'"$PREFS"'"))["defaults"]["claude_code"]["model"])' 2>/dev/null
+}
+
+before=$(snapshot)
+
+echo "[model-poll] syncing openai + anthropic..."
+"$MS" sync openai anthropic 2>&1
+
+after=$(snapshot)
+
+# Newly-present model ids (present after, absent before), split by provider.
+new=$(LC_ALL=C comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after"))
+new_openai=$(printf '%s\n' "$new" | awk -F'\t' '$2=="openai"{print $1}' | grep -v '^$' || true)
+new_anthropic=$(printf '%s\n' "$new" | awk -F'\t' '$2=="anthropic"{print $1}' | grep -v '^$' || true)
+
+# ---------------------------------------------------------------------------
+# 1. OpenAI: re-price everything from OpenRouter; set priority for new models.
+# ---------------------------------------------------------------------------
+echo "[model-poll] pricing OpenAI models from OpenRouter + normalizing new ones..."
+NEW_OPENAI="$new_openai" MS="$MS" STORE_API="$STORE_API" OPENROUTER_API="$OPENROUTER_API" python3 - <<'PYEOF'
+import json, os, subprocess, urllib.request
+MS      = os.environ["MS"]
+NEW     = set(x for x in os.environ["NEW_OPENAI"].split() if x)
+STALE   = {"gpt-4", "gpt-4-turbo", "o1", "o1-pro"}  # superseded, over-priced
+
+def ms(*a):
+    r = subprocess.run([MS, *a], capture_output=True, text=True)
+    print(("  ok  " if r.returncode==0 else "  ERR ") + " ".join(a) +
+          ("" if r.returncode==0 else " :: "+r.stderr.strip()))
+
+def get_json(url):
+    with urllib.request.urlopen(url, timeout=20) as r:
+        return json.load(r)
+
+# Priority + enabled: local failover policy, applied to NEW models only.
+def new_model_policy(mid):
+    if mid in STALE:                                        return {"enabled": False}
+    if "image" in mid:                                      return {"prio": 95}
+    if mid == "o3-mini":                                    return {"prio": 42}
+    if mid == "o4-mini":                                    return {"prio": 41}
+    if mid == "gpt-4.1":                                    return {"prio": 45}
+    if mid == "gpt-4.1-mini":                               return {"prio": 58}
+    if mid == "gpt-4.1-nano":                               return {"prio": 59}
+    if mid.endswith("-nano"):                               return {"prio": 39}
+    if mid.endswith("-mini") or mid.endswith("codex-mini"): return {"prio": 38}
+    if mid.endswith("-pro"):                                return {"prio": 80}
+    if "codex" in mid:                                      return {"prio": 33}
+    if mid.startswith("gpt-5"):                             return {"prio": 34}
+    return {}
+
+# Cost fallback ONLY when OpenRouter has no entry for a new model. Clearly an estimate.
+def heuristic_cost(mid):
+    if mid.endswith("-nano"):                               return (0.05, 0.4)
+    if mid.endswith("-mini") or mid.endswith("codex-mini"): return (0.25, 2.0)
+    if mid.endswith("-pro"):                                return (15.0, 120.0)
+    return (1.25, 10.0)  # base gpt-5 / codex tier
+
+# --- OpenRouter published pricing (per MTok), openai/* only ---
+orp = {}
+try:
+    for m in get_json(os.environ["OPENROUTER_API"])["data"]:
+        if m["id"].startswith("openai/"):
+            bid = m["id"].split("/", 1)[1]
+            orp[bid] = (round(float(m["pricing"]["prompt"])*1e6, 4),
+                        round(float(m["pricing"]["completion"])*1e6, 4))
+    print(f"  OpenRouter: {len(orp)} openai models priced")
+except Exception as e:
+    print(f"  WARN OpenRouter fetch failed ({e}); new models fall back to tier ESTIMATES")
+
+def or_price(mid):
+    for c in (mid, mid.replace("-latest", ""), mid + "-latest"):
+        if c in orp: return orp[c]
+    return None
+
+store = [m for m in get_json(os.environ["STORE_API"]) if m["provider"] == "openai"]
+
+# 1a. Priority / stale-disable for NEW models.
+for m in store:
+    if m["id"] not in NEW: continue
+    pol = new_model_policy(m["id"])
+    if pol.get("enabled") is False and m["enabled"]:
+        ms("disable", m["id"])
+    if "prio" in pol and m["priority"] != pol["prio"]:
+        ms("priority", m["id"], str(pol["prio"]))
+
+# 1b. Re-price EVERY openai model from OpenRouter; estimate only if unavailable.
+repriced = est = 0
+for m in sorted(store, key=lambda x: x["id"]):
+    p = or_price(m["id"])
+    src = "openrouter"
+    if p is None:
+        if m["id"] not in NEW:
+            continue  # not on OpenRouter and not new -> leave existing price alone
+        p = heuristic_cost(m["id"]); src = "ESTIMATE"
+    if abs(p[0]-m["input_cost"]) < 0.001 and abs(p[1]-m["output_cost"]) < 0.001:
+        continue
+    ms("cost", m["id"], str(p[0]), str(p[1]))
+    print(f"       ^ {m['id']} {m['input_cost']}/{m['output_cost']} -> {p[0]}/{p[1]} [{src}]")
+    repriced += 1
+    if src == "ESTIMATE": est += 1
+print(f"  repriced {repriced} model(s)" + (f", {est} by tier ESTIMATE (not on OpenRouter)" if est else ""))
+PYEOF
+
+# ---------------------------------------------------------------------------
+# 2. Anthropic: notify only (they run on the Max subscription default).
+# ---------------------------------------------------------------------------
+if [ -n "${new_anthropic//[[:space:]]/}" ]; then
+  echo "[model-poll] NEW Anthropic models (notify): $new_anthropic"
+  # The program goes in a quoted heredoc: inside a single-quoted -c string the
+  # f-string needed \" escapes, which Python rejects as a SyntaxError.
+  detail=$(curl -sfS "$STORE_API" | NEW="$new_anthropic" python3 -c "$(cat <<'PYEOF'
+import json, os, sys
+new = set(os.environ["NEW"].split())
+for m in json.load(sys.stdin):
+    if m["id"] in new:
+        print(f"- {m['id']} ({m['provider']}) - est ${m['input_cost']}/${m['output_cost']} per MTok, priority {m['priority']}")
+PYEOF
+)")
+  cur_default=$(claude_default || echo "?")
+  msg="model-poll found new Anthropic model(s) (auto-added at priority 100, estimated costs):
+
+$detail
+
+These run on your Claude Max subscription, so I did NOT change anything automatically. Your current claude_code default (bridge-prefs) is: $cur_default.
+Want me to point the 'best' role at one of these (\`ms role set best <model>\`), make it the claude_code default, set its real cost/priority, or leave it in the failover chain as-is?"
+  "$ASK" -from model-poll \
+    -title "New Anthropic model(s) detected" \
+    -on-reply "Apply the user's choice with the ms CLI at ~/bin/ms (cost/priority/enable/disable; \`ms role set best <model>\` to repoint the 'best' role) and, if they want a new default, set defaults.claude_code.model in ~/.config/llm-bridge/bridge-prefs.json to the concrete model id. Per the model-store reference note." \
+    "$msg" || echo "[model-poll] ask relay failed (non-fatal)"
+else
+  echo "[model-poll] no new Anthropic models."
+fi
+
+# ---------------------------------------------------------------------------
+# 3. Roles are NOT reconciled here.
+# ---------------------------------------------------------------------------
+# The best/default/efficient roles are owned by model-store's model_roles table
+# and set by the operator via `ms role set <role> <model>`. bridge-prefs.json is
+# a per-harness OVERRIDE layer on top of that, not a source of truth, so the old
+# step that copied defaults.claude_code.model out of it into a `best` alias
+# inverted ownership and left a stale pointer whenever the two disagreed.
+
+exit 0

@@ -1,0 +1,13 @@
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+/agent-store
+
+# Stray root build artifact: a `go build` at the repo root drops a binary named
+# `server`, and 19MB of it got committed. The leading slash is load-bearing —
+# a bare `server` would match the cmd/server/ main package path segment.
+/server
+
+# Python bytecode from running scripts/sabotage*.py.
+__pycache__/

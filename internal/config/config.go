@@ -67,13 +67,8 @@ type Config struct {
 	// UsageStoreURL is usage-store, read for subscription limits before a
 	// routed one-shot call. Empty switches the check off.
 	UsageStoreURL  string
-	AgentStoreDB   string
-	MemoryStoreDB  string
 	HarnessStoreDB string
 	HookStoreDB    string
-	ModelStoreDB   string
-	ModelStoreURL  string
-	AgentStoreURL  string
 	ImagesDir      string
 	// SessionFilesDir is where a file shared into a session is copied for its
 	// agent to read: <dir>/<session id>/<file id>/<filename>.
@@ -431,13 +426,8 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		KeepAwakeGraceMinutes:                 settings.Integer(SettingKeepAwakeGraceMinutes),
 		SessionHostHoldSessions:               settings.Boolean(SettingSessionHostHoldSessions),
 		SessionHostHoldMinutes:                settings.Integer(SettingSessionHostHoldMinutes),
-		AgentStoreDB:                          settings.String("agent_store.database_path"),
-		MemoryStoreDB:                         settings.String("memory_store.database_path"),
 		HarnessStoreDB:                        settings.String("harness_store.database_path"),
 		HookStoreDB:                           settings.String("hook_store.database_path"),
-		ModelStoreDB:                          settings.String("model_store.database_path"),
-		ModelStoreURL:                         settings.String("model_store.url"),
-		AgentStoreURL:                         settings.String("agent_store.url"),
 		ImagesDir:                             settings.String("images.directory"),
 		SessionFilesDir:                       settings.String("session_files.directory"),
 		SchedulerURL:                          settings.String("scheduler.url"),
@@ -507,11 +497,8 @@ func (c *Config) GuardedAddresses() map[string]string {
 	return map[string]string{
 		"ListenAddr":       c.ListenAddr,
 		"DBPath":           c.DBPath,
-		"AgentStoreDB":     c.AgentStoreDB,
-		"MemoryStoreDB":    c.MemoryStoreDB,
 		"HarnessStoreDB":   c.HarnessStoreDB,
 		"HookStoreDB":      c.HookStoreDB,
-		"ModelStoreDB":     c.ModelStoreDB,
 		"BridgePrefsPath":  c.BridgePrefsPath,
 		"ConformancePath":  c.ConformancePath,
 		"MailstackURL":     c.MailstackURL,

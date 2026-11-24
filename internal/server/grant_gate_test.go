@@ -5,12 +5,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 
-	agentstore "github.com/kayushkin/agent-store"
+	agentstore "github.com/kayushkin/llm-bridge-server/internal/agents/agentstore"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -90,11 +89,7 @@ func TestGateRefusesAnInstanceOutsideTheDispatchGrants(t *testing.T) {
 // id it gave each.
 func agentStoreWithAgents(t *testing.T, slugs ...string) (*agentstore.Store, map[string]string) {
 	t.Helper()
-	agents, err := agentstore.Open(filepath.Join(t.TempDir(), "agents.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { agents.Close() })
+	agents := openTestAgentStore(t)
 	ids := map[string]string{}
 	for _, slug := range slugs {
 		if err := agents.UpsertAgent(&agentstore.Agent{Slug: slug, DisplayName: slug, Enabled: true}); err != nil {

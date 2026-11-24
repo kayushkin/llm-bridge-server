@@ -2,7 +2,6 @@ package server
 
 import (
 	"net/url"
-	"path"
 	"strings"
 )
 
@@ -94,17 +93,4 @@ func logStoreEndpointFromPath(escapedPath string) string {
 
 func logStoreSessionURL(base, sessionID, endpoint string) string {
 	return base + "/api/v1/sessions/" + url.PathEscape(sessionID) + "/" + endpoint
-}
-
-// cleanEscapedPathAfterPrefix is escapedPathAfterPrefix with path.Clean applied,
-// for the store proxies, which normalize the remainder before forwarding it.
-//
-// Cleaning the ESCAPED form is what makes the normalization mean what it says.
-// path.Clean resolves ".." against "/" separators, so running it on the decoded
-// path let an escaped %2F..%2F become a real traversal that Clean then resolved
-// — the caller's single segment silently turned into a walk up the upstream's
-// path. On the escaped form a %2F is an ordinary character and stays inside its
-// segment, so Clean only removes the dot segments the caller actually sent.
-func cleanEscapedPathAfterPrefix(u *url.URL, mountPrefix string) string {
-	return path.Clean("/" + strings.TrimPrefix(escapedPathAfterPrefix(u, mountPrefix), "/"))
 }

@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
+	modelstore "github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
 	"github.com/kayushkin/llm-bridge/msg"
-	modelstore "github.com/kayushkin/model-store"
 )
 
 type fakeModels map[string][]*modelstore.Model

@@ -11,7 +11,6 @@ import (
 	"syscall"
 	"time"
 
-	agentstore "github.com/kayushkin/agent-store"
 	"github.com/kayushkin/llm-bridge-server/internal/access"
 	hookstore "github.com/kayushkin/llm-bridge-server/internal/agents/hookstore"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
@@ -22,8 +21,6 @@ import (
 	snapshotstore "github.com/kayushkin/llm-bridge-server/internal/sessions/snapshotstore"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/predictionstore"
-	memorystore "github.com/kayushkin/memory-store"
-	modelstore "github.com/kayushkin/model-store"
 )
 
 func main() {
@@ -56,6 +53,15 @@ func main() {
 		case "import-file-store":
 			importFileStoreCmd(os.Args[2:])
 			return
+		case "import-agent-store":
+			importAgentStoreCmd(os.Args[2:])
+			return
+		case "import-memory-store":
+			importMemoryStoreCmd(os.Args[2:])
+			return
+		case "import-model-store":
+			importModelStoreCmd(os.Args[2:])
+			return
 		case "import-noteboard":
 			importNoteboardCmd(os.Args[2:])
 			return
@@ -75,7 +81,7 @@ func main() {
 			makeSignInLinkCmd(os.Args[2:])
 			return
 		case "-h", "--help":
-			fmt.Fprintln(os.Stderr, "usage: llm-bridge-server [mint-enroll [-ttl 15m] | import-prediction-store -sqlite <file> | import-principal-store|import-grant-store|import-sign-in-store|import-permission-store -sqlite <file> | make-sign-in-link <principal id> | import-noteboard -sqlite <file> | import-project-store -sqlite <file> | import-kanban-store -sqlite <file> | import-log-store -sqlite <file> | import-tool-store -sqlite <file> | import-skill-store -sqlite <file> | import-bundle-store -sqlite <file> | import-repo-store -sqlite <file> | import-work-graph-store -sqlite <file> | import-file-store -sqlite <file> -blobs <directory> [-carry copy|link]]")
+			fmt.Fprintln(os.Stderr, "usage: llm-bridge-server [mint-enroll [-ttl 15m] | import-prediction-store -sqlite <file> | import-principal-store|import-grant-store|import-sign-in-store|import-permission-store -sqlite <file> | make-sign-in-link <principal id> | import-noteboard -sqlite <file> | import-project-store -sqlite <file> | import-kanban-store -sqlite <file> | import-log-store -sqlite <file> | import-tool-store -sqlite <file> | import-skill-store -sqlite <file> | import-bundle-store -sqlite <file> | import-agent-store|import-memory-store|import-model-store -sqlite <file> | import-repo-store -sqlite <file> | import-work-graph-store -sqlite <file> | import-file-store -sqlite <file> -blobs <directory> [-carry copy|link]]")
 			os.Exit(0)
 		}
 	}
@@ -130,31 +136,10 @@ func main() {
 	}
 	defer st.Close()
 
-	// Initialize agent-store (optional)
-	var as *agentstore.Store
-	if cfg.AgentStoreDB != "" {
-		as, err = agentstore.Open(cfg.AgentStoreDB)
-		if err != nil {
-			log.Printf("agent-store: %v (continuing without agent data)", err)
-			as = nil
-		} else {
-			defer as.Close()
-			log.Printf("agent-store loaded from %s", cfg.AgentStoreDB)
-		}
-	}
-
-	// Initialize memory-store (optional)
-	var ms *memorystore.Store
-	if cfg.MemoryStoreDB != "" {
-		ms, err = memorystore.NewStore(cfg.MemoryStoreDB)
-		if err != nil {
-			log.Printf("memory-store: %v (continuing without memory data)", err)
-			ms = nil
-		} else {
-			defer ms.Close()
-			log.Printf("memory-store loaded from %s", cfg.MemoryStoreDB)
-		}
-	}
+	// agent-store, memory-store and model-store, in Postgres. Each is required.
+	agentsRegistry := openAgentsRegistryModules(context.Background(), cfg)
+	defer agentsRegistry.close()
+	as, ms, mds := agentsRegistry.agents, agentsRegistry.memories, agentsRegistry.models
 
 	// Initialize harness-store (optional)
 	var hs *harnessstore.Store
@@ -181,22 +166,6 @@ func main() {
 			log.Printf("hook-store loaded from %s", cfg.HookStoreDB)
 		}
 	}
-
-	// Initialize model-store — REQUIRED. It is the only source of a model:
-	// every session's model is resolved through it (internal/server/
-	// model_selection.go), so a server without it cannot start a session.
-	// Refusing to start here is louder and earlier than refusing every
-	// create later, and "continuing without model data" was how a server
-	// could run for months with no idea what model any session was on.
-	if cfg.ModelStoreDB == "" {
-		log.Fatalf("model-store: no registry path configured (ModelStoreDB); the model registry is required")
-	}
-	mds, err := modelstore.Open(cfg.ModelStoreDB)
-	if err != nil {
-		log.Fatalf("model-store: open %s: %v", cfg.ModelStoreDB, err)
-	}
-	defer mds.Close()
-	log.Printf("model-store loaded from %s", cfg.ModelStoreDB)
 
 	// Initialize snapshot-store (optional)
 	var ss *snapshotstore.Store

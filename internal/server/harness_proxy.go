@@ -66,9 +66,9 @@ func restEscapesBackendPath(rest string) bool {
 //
 //	/api/harness-proxy/{harness}/<rest> → <backend>/<rest>
 //
-// This route authenticates nobody. Its sibling seed routes, proxyAgentStore
-// registered a few lines above it in server.go and skill-store's runner seed
-// routes (skill_store_routes.go), call authorizeRunnerRequest and answer 401. This
+// This route authenticates nobody. Its sibling seed routes, agent-store's
+// (agents_registry_routes.go) and skill-store's (skill_store_routes.go), call
+// authorizeRunnerRequest and answer 401. This
 // one has no gate, and neither ServeHTTP nor the mux supplies one.
 //
 // What made that look settled is that runners reach the bridge over

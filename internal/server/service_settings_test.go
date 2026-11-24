@@ -2,7 +2,7 @@ package server
 
 import (
 	"encoding/json"
-	modelstore "github.com/kayushkin/model-store"
+	modelstore "github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"

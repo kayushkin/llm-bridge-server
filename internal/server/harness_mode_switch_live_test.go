@@ -22,12 +22,13 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	modelstore "github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	harnessstore "github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore"
 	"github.com/kayushkin/llm-bridge-server/internal/productiondefaults"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
+	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 	"github.com/kayushkin/llm-bridge/msg"
-	modelstore "github.com/kayushkin/model-store"
 	_ "modernc.org/sqlite"
 )
 
@@ -383,11 +384,12 @@ func newLiveBridge(t *testing.T, h liveHarness) *liveBridge {
 }
 
 // copyOfProductionModelStore copies the model registry the production server
-// reads into dir and opens the copy. VACUUM INTO through a read-only handle
-// takes a consistent copy, WAL included, and cannot write to the source.
+// reads into dir and imports the copy into a test database. VACUUM INTO
+// through a read-only handle takes a consistent copy, WAL included, and cannot
+// write to the source.
 func copyOfProductionModelStore(t *testing.T, dir string) *modelstore.Store {
 	t.Helper()
-	source := productiondefaults.ModelStoreDatabasePath()
+	source := productiondefaults.StandaloneModelStoreDatabasePath()
 	db, err := sql.Open("sqlite", "file:"+source+"?mode=ro")
 	if err != nil {
 		t.Fatalf("open %s read-only: %v", source, err)
@@ -397,12 +399,15 @@ func copyOfProductionModelStore(t *testing.T, dir string) *modelstore.Store {
 	if _, err := db.Exec("VACUUM INTO ?", copyPath); err != nil {
 		t.Fatalf("copy %s: %v", source, err)
 	}
-	models, err := modelstore.Open(copyPath)
+	module, err := modelstore.Module()
 	if err != nil {
-		t.Fatalf("open model-store copy: %v", err)
+		t.Fatalf("model-store module: %v", err)
 	}
-	t.Cleanup(func() { models.Close() })
-	return models
+	pool := postgrestest.NewDatabase(t, module).Open(module)
+	if _, err := modelstore.ImportStandaloneDatabase(context.Background(), pool, copyPath); err != nil {
+		t.Fatalf("import the model-store copy: %v", err)
+	}
+	return modelstore.New(pool)
 }
 
 // liveModelForHarness picks the cheapest kind of model the registry offers

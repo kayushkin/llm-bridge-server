@@ -14,9 +14,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	agentstore "github.com/kayushkin/agent-store"
+	agentstore "github.com/kayushkin/llm-bridge-server/internal/agents/agentstore"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/bundlestore"
 	hookstore "github.com/kayushkin/llm-bridge-server/internal/agents/hookstore"
+	memorystore "github.com/kayushkin/llm-bridge-server/internal/agents/memorystore"
+	modelstore "github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/skillstore"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore"
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
@@ -39,8 +41,6 @@ import (
 	"github.com/kayushkin/llm-bridge-server/ui"
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	memorystore "github.com/kayushkin/memory-store"
-	modelstore "github.com/kayushkin/model-store"
 
 	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/runnerprotocol"
 )
@@ -352,6 +352,7 @@ func (s *Server) routes() {
 	s.registerSessionLogRoutes()
 	s.registerToolStoreRoutes()
 	s.registerSkillStoreRoutes()
+	s.registerAgentsRegistryRoutes()
 	s.registerBundleStoreRoutes()
 	s.registerNoteboardRoutes()
 	s.registerProjectStoreRoutes()
@@ -563,15 +564,7 @@ func (s *Server) routes() {
 	// callbacks let agent-store nudge connected runners to reconcile when
 	// the canonical context files change.
 	if s.agentStore != nil {
-		agentstore.RegisterHandlersWithHookSet(s.mux, s.agentStore, agentstore.HandlerHooks{
-			OnFileSaved: func(f *agentstore.TrackedFile, v *agentstore.TrackedFileVersion) {
-				s.broadcastSeedSnapshot(runnerprotocol.SeedSourceAgentStore, "save")
-			},
-			OnScanCompleted: func(_ *agentstore.ScanResult) {
-				s.broadcastSeedSnapshot(runnerprotocol.SeedSourceAgentStore, "scan")
-			},
-			OnPromptDriftsDetected: s.onPromptDriftsDetected,
-		})
+		agentstore.RegisterHandlersWithHookSet(s.mux, s.agentStore, s.agentStoreHandlerHooks())
 	}
 
 	// Memory-store routes (mounted from memory-store library)
@@ -681,12 +674,9 @@ func (s *Server) routes() {
 	// fallback for actors outside this process.
 	s.mux.HandleFunc("POST /api/runner/seed/broadcast", s.handleSeedBroadcast)
 
-	// Seed source proxy. Runners hit bridge-server with their bearer token;
-	// bridge-server forwards to the standalone agent-store service. This way
-	// the runner has a single base URL and a single auth credential for all
-	// bridge-side data. skill-store's seed routes are answered in process
-	// (registerSkillStoreRoutes).
-	s.mux.Handle("/api/agent-store/", http.HandlerFunc(s.proxyAgentStore))
+	// Seed sources for runners: agent-store's four seed routes
+	// (registerAgentsRegistryRoutes) and skill-store's (registerSkillStoreRoutes)
+	// are answered in process, checked by the runner's bearer token.
 
 	// Harness backend proxy — service-style harnesses (inber, hermes…)
 	// run their backend once on the bridge host. Wrappers on remote
@@ -1397,47 +1387,6 @@ func (s *Server) handleSeedBroadcast(w http.ResponseWriter, r *http.Request) {
 	}
 	s.broadcastSeedSnapshot(source, reason)
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// proxyAgentStore forwards seed-related GET/POSTs from runners to the
-// standalone agent-store service on the bridge host. Runner auth
-// (bearer token vs. machine row) is validated by checking the Authorization
-// header against harness-store; if it doesn't match a known machine the
-// request is rejected. Cookies/sessions are not forwarded — only seed
-// endpoints accept this path.
-func (s *Server) proxyAgentStore(w http.ResponseWriter, r *http.Request) {
-	s.proxyToStore(w, r, "/api/agent-store", envOrDefault("AGENT_STORE_URL", "http://localhost:8300"))
-}
-
-func (s *Server) proxyToStore(w http.ResponseWriter, r *http.Request, prefix, target string) {
-	if !s.authorizeRunnerRequest(r) {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	target = target + cleanEscapedPathAfterPrefix(r.URL, prefix)
-	if r.URL.RawQuery != "" {
-		target += "?" + r.URL.RawQuery
-	}
-	req, err := http.NewRequestWithContext(r.Context(), r.Method, target, r.Body)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if ct := r.Header.Get("Content-Type"); ct != "" {
-		req.Header.Set("Content-Type", ct)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		log.Printf("[seed-proxy] %s: %v", target, err)
-		http.Error(w, "upstream unavailable", http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
-	if ct := resp.Header.Get("Content-Type"); ct != "" {
-		w.Header().Set("Content-Type", ct)
-	}
-	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
 }
 
 // authorizeRunnerRequest accepts only requests carrying a known runner's
