@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kayushkin/memory-store/internal/textutil"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/memorystore/internal/textutil"
 )
 
 // ToolMetadata represents metadata about an available tool

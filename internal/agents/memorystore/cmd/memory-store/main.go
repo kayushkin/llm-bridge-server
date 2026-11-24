@@ -22,7 +22,7 @@ import (
 	"syscall"
 	"time"
 
-	memorystore "github.com/kayushkin/memory-store"
+	memorystore "github.com/kayushkin/llm-bridge-server/internal/agents/memorystore"
 )
 
 func main() {

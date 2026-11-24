@@ -9,7 +9,7 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
-	modelstore "github.com/kayushkin/model-store"
+	modelstore "github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
 )
 
 // testModelStore opens a throwaway registry seeded with what model resolution

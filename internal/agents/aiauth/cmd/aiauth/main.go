@@ -2,14 +2,15 @@ package main
 
 import (
 	"fmt"
+	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 	"net/http"
 	"os"
 	"os/exec"
 	"runtime"
 	"time"
 
-	"github.com/kayushkin/aiauth"
-	"github.com/kayushkin/aiauth/providers"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/aiauth"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/aiauth/providers"
 	"github.com/spf13/cobra"
 )
 
@@ -219,5 +220,6 @@ func openBrowser(url string) {
 	default:
 		return
 	}
+	cmd.Env = childprocessenv.EnvironmentWithoutServerSecrets()
 	_ = cmd.Start()
 }

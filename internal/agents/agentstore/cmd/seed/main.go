@@ -11,9 +11,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	agentstore "github.com/kayushkin/agent-store"
-	"github.com/kayushkin/agent-store/internal/config"
-	"github.com/kayushkin/agent-store/internal/textutil"
+	agentstore "github.com/kayushkin/llm-bridge-server/internal/agents/agentstore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/agentstore/internal/config"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/agentstore/internal/textutil"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 

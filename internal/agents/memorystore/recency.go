@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+
+	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 	"path/filepath"
 	"strings"
 	"time"
@@ -77,6 +79,8 @@ func findRecentlyModifiedGit(ctx context.Context, rootDir string, since time.Dur
 	// process group and escalates SIGINT to SIGKILL.
 	cmd := exec.CommandContext(ctx, "git", "log", "--pretty=format:", "--name-only", "--since", sinceArg)
 	cmd.Dir = rootDir
+	// Inside the bridge the process holds the server's secrets; git needs none.
+	cmd.Env = childprocessenv.EnvironmentWithoutServerSecrets()
 	cmd.WaitDelay = waitDelayAfterGitExits
 
 	output, err := cmd.Output()

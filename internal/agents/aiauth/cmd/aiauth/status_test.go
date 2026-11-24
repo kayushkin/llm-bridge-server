@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/aiauth"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/aiauth"
 )
 
 // `aiauth status` is the one command that prints a credential. It prints the masked

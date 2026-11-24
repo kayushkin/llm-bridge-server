@@ -14,7 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	agentstore "github.com/kayushkin/agent-store"
+	agentstore "github.com/kayushkin/llm-bridge-server/internal/agents/agentstore"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/bundlestore"
 	hookstore "github.com/kayushkin/llm-bridge-server/internal/agents/hookstore"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/skillstore"
@@ -39,8 +39,8 @@ import (
 	"github.com/kayushkin/llm-bridge-server/ui"
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	memorystore "github.com/kayushkin/memory-store"
-	modelstore "github.com/kayushkin/model-store"
+	memorystore "github.com/kayushkin/llm-bridge-server/internal/agents/memorystore"
+	modelstore "github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
 
 	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/runnerprotocol"
 )

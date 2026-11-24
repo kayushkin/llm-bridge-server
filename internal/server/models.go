@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
-	modelstore "github.com/kayushkin/model-store"
+	modelstore "github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
 )
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {

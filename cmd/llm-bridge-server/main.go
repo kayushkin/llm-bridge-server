@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	agentstore "github.com/kayushkin/agent-store"
+	agentstore "github.com/kayushkin/llm-bridge-server/internal/agents/agentstore"
 	"github.com/kayushkin/llm-bridge-server/internal/access"
 	hookstore "github.com/kayushkin/llm-bridge-server/internal/agents/hookstore"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
@@ -22,8 +22,8 @@ import (
 	snapshotstore "github.com/kayushkin/llm-bridge-server/internal/sessions/snapshotstore"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/predictionstore"
-	memorystore "github.com/kayushkin/memory-store"
-	modelstore "github.com/kayushkin/model-store"
+	memorystore "github.com/kayushkin/llm-bridge-server/internal/agents/memorystore"
+	modelstore "github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
 )
 
 func main() {

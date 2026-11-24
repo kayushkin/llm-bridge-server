@@ -12,7 +12,7 @@ import (
 	"os"
 	"path/filepath"
 
-	agentstore "github.com/kayushkin/agent-store"
+	agentstore "github.com/kayushkin/llm-bridge-server/internal/agents/agentstore"
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )

@@ -26,7 +26,7 @@ import (
 	"strings"
 
 	"github.com/kayushkin/llm-bridge/msg"
-	modelstore "github.com/kayushkin/model-store"
+	modelstore "github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
 )
 
 // UsageProviderByHarness names the usage-store provider whose subscription a

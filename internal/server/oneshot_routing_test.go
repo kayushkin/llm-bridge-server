@@ -11,7 +11,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/oneshotrouting"
 	"github.com/kayushkin/llm-bridge/msg"
-	modelstore "github.com/kayushkin/model-store"
+	modelstore "github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
 )
 
 // routerAnsweringEveryCall is a router over the server's own model-store and

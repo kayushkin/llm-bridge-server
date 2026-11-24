@@ -9,7 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
-	agentstore "github.com/kayushkin/agent-store"
+	agentstore "github.com/kayushkin/llm-bridge-server/internal/agents/agentstore"
 )
 
 func hash(s string) string {

@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/kayushkin/aiauth"
-	ms "github.com/kayushkin/model-store"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/aiauth"
+	ms "github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
 	"github.com/spf13/cobra"
 )
 

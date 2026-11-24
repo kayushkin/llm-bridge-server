@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kayushkin/aiauth"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/aiauth"
 )
 
 const (

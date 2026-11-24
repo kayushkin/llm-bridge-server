@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	ms "github.com/kayushkin/model-store"
+	ms "github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
 )
 
 func newTestServer(t *testing.T) (*ms.Store, *httptest.Server) {

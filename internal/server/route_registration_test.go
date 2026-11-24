@@ -7,12 +7,12 @@ import (
 	"path/filepath"
 	"testing"
 
-	agentstore "github.com/kayushkin/agent-store"
+	agentstore "github.com/kayushkin/llm-bridge-server/internal/agents/agentstore"
 	hookstore "github.com/kayushkin/llm-bridge-server/internal/agents/hookstore"
 	harnessstore "github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore"
 	snapshotstore "github.com/kayushkin/llm-bridge-server/internal/sessions/snapshotstore"
-	memorystore "github.com/kayushkin/memory-store"
-	modelstore "github.com/kayushkin/model-store"
+	memorystore "github.com/kayushkin/llm-bridge-server/internal/agents/memorystore"
+	modelstore "github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/store"

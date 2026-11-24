@@ -27,7 +27,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/productiondefaults"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
-	modelstore "github.com/kayushkin/model-store"
+	modelstore "github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
 	_ "modernc.org/sqlite"
 )
 

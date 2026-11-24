@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	ms "github.com/kayushkin/model-store"
+	ms "github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
 	"github.com/spf13/cobra"
 )
 
