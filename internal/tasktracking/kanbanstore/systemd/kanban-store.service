@@ -1,0 +1,20 @@
+[Unit]
+Description=Kanban store — boards/columns/placements + entity links and tags
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/bin/kanban-store
+Environment=KANBAN_PORT=8305
+Environment=KANBAN_DB=%h/.kanban-store/kanban-store.db
+Environment=KANBAN_NOTEBOARD_URL=http://localhost:8191
+Environment=PRINCIPAL_STORE_URL=http://127.0.0.1:8314
+Environment=LLM_BRIDGE_URL=http://127.0.0.1:8160
+Environment=BUNDLE_STORE_URL=http://127.0.0.1:8307
+Environment=HOME=%h
+WorkingDirectory=%h/repos/kanban-store
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

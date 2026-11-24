@@ -1,0 +1,26 @@
+{
+  "name": "@kayushkin/kanban-store-types",
+  "version": "0.1.0",
+  "description": "TypeScript types for kanban-store's wire format. Generated from the Go types in internal/model — the Go package is the source of truth.",
+  "type": "module",
+  "types": "./model.ts",
+  "exports": {
+    ".": {
+      "types": "./model.ts",
+      "default": "./model.ts"
+    }
+  },
+  "files": ["model.ts", "README.md"],
+  "dependencies": {
+    "@kayushkin/noteboard-types": "file:../../noteboard/ts",
+    "@kayushkin/file-store-types": "file:../../file-store/ts",
+    "@kayushkin/llm-bridge-types": "file:../../llm-bridge/ts"
+  },
+  "license": "Apache-2.0",
+  "author": "kayushkin",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kayushkin/kanban-store.git",
+    "directory": "ts"
+  }
+}

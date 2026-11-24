@@ -1,0 +1,36 @@
+# TypeScript types generated from this store's Go types. The Go structs in
+# internal/model are the source of truth; ts/ is a render of them. Regenerate
+# with ./generate-ts.sh after changing a wire type.
+#
+# A card's item is noteboard's record passed through unchanged, so its type
+# comes from noteboard's own generated package rather than being copied here.
+# The same for an attachment's file, which is file-store's record, and for a
+# board's taxonomy and classification records, which are llm-bridge's msg types.
+packages:
+  - path: "github.com/kayushkin/kanban-store/internal/model"
+    output_path: "ts/model.ts"
+    # The shared work_state rule's input type, never on the wire.
+    exclude_files:
+      - "work_state_selection.go"
+    frontmatter: |
+      import type { Item as NoteboardItem } from "@kayushkin/noteboard-types";
+      import type { File as FileStoreFile } from "@kayushkin/file-store-types";
+      import type {
+        ClassificationTaxonomy as LLMBridgeClassificationTaxonomy,
+        BoardClassification as LLMBridgeBoardClassification,
+        ClassificationAxisPolicy as LLMBridgeClassificationAxisPolicy,
+        ClassificationSourceSnapshot as LLMBridgeClassificationSourceSnapshot,
+        ClassificationModelEvidence as LLMBridgeClassificationModelEvidence,
+        ClassificationDecisionOrigin as LLMBridgeClassificationDecisionOrigin,
+        OperationEvidence as LLMBridgeOperationEvidence,
+      } from "@kayushkin/llm-bridge-types";
+    type_mappings:
+      "json.RawMessage": "unknown"
+      "time.Time": "string"
+      "msg.ClassificationTaxonomy": "LLMBridgeClassificationTaxonomy"
+      "msg.BoardClassification": "LLMBridgeBoardClassification"
+      "msg.ClassificationAxisPolicy": "LLMBridgeClassificationAxisPolicy"
+      "msg.ClassificationSourceSnapshot": "LLMBridgeClassificationSourceSnapshot"
+      "msg.ClassificationModelEvidence": "LLMBridgeClassificationModelEvidence"
+      "msg.ClassificationDecisionOrigin": "LLMBridgeClassificationDecisionOrigin"
+      "msg.OperationEvidence": "LLMBridgeOperationEvidence"
