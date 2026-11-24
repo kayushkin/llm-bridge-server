@@ -2,7 +2,7 @@
 // a permission can be granted to and a card can be assigned to.
 //
 // It exists because nothing on this box models a person. The operator appears
-// as `slava`, `kanban` and `vlad` in three different stores with nothing
+// as `dana`, `kanban` and `vlad` in three different stores with nothing
 // joining them, and kanban has no assignee concept at all. This store hands out
 // the id everything else joins on; display names and emails ride alongside for
 // display and are never a join key.

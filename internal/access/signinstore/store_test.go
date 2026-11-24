@@ -66,7 +66,7 @@ func TestARefusedRedeemSpendsNothing(t *testing.T) {
 func TestADiscordAttemptSpentTwiceAtOnceIsSpentOnce(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
-	if err := store.insertDiscordAttempt(ctx, "state-hash", "browser-hash", discordPurposeSignIn, "", "", "https://kayushkin.com/"); err != nil {
+	if err := store.insertDiscordAttempt(ctx, "state-hash", "browser-hash", discordPurposeSignIn, "", "", "https://example.test/"); err != nil {
 		t.Fatal(err)
 	}
 	var wait sync.WaitGroup

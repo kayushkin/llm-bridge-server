@@ -17,7 +17,7 @@ const (
 // would carry back and the attempt cookie.
 func (service *testService) startDiscordRoundTrip(t *testing.T, purpose string, cookies ...*http.Cookie) (string, *http.Cookie) {
 	t.Helper()
-	request := httptest.NewRequest("GET", "/discord/start?purpose="+purpose+"&return_to="+url.QueryEscape("https://dash.kayushkin.com/"), nil)
+	request := httptest.NewRequest("GET", "/discord/start?purpose="+purpose+"&return_to="+url.QueryEscape("https://dash.example.test/"), nil)
 	for _, cookie := range cookies {
 		request.AddCookie(cookie)
 	}
@@ -61,7 +61,7 @@ func TestLinkingDiscordThenSigningInWithIt(t *testing.T) {
 	// Not linked yet: Discord proves who they are, but nobody here is them.
 	state, attempt := service.startDiscordRoundTrip(t, discordPurposeSignIn)
 	back, _ := service.finishDiscordRoundTrip(t, state, operatorDiscordUser, attempt)
-	if back.Query().Get("sign_in_error") != discordErrorNotLinked || back.Host != "dash.kayushkin.com" {
+	if back.Query().Get("sign_in_error") != discordErrorNotLinked || back.Host != "dash.example.test" {
 		t.Fatalf("an unlinked account = %s, want dash with %s", back, discordErrorNotLinked)
 	}
 
@@ -82,7 +82,7 @@ func TestLinkingDiscordThenSigningInWithIt(t *testing.T) {
 			signedIn = cookie
 		}
 	}
-	if back.String() != "https://dash.kayushkin.com/" || signedIn == nil || signedIn.Domain != "kayushkin.com" {
+	if back.String() != "https://dash.example.test/" || signedIn == nil || signedIn.Domain != "example.test" {
 		t.Fatalf("sign in with Discord = %s, cookie %+v", back, signedIn)
 	}
 	current := service.do(t, "GET", "/session", nil, nil, signedIn)
@@ -113,7 +113,7 @@ func TestADiscordRoundTripIsSpentOnceAndOnlyInItsOwnBrowser(t *testing.T) {
 		}
 	}
 	back, _ = service.finishDiscordRoundTrip(t, state, operatorDiscordUser, attempt)
-	if back.Query().Get("sign_in_error") != discordErrorAttempt || back.Host != "kayushkin.com" {
+	if back.Query().Get("sign_in_error") != discordErrorAttempt || back.Host != "example.test" {
 		t.Fatalf("a spent attempt used again = %s, want the sign-in page with %s", back, discordErrorAttempt)
 	}
 	state, attempt = service.startDiscordRoundTrip(t, discordPurposeSignIn)
@@ -128,7 +128,7 @@ func TestADiscordRoundTripIsSpentOnceAndOnlyInItsOwnBrowser(t *testing.T) {
 
 func TestDiscordStartRefusesAForeignReturnAndALinkWithNoSession(t *testing.T) {
 	service := newTestService(t)
-	for _, target := range []string{"https://evil.example/", "http://dash.kayushkin.com/", "https://kayushkin.com.evil.example/"} {
+	for _, target := range []string{"https://evil.example/", "http://dash.example.test/", "https://example.test.evil.example/"} {
 		answer := service.do(t, "GET", "/discord/start?return_to="+url.QueryEscape(target), nil, nil, nil)
 		if answer.Code != http.StatusBadRequest {
 			t.Errorf("return_to %s = %d, want 400", target, answer.Code)

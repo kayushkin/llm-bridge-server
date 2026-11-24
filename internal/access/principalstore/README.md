@@ -10,8 +10,8 @@ who may call each one; this package checks no caller.
 
 ## Why it exists
 
-Nothing on this box models a person. The operator appears as `slava`, `kanban`
-and `slava` in three different stores with nothing joining them, and kanban has
+Nothing on this box models a person. The operator appears as `dana`, `kanban`
+and `dana` in three different stores with nothing joining them, and kanban has
 no assignee concept at all. This store hands out the id — `principal_000001` —
 that every other store joins on. Display names and emails ride alongside for
 display; neither is unique and neither is ever a join key.
@@ -68,11 +68,6 @@ curl -s "$B/principals/principal_000001/availability"                     # {ava
 curl -s "$B/principals/principal_000002/members?available_at="            # the assignment-pool read
 ```
 
-`scripts/seed-sample-principals.sh` (written for the standalone store's
-address) creates the operator, the four Northwind demo humans already named in kanban's
-`card_events.actor`, and the `Data Team` and `Security` groups. It is idempotent
-and refuses to guess if two rows ever share a name.
-
 `CONTRACT.md` is the route table and the field-by-field reference.
 
 ## Design notes
@@ -109,8 +104,7 @@ actually working.
 **Search is prefix-by-default.** `?q=pri` finds Priya Raman, because the main
 caller is an assignee picker reading keystrokes. A query that carries search
 syntax — a quoted phrase, `*`, a column filter, an upper-case operator — means
-exactly what it says, which is what the seed script's exact-name lookup relies
-on (`search_query.go`).
+exactly what it says (`search_query.go`).
 
 ## License
 

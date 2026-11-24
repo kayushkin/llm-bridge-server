@@ -16,7 +16,7 @@ import (
 // and the domain of her address — because the main caller is an assignee
 // picker reading keystrokes. A query that carries search syntax (a double
 // quote, a star, parentheses, or an upper-case AND, OR or NOT) means exactly
-// what it says: "Slava Kayushkin" in quotes is that phrase, a bare word is
+// what it says: "Dana Example" in quotes is that phrase, a bare word is
 // that whole word, and a word followed by * is a prefix. Both are read here
 // into a Postgres tsquery over the generated search_document column.
 //

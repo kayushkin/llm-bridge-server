@@ -274,8 +274,7 @@ Punctuation alone, `q=-`, holds no word and matches nothing.
 
 **A query with search syntax means exactly what it says.** A double quote, `*`,
 `:`, parentheses, or an upper-case `AND` / `OR` / `NOT` switch a query to it:
-`"Slava Kayushkin"` (quotes included, URL-encoded) is an exact phrase, which is
-what `scripts/seed-sample-principals.sh` relies on; a bare word is that whole
+`"Dana Example"` (quotes included, URL-encoded) is an exact phrase; a bare word is that whole
 word; `word*` or `"a phrase"*` makes the last word a prefix; `display_name:data`
 or `email:"northwind eng"` searches one field; `NOT` is binary (`a NOT b`), and
 `NOT` binds tighter than `AND` (or two terms side by side), which binds tighter
@@ -328,17 +327,6 @@ separate, written-by-others table, not a change to this one.
 
 ## Seed data
 
-`scripts/seed-sample-principals.sh`, installed by `deploy.sh` as
-`~/bin/seed-sample-principals`, creates:
-
-- humans: **Slava Kayushkin** (`slava@kayushkin.com` — the operator; real, not
-  a sample), **Priya Raman**, **Marcus Feld**, **Dinesh Okonkwo**, **Helena Vos**
-  (`@northwind-eng.example` — the names already in kanban's `card_events.actor`
-  from the Northwind demo)
-- groups: **Data Team**, **Security**
-- memberships: Priya, Dinesh → Data Team; Helena, Marcus → Security; Slava → both
-
-It is idempotent — each principal is looked up by exact `display_name` and
-`kind` before it is created — and exits non-zero if two rows ever match one
-lookup rather than seeding memberships onto the wrong row. It prints one line per
-principal, `principal_000001  human  Slava Kayushkin`.
+The standalone store had a seed script for the Northwind demo principals,
+written against its own address. It stays with the standalone repo and did not
+move here.

@@ -207,7 +207,7 @@ func (h *Handlers) sendLinkForHandle(r *http.Request, kind, value string) error 
 	if err != nil {
 		return err
 	}
-	message := "Your sign-in link for kayushkin.com. It works once, within 7 days: " + h.config.SignInPageURL + "#" + secret
+	message := "Your sign-in link. It works once, within 7 days: " + h.config.SignInPageURL + "#" + secret
 	sent, err := h.directory.SendToPersonsChat(r.Context(), person, chatAccountPrefixesFor(kind), message)
 	if err != nil {
 		return fmt.Errorf("%s made for %s, and sending it failed: %w", link.ID, principal.ID, err)

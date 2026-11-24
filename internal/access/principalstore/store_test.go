@@ -35,7 +35,7 @@ func mustCreate(t *testing.T, s *Store, kind, displayName, email string) *Princi
 
 func TestCreateAssignsAPrefixedID(t *testing.T) {
 	s := newTestStore(t)
-	first := mustCreate(t, s, KindHuman, "Slava Kayushkin", "slava@kayushkin.com")
+	first := mustCreate(t, s, KindHuman, "Dana Example", "dana@example.test")
 	if first.ID != "principal_000001" {
 		t.Fatalf("first id = %q, want principal_000001", first.ID)
 	}
@@ -78,12 +78,12 @@ func TestDisplayNameIsRequired(t *testing.T) {
 
 func TestMembershipEnforcesKinds(t *testing.T) {
 	s := newTestStore(t)
-	slava := mustCreate(t, s, KindHuman, "Slava Kayushkin", "")
+	dana := mustCreate(t, s, KindHuman, "Dana Example", "")
 	priya := mustCreate(t, s, KindHuman, "Priya Raman", "")
 	data := mustCreate(t, s, KindGroup, "Data Team", "")
 
 	// A human in the group slot.
-	_, err := s.AddMember(testContext, slava.ID, priya.ID)
+	_, err := s.AddMember(testContext, dana.ID, priya.ID)
 	if !errors.Is(err, ErrInvalidMembership) {
 		t.Fatalf("human as group: err = %v, want ErrInvalidMembership", err)
 	}
@@ -97,7 +97,7 @@ func TestMembershipEnforcesKinds(t *testing.T) {
 	if _, err := s.AddMember(testContext, data.ID, "principal_999999"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing member: err = %v, want ErrNotFound", err)
 	}
-	if _, err := s.ListMembers(testContext, slava.ID, false); !errors.Is(err, ErrInvalidMembership) {
+	if _, err := s.ListMembers(testContext, dana.ID, false); !errors.Is(err, ErrInvalidMembership) {
 		t.Fatalf("members of a human: err = %v, want ErrInvalidMembership", err)
 	}
 	if _, err := s.ListGroups(testContext, data.ID, false); !errors.Is(err, ErrInvalidMembership) {
@@ -267,7 +267,7 @@ func TestPatchRenamesAndReindexes(t *testing.T) {
 func TestCountsCoverEveryRow(t *testing.T) {
 	s := newTestStore(t)
 	h := mustCreate(t, s, KindHuman, "Helena Vos", "")
-	mustCreate(t, s, KindHuman, "Slava Kayushkin", "")
+	mustCreate(t, s, KindHuman, "Dana Example", "")
 	mustCreate(t, s, KindGroup, "Security", "")
 	if _, err := s.Disable(testContext, h.ID); err != nil {
 		t.Fatalf("disable: %v", err)
@@ -286,7 +286,7 @@ func TestCountsCoverEveryRow(t *testing.T) {
 // PATCH, it survives a read, and a group is refused it.
 func TestOnlyAHumanCanBeAnAdministrator(t *testing.T) {
 	s := newTestStore(t)
-	operator := mustCreate(t, s, KindHuman, "Slava Kayushkin", "slava@kayushkin.com")
+	operator := mustCreate(t, s, KindHuman, "Dana Example", "dana@example.test")
 	if operator.IsAdministrator {
 		t.Fatal("a new human must not be an administrator until someone says so")
 	}
@@ -316,7 +316,7 @@ func TestOnlyAHumanCanBeAnAdministrator(t *testing.T) {
 		t.Fatalf("demote: %+v %v", demoted, err)
 	}
 	// A patch that says nothing about it leaves it alone.
-	name := "Slava K"
+	name := "Dana E"
 	unchanged, err := s.Patch(testContext, operator.ID, Patch{DisplayName: &name})
 	if err != nil || unchanged.IsAdministrator {
 		t.Fatalf("a rename must not change administrator: %+v %v", unchanged, err)

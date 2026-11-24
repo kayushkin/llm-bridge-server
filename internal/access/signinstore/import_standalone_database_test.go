@@ -35,7 +35,7 @@ func newStandaloneDatabase(t *testing.T) (string, string) {
 		`INSERT INTO sign_in_links VALUES (3, '` + hashSecret("open-link") + `', 'principal_000002', 'discord', '', 1800000200, 4000000000, 0, '')`,
 		`INSERT INTO sessions VALUES (2, '` + hashSecret(liveSecret) + `', 'principal_000002', 'sign_in_link', 'sign_in_link_000001', 1800000100, 4000000000, 1800000500, 0, '', '', 'Firefox', '203.0.113.7')`,
 		`INSERT INTO sessions VALUES (5, '` + hashSecret("revoked") + `', 'principal_000001', 'discord', '', 1800000300, 4000000000, 1800000300, 1800000400, 'principal_000001', 'lost phone', 'Safari', '198.51.100.4')`,
-		`INSERT INTO discord_attempts VALUES (4, 'state-hash', 'browser-hash', 'link', 'principal_000001', 'session_000005', 'https://dash.kayushkin.com/', 1800000300, 1800000900, 1800000350)`,
+		`INSERT INTO discord_attempts VALUES (4, 'state-hash', 'browser-hash', 'link', 'principal_000001', 'session_000005', 'https://dash.example.test/', 1800000300, 1800000900, 1800000350)`,
 		// A row added and removed afterwards: AUTOINCREMENT remembers 7.
 		`INSERT INTO sessions VALUES (7, 'gone', 'principal_000001', 'discord', '', 1, 2, 1, 0, '', '', '', '')`,
 		`DELETE FROM sessions WHERE seq = 7`,

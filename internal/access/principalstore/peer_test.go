@@ -24,7 +24,7 @@ func TestAPeerActsHoldsGrantsAndIsRestrictedToThem(t *testing.T) {
 	if readBack.Groups == nil {
 		t.Fatal("a peer carries its groups, [] when none, as a human does")
 	}
-	human := mustCreate(t, s, KindHuman, "Slava Kayushkin", "")
+	human := mustCreate(t, s, KindHuman, "Dana Example", "")
 	if human.RestrictedToItsGrants || !human.ActsAsCaller {
 		t.Fatalf("a human acts and keeps the lenient rule: %+v", human)
 	}

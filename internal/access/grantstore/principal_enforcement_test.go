@@ -80,7 +80,7 @@ func TestEnforcingGrantStoreIdentifiesTheCaller(t *testing.T) {
 	expectStatus(t, 401, status, body, "no identity")
 	status, body = doWithHeaders(t, srv, map[string]string{testInternalServiceHeader: "yes", testPrincipalHeader: plainMember}, "GET", "/grants", nil)
 	expectStatus(t, 500, status, body, "a caller that is both the internal service and a principal is a wiring bug")
-	status, body = doWithHeaders(t, srv, asGrantStorePrincipal("Slava"), "GET", "/grants?principal_id=Slava", nil)
+	status, body = doWithHeaders(t, srv, asGrantStorePrincipal("Dana"), "GET", "/grants?principal_id=Dana", nil)
 	expectStatus(t, 401, status, body, "a name is not a principal id")
 	status, body = doWithHeaders(t, srv, asGrantStorePrincipal("principal_000099"), "GET", "/grants?principal_id=principal_000099", nil)
 	expectStatus(t, 401, status, body, "unknown principal")

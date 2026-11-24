@@ -95,11 +95,11 @@ func post(t *testing.T, srv *httptest.Server, kind, displayName, email string) P
 
 func TestPostCreatesAndGetReadsBack(t *testing.T) {
 	srv, _ := newTestServer(t)
-	slava := post(t, srv, "human", "Slava Kayushkin", "slava@kayushkin.com")
-	if slava.ID != "principal_000001" {
-		t.Fatalf("id = %q", slava.ID)
+	dana := post(t, srv, "human", "Dana Example", "dana@example.test")
+	if dana.ID != "principal_000001" {
+		t.Fatalf("id = %q", dana.ID)
 	}
-	status, body := do(t, srv, "GET", "/principals/"+slava.ID, nil)
+	status, body := do(t, srv, "GET", "/principals/"+dana.ID, nil)
 	if status != http.StatusOK {
 		t.Fatalf("GET = %d: %s", status, body)
 	}
@@ -144,22 +144,22 @@ func TestKindsRoute(t *testing.T) {
 
 func TestPatchRefusesUnknownAndProtectedFields(t *testing.T) {
 	srv, _ := newTestServer(t)
-	slava := post(t, srv, "human", "Slava Kayushkin", "")
+	dana := post(t, srv, "human", "Dana Example", "")
 
-	status, body := do(t, srv, "PATCH", "/principals/"+slava.ID, map[string]any{"display_nmae": "Slava"})
+	status, body := do(t, srv, "PATCH", "/principals/"+dana.ID, map[string]any{"display_nmae": "Dana"})
 	if status != http.StatusBadRequest || !strings.Contains(string(body), "display_nmae") {
 		t.Fatalf("unknown field = %d: %s", status, body)
 	}
-	status, body = do(t, srv, "PATCH", "/principals/"+slava.ID, map[string]any{"kind": "group"})
+	status, body = do(t, srv, "PATCH", "/principals/"+dana.ID, map[string]any{"kind": "group"})
 	if status != http.StatusBadRequest || !strings.Contains(string(body), "fixed at creation") {
 		t.Fatalf("kind = %d: %s", status, body)
 	}
-	status, body = do(t, srv, "PATCH", "/principals/"+slava.ID, map[string]any{"disabled_at": 1})
+	status, body = do(t, srv, "PATCH", "/principals/"+dana.ID, map[string]any{"disabled_at": 1})
 	if status != http.StatusBadRequest || !strings.Contains(string(body), "/disable") {
 		t.Fatalf("disabled_at = %d: %s", status, body)
 	}
-	status, body = do(t, srv, "PATCH", "/principals/"+slava.ID, map[string]any{"display_name": "Slava Kayushkin", "email": "slava@kayushkin.com"})
-	if status != http.StatusOK || !strings.Contains(string(body), "Slava Kayushkin") {
+	status, body = do(t, srv, "PATCH", "/principals/"+dana.ID, map[string]any{"display_name": "Dana Example", "email": "dana@example.test"})
+	if status != http.StatusOK || !strings.Contains(string(body), "Dana Example") {
 		t.Fatalf("rename = %d: %s", status, body)
 	}
 	status, _ = do(t, srv, "PATCH", "/principals/principal_999999", map[string]any{"email": "x"})
@@ -283,7 +283,7 @@ func TestListSearchesAndFilters(t *testing.T) {
 // unknown field, so a promotion answered 400 and nobody was promoted.
 func TestPatchPromotesAnAdministratorOverHTTP(t *testing.T) {
 	srv, _ := newTestServer(t)
-	human := post(t, srv, "human", "Slava Kayushkin", "slava@kayushkin.com")
+	human := post(t, srv, "human", "Dana Example", "dana@example.test")
 	status, body := do(t, srv, "PATCH", "/principals/"+human.ID, map[string]any{"is_administrator": true})
 	if status != http.StatusOK {
 		t.Fatalf("promote = %d: %s", status, body)

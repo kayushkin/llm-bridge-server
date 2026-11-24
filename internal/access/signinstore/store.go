@@ -2,7 +2,7 @@
 // the sessions that result. It does not own who anybody is: principal-store
 // does, and every session check asks it whether the principal still exists,
 // is enabled and is an administrator. One session cookie, set for the whole
-// domain, reaches dash, kayushkin.com and the film player.
+// domain, reaches dash, example.test and the film player.
 //
 // The records live in Postgres, in the schema of Module, through
 // postgresstorage. The server provisions, migrates and opens the module, then

@@ -20,8 +20,8 @@ const (
 	testPerson          = "principal_000002"
 	testGroup           = "principal_000006"
 	testMultichatToken  = "multichat-bearer"
-	testDiscordAccount  = "@discord_1234:matrix.kayushkin.com"
-	testDiscordRedirect = "https://kayushkin.com/api/sign-in/discord/callback"
+	testDiscordAccount  = "@discord_1234:matrix.example.test"
+	testDiscordRedirect = "https://example.test/api/sign-in/discord/callback"
 )
 
 // fakeWorld stands in for people-store, auth-store, multichat and Discord over
@@ -192,7 +192,7 @@ func newTestService(t *testing.T) *testService {
 	service := &testService{store: store, directory: directory, world: world, clock: time.Now()}
 	store.now = func() time.Time { return service.clock }
 	directory.now = func() time.Time { return service.clock }
-	handlers := NewHandlers(store, directory, HandlersConfig{SignInPageURL: "https://kayushkin.com/signin", CookieDomain: "kayushkin.com",
+	handlers := NewHandlers(store, directory, HandlersConfig{SignInPageURL: "https://example.test/signin", CookieDomain: "example.test",
 		Discord: DiscordConfig{ApplicationID: "discord-app", ClientSecretCredentialID: "cred_discord", RedirectURL: testDiscordRedirect}})
 	mux := http.NewServeMux()
 	for pattern, route := range map[string]http.HandlerFunc{
@@ -263,10 +263,10 @@ func (service *testService) makeLink(t *testing.T, principalID string) string {
 		Link SignInLink `json:"link"`
 	}
 	json.Unmarshal(answer.Body.Bytes(), &made)
-	if made.Link.MadeBy != testAdministrator || !strings.HasPrefix(made.URL, "https://kayushkin.com/signin#") {
+	if made.Link.MadeBy != testAdministrator || !strings.HasPrefix(made.URL, "https://example.test/signin#") {
 		t.Fatalf("made = %s", answer.Body)
 	}
-	return strings.TrimPrefix(made.URL, "https://kayushkin.com/signin#")
+	return strings.TrimPrefix(made.URL, "https://example.test/signin#")
 }
 
 func sessionCookieFrom(t *testing.T, answer *httptest.ResponseRecorder) *http.Cookie {
@@ -290,7 +290,7 @@ func TestALinkTheOperatorMakesSignsInOnceAcrossTheDomain(t *testing.T) {
 	}
 	cookie := sessionCookieFrom(t, redeemed)
 	setCookie := redeemed.Header().Get("Set-Cookie")
-	for _, want := range []string{"Domain=kayushkin.com", "HttpOnly", "Secure", "SameSite=Lax"} {
+	for _, want := range []string{"Domain=example.test", "HttpOnly", "Secure", "SameSite=Lax"} {
 		if !strings.Contains(setCookie, want) {
 			t.Errorf("Set-Cookie %q lacks %s", setCookie, want)
 		}
@@ -452,7 +452,7 @@ func TestOnlyALoopbackCallerMayNameTheClientAddress(t *testing.T) {
 
 func TestADiscordMessageReachesThePersonPointingAtThePrincipal(t *testing.T) {
 	service := newTestService(t)
-	body := map[string]string{"body": "Member recommends Dune (2021): kayushkin.com/library/movies"}
+	body := map[string]string{"body": "Member recommends Dune (2021): example.test/library/movies"}
 	if answer := service.do(t, "POST", "/principals/"+testPerson+"/discord-messages", body, map[string]string{testAdministratorHeader: testPerson}, nil); answer.Code != http.StatusForbidden {
 		t.Fatalf("from a principal who is not an administrator = %d, want 403", answer.Code)
 	}

@@ -225,7 +225,7 @@ func TestIdentityBindingRoutes(t *testing.T) {
 
 func TestADiscordIdentityBindsByUserIDWithNoTenant(t *testing.T) {
 	s := newTestStore(t)
-	person := mustCreate(t, s, KindHuman, "Slava Kayushkin", "")
+	person := mustCreate(t, s, KindHuman, "Dana Example", "")
 	binding, err := s.LinkIdentity(testContext, person.ID, IdentityProviderDiscord, "", "104357516833472512", person.ID, "linked while signed in")
 	if err != nil {
 		t.Fatalf("link a Discord id: %v", err)
