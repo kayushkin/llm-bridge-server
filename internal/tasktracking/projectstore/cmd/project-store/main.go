@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	projectstore "github.com/kayushkin/project-store"
+	projectstore "github.com/kayushkin/llm-bridge-server/internal/tasktracking/projectstore"
 )
 
 func main() {

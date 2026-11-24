@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	"github.com/kayushkin/noteboard/internal/boundedtext"
-	"github.com/kayushkin/noteboard/internal/db"
-	"github.com/kayushkin/noteboard/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/internal/boundedtext"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/internal/db"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/model"
 )
 
 type API struct {

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/noteboard/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/model"
 )
 
 // legacyTimeLayout is SQLite's own timestamp encoding, and the one

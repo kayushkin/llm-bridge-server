@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/kayushkin/noteboard/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/model"
 	_ "modernc.org/sqlite"
 )
 

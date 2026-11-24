@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kayushkin/noteboard/internal/boundedtext"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/internal/boundedtext"
 	"github.com/teambition/rrule-go"
 )
 

@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/kayushkin/noteboard/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/model"
 )
 
 func createItem(t *testing.T, h http.Handler, fields map[string]any) string {

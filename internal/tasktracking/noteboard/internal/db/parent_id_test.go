@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/kayushkin/noteboard/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/model"
 )
 
 // The hold gate and the spend ceiling both roll up over parent_id, and they do

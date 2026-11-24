@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kayushkin/noteboard/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/model"
 )
 
 // itemsQueryOrder is each sort as SQL over items joined to the sent ids as

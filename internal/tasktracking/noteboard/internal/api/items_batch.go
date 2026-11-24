@@ -2,7 +2,7 @@ package api
 
 import (
 	"encoding/json"
-	"github.com/kayushkin/noteboard/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/model"
 	"net/http"
 )
 

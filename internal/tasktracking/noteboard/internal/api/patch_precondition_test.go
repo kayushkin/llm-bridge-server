@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/kayushkin/noteboard/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/model"
 )
 
 func patchItem(t *testing.T, h http.Handler, id, ifMatch string, patch map[string]any) *httptest.ResponseRecorder {

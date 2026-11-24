@@ -3,7 +3,7 @@ package api_test
 import (
 	"bytes"
 	"encoding/json"
-	"github.com/kayushkin/noteboard/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/model"
 	"net/http/httptest"
 	"reflect"
 	"testing"

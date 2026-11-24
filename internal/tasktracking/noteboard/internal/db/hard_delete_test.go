@@ -3,7 +3,7 @@ package db
 import (
 	"testing"
 
-	"github.com/kayushkin/noteboard/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/model"
 )
 
 // DeleteItem's `hard` parameter selects between the two deletes this store

@@ -14,10 +14,10 @@ import (
 
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	"github.com/kayushkin/noteboard/internal/api"
-	"github.com/kayushkin/noteboard/internal/db"
-	"github.com/kayushkin/noteboard/internal/settings"
-	"github.com/kayushkin/noteboard/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/internal/api"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/internal/db"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/internal/settings"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/model"
 	_ "modernc.org/sqlite"
 )
 

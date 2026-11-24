@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/noteboard/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/model"
 )
 
 // noteboard hands a caller's own input back inside its 400s, and this service
