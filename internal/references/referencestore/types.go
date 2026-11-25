@@ -42,8 +42,8 @@ const (
 	AccessByOwner Access = "owner"
 	// AccessByGrantAndOwner: both. The caller needs what AccessByGrant asks,
 	// and the owning service, asked as the caller, must let it see the record
-	// too. A connected record (a person, a journal entry, a calendar event)
-	// has an owner, and its store shows it only to that owner and to an
+	// too. A connected record (a person, a journal entry, a calendar event,
+	// a chat message, an activity, a time entry) has an owner, and its store shows it only to that owner and to an
 	// administrator, so a grant cannot show one person another's records.
 	AccessByGrantAndOwner Access = "grant_and_owner"
 )
@@ -360,7 +360,7 @@ func buildTypes() []ReferenceType {
 			Get:         "/conversations/{id}", IDPatterns: []string{`conversation_\d{6,}`},
 			LabelField: "title",
 			Summary:    []SummaryField{text("platform", "Platform"), {"message_count", "Messages", FormatNumber}, milliseconds("last_message_at", "Last message")},
-			Access:     AccessByGrant,
+			Access:     AccessByGrantAndOwner,
 		},
 		{
 			Type: "chat_message", Service: "message-store", Glyph: "🗨️",
@@ -368,7 +368,7 @@ func buildTypes() []ReferenceType {
 			Get:         "/messages/{id}", IDPatterns: []string{`chat_message_\d{6,}`},
 			LabelField: "body",
 			Summary:    []SummaryField{text("sender_name", "From"), milliseconds("sent_at", "Sent"), reference("conversation_id", "Conversation")},
-			Access:     AccessByGrant,
+			Access:     AccessByGrantAndOwner,
 		},
 		{
 			Type: "conversation_day", Service: "message-store", Glyph: "🗓️",
@@ -377,7 +377,7 @@ func buildTypes() []ReferenceType {
 			LabelField: "day",
 			Summary:    []SummaryField{{"message_count", "Messages", FormatNumber}, reference("conversation_id", "Conversation")},
 			Page:       "/day/{data.day}?conversation={data.conversation_id}#{id}",
-			Access:     AccessByGrant,
+			Access:     AccessByGrantAndOwner,
 		},
 		{
 			Type: "discord_event", Service: "discord-signup-store", Glyph: "🎟️",
@@ -409,7 +409,7 @@ func buildTypes() []ReferenceType {
 			Get:         "/time-entries/{id}", IDPatterns: []string{`time_entry_\d{6,}`},
 			LabelField: "title",
 			Summary:    []SummaryField{seconds("starts_at", "Starts"), text("outcome", "Outcome"), text("place", "Where"), reference("parent_time_entry_id", "Inside")},
-			Access:     AccessByGrant,
+			Access:     AccessByGrantAndOwner,
 		},
 		{
 			Type: "time_entry_kind", Service: "time-ledger-store", Glyph: "🏷️",
@@ -417,7 +417,7 @@ func buildTypes() []ReferenceType {
 			Get:         "/kinds/{id}", IDPatterns: []string{`time_entry_kind_\d{6,}`},
 			LabelField: "name",
 			Summary:    []SummaryField{text("description", "Means")},
-			Access:     AccessByGrant,
+			Access:     AccessByGrantAndOwner,
 		},
 		{
 			Type: "time_entry_review", Service: "time-ledger-store", Glyph: "⚖️",
@@ -425,7 +425,7 @@ func buildTypes() []ReferenceType {
 			Get:         "/reviews/{id}", IDPatterns: []string{`time_entry_review_\d{6,}`},
 			LabelField: "outcome",
 			Summary:    []SummaryField{reference("time_entry_id", "Entry"), text("reviewed_by", "By"), text("reason", "Why")},
-			Access:     AccessByGrant,
+			Access:     AccessByGrantAndOwner,
 		},
 		{
 			Type: "activity", Service: "activity-store", Glyph: "🔎",
@@ -433,7 +433,7 @@ func buildTypes() []ReferenceType {
 			Get:         "/activities/{id}", IDPatterns: []string{`activity_\d{6,}`},
 			LabelField: "title",
 			Summary:    []SummaryField{text("action_text", "Did"), text("product", "Where"), seconds("occurred_at", "When"), {"url", "Link", FormatURL}},
-			Access:     AccessByGrant,
+			Access:     AccessByGrantAndOwner,
 		},
 		// Email: no pattern and no Get. A card links one by a compound ref
 		// mailstack resolves on its own routes.

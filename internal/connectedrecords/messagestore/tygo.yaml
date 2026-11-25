@@ -1,0 +1,13 @@
+# TypeScript types generated from this store's Go wire types. The Go structs
+# are the source of truth; ts/ is a render of them. Regenerate with
+# ./generate-ts.sh after changing a wire type. Only message.go and
+# vocabulary.go hold wire types.
+packages:
+  - path: "github.com/kayushkin/message-store"
+    output_path: "ts/model.ts"
+    exclude_files:
+      - "store.go"
+      - "store_import.go"
+      - "store_read.go"
+      - "server.go"
+      - "settings.go"

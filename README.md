@@ -178,6 +178,8 @@ curl -s -c jar -X POST localhost:8160/auth/demo-login -H 'Content-Type: applicat
 
 `/people-store/`, `/calendar-store/` and `/journal-store/` are the connected records stores, on their Postgres modules (`internal/connectedrecords/`), with their own paths behind the prefix. Every record carries `owner_principal_id`, the principal-store id of the person who keeps it, and each store narrows every read and write to the caller's own records: another person's record is 404, as a missing one is, and a list holds only the caller's. An administrator sees every owner's records and may narrow to one with `?owner_principal_id=`. The service token acting as nobody sees every owner's in people-store and calendar-store and cannot make a record; journal-store refuses it outright (403 `journal_store_requires_a_principal`), so it answers only its owner's or an administrator's principal. `llm-bridge-server import-people-store|import-calendar-store|import-journal-store -sqlite <file> -owner <principal id>` copies a standalone store into its module, every record owned by `-owner`, which is required and must be a person principal-store holds.
 
+`/message-store/`, `/activity-store/` and `/time-ledger-store/` are connected records stores too (`internal/connectedrecords/messagestore`, `activitystore`, `timeledgerstore`; modules `messages`, `activity`, `time_ledger`), under the same owner rule. The service token acting as nobody sees every owner's records in all three and cannot make one; an importer sends it beside the `X-Principal-Id` of the person it files for. activity-store keeps its attachments' bytes in file-store, as files owned by `activity-store` and the activity. None runs a loop of its own: the importers (`message-import-*`, `activity-import-google`, `time-ledger-import` and the rest) are separate commands that call these routes. `llm-bridge-server import-message-store|import-time-ledger-store -sqlite <file> -owner <principal id>` and `import-activity-store -sqlite <file> -attachments <directory> -owner <principal id>` copy a standalone store into its module; the activity import carries each attachment into file-store after checking its SHA-256.
+
 ### Session agent tokens
 
 A session started as a principal gives its harness process `LLM_BRIDGE_GATEWAY_URL` and `LLM_BRIDGE_PRINCIPAL_TOKEN`, so a tool call inside the session can reach the stores as that principal:
@@ -867,6 +869,79 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `GET` | `/journal-store/timelines/{id}/items` | A timeline's items, oldest first | principal or session agent |
 | `POST` | `/journal-store/timelines/{id}/items` | Add items to a timeline, in one transaction; 201 | principal or session agent |
 | `GET` | `/journal-store/visibilities` | The visibilities | principal or session agent |
+
+### message-store, mounted in this process
+
+| Method | Route | What it does | Who may call |
+|---|---|---|---|
+| `GET` | `/message-store/accounts` | The caller's accounts on platforms, its own first, then its bots | principal or session agent |
+| `POST` | `/message-store/accounts` | The caller's account with that platform and handle, made if new | principal or session agent |
+| `GET` | `/message-store/accounts/{id}` | One account | principal or session agent |
+| `GET` | `/message-store/activity` | Message counts per time bucket, by `group_by`, `interval`, `time_zone`, `person`, `after`, `before` and `involved` | principal or session agent |
+| `GET` | `/message-store/conversation-days` | Conversation days by `conversation`, `journal_entry`, `person`, `from`, `to`, `involved` and `limit` | principal or session agent |
+| `POST` | `/message-store/conversation-days/journal-entries` | Record which journal entry held each day's transcript | principal or session agent |
+| `GET` | `/message-store/conversation-days/{id}` | One conversation day, its conversation and its messages | principal or session agent |
+| `GET` | `/message-store/conversation-merges` | Merged conversations, newest first, by `merged_into` and `limit` | principal or session agent |
+| `GET` | `/message-store/conversations` | The caller's conversations, most recently active first, by `account`, `person`, `platform`, `q` and `limit` | principal or session agent |
+| `GET` | `/message-store/conversations/{id}` | One conversation with participants and a message summary; a merged id is a 301 to the one it merged into | principal or session agent |
+| `PATCH` | `/message-store/conversations/{id}/participants/{handle}` | Name a participant's people-store person, or clear it | principal or session agent |
+| `GET` | `/message-store/health` | `{"status":"ok"}` when the database answers | principal or session agent |
+| `GET` | `/message-store/imports` | The caller's import runs | principal or session agent |
+| `POST` | `/message-store/imports` | Start an import run owned by the caller | principal or session agent |
+| `GET` | `/message-store/imports/{id}` | One import run and what it wrote | principal or session agent |
+| `POST` | `/message-store/imports/{id}/batches` | Write conversations, messages, days, supersessions and merges in one transaction | principal or session agent |
+| `POST` | `/message-store/imports/{id}/finish` | End an import run | principal or session agent |
+| `GET` | `/message-store/messages` | The caller's messages in time order by `conversation`, `person`, `platform`, `source`, `source_ref`, `after`, `before`, `q`, `order`, `limit` and `cursor` | principal or session agent |
+| `GET` | `/message-store/messages/{id}` | One message; a superseded id is a 301 to the message that holds it now | principal or session agent |
+| `GET` | `/message-store/messages/{id}/revisions` | Every earlier version of a message, oldest first | principal or session agent |
+| `GET` | `/message-store/summary` | The caller's conversations and messages per platform, with first and last times | principal or session agent |
+| `GET` | `/message-store/superseded-messages` | Retired message rows, newest first, by `superseded_by` and `limit` | principal or session agent |
+| `GET` | `/message-store/vocabulary` | Platforms, message kinds, account kinds, merge rules, day involvements, activity groupings and intervals | principal or session agent |
+
+### activity-store, mounted in this process
+
+| Method | Route | What it does | Who may call |
+|---|---|---|---|
+| `GET` | `/activity-store/activities` | The caller's activities by `from`, `to`, `product`, `action`, `source`, `q`, `include_deleted`, `order`, `limit` and `offset` | principal or session agent |
+| `DELETE` | `/activity-store/activities/{id}` | Delete an activity, reversibly; 204 | principal or session agent |
+| `GET` | `/activity-store/activities/{id}` | One activity with its sightings and attachments | principal or session agent |
+| `POST` | `/activity-store/activities/{id}/purge` | Blank an activity's words and destroy its attachments, keeping the row so no import brings it back | principal or session agent |
+| `POST` | `/activity-store/activities/{id}/restore` | Undo a delete; a purged activity is 409 | principal or session agent |
+| `GET` | `/activity-store/activities/{id}/revisions` | An activity as it was before each delete, restore and purge, newest first | principal or session agent |
+| `GET` | `/activity-store/attachments/{id}` | An attachment's bytes, kept in file-store; a purged one is 410 | principal or session agent |
+| `GET` | `/activity-store/days/{date}` | One local day (`tz` required) summarized by product | principal or session agent |
+| `GET` | `/activity-store/health` | `{status, counts}`, counted over the caller's own activities | principal or session agent |
+| `GET` | `/activity-store/imports` | The caller's imports, newest first | principal or session agent |
+| `POST` | `/activity-store/imports` | Start an import owned by the caller, or answer the caller's one with that hash | principal or session agent |
+| `GET` | `/activity-store/imports/{id}` | One import | principal or session agent |
+| `POST` | `/activity-store/imports/{id}/batches` | Write activities in one transaction, folding what the caller already holds | principal or session agent |
+| `POST` | `/activity-store/imports/{id}/finish` | End an import | principal or session agent |
+| `GET` | `/activity-store/stats` | The caller's live activities by product, source and action | principal or session agent |
+| `GET` | `/activity-store/vocabularies` | Actions, action phrases, sources, import kinds and revision reasons | principal or session agent |
+
+### time-ledger-store, mounted in this process
+
+| Method | Route | What it does | Who may call |
+|---|---|---|---|
+| `GET` | `/time-ledger-store/health` | `{status, counts}`, counted over the caller's own entries | principal or session agent |
+| `GET` | `/time-ledger-store/kinds` | The caller's kinds, by name | principal or session agent |
+| `POST` | `/time-ledger-store/kinds` | Make a kind owned by the caller; 201 | principal or session agent |
+| `GET` | `/time-ledger-store/kinds/{id}` | One kind | principal or session agent |
+| `GET` | `/time-ledger-store/links/{link_type}` | The caller's entries' links to one record, by `ref`, `occurrence_starts_at` and `include_removed` | principal or session agent |
+| `GET` | `/time-ledger-store/reviews/{id}` | One review | principal or session agent |
+| `GET` | `/time-ledger-store/time-entries` | The caller's entries by `from`, `to`, `ended_before`, `parent`, `kind_id`, `outcome`, `q`, `needs_review`, `include_deleted`, `limit` and `offset`, earliest first | principal or session agent |
+| `POST` | `/time-ledger-store/time-entries` | Make an entry owned by the caller, with kinds and links, in one transaction; 201 | principal or session agent |
+| `DELETE` | `/time-ledger-store/time-entries/{id}` | Delete an entry, reversibly, keeping its links; 204 | principal or session agent |
+| `GET` | `/time-ledger-store/time-entries/{id}` | One entry with its links, children and reviews | principal or session agent |
+| `PATCH` | `/time-ledger-store/time-entries/{id}` | Change an entry's title, span, place or parent, by who may | principal or session agent |
+| `DELETE` | `/time-ledger-store/time-entries/{id}/kinds/{kind_id}` | Take a kind off an entry; 204 | principal or session agent |
+| `PUT` | `/time-ledger-store/time-entries/{id}/kinds/{kind_id}` | Give an entry a kind | principal or session agent |
+| `DELETE` | `/time-ledger-store/time-entries/{id}/links/{link_type}` | Take a link off an entry, keeping it as removed; 204 | principal or session agent |
+| `POST` | `/time-ledger-store/time-entries/{id}/links/{link_type}` | Link a record of another store to an entry; 201 | principal or session agent |
+| `GET` | `/time-ledger-store/time-entries/{id}/reviews` | An entry's reviews, newest first | principal or session agent |
+| `POST` | `/time-ledger-store/time-entries/{id}/reviews` | Judge whether an entry happened; 201 | principal or session agent |
+| `GET` | `/time-ledger-store/time-entries/{id}/revisions` | An entry as it was before each change, newest first | principal or session agent |
+| `GET` | `/time-ledger-store/vocabularies` | Link types, bears-on values, actor kinds and outcomes | principal or session agent |
 
 ### repo-store, mounted in this process
 
