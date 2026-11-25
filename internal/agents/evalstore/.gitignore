@@ -1,0 +1,4 @@
+/eval-store
+*.db
+*.db-wal
+*.db-shm

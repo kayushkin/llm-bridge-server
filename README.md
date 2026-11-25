@@ -844,6 +844,55 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `GET` | `/reference-store/types` | Every reference type: id patterns, owning service, label and summary fields, page, access | anyone |
 | `GET` | `/reference-store/types/{type}` | One reference type | anyone |
 | `GET` | `/reference-store/vocabulary` | The summary formats, the access rules and the grant names the types use | anyone |
+
+### usage-store, mounted in this process
+
+| Method | Route | What it does | Who may call |
+|---|---|---|---|
+| `GET` | `/usage-store/api/usage` | Token totals per agent, orchestrator and model over the last `day`, `week` and `month`, from model-store's old daily usage rows | operator |
+| `GET` | `/usage-store/api/usage/limits` | The latest limits snapshot of `anthropic` and `codex`, each with `stale_after` | operator |
+| `POST` | `/usage-store/api/usage/limits/refresh` | Read `?provider=anthropic|codex` now and keep the snapshot | operator |
+| `POST` | `/usage-store/api/usage/limits/watch` | The usage page is open: read limits on the watched interval for a while. 204 | operator |
+| `GET` | `/usage-store/api/usage/limits/{provider}` | One provider's latest limits snapshot; 404 when it has none | operator |
+| `GET` | `/usage-store/api/usage/limits/{provider}/history` | One provider's snapshot rows, oldest first: `window`, `since`, `until`, `limit` | operator |
+| `GET` | `/usage-store/api/usage/spend/keys` | Each account's API keys with their 24h, 7d and 30d spend, top-ups and remaining credit | operator |
+| `GET` | `/usage-store/api/usage/spend/keys/{provider}/{api_key_id}/raw` | The provider's last answer about one key, as it came | operator |
+| `POST` | `/usage-store/api/usage/spend/refresh` | Read `?provider=anthropic` per-key spend now | operator |
+| `GET` | `/usage-store/api/usage/spend/topups` | A provider's top-ups, earliest first: `?provider=` | operator |
+| `POST` | `/usage-store/api/usage/spend/topups` | Record credit bought: `{"provider","amount_usd","occurred_at"|"occurred_at_str","note"}` | operator |
+| `DELETE` | `/usage-store/api/usage/spend/topups/{id}` | Delete one top-up. 204 | operator |
+| `GET` | `/usage-store/health` | `{"status":"ok"}` | operator |
+
+### eval-store, mounted in this process
+
+| Method | Route | What it does | Who may call |
+|---|---|---|---|
+| `GET` | `/eval-store/cases/{id}` | One case with its prompts and original answer | operator |
+| `PATCH` | `/eval-store/cases/{id}` | Replace a case's `expected_answer` | operator |
+| `GET` | `/eval-store/health` | Counts of each record | operator |
+| `GET` | `/eval-store/runs` | Runs, newest first: `?suite_id=` | operator |
+| `POST` | `/eval-store/runs` | Create a run, freezing its cases and model-store's prices | operator |
+| `DELETE` | `/eval-store/runs/{id}` | Delete a run with its answers, verdicts and checks; 409 while it is going | operator |
+| `GET` | `/eval-store/runs/{id}` | One run and its progress | operator |
+| `PATCH` | `/eval-store/runs/{id}` | Change a run's `prediction_id` or `note` | operator |
+| `GET` | `/eval-store/runs/{id}/answers` | A run's answers; bodies only with `include_bodies=true` | operator |
+| `GET` | `/eval-store/runs/{id}/checks` | A run's check results | operator |
+| `POST` | `/eval-store/runs/{id}/checks` | Run the suite's checker over a run's answers again | operator |
+| `GET` | `/eval-store/runs/{id}/cost-projection` | What each model would cost a week, and what reaches `target_usd` | operator |
+| `GET` | `/eval-store/runs/{id}/report` | A run's report: `format=json|markdown`, `calls_per_week` | operator |
+| `POST` | `/eval-store/runs/{id}/resume` | Make what a run is missing, and with `retry_failed` what failed (202); 503 while runs are off | operator |
+| `POST` | `/eval-store/runs/{id}/start` | Start a created run (202); 503 while `eval_store.runs.enabled` is off | operator |
+| `POST` | `/eval-store/runs/{id}/stop` | Finish the calls in flight, then stop | operator |
+| `GET` | `/eval-store/runs/{id}/verdicts` | A run's verdicts; bodies and reasons only with `include_bodies=true` | operator |
+| `GET` | `/eval-store/suites` | Every suite | operator |
+| `POST` | `/eval-store/suites` | Create a suite | operator |
+| `DELETE` | `/eval-store/suites/{id}` | Delete a suite; 409 while it has runs | operator |
+| `GET` | `/eval-store/suites/{id}` | One suite | operator |
+| `PATCH` | `/eval-store/suites/{id}` | Change the suite fields named | operator |
+| `GET` | `/eval-store/suites/{id}/cases` | A suite's cases without their prompts or answers | operator |
+| `POST` | `/eval-store/suites/{id}/cases` | Add one case | operator |
+| `POST` | `/eval-store/suites/{id}/cases/import-operations` | Import succeeded llm.completion operations as cases | operator |
+| `GET` | `/eval-store/vocabulary` | Run statuses, source kinds, checkers, selection modes and answer origins | operator |
 <!-- route-table:end -->
 
 ## Testing

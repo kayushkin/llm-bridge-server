@@ -1,0 +1,6 @@
+/usage-store-server
+
+# The scorer rewrites these on every run; a dirty tree is the signal other
+# passes read as "another agent is working here".
+__pycache__/
+*.pyc
