@@ -170,18 +170,18 @@ func (s *Store) StoreEvent(ctx context.Context, sessionID, eventType string, dat
 // new event. Idempotent on re-application of the same event because
 // last_active uses CURRENT_TIMESTAMP and turn_count / token sums are
 // monotonic only when StoreEvent is called once per event (the caller's job).
-func (s *Store) updateSessionProjection(sessionID, eventType string, data []byte) error {
+func (s *Store) updateSessionProjection(db execer, sessionID, eventType string, data []byte) error {
 	// Ensure the row exists. INSERT OR IGNORE is a no-op for established
 	// sessions; for the first event of a new session it seeds started_at /
 	// last_active to now().
-	if _, err := s.writer.Exec(
+	if _, err := db.Exec(
 		`INSERT INTO sessions (session_id) VALUES ($1) ON CONFLICT (session_id) DO NOTHING`,
 		sessionID,
 	); err != nil {
 		return fmt.Errorf("seed sessions row: %w", err)
 	}
 	// Bump last_active on every event regardless of type.
-	if _, err := s.writer.Exec(
+	if _, err := db.Exec(
 		`UPDATE sessions SET last_active = now() WHERE session_id = $1`,
 		sessionID,
 	); err != nil {
@@ -194,7 +194,7 @@ func (s *Store) updateSessionProjection(sessionID, eventType string, data []byte
 	// uuid partway through. Last writer wins, matching the migration's
 	// MAX(id) backfill and the gateway's own row.
 	if harnessSessionID := harnessSessionIDOf(data); harnessSessionID != "" {
-		if _, err := s.writer.Exec(
+		if _, err := db.Exec(
 			`UPDATE sessions SET harness_session_id = $1
 			 WHERE session_id = $2 AND harness_session_id <> $1`,
 			harnessSessionID, sessionID,
@@ -204,7 +204,7 @@ func (s *Store) updateSessionProjection(sessionID, eventType string, data []byte
 	}
 	switch eventType {
 	case "user_message":
-		_, err := s.writer.Exec(
+		_, err := db.Exec(
 			`UPDATE sessions SET turn_count = turn_count + 1 WHERE session_id = $1`,
 			sessionID,
 		)
@@ -230,13 +230,13 @@ func (s *Store) updateSessionProjection(sessionID, eventType string, data []byte
 			log.Printf("[log-store] decode result event %s: %v", sessionID, err)
 			// Still set ended_at — the event terminated the turn even if
 			// the body was malformed.
-			_, err := s.writer.Exec(
+			_, err := db.Exec(
 				`UPDATE sessions SET ended_at = now() WHERE session_id = $1`,
 				sessionID,
 			)
 			return err
 		}
-		_, err := s.writer.Exec(
+		_, err := db.Exec(
 			`UPDATE sessions SET
 				input_tokens = input_tokens + $1,
 				output_tokens = output_tokens + $2,
@@ -256,9 +256,9 @@ func (s *Store) updateSessionProjection(sessionID, eventType string, data []byte
 		)
 		return err
 	case "api_call":
-		return s.addAPICallToSessionUsage(sessionID, data)
+		return s.addAPICallToSessionUsage(db, sessionID, data)
 	case "error":
-		_, err := s.writer.Exec(
+		_, err := db.Exec(
 			`UPDATE sessions SET ended_at = now() WHERE session_id = $1`,
 			sessionID,
 		)

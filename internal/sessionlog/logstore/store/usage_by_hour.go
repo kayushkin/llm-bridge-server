@@ -106,14 +106,14 @@ func apiCallUsageByHourArguments(sessionID string, hourStartUnix int64, u APICal
 // addEventToUsageByHour adds one newly stored event to its session's hour.
 // Only four event types carry anything the hourly projections count; every
 // other type returns at once.
-func (s *Store) addEventToUsageByHour(eventID int64, sessionID, eventType string, data []byte) error {
+func (s *Store) addEventToUsageByHour(db execer, eventID int64, sessionID, eventType string, data []byte) error {
 	switch eventType {
 	case "user_message", "result", "api_call", "session_cost":
 	default:
 		return nil
 	}
 	var hourStartUnix int64
-	if err := s.writer.QueryRow(
+	if err := db.QueryRow(
 		`SELECT `+hourStartUnixSQL+` FROM events WHERE id = $1`, eventID,
 	).Scan(&hourStartUnix); err != nil {
 		return fmt.Errorf("read the hour of event %d: %w", eventID, err)
@@ -121,7 +121,7 @@ func (s *Store) addEventToUsageByHour(eventID int64, sessionID, eventType string
 
 	switch eventType {
 	case "user_message":
-		_, err := s.writer.Exec(addToUsageByHourSQL,
+		_, err := db.Exec(addToUsageByHourSQL,
 			usageByHourArguments(sessionID, hourStartUnix, hourlyUsage{TurnCount: 1})...)
 		return err
 	case "result":
@@ -139,7 +139,7 @@ func (s *Store) addEventToUsageByHour(eventID int64, sessionID, eventType string
 		if err := json.Unmarshal(data, &ev); err != nil {
 			return fmt.Errorf("decode result event: %w", err)
 		}
-		_, err := s.writer.Exec(addToUsageByHourSQL,
+		_, err := db.Exec(addToUsageByHourSQL,
 			usageByHourArguments(sessionID, hourStartUnix, hourlyUsage{
 				InputTokens:      ev.Result.Usage.InputTokens,
 				OutputTokens:     ev.Result.Usage.OutputTokens,
@@ -158,7 +158,7 @@ func (s *Store) addEventToUsageByHour(eventID int64, sessionID, eventType string
 		if ev.SessionCost == nil {
 			return errors.New("session_cost event carries no session_cost body")
 		}
-		_, err := s.writer.Exec(addToUsageByHourSQL,
+		_, err := db.Exec(addToUsageByHourSQL,
 			usageByHourArguments(sessionID, hourStartUnix, hourlyUsage{
 				SessionCostTotalUSD: sql.NullFloat64{Float64: ev.SessionCost.TotalUSD, Valid: true},
 			})...)
@@ -173,7 +173,7 @@ func (s *Store) addEventToUsageByHour(eventID int64, sessionID, eventType string
 		if ev.APICall == nil {
 			return errors.New("api_call event carries no api_call body")
 		}
-		_, err := s.writer.Exec(addToAPICallUsageByHourSQL,
+		_, err := db.Exec(addToAPICallUsageByHourSQL,
 			apiCallUsageByHourArguments(sessionID, hourStartUnix, APICallUsageRow{
 				QuerySource:      ev.APICall.QuerySource,
 				Calls:            1,

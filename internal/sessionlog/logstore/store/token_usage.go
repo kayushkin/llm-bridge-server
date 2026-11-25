@@ -27,7 +27,7 @@ import (
 
 // addAPICallToSessionUsage adds one newly stored api_call event to its
 // session's total for its query source.
-func (s *Store) addAPICallToSessionUsage(sessionID string, data []byte) error {
+func (s *Store) addAPICallToSessionUsage(db execer, sessionID string, data []byte) error {
 	var ev struct {
 		APICall *msg.APICallEvent `json:"api_call"`
 	}
@@ -37,7 +37,7 @@ func (s *Store) addAPICallToSessionUsage(sessionID string, data []byte) error {
 	if ev.APICall == nil {
 		return errors.New("api_call event carries no api_call body")
 	}
-	_, err := s.writer.Exec(addToAPICallUsageSQL,
+	_, err := db.Exec(addToAPICallUsageSQL,
 		sessionID, ev.APICall.QuerySource, 1,
 		ev.APICall.InputTokens, ev.APICall.OutputTokens,
 		ev.APICall.CacheReadTokens, ev.APICall.CacheCreationTokens,

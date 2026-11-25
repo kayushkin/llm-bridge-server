@@ -165,17 +165,44 @@ func (s *Store) AppendEvent(ctx context.Context, event EventToAppend) (AppendedE
 	if err := s.indexEventInTx(tx, event.SessionID, appended.ID, event.Type, appended.Data); err != nil {
 		return AppendedEvent{}, fmt.Errorf("index event in its turn: %w", err)
 	}
+	// The session's totals are added to in the same transaction, so the
+	// event costs one commit, not one per total. Each runs under a savepoint
+	// of its own: a total that fails is logged and rolled back alone, and the
+	// event and the other total are kept, as when each was its own commit.
+	// RebuildMissingSessionRows repairs a sessions row whose seed failed.
+	if err := inSavepoint(ctx, tx, func() error {
+		return s.updateSessionProjection(tx, event.SessionID, event.Type, appended.Data)
+	}); err != nil {
+		logProjectionFailure("sessions projection", event.SessionID, event.Type, err)
+	}
+	if err := inSavepoint(ctx, tx, func() error {
+		return s.addEventToUsageByHour(tx, appended.ID, event.SessionID, event.Type, appended.Data)
+	}); err != nil {
+		logProjectionFailure("hourly usage", event.SessionID, event.Type, err)
+	}
 	if err := tx.Commit(); err != nil {
 		return AppendedEvent{}, err
 	}
-	if err := s.updateSessionProjection(event.SessionID, event.Type, appended.Data); err != nil {
-		logProjectionFailure("sessions projection", event.SessionID, event.Type, err)
-	}
-	// Its own call, so a failure in one projection does not skip the other.
-	if err := s.addEventToUsageByHour(appended.ID, event.SessionID, event.Type, appended.Data); err != nil {
-		logProjectionFailure("hourly usage", event.SessionID, event.Type, err)
-	}
 	return appended, nil
+}
+
+// inSavepoint runs write under a savepoint of tx, rolling back to it when
+// write fails, and answers write's error. A failure to set or leave the
+// savepoint is answered too.
+func inSavepoint(ctx context.Context, tx *sql.Tx, write func() error) error {
+	if _, err := tx.ExecContext(ctx, `SAVEPOINT session_totals`); err != nil {
+		return fmt.Errorf("set a savepoint: %w", err)
+	}
+	if err := write(); err != nil {
+		if _, rollbackErr := tx.ExecContext(ctx, `ROLLBACK TO SAVEPOINT session_totals`); rollbackErr != nil {
+			return errors.Join(err, fmt.Errorf("roll back to the savepoint: %w", rollbackErr))
+		}
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `RELEASE SAVEPOINT session_totals`); err != nil {
+		return fmt.Errorf("release the savepoint: %w", err)
+	}
+	return nil
 }
 
 // HighestEventID is the highest event id stored, or 0 for none.
