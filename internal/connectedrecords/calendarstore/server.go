@@ -1,20 +1,23 @@
 package calendarstore
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"log"
 	"net/http"
 	"strconv"
+
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 )
 
-// MaxImportBytes is the largest iCalendar file POST /calendars/{id}/imports
-// takes.
+// MaxImportBytes is the largest body POST /calendars/{id}/imports and
+// /google-event-imports take.
 const MaxImportBytes = 64 << 20
 
-// RegisterHandlers mounts the API on mux. A front door such as dash adds the
-// auth this service has none of, which is why it binds 127.0.0.1.
+// RegisterHandlers mounts the API on mux. Every request must carry the
+// ownership.Caller the server verified; one without is 401.
 func RegisterHandlers(mux *http.ServeMux, s *Store) {
 	h := &handler{s: s}
 	mux.HandleFunc("GET /health", h.health)
@@ -37,7 +40,7 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(value); err != nil {
-		log.Printf("write response: %v", err)
+		log.Printf("calendar-store: write response: %v", err)
 	}
 }
 
@@ -55,10 +58,29 @@ func respondError(w http.ResponseWriter, err error) bool {
 		status = http.StatusConflict
 	}
 	if status == http.StatusInternalServerError {
-		log.Printf("error: %v", err)
+		log.Printf("calendar-store: error: %v", err)
 	}
 	writeJSON(w, status, map[string]string{"error": err.Error()})
 	return true
+}
+
+// respondRefusal answers a request the ownership rules refuse, in the
+// store's own error shape.
+func respondRefusal(w http.ResponseWriter, refusal *ownership.RequestError) bool {
+	if refusal == nil {
+		return false
+	}
+	writeJSON(w, refusal.Status, map[string]string{"error": refusal.Message})
+	return true
+}
+
+// readScope is the request's scope, or false once a refusal is answered.
+func readScope(w http.ResponseWriter, r *http.Request) (ownership.Scope, bool) {
+	scope, refusal := ownership.ReadScope(r)
+	if respondRefusal(w, refusal) {
+		return ownership.Scope{}, false
+	}
+	return scope, true
 }
 
 func decodeStrict(r *http.Request, into any) error {
@@ -71,7 +93,11 @@ func decodeStrict(r *http.Request, into any) error {
 }
 
 func (h *handler) health(w http.ResponseWriter, r *http.Request) {
-	counts, err := h.s.Counts()
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	counts, err := h.s.Counts(r.Context(), scope)
 	if respondError(w, err) {
 		return
 	}
@@ -79,11 +105,18 @@ func (h *handler) health(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) vocabularies(w http.ResponseWriter, r *http.Request) {
+	if _, refusal := ownership.CallerOfRequest(r); respondRefusal(w, refusal) {
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"link_sources": LinkSources, "revision_reasons": []string{"import"}})
 }
 
 func (h *handler) listCalendars(w http.ResponseWriter, r *http.Request) {
-	calendars, err := h.s.Calendars()
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	calendars, err := h.s.Calendars(r.Context(), scope)
 	if respondError(w, err) {
 		return
 	}
@@ -91,6 +124,10 @@ func (h *handler) listCalendars(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) ensureCalendar(w http.ResponseWriter, r *http.Request) {
+	owner, refusal := ownership.OwnerOfNewRecord(r)
+	if respondRefusal(w, refusal) {
+		return
+	}
 	var body struct {
 		Name      string `json:"name"`
 		Source    string `json:"source"`
@@ -99,7 +136,7 @@ func (h *handler) ensureCalendar(w http.ResponseWriter, r *http.Request) {
 	if respondError(w, decodeStrict(r, &body)) {
 		return
 	}
-	calendar, created, err := h.s.EnsureCalendar(body.Name, body.Source, body.SourceRef)
+	calendar, created, err := h.s.EnsureCalendar(r.Context(), owner, body.Name, body.Source, body.SourceRef)
 	if respondError(w, err) {
 		return
 	}
@@ -118,7 +155,11 @@ func (h *handler) importGoogleEvents(w http.ResponseWriter, r *http.Request) {
 	h.importBody(w, r, h.s.ImportGoogleEvents)
 }
 
-func (h *handler) importBody(w http.ResponseWriter, r *http.Request, importInto func(calendarID, fileName string, content []byte) (Import, error)) {
+func (h *handler) importBody(w http.ResponseWriter, r *http.Request, importInto func(ctx context.Context, scope ownership.Scope, calendarID, fileName string, content []byte) (Import, error)) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	content, err := io.ReadAll(io.LimitReader(r.Body, MaxImportBytes+1))
 	if respondError(w, err) {
 		return
@@ -127,7 +168,7 @@ func (h *handler) importBody(w http.ResponseWriter, r *http.Request, importInto 
 		respondError(w, errors.Join(ErrInvalid, errors.New("the body is larger than 64 MiB")))
 		return
 	}
-	record, err := importInto(r.PathValue("id"), r.URL.Query().Get("file_name"), content)
+	record, err := importInto(r.Context(), scope, r.PathValue("id"), r.URL.Query().Get("file_name"), content)
 	if respondError(w, err) {
 		return
 	}
@@ -135,7 +176,11 @@ func (h *handler) importBody(w http.ResponseWriter, r *http.Request, importInto 
 }
 
 func (h *handler) listImports(w http.ResponseWriter, r *http.Request) {
-	imports, err := h.s.Imports()
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	imports, err := h.s.Imports(r.Context(), scope)
 	if respondError(w, err) {
 		return
 	}
@@ -155,6 +200,10 @@ func queryInt(r *http.Request, name string) (int64, error) {
 }
 
 func (h *handler) listEvents(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	query := EventQuery{CalendarID: r.URL.Query().Get("calendar_id"), Text: r.URL.Query().Get("q"), PersonID: r.URL.Query().Get("person_id")}
 	var err error
 	var limit, offset int64
@@ -167,7 +216,7 @@ func (h *handler) listEvents(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	query.Limit, query.Offset = int(limit), int(offset)
-	events, err := h.s.Events(query)
+	events, err := h.s.Events(r.Context(), scope, query)
 	if respondError(w, err) {
 		return
 	}
@@ -175,7 +224,11 @@ func (h *handler) listEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) getEvent(w http.ResponseWriter, r *http.Request) {
-	event, err := h.s.GetEvent(r.PathValue("id"))
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	event, err := h.s.GetEvent(r.Context(), scope, r.PathValue("id"))
 	if respondError(w, err) {
 		return
 	}
@@ -183,7 +236,11 @@ func (h *handler) getEvent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) revisions(w http.ResponseWriter, r *http.Request) {
-	revisions, err := h.s.Revisions(r.PathValue("id"))
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	revisions, err := h.s.Revisions(r.Context(), scope, r.PathValue("id"))
 	if respondError(w, err) {
 		return
 	}
@@ -191,6 +248,10 @@ func (h *handler) revisions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) linkPerson(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	var body struct {
 		PersonID string `json:"person_id"`
 		LinkedBy string `json:"linked_by"`
@@ -199,7 +260,7 @@ func (h *handler) linkPerson(w http.ResponseWriter, r *http.Request) {
 	if respondError(w, decodeStrict(r, &body)) {
 		return
 	}
-	event, err := h.s.LinkPerson(r.PathValue("id"), PersonLink{PersonID: body.PersonID, LinkedBy: body.LinkedBy, Reason: body.Reason})
+	event, err := h.s.LinkPerson(r.Context(), scope, r.PathValue("id"), PersonLink{PersonID: body.PersonID, LinkedBy: body.LinkedBy, Reason: body.Reason})
 	if respondError(w, err) {
 		return
 	}
@@ -207,7 +268,11 @@ func (h *handler) linkPerson(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) unlinkPerson(w http.ResponseWriter, r *http.Request) {
-	if respondError(w, h.s.UnlinkPerson(r.PathValue("id"), r.PathValue("person_id"))) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	if respondError(w, h.s.UnlinkPerson(r.Context(), scope, r.PathValue("id"), r.PathValue("person_id"))) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

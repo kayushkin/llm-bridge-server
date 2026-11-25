@@ -5,13 +5,12 @@ Calendar events as their calendars wrote them, kept whole, with who each was wit
 - Import an iCalendar (`.ics`) file into a calendar; importing it again changes only what changed, and every earlier version of an event is kept.
 - Each event keeps its attendees, and links to people: made from attendees' addresses at import, or recorded with a reason by an agent or a person.
 - Events have ids (`calendar_event_000001`) other services can cite.
+- Every record has an owner (`owner_principal_id`), and a caller reaches only its own unless it sees every owner.
 
-Go, SQLite, one HTTP service on loopback. `CONTRACT.md` is the route table.
+It runs inside llm-bridge-server, at `/calendar-store/`, on Postgres (schema `calendar`). `CONTRACT.md` is the route table and the owner rules. The server builds the store with `New(db, people)`, where `people` answers questions about one owner's address book, and mounts it with `RegisterHandlers`.
 
 ```bash
-go test ./... && go build ./cmd/calendar-store
-curl -s -X POST localhost:8342/calendars -d '{"name":"Main","source":"google","source_ref":"main"}'
-curl -s -X POST --data-binary @calendar.ics 'localhost:8342/calendars/calendar_000001/imports?file_name=calendar.ics'
+POSTGRESTEST_ADMINISTRATOR_URL="$(scripts/test-postgres.sh url)" go test ./internal/connectedrecords/calendarstore/...
 ```
 
 MIT licensed.

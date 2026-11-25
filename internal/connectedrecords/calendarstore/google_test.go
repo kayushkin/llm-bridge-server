@@ -1,9 +1,7 @@
 package calendarstore
 
 import (
-	"database/sql"
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -35,7 +33,7 @@ const googleBirthday = `{"kind":"calendar#event","id":"bday1","iCalUID":"bday-1"
 
 func googleCalendar(t *testing.T, store *Store) Calendar {
 	t.Helper()
-	calendar, _, err := store.EnsureCalendar("Main", "google", "primary")
+	calendar, _, err := store.EnsureCalendar(testContext, aliceID, "Main", "google", "primary")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +42,7 @@ func googleCalendar(t *testing.T, store *Store) Calendar {
 
 func eventsOf(t *testing.T, store *Store, calendarID string) map[string]Event {
 	t.Helper()
-	events, err := store.Events(EventQuery{CalendarID: calendarID, Limit: 1000})
+	events, err := store.Events(testContext, aliceScope, EventQuery{CalendarID: calendarID, Limit: 1000})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,12 +56,12 @@ func eventsOf(t *testing.T, store *Store, calendarID string) map[string]Event {
 func TestGoogleEventsFindTheEventsAnICSExportBrought(t *testing.T) {
 	store := testStore(t)
 	calendar := googleCalendar(t, store)
-	if _, err := store.ImportICS(calendar.ID, "export.ics", []byte(calendarFile(skating, skatingMoved, birthday))); err != nil {
+	if _, err := store.ImportICS(testContext, aliceScope, calendar.ID, "export.ics", []byte(calendarFile(skating, skatingMoved, birthday))); err != nil {
 		t.Fatal(err)
 	}
 	before := eventsOf(t, store, calendar.ID)
 
-	record, err := store.ImportGoogleEvents(calendar.ID, "dash", []byte("["+googleSkating+","+googleSkatingMoved+","+googleBirthday+"]"))
+	record, err := store.ImportGoogleEvents(testContext, aliceScope, calendar.ID, "dash", []byte("["+googleSkating+","+googleSkatingMoved+","+googleBirthday+"]"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +81,7 @@ func TestGoogleEventsFindTheEventsAnICSExportBrought(t *testing.T) {
 			event.AllDay != old.AllDay || event.StartDate != old.StartDate || event.RecurrenceRule != old.RecurrenceRule {
 			t.Errorf("%s: times read differently from Google\n ics    %+v\n google %+v", key, old, event)
 		}
-		revisions, err := store.Revisions(event.ID)
+		revisions, err := store.Revisions(testContext, aliceScope, event.ID)
 		if err != nil || len(revisions) != 1 || !strings.Contains(string(revisions[0].Event), "BEGIN:VEVENT") {
 			t.Errorf("%s: revisions %v %v, want the .ics row kept", key, revisions, err)
 		}
@@ -104,7 +102,7 @@ func TestGoogleEventsFindTheEventsAnICSExportBrought(t *testing.T) {
 		t.Errorf("birthday or moved date read wrong: %+v", after)
 	}
 
-	again, err := store.ImportGoogleEvents(calendar.ID, "dash", []byte("["+googleSkating+","+googleSkatingMoved+","+googleBirthday+"]"))
+	again, err := store.ImportGoogleEvents(testContext, aliceScope, calendar.ID, "dash", []byte("["+googleSkating+","+googleSkatingMoved+","+googleBirthday+"]"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +111,7 @@ func TestGoogleEventsFindTheEventsAnICSExportBrought(t *testing.T) {
 	}
 
 	// An .ics import afterwards keeps the Google id the row was given.
-	if _, err := store.ImportICS(calendar.ID, "export.ics", []byte(calendarFile(birthday))); err != nil {
+	if _, err := store.ImportICS(testContext, aliceScope, calendar.ID, "export.ics", []byte(calendarFile(birthday))); err != nil {
 		t.Fatal(err)
 	}
 	if got := eventsOf(t, store, calendar.ID)["bday-1 "].SourceEventID; got != "bday1" {
@@ -124,12 +122,12 @@ func TestGoogleEventsFindTheEventsAnICSExportBrought(t *testing.T) {
 func TestGoogleCancellationsAreKept(t *testing.T) {
 	store := testStore(t)
 	calendar := googleCalendar(t, store)
-	if _, err := store.ImportGoogleEvents(calendar.ID, "dash", []byte("["+googleSkating+","+googleBirthday+"]")); err != nil {
+	if _, err := store.ImportGoogleEvents(testContext, aliceScope, calendar.ID, "dash", []byte("["+googleSkating+","+googleBirthday+"]")); err != nil {
 		t.Fatal(err)
 	}
 	deleted := `{"kind":"calendar#event","id":"bday1","status":"cancelled"}`
 	neverHeld := `{"kind":"calendar#event","id":"gone","status":"cancelled"}`
-	record, err := store.ImportGoogleEvents(calendar.ID, "dash", []byte("["+googleSkatingCancelled+","+deleted+","+neverHeld+"]"))
+	record, err := store.ImportGoogleEvents(testContext, aliceScope, calendar.ID, "dash", []byte("["+googleSkatingCancelled+","+deleted+","+neverHeld+"]"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,8 +148,8 @@ func TestGoogleCancellationsAreKept(t *testing.T) {
 func TestGoogleImportsRefuseWhatTheyCannotPlace(t *testing.T) {
 	store := testStore(t)
 	calendar := googleCalendar(t, store)
-	other, _, _ := store.EnsureCalendar("Work", "outlook", "work")
-	if _, err := store.ImportGoogleEvents(other.ID, "dash", []byte("["+googleBirthday+"]")); !errors.Is(err, ErrInvalid) {
+	other, _, _ := store.EnsureCalendar(testContext, aliceID, "Work", "outlook", "work")
+	if _, err := store.ImportGoogleEvents(testContext, aliceScope, other.ID, "dash", []byte("["+googleBirthday+"]")); !errors.Is(err, ErrInvalid) {
 		t.Errorf("into a calendar Google does not keep: %v, want invalid", err)
 	}
 	for name, body := range map[string]string{
@@ -161,52 +159,19 @@ func TestGoogleImportsRefuseWhatTheyCannotPlace(t *testing.T) {
 		"unknown response":  `[{"id":"x","iCalUID":"x","start":{"date":"2024-01-01"},"attendees":[{"email":"a@b","responseStatus":"maybe"}]}]`,
 		"the same id twice": "[" + googleBirthday + "," + googleBirthday + "]",
 	} {
-		if _, err := store.ImportGoogleEvents(calendar.ID, "dash", []byte(body)); !errors.Is(err, ErrInvalid) {
+		if _, err := store.ImportGoogleEvents(testContext, aliceScope, calendar.ID, "dash", []byte(body)); !errors.Is(err, ErrInvalid) {
 			t.Errorf("%s: %v, want invalid", name, err)
 		}
 	}
-	if _, err := store.ImportGoogleEvents(calendar.ID, "dash", []byte("["+googleBirthday+"]")); err != nil {
+	if _, err := store.ImportGoogleEvents(testContext, aliceScope, calendar.ID, "dash", []byte("["+googleBirthday+"]")); err != nil {
 		t.Fatal(err)
 	}
 	renamed := strings.Replace(googleBirthday, `"iCalUID":"bday-1"`, `"iCalUID":"bday-2"`, 1)
-	if _, err := store.ImportGoogleEvents(calendar.ID, "dash", []byte("["+renamed+"]")); !errors.Is(err, ErrConflict) {
+	if _, err := store.ImportGoogleEvents(testContext, aliceScope, calendar.ID, "dash", []byte("["+renamed+"]")); !errors.Is(err, ErrConflict) {
 		t.Errorf("a Google id that now names another event: %v, want conflict", err)
 	}
 	otherID := strings.Replace(googleBirthday, `"id":"bday1"`, `"id":"bday9"`, 1)
-	if _, err := store.ImportGoogleEvents(calendar.ID, "dash", []byte("["+otherID+"]")); !errors.Is(err, ErrConflict) {
+	if _, err := store.ImportGoogleEvents(testContext, aliceScope, calendar.ID, "dash", []byte("["+otherID+"]")); !errors.Is(err, ErrConflict) {
 		t.Errorf("an event held under another Google id: %v, want conflict", err)
-	}
-}
-
-// A database made before source_event_id, format and skipped gains them.
-func TestOpenAddsTheGoogleColumnsToAnOlderDatabase(t *testing.T) {
-	dir := t.TempDir()
-	older := schemaSQL
-	for _, line := range []string{
-		"    source_event_id    TEXT    NOT NULL DEFAULT '',\n",
-		"    format      TEXT    NOT NULL DEFAULT 'ics',\n",
-		"    skipped     INTEGER NOT NULL DEFAULT 0,\n",
-	} {
-		if !strings.Contains(older, line) {
-			t.Fatalf("schema.sql no longer holds %q", line)
-		}
-		older = strings.Replace(older, line, "", 1)
-	}
-	db, err := sql.Open("sqlite3", filepath.Join(dir, "calendar-store.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(older); err != nil {
-		t.Fatal(err)
-	}
-	db.Close()
-	store, err := Open(dir, fakePeople{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	calendar := googleCalendar(t, store)
-	if _, err := store.ImportGoogleEvents(calendar.ID, "dash", []byte("["+googleBirthday+"]")); err != nil {
-		t.Fatal(err)
 	}
 }

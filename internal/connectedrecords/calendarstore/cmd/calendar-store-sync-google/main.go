@@ -25,9 +25,13 @@ import (
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
+// defaultCalendarStoreURL is where the standalone calendar-store answered.
+// The flag names the store's address wherever it runs now.
+const defaultCalendarStoreURL = "http://127.0.0.1:8342"
+
 func main() {
 	today := time.Now().UTC().Truncate(24 * time.Hour)
-	calendarStoreURL := flag.String("calendar-store-url", "http://"+calendarstore.DefaultListenAddress, "where calendar-store answers")
+	calendarStoreURL := flag.String("calendar-store-url", defaultCalendarStoreURL, "where calendar-store answers")
 	calendarID := flag.String("calendar", "", "the calendar-store calendar to fill (calendar_000001); its source must be google")
 	from := flag.String("from", today.AddDate(-1, 0, 0).Format(time.DateOnly), "first day to read (YYYY-MM-DD, UTC)")
 	to := flag.String("to", today.AddDate(2, 0, 0).Format(time.DateOnly), "day after the last day to read (YYYY-MM-DD, UTC)")

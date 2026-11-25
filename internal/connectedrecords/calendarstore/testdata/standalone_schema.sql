@@ -1,6 +1,7 @@
--- calendar-store: calendar events as their calendars wrote them.
--- Ids are a prefix and a six-digit number made from seq: calendar_000001,
--- calendar_event_000001, calendar_import_000001.
+-- The live schema of the standalone calendar-store's SQLite file: its
+-- schema.sql, plus what its migrate() added (the columns below are already in
+-- schema.sql; the index is migrate()'s). The import test builds a file from it.
+
 
 CREATE TABLE IF NOT EXISTS calendars (
     seq        INTEGER PRIMARY KEY,
@@ -107,3 +108,6 @@ CREATE TABLE IF NOT EXISTS calendar_imports (
     skipped     INTEGER NOT NULL DEFAULT 0,
     imported_at INTEGER NOT NULL
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS calendar_events_source_event_id
+    ON calendar_events(calendar_id, source_event_id) WHERE source_event_id != '';
