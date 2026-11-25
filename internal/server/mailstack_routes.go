@@ -26,7 +26,9 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/access"
 	"github.com/kayushkin/llm-bridge-server/internal/access/grantstore"
 	"github.com/kayushkin/llm-bridge-server/internal/access/principalstore"
+	"github.com/kayushkin/llm-bridge-server/internal/inprocesshttp"
 	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack"
+	mailfilestore "github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/filestore"
 	"github.com/kayushkin/llm-bridge-server/internal/mailstackclient"
 )
 
@@ -52,6 +54,16 @@ func (s *Server) EnableMailstack(mail *mailstack.Server) {
 func (s *Server) MailstackPeopleDirectory(stores *access.Stores) mailstack.PeopleDirectory {
 	return mailstackPeopleDirectory{server: s, principals: stores.Principals, grants: stores.Grants,
 		directory: access.GrantsPrincipalDirectory(stores.Principals)}
+}
+
+// MailstackFileStore is the file-store client mailstack keeps attachment
+// bytes through, calling the file-store module in this process with no
+// socket and no token. Until EnableFileStore it answers 503, and mailstack
+// refuses attachments.
+func (s *Server) MailstackFileStore() *mailfilestore.Client {
+	files := mailfilestore.New(inprocesshttp.BaseURL, "")
+	files.HTTP = inprocesshttp.Client(s.FileStoreModuleHandler())
+	return files
 }
 
 // serveMailstack answers /mailstack/<rest> with mailstack's /<rest>, as

@@ -11,11 +11,9 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/access"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	"github.com/kayushkin/llm-bridge-server/internal/inprocesshttp"
 	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack"
 	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/accounts"
 	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/apiauth"
-	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/filestore"
 	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/localmail"
 	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/mailmodule"
 	"github.com/kayushkin/llm-bridge-server/internal/server"
@@ -47,13 +45,11 @@ func enableMail(ctx context.Context, cfg *config.Config, srv *server.Server, acc
 		return nil, fmt.Errorf("mailstack: %w", err)
 	}
 	db := mailmodule.New(pool)
-	files := filestore.New(inprocesshttp.BaseURL, "")
-	files.HTTP = inprocesshttp.Client(srv.FileStoreModuleHandler())
 	parts := mailstack.ServerParts{
 		Accounts:                   accounts.New(db),
 		LocalMail:                  localmail.New(db),
 		ProviderConnectionsEnabled: providerConnections,
-		Files:                      files,
+		Files:                      srv.MailstackFileStore(),
 		People:                     srv.MailstackPeopleDirectory(accessStores),
 	}
 	if providerConnections {

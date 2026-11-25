@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/grantstore"
+	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
 	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack"
 	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/accounts"
 	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/backend"
@@ -34,7 +35,19 @@ func newMailstackTestServer(t *testing.T) *mailstackTestServer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	db := mailmodule.New(postgrestest.NewDatabase(t, module).Open(module))
+	fileModule, err := filestore.Module()
+	if err != nil {
+		t.Fatal(err)
+	}
+	database := postgrestest.NewDatabase(t, module, fileModule)
+	db := mailmodule.New(database.Open(module))
+	files, err := filestore.New(database.Open(fileModule), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := test.server.EnableFileStore(files); err != nil {
+		t.Fatal(err)
+	}
 	mailAccounts := accounts.New(db)
 	if err := mailAccounts.Save(&accounts.Account{ID: "desk", Label: "Desk", Provider: accounts.ProviderLocal, Address: "desk@demo.invalid", Enabled: true}); err != nil {
 		t.Fatal(err)
@@ -42,6 +55,7 @@ func newMailstackTestServer(t *testing.T) *mailstackTestServer {
 	local := localmail.New(db)
 	test.server.EnableMailstack(mailstack.NewServer(mailstack.ServerParts{
 		Accounts: mailAccounts, LocalMail: local, People: test.server.MailstackPeopleDirectory(test.stores),
+		Files: test.server.MailstackFileStore(),
 	}))
 	outcomes, _, _, err := local.Import(context.Background(), "desk", []localmail.ImportedMessage{
 		importedTestMessage("SRC-1", "Printer jammed again"),
@@ -192,5 +206,32 @@ func TestTriageReadsAMessagesSenderFromMailstackInProcess(t *testing.T) {
 	}
 	if headers.From.Email != "pat@demo.invalid" || headers.Subject != "Printer jammed again" {
 		t.Errorf("headers %+v", headers)
+	}
+}
+
+// An imported attachment's bytes go to the file-store module in this
+// process, and come back through mailstack, which checks the message first.
+func TestMailstackKeepsAttachmentBytesInTheFileStoreModule(t *testing.T) {
+	test := newMailstackTestServer(t)
+	body := `{"messages":[{"provider_message_id":"SRC-ATT","subject":"Invoice","from":{"email":"pat@demo.invalid"},
+		"received_at":"2026-10-03T09:30:00Z","body_text":"attached",
+		"attachments":[{"filename":"invoice.txt","content_type":"text/plain","content_base64":"aW52b2ljZSBib2R5"}]}]}`
+	imported := test.call(t, callerServiceTokenAlone, "POST", "/mailstack/api/accounts/desk/messages/import", body)
+	var answer struct {
+		Outcomes []struct {
+			ID string `json:"id"`
+		} `json:"outcomes"`
+	}
+	if err := json.Unmarshal(imported.Body.Bytes(), &answer); err != nil || imported.Code != http.StatusOK || len(answer.Outcomes) != 1 {
+		t.Fatalf("import: %d %s", imported.Code, imported.Body)
+	}
+	path := "/mailstack/api/messages/" + answer.Outcomes[0].ID + "/attachments/a1?account=desk"
+	read := test.call(t, callerServiceTokenAlone, "GET", path, "")
+	if read.Code != http.StatusOK || read.Body.String() != "invoice body" {
+		t.Fatalf("read the attachment: %d %q", read.Code, read.Body.String())
+	}
+	// The member holds no grant and no ticket links this message.
+	if response := test.call(t, callerMemberWithLoginCookie, "GET", path, ""); response.Code != http.StatusNotFound {
+		t.Errorf("the member reading it: %d %s, want 404", response.Code, response.Body)
 	}
 }
