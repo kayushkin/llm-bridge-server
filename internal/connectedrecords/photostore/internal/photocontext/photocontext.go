@@ -5,31 +5,21 @@ package photocontext
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"regexp"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/kayushkin/llm-bridge/servicesettings"
-
 	photostore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore/internal/messagecitation"
 )
-
-// SourcesFromSettings reads where the context lives from photo-store's
-// command settings.
-func SourcesFromSettings(registry *servicesettings.Registry) Sources {
-	return Sources{MultichatURL: strings.TrimRight(registry.String(photostore.SettingMultichatURL), "/"), MultichatToken: registry.String(photostore.SettingMultichatToken),
-		JournalURL: strings.TrimRight(registry.String(photostore.SettingJournalStoreURL), "/"), PeopleURL: strings.TrimRight(registry.String(photostore.SettingPeopleStoreURL), "/"),
-		Messages: messagecitation.Store{Base: registry.String(photostore.SettingMessageStoreURL), Client: &http.Client{Timeout: time.Minute}}}
-}
 
 // LargestChatForContext is the most members a room may have for all of them
 // to count as context; a bigger room counts only its sender.
@@ -37,14 +27,17 @@ const LargestChatForContext = 8
 
 var personReference = regexp.MustCompile(`ref:(person_[0-9]{6,})`)
 
-// Client makes the JSON calls.
+// Client makes the JSON calls. Every request goes through HTTP. Do writes
+// each wait for a store that refuses connections to Diagnostics, which must
+// be set.
 type Client struct {
-	HTTP *http.Client
+	HTTP        *http.Client
+	Diagnostics io.Writer
 }
 
 // GetJSON reads a JSON answer into out; a 404 is ErrNotFound.
-func (c Client) GetJSON(target string, headers map[string]string, out any) error {
-	request, err := http.NewRequest(http.MethodGet, target, nil)
+func (c Client) GetJSON(ctx context.Context, target string, headers map[string]string, out any) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return err
 	}
@@ -73,12 +66,12 @@ func (c Client) GetJSON(target string, headers map[string]string, out any) error
 var ErrNotFound = fmt.Errorf("not found")
 
 // PostJSON sends payload and answers the status and body.
-func (c Client) PostJSON(target string, payload any) (int, []byte, error) {
+func (c Client) PostJSON(ctx context.Context, target string, payload any) (int, []byte, error) {
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return 0, nil, err
 	}
-	request, err := http.NewRequest(http.MethodPost, target, bytes.NewReader(encoded))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(encoded))
 	if err != nil {
 		return 0, nil, err
 	}
@@ -97,7 +90,8 @@ func (c Client) PostJSON(target string, payload any) (int, []byte, error) {
 const restartWait = 2 * time.Minute
 
 // Do sends a request, sending it again every 5 seconds while the connection
-// is refused, for up to restartWait. Any other failure is returned at once.
+// is refused, for up to restartWait. Any other failure is returned at once,
+// and so is the end of the request's context while it waits.
 func (c Client) Do(request *http.Request) (*http.Response, error) {
 	deadline := time.Now().Add(restartWait)
 	for {
@@ -112,8 +106,12 @@ func (c Client) Do(request *http.Request) (*http.Response, error) {
 		if err == nil || !errors.Is(err, syscall.ECONNREFUSED) || time.Now().After(deadline) {
 			return response, err
 		}
-		fmt.Fprintf(os.Stderr, "%s %s: connection refused; trying again in 5 s\n", request.Method, request.URL.Host)
-		time.Sleep(5 * time.Second)
+		fmt.Fprintf(c.Diagnostics, "%s %s: connection refused; trying again in 5 s\n", request.Method, request.URL.Host)
+		select {
+		case <-request.Context().Done():
+			return nil, request.Context().Err()
+		case <-time.After(5 * time.Second):
+		}
 	}
 }
 
@@ -137,10 +135,10 @@ type Reader struct {
 
 // NewReader reads multichat's rooms once and answers a Reader. operatorID is
 // the person whose photos these are, counted in every small chat.
-func NewReader(client Client, sources Sources, operatorID string) (*Reader, error) {
+func NewReader(ctx context.Context, client Client, sources Sources, operatorID string) (*Reader, error) {
 	reader := &Reader{Client: client, Sources: sources, persons: map[string]string{}, entries: map[string][]string{},
 		conversations: map[string]messagecitation.Conversation{}, operatorID: operatorID}
-	return reader, reader.loadRooms()
+	return reader, reader.loadRooms(ctx)
 }
 
 type room struct {
@@ -151,9 +149,9 @@ type room struct {
 	RoomID string `json:"room_id"`
 }
 
-func (r *Reader) loadRooms() error {
+func (r *Reader) loadRooms(ctx context.Context) error {
 	var rooms []room
-	if err := r.GetJSON(r.MultichatURL+"/api/conversations", map[string]string{"Authorization": "Bearer " + r.MultichatToken}, &rooms); err != nil {
+	if err := r.GetJSON(ctx, r.MultichatURL+"/api/conversations", map[string]string{"Authorization": "Bearer " + r.MultichatToken}, &rooms); err != nil {
 		return fmt.Errorf("multichat conversations: %w", err)
 	}
 	r.rooms = map[string]room{}
@@ -163,7 +161,7 @@ func (r *Reader) loadRooms() error {
 	return nil
 }
 
-func (r *Reader) personOfUser(userID string) (string, error) {
+func (r *Reader) personOfUser(ctx context.Context, userID string) (string, error) {
 	if personID, known := r.persons[userID]; known {
 		return personID, nil
 	}
@@ -172,7 +170,7 @@ func (r *Reader) personOfUser(userID string) (string, error) {
 			ID string `json:"id"`
 		} `json:"person"`
 	}
-	err := r.GetJSON(r.PeopleURL+"/identities/resolve?"+url.Values{"kind": {"matrix_user"}, "value": {userID}}.Encode(), nil, &answer)
+	err := r.GetJSON(ctx, r.PeopleURL+"/identities/resolve?"+url.Values{"kind": {"matrix_user"}, "value": {userID}}.Encode(), nil, &answer)
 	if err != nil && err != ErrNotFound {
 		return "", fmt.Errorf("people-store resolve %s: %w", userID, err)
 	}
@@ -182,7 +180,10 @@ func (r *Reader) personOfUser(userID string) (string, error) {
 
 // PeopleOf answers the people a photo's source names, with a short reason
 // in markdown for the evidence.
-func (r *Reader) PeopleOf(photo photostore.Photo) (map[string]string, error) {
+//
+// message-store's look-ups go through messagecitation, whose calls take no
+// context, so PeopleOf checks ctx before each one instead.
+func (r *Reader) PeopleOf(ctx context.Context, photo photostore.Photo) (map[string]string, error) {
 	named := map[string]string{}
 	switch {
 	case strings.HasPrefix(photo.SourcePath, "message_"):
@@ -193,7 +194,7 @@ func (r *Reader) PeopleOf(photo photostore.Photo) (map[string]string, error) {
 				RoomName     string `json:"room_name"`
 			} `json:"messages"`
 		}
-		err := r.GetJSON(r.MultichatURL+"/api/message-log/"+url.PathEscape(photo.SourcePath), map[string]string{"Authorization": "Bearer " + r.MultichatToken}, &answer)
+		err := r.GetJSON(ctx, r.MultichatURL+"/api/message-log/"+url.PathEscape(photo.SourcePath), map[string]string{"Authorization": "Bearer " + r.MultichatToken}, &answer)
 		if err == ErrNotFound || (err == nil && len(answer.Messages) == 0) {
 			return named, nil
 		}
@@ -217,7 +218,7 @@ func (r *Reader) PeopleOf(photo photostore.Photo) (map[string]string, error) {
 			reason = fmt.Sprintf("posted in [%s](ref:%s)", message.RoomName, photo.SourcePath)
 		}
 		for _, userID := range users {
-			personID, err := r.personOfUser(userID)
+			personID, err := r.personOfUser(ctx, userID)
 			if err != nil {
 				return nil, err
 			}
@@ -226,12 +227,18 @@ func (r *Reader) PeopleOf(photo photostore.Photo) (map[string]string, error) {
 			}
 		}
 	case strings.HasPrefix(photo.SourcePath, "chat_message_"):
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		message, err := r.Sources.Messages.MessageByID(photo.SourcePath)
 		if err != nil {
 			return nil, err
 		}
 		conversation, cached := r.conversations[message.ConversationID]
 		if !cached {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			if conversation, err = r.Sources.Messages.ConversationByID(message.ConversationID); err != nil {
 				return nil, err
 			}
@@ -260,7 +267,7 @@ func (r *Reader) PeopleOf(photo photostore.Photo) (map[string]string, error) {
 			var entry struct {
 				Body string `json:"body"`
 			}
-			if err := r.GetJSON(r.JournalURL+"/entries/"+url.PathEscape(photo.SourcePath), nil, &entry); err != nil && err != ErrNotFound {
+			if err := r.GetJSON(ctx, r.JournalURL+"/entries/"+url.PathEscape(photo.SourcePath), nil, &entry); err != nil && err != ErrNotFound {
 				return nil, fmt.Errorf("journal-store %s: %w", photo.SourcePath, err)
 			}
 			for _, match := range personReference.FindAllStringSubmatch(entry.Body, -1) {
@@ -280,11 +287,11 @@ func (r *Reader) PeopleOf(photo photostore.Photo) (map[string]string, error) {
 }
 
 // LoadLinks reads every photo-people link.
-func LoadLinks(web Client, storeURL string) ([]photostore.PhotoPerson, error) {
+func LoadLinks(ctx context.Context, web Client, storeURL string) ([]photostore.PhotoPerson, error) {
 	var links []photostore.PhotoPerson
 	for offset := 0; ; offset += 5000 {
 		var page []photostore.PhotoPerson
-		if err := web.GetJSON(fmt.Sprintf("%s/photo-people?limit=5000&offset=%d", storeURL, offset), nil, &page); err != nil {
+		if err := web.GetJSON(ctx, fmt.Sprintf("%s/photo-people?limit=5000&offset=%d", storeURL, offset), nil, &page); err != nil {
 			return nil, fmt.Errorf("photo-people: %w", err)
 		}
 		links = append(links, page...)
@@ -295,11 +302,11 @@ func LoadLinks(web Client, storeURL string) ([]photostore.PhotoPerson, error) {
 }
 
 // LoadPhotos reads every live photo.
-func LoadPhotos(web Client, storeURL string) ([]photostore.Photo, error) {
+func LoadPhotos(ctx context.Context, web Client, storeURL string) ([]photostore.Photo, error) {
 	var photos []photostore.Photo
 	for offset := 0; ; offset += 1000 {
 		var page []photostore.Photo
-		if err := web.GetJSON(fmt.Sprintf("%s/photos?limit=1000&offset=%d", storeURL, offset), nil, &page); err != nil {
+		if err := web.GetJSON(ctx, fmt.Sprintf("%s/photos?limit=1000&offset=%d", storeURL, offset), nil, &page); err != nil {
 			return nil, fmt.Errorf("photos: %w", err)
 		}
 		photos = append(photos, page...)

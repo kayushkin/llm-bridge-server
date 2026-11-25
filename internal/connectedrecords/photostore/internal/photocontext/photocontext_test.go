@@ -1,6 +1,8 @@
 package photocontext
 
 import (
+	"context"
+	"io"
 	"net"
 	"net/http"
 	"testing"
@@ -29,11 +31,11 @@ func TestDoWaitsOutAStoreThatIsRestarting(t *testing.T) {
 	var answer struct {
 		OK bool `json:"ok"`
 	}
-	client := Client{HTTP: &http.Client{Timeout: 10 * time.Second}}
-	if err := client.GetJSON("http://"+address+"/health", nil, &answer); err != nil || !answer.OK {
+	client := Client{HTTP: &http.Client{Timeout: 10 * time.Second}, Diagnostics: io.Discard}
+	if err := client.GetJSON(context.Background(), "http://"+address+"/health", nil, &answer); err != nil || !answer.OK {
 		t.Fatalf("GET through a restart = %v %+v, want the answer once the store is back", err, answer)
 	}
-	if status, _, err := client.PostJSON("http://"+address+"/x", map[string]int{"a": 1}); err != nil || status != http.StatusOK {
+	if status, _, err := client.PostJSON(context.Background(), "http://"+address+"/x", map[string]int{"a": 1}); err != nil || status != http.StatusOK {
 		t.Fatalf("POST = %d %v", status, err)
 	}
 }

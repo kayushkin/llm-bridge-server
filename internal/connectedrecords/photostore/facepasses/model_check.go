@@ -1,7 +1,8 @@
-package main
+package facepasses
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -10,23 +11,26 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"regexp"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/kayushkin/llm-bridge/msg"
 	photostore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore/internal/peoplematching"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore/internal/photocontext"
+	"github.com/kayushkin/llm-bridge/msg"
 )
+
+// personReference finds the person ids in markdown chips.
+var personReference = regexp.MustCompile(`ref:(person_[0-9]{6,})`)
 
 // modelChecker asks a model that can see whether a suggested face is the
 // person suggested, by showing it the face beside faces already known to be
 // them, and confirms or rejects the suggestion on its answer.
 type modelChecker struct {
 	web          photocontext.Client
+	output       io.Writer
 	storeURL     string
 	bridgeURL    string
 	serviceToken string
@@ -51,11 +55,15 @@ const modelCheckSystemPrompt = `You compare faces in a private family photo arch
 	`Say "same" when those clearly match allowing for age, "different" when they clearly do not, and "unsure" only ` +
 	`when the face is too small, blurred or turned away to see them. Give a one-sentence reason.`
 
-func (c *modelChecker) thumbnail(photoID string) (image.Image, error) {
+func (c *modelChecker) thumbnail(ctx context.Context, photoID string) (image.Image, error) {
 	if cached, seen := c.thumbnails[photoID]; seen {
 		return cached, nil
 	}
-	response, err := c.web.HTTP.Get(c.storeURL + "/photos/" + url.PathEscape(photoID) + "/thumbnail")
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.storeURL+"/photos/"+url.PathEscape(photoID)+"/thumbnail", nil)
+	if err != nil {
+		return nil, err
+	}
+	response, err := c.web.HTTP.Do(request)
 	if err != nil {
 		return nil, err
 	}
@@ -76,12 +84,12 @@ func (c *modelChecker) thumbnail(photoID string) (image.Image, error) {
 
 // faceCrop cuts a face from its photo's thumbnail with some room around it,
 // as a JPEG for the model.
-func (c *modelChecker) faceCrop(faceID string) (msg.OneShotImage, error) {
+func (c *modelChecker) faceCrop(ctx context.Context, faceID string) (msg.OneShotImage, error) {
 	face, known := c.faces[faceID]
 	if !known {
 		return msg.OneShotImage{}, fmt.Errorf("no face %s", faceID)
 	}
-	picture, err := c.thumbnail(face.PhotoID)
+	picture, err := c.thumbnail(ctx, face.PhotoID)
 	if err != nil {
 		return msg.OneShotImage{}, err
 	}
@@ -114,15 +122,15 @@ type modelVerdict struct {
 }
 
 // ask shows the model one face and up to three known faces of a person.
-func (c *modelChecker) ask(faceID string, knownFaceIDs []string, context string) (modelVerdict, error) {
+func (c *modelChecker) ask(ctx context.Context, faceID string, knownFaceIDs []string, photoContext string) (modelVerdict, error) {
 	images := []msg.OneShotImage{}
-	crop, err := c.faceCrop(faceID)
+	crop, err := c.faceCrop(ctx, faceID)
 	if err != nil {
 		return modelVerdict{}, err
 	}
 	images = append(images, crop)
 	for _, known := range knownFaceIDs {
-		crop, err := c.faceCrop(known)
+		crop, err := c.faceCrop(ctx, known)
 		if err != nil {
 			return modelVerdict{}, err
 		}
@@ -130,19 +138,19 @@ func (c *modelChecker) ask(faceID string, knownFaceIDs []string, context string)
 	}
 	years := make([]string, 0, len(images))
 	for _, id := range append([]string{faceID}, knownFaceIDs...) {
-		years = append(years, c.yearOf(c.faces[id].PhotoID))
+		years = append(years, c.yearOf(ctx, c.faces[id].PhotoID))
 	}
 	prompt := fmt.Sprintf("Image 1 is the face to judge. Images 2 to %d are the person it may be. The photos were taken in, in order: %s.",
 		len(images), strings.Join(years, ", "))
-	if context != "" {
-		prompt += " What the archive knows about where the photo came from: " + context
+	if photoContext != "" {
+		prompt += " What the archive knows about where the photo came from: " + photoContext
 	}
 	body, err := json.Marshal(msg.OneShotRequest{Prompt: prompt, SystemPrompt: modelCheckSystemPrompt, ModelRole: c.role,
 		Caller: matcherName, Schema: json.RawMessage(modelCheckSchema), MaxTokens: 400, Images: images})
 	if err != nil {
 		return modelVerdict{}, err
 	}
-	request, err := http.NewRequest(http.MethodPost, c.bridgeURL+"/oneshot", bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.bridgeURL+"/oneshot", bytes.NewReader(body))
 	if err != nil {
 		return modelVerdict{}, err
 	}
@@ -172,8 +180,6 @@ func (c *modelChecker) ask(faceID string, knownFaceIDs []string, context string)
 	return verdict, nil
 }
 
-var personReference = regexp.MustCompile(`ref:(person_[0-9]{6,})`)
-
 // markdownToPlain drops the ref chips from evidence, leaving their text, for
 // a prompt.
 func markdownToPlain(markdown string) string {
@@ -185,7 +191,7 @@ func markdownToPlain(markdown string) string {
 // says are not. A link to a person with no confirmed face is left for a
 // person to confirm their first face. It answers how many it asked, how they
 // came out, and how many wait.
-func (c *modelChecker) checkSuggestions(links []photostore.PhotoPerson, limit int, dryRun bool) (map[string]int, error) {
+func (c *modelChecker) checkSuggestions(ctx context.Context, links []photostore.PhotoPerson, limit int, dryRun bool) (map[string]int, error) {
 	confirmedFaces := map[string][]string{}
 	var suggestions []photostore.PhotoPerson
 	for _, link := range links {
@@ -225,13 +231,17 @@ func (c *modelChecker) checkSuggestions(links []photostore.PhotoPerson, limit in
 		}
 		known = c.mostSimilar(link.FaceID, known, 3)
 		outcome["asked"]++
-		verdict, err := c.ask(link.FaceID, known, contextWithoutScores(link.Evidence))
+		verdict, err := c.ask(ctx, link.FaceID, known, contextWithoutScores(link.Evidence))
+		if err != nil && ctx.Err() != nil {
+			// The run was stopped, not the model: nothing to count.
+			return outcome, ctx.Err()
+		}
 		if err != nil {
 			// One failed call (an overloaded model, a passing limit) skips
 			// this link, loudly; several in a row mean the route is down.
 			outcome["failed"]++
 			failedInARow++
-			fmt.Fprintf(os.Stderr, "%s: model check of %s failed: %v\n", matcherName, link.ID, err)
+			fmt.Fprintf(c.web.Diagnostics, "%s: model check of %s failed: %v\n", matcherName, link.ID, err)
 			if failedInARow >= 5 {
 				return outcome, fmt.Errorf("five model calls failed in a row; the last: %w", err)
 			}
@@ -254,27 +264,27 @@ func (c *modelChecker) checkSuggestions(links []photostore.PhotoPerson, limit in
 		}
 		outcome[verdict.Verdict]++
 		if dryRun {
-			fmt.Printf("%s %s %s: %s (%s)\n", link.ID, link.PhotoID, link.PersonID, verdict.Verdict, verdict.Reason)
+			fmt.Fprintf(c.output, "%s %s %s: %s (%s)\n", link.ID, link.PhotoID, link.PersonID, verdict.Verdict, verdict.Reason)
 			continue
 		}
-		if err := c.patch(link.ID, change); err != nil {
+		if err := c.patch(ctx, link.ID, change); err != nil {
 			return outcome, err
 		}
 	}
 	return outcome, nil
 }
 
-func (c *modelChecker) patch(id string, change photostore.PhotoPersonDecision) error {
-	return patchLink(c.web, c.storeURL, id, change)
+func (c *modelChecker) patch(ctx context.Context, id string, change photostore.PhotoPersonDecision) error {
+	return patchLink(ctx, c.web, c.storeURL, id, change)
 }
 
 // patchLink sends one PATCH /photo-people/{id}.
-func patchLink(web photocontext.Client, storeURL, id string, change photostore.PhotoPersonDecision) error {
+func patchLink(ctx context.Context, web photocontext.Client, storeURL, id string, change photostore.PhotoPersonDecision) error {
 	body, err := json.Marshal(change)
 	if err != nil {
 		return err
 	}
-	request, err := http.NewRequest(http.MethodPatch, storeURL+"/photo-people/"+url.PathEscape(id), bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPatch, storeURL+"/photo-people/"+url.PathEscape(id), bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -293,7 +303,7 @@ func patchLink(web photocontext.Client, storeURL, id string, change photostore.P
 
 // loadFaceBoxes reads every face's box, which the crops need, and its
 // embedding, which picks the known faces most like it.
-func (c *modelChecker) loadFaceBoxes(model string) error {
+func (c *modelChecker) loadFaceBoxes(ctx context.Context, model string) error {
 	after := ""
 	for {
 		query := url.Values{"model": {model}, "limit": {"5000"}, "include_embeddings": {"true"}}
@@ -301,7 +311,7 @@ func (c *modelChecker) loadFaceBoxes(model string) error {
 			query.Set("after", after)
 		}
 		var page []photostore.Face
-		if err := c.web.GetJSON(c.storeURL+"/faces?"+query.Encode(), nil, &page); err != nil {
+		if err := c.web.GetJSON(ctx, c.storeURL+"/faces?"+query.Encode(), nil, &page); err != nil {
 			return fmt.Errorf("faces: %w", err)
 		}
 		for _, face := range page {
@@ -332,13 +342,13 @@ func (c *modelChecker) mostSimilar(faceID string, known []string, count int) []s
 }
 
 // yearOf answers the year a photo was taken, read once from photo-store.
-func (c *modelChecker) yearOf(photoID string) string {
+func (c *modelChecker) yearOf(ctx context.Context, photoID string) string {
 	if year, seen := c.years[photoID]; seen {
 		return year
 	}
 	year := "unknown year"
 	var photo photostore.Photo
-	if err := c.web.GetJSON(c.storeURL+"/photos/"+url.PathEscape(photoID), nil, &photo); err == nil && photo.TakenAt > 0 {
+	if err := c.web.GetJSON(ctx, c.storeURL+"/photos/"+url.PathEscape(photoID), nil, &photo); err == nil && photo.TakenAt > 0 {
 		year = time.Unix(photo.TakenAt, 0).UTC().Format("2006")
 	}
 	c.years[photoID] = year
