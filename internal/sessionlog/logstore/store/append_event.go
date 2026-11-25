@@ -99,10 +99,10 @@ func (s *Store) appendEventOnConnection(ctx context.Context, connection *pgx.Con
 	}
 
 	batch := &statementBatch{}
-	batch.Exec(`INSERT INTO events (id, session_id, type, data, created_at, message_id, harness_message_id, tool_use_id, idempotency_key)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+	batch.Exec(`INSERT INTO events (id, session_id, type, data, created_at, message_id, harness_message_id, tool_use_id, tool_name, idempotency_key)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 		appended.ID, event.SessionID, event.Type, string(appended.Data), state.createdAt,
-		event.Fields.MessageID, event.Fields.HarnessMessageID, event.Fields.ToolUseID, key)
+		event.Fields.MessageID, event.Fields.HarnessMessageID, event.Fields.ToolUseID, event.Fields.ToolName, key)
 	if err := s.indexLiveEvent(batch, state, event.SessionID, appended.ID, event.Type, event.Fields.TurnID, appended.Data); err != nil {
 		return AppendedEvent{}, fmt.Errorf("index event in its turn: %w", err)
 	}

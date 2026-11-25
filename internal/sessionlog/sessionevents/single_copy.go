@@ -183,6 +183,7 @@ func eventToAppend(record store.SessionEventRecord) logstorestore.EventToAppend 
 			MessageID:        record.MessageID,
 			HarnessMessageID: record.HarnessMessageID,
 			ToolUseID:        record.ToolUseID,
+			ToolName:         record.ToolName,
 			TurnID:           record.Event.TurnID,
 			HarnessSessionID: record.Event.HarnessSessionID,
 		},

@@ -20,8 +20,10 @@ type SessionEventRecord struct {
 	MessageID        string
 	HarnessMessageID string
 	// ToolUseID is the tool call's id on a tool_call or tool_result event,
-	// which the bridge database reads from the body instead.
+	// and ToolName the tool's name on a tool_call; the bridge database reads
+	// both from the body instead.
 	ToolUseID string
+	ToolName  string
 	Data      []byte
 	// Event is the event Data is the JSON of.
 	Event *msg.Event

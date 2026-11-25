@@ -133,6 +133,7 @@ func sessionEventRecord(sessionID string, ev *msg.Event, messageID, harnessMessa
 	switch {
 	case ev.ToolCall != nil:
 		record.ToolUseID = ev.ToolCall.ToolID
+		record.ToolName = ev.ToolCall.Name
 	case ev.ToolResult != nil:
 		record.ToolUseID = ev.ToolResult.ToolID
 	}

@@ -51,7 +51,7 @@ const (
 var standaloneTables = []standaloneTable{
 	{name: "events", columns: []string{"id", "session_id", "type", "data", "created_at"}, orderBy: "id",
 		kinds:          []valueKind{integerValue, textValue, textValue, eventBodyValue, timeValue},
-		derivedColumns: []string{"message_id", "harness_message_id", "tool_use_id"},
+		derivedColumns: []string{"message_id", "harness_message_id", "tool_use_id", "tool_name"},
 		derive:         eventColumnsOfImportedBody},
 	{name: "sessions", columns: []string{"session_id", "turn_count", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens",
 		"duration_ms", "model", "harness_session_id", "started_at", "last_active", "ended_at"}, orderBy: "session_id",
@@ -374,12 +374,12 @@ func convertStandaloneValue(column string, kind valueKind, value any) (any, erro
 	return nil, fmt.Errorf("%s: no conversion for kind %d", column, kind)
 }
 
-// eventColumnsOfImportedBody reads an imported event's message ids and tool
-// use id from its body (the fourth column), as the writer stores them.
+// eventColumnsOfImportedBody reads an imported event's message ids, tool use
+// id and tool name from its body (the fourth column), as the writer stores them.
 func eventColumnsOfImportedBody(converted []any) ([]any, error) {
 	columns, err := EventFieldsOfBody([]byte(converted[3].(string)))
 	if err != nil {
 		return nil, fmt.Errorf("read the message ids from data: %w", err)
 	}
-	return []any{columns.MessageID, columns.HarnessMessageID, columns.ToolUseID}, nil
+	return []any{columns.MessageID, columns.HarnessMessageID, columns.ToolUseID, columns.ToolName}, nil
 }

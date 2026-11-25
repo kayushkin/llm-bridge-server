@@ -22,12 +22,14 @@ import (
 // holding the event passes rather than have the store read its body again.
 // Each is ” when the event names none.
 type EventFields struct {
-	// MessageID, HarnessMessageID and ToolUseID are kept beside the body,
-	// for the readers that select by them. ToolUseID is the tool call's id
-	// on a tool_call or tool_result event.
+	// MessageID, HarnessMessageID, ToolUseID and ToolName are kept beside
+	// the body, for the readers that select by them. ToolUseID is the tool
+	// call's id on a tool_call or tool_result event, ToolName the tool's name
+	// on a tool_call.
 	MessageID        string
 	HarnessMessageID string
 	ToolUseID        string
+	ToolName         string
 	// TurnID places the event in its turn.
 	TurnID string
 	// HarnessSessionID is the harness's own id for the session, which the
@@ -41,6 +43,7 @@ func EventFieldsOf(ev *msg.Event) EventFields {
 	switch {
 	case ev.ToolCall != nil:
 		columns.ToolUseID = ev.ToolCall.ToolID
+		columns.ToolName = ev.ToolCall.Name
 	case ev.ToolResult != nil:
 		columns.ToolUseID = ev.ToolResult.ToolID
 	}
@@ -55,6 +58,7 @@ type eventFieldsOfBody struct {
 	HarnessSessionID string `json:"harness_session_id"`
 	ToolCall         *struct {
 		ToolID string `json:"tool_id"`
+		Name   string `json:"name"`
 	} `json:"tool_call"`
 	ToolResult *struct {
 		ToolID string `json:"tool_id"`
@@ -72,6 +76,7 @@ func EventFieldsOfBody(data []byte) (EventFields, error) {
 	switch {
 	case fields.ToolCall != nil:
 		columns.ToolUseID = fields.ToolCall.ToolID
+		columns.ToolName = fields.ToolCall.Name
 	case fields.ToolResult != nil:
 		columns.ToolUseID = fields.ToolResult.ToolID
 	}
@@ -405,7 +410,7 @@ func (s *Store) LatestToolCallWithResult(sessionID, toolName string, since time.
 		FROM (
 			SELECT id, data FROM events
 			WHERE session_id = $1 AND type = 'tool_call' AND created_at >= $2
-			  AND data->'tool_call'->>'name' = $3
+			  AND tool_name = $3
 			ORDER BY id DESC LIMIT 1) call
 		JOIN events result
 		  ON result.session_id = $1 AND result.type = 'tool_result' AND result.id > call.id
