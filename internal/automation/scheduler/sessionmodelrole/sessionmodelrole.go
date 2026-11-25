@@ -73,14 +73,46 @@ func New(modelStoreURL, bridgeURL string) Checker {
 // bridge does not know the harness, and when the harness cannot run the
 // model's provider.
 func (checker Checker) Check(role string, harness msg.Harness) (Model, error) {
+	return checkRole(checker, role, harness)
+}
+
+// RoleSources answers what a check needs: the role's first model, and the
+// providers a harness runs. Checker reads them over HTTP; llm-bridge-server
+// answers them in process for the scheduler inside it.
+type RoleSources interface {
+	// FirstModelOfRole is the role's first model.
+	FirstModelOfRole(role string) (Model, error)
+	// ProvidersOfHarness is the providers harness runs, nil for any. A
+	// harness the bridge does not know is an error.
+	ProvidersOfHarness(harness msg.Harness) ([]string, error)
+}
+
+var _ RoleSources = Checker{}
+
+// SourcesChecker checks a role against sources read in process.
+type SourcesChecker struct {
+	Sources RoleSources
+}
+
+var _ RoleChecker = SourcesChecker{}
+
+// Check is Checker.Check, asking Sources.
+func (checker SourcesChecker) Check(role string, harness msg.Harness) (Model, error) {
+	return checkRole(checker.Sources, role, harness)
+}
+
+func checkRole(sources RoleSources, role string, harness msg.Harness) (Model, error) {
 	if role == "" {
 		return Model{}, fmt.Errorf("no model role to start a %s session on", harness)
 	}
-	model, err := checker.firstModel(role)
+	model, err := sources.FirstModelOfRole(role)
 	if err != nil {
 		return Model{}, err
 	}
-	providers, err := checker.harnessProviders(harness)
+	if model.ID == "" || model.Provider == "" {
+		return Model{}, fmt.Errorf("resolve model role %q: model-store has a model with no id or no provider: %+v", role, model)
+	}
+	providers, err := sources.ProvidersOfHarness(harness)
 	if err != nil {
 		return Model{}, err
 	}
@@ -92,8 +124,9 @@ func (checker Checker) Check(role string, harness msg.Harness) (Model, error) {
 	return model, nil
 }
 
-// firstModel reads model-store's GET /api/roles/{role}, the role's first model.
-func (checker Checker) firstModel(role string) (Model, error) {
+// FirstModelOfRole reads model-store's GET /api/roles/{role}, the role's
+// first model.
+func (checker Checker) FirstModelOfRole(role string) (Model, error) {
 	address := strings.TrimRight(checker.ModelStoreURL, "/") + "/api/roles/" + url.PathEscape(role)
 	body, err := checker.get(address)
 	if err != nil {
@@ -109,9 +142,9 @@ func (checker Checker) firstModel(role string) (Model, error) {
 	return model, nil
 }
 
-// harnessProviders reads the providers llm-bridge-server's GET /harnesses says
-// harness runs. nil means any provider.
-func (checker Checker) harnessProviders(harness msg.Harness) ([]string, error) {
+// ProvidersOfHarness reads the providers llm-bridge-server's GET /harnesses
+// says harness runs. nil means any provider.
+func (checker Checker) ProvidersOfHarness(harness msg.Harness) ([]string, error) {
 	address := strings.TrimRight(checker.BridgeURL, "/") + "/harnesses"
 	body, err := checker.get(address)
 	if err != nil {

@@ -32,10 +32,6 @@ import (
 // schedulerNATSClientName is how the scheduler names itself on NATS.
 const schedulerNATSClientName = "llm-bridge-server scheduler"
 
-// schedulerCallTimeout bounds a call the scheduler makes to this server or
-// model-store in process, as the network calls were bounded.
-const schedulerCallTimeout = 15 * time.Second
-
 func openSchedulerModule(ctx context.Context, url string) (*sql.DB, error) {
 	module, err := schedulerdb.Module()
 	if err != nil {
@@ -97,10 +93,9 @@ func enableScheduler(ctx context.Context, cfg *config.Config, srv *server.Server
 		return nil, fmt.Errorf("scheduler: %w", err)
 	}
 
-	// Model roles are checked with model-store, and agent jobs read sessions
-	// and harnesses, in this process.
-	bridgeBaseURL, bridgeClient := srv.HTTPClientToThisServer(schedulerCallTimeout)
-	roles := modelstoreroles.Checker{ModelStoreURL: bridgeBaseURL + "/model-store", HTTPClient: bridgeClient}
+	// Model roles are checked with model-store, and agent jobs read sessions,
+	// instances and harnesses, by direct calls into this process.
+	roles := modelstoreroles.Checker{Roles: srv.SchedulerModelStoreRoles()}
 
 	storedSettings, err := schedulerconfig.NewStoredSettingsRegistry()
 	if err != nil {
@@ -138,10 +133,9 @@ func enableScheduler(ctx context.Context, cfg *config.Config, srv *server.Server
 		log.Printf("scheduler: runs are on; %d runs were going when the last process stopped, and are interrupted", len(interrupted))
 		scheduler.SetLogger(logger)
 		if natsClient != nil {
-			agents := executor.NewAgentExecutor(natsClient, bridgeBaseURL, noteboardURL,
+			agents := executor.NewAgentExecutor(natsClient, srv.SchedulerBridge(), noteboardURL,
 				func() string { return storedSettings.ModelRole(schedulerconfig.SettingAgentJobModelRole) },
-				sessionmodelrole.Checker{ModelStoreURL: bridgeBaseURL + "/model-store", BridgeURL: bridgeBaseURL, HTTPClient: bridgeClient})
-			agents.SetBridgeHTTPClient(bridgeClient)
+				sessionmodelrole.SourcesChecker{Sources: srv.SchedulerModelRoleSources()})
 			scheduler.SetAgentExecutor(agents)
 			busHandler, err := bus.NewHandler(natsURL, store, scheduler, logger, roles.CheckRole)
 			if err != nil {
