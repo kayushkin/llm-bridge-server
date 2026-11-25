@@ -180,7 +180,9 @@ func (s *Store) HistoryLimits(f LimitHistoryFilter) ([]LimitHistoryRow, error) {
 		args = append(args, f.Until)
 		q += fmt.Sprintf(" AND snapshot_at <= $%d", len(args))
 	}
-	q += " ORDER BY snapshot_at ASC, id ASC"
+	// Ties within one reading come out by window name, as the standalone
+	// store's index gave them.
+	q += ` ORDER BY snapshot_at ASC, window_key COLLATE "C" ASC, id ASC`
 	if f.Limit > 0 {
 		q += fmt.Sprintf(" LIMIT %d", f.Limit)
 	}

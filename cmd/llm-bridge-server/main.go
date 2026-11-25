@@ -62,6 +62,12 @@ func main() {
 		case "import-model-store":
 			importModelStoreCmd(os.Args[2:])
 			return
+		case "import-usage-store":
+			importUsageStoreCmd(os.Args[2:])
+			return
+		case "import-eval-store":
+			importEvalStoreCmd(os.Args[2:])
+			return
 		case "import-noteboard":
 			importNoteboardCmd(os.Args[2:])
 			return
@@ -81,7 +87,7 @@ func main() {
 			makeSignInLinkCmd(os.Args[2:])
 			return
 		case "-h", "--help":
-			fmt.Fprintln(os.Stderr, "usage: llm-bridge-server [mint-enroll [-ttl 15m] | import-prediction-store -sqlite <file> | import-principal-store|import-grant-store|import-sign-in-store|import-permission-store -sqlite <file> | make-sign-in-link <principal id> | import-noteboard -sqlite <file> | import-project-store -sqlite <file> | import-kanban-store -sqlite <file> | import-log-store -sqlite <file> | import-tool-store -sqlite <file> | import-skill-store -sqlite <file> | import-bundle-store -sqlite <file> | import-agent-store|import-memory-store|import-model-store -sqlite <file> | import-repo-store -sqlite <file> | import-work-graph-store -sqlite <file> | import-file-store -sqlite <file> -blobs <directory> [-carry copy|link]]")
+			fmt.Fprintln(os.Stderr, "usage: llm-bridge-server [mint-enroll [-ttl 15m] | import-prediction-store -sqlite <file> | import-principal-store|import-grant-store|import-sign-in-store|import-permission-store -sqlite <file> | make-sign-in-link <principal id> | import-noteboard -sqlite <file> | import-project-store -sqlite <file> | import-kanban-store -sqlite <file> | import-log-store -sqlite <file> | import-tool-store -sqlite <file> | import-skill-store -sqlite <file> | import-bundle-store -sqlite <file> | import-agent-store|import-memory-store|import-model-store -sqlite <file> | import-usage-store|import-eval-store -sqlite <file> | import-repo-store -sqlite <file> | import-work-graph-store -sqlite <file> | import-file-store -sqlite <file> -blobs <directory> [-carry copy|link]]")
 			os.Exit(0)
 		}
 	}
@@ -231,6 +237,14 @@ func main() {
 
 	closeAgentsStoreModules := enableAgentsStoreModules(context.Background(), srv, cfg)
 	defer closeAgentsStoreModules()
+
+	// usage-store and eval-store, in Postgres. Their background loops run only
+	// when their settings say so.
+	closeUsageAndEvalStores, err := enableUsageAndEvalStores(context.Background(), cfg, srv, mds)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	defer closeUsageAndEvalStores()
 
 	operationStore, err := operationstore.Open(cfg.OperationsDBPath)
 	if err != nil {

@@ -64,12 +64,9 @@ type Config struct {
 	// first start each key exists; the stored row decides after.
 	FileStoreMaximumFileBytes   int
 	FileStoreInlineContentTypes []string
-	// UsageStoreURL is usage-store, read for subscription limits before a
-	// routed one-shot call. Empty switches the check off.
-	UsageStoreURL  string
-	HarnessStoreDB string
-	HookStoreDB    string
-	ImagesDir      string
+	HarnessStoreDB              string
+	HookStoreDB                 string
+	ImagesDir                   string
 	// SessionFilesDir is where a file shared into a session is copied for its
 	// agent to read: <dir>/<session id>/<file id>/<filename>.
 	SessionFilesDir string
@@ -416,7 +413,6 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		SessionActionsReviewModelRole:         settings.ModelRole(SettingSessionActionsReviewModelRole),
 		ImageGenerationInstanceID:             settings.String(SettingImageGenerationInstanceID),
 		SessionRenamerModelRole:               settings.ModelRole(SettingSessionRenamerModelRole),
-		UsageStoreURL:                         settings.String("usage_store.url"),
 		OperationsGrantEnforcement:            settings.String(SettingOperationsGrantEnforcement),
 		ServerName:                            settings.String(SettingServerName),
 		ChatLinksReferencePageBaseURL:         settings.String(SettingChatLinksReferencePageBaseURL),
@@ -503,7 +499,6 @@ func (c *Config) GuardedAddresses() map[string]string {
 		"ConformancePath":  c.ConformancePath,
 		"MailstackURL":     c.MailstackURL,
 		"HealthcheckURL":   c.HealthcheckURL,
-		"UsageStoreURL":    c.UsageStoreURL,
 		"SnapshotStoreDB":  c.SnapshotStoreDB,
 		"SnapshotStoreGit": c.SnapshotStoreGit,
 		"OperationsDBPath": c.OperationsDBPath,

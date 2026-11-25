@@ -36,11 +36,12 @@ type usageStoreProviderLimits struct {
 	StaleAfter int64 `json:"stale_after"`
 }
 
-// NewUsageStoreLimits reads usage-store at baseURL.
-func NewUsageStoreLimits(baseURL string) *UsageStoreLimits {
+// NewUsageStoreLimits reads usage-store's routes at baseURL with client. The
+// server gives it a client that answers from usage-store in this process.
+func NewUsageStoreLimits(baseURL string, client *http.Client) *UsageStoreLimits {
 	return &UsageStoreLimits{
 		baseURL:  strings.TrimRight(baseURL, "/"),
-		client:   &http.Client{Timeout: 3 * time.Second},
+		client:   client,
 		cacheFor: 30 * time.Second,
 		now:      time.Now,
 	}

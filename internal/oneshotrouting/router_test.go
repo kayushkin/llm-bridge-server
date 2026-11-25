@@ -245,7 +245,7 @@ func TestUsageStoreLimitsReadsAFullFreshWindowAndIgnoresAStaleOne(t *testing.T) 
 			"codex":{"windows":{"weekly":{"used_percent":100}},"stale_after":%d}}`, now.Unix()+60, now.Unix()-60)
 	}))
 	defer server.Close()
-	limits := NewUsageStoreLimits(server.URL)
+	limits := NewUsageStoreLimits(server.URL, &http.Client{Timeout: 3 * time.Second})
 	limits.now = func() time.Time { return now }
 	for provider, want := range map[string]string{"anthropic": "seven_day limit at 100%", "codex": "", "gemini": ""} {
 		got, err := limits.ExhaustedWindow(context.Background(), provider)
@@ -253,7 +253,7 @@ func TestUsageStoreLimitsReadsAFullFreshWindowAndIgnoresAStaleOne(t *testing.T) 
 			t.Errorf("%s: %q %v, want %q", provider, got, err, want)
 		}
 	}
-	if _, err := NewUsageStoreLimits("http://127.0.0.1:1").ExhaustedWindow(context.Background(), "anthropic"); err == nil {
+	if _, err := NewUsageStoreLimits("http://127.0.0.1:1", &http.Client{Timeout: 3 * time.Second}).ExhaustedWindow(context.Background(), "anthropic"); err == nil {
 		t.Error("an unreachable usage-store read as no limit instead of an error")
 	}
 }

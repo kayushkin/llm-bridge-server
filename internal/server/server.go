@@ -130,6 +130,9 @@ type Server struct {
 	toolStoreForResourceChecks  atomic.Pointer[toolstore.Store]
 	skillStoreForResourceChecks atomic.Pointer[skillstore.Store]
 	bundleStoreHandlers         atomic.Pointer[bundlestore.Handlers]
+	// usageAndEvalStores answers /usage-store/ and /eval-store/ once their
+	// Postgres modules are open (usage_and_eval_store_routes.go).
+	usageAndEvalStores usageAndEvalStores
 	// kanbanClient answers "which noteboard todo is this session linked
 	// to?" when a signal is minted, and every other read this server makes of
 	// kanban-store. EnableKanbanStore sets it; nil until then, which leaves
@@ -358,6 +361,7 @@ func (s *Server) routes() {
 	s.registerProjectStoreRoutes()
 	s.registerAccessRoutes()
 	s.registerRepositoriesAndReferencesRoutes()
+	s.registerUsageAndEvalStoreRoutes()
 	// This server's own settings, served the way every service serves them.
 	serviceSettingsHandler := servicesettings.Handler(s.settings, "/settings")
 	s.mux.Handle("GET /settings", serviceSettingsHandler)

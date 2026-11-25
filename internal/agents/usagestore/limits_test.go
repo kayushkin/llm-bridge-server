@@ -65,3 +65,23 @@ func TestHistoryLimitsFiltersByWindowAndTimeAndKeepsTheLimit(t *testing.T) {
 		t.Fatal("a history with no provider must be refused")
 	}
 }
+
+func TestHistoryLimitsListsTheWindowsOfOneReadingByName(t *testing.T) {
+	s := newTestStore(t)
+	for attempt := 0; attempt < 5; attempt++ {
+		if err := s.SaveLimits(ProviderLimits{Provider: "anthropic", SnapshotAt: int64(100 + attempt), Source: "api",
+			Windows: map[string]*LimitWindow{"seven_day": {UsedPercent: 1}, "five_hour": {UsedPercent: 2}, "seven_day_opus": {UsedPercent: 3}}}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := s.HistoryLimits(LimitHistoryFilter{Provider: "anthropic"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, row := range rows {
+		want := []string{"five_hour", "seven_day", "seven_day_opus"}[index%3]
+		if row.WindowKey != want || row.SnapshotAt != int64(100+index/3) {
+			t.Fatalf("row %d is %s at %d, want %s at %d", index, row.WindowKey, row.SnapshotAt, want, 100+index/3)
+		}
+	}
+}

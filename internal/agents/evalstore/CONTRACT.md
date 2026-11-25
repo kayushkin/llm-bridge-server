@@ -1,20 +1,22 @@
 # eval-store — API contract
 
-Port 8323, set by `EVAL_STORE_ADDR` in `eval-store.service` (loopback only). Judged
-runs of several models on a fixed set of real model calls.
+Judged runs of several models on a fixed set of real model calls. It runs
+inside llm-bridge-server, mounted at `/eval-store/` with the paths below behind
+the prefix, as operator routes: the service token, an administrator, or an
+administrator's session agent token.
 
-Module `github.com/kayushkin/llm-bridge-server/internal/agents/evalstore`, root package `evalstore`, binary
-`cmd/eval-store` installed at `~/bin/eval-store`. SQLite at
-`<EVAL_STORE_DATA_DIR>/eval-store.db` (default `~/.config/eval-store`), WAL, foreign
-keys on. The directory is 700 and the file 600, and `Open` refuses a directory
-others can read: **cases hold real mail**. Nothing derived from a case — prompt,
-answer, verdict reason — may go in this repository, its tests or its commit
-messages.
+Package `internal/agents/evalstore`. Records live in the Postgres module
+`evaluations` (role `evaluations_module`); only that role and the login that
+provisions it can read the schema. **Cases hold real mail**: nothing derived
+from a case — prompt, answer, verdict reason — may go in this repository, its
+tests or its commit messages. `llm-bridge-server import-eval-store -sqlite
+<file>` copies a standalone eval-store's SQLite file into the module, keeping
+every id, and prints only counts.
 
-Routes are rooted at `/`. No route takes a credential. Times are epoch seconds
-(0 = unset). Bodies are decoded strictly: an unknown field is a 400. Errors are
-`{"error": "…"}` with 400 (invalid), 404, 409 (conflict), 502 (llm-bridge-server
-lacks a route) or 500.
+Routes take no credential of their own beyond the bridge's. Times are epoch
+seconds (0 = unset). Bodies are decoded strictly: an unknown field is a 400.
+Errors are `{"error": "…"}` with 400 (invalid), 404, 409 (conflict), 502
+(llm-bridge-server lacks a route), 503 (runs are off here) or 500.
 
 ## Records and ids
 
@@ -68,9 +70,9 @@ reads none refuses any, and only `GET /cases/{id}` returns it.
 `case_selection` (`{"mode":"all"}` or `{"mode":"sample","size":N,"seed":S}`,
 frozen into `case_ids` at creation), `budget_limits` (`[{"subscription":"codex",
 "window":"weekly","max_used_percent":60}, …]`; defaults from
-`EVAL_STORE_DEFAULT_BUDGET_LIMITS`), `concurrency`, `organization_id` (the
+`eval_store.default_budget_limits`), `concurrency`, `organization_id` (the
 principal-store group billed, recorded at start; default
-`EVAL_STORE_ORGANIZATION_ID`; a run with neither refuses to start), `model_prices` (every model's provider and
+`eval_store.organization_id`; a run with neither refuses to start), `model_prices` (every model's provider and
 list price from model-store, frozen at creation), `prediction_id`, `note`,
 `origin` (`live` or `legacy-import`).
 
@@ -95,14 +97,16 @@ label exactly once; an invalid one is left out of every report figure.
 
 ## Model calls
 
-Every candidate and judge call is an `llm.completion` operation on
-llm-bridge-server, sent with `X-LLM-Bridge-Service-Token` alone, as scheduler
-sends its calls: eval-store acts as the internal service, as no principal, and
-each intent bills the run's `organization_id`. The operation's
+Every candidate and judge call is an `llm.completion` operation on the
+llm-bridge-server it runs in, made in process as the internal service, as no
+principal, as scheduler's calls with the service token are: each intent bills
+the run's `organization_id`. Prices come from model-store's
+`/model-store/api/models` and usage from usage-store's
+`/usage-store/api/usage/limits`, both in process too. The operation's
 `model` is the model-store id. Idempotency key:
 `eval-store:<run>:<case>:<answer|judge>:<model>:<attempt>`; correlation id: the
 run id. A resumed run sends the same keys and is handed the first receipts.
-Calls are made in batches of `EVAL_STORE_BUDGET_CHECK_EVERY_CALLS`, with
+Calls are made in batches of `eval_store.budget_check_every_calls`, with
 usage-store read before each.
 
 ## Routes
@@ -110,7 +114,6 @@ usage-store read before each.
 | Route | What it does |
 |---|---|
 | `GET /health` | counts of each record |
-| `GET /settings` | the declared settings and the values in force; the token as set-or-not |
 | `GET /vocabulary` | run statuses, source kinds, checkers, selection modes, answer origins |
 | `GET /suites` · `POST /suites` | list, create |
 | `GET /suites/{id}` · `PATCH /suites/{id}` · `DELETE /suites/{id}` | read; change the fields named; delete (409 while it has runs) |
@@ -173,8 +176,10 @@ cache discount. Each model gets cost per call, week and unit, and the volume,
 each feature and each coefficient that reach `target_usd` (null when out of
 reach below 10⁷).
 
-## Command
+## Settings and runs
 
-`eval-store serve`; `eval-store import-legacy <dir>` (opens the database
-directly); every other verb calls the server at `EVAL_STORE_URL`. `eval-store
-help` lists them.
+eval-store's settings are llm-bridge-server's, `eval_store.*` in
+`internal/config/usage_and_eval_settings.go`, read at start. Runs are carried
+out only when `eval_store.runs.enabled` is on (off by default): off, `POST
+/runs/{id}/start` and `/resume` answer 503 and every other route answers. On,
+the runs a previous process left going are marked `interrupted` at start.

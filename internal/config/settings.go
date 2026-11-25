@@ -216,8 +216,6 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "mailstack, asked for the sender and subject behind a card when triage drafts a customer reply, and the upstream of the /mailstack/ proxy, which forwards a person's mail reads as X-Principal-Id."},
 		{Key: "healthcheck.url", EnvironmentVariable: "LLMBRIDGE_HEALTHCHECK_URL", Kind: wiring, ValueType: text, Default: productiondefaults.HealthcheckURL,
 			Description: "healthcheck, whose status is the list of services the service inventory shows."},
-		{Key: "usage_store.url", EnvironmentVariable: "LLMBRIDGE_USAGE_STORE_URL", Kind: wiring, ValueType: text, Default: productiondefaults.UsageStoreURL,
-			Description: "usage-store, asked before each routed one-shot call whether the subscription the call would bill is used up; a model on a full, fresh window is skipped for the role's next. Empty switches the check off."},
 		{Key: "entra.tenant_id", EnvironmentVariable: "LLMBRIDGE_ENTRA_TENANT_ID", Kind: wiring, ValueType: text,
 			Description: "The Microsoft Entra ID tenant people sign in from, as a GUID. A token from any other tenant is refused. Entra sign-in is on only when this, the client id, the client secret and the redirect URL are all set."},
 		{Key: "entra.client_id", EnvironmentVariable: "LLMBRIDGE_ENTRA_CLIENT_ID", Kind: wiring, ValueType: text,
@@ -292,6 +290,7 @@ func SettingDefinitions() []servicesettings.Definition {
 	definitions = append(definitions, repositoriesAndReferencesSettingDefinitions()...)
 	definitions = append(definitions, sessionLogSettingDefinitions()...)
 	definitions = append(definitions, kanbanStoreSettingDefinitions()...)
+	definitions = append(definitions, usageAndEvalSettingDefinitions()...)
 
 	// One proxy backend per known harness. The variable is per harness, so the
 	// declarations are read off the harness registry rather than listed.
