@@ -304,7 +304,7 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 			kick: make(chan struct{}, 1),
 			now:  func() time.Time { return time.Now().UTC() },
 		}
-		srv.chatLinks.sendIntoSession = srv.sendIntoSessionThroughRoutes
+		srv.chatLinks.sendIntoSession = srv.sendIntoSessionAsTheServer
 	} else {
 		log.Printf("[chat-links] off: %v", errChatLinksOff)
 	}

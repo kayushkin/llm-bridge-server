@@ -18,7 +18,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"net/url"
 	"sync"
 	"time"
 
@@ -213,8 +212,8 @@ func (s *Server) deliverHeldMessages() {
 }
 
 func (s *Server) deliverHeldMessage(message store.HeldMessage) {
-	status, body := s.serveInternallyWithContext(withHeldMessageSender(context.Background(), message.SenderPrincipalID),
-		http.MethodPost, "/sessions/"+url.PathEscape(message.SessionID)+"/send", message.Request)
+	answer := s.sendMessageFromThisServer(context.Background(), message.SessionID, message.Request, message.SenderPrincipalID)
+	status, body := answer.status, answer.body
 	outcome, subtype, detail := store.HeldMessageDelivered, msg.SystemSubtypeHeldMessageDelivered, ""
 	if status == http.StatusAccepted {
 		log.Printf("[restart-drain] held %s for session %s was held again: a new drain began while it was sent", message.HeldMessageID, message.SessionID)

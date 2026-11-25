@@ -1,10 +1,10 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
-	"net/url"
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -131,9 +131,9 @@ func (s *Server) deliverLostWakeup(armed store.ScheduledWakeup, oldestCallToRead
 		return
 	}
 	message := fmt.Sprintf("[llm-bridge-server restarted while your ScheduleWakeup was pending, which canceled it. This is its prompt, sent by the server at the time it was due.]\n\n%s", armed.Prompt)
-	status, body := s.serveInternally(http.MethodPost, "/sessions/"+url.PathEscape(armed.SessionID)+"/send", SendMessageRequest{Message: message})
-	if status != http.StatusOK {
-		log.Printf("[wakeup-redelivery] ERROR %s: sending wakeup %s answered %d: %s", armed.SessionID, armed.ToolID, status, body)
+	answer := s.sendMessageFromThisServer(context.Background(), armed.SessionID, SendMessageRequest{Message: message}, "")
+	if answer.status != http.StatusOK {
+		log.Printf("[wakeup-redelivery] ERROR %s: sending wakeup %s answered %d: %s", armed.SessionID, armed.ToolID, answer.status, answer.body)
 		return
 	}
 	log.Printf("[wakeup-redelivery] %s: delivered wakeup %s", armed.SessionID, armed.ToolID)

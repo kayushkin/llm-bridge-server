@@ -656,17 +656,21 @@ func (s *Server) sendToCreatedSession(createdBody []byte, message string) sessio
 }
 
 func (s *Server) sendMessageInternally(sessionID, message string) (string, error) {
-	status, body := s.serveInternally(http.MethodPost, "/sessions/"+url.PathEscape(sessionID)+"/send", SendMessageRequest{Message: message})
-	if status != http.StatusOK {
-		return string(body), fmt.Errorf("send to %s refused with %d: %s", sessionID, status, strings.TrimSpace(string(body)))
+	answer := s.sendMessageFromThisServer(context.Background(), sessionID, SendMessageRequest{Message: message}, "")
+	if answer.status != http.StatusOK {
+		return string(answer.body), fmt.Errorf("send to %s refused with %d: %s", sessionID, answer.status, strings.TrimSpace(string(answer.body)))
 	}
-	return string(body), nil
+	return string(answer.body), nil
 }
 
 // serveInternally runs one request through this server's own routes, past
 // request authorization — the person who confirmed the action was authorized
-// for its session already — so an action sends, forks and creates exactly as
-// those routes do when a person calls them.
+// for its session already — so an action forks and creates exactly as those
+// routes do when a person calls them. Only POST /sessions and
+// POST /sessions/{id}/fork go this way: their handlers decide from the
+// request's caller throughout (delegates, peers, starters, scopes), and
+// splitting them into a function of their own is a change to session
+// creation, not to how it is called. A send calls sendMessageFromThisServer.
 func (s *Server) serveInternally(method, path string, body any) (int, []byte) {
 	return s.serveInternallyWithContext(context.Background(), method, path, body)
 }

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -130,11 +129,10 @@ func (s *Server) handleAnswerLooseEnd(w http.ResponseWriter, r *http.Request) {
 	if looseEnd == nil {
 		return
 	}
-	status, body := s.serveInternally(http.MethodPost, "/sessions/"+url.PathEscape(looseEnd.SessionID)+"/send",
-		SendMessageRequest{Message: looseEndAnswerMessage(looseEnd, answer)})
-	if status < 200 || status >= 300 {
+	sent := s.sendMessageFromThisServer(r.Context(), looseEnd.SessionID, SendMessageRequest{Message: looseEndAnswerMessage(looseEnd, answer)}, "")
+	if !sent.sent() {
 		writeJSONError(w, http.StatusBadGateway, "send_failed",
-			fmt.Sprintf("sending the answer to the session answered %d: %s", status, strings.TrimSpace(string(body))))
+			fmt.Sprintf("sending the answer to the session answered %d: %s", sent.status, strings.TrimSpace(string(sent.body))))
 		return
 	}
 	if err := s.store.CloseLooseEnd(looseEnd.ID, msg.LooseEndAnswered, answer); err != nil {
