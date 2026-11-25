@@ -39,7 +39,9 @@ func (s *Server) SchedulerModelRoleSources() sessionmodelrole.RoleSources {
 
 // SchedulerModelStoreRoles is model-store's roles as the scheduler checks a
 // model-role setting.
-func (s *Server) SchedulerModelStoreRoles() modelstoreroles.Roles { return schedulerReadsThisServer{server: s} }
+func (s *Server) SchedulerModelStoreRoles() modelstoreroles.Roles {
+	return schedulerReadsThisServer{server: s}
+}
 
 func (reads schedulerReadsThisServer) Instances() ([]msg.Instance, error) {
 	return reads.server.listInstancesWithMachines()
