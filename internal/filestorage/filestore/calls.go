@@ -1,6 +1,7 @@
 package filestore
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -24,10 +25,19 @@ type Refusal struct {
 
 func (refusal *Refusal) Error() string { return refusal.Message }
 
-// Write answers the refusal as the routes do: its status and
-// {"error": message}.
+// Write answers the refusal as the routes do: its status and Body.
 func (refusal *Refusal) Write(w http.ResponseWriter) {
 	writeError(w, refusal.Status, refusal.Message)
+}
+
+// Body is the refusal's answer body as the routes write it:
+// {"error": message} and a newline.
+func (refusal *Refusal) Body() []byte {
+	encoded, err := json.Marshal(map[string]string{"error": refusal.Message})
+	if err != nil {
+		panic(fmt.Sprintf("a string map always encodes: %v", err))
+	}
+	return append(encoded, '\n')
 }
 
 // writeAcceptError answers a refusal with its own status and any other
@@ -97,11 +107,23 @@ func (s *Server) Accept(content io.Reader, declaredLength int64, contentType str
 // is told not to sniff the type and to run nothing: a person's upload shown
 // from the dashboard's origin must never execute as it.
 func (s *Server) ServeContentOf(w http.ResponseWriter, r *http.Request, id, inline string) {
-	file, err := s.store.Get(id, false)
+	file, err := s.LiveFile(id)
 	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
+	s.ServeLiveFile(w, r, file, inline)
+}
+
+// LiveFile is the record of a file this store holds and has not deleted, or
+// ErrNotFound.
+func (s *Server) LiveFile(id string) (*File, error) {
+	return s.store.Get(id, false)
+}
+
+// ServeLiveFile answers r with the bytes of file, a record LiveFile read, as
+// ServeContentOf does once it has found it.
+func (s *Server) ServeLiveFile(w http.ResponseWriter, r *http.Request, file *File, inline string) {
 	served := false
 	switch inline {
 	case "", "false":
@@ -141,7 +163,7 @@ func (s *Server) ServeContentOf(w http.ResponseWriter, r *http.Request, id, inli
 // file this store does not hold, or has deleted, is ErrNotFound. The caller
 // closes the file.
 func (s *Server) OpenLiveContent(id string) (*File, *os.File, error) {
-	file, err := s.store.Get(id, false)
+	file, err := s.LiveFile(id)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -150,6 +172,24 @@ func (s *Server) OpenLiveContent(id string) (*File, *os.File, error) {
 		return nil, nil, err
 	}
 	return file, blob, nil
+}
+
+// ListFiles is the files filter names, as GET /files lists them. A limit
+// outside 1 to the most a page holds is a *Refusal.
+func (s *Server) ListFiles(filter Filter) ([]*File, error) {
+	if filter.Limit < 1 || filter.Limit > maximumListLimit {
+		return nil, &Refusal{http.StatusBadRequest, fmt.Sprintf("limit must be between 1 and %d", maximumListLimit)}
+	}
+	return s.store.List(filter)
+}
+
+// MaximumFilesListed is the most files one ListFiles answers.
+const MaximumFilesListed = maximumListLimit
+
+// DeleteFile deletes a file reversibly, as DELETE /files/{id} does. An unknown
+// file is ErrNotFound.
+func (s *Server) DeleteFile(id string) error {
+	return s.store.Delete(id)
 }
 
 // PurgeFile destroys a file's row and, when no other row names them, its

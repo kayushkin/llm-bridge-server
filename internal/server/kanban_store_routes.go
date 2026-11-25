@@ -32,13 +32,11 @@ import (
 	kanbanapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/api"
 	kanbanbundles "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/bundlestore"
 	kanbandb "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/db"
-	kanbanfiles "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/filestore"
 	kanbangrants "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/grantstore"
 	kanbanbridge "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/llmbridge"
 	kanbanmultichat "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/multichat"
 	kanbannoteboard "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/noteboard"
 	kanbanprincipals "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/principalstore"
-	kanbanreferences "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/referencestore"
 	noteboardapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/api"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/items"
 )
@@ -81,15 +79,11 @@ func (s *Server) EnableKanbanStore(store *kanbandb.Store, owners KanbanStoreOwne
 		kanbanPrincipalDirectory{principals: owners.Access.Principals},
 		kanbanAgentsAndInstances{server: s},
 		kanbanBundles{server: s})
-	// reference-store and file-store run in this process too; kanban-store's
-	// clients of them reach their handlers through inprocesshttp, with no
-	// socket and no token. Each answers 503 until its module is enabled.
-	references := kanbanreferences.New(inprocesshttp.BaseURL)
-	references.HTTP = inprocesshttp.Client(s.ReferenceStoreModuleHandler())
-	api.SetReferenceStore(references)
-	files := kanbanfiles.New(inprocesshttp.BaseURL, "")
-	files.HTTP = inprocesshttp.Client(s.FileStoreModuleHandler())
-	api.SetFileStore(files)
+	// reference-store and file-store run in this process too, and
+	// kanban-store calls them in Go. Each call fails until its module is
+	// enabled.
+	api.SetReferenceStore(kanbanReferenceTypes{server: s})
+	api.SetFileStore(kanbanFileStore{server: s})
 	if owners.MessageTriggersEnabled {
 		api.SetMessageSender(kanbanmultichat.New(s.cfg.MultichatURL, kanbanmultichat.AuthStoreTokenSource(s.cfg.AuthStoreURL, s.cfg.AuthStoreToken)))
 	}

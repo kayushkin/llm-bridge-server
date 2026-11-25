@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 
@@ -24,7 +23,7 @@ import (
 
 // SetFileStore gives the API its file-store client. Without it this store has
 // no attachments, and says so.
-func (a *API) SetFileStore(files *filestore.Client) { a.files = files }
+func (a *API) SetFileStore(files filestore.Files) { a.files = files }
 
 // requireFileStore answers 503 when no file-store is configured: a card's
 // attachments are then unknown, which is not the same as none.
@@ -196,9 +195,9 @@ func (a *API) cardAttachmentByFile(w http.ResponseWriter, r *http.Request, cardI
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// cardAttachmentContent streams a file on this card. file-store's answer goes
-// through as it was sent — status, headers and bytes — because the headers are
-// what keep somebody's upload from running in the reader's browser.
+// cardAttachmentContent streams a file on this card. file-store writes the
+// answer itself — status, headers and bytes — because the headers are what
+// keep somebody's upload from running in the reader's browser.
 func (a *API) cardAttachmentContent(w http.ResponseWriter, r *http.Request, cardID, fileID string) {
 	if !a.requireFileStore(w) {
 		return
@@ -222,24 +221,14 @@ func (a *API) cardAttachmentContent(w http.ResponseWriter, r *http.Request, card
 		writeError(w, 400, fmt.Sprintf("inline must be true or false, got %q", raw))
 		return
 	}
-	response, err := a.files.Content(fileID, inline, r.Header)
+	err := a.files.ServeContent(w, r, fileID, inline)
+	if errors.Is(err, filestore.ErrNotFound) {
+		// The answer file-store's own route gave for a file it does not hold.
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "file-store: "+err.Error())
-		return
-	}
-	defer response.Body.Close()
-	if response.StatusCode == http.StatusUnauthorized {
-		writeError(w, http.StatusBadGateway, "file-store refused this store's service token")
-		return
-	}
-	for name, values := range response.Header {
-		for _, value := range values {
-			w.Header().Add(name, value)
-		}
-	}
-	w.WriteHeader(response.StatusCode)
-	if _, err := io.Copy(w, response.Body); err != nil {
-		log.Printf("attachments: streaming %s of card %s: %v", fileID, cardID, err)
 	}
 }
 

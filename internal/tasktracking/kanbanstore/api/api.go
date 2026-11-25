@@ -31,7 +31,7 @@ type API struct {
 	// that one reference.
 	principals principalstore.Directory
 	// references is reference-store, which owns the list of reference types.
-	references *referencestore.Client
+	references referencestore.Types
 	// bridge is consulted on one write: setting a board's default agent or
 	// default instance. See internal/llmbridge for why.
 	bridge llmbridge.AgentsAndInstances
@@ -48,7 +48,7 @@ type API struct {
 	principalEnforcement *PrincipalEnforcement
 	// files is file-store, which owns uploaded bytes. Nil until SetFileStore is
 	// called, and then every attachment route answers 503; see attachments.go.
-	files *filestore.Client
+	files filestore.Files
 }
 
 // New builds the API over its store and the owners it asks. What the process
@@ -1330,7 +1330,7 @@ func (a *API) entityTypes(w http.ResponseWriter, r *http.Request) {
 
 // SetReferenceStore gives the API reference-store, which owns the list of
 // reference types.
-func (a *API) SetReferenceStore(references *referencestore.Client) { a.references = references }
+func (a *API) SetReferenceStore(references referencestore.Types) { a.references = references }
 
 func (a *API) allTags(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()

@@ -39,7 +39,7 @@ type Server struct {
 
 	// files holds imported attachments' bytes. Nil refuses attachments on
 	// local accounts with 503.
-	files *filestore.Client
+	files filestore.Files
 
 	// people is where a person's access is read. Nil refuses every request
 	// that names a principal; see principal_access.go.
@@ -59,7 +59,7 @@ type ServerParts struct {
 	// their providers.
 	ProviderConnectionsEnabled bool
 	// Files keeps imported attachments' bytes; nil refuses attachments.
-	Files *filestore.Client
+	Files filestore.Files
 	// People answers who a principal is and what it was granted; nil refuses
 	// every request that names a person.
 	People PeopleDirectory
