@@ -342,8 +342,9 @@ func (owner kanbanBundles) CheckBundleExists(id string) error {
 
 // KanbanStoreHTTPClientAsInternalService is an HTTP client whose every
 // request kanban-store's handler serves in this process as the internal
-// service, for a store beside it that was written against kanban-store's
-// routes (project-store). Its requests go to KanbanStoreInProcessBaseURL.
+// service. Only rule-store's live rules use it: a rule's effect names a
+// method, a path and a body, and its run records the answer's status, so it
+// is a request by design. Its requests go to KanbanStoreInProcessBaseURL.
 func (s *Server) KanbanStoreHTTPClientAsInternalService() (*http.Client, error) {
 	handlers := s.kanbanStore.Load()
 	if handlers == nil {
