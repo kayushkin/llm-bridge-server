@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	schedulerconfig "github.com/slava/scheduler/internal/config"
+	schedulerconfig "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/config"
 )
 
 // The defaults that ship, and the wiring that carries them to the tick.

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/noteboard/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/model"
 )
 
 // A noteboard item id reaches Patch and SetSchedule off a list answer: noteboard

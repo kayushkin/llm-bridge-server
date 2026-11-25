@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/slava/scheduler/internal/degradations"
-	"github.com/slava/scheduler/internal/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/degradations"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/kanbanclient"
 )
 
 // The body the Anthropic API really returned to this job on 2026-08-29, when

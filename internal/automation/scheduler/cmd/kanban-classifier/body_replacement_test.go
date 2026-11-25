@@ -3,7 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/slava/scheduler/internal/degradations"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/degradations"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/slava/scheduler/internal/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/kanbanclient"
 )
 
 // This file states what a classifier state update does to a card body. It

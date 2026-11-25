@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/slava/scheduler/internal/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/kanbanclient"
 )
 
 // The digest is the whole of what this binary buys. Every tick it does not

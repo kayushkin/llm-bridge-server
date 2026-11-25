@@ -30,9 +30,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/slava/scheduler/internal/boundedtext"
-	"github.com/slava/scheduler/internal/bridgesession"
-	"github.com/slava/scheduler/internal/kanbanvocab"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/boundedtext"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/bridgesession"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/kanbanvocab"
 )
 
 // linkTypeSession is the entity_type that autoworker, kanban-dispatcher and the

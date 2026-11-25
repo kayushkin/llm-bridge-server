@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/slava/scheduler/internal/noteboarditems"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/noteboarditems"
 )
 
 // fleet stands up the three services one tick talks to — noteboard for the

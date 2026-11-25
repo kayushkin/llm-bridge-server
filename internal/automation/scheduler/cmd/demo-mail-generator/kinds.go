@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/slava/scheduler/internal/demomail"
-	"github.com/slava/scheduler/internal/demoteam"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/demomail"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/demoteam"
 )
 
 // requestKind is what somebody wants, and the mix matters more than any single

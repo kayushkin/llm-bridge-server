@@ -31,8 +31,8 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/slava/scheduler/internal/degradations"
-	"github.com/slava/scheduler/internal/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/degradations"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/kanbanclient"
 )
 
 // ============================ Reading the four authorings ============================

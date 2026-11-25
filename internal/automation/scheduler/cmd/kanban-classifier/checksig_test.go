@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/slava/scheduler/internal/degradations"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/degradations"
 )
 
 // Go randomises map order, so a pick that depends on it shows up only as a

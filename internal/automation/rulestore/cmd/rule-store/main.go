@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	rulestore "github.com/kayushkin/rule-store"
+	rulestore "github.com/kayushkin/llm-bridge-server/internal/automation/rulestore"
 )
 
 func main() {

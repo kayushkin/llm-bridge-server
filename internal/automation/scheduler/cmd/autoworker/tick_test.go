@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/slava/scheduler/internal/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/kanbanclient"
 )
 
 // Ported from 145c5bae (test/the-no-secret-rule-is-pinned-by-its-message). On

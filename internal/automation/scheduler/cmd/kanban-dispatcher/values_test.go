@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/slava/scheduler/internal/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/kanbanclient"
 )
 
 // The boundary VALUES, ported from 081b8ac6.

@@ -7,9 +7,9 @@ import (
 	"testing"
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	"github.com/slava/scheduler/internal/config"
-	"github.com/slava/scheduler/internal/db"
-	"github.com/slava/scheduler/internal/modelstoreroles"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/config"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/db"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/modelstoreroles"
 )
 
 // The environment seeds a role once; after that the database is the record,

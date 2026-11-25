@@ -8,10 +8,10 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/slava/scheduler/internal/kanbanclient"
-	"github.com/slava/scheduler/internal/kanbanvocab"
-	"github.com/slava/scheduler/internal/noteboarditems"
-	"github.com/slava/scheduler/internal/spendtree"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/kanbanvocab"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/noteboarditems"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/spendtree"
 )
 
 // The spend ceiling ("stop this task once it has cost me $N") is enforced at two

@@ -35,7 +35,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/slava/scheduler/internal/textcut"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/textcut"
 )
 
 // whitespaceRunes returns every rune unicode.IsSpace accepts, swept out of the

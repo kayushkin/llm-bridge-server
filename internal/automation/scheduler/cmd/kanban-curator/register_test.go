@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/slava/scheduler/internal/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/kanbanclient"
 )
 
 // -register is how this binary gets onto the cron schedule at all, and it is run

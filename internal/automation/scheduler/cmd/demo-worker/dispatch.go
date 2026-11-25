@@ -5,10 +5,10 @@ import (
 	"os"
 	"time"
 
-	"github.com/slava/scheduler/internal/demosession"
-	"github.com/slava/scheduler/internal/demoteam"
-	"github.com/slava/scheduler/internal/kanbanclient"
-	"github.com/slava/scheduler/internal/kanbanvocab"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/demosession"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/demoteam"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/kanbanvocab"
 )
 
 // dispatch turns queued cards into real agent sessions.

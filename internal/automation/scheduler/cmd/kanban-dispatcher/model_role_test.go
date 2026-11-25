@@ -8,8 +8,8 @@ import (
 
 	"github.com/kayushkin/bus/messages"
 	"github.com/kayushkin/llm-bridge/msg"
-	"github.com/slava/scheduler/internal/kanbanclient"
-	"github.com/slava/scheduler/internal/sessionmodelrole"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/sessionmodelrole"
 )
 
 // stubModelRoles stands in for model-store and the bridge's harness table.

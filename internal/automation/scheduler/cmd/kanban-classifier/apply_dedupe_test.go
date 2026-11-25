@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/slava/scheduler/internal/degradations"
-	"github.com/slava/scheduler/internal/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/degradations"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/kanbanclient"
 )
 
 // Ported from 0530193e (test/first-tests-for-kanban-classifier). applyNew's title

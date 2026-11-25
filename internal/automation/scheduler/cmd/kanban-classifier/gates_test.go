@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/slava/scheduler/internal/degradations"
-	"github.com/slava/scheduler/internal/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/degradations"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/kanbanclient"
 )
 
 // Ported from 0530193e and 59414aad (test/first-tests-for-kanban-classifier),

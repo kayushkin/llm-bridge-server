@@ -38,12 +38,12 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	"github.com/slava/scheduler/internal/config"
-	cronpkg "github.com/slava/scheduler/internal/cron"
-	"github.com/slava/scheduler/internal/db"
-	"github.com/slava/scheduler/internal/executor"
-	"github.com/slava/scheduler/internal/logging"
-	"github.com/slava/scheduler/internal/runstatus"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/config"
+	cronpkg "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/cron"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/db"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/executor"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/logging"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/runstatus"
 
 	_ "modernc.org/sqlite"
 )

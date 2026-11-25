@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/slava/scheduler/internal/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/kanbanclient"
 )
 
 // applier turns filing decisions into kanban writes. It is the only place that

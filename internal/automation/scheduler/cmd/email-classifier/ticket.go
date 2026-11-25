@@ -3,7 +3,7 @@ package main
 import (
 	"log"
 
-	"github.com/slava/scheduler/internal/principalstore"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/principalstore"
 )
 
 // Mail becomes a ticket.

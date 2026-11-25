@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/slava/scheduler/internal/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/kanbanclient"
 )
 
 // Every per-field bound in the digest was already exercised by the suite and

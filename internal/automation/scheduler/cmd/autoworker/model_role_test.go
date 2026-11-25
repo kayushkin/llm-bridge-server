@@ -9,8 +9,8 @@ import (
 	"testing"
 
 	"github.com/kayushkin/llm-bridge/msg"
-	schedulerconfig "github.com/slava/scheduler/internal/config"
-	"github.com/slava/scheduler/internal/sessionmodelrole"
+	schedulerconfig "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/config"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/sessionmodelrole"
 )
 
 // A lane whose role cannot start a session on its harness dispatches nothing,

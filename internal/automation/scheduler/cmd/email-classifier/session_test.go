@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/slava/scheduler/internal/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/kanbanclient"
 )
 
 // bridgeRequest is one request the stub bridge saw: which of its routes matched,

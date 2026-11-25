@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge/msg"
-	"github.com/slava/scheduler/internal/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/kanbanclient"
 )
 
 // Ported from 18ecd596, 652acbfd and f119a711 (test/the-mint-site-truncates-a-

@@ -30,7 +30,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/bus/messages"
-	"github.com/slava/scheduler/internal/sessionmodelrole"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/sessionmodelrole"
 )
 
 // ---------------------------------------------------------------- fixtures

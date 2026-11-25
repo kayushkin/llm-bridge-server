@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/slava/scheduler/internal/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/kanbanclient"
 )
 
 // noAgentGate is a gate pointed at a port nothing listens on, so a test that

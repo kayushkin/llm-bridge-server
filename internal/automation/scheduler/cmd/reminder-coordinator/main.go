@@ -39,6 +39,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 	"io"
 	"log"
 	"math"
@@ -51,11 +52,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/boundedtext"
+	schedulerconfig "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/config"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/degradations"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/model"
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	"github.com/kayushkin/noteboard/model"
-	"github.com/slava/scheduler/internal/boundedtext"
-	schedulerconfig "github.com/slava/scheduler/internal/config"
-	"github.com/slava/scheduler/internal/degradations"
 )
 
 const (
@@ -1579,6 +1580,7 @@ func (h *Herald) Relay(from, title, message, reuseSessionID string) (string, err
 	}
 	arguments = append(arguments, message)
 	command := exec.Command(h.AskPath, arguments...)
+	command.Env = childprocessenv.EnvironmentWithoutServerSecrets()
 	// Output, not CombinedOutput: stdout must be exactly the session id, and a
 	// stray log line on stderr must not corrupt it. On failure the ExitError
 	// carries the captured stderr.
@@ -1809,9 +1811,9 @@ type GoogleCalendarMirror struct {
 // is no second place for it to go stale.
 func (g *GoogleCalendarMirror) ResolveDashToken() (string, error) {
 	command := exec.Command("systemctl", "--user", "show", "dash-server.service", "-p", "Environment")
-	// The child inherits this process's environment (command.Environ), with the
-	// two variables it needs set to the values in force.
-	command.Env = append(command.Environ(),
+	// The child takes this process's environment without the server's secrets,
+	// with the two variables it needs set to the values in force.
+	command.Env = append(childprocessenv.EnvironmentWithoutServerSecrets(),
 		"XDG_RUNTIME_DIR="+g.RuntimeDirectory,
 		"DBUS_SESSION_BUS_ADDRESS="+g.SessionBusAddress,
 	)

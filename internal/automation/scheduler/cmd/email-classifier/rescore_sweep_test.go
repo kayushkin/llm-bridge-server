@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/slava/scheduler/internal/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/kanbanclient"
 )
 
 // ===================== what these tests are here to pin =====================

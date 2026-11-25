@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/slava/scheduler/internal/demoteam"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/demoteam"
 )
 
 // The prompts are where a role is enforced, because permission-store has no

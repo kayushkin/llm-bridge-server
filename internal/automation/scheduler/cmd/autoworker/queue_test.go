@@ -10,8 +10,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/slava/scheduler/internal/kanbanclient"
-	"github.com/slava/scheduler/internal/noteboarditems"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/noteboarditems"
 )
 
 // Ported from e0f686a5 and 4e4a0b93 (test/first-tests-for-autoworker). Main has

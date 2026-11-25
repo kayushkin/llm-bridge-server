@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/slava/scheduler/internal/principalstore"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/principalstore"
 )
 
 // fakeContacts stands in for principal-store's POST /contacts/resolve.

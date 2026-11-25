@@ -6,9 +6,9 @@ import (
 	neturl "net/url"
 	"strings"
 
-	"github.com/slava/scheduler/internal/demoteam"
-	"github.com/slava/scheduler/internal/kanbanclient"
-	"github.com/slava/scheduler/internal/kanbanvocab"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/demoteam"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/kanbanvocab"
 )
 
 // buildableActions are the work-vocabulary actions an agent can actually carry

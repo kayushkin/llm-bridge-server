@@ -122,7 +122,9 @@ func TestEveryEnvironmentVariableTheServerReadsIsDeclared(t *testing.T) {
 		declared[definition.EnvironmentVariable] = true
 	}
 	// Read by name and not settings of this server.
-	notSettings := map[string]bool{"HOME": true, "PATH": true}
+	notSettings := map[string]bool{"HOME": true, "PATH": true,
+		// The Codex CLI's own folder, read where the CLI reads it.
+		"CODEX_HOME": true}
 
 	// Programs kept in this repo that are not this server and read their own
 	// environment: the git hook git runs for every command, and the commands below.

@@ -55,13 +55,13 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	"github.com/slava/scheduler/internal/bridgeauth"
-	"github.com/slava/scheduler/internal/bridgesession"
-	schedulerconfig "github.com/slava/scheduler/internal/config"
-	"github.com/slava/scheduler/internal/degradations"
-	"github.com/slava/scheduler/internal/kanbanclient"
-	"github.com/slava/scheduler/internal/kanbanvocab"
-	"github.com/slava/scheduler/internal/schedulerjobs"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/bridgeauth"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/bridgesession"
+	schedulerconfig "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/config"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/degradations"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/kanbanvocab"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/schedulerjobs"
 )
 
 const (

@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/slava/scheduler/internal/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/kanbanclient"
 )
 
 // Ported 2026-09-25 from 348e0589 (test/classifier-register-hole). When it was

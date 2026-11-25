@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/slava/scheduler/internal/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/kanbanclient"
 )
 
 // TestAStrandedCardIsNamedAndNotCalledAFailure is the caller-side half of card

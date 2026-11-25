@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/slava/scheduler/internal/degradations"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/degradations"
 )
 
 // TestUnreachableAccountIsRecordedWhileOthersStillFile reproduces the outage

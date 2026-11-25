@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/slava/scheduler/internal/completionoperation"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/completionoperation"
 )
 
 // ============================ taxonomy ============================

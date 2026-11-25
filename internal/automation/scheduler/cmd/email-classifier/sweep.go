@@ -5,7 +5,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/slava/scheduler/internal/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/kanbanclient"
 )
 
 // ============================ the re-score sweep ============================

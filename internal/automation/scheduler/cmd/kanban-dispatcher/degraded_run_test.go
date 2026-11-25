@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/bus/messages"
-	"github.com/slava/scheduler/internal/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/kanbanclient"
 )
 
 // These tests drive whole ticks through run. Each failure the tick cannot do

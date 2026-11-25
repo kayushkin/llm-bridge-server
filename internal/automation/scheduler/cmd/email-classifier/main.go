@@ -51,15 +51,15 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	"github.com/slava/scheduler/internal/boundedtext"
-	"github.com/slava/scheduler/internal/bridgeauth"
-	"github.com/slava/scheduler/internal/completionoperation"
-	schedulerconfig "github.com/slava/scheduler/internal/config"
-	"github.com/slava/scheduler/internal/degradations"
-	"github.com/slava/scheduler/internal/kanbanclient"
-	"github.com/slava/scheduler/internal/principalstore"
-	"github.com/slava/scheduler/internal/schedulerjobs"
-	"github.com/slava/scheduler/internal/schedulersettings"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/boundedtext"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/bridgeauth"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/completionoperation"
+	schedulerconfig "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/config"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/degradations"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/principalstore"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/schedulerjobs"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/schedulersettings"
 )
 
 const (
