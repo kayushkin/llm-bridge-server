@@ -1,0 +1,30 @@
+[Unit]
+Description=possession-store — an inventory of the things a person owns, with outfits, purchases and photo review
+After=network.target
+
+# A systemd user unit: install it to ~/.config/systemd/user/ and the binary to
+# ~/bin. %h is the user's home directory, so nothing here names a user.
+#
+# The photo review needs llm-bridge-server's service token. Put it in a
+# host-local drop-in, mode 600, never in this file:
+#   ~/.config/systemd/user/possession-store.service.d/10-llm-bridge-token.conf
+#   [Service]
+#   Environment=LLMBRIDGE_SERVICE_TOKEN=…
+# The eBay import reads mail with mailstack's bearer, in another one:
+#   ~/.config/systemd/user/possession-store.service.d/30-mailstack-token.conf
+#   [Service]
+#   Environment=MAILSTACK_TOKEN=…
+[Service]
+Type=simple
+ExecStart=%h/bin/possession-store
+
+# Loopback, deliberately: the service has no auth of its own; dash is the
+# front door. settings.go defaults to the same address.
+Environment=POSSESSION_STORE_ADDR=127.0.0.1:8341
+
+WorkingDirectory=%h
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
