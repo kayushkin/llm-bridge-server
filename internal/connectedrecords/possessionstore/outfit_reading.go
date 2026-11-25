@@ -208,7 +208,7 @@ func (s *Store) recordOutfitReading(ctx context.Context, reviewID, model, wornOn
 // settleReviewOutfit gives an outfit reading its outfit once its first
 // reading is recorded: the outfit already recorded with exactly the same
 // pieces, or a new one, and a wearing on the review's day either way.
-func (s *Store) settleReviewOutfit(transaction *sql.Tx, reviewID string, now int64) error {
+func (s *Store) settleReviewOutfit(transaction *databaseTransaction, reviewID string, now int64) error {
 	review, err := photoReviewRow(transaction, reviewID)
 	if err != nil {
 		return err
@@ -216,7 +216,7 @@ func (s *Store) settleReviewOutfit(transaction *sql.Tx, reviewID string, now int
 	if review.OutfitID != nil {
 		return nil
 	}
-	pieces, err := stringColumn(transaction, `SELECT DISTINCT possession_id FROM sightings WHERE photo_review_id = ? AND status = 'accepted' AND possession_id IS NOT NULL ORDER BY seq`, reviewID)
+	pieces, err := stringColumn(transaction, `SELECT possession_id FROM sightings WHERE photo_review_id = ? AND status = 'accepted' AND possession_id IS NOT NULL GROUP BY possession_id ORDER BY MIN(seq)`, reviewID)
 	if err != nil {
 		return err
 	}
@@ -236,8 +236,8 @@ func (s *Store) settleReviewOutfit(transaction *sql.Tx, reviewID string, now int
 				return err
 			}
 			for _, piece := range pieces {
-				if _, err := transaction.Exec(`INSERT OR IGNORE INTO outfit_possessions (outfit_id, possession_id, position)
-					VALUES (?, ?, (SELECT COALESCE(MAX(position), -1) + 1 FROM outfit_possessions WHERE outfit_id = ?))`, outfitID, piece, outfitID); err != nil {
+				if _, err := transaction.Exec(`INSERT INTO outfit_possessions (outfit_id, possession_id, position)
+					VALUES (?, ?, (SELECT COALESCE(MAX(position), -1) + 1 FROM outfit_possessions WHERE outfit_id = ?)) ON CONFLICT DO NOTHING`, outfitID, piece, outfitID); err != nil {
 					return err
 				}
 			}
@@ -257,7 +257,7 @@ func (s *Store) settleReviewOutfit(transaction *sql.Tx, reviewID string, now int
 			return err
 		}
 	}
-	if _, err := transaction.Exec(`INSERT OR IGNORE INTO outfit_wearings (outfit_id, worn_on) VALUES (?, ?)`, outfitID, review.WornOn); err != nil {
+	if _, err := transaction.Exec(`INSERT INTO outfit_wearings (outfit_id, worn_on) VALUES (?, ?) ON CONFLICT DO NOTHING`, outfitID, review.WornOn); err != nil {
 		return err
 	}
 	_, err = transaction.Exec(`UPDATE photo_reviews SET outfit_id = ? WHERE id = ?`, outfitID, reviewID)
@@ -298,7 +298,7 @@ func outfitWithExactly(q querier, pieces []string) (string, error) {
 	err := q.QueryRow(`SELECT outfits.id FROM outfits JOIN outfit_possessions ON outfit_possessions.outfit_id = outfits.id
 		WHERE outfits.deleted_at = 0 AND outfits.status != 'rejected'
 		GROUP BY outfits.id
-		HAVING SUM(outfit_possessions.possession_id IN (`+placeholders+`)) = ? AND COUNT(*) = ?
+		HAVING SUM(CASE WHEN outfit_possessions.possession_id IN (`+placeholders+`) THEN 1 ELSE 0 END) = ? AND COUNT(*) = ?
 		ORDER BY outfits.seq LIMIT 1`, arguments...).Scan(&outfitID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
@@ -309,7 +309,7 @@ func outfitWithExactly(q querier, pieces []string) (string, error) {
 // addToReviewOutfit runs after any sighting is settled. A piece of an
 // outfit reading accepted once the reading is done (an owner's answer, or a
 // sighting it waited on being settled) joins that reading's outfit.
-func (s *Store) addToReviewOutfit(transaction *sql.Tx, sightingID string, now int64) error {
+func (s *Store) addToReviewOutfit(transaction *databaseTransaction, sightingID string, now int64) error {
 	sighting, err := sightingByID(transaction, sightingID)
 	if err != nil {
 		return err
@@ -327,14 +327,14 @@ func (s *Store) addToReviewOutfit(transaction *sql.Tx, sightingID string, now in
 	if review.OutfitID == nil {
 		return s.settleReviewOutfit(transaction, review.ID, now)
 	}
-	_, err = transaction.Exec(`INSERT OR IGNORE INTO outfit_possessions (outfit_id, possession_id, position)
-		VALUES (?, ?, (SELECT COALESCE(MAX(position), -1) + 1 FROM outfit_possessions WHERE outfit_id = ?))`, *review.OutfitID, *sighting.PossessionID, *review.OutfitID)
+	_, err = transaction.Exec(`INSERT INTO outfit_possessions (outfit_id, possession_id, position)
+		VALUES (?, ?, (SELECT COALESCE(MAX(position), -1) + 1 FROM outfit_possessions WHERE outfit_id = ?)) ON CONFLICT DO NOTHING`, *review.OutfitID, *sighting.PossessionID, *review.OutfitID)
 	return err
 }
 
 // insertStillHaveItQuestion asks whether a piece seen in a photo is still
 // owned. Each choice sets its status.
-func insertStillHaveItQuestion(transaction *sql.Tx, sightingID, name string, now int64) error {
+func insertStillHaveItQuestion(transaction *databaseTransaction, sightingID, name string, now int64) error {
 	choice := func(label, status string) Choice {
 		return Choice{Label: label, Resolution: Resolution{Action: "amend", Proposal: &Proposal{Status: status, KindFields: map[string]json.RawMessage{}}}}
 	}

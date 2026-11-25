@@ -222,7 +222,7 @@ func (s *Store) combineIdenticalOutfits(ctx context.Context, outfits []Outfit, a
 // asked about combining these two outfits; "" when none.
 func (s *Store) questionAboutOutfitPair(first, second string) (string, error) {
 	for _, pair := range [][2]string{{first, second}, {second, first}} {
-		ids, err := stringColumn(s.db, `SELECT id FROM owner_questions WHERE instr(choices, '"combine_outfits"') > 0 AND instr(choices, ?) > 0 AND instr(choices, ?) > 0 ORDER BY seq LIMIT 1`,
+		ids, err := stringColumn(s.db, `SELECT id FROM owner_questions WHERE strpos(choices, '"combine_outfits"') > 0 AND strpos(choices, ?) > 0 AND strpos(choices, ?) > 0 ORDER BY seq LIMIT 1`,
 			jsonField("outfit_id", pair[0]), jsonField("into_outfit_id", pair[1]))
 		if err != nil {
 			return "", err

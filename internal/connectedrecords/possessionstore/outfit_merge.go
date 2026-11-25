@@ -39,7 +39,7 @@ type OutfitMerge struct {
 // outfit takes the union of pieces, every wearing and every outfit reading;
 // the duplicate is deleted with merged_into_id set. It answers the
 // outfit_merge id.
-func (s *Store) combineOutfitsInTransaction(transaction *sql.Tx, duplicateID, keptID, actor, reason string, now int64) (string, error) {
+func (s *Store) combineOutfitsInTransaction(transaction *databaseTransaction, duplicateID, keptID, actor, reason string, now int64) (string, error) {
 	if duplicateID == keptID {
 		return "", fmt.Errorf("%w: an outfit cannot be combined with itself", ErrInvalid)
 	}
@@ -231,7 +231,7 @@ func (s *Store) UndoOutfitMerge(ctx context.Context, mergeID, actor string) (Out
 		return OutfitMerge{}, err
 	}
 	possessionMerges, err := stringColumn(transaction, `SELECT id FROM possession_merges WHERE undone_at = 0 AND merge_order > ?
-		AND EXISTS (SELECT 1 FROM json_each(possession_merges.moved, '$.outfit_memberships') WHERE json_extract(json_each.value, '$.outfit_id') IN (?, ?))`,
+		AND EXISTS (SELECT 1 FROM json_array_items((possession_merges.moved::jsonb -> 'outfit_memberships')::text) AS membership WHERE membership ->> 'outfit_id' IN (?, ?))`,
 		order, merge.DuplicateOutfitID, merge.KeptOutfitID)
 	if err != nil {
 		return OutfitMerge{}, err

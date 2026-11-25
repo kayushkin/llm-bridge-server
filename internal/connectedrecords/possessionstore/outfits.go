@@ -31,6 +31,7 @@ type OutfitInput struct {
 // Outfit is an outfit as the API answers it.
 type Outfit struct {
 	ID               string   `json:"id"`
+	OwnerPrincipalID string   `json:"owner_principal_id"` // principal-store's id of who keeps it
 	Name             string   `json:"name"`
 	Occasion         string   `json:"occasion"`
 	Weather          string   `json:"weather"`
@@ -60,7 +61,7 @@ type Outfit struct {
 
 // checkOutfitPossessions holds an outfit to live possessions of a wearable
 // kind, each once.
-func (s *Store) checkOutfitPossessions(transaction *sql.Tx, possessionIDs []string) error {
+func (s *Store) checkOutfitPossessions(transaction *databaseTransaction, possessionIDs []string) error {
 	if len(possessionIDs) == 0 {
 		return fmt.Errorf("%w: an outfit needs at least one thing in it", ErrInvalid)
 	}
@@ -84,7 +85,7 @@ func (s *Store) checkOutfitPossessions(transaction *sql.Tx, possessionIDs []stri
 	return nil
 }
 
-func replaceOutfitPossessions(transaction *sql.Tx, outfitID string, possessionIDs []string) error {
+func replaceOutfitPossessions(transaction *databaseTransaction, outfitID string, possessionIDs []string) error {
 	if _, err := transaction.Exec(`DELETE FROM outfit_possessions WHERE outfit_id = ?`, outfitID); err != nil {
 		return err
 	}
@@ -237,7 +238,7 @@ func (s *Store) RecordWearing(id, wornOn string) (Outfit, error) {
 	if _, err := outfitByID(s.db, id, false); err != nil {
 		return Outfit{}, err
 	}
-	if _, err := s.db.Exec(`INSERT OR IGNORE INTO outfit_wearings (outfit_id, worn_on) VALUES (?, ?)`, id, wornOn); err != nil {
+	if _, err := s.db.Exec(`INSERT INTO outfit_wearings (outfit_id, worn_on) VALUES (?, ?) ON CONFLICT DO NOTHING`, id, wornOn); err != nil {
 		return Outfit{}, err
 	}
 	return outfitByID(s.db, id, false)
@@ -252,8 +253,8 @@ func outfitByID(q querier, id string, includeDeleted bool) (Outfit, error) {
 	var outfit Outfit
 	var mergedInto sql.NullString
 	var tags string
-	err := q.QueryRow(`SELECT id, name, occasion, weather, status, reasoning, preview_image_path, favorite, tags, created_by, created_at, updated_at, deleted_at, merged_into_id FROM outfits WHERE id = ?`, id).Scan(
-		&outfit.ID, &outfit.Name, &outfit.Occasion, &outfit.Weather, &outfit.Status, &outfit.Reasoning, &outfit.PreviewImagePath, &outfit.Favorite, &tags, &outfit.CreatedBy, &outfit.CreatedAt, &outfit.UpdatedAt, &outfit.DeletedAt, &mergedInto)
+	err := q.QueryRow(`SELECT id, owner_principal_id, name, occasion, weather, status, reasoning, preview_image_path, favorite, tags, created_by, created_at, updated_at, deleted_at, merged_into_id FROM outfits WHERE id = ?`, id).Scan(
+		&outfit.ID, &outfit.OwnerPrincipalID, &outfit.Name, &outfit.Occasion, &outfit.Weather, &outfit.Status, &outfit.Reasoning, &outfit.PreviewImagePath, &outfit.Favorite, &tags, &outfit.CreatedBy, &outfit.CreatedAt, &outfit.UpdatedAt, &outfit.DeletedAt, &mergedInto)
 	if mergedInto.Valid {
 		outfit.MergedIntoID = &mergedInto.String
 	}
@@ -320,7 +321,7 @@ func (s *Store) FindOutfits(filter OutfitFilter) ([]Outfit, error) {
 		if err != nil {
 			return nil, err
 		}
-		conditions = append(conditions, "EXISTS (SELECT 1 FROM json_each(outfits.tags) WHERE json_each.value = ?)")
+		conditions = append(conditions, "EXISTS (SELECT 1 FROM json_array_texts(outfits.tags) AS tag WHERE tag = ?)")
 		arguments = append(arguments, tags[0])
 	}
 	limit := filter.Limit
@@ -375,8 +376,8 @@ type OutfitTagCount struct {
 // OutfitTagCounts answers every tag on a live outfit, the most used first,
 // then by name.
 func (s *Store) OutfitTagCounts() ([]OutfitTagCount, error) {
-	rows, err := s.db.Query(`SELECT json_each.value, COUNT(*) FROM outfits, json_each(outfits.tags) WHERE outfits.deleted_at = 0
-		GROUP BY json_each.value ORDER BY COUNT(*) DESC, json_each.value`)
+	rows, err := s.db.Query(`SELECT tag, COUNT(*) FROM outfits, json_array_texts(outfits.tags) AS tag WHERE outfits.deleted_at = 0
+		GROUP BY tag ORDER BY COUNT(*) DESC, tag COLLATE "C"`)
 	if err != nil {
 		return nil, err
 	}

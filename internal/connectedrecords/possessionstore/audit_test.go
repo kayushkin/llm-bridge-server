@@ -32,12 +32,7 @@ func openAuditStore(t *testing.T) *Store {
 	for number := 1; number <= 40; number++ {
 		known[fmt.Sprintf("photo_%06d", number)] = true
 	}
-	store, err := Open(t.TempDir(), fakeReferences{known: known})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { store.Close() })
-	return store
+	return newTestStore(t, fakeReferences{known: known})
 }
 
 // auditReviewer reads photo_00000N on day N-1 after testDay unless days

@@ -13,6 +13,8 @@ import (
 	"time"
 )
 
+var errArticleStoreNotSet = errors.New("article-store's address is not set, so listings cannot be saved or read")
+
 // ListingPage is a product listing as article-store keeps it.
 type ListingPage struct {
 	ArticleID string
@@ -29,7 +31,7 @@ type ArticleSource interface {
 	ReadListing(ctx context.Context, articleID string) (ListingPage, error)
 }
 
-// ArticleStore is article-store over HTTP.
+// ArticleStore is article-store over HTTP; it runs outside this server.
 type ArticleStore struct {
 	URL        string
 	HTTPClient *http.Client
@@ -38,6 +40,9 @@ type ArticleStore struct {
 // SaveListing saves the page (article-store fetches it; a URL already saved
 // answers the stored article) and answers its article id.
 func (store ArticleStore) SaveListing(ctx context.Context, pageURL string, tags []string, addedBy string) (string, error) {
+	if store.URL == "" {
+		return "", errArticleStoreNotSet
+	}
 	body, _ := json.Marshal(map[string]any{"url": pageURL, "kind": "other", "tags": tags, "added_by": addedBy})
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, store.URL+"/articles", bytes.NewReader(body))
 	if err != nil {
@@ -59,6 +64,9 @@ func (store ArticleStore) SaveListing(ctx context.Context, pageURL string, tags 
 
 // ReadListing reads the article's text and the page it was fetched from.
 func (store ArticleStore) ReadListing(ctx context.Context, articleID string) (ListingPage, error) {
+	if store.URL == "" {
+		return ListingPage{}, errArticleStoreNotSet
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, store.URL+"/articles/"+url.PathEscape(articleID), nil)
 	if err != nil {
 		return ListingPage{}, err
@@ -102,22 +110,19 @@ type MailSource interface {
 	Message(ctx context.Context, account, id string) (MailMessage, error)
 }
 
-// Mailstack is mailstack over HTTP with its bearer token.
+// Mailstack is mailstack's API at URL. HTTPClient's transport answers
+// mailstack's in-process host as the caller on the request's context, so
+// mail is read only from the accounts that caller may read.
 type Mailstack struct {
 	URL        string
-	Token      string
 	HTTPClient *http.Client
 }
 
 func (mail Mailstack) get(ctx context.Context, path string, query url.Values) ([]byte, error) {
-	if mail.Token == "" {
-		return nil, fmt.Errorf("MAILSTACK_TOKEN is not set, so mail cannot be read")
-	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, mail.URL+path+"?"+query.Encode(), nil)
 	if err != nil {
 		return nil, err
 	}
-	request.Header.Set("Authorization", "Bearer "+mail.Token)
 	return readAnswer(mail.HTTPClient, request, "mailstack GET "+path)
 }
 
@@ -236,13 +241,16 @@ type BudgetOrders interface {
 	OrderOfLine(ctx context.Context, lineID string) (BudgetOrder, BudgetOrderLine, error)
 }
 
-// BudgetStore is budget-store over HTTP.
+// BudgetStore is budget-store over HTTP, at the standalone service.
 type BudgetStore struct {
 	URL        string
 	HTTPClient *http.Client
 }
 
 func (budget BudgetStore) send(ctx context.Context, method, path string, body any) ([]byte, int, error) {
+	if budget.URL == "" {
+		return nil, 0, errors.New("budget-store's address is not set, so orders cannot be read or written")
+	}
 	var reader io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)

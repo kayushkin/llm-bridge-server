@@ -67,7 +67,7 @@ func (s *Store) CreatePurchase(ctx context.Context, purchase Purchase) (Purchase
 	now := s.unixNow()
 	if _, err := transaction.Exec(`INSERT INTO purchases (id, seq, seller, marketplace, order_reference, ordered_at, total_cents, currency, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, sequence, purchase.Seller, purchase.Marketplace, purchase.OrderReference, purchase.OrderedAt, purchase.TotalCents, purchase.Currency, purchase.Source, now); err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+		if isUniqueViolation(err) {
 			return Purchase{}, fmt.Errorf("%w: %s order %s is already recorded", ErrConflict, purchase.Marketplace, purchase.OrderReference)
 		}
 		return Purchase{}, err
@@ -228,7 +228,7 @@ func (s *Store) DeletePurchase(ctx context.Context, id, actor, reason string) ([
 	withdrawn := []string{}
 	resolution, _ := json.Marshal(Resolution{Action: "withdrawn", Explanation: reason})
 	for _, lineID := range lineIDs {
-		questions, err := stringColumn(transaction, `SELECT id FROM owner_questions WHERE answered_at = 0 AND instr(choices, ?) > 0`, jsonField("purchase_line_id", lineID))
+		questions, err := stringColumn(transaction, `SELECT id FROM owner_questions WHERE answered_at = 0 AND strpos(choices, ?) > 0`, jsonField("purchase_line_id", lineID))
 		if err != nil {
 			return nil, err
 		}

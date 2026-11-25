@@ -323,7 +323,7 @@ func (reviewer *Reviewer) CheckWearableLinks(ctx context.Context, actor string) 
 				run.leave(possessionID+" "+link.PhotoID, "a person linked it")
 			default:
 				var asked int
-				if err := store.db.QueryRow(`SELECT COUNT(*) FROM owner_questions WHERE sighting_id = ? AND instr(choices, '"keep_link"') > 0`, *link.SightingID).Scan(&asked); err != nil {
+				if err := store.db.QueryRow(`SELECT COUNT(*) FROM owner_questions WHERE sighting_id = ? AND strpos(choices, '"keep_link"') > 0`, *link.SightingID).Scan(&asked); err != nil {
 					return run, err
 				}
 				if asked > 0 {
@@ -868,7 +868,7 @@ func containsInt(values []int, value int) bool {
 // asked about merging these two, in either direction; "" when none.
 func (s *Store) questionAboutPossessionPair(first, second string) (string, error) {
 	for _, pair := range [][2]string{{first, second}, {second, first}} {
-		ids, err := stringColumn(s.db, `SELECT id FROM owner_questions WHERE instr(choices, '"merge_possessions"') > 0 AND instr(choices, ?) > 0 AND instr(choices, ?) > 0 ORDER BY seq LIMIT 1`,
+		ids, err := stringColumn(s.db, `SELECT id FROM owner_questions WHERE strpos(choices, '"merge_possessions"') > 0 AND strpos(choices, ?) > 0 AND strpos(choices, ?) > 0 ORDER BY seq LIMIT 1`,
 			jsonField("possession_id", pair[0]), jsonField("into_possession_id", pair[1]))
 		if err != nil {
 			return "", err

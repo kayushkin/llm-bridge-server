@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -28,7 +29,9 @@ import (
 //     has a doubt, it records the thing. Everything else becomes a question
 //     for the owner, whose answer is applied the same way.
 
-// Reviewer runs photo reviews.
+// Reviewer runs photo reviews, and every pass that asks the readers. Like a
+// Store, it works on one scope's records: Narrowed answers the Reviewer of
+// one; the one a server builds reaches none until then.
 type Reviewer struct {
 	Store            *Store
 	Models           ModelCaller
@@ -43,24 +46,79 @@ type Reviewer struct {
 	// OwnerLocation is the owner's time zone: an outfit read from a photo
 	// was worn on the photo's day there.
 	OwnerLocation *time.Location
-	// wake is signalled when a review is queued, so the worker need not wait
-	// for its next poll.
-	wakeOnce sync.Once
-	wake     chan struct{}
-	// ReadCoverWearersInBackground lets the outfit list start reading the
-	// wearer box of covers that have none (QueueCoverWearerReads).
-	ReadCoverWearersInBackground bool
-	// coverCache holds what outfit covers cost to work out (outfit_covers.go).
-	coversOnce sync.Once
-	coverCache *outfitCovers
+	// ReadCoverWearersInBackgroundFor says whose outfits the outfit list may
+	// start reading the wearer box of covers for, when they have none
+	// (QueueCoverWearerReads); nil reads none.
+	ReadCoverWearersInBackgroundFor func(ownerPrincipalID string) bool
+	// CoverImagesDirectory keeps outfit covers already cut (outfit_covers.go);
+	// any file there can be deleted and is cut again when asked for.
+	CoverImagesDirectory string
+	// shared is what every Reviewer narrowed from one holds in common: the
+	// workers' wake signals and the cover cache.
+	shared *reviewerShared
+}
+
+// reviewerShared is what Narrowed copies share.
+type reviewerShared struct {
+	wakeMutex sync.Mutex
+	// wake is signalled, per owner, when a review is queued, so that owner's
+	// worker need not wait for its next poll.
+	wake map[string]chan struct{}
+	// covers holds what outfit covers cost to work out (outfit_covers.go).
+	covers *outfitCovers
+}
+
+// reviewerSharedMutex guards the first making of a Reviewer's shared state.
+var reviewerSharedMutex sync.Mutex
+
+func (reviewer *Reviewer) sharedState() *reviewerShared {
+	reviewerSharedMutex.Lock()
+	defer reviewerSharedMutex.Unlock()
+	if reviewer.shared == nil {
+		reviewer.shared = &reviewerShared{wake: map[string]chan struct{}{}, covers: newOutfitCovers()}
+	}
+	return reviewer.shared
+}
+
+// Narrowed is the reviewer working on store's records, store being narrowed
+// to one scope.
+func (reviewer *Reviewer) Narrowed(store *Store) *Reviewer {
+	reviewer.sharedState()
+	narrowed := *reviewer
+	narrowed.Store = store
+	return &narrowed
+}
+
+// NarrowedToOwner is the reviewer working on one owner's records.
+func (reviewer *Reviewer) NarrowedToOwner(ctx context.Context, ownerPrincipalID string) (*Reviewer, error) {
+	store, err := reviewer.Store.NarrowedToOwner(ctx, ownerPrincipalID)
+	if err != nil {
+		return nil, err
+	}
+	return reviewer.Narrowed(store), nil
+}
+
+// backgroundContext is a context for work the reviewer carries on after the
+// request that started it: it acts as the owner whose records it works on,
+// so the stores it asks answer that owner's.
+func (reviewer *Reviewer) backgroundContext(ownerPrincipalID string) context.Context {
+	return ownership.ContextWithCaller(context.Background(), ownership.Caller{PrincipalID: ownerPrincipalID})
 }
 
 func (reviewer *Reviewer) wakeChannel() chan struct{} {
-	reviewer.wakeOnce.Do(func() { reviewer.wake = make(chan struct{}, 1) })
-	return reviewer.wake
+	shared := reviewer.sharedState()
+	owner := reviewer.Store.scope.OwnerPrincipalID()
+	shared.wakeMutex.Lock()
+	defer shared.wakeMutex.Unlock()
+	channel, made := shared.wake[owner]
+	if !made {
+		channel = make(chan struct{}, 1)
+		shared.wake[owner] = channel
+	}
+	return channel
 }
 
-// Wake tells the worker a review is waiting.
+// Wake tells the worker of this reviewer's owner a review is waiting.
 func (reviewer *Reviewer) Wake() {
 	select {
 	case reviewer.wakeChannel() <- struct{}{}:
@@ -584,7 +642,7 @@ func (s *Store) QueuePhotoReview(ctx context.Context, photoID, queuedBy, reading
 	} else if !errors.Is(err, ErrNotFound) {
 		return PhotoReview{}, false, err
 	}
-	if err := s.references.Check(ctx, ReferencePhoto, photoID); err != nil {
+	if err := s.checkOutside(ctx, ReferencePhoto, photoID); err != nil {
 		return PhotoReview{}, false, err
 	}
 	s.writeMutex.Lock()
@@ -599,7 +657,7 @@ func (s *Store) QueuePhotoReview(ctx context.Context, photoID, queuedBy, reading
 		return PhotoReview{}, false, err
 	}
 	if _, err := transaction.Exec(`INSERT INTO photo_reviews (id, seq, photo_id, status, queued_by, queued_at, reading, wearer_person_id) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?)`, id, sequence, photoID, queuedBy, s.unixNow(), reading, wearerPersonID); err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+		if isUniqueViolation(err) {
 			return PhotoReview{}, false, fmt.Errorf("%w: %s is already queued", ErrConflict, photoID)
 		}
 		return PhotoReview{}, false, err
@@ -732,7 +790,7 @@ func (s *Store) RetryPhotoReview(id, actor string) (PhotoReview, error) {
 	if err := saveRevision(transaction, "photo_reviews", "id", id, actor, now); err != nil {
 		return PhotoReview{}, err
 	}
-	readings, err := stringColumn(transaction, `SELECT json_object('round', round, 'model_role', model_role, 'model_id', model_id, 'answer', json(answer), 'cost_usd', cost_usd, 'read_at', read_at) FROM model_readings WHERE photo_review_id = ?`, id)
+	readings, err := stringColumn(transaction, `SELECT json_build_object('round', round, 'model_role', model_role, 'model_id', model_id, 'answer', answer::json, 'cost_usd', cost_usd, 'read_at', read_at)::text FROM model_readings WHERE photo_review_id = ?`, id)
 	if err != nil {
 		return PhotoReview{}, err
 	}
@@ -1186,12 +1244,12 @@ func (s *Store) recordReconciliation(ctx context.Context, reviewID, photoID stri
 	return transaction.Commit()
 }
 
-func insertQuestion(transaction *sql.Tx, sightingID, question string, choices []Choice, purpose string, now int64) error {
+func insertQuestion(transaction *databaseTransaction, sightingID, question string, choices []Choice, purpose string, now int64) error {
 	_, err := insertQuestionAnsweringID(transaction, sightingID, question, choices, purpose, now)
 	return err
 }
 
-func insertQuestionAnsweringID(transaction *sql.Tx, sightingID, question string, choices []Choice, purpose string, now int64) (string, error) {
+func insertQuestionAnsweringID(transaction *databaseTransaction, sightingID, question string, choices []Choice, purpose string, now int64) (string, error) {
 	questionID, sequence, err := nextID(transaction, "owner_questions", "possession_question")
 	if err != nil {
 		return "", err
@@ -1203,7 +1261,7 @@ func insertQuestionAnsweringID(transaction *sql.Tx, sightingID, question string,
 
 // applyResolution settles a sighting, then every later sighting that waits
 // on it. creator is who a new possession is recorded as made by.
-func (s *Store) applyResolution(ctx context.Context, transaction *sql.Tx, sightingID string, resolution Resolution, decidedBy, creator string, now int64) error {
+func (s *Store) applyResolution(ctx context.Context, transaction *databaseTransaction, sightingID string, resolution Resolution, decidedBy, creator string, now int64) error {
 	sighting, err := sightingByID(transaction, sightingID)
 	if err != nil {
 		return err
@@ -1585,7 +1643,7 @@ Decide what the answer means. accept records it as a new possession described by
 
 // applyDetail carries out the answer to a detail question: keep leaves the
 // possession as recorded; amend changes it to what the owner said.
-func (s *Store) applyDetail(ctx context.Context, transaction *sql.Tx, sightingID string, resolution Resolution, actor string) error {
+func (s *Store) applyDetail(ctx context.Context, transaction *databaseTransaction, sightingID string, resolution Resolution, actor string) error {
 	switch resolution.Action {
 	case "keep":
 		return nil

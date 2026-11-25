@@ -95,7 +95,7 @@ func (s *Store) MergePossession(ctx context.Context, duplicateID, keptID, actor,
 	return kept, nil
 }
 
-func (s *Store) mergePossessionInTransaction(transaction *sql.Tx, duplicateID, keptID, actor, reason string, now int64) (string, error) {
+func (s *Store) mergePossessionInTransaction(transaction *databaseTransaction, duplicateID, keptID, actor, reason string, now int64) (string, error) {
 	if duplicateID == keptID {
 		return "", fmt.Errorf("%w: a possession cannot be merged into itself", ErrInvalid)
 	}
@@ -188,7 +188,7 @@ func (s *Store) mergePossessionInTransaction(transaction *sql.Tx, duplicateID, k
 				if err != nil {
 					return "", err
 				}
-				if _, err := transaction.Exec(`INSERT OR IGNORE INTO vehicle_odometer_readings (vehicle_id, read_at, miles, source) SELECT ?, read_at, miles, source FROM vehicle_odometer_readings WHERE vehicle_id = ?`, keptKindID, duplicateKindID); err != nil {
+				if _, err := transaction.Exec(`INSERT INTO vehicle_odometer_readings (vehicle_id, read_at, miles, source) SELECT ?::text, read_at, miles, source FROM vehicle_odometer_readings WHERE vehicle_id = ? ON CONFLICT DO NOTHING`, keptKindID, duplicateKindID); err != nil {
 					return "", err
 				}
 				moves.OdometerReadingsInserted = readings
@@ -214,7 +214,7 @@ func (s *Store) mergePossessionInTransaction(transaction *sql.Tx, duplicateID, k
 	if err := rows.Err(); err != nil {
 		return "", err
 	}
-	if _, err := transaction.Exec(`INSERT OR IGNORE INTO outfit_possessions (outfit_id, possession_id, position) SELECT outfit_id, ?, position FROM outfit_possessions WHERE possession_id = ?`, keptID, duplicateID); err != nil {
+	if _, err := transaction.Exec(`INSERT INTO outfit_possessions (outfit_id, possession_id, position) SELECT outfit_id, ?::text, position FROM outfit_possessions WHERE possession_id = ? ON CONFLICT DO NOTHING`, keptID, duplicateID); err != nil {
 		return "", err
 	}
 	if _, err := transaction.Exec(`DELETE FROM outfit_possessions WHERE possession_id = ?`, duplicateID); err != nil {
@@ -225,8 +225,8 @@ func (s *Store) mergePossessionInTransaction(transaction *sql.Tx, duplicateID, k
 	if moves.PhotosInserted, err = stringColumn(transaction, `SELECT photo_id FROM possession_photos WHERE possession_id = ? AND photo_id NOT IN (SELECT photo_id FROM possession_photos WHERE possession_id = ?) ORDER BY photo_id`, duplicateID, keptID); err != nil {
 		return "", err
 	}
-	if _, err := transaction.Exec(`INSERT OR IGNORE INTO possession_photos (possession_id, photo_id, box_left, box_top, box_right, box_bottom, is_cover, sighting_id, linked_by, linked_at)
-		SELECT ?, photo_id, box_left, box_top, box_right, box_bottom, 0, sighting_id, ?, ? FROM possession_photos WHERE possession_id = ?`, keptID, actor, now, duplicateID); err != nil {
+	if _, err := transaction.Exec(`INSERT INTO possession_photos (possession_id, photo_id, box_left, box_top, box_right, box_bottom, is_cover, sighting_id, linked_by, linked_at)
+		SELECT ?::text, photo_id, box_left, box_top, box_right, box_bottom, 0, sighting_id, ?::text, ?::bigint FROM possession_photos WHERE possession_id = ? ON CONFLICT DO NOTHING`, keptID, actor, now, duplicateID); err != nil {
 		return "", err
 	}
 	if kept["cover_photo_id"] == nil {
@@ -270,7 +270,7 @@ func (s *Store) mergePossessionInTransaction(transaction *sql.Tx, duplicateID, k
 
 // chooseCover makes the earliest linked photo the cover when a possession
 // has none, and answers its id ("" when it already had one or has no photo).
-func chooseCover(transaction *sql.Tx, possessionID string) (string, error) {
+func chooseCover(transaction *databaseTransaction, possessionID string) (string, error) {
 	var hasCover int
 	if err := transaction.QueryRow(`SELECT COUNT(*) FROM possession_photos WHERE possession_id = ? AND is_cover = 1`, possessionID).Scan(&hasCover); err != nil {
 		return "", err
@@ -375,7 +375,7 @@ func (s *Store) UndoPossessionMerge(ctx context.Context, mergeID, actor string) 
 	return possessionMergeByID(s.db, mergeID)
 }
 
-func (s *Store) undoPossessionMergeInTransaction(transaction *sql.Tx, mergeID, actor string, now int64) error {
+func (s *Store) undoPossessionMergeInTransaction(transaction *databaseTransaction, mergeID, actor string, now int64) error {
 	merge, err := possessionMergeByID(transaction, mergeID)
 	if err != nil {
 		return err
@@ -452,7 +452,7 @@ func (s *Store) undoPossessionMergeInTransaction(transaction *sql.Tx, mergeID, a
 		}
 	}
 	for _, membership := range moves.OutfitMemberships {
-		if _, err := transaction.Exec(`INSERT OR IGNORE INTO outfit_possessions (outfit_id, possession_id, position) VALUES (?, ?, ?)`, membership.OutfitID, duplicateID, membership.Position); err != nil {
+		if _, err := transaction.Exec(`INSERT INTO outfit_possessions (outfit_id, possession_id, position) VALUES (?, ?, ?) ON CONFLICT DO NOTHING`, membership.OutfitID, duplicateID, membership.Position); err != nil {
 			return err
 		}
 		if membership.AddedToKept {
@@ -485,9 +485,9 @@ func (s *Store) undoPossessionMergeInTransaction(transaction *sql.Tx, mergeID, a
 
 // nextMergeOrder is one more than the latest merge of either kind, so undo
 // can tell which merge came after which.
-func nextMergeOrder(transaction *sql.Tx) (int64, error) {
+func nextMergeOrder(transaction *databaseTransaction) (int64, error) {
 	var latest int64
-	err := transaction.QueryRow(`SELECT MAX(COALESCE((SELECT MAX(merge_order) FROM possession_merges), 0), COALESCE((SELECT MAX(merge_order) FROM outfit_merges), 0))`).Scan(&latest)
+	err := transaction.QueryRow(`SELECT GREATEST(COALESCE((SELECT MAX(merge_order) FROM possession_merges), 0), COALESCE((SELECT MAX(merge_order) FROM outfit_merges), 0))`).Scan(&latest)
 	return latest + 1, err
 }
 

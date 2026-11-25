@@ -28,7 +28,7 @@ func (question OwnerQuestion) isAudit() bool {
 
 // applyAuditResolution carries out an answer to one of the audit's
 // questions.
-func (s *Store) applyAuditResolution(transaction *sql.Tx, question OwnerQuestion, resolution Resolution, actor string, now int64) error {
+func (s *Store) applyAuditResolution(transaction *databaseTransaction, question OwnerQuestion, resolution Resolution, actor string, now int64) error {
 	switch resolution.Action {
 	case "keep_link", "keep_apart", "keep_outfits_apart":
 		return nil
@@ -67,12 +67,12 @@ func (s *Store) applyAuditResolution(transaction *sql.Tx, question OwnerQuestion
 // it made goes, the sighting waits again (proposed), and the possession
 // leaves the reading's outfit unless another photo of that outfit shows it.
 // Each row is saved to revisions first.
-func (s *Store) unlinkSighting(transaction *sql.Tx, sighting Sighting, possessionID, actor string, now int64) error {
+func (s *Store) unlinkSighting(transaction *databaseTransaction, sighting Sighting, possessionID, actor string, now int64) error {
 	if sighting.Status != "accepted" || sighting.PossessionID == nil || *sighting.PossessionID != possessionID {
 		return fmt.Errorf("%w: %s is no longer recorded as %s", ErrConflict, sighting.ID, possessionID)
 	}
-	link, err := stringColumn(transaction, `SELECT json_object('table', 'possession_photos', 'possession_id', possession_id, 'photo_id', photo_id, 'box_left', box_left, 'box_top', box_top,
-		'box_right', box_right, 'box_bottom', box_bottom, 'is_cover', is_cover, 'sighting_id', sighting_id, 'linked_by', linked_by, 'linked_at', linked_at)
+	link, err := stringColumn(transaction, `SELECT json_build_object('table', 'possession_photos', 'possession_id', possession_id, 'photo_id', photo_id, 'box_left', box_left, 'box_top', box_top,
+		'box_right', box_right, 'box_bottom', box_bottom, 'is_cover', is_cover, 'sighting_id', sighting_id, 'linked_by', linked_by, 'linked_at', linked_at)::text
 		FROM possession_photos WHERE possession_id = ? AND photo_id = ?`, possessionID, sighting.PhotoID)
 	if err != nil {
 		return err
@@ -119,14 +119,14 @@ func (s *Store) unlinkSighting(transaction *sql.Tx, sighting Sighting, possessio
 // markReviewWaiting puts a finished review back to waiting_for_owner when a
 // decision question is added to it; AnswerQuestion marks it done again once
 // none is open.
-func markReviewWaiting(transaction *sql.Tx, sightingID string) error {
+func markReviewWaiting(transaction *databaseTransaction, sightingID string) error {
 	_, err := transaction.Exec(`UPDATE photo_reviews SET status = 'waiting_for_owner' WHERE status = 'done' AND id = (SELECT photo_review_id FROM sightings WHERE id = ?)`, sightingID)
 	return err
 }
 
 // askAuditQuestion adds a decision question from the audit and marks its
 // review waiting.
-func askAuditQuestion(transaction *sql.Tx, askedBy, sightingID, question string, choices []Choice, now int64) (string, error) {
+func askAuditQuestion(transaction *databaseTransaction, askedBy, sightingID, question string, choices []Choice, now int64) (string, error) {
 	if !contains(QuestionAskers, askedBy) {
 		return "", fmt.Errorf("%q is not one of %s", askedBy, strings.Join(QuestionAskers, ", "))
 	}
@@ -147,7 +147,7 @@ func questionAboutExists(q querier, fragments ...string) (bool, error) {
 	conditions := []string{}
 	arguments := []any{}
 	for _, fragment := range fragments {
-		conditions = append(conditions, "instr(choices, ?) > 0")
+		conditions = append(conditions, "strpos(choices, ?) > 0")
 		arguments = append(arguments, fragment)
 	}
 	var found int

@@ -14,7 +14,7 @@ func TestTheRoutesRegisterAndAnswer(t *testing.T) {
 	(&Server{Store: store, Reviewer: &Reviewer{Store: store, Photos: fakePhotos{}}}).RegisterHandlers(mux)
 	call := func(method, path, body string) *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
-		mux.ServeHTTP(recorder, httptest.NewRequest(method, path, strings.NewReader(body)))
+		asTestOwner(mux).ServeHTTP(recorder, httptest.NewRequest(method, path, strings.NewReader(body)))
 		return recorder
 	}
 	created := call("POST", "/possessions", `{"actor":"principal_000001","name":"laptop","computer":{"form_factor":"laptop","harness_machine_id":"m_test_machine"},

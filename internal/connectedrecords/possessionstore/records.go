@@ -405,6 +405,9 @@ func scanRow(scanner interface{ Scan(...any) error }, columns []Column) (map[str
 // then the bookkeeping ones.
 func (recordType RecordType) readColumns() []Column {
 	columns := []Column{{Name: "id", Type: ColumnText}}
+	if recordType.Name == possessionType.Name {
+		columns = append(columns, Column{Name: "owner_principal_id", Type: ColumnText})
+	}
 	if recordType.Name != possessionType.Name {
 		columns = append(columns, Column{Name: "possession_id", Type: ColumnText})
 	}

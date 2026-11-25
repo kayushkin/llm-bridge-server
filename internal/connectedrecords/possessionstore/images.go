@@ -12,8 +12,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"golang.org/x/image/draw"
@@ -44,10 +42,17 @@ type PhotoSource interface {
 	DetailImage(ctx context.Context, photoID string) (image.Image, string, error)
 }
 
-// PhotoStoreSource is the PhotoSource over photo-store and originals/.
+// OriginalReader reads the original an owner keeps (originals.go).
+type OriginalReader interface {
+	OriginalBytes(ctx context.Context, ownerPrincipalID, sha256 string) ([]byte, bool, error)
+}
+
+// PhotoStoreSource is the PhotoSource over photo-store and the kept
+// originals. HTTPClient's transport answers photo-store's in-process host as
+// the caller on the request's context.
 type PhotoStoreSource struct {
 	PhotoStoreURL string
-	OriginalsDir  string
+	Originals     OriginalReader
 	LongestSide   int
 	HTTPClient    *http.Client
 }
@@ -163,8 +168,8 @@ func (source PhotoStoreSource) Thumbnail(ctx context.Context, photoID string) ([
 }
 
 // ReviewImage answers the photo the readers are shown: the original,
-// turned as its thumbnail stands and scaled to LongestSide, when originals/
-// holds it, and the thumbnail otherwise.
+// turned as its thumbnail stands and scaled to LongestSide, when the owner
+// keeps one, and the thumbnail otherwise.
 func (source PhotoStoreSource) ReviewImage(ctx context.Context, photoID string) ([]byte, string, error) {
 	picture, kind, err := source.DetailImage(ctx, photoID)
 	if err != nil {
@@ -181,15 +186,16 @@ func (source PhotoStoreSource) ReviewImage(ctx context.Context, photoID string) 
 	return scaled, kind, nil
 }
 
-// DetailImage finds the original by the photo's sha256 and turns it to
-// match photo-store's thumbnail (alignToThumbnail).
+// DetailImage finds the original the photo's owner keeps by the photo's
+// sha256 and turns it to match photo-store's thumbnail (alignToThumbnail).
 func (source PhotoStoreSource) DetailImage(ctx context.Context, photoID string) (image.Image, string, error) {
 	body, err := source.get(ctx, "/photos/"+url.PathEscape(photoID))
 	if err != nil {
 		return nil, "", err
 	}
 	var photo struct {
-		Sha256 string `json:"sha256"`
+		OwnerPrincipalID string `json:"owner_principal_id"`
+		Sha256           string `json:"sha256"`
 	}
 	if err := json.Unmarshal(body, &photo); err != nil {
 		return nil, "", fmt.Errorf("photo-store's %s is not a photo: %w", photoID, err)
@@ -202,20 +208,16 @@ func (source PhotoStoreSource) DetailImage(ctx context.Context, photoID string) 
 	if err != nil {
 		return nil, "", fmt.Errorf("decode the thumbnail of %s: %w", photoID, err)
 	}
-	matches, err := filepath.Glob(filepath.Join(source.OriginalsDir, photo.Sha256+".*"))
+	original, kept, err := source.Originals.OriginalBytes(ctx, photo.OwnerPrincipalID, photo.Sha256)
 	if err != nil {
 		return nil, "", err
 	}
-	if len(matches) == 0 {
+	if !kept {
 		return thumbnail, "thumbnail", nil
-	}
-	original, err := os.ReadFile(matches[0])
-	if err != nil {
-		return nil, "", err
 	}
 	aligned, _, err := alignOriginal(original, thumbnail)
 	if err != nil {
-		return nil, "", fmt.Errorf("%s (%s): %w", photoID, matches[0], err)
+		return nil, "", fmt.Errorf("%s (original %s): %w", photoID, photo.Sha256, err)
 	}
 	return aligned, "original", nil
 }

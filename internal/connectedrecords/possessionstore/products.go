@@ -112,7 +112,7 @@ func (s *Store) ListProducts(query string, limit, offset int) ([]Product, error)
 	conditions := []string{"deleted_at = 0"}
 	arguments := []any{}
 	for _, word := range strings.Fields(strings.ToLower(query)) {
-		conditions = append(conditions, `instr(lower(brand || ' ' || model_number || ' ' || name || ' ' || description), ?) > 0`)
+		conditions = append(conditions, `strpos(lower(brand || ' ' || model_number || ' ' || name || ' ' || description), ?) > 0`)
 		arguments = append(arguments, word)
 	}
 	if limit <= 0 {
@@ -167,7 +167,7 @@ func (s *Store) insertProduct(ctx context.Context, product Product, possessionID
 	if err := checkProductFields(product); err != nil {
 		return Product{}, err
 	}
-	if err := s.references.Check(ctx, ReferenceArticle, product.ArticleID); err != nil {
+	if err := s.checkOutside(ctx, ReferenceArticle, product.ArticleID); err != nil {
 		return Product{}, err
 	}
 	specs, _ := json.Marshal(product.Specs)
@@ -243,7 +243,7 @@ func (s *Store) PatchProduct(ctx context.Context, id string, fields map[string]j
 		return Product{}, err
 	}
 	if product.ArticleID != articleBefore {
-		if err := s.references.Check(ctx, ReferenceArticle, product.ArticleID); err != nil {
+		if err := s.checkOutside(ctx, ReferenceArticle, product.ArticleID); err != nil {
 			return Product{}, err
 		}
 	}
@@ -263,7 +263,7 @@ func (s *Store) PatchProduct(ctx context.Context, id string, fields map[string]j
 		found_by = ?, description = ?, specs = ?, list_price_cents = ?, list_price_currency = ?, updated_at = ? WHERE id = ?`,
 		product.Brand, product.ModelNumber, product.Name, product.ListingURL, product.ListingSource, product.ListingPublisher, product.ArticleID,
 		product.FoundBy, product.Description, string(specs), product.ListPriceCents, product.ListPriceCurrency, now, id); err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+		if isUniqueViolation(err) {
 			return Product{}, fmt.Errorf("%w: another product is %s %s", ErrConflict, product.Brand, product.ModelNumber)
 		}
 		return Product{}, err

@@ -145,11 +145,11 @@ func outfitPiecesFromLooks(q querier, outfitID string) ([]string, error) {
 
 // addOutfitPieces adds the pieces an outfit does not hold yet, after the
 // ones it holds, and answers those it added.
-func addOutfitPieces(transaction *sql.Tx, outfitID string, pieces []string) ([]string, error) {
+func addOutfitPieces(transaction *databaseTransaction, outfitID string, pieces []string) ([]string, error) {
 	added := []string{}
 	for _, piece := range pieces {
-		result, err := transaction.Exec(`INSERT OR IGNORE INTO outfit_possessions (outfit_id, possession_id, position)
-			VALUES (?, ?, (SELECT COALESCE(MAX(position) + 1, 0) FROM outfit_possessions WHERE outfit_id = ?))`, outfitID, piece, outfitID)
+		result, err := transaction.Exec(`INSERT INTO outfit_possessions (outfit_id, possession_id, position)
+			VALUES (?, ?, (SELECT COALESCE(MAX(position) + 1, 0) FROM outfit_possessions WHERE outfit_id = ?)) ON CONFLICT DO NOTHING`, outfitID, piece, outfitID)
 		if err != nil {
 			return nil, err
 		}
@@ -546,7 +546,7 @@ func (s *Store) RebuildOutfitsFromLooks(ctx context.Context, actor string, copie
 			if copies[look.ID] != "" {
 				continue
 			}
-			if _, err := transaction.Exec(`INSERT OR IGNORE INTO outfit_wearings (outfit_id, worn_on) VALUES (?, ?)`, target, look.WornOn); err != nil {
+			if _, err := transaction.Exec(`INSERT INTO outfit_wearings (outfit_id, worn_on) VALUES (?, ?) ON CONFLICT DO NOTHING`, target, look.WornOn); err != nil {
 				return run, err
 			}
 		}
@@ -709,7 +709,7 @@ func takeOutfitSnapshot(q querier, outfitID string) (outfitSnapshot, error) {
 	return taken, nil
 }
 
-func restoreOutfitSnapshot(transaction *sql.Tx, taken outfitSnapshot, now int64) error {
+func restoreOutfitSnapshot(transaction *databaseTransaction, taken outfitSnapshot, now int64) error {
 	if err := replaceOutfitPossessions(transaction, taken.OutfitID, taken.Pieces); err != nil {
 		return err
 	}
@@ -742,7 +742,7 @@ func restoreOutfitSnapshot(transaction *sql.Tx, taken outfitSnapshot, now int64)
 // looks came from: favorite when any was, the union of their tags, and the
 // owner's cover pick when it has none and a pick's photo is one of its
 // looks' photos.
-func carryOwnerMarks(transaction *sql.Tx, target string, from []string, photoIDs []string) error {
+func carryOwnerMarks(transaction *databaseTransaction, target string, from []string, photoIDs []string) error {
 	if len(from) == 0 {
 		return nil
 	}
@@ -837,7 +837,7 @@ func (s *Store) UndoOutfitRebuild(ctx context.Context, rebuildID, actor string) 
 		}
 	}
 	for _, wearing := range rebuild.Moved.WearingsRemoved {
-		if _, err := transaction.Exec(`INSERT OR IGNORE INTO outfit_wearings (outfit_id, worn_on) VALUES (?, ?)`, wearing.OutfitID, wearing.WornOn); err != nil {
+		if _, err := transaction.Exec(`INSERT INTO outfit_wearings (outfit_id, worn_on) VALUES (?, ?) ON CONFLICT DO NOTHING`, wearing.OutfitID, wearing.WornOn); err != nil {
 			return OutfitRebuild{}, err
 		}
 	}

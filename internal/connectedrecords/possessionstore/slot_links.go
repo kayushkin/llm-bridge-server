@@ -132,7 +132,7 @@ func lookDay(q querier, lookID string) string {
 // slotSighting makes the sighting of a slot on one photo, recorded as a
 // possession, and links the photo to it; with no possession ("") the
 // sighting waits, proposed.
-func (s *Store) slotSighting(transaction *sql.Tx, slot Slot, photo SlotPhoto, possessionID string, now int64) (string, error) {
+func (s *Store) slotSighting(transaction *databaseTransaction, slot Slot, photo SlotPhoto, possessionID string, now int64) (string, error) {
 	var reviewID string
 	if err := transaction.QueryRow(`SELECT photo_review_id FROM outfit_look_photos WHERE look_id = ? AND photo_id = ?`, slot.LookID, photo.PhotoID).Scan(&reviewID); err != nil {
 		return "", fmt.Errorf("%s's photo %s is not in its look: %w", slot.ID, photo.PhotoID, err)
@@ -172,7 +172,7 @@ func (s *Store) slotSighting(transaction *sql.Tx, slot Slot, photo SlotPhoto, po
 
 // applySlotAnswer relinks a slot as the owner answered: to a candidate, to
 // a new piece, or to nothing.
-func (s *Store) applySlotAnswer(transaction *sql.Tx, resolution Resolution, actor string, now int64) error {
+func (s *Store) applySlotAnswer(transaction *databaseTransaction, resolution Resolution, actor string, now int64) error {
 	slot, err := slotByID(transaction, resolution.SlotID)
 	if err != nil {
 		return err
@@ -207,7 +207,7 @@ func (s *Store) applySlotAnswer(transaction *sql.Tx, resolution Resolution, acto
 // relinkSlot points a slot, its sightings and its photos at another
 // possession ("" for none), then puts its look in the outfit that holds its
 // pieces. Each row is saved to revisions first.
-func (s *Store) relinkSlot(transaction *sql.Tx, slot Slot, possessionID, actor string, now int64) error {
+func (s *Store) relinkSlot(transaction *databaseTransaction, slot Slot, possessionID, actor string, now int64) error {
 	if err := saveRevision(transaction, "outfit_slots", "id", slot.ID, actor, now); err != nil {
 		return err
 	}
@@ -270,7 +270,7 @@ func lookPieces(q querier, lookID string) ([]string, error) {
 // union of every look's pieces. Otherwise the look moves, with its day and
 // readings, to the outfit of other looks it matches best, or a new one, and
 // both outfits hold the union of their looks' pieces.
-func (s *Store) placeLook(transaction *sql.Tx, lookID, actor string, now int64) error {
+func (s *Store) placeLook(transaction *databaseTransaction, lookID, actor string, now int64) error {
 	look, err := lookByID(transaction, lookID)
 	if err != nil {
 		return err
@@ -300,8 +300,8 @@ func (s *Store) placeLook(transaction *sql.Tx, lookID, actor string, now int64) 
 	if _, same := identityMatch(identity, others.identity, contains(others.days, look.WornOn)); same {
 		return refreshOutfitPieces(transaction, current)
 	}
-	outfitIDs, err := stringColumn(transaction, `SELECT DISTINCT outfit_looks.outfit_id FROM outfit_looks JOIN outfits ON outfits.id = outfit_looks.outfit_id
-		WHERE outfits.deleted_at = 0 AND outfits.status != 'rejected' AND outfit_looks.outfit_id != ? ORDER BY outfits.seq`, current)
+	outfitIDs, err := stringColumn(transaction, `SELECT outfit_looks.outfit_id FROM outfit_looks JOIN outfits ON outfits.id = outfit_looks.outfit_id
+		WHERE outfits.deleted_at = 0 AND outfits.status != 'rejected' AND outfit_looks.outfit_id != ? GROUP BY outfit_looks.outfit_id, outfits.seq ORDER BY outfits.seq`, current)
 	if err != nil {
 		return err
 	}
@@ -335,7 +335,7 @@ func (s *Store) placeLook(transaction *sql.Tx, lookID, actor string, now int64) 
 	if _, err := transaction.Exec(`UPDATE photo_reviews SET outfit_id = ? WHERE id IN (SELECT photo_review_id FROM outfit_look_photos WHERE look_id = ?)`, target, lookID); err != nil {
 		return err
 	}
-	if _, err := transaction.Exec(`INSERT OR IGNORE INTO outfit_wearings (outfit_id, worn_on) VALUES (?, ?)`, target, look.WornOn); err != nil {
+	if _, err := transaction.Exec(`INSERT INTO outfit_wearings (outfit_id, worn_on) VALUES (?, ?) ON CONFLICT DO NOTHING`, target, look.WornOn); err != nil {
 		return err
 	}
 	if _, err := transaction.Exec(`DELETE FROM outfit_wearings WHERE outfit_id = ? AND worn_on = ? AND NOT EXISTS (SELECT 1 FROM outfit_looks WHERE outfit_id = ? AND worn_on = ?)`, current, look.WornOn, current, look.WornOn); err != nil {
@@ -348,7 +348,7 @@ func (s *Store) placeLook(transaction *sql.Tx, lookID, actor string, now int64) 
 }
 
 // refreshOutfitPieces makes an outfit hold the union of its looks' pieces.
-func refreshOutfitPieces(transaction *sql.Tx, outfitID string) error {
+func refreshOutfitPieces(transaction *databaseTransaction, outfitID string) error {
 	pieces, err := outfitPiecesFromLooks(transaction, outfitID)
 	if err != nil {
 		return err

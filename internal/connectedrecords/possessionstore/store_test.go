@@ -20,7 +20,7 @@ import (
 // fakeReferences knows a fixed set of other stores' ids.
 type fakeReferences struct{ known map[string]bool }
 
-func (references fakeReferences) Check(ctx context.Context, kind ReferenceKind, id string) error {
+func (references fakeReferences) Check(ctx context.Context, ownerPrincipalID string, kind ReferenceKind, id string) error {
 	if references.known[id] {
 		return nil
 	}
@@ -29,14 +29,9 @@ func (references fakeReferences) Check(ctx context.Context, kind ReferenceKind, 
 
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
-	store, err := Open(t.TempDir(), fakeReferences{known: map[string]bool{
+	return newTestStore(t, fakeReferences{known: map[string]bool{
 		"photo_000001": true, "photo_000002": true, "m_test_machine": true, "place_000001": true,
 	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { store.Close() })
-	return store
 }
 
 func fields(t *testing.T, text string) map[string]json.RawMessage {

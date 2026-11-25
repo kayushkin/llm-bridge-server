@@ -322,7 +322,7 @@ type outfitCovers struct {
 	warmQueue   []coverCut
 	// The background reads of wearer boxes (QueueCoverWearerReads).
 	wearerReading  bool
-	wearerQueue    []string
+	wearerQueue    []coverWearerRead
 	wearerQueued   map[string]bool
 	wearerFailedAt map[string]time.Time
 }
@@ -338,14 +338,13 @@ const (
 	coverRendersAtOnce = 2
 )
 
-func (reviewer *Reviewer) covers() *outfitCovers {
-	reviewer.coversOnce.Do(func() {
-		reviewer.coverCache = &outfitCovers{shapes: map[string]float64{}, faces: map[string]cachedFace{},
-			wearerQueued: map[string]bool{}, wearerFailedAt: map[string]time.Time{},
-			renderSlots: make(chan struct{}, coverRendersAtOnce)}
-	})
-	return reviewer.coverCache
+func newOutfitCovers() *outfitCovers {
+	return &outfitCovers{shapes: map[string]float64{}, faces: map[string]cachedFace{},
+		wearerQueued: map[string]bool{}, wearerFailedAt: map[string]time.Time{},
+		renderSlots: make(chan struct{}, coverRendersAtOnce)}
 }
+
+func (reviewer *Reviewer) covers() *outfitCovers { return reviewer.sharedState().covers }
 
 // photoAspect answers a photo's width over its height, read from
 // photo-store's thumbnail, which stands as every box was read.
@@ -532,8 +531,11 @@ func (reviewer *Reviewer) readCoverWearerBox(ctx context.Context, photoID, readB
 	store := reviewer.Store
 	store.writeMutex.Lock()
 	defer store.writeMutex.Unlock()
-	if _, err := store.db.Exec(`INSERT OR REPLACE INTO outfit_cover_wearer_boxes (photo_id, person_id, box_left, box_top, box_right, box_bottom, face_given, model, input_tokens, output_tokens, cost_usd, read_by, read_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, photoID, personID, box.Left, box.Top, box.Right, box.Bottom, face != nil, answer.Model,
+	if _, err := store.db.Exec(`INSERT INTO outfit_cover_wearer_boxes (photo_id, person_id, box_left, box_top, box_right, box_bottom, face_given, model, input_tokens, output_tokens, cost_usd, read_by, read_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (owner_principal_id, photo_id, person_id) DO UPDATE SET box_left = excluded.box_left, box_top = excluded.box_top, box_right = excluded.box_right,
+			box_bottom = excluded.box_bottom, face_given = excluded.face_given, model = excluded.model, input_tokens = excluded.input_tokens,
+			output_tokens = excluded.output_tokens, cost_usd = excluded.cost_usd, read_by = excluded.read_by, read_at = excluded.read_at`, photoID, personID, box.Left, box.Top, box.Right, box.Bottom, face != nil, answer.Model,
 		answer.InputTokens, answer.OutputTokens, answer.CostUSD, readBy, store.unixNow()); err != nil {
 		return Box{}, answer, err
 	}
@@ -640,17 +642,19 @@ func (reviewer *Reviewer) ReadMissingCoverWearerBoxes(ctx context.Context, actor
 // QueueCoverWearerReads reads, in the background and one at a time, the
 // wearer box of every listed outfit whose cover is still cut to its piece
 // boxes, so a cover that changed (a rebuild, a combine) is cut tight soon
-// after the gallery lists it. Only with ReadCoverWearersInBackground. A
+// after the gallery lists it. Only for owners ReadCoverWearersInBackgroundFor
+// names. A
 // photo that failed is not tried again for coverWearerRetryAfter; failures
 // are logged.
 func (reviewer *Reviewer) QueueCoverWearerReads(outfits []Outfit) {
-	if !reviewer.ReadCoverWearersInBackground {
+	if reviewer.ReadCoverWearersInBackgroundFor == nil {
 		return
 	}
 	cache := reviewer.covers()
 	cache.mutex.Lock()
 	for _, outfit := range outfits {
-		if outfit.CoverPhotoID == nil || outfit.CoverReason == nil || outfit.CoverReason.FrameFrom != CoverFrameFromPieceBoxes {
+		if outfit.CoverPhotoID == nil || outfit.CoverReason == nil || outfit.CoverReason.FrameFrom != CoverFrameFromPieceBoxes ||
+			!reviewer.ReadCoverWearersInBackgroundFor(outfit.OwnerPrincipalID) {
 			continue
 		}
 		photoID := *outfit.CoverPhotoID
@@ -658,7 +662,7 @@ func (reviewer *Reviewer) QueueCoverWearerReads(outfits []Outfit) {
 			continue
 		}
 		cache.wearerQueued[photoID] = true
-		cache.wearerQueue = append(cache.wearerQueue, photoID)
+		cache.wearerQueue = append(cache.wearerQueue, coverWearerRead{photoID: photoID, ownerPrincipalID: outfit.OwnerPrincipalID})
 	}
 	start := !cache.wearerReading && len(cache.wearerQueue) > 0
 	cache.wearerReading = cache.wearerReading || start
@@ -674,10 +678,18 @@ func (reviewer *Reviewer) QueueCoverWearerReads(outfits []Outfit) {
 				cache.mutex.Unlock()
 				return
 			}
-			photoID := cache.wearerQueue[0]
+			next := cache.wearerQueue[0]
+			photoID := next.photoID
 			cache.wearerQueue = cache.wearerQueue[1:]
 			cache.mutex.Unlock()
-			_, answer, err := reviewer.readCoverWearerBox(context.Background(), photoID, coverWearerReadByList)
+			// Each read acts as the owner of the outfit listed, whoever
+			// listed it: the box is that owner's record.
+			ctx := reviewer.backgroundContext(next.ownerPrincipalID)
+			var answer ModelAnswer
+			owned, err := reviewer.NarrowedToOwner(ctx, next.ownerPrincipalID)
+			if err == nil {
+				_, answer, err = owned.readCoverWearerBox(ctx, photoID, coverWearerReadByList)
+			}
 			cache.mutex.Lock()
 			delete(cache.wearerQueued, photoID)
 			if err != nil {
@@ -737,7 +749,7 @@ func (reviewer *Reviewer) OutfitCoverImage(ctx context.Context, outfitID string)
 func (reviewer *Reviewer) coverImagePath(photoID string, frame Box) string {
 	key := fmt.Sprintf("%s|%.4f|%.4f|%.4f|%.4f|%d", photoID, frame.Left, frame.Top, frame.Right, frame.Bottom, coverImageHeight)
 	sum := sha256.Sum256([]byte(key))
-	return filepath.Join(reviewer.Store.CoverImagesDir(), hex.EncodeToString(sum[:])+".jpg")
+	return filepath.Join(reviewer.CoverImagesDirectory, hex.EncodeToString(sum[:])+".jpg")
 }
 
 func (reviewer *Reviewer) coverImage(ctx context.Context, photoID string, frame Box) ([]byte, error) {
@@ -787,7 +799,7 @@ func (reviewer *Reviewer) WarmOutfitCovers(outfits []Outfit) {
 	cache.mutex.Lock()
 	for _, outfit := range outfits {
 		if outfit.CoverPhotoID != nil && outfit.CoverBox != nil {
-			cache.warmQueue = append(cache.warmQueue, coverCut{photoID: *outfit.CoverPhotoID, frame: *outfit.CoverBox, outfitID: outfit.ID})
+			cache.warmQueue = append(cache.warmQueue, coverCut{photoID: *outfit.CoverPhotoID, frame: *outfit.CoverBox, outfitID: outfit.ID, ownerPrincipalID: outfit.OwnerPrincipalID})
 		}
 	}
 	start := !cache.warming && len(cache.warmQueue) > 0
@@ -807,18 +819,26 @@ func (reviewer *Reviewer) WarmOutfitCovers(outfits []Outfit) {
 			next := cache.warmQueue[0]
 			cache.warmQueue = cache.warmQueue[1:]
 			cache.mutex.Unlock()
-			if _, err := reviewer.coverImage(context.Background(), next.photoID, next.frame); err != nil {
+			if _, err := reviewer.coverImage(reviewer.backgroundContext(next.ownerPrincipalID), next.photoID, next.frame); err != nil {
 				log.Printf("warm %s's cover: %v", next.outfitID, err)
 			}
 		}
 	}()
 }
 
-// coverCut is one cover waiting to be cut.
+// coverCut is one cover waiting to be cut, as the outfit's owner.
 type coverCut struct {
-	photoID  string
-	frame    Box
-	outfitID string
+	photoID          string
+	frame            Box
+	outfitID         string
+	ownerPrincipalID string
+}
+
+// coverWearerRead is one cover photo whose wearer box waits to be read, as
+// the outfit's owner.
+type coverWearerRead struct {
+	photoID          string
+	ownerPrincipalID string
 }
 
 // cutCover cuts a frame out of a picture and scales it to at most

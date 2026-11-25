@@ -25,12 +25,7 @@ func (articles *fakeArticles) ReadListing(ctx context.Context, articleID string)
 
 func openProductTestStore(t *testing.T) *Store {
 	t.Helper()
-	store, err := Open(t.TempDir(), fakeReferences{known: map[string]bool{"photo_000001": true, "article_000007": true, "transaction_000001": true}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { store.Close() })
-	return store
+	return newTestStore(t, fakeReferences{known: map[string]bool{"photo_000001": true, "article_000007": true, "transaction_000001": true}})
 }
 
 func TestAProductIsReadFromItsListingAndServesItsPossessions(t *testing.T) {
@@ -282,34 +277,5 @@ func TestDeletingAPurchaseWithdrawsItsQuestionsAndRefusesWhileAPossessionCameFro
 	}
 	if _, err := store.GetPurchase(purchase.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("a deleted purchase read = %v, want not found", err)
-	}
-}
-
-func TestOpenDropsTheOrderColumnsPurchasesHeldForADay(t *testing.T) {
-	directory := t.TempDir()
-	store, err := Open(directory, fakeReferences{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, statement := range []string{
-		`ALTER TABLE purchases ADD COLUMN mail_account_id TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE purchases ADD COLUMN mail_message_id TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE purchases ADD COLUMN extracted_by TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE purchase_lines ADD COLUMN listing_url TEXT NOT NULL DEFAULT ''`,
-		`CREATE UNIQUE INDEX idx_purchases_mail ON purchases(mail_account_id, mail_message_id) WHERE mail_message_id != ''`,
-	} {
-		if _, err := store.db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
-	store.Close()
-	store, err = Open(directory, fakeReferences{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	left, err := stringColumn(store.db, `SELECT name FROM pragma_table_info('purchases') WHERE name IN ('mail_account_id','mail_message_id','extracted_by')`)
-	if err != nil || len(left) != 0 {
-		t.Fatalf("columns left = %v %v", left, err)
 	}
 }

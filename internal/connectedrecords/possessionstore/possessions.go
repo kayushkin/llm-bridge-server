@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-// querier is a *sql.DB or a *sql.Tx.
+// querier is a *database or a *databaseTransaction.
 type querier interface {
 	QueryRow(query string, arguments ...any) *sql.Row
 	Query(query string, arguments ...any) (*sql.Rows, error)
@@ -79,7 +79,7 @@ func splitPossessionFields(fields map[string]json.RawMessage) (own map[string]js
 	return own, kind, kindFields, photos, nil
 }
 
-func (s *Store) checkValues(ctx context.Context, transaction *sql.Tx, values map[string]decodedValue) error {
+func (s *Store) checkValues(ctx context.Context, transaction *databaseTransaction, values map[string]decodedValue) error {
 	for _, decoded := range values {
 		if decoded.column.References == "" || decoded.value == nil {
 			continue
@@ -93,7 +93,7 @@ func (s *Store) checkValues(ctx context.Context, transaction *sql.Tx, values map
 
 // insertRecord writes a new row of recordType with the given values; the
 // caller has minted id and sequence.
-func insertRecord(transaction *sql.Tx, recordType RecordType, id string, sequence int64, extra map[string]any, values map[string]decodedValue) error {
+func insertRecord(transaction *databaseTransaction, recordType RecordType, id string, sequence int64, extra map[string]any, values map[string]decodedValue) error {
 	names := []string{"id", "seq"}
 	arguments := []any{id, sequence}
 	extraNames := make([]string, 0, len(extra))
@@ -113,13 +113,13 @@ func insertRecord(transaction *sql.Tx, recordType RecordType, id string, sequenc
 	}
 	placeholders := strings.TrimSuffix(strings.Repeat("?, ", len(names)), ", ")
 	_, err := transaction.Exec(`INSERT INTO `+recordType.Table+` (`+strings.Join(names, ", ")+`) VALUES (`+placeholders+`)`, arguments...)
-	if err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed") {
+	if err != nil && isUniqueViolation(err) {
 		return fmt.Errorf("%w: %v", ErrConflict, err)
 	}
 	return err
 }
 
-func updateRecord(transaction *sql.Tx, recordType RecordType, idColumn, id string, extra map[string]any, values map[string]decodedValue) error {
+func updateRecord(transaction *databaseTransaction, recordType RecordType, idColumn, id string, extra map[string]any, values map[string]decodedValue) error {
 	assignments := []string{}
 	arguments := []any{}
 	for name, value := range extra {
@@ -137,7 +137,7 @@ func updateRecord(transaction *sql.Tx, recordType RecordType, idColumn, id strin
 	}
 	arguments = append(arguments, id)
 	_, err := transaction.Exec(`UPDATE `+recordType.Table+` SET `+strings.Join(assignments, ", ")+` WHERE `+idColumn+` = ?`, arguments...)
-	if err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed") {
+	if err != nil && isUniqueViolation(err) {
 		return fmt.Errorf("%w: %v", ErrConflict, err)
 	}
 	return err
@@ -167,7 +167,7 @@ func (s *Store) CreatePossession(ctx context.Context, fields map[string]json.Raw
 	return s.GetPossession(id, false)
 }
 
-func (s *Store) createPossessionInTransaction(ctx context.Context, transaction *sql.Tx, fields map[string]json.RawMessage, actor string) (string, error) {
+func (s *Store) createPossessionInTransaction(ctx context.Context, transaction *databaseTransaction, fields map[string]json.RawMessage, actor string) (string, error) {
 	own, kind, kindFields, photos, err := splitPossessionFields(fields)
 	if err != nil {
 		return "", err
@@ -230,7 +230,7 @@ func checkPrice(values map[string]decodedValue, existing map[string]any) error {
 	return nil
 }
 
-func (s *Store) insertKind(ctx context.Context, transaction *sql.Tx, kind RecordType, possessionID string, kindFields map[string]json.RawMessage) error {
+func (s *Store) insertKind(ctx context.Context, transaction *databaseTransaction, kind RecordType, possessionID string, kindFields map[string]json.RawMessage) error {
 	values, err := kind.decodeFields(kindFields, true)
 	if err != nil {
 		return err
@@ -245,7 +245,7 @@ func (s *Store) insertKind(ctx context.Context, transaction *sql.Tx, kind Record
 	return insertRecord(transaction, kind, kindID, sequence, map[string]any{"possession_id": possessionID}, values)
 }
 
-func (s *Store) linkPhotoInTransaction(ctx context.Context, transaction *sql.Tx, possessionID string, link PhotoLink, now int64) error {
+func (s *Store) linkPhotoInTransaction(ctx context.Context, transaction *databaseTransaction, possessionID string, link PhotoLink, now int64) error {
 	if err := link.validate(); err != nil {
 		return err
 	}
@@ -270,7 +270,7 @@ func (s *Store) linkPhotoInTransaction(ctx context.Context, transaction *sql.Tx,
 	_, err := transaction.Exec(`INSERT INTO possession_photos (possession_id, photo_id, box_left, box_top, box_right, box_bottom, is_cover, sighting_id, linked_by, linked_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (possession_id, photo_id) DO UPDATE SET box_left = excluded.box_left, box_top = excluded.box_top, box_right = excluded.box_right,
-			box_bottom = excluded.box_bottom, is_cover = excluded.is_cover, sighting_id = COALESCE(excluded.sighting_id, sighting_id), linked_by = excluded.linked_by, linked_at = excluded.linked_at`,
+			box_bottom = excluded.box_bottom, is_cover = excluded.is_cover, sighting_id = COALESCE(excluded.sighting_id, possession_photos.sighting_id), linked_by = excluded.linked_by, linked_at = excluded.linked_at`,
 		possessionID, link.PhotoID, link.BoxLeft, link.BoxTop, link.BoxRight, link.BoxBottom, boolToInteger(isCover), link.SightingID, link.LinkedBy, now)
 	return err
 }
@@ -320,8 +320,8 @@ func (s *Store) UnlinkPhoto(ctx context.Context, possessionID, photoID string) (
 	if removed, _ := result.RowsAffected(); removed == 0 {
 		return nil, fmt.Errorf("%w: %s has no photo %s", ErrNotFound, possessionID, photoID)
 	}
-	if _, err := transaction.Exec(`UPDATE possession_photos SET is_cover = 1 WHERE possession_id = ?1 AND NOT EXISTS (SELECT 1 FROM possession_photos WHERE possession_id = ?1 AND is_cover = 1)
-		AND photo_id = (SELECT photo_id FROM possession_photos WHERE possession_id = ?1 ORDER BY linked_at, photo_id LIMIT 1)`, possessionID); err != nil {
+	if _, err := transaction.Exec(`UPDATE possession_photos SET is_cover = 1 WHERE possession_id = $1 AND NOT EXISTS (SELECT 1 FROM possession_photos WHERE possession_id = $1 AND is_cover = 1)
+		AND photo_id = (SELECT photo_id FROM possession_photos WHERE possession_id = $1 ORDER BY linked_at, photo_id LIMIT 1)`, possessionID); err != nil {
 		return nil, err
 	}
 	if err := transaction.Commit(); err != nil {
@@ -583,7 +583,7 @@ func (s *Store) PatchPossession(ctx context.Context, id string, fields map[strin
 
 // patchPossessionInTransaction changes a possession's own fields and its
 // kind's fields, saving a revision of each row it changes.
-func (s *Store) patchPossessionInTransaction(ctx context.Context, transaction *sql.Tx, id string, own map[string]json.RawMessage, kind *RecordType, kindFields map[string]json.RawMessage, actor string) error {
+func (s *Store) patchPossessionInTransaction(ctx context.Context, transaction *databaseTransaction, id string, own map[string]json.RawMessage, kind *RecordType, kindFields map[string]json.RawMessage, actor string) error {
 	existing, err := possessionView(transaction, id, false)
 	if err != nil {
 		return err
@@ -735,7 +735,7 @@ func (s *Store) AddOdometerReading(vehicleID string, reading OdometerReading) er
 		return err
 	}
 	_, err := s.db.Exec(`INSERT INTO vehicle_odometer_readings (vehicle_id, read_at, miles, source) VALUES (?, ?, ?, ?)`, vehicleID, reading.ReadAt, reading.Miles, reading.Source)
-	if err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed") {
+	if err != nil && isUniqueViolation(err) {
 		return fmt.Errorf("%w: %s already has a reading at %d", ErrConflict, vehicleID, reading.ReadAt)
 	}
 	return err

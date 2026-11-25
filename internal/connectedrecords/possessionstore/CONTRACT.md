@@ -1,40 +1,56 @@
 # possession-store — API contract
 
-`127.0.0.1:8341`, loopback only, no auth: dash is the front door. An inventory
-of the things a person owns. SQLite at `<data dir>/possession-store.db`
-(default `~/.config/possession-store`, directory 0700, file 0600); the
-originals `possession-add-photos` brings in sit in `<data dir>/originals/`,
-named by their sha256. Timestamps are epoch seconds. Money is integer cents
-with an ISO 4217 code.
+An inventory of the things a person owns, served by llm-bridge-server at
+`/possession-store/` with these paths behind the prefix. Timestamps are epoch
+seconds. Money is integer cents with an ISO 4217 code.
+
+The records live in Postgres, in the module `possessions` (role
+`possessions_module`). The originals `possession-add-photos` brings in are
+files in file-store, named in table `originals` by the sha256 of their bytes.
+
+## Owners
+
+Every record has an owner, `owner_principal_id`, principal-store's id of the
+person who keeps it; a possession and an outfit answer it. A request reaches
+the records of one scope, from the caller the server verified:
+
+- A `GET` reaches the caller's own records; an administrator's, or this
+  server's own service's, reaches every owner's, or one owner's named in
+  `?owner_principal_id=`.
+- Anything else acts for one owner: the caller, or the owner an
+  administrator names in `?owner_principal_id=`. The service token naming no
+  one is **403** there. A record of another owner answers **404**, as a
+  missing one does, and every store asked on the way (photo-store,
+  location-store, mailstack) is asked as that owner.
+
+Postgres holds the scope too: each connection names its owner, and
+row-level security shows and writes no other owner's rows. Ids are numbered
+across owners, so `possession_000002` may be another owner's.
 
 ## Settings
 
-`GET /settings` lists them. The service reads:
+The store reads llm-bridge-server's settings (`GET /settings` there):
 
-| Variable | Default | What it is |
+| Setting | Default | What it is |
 |---|---|---|
-| `POSSESSION_STORE_ADDR` | `127.0.0.1:8341` | listen address |
-| `POSSESSION_STORE_DATA_DIR` | `~/.config/possession-store` | database and originals |
-| `PHOTO_STORE_URL` | `http://127.0.0.1:8329` | photos are checked and read there |
-| `LOCATION_STORE_URL` | `http://127.0.0.1:8333` | a `place_id` is checked there |
-| `POSSESSION_STORE_HARNESS_STORE_DATABASE` | `~/.config/harness-store/harness.db` | read-only: a computer's `harness_machine_id` is checked in its `machines` |
-| `LLMBRIDGE_URL` | `http://localhost:8160` | the readers are asked through `POST /oneshot` |
-| `LLMBRIDGE_SERVICE_TOKEN` | (secret) | required while the review worker is on; a host-local drop-in |
-| `MODEL_STORE_URL` | `http://localhost:8155` | list prices for a reading's cost |
-| `ARTICLE_STORE_URL` | `http://127.0.0.1:8318` | a product's listing page is saved and read there; a product's `article_id` is checked there |
-| `BUDGET_STORE_URL` | `http://127.0.0.1:8340` | the eBay import records orders there; a `budget_transaction_id` is checked there; an order line is linked to its possession there |
-| `MAILSTACK_URL` | `http://localhost:8195` | the eBay import reads order confirmations there, read-only |
-| `MAILSTACK_TOKEN` | (secret) | mailstack's bearer; a host-local drop-in. Without it the import answers an error |
-| `POSSESSION_STORE_FIRST_READER_ROLE` | `possession-photo-reader` | model-store role of the first reader; it also reads answers given in words |
-| `POSSESSION_STORE_SECOND_READER_ROLE` | `possession-photo-second-reader` | model-store role of the second reader |
-| `POSSESSION_STORE_REVIEW_WORKER_ENABLED` | `true` | off, queued photos wait |
-| `POSSESSION_STORE_OWNER_TIME_ZONE` | `UTC` | the owner's IANA zone: an outfit read from a photo was worn on the photo's day there; set it in a host-local drop-in |
-| `POSSESSION_STORE_REVIEW_IMAGE_LONGEST_SIDE` | `2048` | size of the original the readers see; without an original they see photo-store's 1024-pixel thumbnail |
+| `possession_store.review_worker.enabled` | `false` | review queued photos, and read covers' wearer boxes in the background; off, queued photos wait |
+| `possession_store.review_worker.owner_principal_ids` | empty | the owners whose photos the worker reviews, each as that owner |
+| `possession_store.first_reader_role` | `possession-photo-reader` | model-store role of the first reader; it also reads answers given in words |
+| `possession_store.second_reader_role` | `possession-photo-second-reader` | model-store role of the second reader |
+| `possession_store.owner_time_zone` | `UTC` | an outfit read from a photo was worn on the photo's day in this zone |
+| `possession_store.review_image_longest_side` | `2048` | size of the original the readers see; without one they see photo-store's 1024-pixel thumbnail |
+| `possession_store.cover_cache_directory` | under the server's folder | outfit covers already cut; any file may be deleted |
+| `possession_store.article_store_url` | empty | article-store, outside the server: product listings are saved and read there |
+| `possession_store.budget_store_url` | empty | budget-store: eBay orders, `budget_transaction_id` checks, order-line links |
+
+Model calls go through the server's one-shot router, in process, priced at
+model-store's list price. photo-store, location-store, harness-store and
+mailstack are called in process.
 
 ## Records and ids
 
-Every id is `<prefix>_000001`. kanban-store's registry claims each prefix, so
-a chat draws an id as a chip.
+Every id is `<prefix>_000001`. reference-store's type list claims each prefix,
+so a chat draws an id as a chip.
 
 | Record | Id | Route |
 |---|---|---|
@@ -111,7 +127,8 @@ computer also carries `installed_part_ids`; a vehicle `odometer_readings`.
 | Method | Path | |
 |---|---|---|
 | `GET` | `/health` | `{status, counts:{possessions, outfits, purchases, photo_reviews_queued, photo_reviews_failed, open_decision_questions, open_detail_questions}}` |
-| `GET` | `/vocabulary`, `/kinds`, `/settings` | |
+| `GET` | `/vocabulary`, `/kinds` | |
+| `PUT` | `/originals/{sha256}?extension=.jpg&added_by=…` | the body is an original's bytes, whose sha256 must be the path's; kept in file-store for the owner the request acts for. **201**, or **200** with `created:false` when that owner keeps it already. Answers `{original, created, source_machine, source_path}`: what photo-store should record for the photo |
 | `GET` | `/possessions` | newest first: `?q=` (every word in name, brand, model, description, spot, tags), `?status=`, `?kind=` (a kind, or `none`), `?place_id=`, `?include_deleted=true`, `?limit=` (default 100, max 1000), `?offset=` |
 | `POST` | `/possessions` | `{"actor":…, <possession fields>, "<kind>":{<kind fields>}, "photos":[{photo_id, box_left…, is_cover}]}`. `name` is required; `status` defaults to `owned`; at most one kind. An unknown field, a word outside a vocabulary, a missing required kind field, an id the owning store does not have, or a price with no currency is a **400**. **201** |
 | `GET` | `/possessions/{id}` | `?include_deleted=true` |
@@ -137,7 +154,7 @@ computer also carries `installed_part_ids`; a vehicle `odometer_readings`.
 | `GET` / `PATCH` | `/outfits/{id}` | an outfit answers `possession_ids`, `favorite`, `tags`, `worn_on` (its days), `photo_ids` (the photo-store photos outfit readings found it in) and its cover: `cover_photo_id`, `cover_box`, `cover_aspect` and `cover_reason` (below); a patch changes what it gives; `possession_ids` and `tags` each replace the list. `favorite` is the owner's mark; `tags` are the owner's words, each trimmed, its spaces made one, lower case and kept once, in the order given; an empty tag or one over 40 characters is a **400** |
 | `PUT` | `/outfits/{id}/cover` | `{photo_id, actor}`: the owner's pick of the cover, one of the outfit's `photo_ids` (another is a **400**); `""` takes the pick away so the rule chooses again. The new cover photo's wearer box is read at once when it has none; when that read fails the pick stays and the answer is the error. Answers the outfit |
 | `POST` | `/outfit-covers/read-wearer-boxes` | `{actor}`: reads the wearer box of every live outfit's cover photo that has none, four at a time. Answers `{cover_photos, already_read, read, failed:[{photo_id, why}], cost_usd}` |
-| `GET` | `/outfits/{id}/image` | JPEG: the cover photo cut to `cover_box` (`cover_aspect` wide over tall), at most 900 pixels tall, from the original when `originals/` holds it, else the thumbnail. **404** with no photo |
+| `GET` | `/outfits/{id}/image` | JPEG: the cover photo cut to `cover_box` (`cover_aspect` wide over tall), at most 900 pixels tall, from the original when its owner keeps one, else the thumbnail. **404** with no photo |
 | `DELETE` | `/outfits/{id}?actor=` | soft, **204** |
 | `POST` | `/outfits/{id}/wearings` | `{worn_on:"YYYY-MM-DD"}` in the owner's time zone |
 | `POST` | `/outfits/{id}/combine` | `{into, actor, reason}`: folds this outfit into `into`: the kept one takes the union of pieces, every wearing, every outfit reading, the tags it lacked, and favorite when this one was; this one is deleted with `merged_into_id` set. Answers the `outfit_merge` |
@@ -255,10 +272,12 @@ or the pick has no photo to ask on: the line stays `unreviewed`. Counts:
 ## Photo review
 
 `possession-add-photos -queued-by principal_… [-folder possessions]
-[-time-zone America/Los_Angeles] photo.jpg…` copies each original into
-`originals/`, adds it to photo-store (upright, with its EXIF date and GPS;
-`source_machine` is harness-store's one local machine), and queues it. It
-prints `path, photo id, review id` per photo.
+[-time-zone America/Los_Angeles] photo.jpg…` keeps each original through
+`PUT /possession-store/originals/{sha256}`, adds the photo to photo-store
+(upright, with its EXIF date and GPS, at the `source_machine` and
+`source_path` that answer names), and queues it, all through the bridge at
+`LLM_BRIDGE_GATEWAY_URL` with `LLM_BRIDGE_PRINCIPAL_TOKEN`, so everything is
+that principal's. It prints `path, photo id, review id` per photo.
 
 The worker takes one queued photo at a time:
 
@@ -476,15 +495,15 @@ already stored, with no model call:
 piece boxes span. `ignored_owner_photo_id` names a pick no longer among the
 outfit's photos. `wearer_face_found` says whether the frame holds a face.
 An outfit with no photo answers all four null. Cutting a full-size original
-takes about a second, so cuts are kept in `<data dir>/outfit-covers/` by
+takes about a second, so cuts are kept in `possession_store.cover_cache_directory` by
 photo and frame (any file there may be deleted), `GET /outfits` starts
 cutting the listed covers not cut yet in the background, and at most two
 are cut at once.
 
 ## Full-size pictures
 
-Every box is read on photo-store's thumbnail. Where `originals/` holds a
-photo (named by photo-store's sha256), the readers and every crop use the
+Every box is read on photo-store's thumbnail. Where the photo's owner keeps
+its original (found by photo-store's sha256), the readers and every crop use the
 original instead, turned to stand as the thumbnail stands: by its EXIF
 orientation, checked against the thumbnail itself on a 24×24 gray grid in
 every orientation, and refused when no orientation matches. On 2026-11-07

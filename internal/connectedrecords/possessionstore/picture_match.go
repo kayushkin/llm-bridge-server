@@ -2,7 +2,6 @@ package possessionstore
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -408,7 +407,7 @@ func (reviewer *Reviewer) matchPieces(ctx context.Context, reviewID string, phot
 // readers' match says: what both agree on, or a decision question. The
 // reader's doubt, if any, follows a recorded piece as a detail question. It
 // says whether it asked a decision question.
-func (s *Store) recordMatchedPiece(ctx context.Context, transaction *sql.Tx, sightingID, reviewID, label string, version Proposal, doubt string, match pieceMatch, now int64) (bool, error) {
+func (s *Store) recordMatchedPiece(ctx context.Context, transaction *databaseTransaction, sightingID, reviewID, label string, version Proposal, doubt string, match pieceMatch, now int64) (bool, error) {
 	summary := version.summary()
 	if resolution, agreed := match.agreedResolution(version); agreed {
 		if err := s.applyResolution(ctx, transaction, sightingID, resolution, "agreement", reviewID, now); err != nil {
@@ -449,10 +448,10 @@ func (reviewer *Reviewer) RematchOutfitPieces(ctx context.Context, actor string)
 	if actor == "" {
 		return run, fmt.Errorf("%w: actor is required", ErrInvalid)
 	}
-	sightingIDs, err := stringColumn(store.db, `SELECT DISTINCT sightings.id FROM sightings JOIN photo_reviews ON photo_reviews.id = sightings.photo_review_id
+	sightingIDs, err := stringColumn(store.db, `SELECT sightings.id FROM sightings JOIN photo_reviews ON photo_reviews.id = sightings.photo_review_id
 		JOIN owner_questions ON owner_questions.sighting_id = sightings.id
 		WHERE photo_reviews.reading = 'outfit' AND sightings.status = 'proposed' AND owner_questions.answered_at = 0 AND owner_questions.purpose = 'decision'
-		ORDER BY sightings.seq`)
+		GROUP BY sightings.id, sightings.seq ORDER BY sightings.seq`)
 	if err != nil {
 		return run, err
 	}
@@ -544,8 +543,8 @@ func (reviewer *Reviewer) RematchOutfitPieces(ctx context.Context, actor string)
 // unlinkedPossessions answers the possessions a sighting was unlinked from:
 // the link check found it is not them.
 func unlinkedPossessions(q querier, sightingID string) ([]string, error) {
-	return stringColumn(q, `SELECT DISTINCT json_extract(record, '$.possession_id') FROM revisions
-		WHERE record_id = ? AND json_extract(record, '$.table') = 'sightings' AND json_extract(record, '$.possession_id') IS NOT NULL`, sightingID)
+	return stringColumn(q, `SELECT DISTINCT record::jsonb ->> 'possession_id' FROM revisions
+		WHERE record_id = ? AND record::jsonb ->> 'table' = 'sightings' AND record::jsonb ->> 'possession_id' IS NOT NULL`, sightingID)
 }
 
 // settleByPictureMatch settles a sighting as both readers agreed and
@@ -683,7 +682,7 @@ func (reviewer *Reviewer) settleUnconfirmedMembers(ctx context.Context, cache *p
 // questionAboutMergingAway answers a question, open or answered, that
 // offered to merge this possession into a closed group's member.
 func questionAboutMergingAway(q querier, possessionID string) (string, error) {
-	ids, err := stringColumn(q, `SELECT id FROM owner_questions WHERE asked_by = 'closed_group' AND instr(choices, ?) > 0 ORDER BY seq LIMIT 1`, jsonField("possession_id", possessionID))
+	ids, err := stringColumn(q, `SELECT id FROM owner_questions WHERE asked_by = 'closed_group' AND strpos(choices, ?) > 0 ORDER BY seq LIMIT 1`, jsonField("possession_id", possessionID))
 	if err != nil || len(ids) == 0 {
 		return "", err
 	}

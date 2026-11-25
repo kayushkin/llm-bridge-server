@@ -2,7 +2,6 @@ package possessionstore
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -391,7 +390,7 @@ func (s *Store) LinkOrderLine(ctx context.Context, possessionID, lineID, transac
 	return transaction.Commit()
 }
 
-func (s *Store) linkOrderLineInTransaction(ctx context.Context, transaction *sql.Tx, possessionID, lineID, transactionID, actor, note string) error {
+func (s *Store) linkOrderLineInTransaction(ctx context.Context, transaction *databaseTransaction, possessionID, lineID, transactionID, actor, note string) error {
 	if s.budget == nil {
 		return fmt.Errorf("budget-store is not wired, so an order line cannot be linked")
 	}
