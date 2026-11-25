@@ -10,31 +10,13 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-
-	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
-func TestTheRegistryReadsDefaultsAndRefusesAnUndeclaredVariable(t *testing.T) {
-	registry, err := NewSettingsRegistry(servicesettings.MapEnvironment(nil))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := registry.String(SettingListenAddress); got != "127.0.0.1:8337" {
-		t.Errorf("listen address = %q, want loopback 127.0.0.1:8337", got)
-	}
-	if got := registry.String(SettingDataDirectory); got != DefaultDataDir() {
-		t.Errorf("data directory = %q, want %q", got, DefaultDataDir())
-	}
-	_, err = NewSettingsRegistry(servicesettings.MapEnvironment(map[string]string{"MESSAGE_STORE_ADDRESS": ":1"}))
-	if err == nil || !strings.Contains(err.Error(), "MESSAGE_STORE_ADDRESS") {
-		t.Fatalf("an undeclared LOCATION_STORE_ variable = %v, want a refusal naming it", err)
-	}
-}
-
-// Every environment variable the service's own code reads by name is declared.
+// Every environment variable the package and its importer commands read by
+// name is declared.
 func TestEveryEnvironmentVariableTheServiceReadsIsDeclared(t *testing.T) {
 	declared := map[string]bool{}
-	for _, definition := range append(SettingDefinitions(), ImporterSettingDefinitions()...) {
+	for _, definition := range ImporterSettingDefinitions() {
 		declared[definition.EnvironmentVariable] = true
 	}
 	filesRead := 0
@@ -75,7 +57,7 @@ func TestEveryEnvironmentVariableTheServiceReadsIsDeclared(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join("cmd", "message-store", "main.go")); err != nil {
+	if _, err := os.Stat(filepath.Join("cmd", "message-import-multichat", "main.go")); err != nil {
 		t.Fatalf("the scan starts somewhere that is not the repository root: %v", err)
 	}
 	if filesRead < 5 {

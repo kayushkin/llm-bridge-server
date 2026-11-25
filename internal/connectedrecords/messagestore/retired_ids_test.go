@@ -2,7 +2,6 @@ package messagestore
 
 import (
 	"net/http"
-	"net/http/httptest"
 	"testing"
 )
 
@@ -92,80 +91,4 @@ func TestAMessageFiledAfterTheNewestWasSupersededGetsAFreshID(t *testing.T) {
 	if len(page.Messages) != 1 || page.Messages[0].ID == retiredID {
 		t.Fatalf("the later message got id %+v; the superseded message's retired id is %q", page.Messages, retiredID)
 	}
-}
-
-// A database the old minting left with a live conversation under a merged
-// id: opening it gives that conversation a fresh id with its messages and
-// participants, and the merged id still redirects where it did.
-func TestOpeningRepairsAConversationThatReusedAMergedID(t *testing.T) {
-	dataDir := t.TempDir()
-	store, err := Open(dataDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mux := http.NewServeMux()
-	RegisterHandlers(mux, store)
-	server := httptest.NewServer(mux)
-	ts := &testServer{t: t, server: server}
-	var run Import
-	ts.call("POST", "/imports", ImportStart{Importer: "test"}, http.StatusCreated, &run)
-	survivor := ConversationKey{Source: "matrix", SourceRef: "!survivor:example.org"}
-	newest := ConversationKey{Source: "matrix", SourceRef: "!newest:example.org"}
-	ts.call("POST", "/imports/"+run.ID+"/batches", ImportBatch{Conversations: []ImportConversation{
-		{Platform: "sms", Source: survivor.Source, SourceRef: survivor.SourceRef, Participants: []Participant{{Handle: "@gm_1:example.org"}}},
-		{Platform: "sms", Source: newest.Source, SourceRef: newest.SourceRef, Participants: []Participant{{Handle: "@gmweb_1:example.org"}}},
-	}}, http.StatusOK, nil)
-	ts.call("POST", "/imports/"+run.ID+"/batches", ImportBatch{ConversationMerges: []ImportConversationMerge{
-		{Merged: newest, Into: survivor, Rule: "google_conversation_id"}}}, http.StatusOK, nil)
-	ts.call("POST", "/imports/"+run.ID+"/batches", ImportBatch{
-		Conversations: []ImportConversation{{Platform: "discord", Source: "discord", SourceRef: "5000", Participants: []Participant{{Handle: "7"}, {Handle: "8"}}}},
-		Messages: []ImportMessage{{BodySource: "platform", ConversationSource: "discord", ConversationSourceRef: "5000", SentAt: at("2026-11-11T21:18:14Z"),
-			SenderHandle: "7", Kind: "text", Body: "you have admin now", Source: "discord", SourceRef: "6000"}},
-	}, http.StatusOK, nil)
-	// Put the database in the state the old minting left: the new
-	// conversation under the merged conversation's id.
-	tx, err := store.db.Begin()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, statement := range []string{
-		`PRAGMA defer_foreign_keys = ON`,
-		`UPDATE conversations SET seq = 2, id = 'conversation_000002' WHERE id = 'conversation_000003'`,
-		`UPDATE participants SET conversation_id = 'conversation_000002' WHERE conversation_id = 'conversation_000003'`,
-		`UPDATE messages SET conversation_id = 'conversation_000002' WHERE conversation_id = 'conversation_000003'`,
-	} {
-		if _, err := tx.Exec(statement); err != nil {
-			t.Fatalf("%s: %v", statement, err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
-	}
-	server.Close()
-	store.Close()
-
-	reopened := newTestServerAt(t, dataDir)
-	var conversation Conversation
-	reopened.call("GET", "/conversations/conversation_000003", nil, http.StatusOK, &conversation)
-	if conversation.SourceRef != "5000" || conversation.MessageCount != 1 || len(conversation.Participants) != 2 {
-		t.Fatalf("repaired conversation: %+v", conversation)
-	}
-	reopened.call("GET", "/conversations/conversation_000002", nil, http.StatusOK, &conversation)
-	if conversation.ID != "conversation_000001" {
-		t.Fatalf("the merged id now reads %s, want the survivor conversation_000001", conversation.ID)
-	}
-}
-
-func newTestServerAt(t *testing.T, dataDir string) *testServer {
-	t.Helper()
-	store, err := Open(dataDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { store.Close() })
-	mux := http.NewServeMux()
-	RegisterHandlers(mux, store)
-	server := httptest.NewServer(mux)
-	t.Cleanup(server.Close)
-	return &testServer{t: t, server: server}
 }

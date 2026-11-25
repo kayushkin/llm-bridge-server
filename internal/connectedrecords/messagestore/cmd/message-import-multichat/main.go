@@ -44,10 +44,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kayushkin/llm-bridge/servicesettings"
 	messagestore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messagestore"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messagestore/internal/importclient"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messagestore/internal/photolookup"
+	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
 const importerName = "message-import-multichat"

@@ -7,12 +7,14 @@ import "encoding/json"
 
 // Conversation is one chat on one platform.
 type Conversation struct {
-	ID        string `json:"id"`
-	Platform  string `json:"platform"`
-	Source    string `json:"source"`
-	SourceRef string `json:"source_ref"`
-	Title     string `json:"title"`
-	IsGroup   bool   `json:"is_group"`
+	ID string `json:"id"`
+	// OwnerPrincipalID is principal-store's id of the person whose record this is.
+	OwnerPrincipalID string `json:"owner_principal_id"`
+	Platform         string `json:"platform"`
+	Source           string `json:"source"`
+	SourceRef        string `json:"source_ref"`
+	Title            string `json:"title"`
+	IsGroup          bool   `json:"is_group"`
 	// ParentSourceRef is, for a thread, the id of the channel it hangs off,
 	// in the same source; empty for anything else.
 	ParentSourceRef string `json:"parent_source_ref"`
@@ -76,10 +78,12 @@ type Button struct {
 // user runs. Its conversations are those with a participant of its handle on
 // its platform.
 type Account struct {
-	ID          string `json:"id"`
-	Platform    string `json:"platform"`
-	Handle      string `json:"handle"`
-	DisplayName string `json:"display_name"`
+	ID string `json:"id"`
+	// OwnerPrincipalID is principal-store's id of the person whose record this is.
+	OwnerPrincipalID string `json:"owner_principal_id"`
+	Platform         string `json:"platform"`
+	Handle           string `json:"handle"`
+	DisplayName      string `json:"display_name"`
 	// Kind is one of AccountKinds.
 	Kind string `json:"kind"`
 	// CredentialID is auth-store's id of the credential that signs in as
@@ -102,8 +106,10 @@ type AccountPut struct {
 
 // Message is one message, as the store answers it.
 type Message struct {
-	ID             string `json:"id"`
-	ConversationID string `json:"conversation_id"`
+	ID string `json:"id"`
+	// OwnerPrincipalID is principal-store's id of the person whose record this is.
+	OwnerPrincipalID string `json:"owner_principal_id"`
+	ConversationID   string `json:"conversation_id"`
 	// SentAt is unix milliseconds, UTC.
 	SentAt       int64  `json:"sent_at"`
 	SenderHandle string `json:"sender_handle"`
@@ -130,7 +136,9 @@ type Message struct {
 
 // ConversationDay is one conversation on one local day.
 type ConversationDay struct {
-	ID               string `json:"id"`
+	ID string `json:"id"`
+	// OwnerPrincipalID is principal-store's id of the person whose record this is.
+	OwnerPrincipalID string `json:"owner_principal_id"`
 	ConversationID   string `json:"conversation_id"`
 	Day              string `json:"day"`
 	TimeZone         string `json:"time_zone"`
@@ -179,12 +187,14 @@ type ImportStart struct {
 
 // Import is one run of an importer.
 type Import struct {
-	ID          string       `json:"id"`
-	Importer    string       `json:"importer"`
-	Description string       `json:"description"`
-	StartedAt   int64        `json:"started_at"`
-	FinishedAt  int64        `json:"finished_at"`
-	Counts      ImportCounts `json:"counts"`
+	ID string `json:"id"`
+	// OwnerPrincipalID is principal-store's id of the person whose record this is.
+	OwnerPrincipalID string       `json:"owner_principal_id"`
+	Importer         string       `json:"importer"`
+	Description      string       `json:"description"`
+	StartedAt        int64        `json:"started_at"`
+	FinishedAt       int64        `json:"finished_at"`
+	Counts           ImportCounts `json:"counts"`
 }
 
 // ImportBatch is POST /imports/{id}/batches. Conversations come before the
@@ -222,15 +232,17 @@ type ImportConversationMerge struct {
 // ConversationMerge is a conversation merged into another. Row is its row as
 // it was, with its participants.
 type ConversationMerge struct {
-	ConversationID string          `json:"conversation_id"`
-	Source         string          `json:"source"`
-	SourceRef      string          `json:"source_ref"`
-	MergedInto     string          `json:"merged_into"`
-	Rule           string          `json:"rule"`
-	ImportID       string          `json:"import_id"`
-	MergedAt       int64           `json:"merged_at"`
-	MessagesMoved  int             `json:"messages_moved"`
-	Row            json.RawMessage `json:"row" tstype:"{ [column: string]: unknown }"`
+	ConversationID string `json:"conversation_id"`
+	// OwnerPrincipalID is principal-store's id of the person whose record this is.
+	OwnerPrincipalID string          `json:"owner_principal_id"`
+	Source           string          `json:"source"`
+	SourceRef        string          `json:"source_ref"`
+	MergedInto       string          `json:"merged_into"`
+	Rule             string          `json:"rule"`
+	ImportID         string          `json:"import_id"`
+	MergedAt         int64           `json:"merged_at"`
+	MessagesMoved    int             `json:"messages_moved"`
+	Row              json.RawMessage `json:"row" tstype:"{ [column: string]: unknown }"`
 }
 
 // ImportSupersession retires the row filed under Superseded in favor of the
@@ -300,13 +312,15 @@ type MessageKey struct {
 // SupersededMessage is a message row retired because another row holds the
 // same message. Row is every column of the retired row, as it was.
 type SupersededMessage struct {
-	ID           string          `json:"id"`
-	Source       string          `json:"source"`
-	SourceRef    string          `json:"source_ref"`
-	SupersededBy string          `json:"superseded_by"`
-	ImportID     string          `json:"import_id"`
-	SupersededAt int64           `json:"superseded_at"`
-	Row          json.RawMessage `json:"row" tstype:"{ [column: string]: unknown }"`
+	ID string `json:"id"`
+	// OwnerPrincipalID is principal-store's id of the person whose record this is.
+	OwnerPrincipalID string          `json:"owner_principal_id"`
+	Source           string          `json:"source"`
+	SourceRef        string          `json:"source_ref"`
+	SupersededBy     string          `json:"superseded_by"`
+	ImportID         string          `json:"import_id"`
+	SupersededAt     int64           `json:"superseded_at"`
+	Row              json.RawMessage `json:"row" tstype:"{ [column: string]: unknown }"`
 }
 
 // ImportConversationDay names one local day of a conversation, and the

@@ -1,6 +1,7 @@
 package messagestore
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
+	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 )
 
 // MessageFilter narrows GET /messages. Zero values filter nothing.
@@ -29,22 +33,24 @@ type MessageFilter struct {
 	Cursor string
 }
 
-const messageColumns = `m.id, m.conversation_id, m.sent_at, m.sender_handle, COALESCE(p.display_name, ''), COALESCE(p.person_id, ''), COALESCE(p.is_self, 0),
-	m.kind, m.body, m.body_source, m.attachments, m.embeds, m.buttons, m.reply_to_source_ref, m.call_seconds, m.edited, m.deleted_on_platform, m.source, m.source_ref, m.imported_by, m.seq`
+const messageColumns = `m.seq, m.owner_principal_id, m.conversation_seq, m.sent_at, m.sender_handle, COALESCE(p.display_name, ''), COALESCE(p.person_id, ''), COALESCE(p.is_self, false),
+	m.kind, m.body, m.body_source, m.attachments, m.embeds, m.buttons, m.reply_to_source_ref, m.call_seconds, m.edited, m.deleted_on_platform, m.source, m.source_ref, m.import_seq`
 
-const messageJoin = `FROM messages m LEFT JOIN participants p ON p.conversation_id = m.conversation_id AND p.handle = m.sender_handle`
+const messageJoin = `FROM messages m LEFT JOIN participants p ON p.conversation_seq = m.conversation_seq AND p.handle = m.sender_handle`
 
 func scanMessage(rows interface{ Scan(...any) error }) (Message, int64, error) {
 	var message Message
-	var isSelf, edited, deleted int
+	var seq, conversationSeq int64
+	var importSeq sql.NullInt64
 	var attachments, embeds, buttons string
-	var seq int64
-	if err := rows.Scan(&message.ID, &message.ConversationID, &message.SentAt, &message.SenderHandle, &message.SenderName, &message.SenderPersonID, &isSelf,
-		&message.Kind, &message.Body, &message.BodySource, &attachments, &embeds, &buttons, &message.ReplyToSourceRef, &message.CallSeconds, &edited, &deleted,
-		&message.Source, &message.SourceRef, &message.ImportedBy, &seq); err != nil {
+	if err := rows.Scan(&seq, &message.OwnerPrincipalID, &conversationSeq, &message.SentAt, &message.SenderHandle, &message.SenderName, &message.SenderPersonID, &message.FromSelf,
+		&message.Kind, &message.Body, &message.BodySource, &attachments, &embeds, &buttons, &message.ReplyToSourceRef, &message.CallSeconds, &message.Edited, &message.DeletedOnPlatform,
+		&message.Source, &message.SourceRef, &importSeq); err != nil {
 		return Message{}, 0, err
 	}
-	message.FromSelf, message.Edited, message.DeletedOnPlatform = isSelf == 1, edited == 1, deleted == 1
+	message.ID = postgresstorage.FormatRecordID(MessageIDPrefix, seq)
+	message.ConversationID = postgresstorage.FormatRecordID(ConversationIDPrefix, conversationSeq)
+	message.ImportedBy = formatOptionalImport(importSeq)
 	if err := json.Unmarshal([]byte(attachments), &message.Attachments); err != nil {
 		return Message{}, 0, fmt.Errorf("message %s attachments: %w", message.ID, err)
 	}
@@ -57,84 +63,83 @@ func scanMessage(rows interface{ Scan(...any) error }) (Message, int64, error) {
 	return message, seq, nil
 }
 
-// ListMessages answers GET /messages: messages in time order, paged by a
-// cursor of the last row's time and seq.
-func (s *Store) ListMessages(filter MessageFilter) (MessagePage, error) {
+// ListMessages answers GET /messages in scope: messages in time order, paged
+// by a cursor of the last row's time and number.
+func (s *Store) ListMessages(ctx context.Context, scope ownership.Scope, filter MessageFilter) (MessagePage, error) {
 	if filter.Limit <= 0 || filter.Limit > 5000 {
 		filter.Limit = 500
 	}
-	var where []string
-	var args []any
+	empty := MessagePage{Messages: []Message{}}
+	args := &arguments{}
+	condition, err := args.scope(scope, "m.owner_principal_id")
+	if err != nil {
+		return MessagePage{}, err
+	}
+	where := []string{condition}
 	if len(filter.ConversationIDs) > 0 {
-		live, err := s.liveConversationIDs(filter.ConversationIDs)
+		seqs, err := s.liveConversationSeqs(ctx, scope, filter.ConversationIDs)
 		if err != nil {
 			return MessagePage{}, err
 		}
-		filter.ConversationIDs = live
-		where = append(where, "m.conversation_id IN ("+placeholders(len(filter.ConversationIDs))+")")
-		for _, id := range filter.ConversationIDs {
-			args = append(args, id)
+		if len(seqs) == 0 {
+			return empty, nil
 		}
+		where = append(where, "m.conversation_seq = ANY("+args.add(seqs)+"::bigint[])")
 	}
 	if filter.PersonID != "" {
-		where = append(where, "m.conversation_id IN (SELECT conversation_id FROM participants WHERE person_id = ?)")
-		args = append(args, filter.PersonID)
+		where = append(where, "m.conversation_seq IN (SELECT conversation_seq FROM participants WHERE person_id = "+args.add(filter.PersonID)+")")
 	}
 	if filter.Platform != "" {
-		where = append(where, "m.conversation_id IN (SELECT id FROM conversations WHERE platform = ?)")
-		args = append(args, filter.Platform)
+		where = append(where, "m.conversation_seq IN (SELECT seq FROM conversations WHERE platform = "+args.add(filter.Platform)+")")
 	}
 	if filter.SourceRef != "" && filter.Source == "" {
 		return MessagePage{}, fmt.Errorf("%w: source_ref needs source, since refs are only unique within one", ErrInvalid)
 	}
 	if filter.Source != "" {
-		where = append(where, "m.source = ?")
-		args = append(args, filter.Source)
+		where = append(where, "m.source = "+args.add(filter.Source))
 	}
 	if filter.SourceRef != "" {
-		where = append(where, "m.source_ref = ?")
-		args = append(args, filter.SourceRef)
+		where = append(where, "m.source_ref = "+args.add(filter.SourceRef))
 	}
 	if filter.After > 0 {
-		where = append(where, "m.sent_at >= ?")
-		args = append(args, filter.After)
+		where = append(where, "m.sent_at >= "+args.add(filter.After))
 	}
 	if filter.Before > 0 {
-		where = append(where, "m.sent_at < ?")
-		args = append(args, filter.Before)
+		where = append(where, "m.sent_at < "+args.add(filter.Before))
 	}
 	if filter.Query != "" {
-		where = append(where, "m.seq IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?)")
-		args = append(args, ftsQuery(filter.Query))
+		expression, searchable := searchQueryOf(filter.Query)
+		if !searchable {
+			return empty, nil
+		}
+		if expression != "" {
+			where = append(where, "m.search_document @@ to_tsquery('simple', "+args.add(expression)+")")
+		}
 	}
 	if filter.Cursor != "" {
 		sentAt, seq, err := parseCursor(filter.Cursor)
 		if err != nil {
 			return MessagePage{}, err
 		}
+		sentAtPlaceholder, seqPlaceholder := args.add(sentAt), args.add(seq)
 		if filter.Newest {
-			where = append(where, "(m.sent_at < ? OR (m.sent_at = ? AND m.seq < ?))")
+			where = append(where, "(m.sent_at < "+sentAtPlaceholder+" OR (m.sent_at = "+sentAtPlaceholder+" AND m.seq < "+seqPlaceholder+"))")
 		} else {
-			where = append(where, "(m.sent_at > ? OR (m.sent_at = ? AND m.seq > ?))")
+			where = append(where, "(m.sent_at > "+sentAtPlaceholder+" OR (m.sent_at = "+sentAtPlaceholder+" AND m.seq > "+seqPlaceholder+"))")
 		}
-		args = append(args, sentAt, sentAt, seq)
 	}
 	order := "m.sent_at ASC, m.seq ASC"
 	if filter.Newest {
 		order = "m.sent_at DESC, m.seq DESC"
 	}
-	query := "SELECT " + messageColumns + " " + messageJoin
-	if len(where) > 0 {
-		query += " WHERE " + strings.Join(where, " AND ")
-	}
-	query += " ORDER BY " + order + " LIMIT ?"
-	args = append(args, filter.Limit+1)
-	rows, err := s.db.Query(query, args...)
+	query := "SELECT " + messageColumns + " " + messageJoin + " WHERE " + strings.Join(where, " AND ") +
+		" ORDER BY " + order + " LIMIT " + args.add(filter.Limit+1)
+	rows, err := s.db.QueryContext(ctx, query, args.values...)
 	if err != nil {
 		return MessagePage{}, err
 	}
 	defer rows.Close()
-	page := MessagePage{Messages: []Message{}}
+	page := empty
 	var lastSeq int64
 	for rows.Next() {
 		message, seq, err := scanMessage(rows)
@@ -152,16 +157,6 @@ func (s *Store) ListMessages(filter MessageFilter) (MessagePage, error) {
 	return page, rows.Err()
 }
 
-// ftsQuery quotes each word so punctuation in a search never reads as FTS
-// syntax.
-func ftsQuery(query string) string {
-	var terms []string
-	for _, word := range strings.Fields(query) {
-		terms = append(terms, `"`+strings.ReplaceAll(word, `"`, `""`)+`"`)
-	}
-	return strings.Join(terms, " ")
-}
-
 func parseCursor(cursor string) (int64, int64, error) {
 	sentAtText, seqText, found := strings.Cut(cursor, ":")
 	sentAt, err1 := strconv.ParseInt(sentAtText, 10, 64)
@@ -172,11 +167,6 @@ func parseCursor(cursor string) (int64, int64, error) {
 	return sentAt, seq, nil
 }
 
-func placeholders(count int) string {
-	return strings.TrimSuffix(strings.Repeat("?,", count), ",")
-}
-
-// GetMessage reads one message.
 // MessageRevision is a message as it was before an import changed it.
 type MessageRevision struct {
 	ImportID  string          `json:"import_id"`
@@ -184,34 +174,63 @@ type MessageRevision struct {
 	Row       json.RawMessage `json:"row"`
 }
 
-// MessageRevisions returns every earlier version of a message, oldest
-// first; none for a message no import has changed.
-func (s *Store) MessageRevisions(id string) ([]MessageRevision, error) {
-	rows, err := s.db.Query(`SELECT import_id, revised_at, row_json FROM message_revisions WHERE message_id = ? ORDER BY seq`, id)
+// MessageRevisions returns every earlier version of a message in scope,
+// oldest first; none for a message no import has changed, or one the scope
+// does not reach.
+func (s *Store) MessageRevisions(ctx context.Context, scope ownership.Scope, id string) ([]MessageRevision, error) {
+	revisions := []MessageRevision{}
+	seq, err := postgresstorage.ParseRecordID(MessageIDPrefix, id)
+	if err != nil {
+		return revisions, nil
+	}
+	args := &arguments{}
+	condition, err := args.scope(scope, "owner_principal_id")
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT import_seq, revised_at, row_json FROM message_revisions WHERE message_seq = `+args.add(seq)+` AND `+condition+` ORDER BY seq`, args.values...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	revisions := []MessageRevision{}
 	for rows.Next() {
 		var revision MessageRevision
+		var importSeq int64
 		var row string
-		if err := rows.Scan(&revision.ImportID, &revision.RevisedAt, &row); err != nil {
+		if err := rows.Scan(&importSeq, &revision.RevisedAt, &row); err != nil {
 			return nil, err
 		}
+		revision.ImportID = postgresstorage.FormatRecordID(ImportIDPrefix, importSeq)
 		revision.Row = json.RawMessage(row)
 		revisions = append(revisions, revision)
 	}
 	return revisions, rows.Err()
 }
 
-func (s *Store) GetMessage(id string) (Message, error) {
-	message, _, err := scanMessage(s.db.QueryRow("SELECT "+messageColumns+" "+messageJoin+" WHERE m.id = ?", id))
+// GetMessage reads one message in scope. A retired id in scope answers
+// ErrSuperseded naming the message that holds it now.
+func (s *Store) GetMessage(ctx context.Context, scope ownership.Scope, id string) (Message, error) {
+	seq, err := recordNumber(MessageIDPrefix, "message", id)
+	if err != nil {
+		return Message{}, err
+	}
+	args := &arguments{}
+	condition, err := args.scope(scope, "m.owner_principal_id")
+	if err != nil {
+		return Message{}, err
+	}
+	message, _, err := scanMessage(s.db.QueryRowContext(ctx, "SELECT "+messageColumns+" "+messageJoin+" WHERE m.seq = "+args.add(seq)+" AND "+condition, args.values...))
 	if errors.Is(err, sql.ErrNoRows) {
-		var supersededBy string
-		switch lookupErr := s.db.QueryRow(`SELECT superseded_by FROM superseded_messages WHERE id = ?`, id).Scan(&supersededBy); {
+		retiredArgs := &arguments{}
+		retiredCondition, err := retiredArgs.scope(scope, "owner_principal_id")
+		if err != nil {
+			return Message{}, err
+		}
+		var supersededBy int64
+		switch lookupErr := s.db.QueryRowContext(ctx, `SELECT superseded_by_seq FROM superseded_messages WHERE message_seq = `+retiredArgs.add(seq)+` AND `+retiredCondition,
+			retiredArgs.values...).Scan(&supersededBy); {
 		case lookupErr == nil:
-			return Message{}, ErrSuperseded{ID: id, SupersededBy: supersededBy}
+			return Message{}, ErrSuperseded{ID: id, SupersededBy: postgresstorage.FormatRecordID(MessageIDPrefix, supersededBy)}
 		case !errors.Is(lookupErr, sql.ErrNoRows):
 			return Message{}, lookupErr
 		}
@@ -231,47 +250,62 @@ type ConversationFilter struct {
 	Limit     int
 }
 
-// ListConversations answers GET /conversations, most recently active first.
-func (s *Store) ListConversations(filter ConversationFilter) ([]Conversation, error) {
+// ListConversations answers GET /conversations in scope, most recently
+// active first.
+func (s *Store) ListConversations(ctx context.Context, scope ownership.Scope, filter ConversationFilter) ([]Conversation, error) {
 	if filter.Limit <= 0 || filter.Limit > 5000 {
 		filter.Limit = 500
 	}
-	var where []string
-	var args []any
-	if filter.PersonID != "" {
-		where = append(where, "c.id IN (SELECT conversation_id FROM participants WHERE person_id = ?)")
-		args = append(args, filter.PersonID)
-	}
-	if filter.AccountID != "" {
-		account, err := s.GetAccount(filter.AccountID)
-		if err != nil {
-			return nil, err
-		}
-		where = append(where, "c.platform = ? AND c.id IN (SELECT conversation_id FROM participants WHERE handle = ?)")
-		args = append(args, account.Platform, account.Handle)
-	}
-	if filter.Platform != "" {
-		where = append(where, "c.platform = ?")
-		args = append(args, filter.Platform)
-	}
-	if filter.Query != "" {
-		where = append(where, "(c.title LIKE ? OR c.id IN (SELECT conversation_id FROM participants WHERE display_name LIKE ?))")
-		like := "%" + filter.Query + "%"
-		args = append(args, like, like)
-	}
-	query := `SELECT c.id FROM conversations c LEFT JOIN (SELECT conversation_id, MAX(sent_at) AS last FROM messages GROUP BY conversation_id) l ON l.conversation_id = c.id`
-	if len(where) > 0 {
-		query += " WHERE " + strings.Join(where, " AND ")
-	}
-	query += " ORDER BY COALESCE(l.last, 0) DESC, c.seq DESC LIMIT ?"
-	args = append(args, filter.Limit)
-	ids, err := s.queryStrings(query, args...)
+	args := &arguments{}
+	condition, err := args.scope(scope, "c.owner_principal_id")
 	if err != nil {
 		return nil, err
 	}
+	where := []string{condition}
+	if filter.PersonID != "" {
+		where = append(where, "c.seq IN (SELECT conversation_seq FROM participants WHERE person_id = "+args.add(filter.PersonID)+")")
+	}
+	if filter.AccountID != "" {
+		account, err := s.GetAccount(ctx, scope, filter.AccountID)
+		if err != nil {
+			return nil, err
+		}
+		// The account's conversations are its owner's: a handle it shares with
+		// a chat someone else keeps says nothing about that chat.
+		where = append(where, "c.owner_principal_id = "+args.add(account.OwnerPrincipalID)+" AND c.platform = "+args.add(account.Platform)+
+			" AND c.seq IN (SELECT conversation_seq FROM participants WHERE handle = "+args.add(account.Handle)+")")
+	}
+	if filter.Platform != "" {
+		where = append(where, "c.platform = "+args.add(filter.Platform))
+	}
+	if filter.Query != "" {
+		// As SQLite's LIKE did: case blind, with % and _ in the query as
+		// wildcards, and no escape character.
+		like := args.add("%" + filter.Query + "%")
+		where = append(where, "(c.title ILIKE "+like+" ESCAPE '' OR c.seq IN (SELECT conversation_seq FROM participants WHERE display_name ILIKE "+like+" ESCAPE ''))")
+	}
+	query := `SELECT c.seq FROM conversations c LEFT JOIN (SELECT conversation_seq, MAX(sent_at) AS last FROM messages GROUP BY conversation_seq) l ON l.conversation_seq = c.seq
+		WHERE ` + strings.Join(where, " AND ") + ` ORDER BY COALESCE(l.last, 0) DESC, c.seq DESC LIMIT ` + args.add(filter.Limit)
+	rows, err := s.db.QueryContext(ctx, query, args.values...)
+	if err != nil {
+		return nil, err
+	}
+	var seqs []int64
+	for rows.Next() {
+		var seq int64
+		if err := rows.Scan(&seq); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		seqs = append(seqs, seq)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	conversations := []Conversation{}
-	for _, id := range ids {
-		conversation, err := s.GetConversation(id)
+	for _, seq := range seqs {
+		conversation, err := s.conversationBySeq(ctx, seq)
 		if err != nil {
 			return nil, err
 		}
@@ -280,51 +314,58 @@ func (s *Store) ListConversations(filter ConversationFilter) ([]Conversation, er
 	return conversations, nil
 }
 
-func (s *Store) queryStrings(query string, args ...any) ([]string, error) {
-	rows, err := s.db.Query(query, args...)
+// GetConversation reads one conversation in scope with its participants and
+// message summary. A merged id in scope answers ErrMerged naming the
+// conversation it merged into.
+func (s *Store) GetConversation(ctx context.Context, scope ownership.Scope, id string) (Conversation, error) {
+	seq, err := recordNumber(ConversationIDPrefix, "conversation", id)
 	if err != nil {
-		return nil, err
+		return Conversation{}, err
 	}
-	defer rows.Close()
-	var values []string
-	for rows.Next() {
-		var value string
-		if err := rows.Scan(&value); err != nil {
-			return nil, err
-		}
-		values = append(values, value)
+	args := &arguments{}
+	condition, err := args.scope(scope, "owner_principal_id")
+	if err != nil {
+		return Conversation{}, err
 	}
-	return values, rows.Err()
-}
-
-// GetConversation reads one conversation with its participants and message
-// summary.
-func (s *Store) GetConversation(id string) (Conversation, error) {
-	var conversation Conversation
-	var isGroup int
-	err := s.db.QueryRow(`SELECT id, platform, source, source_ref, title, is_group, parent_source_ref, created_at, updated_at FROM conversations WHERE id = ?`, id).
-		Scan(&conversation.ID, &conversation.Platform, &conversation.Source, &conversation.SourceRef, &conversation.Title, &isGroup, &conversation.ParentSourceRef, &conversation.CreatedAt, &conversation.UpdatedAt)
+	var found int64
+	err = s.db.QueryRowContext(ctx, `SELECT seq FROM conversations WHERE seq = `+args.add(seq)+` AND `+condition, args.values...).Scan(&found)
 	if errors.Is(err, sql.ErrNoRows) {
-		into, lookupErr := s.mergedInto(id)
+		into, lookupErr := s.mergedIntoSeq(ctx, scope, seq)
 		if lookupErr != nil {
 			return Conversation{}, lookupErr
 		}
-		if into != "" {
-			return Conversation{}, ErrMerged{ID: id, MergedInto: into}
+		if into != 0 {
+			return Conversation{}, ErrMerged{ID: id, MergedInto: postgresstorage.FormatRecordID(ConversationIDPrefix, into)}
 		}
 		return Conversation{}, fmt.Errorf("%w: conversation %s", ErrNotFound, id)
 	}
 	if err != nil {
 		return Conversation{}, err
 	}
-	conversation.IsGroup = isGroup == 1
+	return s.conversationBySeq(ctx, seq)
+}
+
+// conversationBySeq reads one conversation the caller already holds in
+// scope.
+func (s *Store) conversationBySeq(ctx context.Context, seq int64) (Conversation, error) {
+	var conversation Conversation
+	err := s.db.QueryRowContext(ctx, `SELECT owner_principal_id, platform, source, source_ref, title, is_group, parent_source_ref, created_at, updated_at FROM conversations WHERE seq = $1`, seq).
+		Scan(&conversation.OwnerPrincipalID, &conversation.Platform, &conversation.Source, &conversation.SourceRef, &conversation.Title, &conversation.IsGroup,
+			&conversation.ParentSourceRef, &conversation.CreatedAt, &conversation.UpdatedAt)
+	if err != nil {
+		return Conversation{}, err
+	}
+	conversation.ID = postgresstorage.FormatRecordID(ConversationIDPrefix, seq)
 	var first, last sql.NullInt64
-	if err := s.db.QueryRow(`SELECT COUNT(*), MIN(sent_at), MAX(sent_at) FROM messages WHERE conversation_id = ?`, id).
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*), MIN(sent_at), MAX(sent_at) FROM messages WHERE conversation_seq = $1`, seq).
 		Scan(&conversation.MessageCount, &first, &last); err != nil {
 		return Conversation{}, err
 	}
 	conversation.FirstMessageAt, conversation.LastMessageAt = first.Int64, last.Int64
-	rows, err := s.db.Query(`SELECT handle, display_name, person_id, is_self FROM participants WHERE conversation_id = ? ORDER BY is_self DESC, display_name, handle`, id)
+	// The standalone store sorted with SQLite's binary collation; COLLATE "C"
+	// sorts the same, by byte.
+	rows, err := s.db.QueryContext(ctx, `SELECT handle, display_name, person_id, is_self FROM participants WHERE conversation_seq = $1
+		ORDER BY is_self DESC, display_name COLLATE "C", handle COLLATE "C"`, seq)
 	if err != nil {
 		return Conversation{}, err
 	}
@@ -332,18 +373,16 @@ func (s *Store) GetConversation(id string) (Conversation, error) {
 	conversation.Participants = []Participant{}
 	for rows.Next() {
 		var participant Participant
-		var isSelf int
-		if err := rows.Scan(&participant.Handle, &participant.DisplayName, &participant.PersonID, &isSelf); err != nil {
+		if err := rows.Scan(&participant.Handle, &participant.DisplayName, &participant.PersonID, &participant.IsSelf); err != nil {
 			return Conversation{}, err
 		}
-		participant.IsSelf = isSelf == 1
 		conversation.Participants = append(conversation.Participants, participant)
 	}
 	return conversation, rows.Err()
 }
 
-const dayColumns = `d.id, d.conversation_id, d.day, d.time_zone, d.starts_at, d.ends_at, d.journal_source, d.journal_source_ref, d.journal_entry_id,
-	(SELECT COUNT(*) FROM messages m WHERE m.conversation_id = d.conversation_id AND m.sent_at >= d.starts_at AND m.sent_at < d.ends_at), ` + dayInvolvementSQL
+const dayColumns = `d.seq, d.owner_principal_id, d.conversation_seq, d.day, d.time_zone, d.starts_at, d.ends_at, d.journal_source, d.journal_source_ref, d.journal_entry_id,
+	(SELECT COUNT(*) FROM messages m WHERE m.conversation_seq = d.conversation_seq AND m.sent_at >= d.starts_at AND m.sent_at < d.ends_at), ` + dayInvolvementSQL
 
 // dayInvolvementSQL is a conversation day d's involvement (DayInvolvements):
 // direct for a chat that is not a group; in a group, participated when one of
@@ -351,19 +390,23 @@ const dayColumns = `d.id, d.conversation_id, d.day, d.time_zone, d.starts_at, d.
 // message in it replies to one of the user's messages or mentions one of the
 // user's handles the way Discord writes a mention (<@id>, <@!id>), else none.
 const dayInvolvementSQL = `CASE
-	WHEN (SELECT is_group FROM conversations c WHERE c.id = d.conversation_id) = 0 THEN 'direct'
-	WHEN EXISTS (SELECT 1 FROM messages m JOIN participants p ON p.conversation_id = m.conversation_id AND p.handle = m.sender_handle
-		WHERE m.conversation_id = d.conversation_id AND m.sent_at >= d.starts_at AND m.sent_at < d.ends_at AND p.is_self = 1) THEN 'participated'
-	WHEN EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = d.conversation_id AND m.sent_at >= d.starts_at AND m.sent_at < d.ends_at AND (
-		(m.reply_to_source_ref != '' AND EXISTS (SELECT 1 FROM messages own JOIN participants op ON op.conversation_id = own.conversation_id AND op.handle = own.sender_handle
-			WHERE own.conversation_id = d.conversation_id AND own.source_ref = m.reply_to_source_ref AND op.is_self = 1))
-		OR EXISTS (SELECT 1 FROM participants sp WHERE sp.conversation_id = d.conversation_id AND sp.is_self = 1 AND sp.handle != ''
-			AND (instr(m.body, '<@' || sp.handle || '>') > 0 OR instr(m.body, '<@!' || sp.handle || '>') > 0)))) THEN 'addressed'
+	WHEN NOT (SELECT is_group FROM conversations c WHERE c.seq = d.conversation_seq) THEN 'direct'
+	WHEN EXISTS (SELECT 1 FROM messages m JOIN participants p ON p.conversation_seq = m.conversation_seq AND p.handle = m.sender_handle
+		WHERE m.conversation_seq = d.conversation_seq AND m.sent_at >= d.starts_at AND m.sent_at < d.ends_at AND p.is_self) THEN 'participated'
+	WHEN EXISTS (SELECT 1 FROM messages m WHERE m.conversation_seq = d.conversation_seq AND m.sent_at >= d.starts_at AND m.sent_at < d.ends_at AND (
+		(m.reply_to_source_ref <> '' AND EXISTS (SELECT 1 FROM messages own JOIN participants op ON op.conversation_seq = own.conversation_seq AND op.handle = own.sender_handle
+			WHERE own.conversation_seq = d.conversation_seq AND own.source_ref = m.reply_to_source_ref AND op.is_self))
+		OR EXISTS (SELECT 1 FROM participants sp WHERE sp.conversation_seq = d.conversation_seq AND sp.is_self AND sp.handle <> ''
+			AND (strpos(m.body, '<@' || sp.handle || '>') > 0 OR strpos(m.body, '<@!' || sp.handle || '>') > 0)))) THEN 'addressed'
 	ELSE 'none' END`
 
 func scanDay(row interface{ Scan(...any) error }) (ConversationDay, error) {
 	var day ConversationDay
-	err := row.Scan(&day.ID, &day.ConversationID, &day.Day, &day.TimeZone, &day.StartsAt, &day.EndsAt, &day.JournalSource, &day.JournalSourceRef, &day.JournalEntryID, &day.MessageCount, &day.Involvement)
+	var seq, conversationSeq int64
+	err := row.Scan(&seq, &day.OwnerPrincipalID, &conversationSeq, &day.Day, &day.TimeZone, &day.StartsAt, &day.EndsAt, &day.JournalSource, &day.JournalSourceRef,
+		&day.JournalEntryID, &day.MessageCount, &day.Involvement)
+	day.ID = postgresstorage.FormatRecordID(ConversationDayIDPrefix, seq)
+	day.ConversationID = postgresstorage.FormatRecordID(ConversationIDPrefix, conversationSeq)
 	return day, err
 }
 
@@ -378,48 +421,46 @@ type DayFilter struct {
 	Limit    int
 }
 
-// ListConversationDays answers GET /conversation-days, in day order.
-func (s *Store) ListConversationDays(filter DayFilter) ([]ConversationDay, error) {
+// ListConversationDays answers GET /conversation-days in scope, in day
+// order.
+func (s *Store) ListConversationDays(ctx context.Context, scope ownership.Scope, filter DayFilter) ([]ConversationDay, error) {
 	if filter.Limit <= 0 || filter.Limit > 10000 {
 		filter.Limit = 1000
 	}
-	var where []string
-	var args []any
+	args := &arguments{}
+	condition, err := args.scope(scope, "d.owner_principal_id")
+	if err != nil {
+		return nil, err
+	}
+	where := []string{condition}
 	if filter.ConversationID != "" {
-		live, err := s.liveConversationIDs([]string{filter.ConversationID})
+		seqs, err := s.liveConversationSeqs(ctx, scope, []string{filter.ConversationID})
 		if err != nil {
 			return nil, err
 		}
-		filter.ConversationID = live[0]
-		where = append(where, "d.conversation_id = ?")
-		args = append(args, filter.ConversationID)
+		if len(seqs) == 0 {
+			return []ConversationDay{}, nil
+		}
+		where = append(where, "d.conversation_seq = "+args.add(seqs[0]))
 	}
 	if filter.JournalEntryID != "" {
-		where = append(where, "d.journal_entry_id = ?")
-		args = append(args, filter.JournalEntryID)
+		where = append(where, "d.journal_entry_id = "+args.add(filter.JournalEntryID))
 	}
 	if filter.PersonID != "" {
-		where = append(where, "d.conversation_id IN (SELECT conversation_id FROM participants WHERE person_id = ?)")
-		args = append(args, filter.PersonID)
+		where = append(where, "d.conversation_seq IN (SELECT conversation_seq FROM participants WHERE person_id = "+args.add(filter.PersonID)+")")
 	}
 	if filter.From != "" {
-		where = append(where, "d.day >= ?")
-		args = append(args, filter.From)
+		where = append(where, `d.day COLLATE "C" >= `+args.add(filter.From))
 	}
 	if filter.To != "" {
-		where = append(where, "d.day <= ?")
-		args = append(args, filter.To)
+		where = append(where, `d.day COLLATE "C" <= `+args.add(filter.To))
 	}
 	if filter.Involved {
-		where = append(where, dayInvolvementSQL+" != 'none'")
+		where = append(where, dayInvolvementSQL+" <> 'none'")
 	}
-	query := "SELECT " + dayColumns + " FROM conversation_days d"
-	if len(where) > 0 {
-		query += " WHERE " + strings.Join(where, " AND ")
-	}
-	query += " ORDER BY d.day, d.seq LIMIT ?"
-	args = append(args, filter.Limit)
-	rows, err := s.db.Query(query, args...)
+	query := "SELECT " + dayColumns + " FROM conversation_days d WHERE " + strings.Join(where, " AND ") +
+		` ORDER BY d.day COLLATE "C", d.seq LIMIT ` + args.add(filter.Limit)
+	rows, err := s.db.QueryContext(ctx, query, args.values...)
 	if err != nil {
 		return nil, err
 	}
@@ -435,106 +476,130 @@ func (s *Store) ListConversationDays(filter DayFilter) ([]ConversationDay, error
 	return days, rows.Err()
 }
 
-// GetConversationDay reads one day with its conversation and messages.
-func (s *Store) GetConversationDay(id string) (ConversationDayWithMessages, error) {
-	day, err := scanDay(s.db.QueryRow("SELECT "+dayColumns+" FROM conversation_days d WHERE d.id = ?", id))
+// GetConversationDay reads one day in scope with its conversation and
+// messages.
+func (s *Store) GetConversationDay(ctx context.Context, scope ownership.Scope, id string) (ConversationDayWithMessages, error) {
+	seq, err := recordNumber(ConversationDayIDPrefix, "conversation day", id)
+	if err != nil {
+		return ConversationDayWithMessages{}, err
+	}
+	args := &arguments{}
+	condition, err := args.scope(scope, "d.owner_principal_id")
+	if err != nil {
+		return ConversationDayWithMessages{}, err
+	}
+	day, err := scanDay(s.db.QueryRowContext(ctx, "SELECT "+dayColumns+" FROM conversation_days d WHERE d.seq = "+args.add(seq)+" AND "+condition, args.values...))
 	if errors.Is(err, sql.ErrNoRows) {
 		return ConversationDayWithMessages{}, fmt.Errorf("%w: conversation day %s", ErrNotFound, id)
 	}
 	if err != nil {
 		return ConversationDayWithMessages{}, err
 	}
-	conversation, err := s.GetConversation(day.ConversationID)
+	owner := ownership.OwnedBy(day.OwnerPrincipalID)
+	conversation, err := s.GetConversation(ctx, owner, day.ConversationID)
 	if err != nil {
 		return ConversationDayWithMessages{}, err
 	}
-	page, err := s.ListMessages(MessageFilter{ConversationIDs: []string{day.ConversationID}, After: day.StartsAt, Before: day.EndsAt, Limit: 5000})
+	page, err := s.ListMessages(ctx, owner, MessageFilter{ConversationIDs: []string{day.ConversationID}, After: day.StartsAt, Before: day.EndsAt, Limit: 5000})
 	if err != nil {
 		return ConversationDayWithMessages{}, err
 	}
 	return ConversationDayWithMessages{ConversationDay: day, Conversation: conversation, Messages: page.Messages}, nil
 }
 
-// involvedGroupDays maps every group conversation to the local days, in
-// location, on which the user took part in it: wrote a message, or had a
-// message that replies to one of theirs or mentions one of their handles the
-// way Discord writes a mention (<@id>, <@!id>). A group with no such day maps
-// to an empty set, so all of it is left out; a conversation that is not a
-// group has no entry.
-func (s *Store) involvedGroupDays(location *time.Location) (map[string]map[string]bool, error) {
-	days := map[string]map[string]bool{}
-	groups, err := s.db.Query(`SELECT id FROM conversations WHERE is_group = 1`)
+// involvedGroupDays maps every group conversation in scope to the local
+// days, in location, on which the user took part in it: wrote a message, or
+// had a message that replies to one of theirs or mentions one of their
+// handles the way Discord writes a mention (<@id>, <@!id>). A group with no
+// such day maps to an empty set, so all of it is left out; a conversation
+// that is not a group has no entry.
+func (s *Store) involvedGroupDays(ctx context.Context, scope ownership.Scope, location *time.Location) (map[int64]map[string]bool, error) {
+	days := map[int64]map[string]bool{}
+	args := &arguments{}
+	condition, err := args.scope(scope, "c.owner_principal_id")
+	if err != nil {
+		return nil, err
+	}
+	groups, err := s.db.QueryContext(ctx, `SELECT c.seq FROM conversations c WHERE c.is_group AND `+condition, args.values...)
 	if err != nil {
 		return nil, err
 	}
 	for groups.Next() {
-		var id string
-		if err := groups.Scan(&id); err != nil {
+		var seq int64
+		if err := groups.Scan(&seq); err != nil {
 			groups.Close()
 			return nil, err
 		}
-		days[id] = map[string]bool{}
+		days[seq] = map[string]bool{}
 	}
 	groups.Close()
-	mark := func(conversationID string, sentAt int64) {
-		days[conversationID][time.UnixMilli(sentAt).In(location).Format(time.DateOnly)] = true
+	if err := groups.Err(); err != nil {
+		return nil, err
+	}
+	mark := func(conversationSeq, sentAt int64) {
+		days[conversationSeq][time.UnixMilli(sentAt).In(location).Format(time.DateOnly)] = true
 	}
 	// The user's own messages in groups: their days, and their refs, which a
-	// reply names. Replies are matched here rather than by a self-join, which
-	// SQLite plans as a scan per reply.
-	own := map[string]map[string]bool{}
-	ownRows, err := s.db.Query(`SELECT m.conversation_id, m.sent_at, m.source_ref FROM messages m
-		JOIN conversations c ON c.id = m.conversation_id AND c.is_group = 1
-		JOIN participants p ON p.conversation_id = m.conversation_id AND p.handle = m.sender_handle AND p.is_self = 1`)
+	// reply names.
+	own := map[int64]map[string]bool{}
+	ownRows, err := s.db.QueryContext(ctx, `SELECT m.conversation_seq, m.sent_at, m.source_ref FROM messages m
+		JOIN conversations c ON c.seq = m.conversation_seq AND c.is_group
+		JOIN participants p ON p.conversation_seq = m.conversation_seq AND p.handle = m.sender_handle AND p.is_self
+		WHERE `+condition, args.values...)
 	if err != nil {
 		return nil, err
 	}
 	for ownRows.Next() {
-		var conversationID, ref string
-		var sentAt int64
-		if err := ownRows.Scan(&conversationID, &sentAt, &ref); err != nil {
+		var conversationSeq, sentAt int64
+		var ref string
+		if err := ownRows.Scan(&conversationSeq, &sentAt, &ref); err != nil {
 			ownRows.Close()
 			return nil, err
 		}
-		mark(conversationID, sentAt)
-		if own[conversationID] == nil {
-			own[conversationID] = map[string]bool{}
+		mark(conversationSeq, sentAt)
+		if own[conversationSeq] == nil {
+			own[conversationSeq] = map[string]bool{}
 		}
-		own[conversationID][ref] = true
+		own[conversationSeq][ref] = true
 	}
 	ownRows.Close()
-	replyRows, err := s.db.Query(`SELECT m.conversation_id, m.sent_at, m.reply_to_source_ref FROM messages m
-		JOIN conversations c ON c.id = m.conversation_id AND c.is_group = 1 WHERE m.reply_to_source_ref != ''`)
+	if err := ownRows.Err(); err != nil {
+		return nil, err
+	}
+	replyRows, err := s.db.QueryContext(ctx, `SELECT m.conversation_seq, m.sent_at, m.reply_to_source_ref FROM messages m
+		JOIN conversations c ON c.seq = m.conversation_seq AND c.is_group WHERE m.reply_to_source_ref <> '' AND `+condition, args.values...)
 	if err != nil {
 		return nil, err
 	}
 	for replyRows.Next() {
-		var conversationID, repliesTo string
-		var sentAt int64
-		if err := replyRows.Scan(&conversationID, &sentAt, &repliesTo); err != nil {
+		var conversationSeq, sentAt int64
+		var repliesTo string
+		if err := replyRows.Scan(&conversationSeq, &sentAt, &repliesTo); err != nil {
 			replyRows.Close()
 			return nil, err
 		}
-		if own[conversationID][repliesTo] {
-			mark(conversationID, sentAt)
+		if own[conversationSeq][repliesTo] {
+			mark(conversationSeq, sentAt)
 		}
 	}
 	replyRows.Close()
-	mentionRows, err := s.db.Query(`SELECT m.conversation_id, m.sent_at FROM messages m
-		JOIN conversations c ON c.id = m.conversation_id AND c.is_group = 1
-		JOIN participants sp ON sp.conversation_id = m.conversation_id AND sp.is_self = 1 AND sp.handle != ''
-		WHERE instr(m.body, '<@' || sp.handle || '>') > 0 OR instr(m.body, '<@!' || sp.handle || '>') > 0`)
+	if err := replyRows.Err(); err != nil {
+		return nil, err
+	}
+	mentionRows, err := s.db.QueryContext(ctx, `SELECT m.conversation_seq, m.sent_at FROM messages m
+		JOIN conversations c ON c.seq = m.conversation_seq AND c.is_group
+		JOIN participants sp ON sp.conversation_seq = m.conversation_seq AND sp.is_self AND sp.handle <> ''
+		WHERE (strpos(m.body, '<@' || sp.handle || '>') > 0 OR strpos(m.body, '<@!' || sp.handle || '>') > 0) AND `+condition, args.values...)
 	if err != nil {
 		return nil, err
 	}
 	defer mentionRows.Close()
 	for mentionRows.Next() {
-		var conversationID string
-		var sentAt int64
-		if err := mentionRows.Scan(&conversationID, &sentAt); err != nil {
+		var conversationSeq, sentAt int64
+		if err := mentionRows.Scan(&conversationSeq, &sentAt); err != nil {
 			return nil, err
 		}
-		mark(conversationID, sentAt)
+		mark(conversationSeq, sentAt)
 	}
 	return days, mentionRows.Err()
 }
@@ -553,14 +618,14 @@ type ActivityFilter struct {
 	Involved bool
 }
 
-// Activity counts messages per bucket of time per key.
+// Activity counts the messages in scope per bucket of time per key.
 //
 // Grouped by person, a message counts for a person when that person sent it
 // (received), or when the user sent it in a direct conversation with that
 // person (sent). The user's messages in a group are not credited to anyone,
 // since they were written to everyone there. Grouped by conversation or
 // platform, every message counts.
-func (s *Store) Activity(filter ActivityFilter) ([]ActivityBucket, error) {
+func (s *Store) Activity(ctx context.Context, scope ownership.Scope, filter ActivityFilter) ([]ActivityBucket, error) {
 	if !contains(ActivityGroupings, filter.GroupBy) {
 		return nil, fmt.Errorf("%w: group_by %q is not one of %v", ErrInvalid, filter.GroupBy, ActivityGroupings)
 	}
@@ -572,53 +637,62 @@ func (s *Store) Activity(filter ActivityFilter) ([]ActivityBucket, error) {
 		return nil, fmt.Errorf("%w: time_zone %q is required and must be an IANA zone", ErrInvalid, filter.TimeZone)
 	}
 	// Each direct conversation's one other person.
-	directPartner := map[string]string{}
-	partnerRows, err := s.db.Query(`SELECT p.conversation_id, MIN(p.person_id) FROM participants p JOIN conversations c ON c.id = p.conversation_id
-		WHERE c.is_group = 0 AND p.is_self = 0 AND p.person_id != '' GROUP BY p.conversation_id HAVING COUNT(DISTINCT p.person_id) = 1`)
+	partnerArgs := &arguments{}
+	partnerCondition, err := partnerArgs.scope(scope, "c.owner_principal_id")
+	if err != nil {
+		return nil, err
+	}
+	directPartner := map[int64]string{}
+	partnerRows, err := s.db.QueryContext(ctx, `SELECT p.conversation_seq, MIN(p.person_id COLLATE "C") FROM participants p JOIN conversations c ON c.seq = p.conversation_seq
+		WHERE NOT c.is_group AND NOT p.is_self AND p.person_id <> '' AND `+partnerCondition+` GROUP BY p.conversation_seq HAVING COUNT(DISTINCT p.person_id) = 1`,
+		partnerArgs.values...)
 	if err != nil {
 		return nil, err
 	}
 	for partnerRows.Next() {
-		var conversationID, personID string
-		if err := partnerRows.Scan(&conversationID, &personID); err != nil {
+		var conversationSeq int64
+		var personID string
+		if err := partnerRows.Scan(&conversationSeq, &personID); err != nil {
 			partnerRows.Close()
 			return nil, err
 		}
-		directPartner[conversationID] = personID
+		directPartner[conversationSeq] = personID
 	}
 	partnerRows.Close()
+	if err := partnerRows.Err(); err != nil {
+		return nil, err
+	}
 
-	var where []string
-	var args []any
+	args := &arguments{}
+	condition, err := args.scope(scope, "m.owner_principal_id")
+	if err != nil {
+		return nil, err
+	}
+	where := []string{condition}
 	if filter.After > 0 {
-		where = append(where, "m.sent_at >= ?")
-		args = append(args, filter.After)
+		where = append(where, "m.sent_at >= "+args.add(filter.After))
 	}
 	if filter.Before > 0 {
-		where = append(where, "m.sent_at < ?")
-		args = append(args, filter.Before)
+		where = append(where, "m.sent_at < "+args.add(filter.Before))
 	}
 	if filter.PersonID != "" {
-		where = append(where, "m.conversation_id IN (SELECT conversation_id FROM participants WHERE person_id = ?)")
-		args = append(args, filter.PersonID)
+		where = append(where, "m.conversation_seq IN (SELECT conversation_seq FROM participants WHERE person_id = "+args.add(filter.PersonID)+")")
 	}
 	// The local days, in the zone asked, on which the user took part in each
 	// group: wrote there, or was replied to or mentioned. Read from the
 	// messages themselves, so a chat with no conversation-day rows (multichat's
 	// live log) is judged the same way.
-	var involvedDays map[string]map[string]bool
+	var involvedDays map[int64]map[string]bool
 	if filter.Involved {
-		if involvedDays, err = s.involvedGroupDays(location); err != nil {
+		if involvedDays, err = s.involvedGroupDays(ctx, scope, location); err != nil {
 			return nil, err
 		}
 	}
-	query := `SELECT m.sent_at, m.conversation_id, c.platform, COALESCE(p.person_id, ''), COALESCE(p.is_self, 0)
-		FROM messages m JOIN conversations c ON c.id = m.conversation_id
-		LEFT JOIN participants p ON p.conversation_id = m.conversation_id AND p.handle = m.sender_handle`
-	if len(where) > 0 {
-		query += " WHERE " + strings.Join(where, " AND ")
-	}
-	rows, err := s.db.Query(query, args...)
+	query := `SELECT m.sent_at, m.conversation_seq, c.platform, COALESCE(p.person_id, ''), COALESCE(p.is_self, false)
+		FROM messages m JOIN conversations c ON c.seq = m.conversation_seq
+		LEFT JOIN participants p ON p.conversation_seq = m.conversation_seq AND p.handle = m.sender_handle
+		WHERE ` + strings.Join(where, " AND ")
+	rows, err := s.db.QueryContext(ctx, query, args.values...)
 	if err != nil {
 		return nil, err
 	}
@@ -630,26 +704,26 @@ func (s *Store) Activity(filter ActivityFilter) ([]ActivityBucket, error) {
 	counts := map[bucketKey]*ActivityBucket{}
 	var order []bucketKey
 	for rows.Next() {
-		var sentAt int64
-		var conversationID, platform, senderPerson string
-		var isSelf int
-		if err := rows.Scan(&sentAt, &conversationID, &platform, &senderPerson, &isSelf); err != nil {
+		var sentAt, conversationSeq int64
+		var platform, senderPerson string
+		var isSelf bool
+		if err := rows.Scan(&sentAt, &conversationSeq, &platform, &senderPerson, &isSelf); err != nil {
 			return nil, err
 		}
 		if involvedDays != nil {
-			if days, isGroup := involvedDays[conversationID]; isGroup && !days[time.UnixMilli(sentAt).In(location).Format(time.DateOnly)] {
+			if days, isGroup := involvedDays[conversationSeq]; isGroup && !days[time.UnixMilli(sentAt).In(location).Format(time.DateOnly)] {
 				continue
 			}
 		}
 		var key string
 		switch filter.GroupBy {
 		case "conversation":
-			key = conversationID
+			key = postgresstorage.FormatRecordID(ConversationIDPrefix, conversationSeq)
 		case "platform":
 			key = platform
 		case "person":
-			if isSelf == 1 {
-				key = directPartner[conversationID]
+			if isSelf {
+				key = directPartner[conversationSeq]
 			} else {
 				key = senderPerson
 			}
@@ -665,7 +739,7 @@ func (s *Store) Activity(filter ActivityFilter) ([]ActivityBucket, error) {
 			counts[bk] = bucket
 			order = append(order, bk)
 		}
-		if isSelf == 1 {
+		if isSelf {
 			bucket.Sent++
 		} else {
 			bucket.Received++
@@ -699,10 +773,15 @@ func bucketStart(at time.Time, interval string) int64 {
 	}
 }
 
-// Summarize answers GET /summary.
-func (s *Store) Summarize() (Summary, error) {
-	rows, err := s.db.Query(`SELECT c.platform, COUNT(DISTINCT c.id), COUNT(m.seq), COALESCE(MIN(m.sent_at), 0), COALESCE(MAX(m.sent_at), 0)
-		FROM conversations c LEFT JOIN messages m ON m.conversation_id = c.id GROUP BY c.platform ORDER BY c.platform`)
+// Summarize answers GET /summary over the records in scope.
+func (s *Store) Summarize(ctx context.Context, scope ownership.Scope) (Summary, error) {
+	args := &arguments{}
+	condition, err := args.scope(scope, "c.owner_principal_id")
+	if err != nil {
+		return Summary{}, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT c.platform, COUNT(DISTINCT c.seq), COUNT(m.seq), COALESCE(MIN(m.sent_at), 0), COALESCE(MAX(m.sent_at), 0)
+		FROM conversations c LEFT JOIN messages m ON m.conversation_seq = c.seq WHERE `+condition+` GROUP BY c.platform ORDER BY c.platform COLLATE "C"`, args.values...)
 	if err != nil {
 		return Summary{}, err
 	}
@@ -725,32 +804,46 @@ func (e ErrSuperseded) Error() string {
 	return fmt.Sprintf("message %s was superseded by %s", e.ID, e.SupersededBy)
 }
 
-const supersededColumns = `id, source, source_ref, superseded_by, import_id, superseded_at, row_json`
+const supersededColumns = `message_seq, owner_principal_id, source, source_ref, superseded_by_seq, import_seq, superseded_at, row_json`
 
 func scanSuperseded(row interface{ Scan(...any) error }) (SupersededMessage, error) {
 	var superseded SupersededMessage
+	var seq, bySeq, importSeq int64
 	var rowJSON string
-	if err := row.Scan(&superseded.ID, &superseded.Source, &superseded.SourceRef, &superseded.SupersededBy, &superseded.ImportID,
+	if err := row.Scan(&seq, &superseded.OwnerPrincipalID, &superseded.Source, &superseded.SourceRef, &bySeq, &importSeq,
 		&superseded.SupersededAt, &rowJSON); err != nil {
 		return SupersededMessage{}, err
 	}
+	superseded.ID = postgresstorage.FormatRecordID(MessageIDPrefix, seq)
+	superseded.SupersededBy = postgresstorage.FormatRecordID(MessageIDPrefix, bySeq)
+	superseded.ImportID = postgresstorage.FormatRecordID(ImportIDPrefix, importSeq)
 	superseded.Row = json.RawMessage(rowJSON)
 	return superseded, nil
 }
 
-// ListSupersededMessages answers GET /superseded-messages, newest retirement
-// first; supersededBy narrows it to the rows one message replaced.
-func (s *Store) ListSupersededMessages(supersededBy string, limit int) ([]SupersededMessage, error) {
+// ListSupersededMessages answers GET /superseded-messages in scope, newest
+// retirement first; supersededBy narrows it to the rows one message
+// replaced.
+func (s *Store) ListSupersededMessages(ctx context.Context, scope ownership.Scope, supersededBy string, limit int) ([]SupersededMessage, error) {
 	if limit <= 0 || limit > 5000 {
 		limit = 500
 	}
-	query := `SELECT ` + supersededColumns + ` FROM superseded_messages`
-	var args []any
-	if supersededBy != "" {
-		query += ` WHERE superseded_by = ?`
-		args = append(args, supersededBy)
+	args := &arguments{}
+	condition, err := args.scope(scope, "owner_principal_id")
+	if err != nil {
+		return nil, err
 	}
-	rows, err := s.db.Query(query+` ORDER BY superseded_at DESC, id LIMIT ?`, append(args, limit)...)
+	query := `SELECT ` + supersededColumns + ` FROM superseded_messages WHERE ` + condition
+	if supersededBy != "" {
+		bySeq, err := postgresstorage.ParseRecordID(MessageIDPrefix, supersededBy)
+		if err != nil {
+			return []SupersededMessage{}, nil
+		}
+		query += ` AND superseded_by_seq = ` + args.add(bySeq)
+	}
+	// The standalone store broke ties on the text id; the number orders the
+	// same for every id of six digits.
+	rows, err := s.db.QueryContext(ctx, query+` ORDER BY superseded_at DESC, message_seq LIMIT `+args.add(limit), args.values...)
 	if err != nil {
 		return nil, err
 	}

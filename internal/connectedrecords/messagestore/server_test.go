@@ -8,28 +8,75 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
+	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
+)
+
+// Two made-up owners, each with messages of their own.
+const (
+	aliceID = "principal_000101"
+	bobID   = "principal_000102"
+)
+
+// Headers the test front door reads to set the caller, standing in for the
+// server's verified credential. No header means no caller at all.
+const (
+	testPrincipalHeader      = "X-Test-Principal"
+	testSeesEveryOwnerHeader = "X-Test-Sees-Every-Owner"
 )
 
 type testServer struct {
 	t      *testing.T
 	server *httptest.Server
+	store  *Store
+	// principal and seesEveryOwner are who the calls act as; neither set
+	// sends no caller.
+	principal      string
+	seesEveryOwner bool
 }
 
+// testFrontDoor puts the caller the test names into the request context, as
+// the server does from the credential it verified.
+func testFrontDoor(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		principal, everyOwner := r.Header.Get(testPrincipalHeader), r.Header.Get(testSeesEveryOwnerHeader) == "true"
+		if principal != "" || everyOwner {
+			r = r.WithContext(ownership.ContextWithCaller(r.Context(), ownership.Caller{PrincipalID: principal, SeesEveryOwner: everyOwner}))
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func newTestStore(t *testing.T) *Store {
+	t.Helper()
+	module, err := Module()
+	if err != nil {
+		t.Fatalf("module: %v", err)
+	}
+	database := postgrestest.NewDatabase(t, module)
+	return New(database.Open(module))
+}
+
+// newTestServer serves a fresh store, called as alice.
 func newTestServer(t *testing.T) *testServer {
 	t.Helper()
-	store, err := Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { store.Close() })
+	store := newTestStore(t)
 	mux := http.NewServeMux()
 	RegisterHandlers(mux, store)
-	server := httptest.NewServer(mux)
+	server := httptest.NewServer(testFrontDoor(mux))
 	t.Cleanup(server.Close)
-	return &testServer{t: t, server: server}
+	return &testServer{t: t, server: server, store: store, principal: aliceID}
 }
 
-func (ts *testServer) call(method, path string, body any, wantStatus int, answer any) {
+// as is the same server, called as principal.
+func (ts *testServer) as(principal string, seesEveryOwner bool) *testServer {
+	other := *ts
+	other.principal, other.seesEveryOwner = principal, seesEveryOwner
+	return &other
+}
+
+func (ts *testServer) request(method, path string, body any) *http.Request {
 	ts.t.Helper()
 	var reader *bytes.Reader
 	if body != nil {
@@ -38,8 +85,27 @@ func (ts *testServer) call(method, path string, body any, wantStatus int, answer
 	} else {
 		reader = bytes.NewReader(nil)
 	}
-	request, _ := http.NewRequest(method, ts.server.URL+path, reader)
-	response, err := http.DefaultClient.Do(request)
+	request, err := http.NewRequest(method, ts.server.URL+path, reader)
+	if err != nil {
+		ts.t.Fatal(err)
+	}
+	if ts.principal != "" {
+		request.Header.Set(testPrincipalHeader, ts.principal)
+	}
+	if ts.seesEveryOwner {
+		request.Header.Set(testSeesEveryOwnerHeader, "true")
+	}
+	return request
+}
+
+func (ts *testServer) call(method, path string, body any, wantStatus int, answer any) {
+	ts.t.Helper()
+	ts.do(http.DefaultClient, method, path, body, wantStatus, answer)
+}
+
+func (ts *testServer) do(client *http.Client, method, path string, body any, wantStatus int, answer any) *http.Response {
+	ts.t.Helper()
+	response, err := client.Do(ts.request(method, path, body))
 	if err != nil {
 		ts.t.Fatal(err)
 	}
@@ -54,7 +120,11 @@ func (ts *testServer) call(method, path string, body any, wantStatus int, answer
 			ts.t.Fatal(err)
 		}
 	}
+	return response
 }
+
+// noFollow is a client that answers a redirect instead of following it.
+var noFollow = &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 
 func at(text string) int64 {
 	moment, err := time.Parse(time.RFC3339, text)
@@ -285,12 +355,7 @@ func TestASupersededMessageIsKeptAsARecordAndItsIDRedirects(t *testing.T) {
 		t.Fatalf("superseded record = %+v", retired)
 	}
 
-	noFollow := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	response, err := noFollow.Get(ts.server.URL + "/messages/" + oldID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	response.Body.Close()
+	response := ts.do(noFollow, "GET", "/messages/"+oldID, nil, http.StatusMovedPermanently, nil)
 	if response.StatusCode != http.StatusMovedPermanently || response.Header.Get("Location") != newID {
 		t.Fatalf("GET old id = %d Location %q", response.StatusCode, response.Header.Get("Location"))
 	}

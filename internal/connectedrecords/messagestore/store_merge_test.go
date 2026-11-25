@@ -50,12 +50,7 @@ func TestConversationMergeMovesEverythingAndTheMergedKeyResolves(t *testing.T) {
 	if phoneThread.MessageCount != 3 || phoneThread.Title != "Carol" || phoneThread.IsGroup || len(phoneThread.Participants) != 4 {
 		t.Fatalf("phone thread after the merge: %+v", phoneThread)
 	}
-	noFollow := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	response, err := noFollow.Get(ts.server.URL + "/conversations/" + ids[webRoom.SourceRef])
-	if err != nil {
-		t.Fatal(err)
-	}
-	response.Body.Close()
+	response := ts.do(noFollow, "GET", "/conversations/"+ids[webRoom.SourceRef], nil, http.StatusMovedPermanently, nil)
 	if response.StatusCode != http.StatusMovedPermanently || response.Header.Get("Location") != ids[phone.SourceRef] {
 		t.Fatalf("merged id answered %d to %q", response.StatusCode, response.Header.Get("Location"))
 	}

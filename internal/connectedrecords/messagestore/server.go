@@ -10,11 +10,13 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 )
 
-// RegisterHandlers mounts the API on mux. Routes are rooted at /; a front door
-// such as dash adds its prefix and the auth this service has none of, which
-// is why the service binds 127.0.0.1. CONTRACT.md is the route table.
+// RegisterHandlers mounts the API on mux, rooted at /; the server mounts it
+// under /message-store/. Every request must carry the ownership.Caller the
+// server verified; one without is 401. CONTRACT.md is the route table.
 func RegisterHandlers(mux *http.ServeMux, s *Store) {
 	h := &handler{s: s}
 	mux.HandleFunc("GET /health", h.health)
@@ -70,9 +72,38 @@ func writeError(w http.ResponseWriter, err error) {
 	case errors.Is(err, ErrInvalid):
 		status = http.StatusBadRequest
 	default:
-		log.Printf("error: %v", err)
+		log.Printf("message-store: error: %v", err)
 	}
 	writeJSON(w, status, map[string]string{"error": err.Error()})
+}
+
+// respondRefusal answers a request the ownership rules refuse, in the
+// store's own error shape.
+func respondRefusal(w http.ResponseWriter, refusal *ownership.RequestError) bool {
+	if refusal == nil {
+		return false
+	}
+	writeJSON(w, refusal.Status, map[string]string{"error": refusal.Message})
+	return true
+}
+
+// readScope is the request's scope, or false once a refusal is answered.
+func readScope(w http.ResponseWriter, r *http.Request) (ownership.Scope, bool) {
+	scope, refusal := ownership.ReadScope(r)
+	if respondRefusal(w, refusal) {
+		return ownership.Scope{}, false
+	}
+	return scope, true
+}
+
+// ownerOfNewRecord is the owner a record the request makes gets, or false
+// once a refusal is answered.
+func ownerOfNewRecord(w http.ResponseWriter, r *http.Request) (string, bool) {
+	owner, refusal := ownership.OwnerOfNewRecord(r)
+	if respondRefusal(w, refusal) {
+		return "", false
+	}
+	return owner, true
 }
 
 func decode(r *http.Request, into any) error {
@@ -113,7 +144,10 @@ func queryLimit(r *http.Request) (int, error) {
 }
 
 func (h *handler) health(w http.ResponseWriter, r *http.Request) {
-	if err := h.s.db.Ping(); err != nil {
+	if _, refusal := ownership.CallerOfRequest(r); respondRefusal(w, refusal) {
+		return
+	}
+	if err := h.s.Ping(r.Context()); err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "error", "error": err.Error()})
 		return
 	}
@@ -121,11 +155,18 @@ func (h *handler) health(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) vocabulary(w http.ResponseWriter, r *http.Request) {
+	if _, refusal := ownership.CallerOfRequest(r); respondRefusal(w, refusal) {
+		return
+	}
 	writeJSON(w, http.StatusOK, vocabulary())
 }
 
 func (h *handler) summary(w http.ResponseWriter, r *http.Request) {
-	summary, err := h.s.Summarize()
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	summary, err := h.s.Summarize(r.Context(), scope)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -134,6 +175,10 @@ func (h *handler) summary(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) listMessages(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	query := r.URL.Query()
 	after, err := queryInt64(r, "after")
 	if err != nil {
@@ -155,7 +200,7 @@ func (h *handler) listMessages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errors.Join(ErrInvalid, errors.New("order is oldest or newest")))
 		return
 	}
-	page, err := h.s.ListMessages(MessageFilter{ConversationIDs: query["conversation"], PersonID: query.Get("person"), Platform: query.Get("platform"),
+	page, err := h.s.ListMessages(r.Context(), scope, MessageFilter{ConversationIDs: query["conversation"], PersonID: query.Get("person"), Platform: query.Get("platform"),
 		Source: query.Get("source"), SourceRef: query.Get("source_ref"),
 		After: after, Before: before, Query: query.Get("q"), Newest: order == "newest", Limit: limit, Cursor: query.Get("cursor")})
 	if err != nil {
@@ -167,7 +212,11 @@ func (h *handler) listMessages(w http.ResponseWriter, r *http.Request) {
 
 // messageRevisions answers every earlier version of a message, oldest first.
 func (h *handler) messageRevisions(w http.ResponseWriter, r *http.Request) {
-	revisions, err := h.s.MessageRevisions(r.PathValue("id"))
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	revisions, err := h.s.MessageRevisions(r.Context(), scope, r.PathValue("id"))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -176,7 +225,11 @@ func (h *handler) messageRevisions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) getMessage(w http.ResponseWriter, r *http.Request) {
-	message, err := h.s.GetMessage(r.PathValue("id"))
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	message, err := h.s.GetMessage(r.Context(), scope, r.PathValue("id"))
 	var superseded ErrSuperseded
 	if errors.As(err, &superseded) {
 		// Relative, so it holds behind a proxy's prefix.
@@ -192,12 +245,16 @@ func (h *handler) getMessage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) listSupersededMessages(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	limit, err := queryLimit(r)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	superseded, err := h.s.ListSupersededMessages(r.URL.Query().Get("superseded_by"), limit)
+	superseded, err := h.s.ListSupersededMessages(r.Context(), scope, r.URL.Query().Get("superseded_by"), limit)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -206,12 +263,16 @@ func (h *handler) listSupersededMessages(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *handler) listConversationMerges(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	limit, err := queryLimit(r)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	merges, err := h.s.ListConversationMerges(r.URL.Query().Get("merged_into"), limit)
+	merges, err := h.s.ListConversationMerges(r.Context(), scope, r.URL.Query().Get("merged_into"), limit)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -220,13 +281,17 @@ func (h *handler) listConversationMerges(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *handler) listConversations(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	limit, err := queryLimit(r)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 	query := r.URL.Query()
-	conversations, err := h.s.ListConversations(ConversationFilter{PersonID: query.Get("person"), AccountID: query.Get("account"), Platform: query.Get("platform"), Query: query.Get("q"), Limit: limit})
+	conversations, err := h.s.ListConversations(r.Context(), scope, ConversationFilter{PersonID: query.Get("person"), AccountID: query.Get("account"), Platform: query.Get("platform"), Query: query.Get("q"), Limit: limit})
 	if err != nil {
 		writeError(w, err)
 		return
@@ -235,7 +300,11 @@ func (h *handler) listConversations(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) getConversation(w http.ResponseWriter, r *http.Request) {
-	conversation, err := h.s.GetConversation(r.PathValue("id"))
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	conversation, err := h.s.GetConversation(r.Context(), scope, r.PathValue("id"))
 	var merged ErrMerged
 	if errors.As(err, &merged) {
 		// Relative, so it holds behind a proxy's prefix.
@@ -251,6 +320,10 @@ func (h *handler) getConversation(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) patchParticipant(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	var patch ParticipantPatch
 	if err := decode(r, &patch); err != nil {
 		writeError(w, err)
@@ -260,7 +333,7 @@ func (h *handler) patchParticipant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errors.Join(ErrInvalid, errors.New("person_id is required (\"\" clears it)")))
 		return
 	}
-	participant, err := h.s.SetParticipantPerson(r.PathValue("id"), r.PathValue("handle"), *patch.PersonID)
+	participant, err := h.s.SetParticipantPerson(r.Context(), scope, r.PathValue("id"), r.PathValue("handle"), *patch.PersonID)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -269,13 +342,17 @@ func (h *handler) patchParticipant(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) listDays(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	limit, err := queryLimit(r)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 	query := r.URL.Query()
-	days, err := h.s.ListConversationDays(DayFilter{ConversationID: query.Get("conversation"), JournalEntryID: query.Get("journal_entry"),
+	days, err := h.s.ListConversationDays(r.Context(), scope, DayFilter{ConversationID: query.Get("conversation"), JournalEntryID: query.Get("journal_entry"),
 		PersonID: query.Get("person"), From: query.Get("from"), To: query.Get("to"), Involved: query.Get("involved") == "true", Limit: limit})
 	if err != nil {
 		writeError(w, err)
@@ -285,7 +362,11 @@ func (h *handler) listDays(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) getDay(w http.ResponseWriter, r *http.Request) {
-	day, err := h.s.GetConversationDay(r.PathValue("id"))
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	day, err := h.s.GetConversationDay(r.Context(), scope, r.PathValue("id"))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -294,12 +375,16 @@ func (h *handler) getDay(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) linkJournalEntries(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	var links []JournalEntryLink
 	if err := decode(r, &links); err != nil {
 		writeError(w, err)
 		return
 	}
-	result, err := h.s.LinkJournalEntries(links)
+	result, err := h.s.LinkJournalEntries(r.Context(), scope, links)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -308,6 +393,10 @@ func (h *handler) linkJournalEntries(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) activity(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	after, err := queryInt64(r, "after")
 	if err != nil {
 		writeError(w, err)
@@ -319,7 +408,7 @@ func (h *handler) activity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query := r.URL.Query()
-	buckets, err := h.s.Activity(ActivityFilter{GroupBy: query.Get("group_by"), Interval: query.Get("interval"), TimeZone: query.Get("time_zone"),
+	buckets, err := h.s.Activity(r.Context(), scope, ActivityFilter{GroupBy: query.Get("group_by"), Interval: query.Get("interval"), TimeZone: query.Get("time_zone"),
 		PersonID: query.Get("person"), After: after, Before: before, Involved: query.Get("involved") == "true"})
 	if err != nil {
 		writeError(w, err)
@@ -338,7 +427,11 @@ func sortBuckets(buckets []ActivityBucket) {
 }
 
 func (h *handler) listImports(w http.ResponseWriter, r *http.Request) {
-	runs, err := h.s.ListImports()
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	runs, err := h.s.ListImports(r.Context(), scope)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -347,12 +440,16 @@ func (h *handler) listImports(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) startImport(w http.ResponseWriter, r *http.Request) {
+	owner, ok := ownerOfNewRecord(w, r)
+	if !ok {
+		return
+	}
 	var start ImportStart
 	if err := decode(r, &start); err != nil {
 		writeError(w, err)
 		return
 	}
-	run, err := h.s.StartImport(start)
+	run, err := h.s.StartImport(r.Context(), owner, start)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -361,7 +458,11 @@ func (h *handler) startImport(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) getImport(w http.ResponseWriter, r *http.Request) {
-	run, err := h.s.GetImport(r.PathValue("id"))
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	run, err := h.s.GetImport(r.Context(), scope, r.PathValue("id"))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -370,12 +471,16 @@ func (h *handler) getImport(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) importBatch(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	var batch ImportBatch
 	if err := decode(r, &batch); err != nil {
 		writeError(w, err)
 		return
 	}
-	counts, err := h.s.ApplyBatch(r.PathValue("id"), batch)
+	counts, err := h.s.ApplyBatch(r.Context(), scope, r.PathValue("id"), batch)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -384,7 +489,11 @@ func (h *handler) importBatch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) finishImport(w http.ResponseWriter, r *http.Request) {
-	run, err := h.s.FinishImport(r.PathValue("id"))
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	run, err := h.s.FinishImport(r.Context(), scope, r.PathValue("id"))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -393,7 +502,11 @@ func (h *handler) finishImport(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) listAccounts(w http.ResponseWriter, r *http.Request) {
-	accounts, err := h.s.ListAccounts()
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	accounts, err := h.s.ListAccounts(r.Context(), scope)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -402,12 +515,16 @@ func (h *handler) listAccounts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) putAccount(w http.ResponseWriter, r *http.Request) {
+	owner, ok := ownerOfNewRecord(w, r)
+	if !ok {
+		return
+	}
 	var put AccountPut
 	if err := decode(r, &put); err != nil {
 		writeError(w, err)
 		return
 	}
-	account, err := h.s.PutAccount(put)
+	account, err := h.s.PutAccount(r.Context(), owner, put)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -416,7 +533,11 @@ func (h *handler) putAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) getAccount(w http.ResponseWriter, r *http.Request) {
-	account, err := h.s.GetAccount(r.PathValue("id"))
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	account, err := h.s.GetAccount(r.Context(), scope, r.PathValue("id"))
 	if err != nil {
 		writeError(w, err)
 		return

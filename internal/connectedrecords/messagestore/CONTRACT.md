@@ -1,12 +1,38 @@
 # message-store routes
 
-All JSON. Times are unix milliseconds, UTC. Errors are `{"error": "…"}`: 400 for
-a bad request (an unknown field included), 404 for a missing id.
+message-store runs inside llm-bridge-server, at `/message-store/` with the paths below, and keeps its records in Postgres (schema `messages`, role `messages_module`). It answers only a request carrying the caller the server verified; one with none is 401. All JSON. Times are unix milliseconds, UTC. Errors are `{"error": "…"}`: 400 for a bad request (an unknown field included), 404 for a missing id.
+
+## Owners
+
+Every record has an owner, `owner_principal_id` (principal-store's `principal_000001`), the person whose messages these are, and every record in the answers says so.
+
+- `POST /imports` starts a run owned by the caller, and `POST /accounts` puts an account of the caller's. A caller that acts as no principal (the server's own service on its own) cannot make either (403).
+- Everything a run's batches write — conversations, participants, messages, days, superseded rows, revisions, merges — is the run's owner's, and every key a batch names (a conversation, a message to supersede, a merge's two sides) is looked up in that owner's records only. `(source, source_ref)` is unique per owner, so two people may each hold the same Discord message; an account's `(platform, handle)` likewise.
+- A caller reaches only its own records. A record of another owner answers 404, as a missing one does, on reads and writes alike, retired ids included (no 301 to another owner's row); lists, `/summary`, `/activity` and `/conversation-days/journal-entries` hold only the caller's own. An administrator, or the server's own service, reaches every owner's, and `?owner_principal_id=` narrows any read to one owner. Anyone else may name only itself there (403 otherwise).
+- `?account=` on `GET /conversations` reads an account in reach, and lists only that account's owner's conversations.
+
+## Ids
+
+| Record | Id |
+|---|---|
+| conversation | `conversation_000001` |
+| message | `chat_message_000001` |
+| conversation day | `conversation_day_000001` |
+| import run | `message_import_000001` |
+| account | `message_account_000001` |
+| person | people-store's `person_000001`, never made here |
+
+A retired id (a superseded message, a merged conversation) is never handed out again.
+
+## Search
+
+`q` on `GET /messages` reads words as the standalone store's FTS5 index did: each whitespace-separated word must appear whole (no prefix match), case blind, with every ASCII punctuation mark splitting words, so `well-being` is the phrase `well being`; a query of punctuation alone matches nothing. One difference: FTS5 dropped accents (`café` matched `cafe`), and Postgres's `simple` configuration does not.
+
+## Routes
 
 | Route | What it does |
 |---|---|
 | `GET /health` | `{"status":"ok"}` when the database answers |
-| `GET /settings` | the declared settings and their values |
 | `GET /vocabulary` | platforms, message kinds, activity groupings and intervals |
 | `GET /summary` | conversations and messages per platform, with first and last times |
 | `GET /messages` | messages in time order. `conversation` (repeatable; a merged id reads the conversation it merged into), `person`, `platform`, `source` and `source_ref` (the one message an importer filed under that ref, such as a Discord message id; `source_ref` alone is a 400), `after`, `before`, `q` (full text), `order=oldest\|newest`, `limit` (≤5000, default 500), `cursor` (the last page's `next`) |
