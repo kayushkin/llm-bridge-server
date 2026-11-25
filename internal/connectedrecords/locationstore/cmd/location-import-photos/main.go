@@ -28,9 +28,9 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	locationstore "github.com/kayushkin/location-store"
-	"github.com/kayushkin/location-store/internal/importclient"
-	photostore "github.com/kayushkin/photo-store"
+	locationstore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locationstore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locationstore/internal/importclient"
+	photostore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore"
 )
 
 const pageSize = 1000

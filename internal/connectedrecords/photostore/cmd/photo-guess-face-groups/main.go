@@ -38,8 +38,8 @@ import (
 
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	photostore "github.com/kayushkin/photo-store"
-	"github.com/kayushkin/photo-store/internal/photocontext"
+	photostore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore/internal/photocontext"
 )
 
 const guesserName = "photo-guess-face-groups"

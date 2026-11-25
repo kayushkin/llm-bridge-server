@@ -26,7 +26,7 @@ import (
 	"strings"
 	"time"
 
-	locationstore "github.com/kayushkin/location-store"
+	locationstore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locationstore"
 )
 
 // Sink receives what a file holds. Begin is called once, with the file's

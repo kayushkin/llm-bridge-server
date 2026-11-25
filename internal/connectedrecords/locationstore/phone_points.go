@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kayushkin/location-store/internal/geonames"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locationstore/internal/geonames"
 )
 
 // A phone sends its fixes as it makes them (POST /points/live). They are

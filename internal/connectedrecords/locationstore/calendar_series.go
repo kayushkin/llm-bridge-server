@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/kayushkin/location-store/internal/geonames"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locationstore/internal/geonames"
 )
 
 // A recurring series with no location (a weekly class, a standing practice)

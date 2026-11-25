@@ -27,10 +27,10 @@ import (
 	"strings"
 	"time"
 
-	photostore "github.com/kayushkin/photo-store"
-	"github.com/kayushkin/photo-store/internal/facegrouping"
-	"github.com/kayushkin/photo-store/internal/peoplematching"
-	"github.com/kayushkin/photo-store/internal/photocontext"
+	photostore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore/internal/facegrouping"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore/internal/peoplematching"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore/internal/photocontext"
 )
 
 const grouperName = "photo-group-faces"

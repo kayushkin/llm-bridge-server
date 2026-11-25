@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/kayushkin/location-store/internal/geonames"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locationstore/internal/geonames"
 )
 
 // GeonamesDir is where location-name-localities downloads the GeoNames files:

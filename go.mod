@@ -12,17 +12,20 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/jackc/pgx/v5 v5.13.0
+	github.com/kayushkin/activity-store v0.0.0-20261103002528-df7dd155d8d4
 	github.com/kayushkin/bus v0.0.0
 	github.com/kayushkin/llm-bridge v0.0.0
 	github.com/mattn/go-sqlite3 v1.14.37
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/nats-io/nats.go v1.49.0
 	github.com/oklog/ulid/v2 v2.1.1
+	github.com/paulmach/osm v0.9.0
 	github.com/spf13/cobra v1.10.2
 	github.com/teambition/rrule-go v1.8.2
+	golang.org/x/image v0.47.0
 	golang.org/x/oauth2 v0.36.0
-	golang.org/x/sys v0.48.0
-	golang.org/x/text v0.41.0
+	golang.org/x/sys v0.49.0
+	golang.org/x/text v0.43.0
 	golang.org/x/time v0.15.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.48.2
@@ -30,6 +33,7 @@ require (
 )
 
 require (
+	github.com/DataDog/czlib v0.0.0-20240814115052-86a9592b3985 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/emersion/go-sasl v0.0.0-20241020182733-b788ff22d5a6 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
@@ -43,6 +47,8 @@ require (
 	github.com/nats-io/nkeys v0.4.12 // indirect
 	github.com/nats-io/nuid v1.0.1 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
+	github.com/paulmach/orb v0.12.0 // indirect
+	github.com/paulmach/protoscan v0.2.1 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect
@@ -52,8 +58,10 @@ require (
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
+	go.mongodb.org/mongo-driver v1.17.4 // indirect
 	golang.org/x/crypto v0.46.0 // indirect
-	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/sync v0.24.0 // indirect
+	google.golang.org/protobuf v1.36.10 // indirect
 	modernc.org/libc v1.70.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect

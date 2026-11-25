@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kayushkin/location-store/internal/geonames"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locationstore/internal/geonames"
 )
 
 // Calendar event links tie a Google Calendar event to the visit or trip it

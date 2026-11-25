@@ -33,10 +33,10 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	photostore "github.com/kayushkin/photo-store"
-	"github.com/kayushkin/photo-store/internal/importbatch"
-	"github.com/kayushkin/photo-store/internal/journalcitation"
-	"github.com/kayushkin/photo-store/internal/messagecitation"
+	photostore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore/internal/importbatch"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore/internal/journalcitation"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore/internal/messagecitation"
 )
 
 type conversation struct {

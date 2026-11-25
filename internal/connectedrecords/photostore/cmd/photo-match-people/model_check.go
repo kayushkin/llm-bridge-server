@@ -17,9 +17,9 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge/msg"
-	photostore "github.com/kayushkin/photo-store"
-	"github.com/kayushkin/photo-store/internal/peoplematching"
-	"github.com/kayushkin/photo-store/internal/photocontext"
+	photostore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore/internal/peoplematching"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore/internal/photocontext"
 )
 
 // modelChecker asks a model that can see whether a suggested face is the

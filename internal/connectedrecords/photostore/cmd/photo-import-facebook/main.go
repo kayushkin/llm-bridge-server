@@ -25,9 +25,9 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	photostore "github.com/kayushkin/photo-store"
-	"github.com/kayushkin/photo-store/internal/importbatch"
-	"github.com/kayushkin/photo-store/internal/journalcitation"
+	photostore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore/internal/importbatch"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore/internal/journalcitation"
 )
 
 // postTag is the journal-store tag of the user's imported Facebook posts.

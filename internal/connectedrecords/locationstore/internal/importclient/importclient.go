@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	locationstore "github.com/kayushkin/location-store"
+	locationstore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locationstore"
 )
 
 // ErrAlreadyImported is Begin's answer when the store finished this same file

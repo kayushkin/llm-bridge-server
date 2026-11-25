@@ -19,8 +19,8 @@ import (
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
 
-	photostore "github.com/kayushkin/photo-store"
-	"github.com/kayushkin/photo-store/internal/messagecitation"
+	photostore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore/internal/messagecitation"
 )
 
 // SourcesFromSettings reads where the context lives from photo-store's

@@ -9,7 +9,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/kayushkin/photo-store/internal/importbatch"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore/internal/importbatch"
 )
 
 func TestAPictureFromADeletedMessageIsImportedLikeAnyOther(t *testing.T) {

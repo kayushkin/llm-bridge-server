@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kayushkin/location-store/internal/geonames"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locationstore/internal/geonames"
 )
 
 // Journey grouping: find the home base of each stretch of time from where

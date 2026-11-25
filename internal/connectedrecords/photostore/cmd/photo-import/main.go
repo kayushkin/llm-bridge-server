@@ -22,7 +22,7 @@ import (
 	"strings"
 	"time"
 
-	photostore "github.com/kayushkin/photo-store"
+	photostore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore"
 )
 
 // indexLine is one line of index.jsonl.

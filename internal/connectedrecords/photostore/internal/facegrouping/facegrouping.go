@@ -15,7 +15,7 @@ import (
 	"math"
 	"sort"
 
-	"github.com/kayushkin/photo-store/internal/peoplematching"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore/internal/peoplematching"
 )
 
 // Settings tune the grouping. DefaultSettings holds the values in use.

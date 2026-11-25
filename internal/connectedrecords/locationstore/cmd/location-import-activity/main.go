@@ -35,8 +35,8 @@ import (
 
 	activitystore "github.com/kayushkin/activity-store"
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	locationstore "github.com/kayushkin/location-store"
-	"github.com/kayushkin/location-store/internal/importclient"
+	locationstore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locationstore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locationstore/internal/importclient"
 )
 
 // pageSize is activity-store's largest page.

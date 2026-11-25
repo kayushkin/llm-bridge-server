@@ -13,8 +13,8 @@ import (
 	"net/http"
 	"time"
 
-	photostore "github.com/kayushkin/photo-store"
-	"github.com/kayushkin/photo-store/thumbnail"
+	photostore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore/thumbnail"
 )
 
 // Batch is the photos read so far.

@@ -5,7 +5,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/kayushkin/photo-store/internal/peoplematching"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore/internal/peoplematching"
 )
 
 // near is a normalized embedding close to axis, tilted a little by wobble

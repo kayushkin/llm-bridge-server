@@ -11,8 +11,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/kayushkin/photo-store/internal/importbatch"
-	"github.com/kayushkin/photo-store/internal/messagecitation"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore/internal/importbatch"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore/internal/messagecitation"
 )
 
 func TestADirectMessageImageCitesTheStoredMessageItWasSentIn(t *testing.T) {

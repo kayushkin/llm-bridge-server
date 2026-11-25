@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	locationstore "github.com/kayushkin/location-store"
-	"github.com/kayushkin/location-store/internal/googletimeline"
-	"github.com/kayushkin/location-store/internal/importclient"
+	locationstore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locationstore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locationstore/internal/googletimeline"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locationstore/internal/importclient"
 )
 
 // Every file here is invented: the shapes are Google's, the places and times

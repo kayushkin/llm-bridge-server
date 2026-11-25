@@ -17,7 +17,7 @@ import (
 	"github.com/paulmach/osm"
 	"github.com/paulmach/osm/osmpbf"
 
-	"github.com/kayushkin/location-store/internal/geonames"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locationstore/internal/geonames"
 )
 
 // typeKeys are the tags that make a named feature somewhere a person goes,

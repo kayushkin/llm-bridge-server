@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	locationstore "github.com/kayushkin/location-store"
+	locationstore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locationstore"
 )
 
 func main() {

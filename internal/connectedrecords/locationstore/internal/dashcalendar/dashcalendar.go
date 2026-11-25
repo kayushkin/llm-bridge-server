@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	locationstore "github.com/kayushkin/location-store"
+	locationstore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locationstore"
 )
 
 // Client reads dash's calendar routes.
