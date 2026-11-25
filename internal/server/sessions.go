@@ -1601,14 +1601,18 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 			if inserted {
 				imported++
 			}
-			go func(h msg.Harness, brID, sid string) {
-				n, err := s.harness.ImportHistory(context.Background(), brID, h, sid)
-				if err != nil {
-					log.Printf("[discover] failed to import history for %s: %v", sid, err)
-				} else if n > 0 {
-					log.Printf("[discover] imported %d events for session %s", n, sid)
-				}
-			}(ds.Harness, bridgeID, ds.HarnessSessionID)
+			// Inside the pass, one at a time, under discoveryMu, as
+			// discoverOnce imports: each import runs the harness wrapper as
+			// a child process. Started in a goroutine and left running, the
+			// imports of one call ran all at once, after the lock was let
+			// go and after the answer was sent, so a test's temporary HOME
+			// was deleted while a wrapper still wrote into it.
+			n, err := s.harness.ImportHistory(r.Context(), bridgeID, ds.Harness, ds.HarnessSessionID)
+			if err != nil {
+				log.Printf("[discover] failed to import history for %s: %v", ds.HarnessSessionID, err)
+			} else if n > 0 {
+				log.Printf("[discover] imported %d events for session %s", n, ds.HarnessSessionID)
+			}
 		}
 	}
 	if imported > 0 {
