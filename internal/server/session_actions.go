@@ -20,7 +20,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -28,10 +27,13 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
 
+	schedulerapi "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/api"
+	schedulerdb "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/db"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/repositories/repostore"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -45,8 +47,8 @@ const (
 	// maximumSessionActionOfferBytes bounds an offer's body. A message to
 	// send is the only long field.
 	maximumSessionActionOfferBytes = 256 << 10
-	// sessionActionStoreRequestTimeout bounds each call to repo-store and the
-	// scheduler.
+	// sessionActionStoreRequestTimeout bounds a deploy action's read of its
+	// repo from repo-store.
 	sessionActionStoreRequestTimeout = 30 * time.Second
 )
 
@@ -493,62 +495,26 @@ func (s *Server) deployableRepo(ctx context.Context, repoID int64) (repoStoreRep
 	return repo, nil
 }
 
-// schedulerJobRecord is the part of the scheduler's job record an action reads.
-type schedulerJobRecord struct {
-	ID      int64  `json:"id"`
-	Name    string `json:"name"`
-	Type    string `json:"type"`
-	Command string `json:"command"`
-	Agent   string `json:"agent"`
-	Prompt  string `json:"prompt"`
-}
-
-// schedulerJob reads the job from the scheduler in this process.
-func (s *Server) schedulerJob(ctx context.Context, jobID int64) (schedulerJobRecord, *sessionActionRefusal) {
-	var job schedulerJobRecord
-	if refusal := s.getJSONForSessionAction(ctx, s.SchedulerHTTPClient(), fmt.Sprintf("%s/api/jobs/%d", SchedulerInProcessBaseURL, jobID), "the scheduler", &job); refusal != nil {
-		return schedulerJobRecord{}, refusal
+// schedulerJob reads the job from the scheduler in this process. A job it
+// does not have is the caller's mistake (422: the offer names a record that
+// does not exist); any other failure is the scheduler's (502).
+func (s *Server) schedulerJob(_ context.Context, jobID int64) (*schedulerdb.Job, *sessionActionRefusal) {
+	jobs := s.schedulerJobsInProcess()
+	if jobs == nil {
+		return nil, &sessionActionRefusal{http.StatusBadGateway, "store_refused", "the scheduler is not open on this server, so job " + strconv.FormatInt(jobID, 10) + " cannot be read"}
+	}
+	job, err := jobs.Job(jobID)
+	if errors.Is(err, schedulerapi.ErrJobNotFound) {
+		return nil, &sessionActionRefusal{http.StatusUnprocessableEntity, "unknown_record", fmt.Sprintf("the scheduler has no job %d", jobID)}
+	}
+	if err != nil {
+		return nil, &sessionActionRefusal{http.StatusBadGateway, "store_unavailable", fmt.Sprintf("the scheduler could not read job %d: %v", jobID, err)}
 	}
 	if job.ID != jobID {
-		return schedulerJobRecord{}, &sessionActionRefusal{http.StatusBadGateway, "scheduler_answer_unusable",
+		return nil, &sessionActionRefusal{http.StatusBadGateway, "scheduler_answer_unusable",
 			fmt.Sprintf("the scheduler answered job %d with id %d", jobID, job.ID)}
 	}
 	return job, nil
-}
-
-func schedulerJobRunURL(jobID int64) string {
-	return fmt.Sprintf("%s/api/jobs/%d/run", SchedulerInProcessBaseURL, jobID)
-}
-
-// getJSONForSessionAction reads one record from a store. A 404 is the
-// caller's mistake (422: the offer names a record that does not exist); any
-// other failure is the store's (502).
-func (s *Server) getJSONForSessionAction(ctx context.Context, client *http.Client, address, storeName string, into any) *sessionActionRefusal {
-	ctx, cancel := context.WithTimeout(ctx, sessionActionStoreRequestTimeout)
-	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
-	if err != nil {
-		return &sessionActionRefusal{http.StatusInternalServerError, "store_request", err.Error()}
-	}
-	response, err := client.Do(request)
-	if err != nil {
-		return &sessionActionRefusal{http.StatusBadGateway, "store_unavailable", fmt.Sprintf("%s did not answer GET %s: %v", storeName, address, err)}
-	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		return &sessionActionRefusal{http.StatusBadGateway, "store_unavailable", fmt.Sprintf("%s answer to GET %s was cut off: %v", storeName, address, err)}
-	}
-	if response.StatusCode == http.StatusNotFound {
-		return &sessionActionRefusal{http.StatusUnprocessableEntity, "unknown_record", fmt.Sprintf("%s has no record at %s: %s", storeName, address, strings.TrimSpace(string(body)))}
-	}
-	if response.StatusCode != http.StatusOK {
-		return &sessionActionRefusal{http.StatusBadGateway, "store_refused", fmt.Sprintf("%s answered GET %s with %d: %s", storeName, address, response.StatusCode, strings.TrimSpace(string(body)))}
-	}
-	if err := json.Unmarshal(body, into); err != nil {
-		return &sessionActionRefusal{http.StatusBadGateway, "store_answer_unusable", fmt.Sprintf("%s answer to GET %s is not the record expected: %v", storeName, address, err)}
-	}
-	return nil
 }
 
 // runDeployAction runs the repo's deploy.sh, which runs deploy-gate like any
@@ -564,29 +530,23 @@ func (s *Server) runDeployAction(session *store.Session, action store.SessionAct
 }
 
 // runSchedulerJobAction asks the scheduler in this process to run the job
-// now. While scheduler.runs.enabled is off the scheduler answers 503, and the
-// action fails with that answer.
+// now, as POST /scheduler/api/jobs/{id}/run does. While scheduler.runs.enabled
+// is off the scheduler refuses, and the action fails with that refusal. The
+// output is the run, as that route answers it.
 func (s *Server) runSchedulerJobAction(jobID int64) sessionActionOutcome {
-	ctx, cancel := context.WithTimeout(context.Background(), sessionActionStoreRequestTimeout)
-	defer cancel()
-	address := schedulerJobRunURL(jobID)
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, address, nil)
+	jobs := s.schedulerJobsInProcess()
+	if jobs == nil {
+		return sessionActionOutcome{err: fmt.Errorf("the scheduler is not open on this server, so job %d cannot run", jobID)}
+	}
+	run, err := jobs.RunJobNow(jobID)
 	if err != nil {
-		return sessionActionOutcome{err: err}
+		return sessionActionOutcome{output: err.Error(), err: fmt.Errorf("the scheduler refused to run job %d: %w", jobID, err)}
 	}
-	response, err := s.SchedulerHTTPClient().Do(request)
+	encoded, err := json.Marshal(run)
 	if err != nil {
-		return sessionActionOutcome{err: fmt.Errorf("the scheduler did not answer POST %s: %w", address, err)}
+		return sessionActionOutcome{err: fmt.Errorf("the run of job %d does not encode: %w", jobID, err)}
 	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		return sessionActionOutcome{output: string(body), err: fmt.Errorf("the scheduler's answer to POST %s was cut off: %w", address, err)}
-	}
-	if response.StatusCode < 200 || response.StatusCode > 299 {
-		return sessionActionOutcome{output: string(body), err: fmt.Errorf("the scheduler answered POST %s with %d", address, response.StatusCode)}
-	}
-	return sessionActionOutcome{output: string(body)}
+	return sessionActionOutcome{output: string(encoded)}
 }
 
 func (s *Server) forkAndSendAction(session *store.Session, offer msg.SessionActionOffer) sessionActionOutcome {

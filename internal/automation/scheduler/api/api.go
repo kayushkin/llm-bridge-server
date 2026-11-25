@@ -77,6 +77,30 @@ func New(store *db.Store, scheduler *cronpkg.Scheduler, token string, settings *
 
 // Routes answers the API's routes with no CORS headers and no bearer check,
 // for a host that authorizes every request itself, as llm-bridge-server does.
+// ErrJobNotFound is a job the scheduler does not have: its routes' 404.
+var ErrJobNotFound = errors.New("job not found")
+
+// Job is one job, as GET /api/jobs/{id} answers it.
+func (s *Server) Job(id int64) (*db.Job, error) {
+	job, err := s.store.GetJob(id)
+	if err == sql.ErrNoRows {
+		return nil, ErrJobNotFound
+	}
+	return job, err
+}
+
+// RunJobNow starts a job now, as POST /api/jobs/{id}/run does, and answers
+// its run. It refuses a job the scheduler does not have (ErrJobNotFound), a
+// job that runs on an event trigger (cron.ErrRunsOnEventTrigger) and any job
+// while runs are switched off on this server (cron.ErrRunsSwitchedOff).
+func (s *Server) RunJobNow(id int64) (*db.Run, error) {
+	run, err := s.scheduler.RunJobNow(id)
+	if err == sql.ErrNoRows {
+		return nil, ErrJobNotFound
+	}
+	return run, err
+}
+
 func (s *Server) Routes() http.Handler {
 	return s.mux
 }
@@ -249,9 +273,9 @@ func (s *Server) handleJobSub(w http.ResponseWriter, r *http.Request) {
 	if len(parts) == 1 {
 		switch r.Method {
 		case http.MethodGet:
-			job, err := s.store.GetJob(id)
+			job, err := s.Job(id)
 			if err != nil {
-				if err == sql.ErrNoRows {
+				if errors.Is(err, ErrJobNotFound) {
 					writeError(w, 404, "job not found", "")
 					return
 				}
@@ -439,9 +463,9 @@ func (s *Server) handleJobSub(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 405, "method not allowed", "")
 			return
 		}
-		run, err := s.scheduler.RunJobNow(id)
+		run, err := s.RunJobNow(id)
 		if err != nil {
-			if err == sql.ErrNoRows {
+			if errors.Is(err, ErrJobNotFound) {
 				writeError(w, 404, "job not found", "")
 				return
 			}
