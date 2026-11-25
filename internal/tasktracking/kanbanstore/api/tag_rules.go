@@ -126,27 +126,34 @@ func (a *API) cardEffectiveDefaults(w http.ResponseWriter, r *http.Request, boar
 		writeError(w, 405, "method not allowed")
 		return
 	}
-	item, err := a.noteboard.GetItem(cardID)
-	if noteboard.IsNotFound(err) {
-		writeError(w, 404, "noteboard item not found: "+boundedtext.Value(cardID))
+	resolved, err := a.cardEffectiveDefaultsFor(boardID, cardID)
+	if err != nil {
+		writeRefusal(w, err)
 		return
 	}
+	writeJSON(w, 200, resolved)
+}
+
+// cardEffectiveDefaultsFor is what a card on a board gets, read with the
+// card's tags from noteboard.
+func (a *API) cardEffectiveDefaultsFor(boardID, cardID string) (*model.EffectiveDefaults, error) {
+	item, err := a.noteboard.GetItem(cardID)
+	if noteboard.IsNotFound(err) {
+		return nil, &Refusal{Status: 404, Message: "noteboard item not found: " + boundedtext.Value(cardID)}
+	}
 	if err != nil {
-		writeError(w, 502, "noteboard read of card "+boundedtext.Value(cardID)+" failed: "+err.Error())
-		return
+		return nil, &Refusal{Status: 502, Message: "noteboard read of card " + boundedtext.Value(cardID) + " failed: " + err.Error()}
 	}
 	tags, err := tagsOfNoteboardItem(item)
 	if err != nil {
-		writeError(w, 502, err.Error())
-		return
+		return nil, &Refusal{Status: 502, Message: err.Error()}
 	}
 	resolved, err := a.effectiveDefaultsFor(boardID, tags)
 	if err != nil {
-		mapDBErr(w, err)
-		return
+		return nil, dbRefusal(err)
 	}
 	resolved.CardID = cardID
-	writeJSON(w, 200, resolved)
+	return resolved, nil
 }
 
 func (a *API) effectiveDefaultsFor(boardID string, tags []string) (*model.EffectiveDefaults, error) {

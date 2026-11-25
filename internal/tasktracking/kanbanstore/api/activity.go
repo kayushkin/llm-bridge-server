@@ -152,35 +152,42 @@ func (a *API) cardEvents(w http.ResponseWriter, r *http.Request, cardID string) 
 			writeError(w, 400, "invalid JSON")
 			return
 		}
-		if err := req.Validate(); err != nil {
-			writeError(w, 400, err.Error())
-			return
-		}
-		if req.Kind == model.EventTimeLogged {
-			// An entry may replace another, and that has rules this route does
-			// not check.
-			writeError(w, 400, "a time_logged event is written through POST /api/cards/{id}/time-entries, which checks who worked and which entry it replaces")
-			return
-		}
-		state, _ := req.ResolveClockState()
-		actor := req.Actor
-		if actor == "" {
-			actor = actorFrom(r)
-		}
-		stored, err := a.store.RecordCardEvent(&model.CardEvent{
-			CardID: cardID, BoardID: req.BoardID, Kind: req.Kind, ClockState: state,
-			Actor: actor, Summary: req.Summary, Detail: req.Detail,
-			OccurredAt: db.EventTime(req.OccurredAt),
-		})
+		stored, err := a.recordCardEvent(cardID, req, actorFrom(r))
 		if err != nil {
-			writeError(w, 500, err.Error())
+			writeRefusal(w, err)
 			return
 		}
-		a.fireMessageTriggers(stored)
 		writeJSON(w, 201, stored)
 	default:
 		writeError(w, 405, "method not allowed")
 	}
+}
+
+// recordCardEvent records an event on a card's timeline and fires the
+// message triggers it meets. actor stands when the request names none.
+func (a *API) recordCardEvent(cardID string, req model.CreateCardEventRequest, actor string) (*model.CardEvent, error) {
+	if err := req.Validate(); err != nil {
+		return nil, &Refusal{Status: 400, Message: err.Error()}
+	}
+	if req.Kind == model.EventTimeLogged {
+		// An entry may replace another, and that has rules this route does
+		// not check.
+		return nil, &Refusal{Status: 400, Message: "a time_logged event is written through POST /api/cards/{id}/time-entries, which checks who worked and which entry it replaces"}
+	}
+	state, _ := req.ResolveClockState()
+	if req.Actor != "" {
+		actor = req.Actor
+	}
+	stored, err := a.store.RecordCardEvent(&model.CardEvent{
+		CardID: cardID, BoardID: req.BoardID, Kind: req.Kind, ClockState: state,
+		Actor: actor, Summary: req.Summary, Detail: req.Detail,
+		OccurredAt: db.EventTime(req.OccurredAt),
+	})
+	if err != nil {
+		return nil, &Refusal{Status: 500, Message: err.Error()}
+	}
+	a.fireMessageTriggers(stored)
+	return stored, nil
 }
 
 // ============================ Card notes ============================

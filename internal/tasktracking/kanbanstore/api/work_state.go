@@ -61,12 +61,21 @@ func (a *API) entityCards(w http.ResponseWriter, r *http.Request, entityType, en
 		writeError(w, 405, "method not allowed")
 		return
 	}
-	linked, err := a.store.ListCardsByEntity(entityType, entityRef)
+	cards, err := a.entityCardsFor(principalBoardAccessFrom(r), entityType, entityRef)
 	if err != nil {
-		writeError(w, 500, err.Error())
+		writeRefusal(w, err)
 		return
 	}
-	access := principalBoardAccessFrom(r)
+	writeJSON(w, 200, cards)
+}
+
+// entityCardsFor is the cards linked to an entity that access may see (every
+// one for a nil access), oldest link first.
+func (a *API) entityCardsFor(access *PrincipalBoardAccess, entityType, entityRef string) ([]model.EntityCardView, error) {
+	linked, err := a.store.ListCardsByEntity(entityType, entityRef)
+	if err != nil {
+		return nil, &Refusal{Status: 500, Message: err.Error()}
+	}
 	visible := linked[:0]
 	for _, card := range linked {
 		if access == nil || canViewAnyPlacement(access, card.Placements) {
@@ -83,8 +92,7 @@ func (a *API) entityCards(w http.ResponseWriter, r *http.Request, entityType, en
 		// ones included, and lists the rest as missing_ids.
 		result, err := a.noteboard.QueryItems(noteboard.ItemsQuery{IDs: ids, IncludeItems: true})
 		if err != nil {
-			writeError(w, 502, err.Error())
-			return
+			return nil, &Refusal{Status: 502, Message: err.Error()}
 		}
 		for i, id := range result.IDs {
 			itemsByID[id] = result.Items[i]
@@ -97,7 +105,7 @@ func (a *API) entityCards(w http.ResponseWriter, r *http.Request, entityType, en
 		// caller can spot the orphan.
 		out[i] = model.EntityCardView{CardID: card.CardID, Item: itemsByID[card.CardID], WorkState: state, WorkStateSource: source}
 	}
-	writeJSON(w, 200, out)
+	return out, nil
 }
 
 // canViewAnyPlacement is cardVisibleTo for a card whose placements are

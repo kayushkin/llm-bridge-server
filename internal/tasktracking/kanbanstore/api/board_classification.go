@@ -67,6 +67,11 @@ func (a *API) boardClassificationRoutes(w http.ResponseWriter, r *http.Request, 
 // writeClassificationError answers a refusal with its status, a stable code
 // and, when there is one, the state the caller should have sent against.
 func writeClassificationError(w http.ResponseWriter, err error) {
+	writeRefusal(w, classificationRefusal(err))
+}
+
+// classificationRefusal is a classification error as its routes answer it.
+func classificationRefusal(err error) *Refusal {
 	var refusal *db.ClassificationRefusal
 	switch {
 	case errors.As(err, &refusal):
@@ -80,13 +85,13 @@ func writeClassificationError(w http.ResponseWriter, err error) {
 		if refusal.Current != nil {
 			body["current"] = refusal.Current
 		}
-		writeJSON(w, status, body)
+		return &Refusal{Status: status, Message: refusal.Message, body: body}
 	case errors.Is(err, db.ErrNotFound):
-		writeError(w, 404, "not found")
+		return &Refusal{Status: 404, Message: "not found"}
 	case errors.Is(err, db.ErrBadCursor):
-		writeJSON(w, 400, map[string]string{"error": err.Error(), "code": "cursor_invalid"})
+		return &Refusal{Status: 400, Message: err.Error(), body: map[string]string{"error": err.Error(), "code": "cursor_invalid"}}
 	default:
-		writeError(w, 500, err.Error())
+		return &Refusal{Status: 500, Message: err.Error()}
 	}
 }
 
@@ -97,8 +102,14 @@ func writeClassificationInvalid(w http.ResponseWriter, format string, arguments 
 // callerClassificationActions is what the caller may do, by the level the
 // gate found. The service token and an administrator may do everything.
 func callerClassificationActions(r *http.Request, boardID string) []msg.BoardClassificationAction {
+	return classificationActionsAt(principalBoardAccessFrom(r), boardID)
+}
+
+// classificationActionsAt is what access may do on a board's classification;
+// a nil access may do everything.
+func classificationActionsAt(access *PrincipalBoardAccess, boardID string) []msg.BoardClassificationAction {
 	level := BoardAccessAdminister
-	if access := principalBoardAccessFrom(r); access != nil {
+	if access != nil {
 		level = access.LevelOn(boardID)
 	}
 	actions := []msg.BoardClassificationAction{}
@@ -154,13 +165,23 @@ func (a *API) boardClassificationSettings(w http.ResponseWriter, r *http.Request
 		writeError(w, 405, "method not allowed")
 		return
 	}
-	classification, err := a.store.BoardClassification(boardID)
+	classification, err := a.boardClassificationFor(principalBoardAccessFrom(r), boardID)
 	if err != nil {
-		writeClassificationError(w, err)
+		writeRefusal(w, err)
 		return
 	}
-	classification.CallerActions = callerClassificationActions(r, boardID)
 	writeJSON(w, 200, classification)
+}
+
+// boardClassificationFor is a board's classification settings, with what
+// access may do with them.
+func (a *API) boardClassificationFor(access *PrincipalBoardAccess, boardID string) (*msg.BoardClassification, error) {
+	classification, err := a.store.BoardClassification(boardID)
+	if err != nil {
+		return nil, classificationRefusal(err)
+	}
+	classification.CallerActions = classificationActionsAt(access, boardID)
+	return classification, nil
 }
 
 func (a *API) boardClassificationTaxonomy(w http.ResponseWriter, r *http.Request, boardID string) {
@@ -280,31 +301,9 @@ func (a *API) publishClassificationDecision(w http.ResponseWriter, r *http.Reque
 		writeClassificationInvalid(w, "invalid JSON: %v", err)
 		return
 	}
-	if publication.BoardID != boardID {
-		writeClassificationInvalid(w, "board_id %q is not the board in the path, %s", publication.BoardID, boardID)
-		return
-	}
-	if _, err := a.store.GetBoard(boardID); err != nil {
-		writeClassificationError(w, err)
-		return
-	}
-	access, administrator, refusal := a.boardAccessOfPrincipal(publication.InitiatingPrincipalID)
-	if refusal != nil && refusal.status == http.StatusBadGateway {
-		writeError(w, refusal.status, refusal.message)
-		return
-	}
-	if refusal != nil || (!administrator && access.LevelOn(boardID) < BoardAccessEdit) {
-		reason := "does not hold can_edit on the board"
-		if refusal != nil {
-			reason = refusal.message
-		}
-		writeJSON(w, http.StatusForbidden, map[string]string{"code": "initiating_principal_may_not_classify",
-			"error": fmt.Sprintf("initiating principal %s may not classify board %s now: %s", publication.InitiatingPrincipalID, boardID, reason)})
-		return
-	}
-	decision, created, err := a.store.PublishClassificationDecision(publication)
+	decision, created, err := a.publishClassificationDecisionFor(boardID, publication)
 	if err != nil {
-		writeClassificationError(w, err)
+		writeRefusal(w, err)
 		return
 	}
 	status := 200
@@ -312,6 +311,35 @@ func (a *API) publishClassificationDecision(w http.ResponseWriter, r *http.Reque
 		status = 201
 	}
 	writeJSON(w, status, decision)
+}
+
+// publishClassificationDecisionFor publishes the classifier's decision on a
+// board, once its initiating principal is shown still to hold can_edit there.
+func (a *API) publishClassificationDecisionFor(boardID string, publication msg.BoardClassificationDecisionPublication) (*model.ClassificationDecision, bool, error) {
+	if publication.BoardID != boardID {
+		message := fmt.Sprintf("board_id %q is not the board in the path, %s", publication.BoardID, boardID)
+		return nil, false, &Refusal{Status: 400, Message: message, body: map[string]string{"error": message, "code": "request_invalid"}}
+	}
+	if _, err := a.store.GetBoard(boardID); err != nil {
+		return nil, false, classificationRefusal(err)
+	}
+	access, administrator, refusal := a.boardAccessOfPrincipal(publication.InitiatingPrincipalID)
+	if refusal != nil && refusal.status == http.StatusBadGateway {
+		return nil, false, refusalFrom(refusal)
+	}
+	if refusal != nil || (!administrator && access.LevelOn(boardID) < BoardAccessEdit) {
+		reason := "does not hold can_edit on the board"
+		if refusal != nil {
+			reason = refusal.message
+		}
+		message := fmt.Sprintf("initiating principal %s may not classify board %s now: %s", publication.InitiatingPrincipalID, boardID, reason)
+		return nil, false, &Refusal{Status: http.StatusForbidden, Message: message, body: map[string]string{"code": "initiating_principal_may_not_classify", "error": message}}
+	}
+	decision, created, err := a.store.PublishClassificationDecision(publication)
+	if err != nil {
+		return nil, false, classificationRefusal(err)
+	}
+	return decision, created, nil
 }
 
 // reviewClassificationDecision records a person's review. The service token
