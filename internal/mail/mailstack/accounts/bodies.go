@@ -105,9 +105,9 @@ func (s *Store) UpsertMessageBody(b MessageBody) error {
 	return err
 }
 
-// Search ranks with BM25 as SQLite's FTS5 bm25() did, computed in SQL over
-// the weighted tsvector the module keeps on each row (see the migration that
-// makes message_bodies).
+// Search ranks with BM25 as SQLite's FTS5 bm25() did, computed in SQL from
+// message_body_words, the module's table of each recorded body's words and
+// their weighted counts (see the migration that makes it).
 //
 // For each query term: its rarity is ln((N - n + 0.5) / (n + 0.5)), at least
 // 1e-6, where N is every recorded body and n those holding the term; its
@@ -116,17 +116,17 @@ func (s *Store) UpsertMessageBody(b MessageBody) error {
 // where D is the row's word count and avgD the average. k1 is 1.2 and b 0.75,
 // FTS5's own. The score handed back is the sum negated, so it is negative and
 // lower is better, as bm25() was, and callers that turn it into a goodness by
-// negating it keep working. A term that the parser splits into several words
-// counts the least frequent of them.
+// negating it keep working. A term the parser splits into several words
+// counts as held when all of them are, as often as the least frequent; FTS5
+// read such a term as a phrase, in order.
 //
 // The field weights rank subject and sender matches above body matches. A
 // shared subject term is a far stronger signal of "same kind of mail" than the
 // same term buried in a footer, and the sender address is the single most
 // predictive field for how mail gets filed — measured on this host's own email
 // board, sender alone predicted the filed card for 93% of 846 linked messages.
-// They are the FTS5 column weights: subject 8 (weight A), sender address 6
-// (B), sender name 2 (C), body text 1 (D).
-const fieldWeightOfHit = `CASE hit_weight WHEN 'A' THEN 8 WHEN 'B' THEN 6 WHEN 'C' THEN 2 ELSE 1 END`
+// They are the FTS5 column weights: subject 8, sender address 6, sender name
+// 2, body text 1.
 
 // SearchMessages runs a full-text search over recorded payloads. The query is
 // plain text: it is cut into words here, and only runs of letters and digits
@@ -138,7 +138,7 @@ func (s *Store) SearchMessages(query, accountID string, limit int) ([]SearchHit,
 	if len(terms) == 0 {
 		return nil, fmt.Errorf("query %q contains no searchable terms", query)
 	}
-	return s.runRankedSearch(terms, " & ", accountID, "", "", limit)
+	return s.runRankedSearch(terms, true, accountID, "", "", limit)
 }
 
 // SimilarMessages finds recorded messages that read like the given text — a
@@ -156,21 +156,25 @@ func (s *Store) SimilarMessages(text string, excludeAccountID, excludeProviderID
 	if len(terms) == 0 {
 		return nil, fmt.Errorf("text contains no searchable terms")
 	}
-	return s.runRankedSearch(terms, " | ", "", excludeAccountID, excludeProviderID, limit)
+	return s.runRankedSearch(terms, false, "", excludeAccountID, excludeProviderID, limit)
 }
 
-// runRankedSearch finds the rows matching terms joined by operator (" & " or
-// " | "), ranks them by BM25 and answers the best limit of them. Every term is
-// a run of letters and digits (tokenizeForSearch), so the joined text is a
-// valid tsquery with no operator the caller wrote.
-func (s *Store) runRankedSearch(terms []string, operator, accountID, excludeAccountID, excludeProviderID string, limit int) ([]SearchHit, error) {
+// runRankedSearch finds the rows holding every term (everyTerm) or any of
+// them, ranks them by BM25 and answers the best limit of them. Every term is
+// a run of letters and digits (tokenizeForSearch), so the joined text the
+// snippet is drawn with is a valid tsquery with no operator the caller wrote.
+func (s *Store) runRankedSearch(terms []string, everyTerm bool, accountID, excludeAccountID, excludeProviderID string, limit int) ([]SearchHit, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if limit <= 0 || limit > 200 {
 		limit = 20
 	}
+	operator := " | "
+	if everyTerm {
+		operator = " & "
+	}
 	query := strings.Join(terms, operator)
-	args := []any{terms, query}
+	args := []any{terms, everyTerm}
 	filters := ""
 	if accountID != "" {
 		filters += " AND b.account_id = ?"
@@ -203,53 +207,45 @@ func (s *Store) runRankedSearch(terms []string, operator, accountID, excludeAcco
 func rankedSearchStatement(filters string) string {
 	return `
 		WITH query_terms AS (
-			SELECT term.position, term.word,
-			       tsvector_to_array(to_tsvector('mail_search', term.word)) AS lexemes
+			SELECT term.position, tsvector_to_array(to_tsvector('mail_search', term.word)) AS words
 			FROM unnest(?::text[]) WITH ORDINALITY AS term(word, position)
 		),
-		query_lexemes AS (
-			SELECT DISTINCT query_terms.position, cardinality(query_terms.lexemes) AS lexeme_count, lexeme
-			FROM query_terms CROSS JOIN LATERAL unnest(query_terms.lexemes) AS lexeme
+		query_words AS (
+			SELECT DISTINCT query_terms.position, cardinality(query_terms.words) AS word_count, word
+			FROM query_terms CROSS JOIN LATERAL unnest(query_terms.words) AS word
 		),
 		corpus AS (
 			SELECT count(*)::double precision AS documents,
 			       coalesce(avg(search_token_count), 0)::double precision AS average_tokens
 			FROM message_bodies
 		),
+		term_frequencies AS (
+			SELECT held.body_id, query_words.position,
+			       CASE WHEN count(*) = max(query_words.word_count) THEN min(held.weighted_hits) ELSE 0 END::double precision AS weighted_hits
+			FROM message_body_words held JOIN query_words ON query_words.word = held.word
+			GROUP BY held.body_id, query_words.position
+		),
 		term_rarity AS (
-			SELECT query_terms.position,
+			SELECT holding.position,
 			       greatest(ln((corpus.documents - holding.documents + 0.5) / (holding.documents + 0.5)), 1e-6) AS rarity
-			FROM query_terms CROSS JOIN corpus
-			CROSS JOIN LATERAL (
-				SELECT count(*)::double precision AS documents FROM message_bodies
-				WHERE search_document @@ phraseto_tsquery('mail_search', query_terms.word)
-			) AS holding
-			WHERE cardinality(query_terms.lexemes) > 0
+			FROM (SELECT position, count(*)::double precision AS documents FROM term_frequencies
+			      WHERE weighted_hits > 0 GROUP BY position) AS holding
+			CROSS JOIN corpus
+		),
+		matched AS (
+			SELECT body_id, count(*) AS terms_held FROM term_frequencies WHERE weighted_hits > 0 GROUP BY body_id
 		),
 		candidates AS (
-			SELECT b.id, b.search_document, b.search_token_count FROM message_bodies b
-			WHERE b.search_document @@ to_tsquery('mail_search', ?)` + filters + `
-		),
-		lexeme_hits AS (
-			SELECT candidates.id, entry.lexeme, sum(` + fieldWeightOfHit + `)::double precision AS weighted_hits
-			FROM candidates
-			CROSS JOIN LATERAL unnest(candidates.search_document) AS entry
-			CROSS JOIN LATERAL unnest(entry.weights) AS hit_weight
-			WHERE entry.lexeme IN (SELECT lexeme FROM query_lexemes)
-			GROUP BY candidates.id, entry.lexeme
-		),
-		term_frequencies AS (
-			SELECT lexeme_hits.id, query_lexemes.position,
-			       CASE WHEN count(*) = max(query_lexemes.lexeme_count) THEN min(lexeme_hits.weighted_hits) ELSE 0 END AS weighted_hits
-			FROM lexeme_hits JOIN query_lexemes ON query_lexemes.lexeme = lexeme_hits.lexeme
-			GROUP BY lexeme_hits.id, query_lexemes.position
+			SELECT b.id, b.search_token_count FROM message_bodies b JOIN matched ON matched.body_id = b.id
+			WHERE matched.terms_held >= CASE WHEN ?::boolean
+			      THEN (SELECT count(*) FROM query_terms WHERE cardinality(words) > 0) ELSE 1 END` + filters + `
 		),
 		scores AS (
 			SELECT candidates.id,
 			       sum(term_rarity.rarity * (term_frequencies.weighted_hits * 2.2)
 			           / (term_frequencies.weighted_hits + 1.2 * (0.25 + 0.75 * candidates.search_token_count / corpus.average_tokens))) AS goodness
 			FROM candidates
-			JOIN term_frequencies ON term_frequencies.id = candidates.id
+			JOIN term_frequencies ON term_frequencies.body_id = candidates.id AND term_frequencies.weighted_hits > 0
 			JOIN term_rarity ON term_rarity.position = term_frequencies.position
 			CROSS JOIN corpus
 			GROUP BY candidates.id

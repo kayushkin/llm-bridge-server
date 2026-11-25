@@ -70,17 +70,29 @@ func NumberPlaceholders(query string) string {
 	return numbered.String()
 }
 
-// TextPostgresCanHold is text as a Postgres text column can hold it: every
-// byte sequence that is not UTF-8 becomes U+FFFD, and so does a NUL, which
-// Postgres refuses in text. It reports whether anything changed. SQLite held
-// whatever bytes it was given, and mail decoded by a provider backend can
-// carry a body in a charset nobody declared; the JSON the store has always
-// served already showed those bytes as U+FFFD.
+// TextPostgresCanHold is text as a Postgres text column can hold it: each
+// byte that is not part of a UTF-8 sequence becomes U+FFFD, and so does a
+// NUL, which Postgres refuses in text. It reports whether anything changed.
+// SQLite held whatever bytes it was given, and mail decoded by a provider
+// backend can carry a body in a charset nobody declared. One U+FFFD for each
+// such byte is exactly what encoding/json wrote for them, so the JSON the
+// store serves does not change.
 func TextPostgresCanHold(text string) (string, bool) {
 	if utf8.ValidString(text) && !strings.ContainsRune(text, 0) {
 		return text, false
 	}
-	return strings.ReplaceAll(strings.ToValidUTF8(text, "\uFFFD"), "\x00", "\uFFFD"), true
+	var held strings.Builder
+	held.Grow(len(text) + 8)
+	for index := 0; index < len(text); {
+		character, size := utf8.DecodeRuneInString(text[index:])
+		if (character == utf8.RuneError && size == 1) || character == 0 {
+			held.WriteRune(utf8.RuneError)
+		} else {
+			held.WriteString(text[index : index+size])
+		}
+		index += size
+	}
+	return held.String(), true
 }
 
 // IsUniqueViolation reports whether err is Postgres refusing a row that
