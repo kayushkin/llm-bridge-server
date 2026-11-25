@@ -1,0 +1,20 @@
+[Unit]
+Description=rule-store — rules that react to changes in other services, run in shadow until compared
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/home/kayushkincom/bin/rule-store
+# Loopback only: the routes take no credential.
+Environment=RULE_STORE_ADDR=127.0.0.1:8324
+Environment=RULE_STORE_LLM_BRIDGE_URL=http://localhost:8160
+Environment=RULE_STORE_KANBAN_STORE_URL=http://localhost:8305
+# LLMBRIDGE_SERVICE_TOKEN and KANBAN_STORE_SERVICE_TOKEN come from a host-local
+# drop-in in rule-store.service.d/, never from this file.
+Environment=HOME=/home/kayushkincom
+WorkingDirectory=/home/kayushkincom
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,4 @@
+/rule-store
+*.db
+*.db-wal
+*.db-shm
