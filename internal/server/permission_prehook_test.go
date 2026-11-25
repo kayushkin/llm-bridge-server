@@ -194,7 +194,13 @@ func seedPrehookSession(t *testing.T, st *store.Store, id string, typ msg.Sessio
 // permissionDecision and its reason.
 func postPrehook(t *testing.T, srv *Server, bridgeID, body string) (decision, reason string) {
 	t.Helper()
-	req := httptest.NewRequest("POST", "/permission/cc-prehook/"+bridgeID, strings.NewReader(body))
+	return postPrehookToRoute(t, srv, "cc-prehook", bridgeID, body)
+}
+
+// postPrehookToRoute is postPrehook on the gate route of another harness.
+func postPrehookToRoute(t *testing.T, srv *Server, route, bridgeID, body string) (decision, reason string) {
+	t.Helper()
+	req := httptest.NewRequest("POST", "/permission/"+route+"/"+bridgeID, strings.NewReader(body))
 	req.SetPathValue("bridge_id", bridgeID)
 	rec := httptest.NewRecorder()
 	srv.handleCCPermissionPrehook(rec, req)
@@ -356,4 +362,52 @@ func keysOf(m map[string]json.RawMessage) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// Codex cannot be answered "ask": its PreToolUse hook treats it as a failed
+// hook and runs the tool (measured on codex 0.172, 2026-11-25). So where
+// Claude Code's interactive session gets an ask, codex's gets a deny.
+func TestPrehookUnreachableStoreDeniesInteractiveCodexSession(t *testing.T) {
+	srv, st := prehookServerWithDeadStore(t)
+	seedPrehookSession(t, st, "bridge-human", msg.SessionTypeInteractive)
+
+	decision, reason := postPrehookToRoute(t, srv, "codex-prehook", "bridge-human",
+		`{"tool_name":"Bash","tool_input":{"command":"ls"}}`)
+	if decision != "deny" {
+		t.Errorf("codex: permissionDecision = %q, want deny (codex runs the tool on an ask)", decision)
+	}
+	if !strings.Contains(reason, "permission-store evaluate failed") {
+		t.Errorf("codex: reason = %q, want it to carry the store's own failure", reason)
+	}
+
+	if decision, _ := postPrehookToRoute(t, srv, "devin-prehook", "bridge-human",
+		`{"tool_name":"Bash","tool_input":{"command":"ls"}}`); decision != "ask" {
+		t.Errorf("devin: permissionDecision = %q, want ask, unchanged", decision)
+	}
+}
+
+// Codex runs the tool on a deny with an empty reason, and a person's decline
+// carries none unless they typed one, so every deny carries a reason.
+func TestWriteHookDenyAlwaysGivesAReason(t *testing.T) {
+	for _, given := range []string{"", "  "} {
+		rec := httptest.NewRecorder()
+		writeHookDeny(rec, given)
+		var got struct {
+			HookSpecificOutput struct {
+				PermissionDecision       string `json:"permissionDecision"`
+				PermissionDecisionReason string `json:"permissionDecisionReason"`
+			} `json:"hookSpecificOutput"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.HookSpecificOutput.PermissionDecision != "deny" || got.HookSpecificOutput.PermissionDecisionReason != permissionGateDeniedWithoutAReasonMessage {
+			t.Errorf("writeHookDeny(%q) = %+v, want deny with %q", given, got.HookSpecificOutput, permissionGateDeniedWithoutAReasonMessage)
+		}
+	}
+	rec := httptest.NewRecorder()
+	writeHookDeny(rec, "rule deny:Bash:rm")
+	if !strings.Contains(rec.Body.String(), "rule deny:Bash:rm") {
+		t.Errorf("a given reason was replaced: %s", rec.Body.String())
+	}
 }

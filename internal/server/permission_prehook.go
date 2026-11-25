@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/ids"
@@ -78,13 +79,13 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		s.writeHookNoVerdict(w, unattended, "read prehook body: "+err.Error())
+		s.writeHookNoVerdict(w, r, unattended, "read prehook body: "+err.Error())
 		return
 	}
 
 	var payload ccPrehookPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
-		s.writeHookNoVerdict(w, unattended, "decode prehook payload: "+err.Error())
+		s.writeHookNoVerdict(w, r, unattended, "decode prehook payload: "+err.Error())
 		return
 	}
 
@@ -167,7 +168,7 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 	// are harness-side concerns; rule evaluation is unchanged.
 
 	if s.permClient == nil {
-		s.writeHookNoVerdict(w, unattended, "permission-store client not configured")
+		s.writeHookNoVerdict(w, r, unattended, "permission-store client not configured")
 		return
 	}
 
@@ -189,7 +190,7 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 		// undecodable body, outcome outside the allowed set — and the fixed
 		// "unreachable" prefix this used to carry reported four of them as the
 		// one they were not.
-		s.writeHookNoVerdict(w, unattended, "permission-store evaluate failed: "+err.Error())
+		s.writeHookNoVerdict(w, r, unattended, "permission-store evaluate failed: "+err.Error())
 		return
 	}
 
@@ -213,7 +214,7 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 		}
 		s.parkPrehook(w, r, bridgeID, sess, payload, msg.HookSourcePermission, unattended)
 	default:
-		s.writeHookNoVerdict(w, unattended, "permission-store returned unknown outcome "+res.Outcome)
+		s.writeHookNoVerdict(w, r, unattended, "permission-store returned unknown outcome "+res.Outcome)
 	}
 }
 
@@ -240,12 +241,28 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 // never answered, no rule ran at all, and there is nothing left holding the
 // floor. So the gate fails closed, and says why, so the agent can route around
 // the tool or stop rather than hang.
-func (s *Server) writeHookNoVerdict(w http.ResponseWriter, unattended bool, reason string) {
+//
+// Codex has no "ask" answer: measured on codex 0.172 on 2026-11-25, a
+// PreToolUse hook that answers permissionDecision "ask" is a failed hook
+// ("unsupported permissionDecision:ask"), and codex runs the tool. So on
+// codex's gate the no-verdict answer is a deny there too.
+func (s *Server) writeHookNoVerdict(w http.ResponseWriter, r *http.Request, unattended bool, reason string) {
 	if unattended {
 		writeHookDeny(w, reason+" — no human is attached to this autonomous session to resolve it, and no permission rule was evaluated, so the call is denied. Proceed without this tool or stop.")
 		return
 	}
+	if !prehookHarnessCanBeAnsweredAsk(r) {
+		writeHookDeny(w, reason+" — no permission rule was evaluated, and this harness cannot hand the call to a person, so it is denied. Try again later.")
+		return
+	}
 	writeHookAsk(w, reason)
+}
+
+// prehookHarnessCanBeAnsweredAsk reports whether the harness posting to this
+// gate route acts on a permissionDecision of "ask". Codex does not (see
+// writeHookNoVerdict).
+func prehookHarnessCanBeAnsweredAsk(r *http.Request) bool {
+	return !strings.HasPrefix(r.URL.Path, "/permission/"+permissionGateRouteByHarness[msg.HarnessCodex]+"/")
 }
 
 // autoModeSafeTools is the canonical bridge-defined set of tools the
@@ -374,7 +391,7 @@ func (s *Server) parkPrehook(w http.ResponseWriter, r *http.Request, bridgeID st
 		// Broadcast failure leaves the parked entry unreferenced — drop
 		// it so a stale resolve doesn't deliver to a never-read channel.
 		s.parkedAsks.cancel(bridgeID, requestID)
-		s.writeHookNoVerdict(w, unattended, "broadcast awaiting_resolution: "+err.Error())
+		s.writeHookNoVerdict(w, r, unattended, "broadcast awaiting_resolution: "+err.Error())
 		return
 	}
 
@@ -466,9 +483,20 @@ func writeHookAllowWithInput(w http.ResponseWriter, reason string, updatedInput 
 	writeHookDecision(w, "allow", reason, updatedInput)
 }
 
+// writeHookDeny always gives a reason. Codex treats a deny with an empty
+// permissionDecisionReason as a failed hook and runs the tool: measured on
+// codex 0.172 on 2026-11-25, and on the PC test instance a person's decline,
+// resolved with no message, let the command run (br_1795640613496687676).
 func writeHookDeny(w http.ResponseWriter, reason string) {
+	if strings.TrimSpace(reason) == "" {
+		reason = permissionGateDeniedWithoutAReasonMessage
+	}
 	writeHookDecision(w, "deny", reason, nil)
 }
+
+// permissionGateDeniedWithoutAReasonMessage is the reason a deny carries when
+// whoever denied it gave none.
+const permissionGateDeniedWithoutAReasonMessage = "The bridge permission check denied this tool call."
 
 func writeHookAsk(w http.ResponseWriter, reason string) {
 	writeHookDecision(w, "ask", reason, nil)
