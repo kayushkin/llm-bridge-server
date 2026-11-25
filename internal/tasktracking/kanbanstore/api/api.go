@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -148,15 +149,7 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 }
 
 func mapDBErr(w http.ResponseWriter, err error) {
-	if errors.Is(err, db.ErrBoardChanged) {
-		writeError(w, http.StatusConflict, err.Error())
-		return
-	}
-	if errors.Is(err, db.ErrNotFound) {
-		writeError(w, 404, "not found")
-		return
-	}
-	writeError(w, 500, err.Error())
+	writeRefusal(w, dbRefusal(err))
 }
 
 func (a *API) health(w http.ResponseWriter, r *http.Request) {
@@ -1155,9 +1148,9 @@ func (a *API) cardPlacements(w http.ResponseWriter, r *http.Request, cardID stri
 func (a *API) cardLinks(w http.ResponseWriter, r *http.Request, cardID string) {
 	switch r.Method {
 	case "GET":
-		ls, err := a.store.ListCardLinks(cardID)
+		ls, err := a.cardLinksOf(cardID)
 		if err != nil {
-			writeError(w, 500, err.Error())
+			writeRefusal(w, err)
 			return
 		}
 		writeJSON(w, 200, ls)
@@ -1216,6 +1209,15 @@ func (a *API) cardLinks(w http.ResponseWriter, r *http.Request, cardID string) {
 	default:
 		writeError(w, 405, "method not allowed")
 	}
+}
+
+// cardLinksOf is every link on a card.
+func (a *API) cardLinksOf(cardID string) ([]model.CardLink, error) {
+	links, err := a.store.ListCardLinks(cardID)
+	if err != nil {
+		return nil, &Refusal{Status: 500, Message: err.Error()}
+	}
+	return links, nil
 }
 
 func (a *API) linkByID(w http.ResponseWriter, r *http.Request) {
@@ -1434,7 +1436,11 @@ func (a *API) search(w http.ResponseWriter, r *http.Request) {
 // A value that cannot mean anything is a 400 naming what would: a filter that
 // was silently dropped answers every card, which reads as "all of these match".
 func cardFilterFromQuery(r *http.Request) (db.CardFilter, error) {
-	query := r.URL.Query()
+	return cardFilterFromValues(r.URL.Query())
+}
+
+// cardFilterFromValues reads a card filter from a query string's values.
+func cardFilterFromValues(query url.Values) (db.CardFilter, error) {
 	filter := db.CardFilter{
 		AssigneePrincipalID:  query.Get("assignee"),
 		RequesterPrincipalID: query.Get("requester"),

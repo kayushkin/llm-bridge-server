@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/postgresstorage"
+
+	"github.com/kayushkin/llm-bridge/msg"
 )
 
 // Suggested next steps: a model reads what a project is for and where it
@@ -270,16 +272,15 @@ func SuggestNextSteps(ctx context.Context, store *Store, owners *Owners, project
 	if err != nil {
 		return nil, err
 	}
-	request := map[string]any{"prompt": SuggestionPrompt(rollup, activity, now), "system_prompt": suggestionSystemPrompt,
-		"model_role": owners.SuggestionModelRole, "caller": SuggestionCaller, "schema": suggestionSchema}
-	var answer struct {
-		Parsed json.RawMessage `json:"parsed"`
-		Model  string          `json:"model"`
+	bridge, err := owners.bridge("a model call")
+	if err != nil {
+		return nil, fmt.Errorf("ask a model for next steps: %w", err)
 	}
-	modelOwners := *owners
-	modelOwners.HTTP = owners.ModelHTTP
-	if err := modelOwners.sendJSON(ctx, http.MethodPost, owners.BridgeURL+"/oneshot", map[string]string{BridgeServiceTokenHeader: owners.BridgeServiceToken},
-		request, http.StatusOK, &answer); err != nil {
+	modelContext, cancel := context.WithTimeout(ctx, modelCallTimeout)
+	defer cancel()
+	answer, err := bridge.OneShot(modelContext, msg.OneShotRequest{Prompt: SuggestionPrompt(rollup, activity, now), SystemPrompt: suggestionSystemPrompt,
+		ModelRole: owners.SuggestionModelRole, Caller: SuggestionCaller, Schema: suggestionSchema})
+	if err := askOwner("llm-bridge-server, the one-shot router", err); err != nil {
 		return nil, fmt.Errorf("ask a model for next steps: %w", err)
 	}
 	var parsed struct {

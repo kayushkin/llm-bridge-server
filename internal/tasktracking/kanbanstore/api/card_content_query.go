@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -35,7 +36,11 @@ func (q cardContentQuery) isEmpty() bool {
 // noteboard's refusal is relayed — this store keeps no copy of the list to
 // fall out of date.
 func cardContentQueryFromRequest(r *http.Request) (cardContentQuery, error) {
-	values := r.URL.Query()
+	return cardContentQueryFromValues(r.URL.Query())
+}
+
+// cardContentQueryFromValues reads a content query from a query string's values.
+func cardContentQueryFromValues(values url.Values) (cardContentQuery, error) {
 	query := cardContentQuery{Tags: values["tag"], Statuses: values["status"], DueBefore: values.Get("due_before"), Sort: values.Get("sort")}
 	for _, raw := range values["priority"] {
 		priority, err := strconv.Atoi(raw)
@@ -122,21 +127,21 @@ func (e *ownStoreError) Unwrap() error { return e.err }
 // writeCardReadError answers a failed board or column read. noteboard's refusal
 // of a query is the caller's to read, as noteboard wrote it.
 func writeCardReadError(w http.ResponseWriter, err error) {
+	writeRefusal(w, cardReadRefusal(err))
+}
+
+// cardReadRefusal is a failed board or column read as its route answers it.
+func cardReadRefusal(err error) *Refusal {
 	var refused *noteboard.QueryRefusedError
 	if errors.As(err, &refused) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write(refused.Body)
-		return
+		return &Refusal{Status: http.StatusBadRequest, Message: string(refused.Body), raw: refused.Body}
 	}
 	if errors.Is(err, db.ErrNotFound) {
-		writeError(w, 404, "not found")
-		return
+		return &Refusal{Status: 404, Message: "not found"}
 	}
 	var own *ownStoreError
 	if errors.As(err, &own) {
-		writeError(w, 500, err.Error())
-		return
+		return &Refusal{Status: 500, Message: err.Error()}
 	}
-	writeError(w, 502, err.Error())
+	return &Refusal{Status: 502, Message: err.Error()}
 }

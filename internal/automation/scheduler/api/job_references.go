@@ -32,9 +32,6 @@ type JobReference struct {
 // number.
 var ErrNotAJobReference = errors.New("not a job reference")
 
-// ErrJobNotFound is a reference to a job the scheduler does not have.
-var ErrJobNotFound = errors.New("job not found")
-
 // JobReferenceOf reads the job a reference id names, with its newest run.
 func (s *Server) JobReferenceOf(reference string) (JobReference, error) {
 	found := jobReferencePattern.FindStringSubmatch(reference)

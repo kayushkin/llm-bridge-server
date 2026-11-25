@@ -6,12 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/kayushkin/llm-bridge/msg"
 )
 
 // The session filer files chat sessions under projects. A pass lists the
@@ -97,80 +98,38 @@ type SessionFilerRunRequest struct {
 	Limit int
 }
 
-// bridgeChatSession is one row of llm-bridge-server's GET /sessions/summary.
-type bridgeChatSession struct {
-	SessionID   string    `json:"sessionId"`
-	DisplayName string    `json:"displayName"`
-	UpdatedAt   time.Time `json:"updatedAt"`
-	CreatedAt   time.Time `json:"createdAt"`
-}
-
-// bridgeSessionRecord is what GET /sessions/{id} says about a session.
-type bridgeSessionRecord struct {
-	SessionID        string    `json:"session_id"`
-	DisplayName      string    `json:"display_name"`
-	Type             string    `json:"type"`
-	Purpose          string    `json:"purpose"`
-	Origin           string    `json:"origin"`
-	WorkingDirectory string    `json:"working_dir"`
-	ManagerSessionID string    `json:"manager_session_id"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
-}
-
-// bridgeSessionBrief is a chat's brief with its revisions, as GET
-// /session-briefs and GET /sessions/{id}/brief answer it.
-type bridgeSessionBrief struct {
-	Brief *struct {
-		SessionID   string `json:"session_id"`
-		OverallGoal string `json:"overall_goal"`
-		CurrentStep string `json:"current_step"`
-	} `json:"brief"`
-	Revisions []struct {
-		GoalChanged bool      `json:"goal_changed"`
-		CreatedAt   time.Time `json:"created_at"`
-	} `json:"revisions"`
-}
-
-func (owners *Owners) bridgeHeaders() map[string]string {
-	return map[string]string{BridgeServiceTokenHeader: owners.BridgeServiceToken}
-}
-
 // chatSessionsChangedSince lists the chats llm-bridge-server changed since
 // then, newest first. The bridge pages its list by the text of updated_at,
 // which it has stored in more than one time zone, so the pages are only
 // roughly in time order: reading goes on until a page ends a day before the
 // window, and each row is kept or dropped by its own time.
-func (owners *Owners) chatSessionsChangedSince(ctx context.Context, since time.Time) ([]bridgeChatSession, error) {
-	var chats []bridgeChatSession
+func (owners *Owners) chatSessionsChangedSince(ctx context.Context, since time.Time) ([]BridgeChatSession, error) {
+	bridge, err := owners.bridge("the chat sessions")
+	if err != nil {
+		return nil, fmt.Errorf("list chat sessions: %w", err)
+	}
+	var chats []BridgeChatSession
 	seen := map[string]bool{}
 	cursor := ""
 	for {
-		query := url.Values{"type": {bridgeSessionTypeInteractive}, "purpose": {bridgeSessionPurposeChat}, "limit": {strconv.Itoa(sessionFilerSummaryPageSize)}}
-		if cursor != "" {
-			query.Set("before", cursor)
-		}
-		var page struct {
-			Sessions []bridgeChatSession `json:"sessions"`
-			Next     string              `json:"next"`
-		}
-		if err := owners.getJSON(ctx, owners.BridgeURL+"/sessions/summary?"+query.Encode(), owners.bridgeHeaders(), &page); err != nil {
+		page, next, err := bridge.ChatSessions(ctx, cursor, sessionFilerSummaryPageSize)
+		if err := askOwner("llm-bridge-server, the chat sessions", err); err != nil {
 			return nil, fmt.Errorf("list chat sessions: %w", err)
 		}
-		for _, chat := range page.Sessions {
+		for _, chat := range page {
 			if chat.UpdatedAt.Before(since) || seen[chat.SessionID] {
 				continue
 			}
 			seen[chat.SessionID] = true
 			chats = append(chats, chat)
 		}
-		if page.Next == "" || len(page.Sessions) == 0 || page.Next == cursor {
+		if next == "" || len(page) == 0 || next == cursor {
 			break
 		}
-		if page.Sessions[len(page.Sessions)-1].UpdatedAt.Before(since.Add(-24 * time.Hour)) {
+		if page[len(page)-1].UpdatedAt.Before(since.Add(-24 * time.Hour)) {
 			break
 		}
-		cursor = page.Next
+		cursor = next
 	}
 	sort.SliceStable(chats, func(i, j int) bool { return chats[i].UpdatedAt.After(chats[j].UpdatedAt) })
 	return chats, nil
@@ -178,13 +137,16 @@ func (owners *Owners) chatSessionsChangedSince(ctx context.Context, since time.T
 
 // sessionBriefsChangedSince reads every brief llm-bridge-server changed since
 // then, by session id.
-func (owners *Owners) sessionBriefsChangedSince(ctx context.Context, since time.Time) (map[string]bridgeSessionBrief, error) {
-	var views []bridgeSessionBrief
-	query := url.Values{"updated_since": {since.UTC().Format(time.RFC3339)}}
-	if err := owners.getJSON(ctx, owners.BridgeURL+"/session-briefs?"+query.Encode(), owners.bridgeHeaders(), &views); err != nil {
+func (owners *Owners) sessionBriefsChangedSince(ctx context.Context, since time.Time) (map[string]msg.SessionBriefView, error) {
+	bridge, err := owners.bridge("the session briefs")
+	if err != nil {
 		return nil, fmt.Errorf("read session briefs: %w", err)
 	}
-	briefs := make(map[string]bridgeSessionBrief, len(views))
+	views, err := bridge.SessionBriefsUpdatedSince(ctx, since)
+	if err := askOwner("llm-bridge-server, the session briefs", err); err != nil {
+		return nil, fmt.Errorf("read session briefs: %w", err)
+	}
+	briefs := make(map[string]msg.SessionBriefView, len(views))
 	for _, view := range views {
 		if view.Brief != nil {
 			briefs[view.Brief.SessionID] = view
@@ -193,28 +155,20 @@ func (owners *Owners) sessionBriefsChangedSince(ctx context.Context, since time.
 	return briefs, nil
 }
 
-// sessionRepoRefUpdates is how many refs a session moved in one repo.
-type sessionRepoRefUpdates struct {
-	RepoStoreID int64 `json:"repo_store_id"`
-	RefUpdates  int   `json:"ref_updates"`
-}
-
 // sessionReposSince reads, from work-graph-store, the repos each session moved
 // refs in since then, by session id, the most moved first.
-func (owners *Owners) sessionReposSince(ctx context.Context, since time.Time) (map[string][]sessionRepoRefUpdates, error) {
-	var answer struct {
-		SessionRepos []struct {
-			SessionID string `json:"session_id"`
-			sessionRepoRefUpdates
-		} `json:"session_repos"`
-	}
-	path := "/work-graph-store/session-repos?since_unix_nano=" + strconv.FormatInt(since.UnixNano(), 10)
-	if err := owners.repositoriesGetJSON(ctx, path, &answer); err != nil {
+func (owners *Owners) sessionReposSince(ctx context.Context, since time.Time) (map[string][]SessionRepo, error) {
+	repositories, err := owners.repositories("the repos sessions changed")
+	if err != nil {
 		return nil, fmt.Errorf("read the repos sessions changed: %w", err)
 	}
-	repos := map[string][]sessionRepoRefUpdates{}
-	for _, row := range answer.SessionRepos {
-		repos[row.SessionID] = append(repos[row.SessionID], row.sessionRepoRefUpdates)
+	rows, err := repositories.SessionRepos(ctx, since.UnixNano())
+	if err := askOwner("work-graph-store, the repos sessions changed", err); err != nil {
+		return nil, fmt.Errorf("read the repos sessions changed: %w", err)
+	}
+	repos := map[string][]SessionRepo{}
+	for _, row := range rows {
+		repos[row.SessionID] = append(repos[row.SessionID], row)
 	}
 	for _, list := range repos {
 		sort.SliceStable(list, func(i, j int) bool { return list[i].RefUpdates > list[j].RefUpdates })
@@ -226,7 +180,7 @@ func (owners *Owners) sessionReposSince(ctx context.Context, since time.Time) (m
 // when it does. It files the chats a person has through a frontend, and
 // nothing a scheduler, an orchestrator sweep, another session or a harness run
 // outside the bridge started.
-func sessionFilerSkipReason(session bridgeSessionRecord) string {
+func sessionFilerSkipReason(session BridgeSession) string {
 	switch {
 	case session.Type != bridgeSessionTypeInteractive:
 		return "not a chat: type " + session.Type
@@ -245,7 +199,7 @@ func sessionFilerSkipReason(session bridgeSessionRecord) string {
 // the filer judged it from its name, nobody has decided on that since, and it
 // now has a brief; or its proposal still waits and a project has been made
 // since, which may be the one it belongs to.
-func judgedAgain(filing SessionFiling, brief bridgeSessionBrief, hasBrief bool, newestProjectCreatedAt int64) bool {
+func judgedAgain(filing SessionFiling, brief msg.SessionBriefView, hasBrief bool, newestProjectCreatedAt int64) bool {
 	if filing.Status == SessionFilingProposed && filing.CreatedAt < newestProjectCreatedAt {
 		return true
 	}
@@ -269,12 +223,12 @@ type sessionFilerProject struct {
 
 // sessionToFile is everything the model is shown about one chat.
 type sessionToFile struct {
-	Session bridgeSessionRecord
+	Session BridgeSession
 	// Goal and CurrentStep are the brief's; both empty when there is none.
 	Goal        string
 	CurrentStep string
 	Evidence    string
-	Repos       []sessionRepoRefUpdates
+	Repos       []SessionRepo
 }
 
 const sessionFilerSystemPrompt = `You file one chat between a person and an AI assistant under the project it belongs to. You are shown the person's projects, each with its id, what it is for and the repos it owns, and what is known about the chat: its goal, where it stands, its name, the folder it ran in and the repos it changed.
@@ -383,15 +337,15 @@ type sessionFilerVerdict struct {
 
 // askWhichProject makes the one model call for a session.
 func (filer *SessionFiler) askWhichProject(ctx context.Context, prompt string, schema json.RawMessage) (sessionFilerVerdict, string, error) {
-	request := map[string]any{"prompt": prompt, "system_prompt": sessionFilerSystemPrompt, "model_role": filer.ModelRole,
-		"caller": SessionFilerCaller, "schema": schema}
-	var answer struct {
-		Parsed json.RawMessage `json:"parsed"`
-		Model  string          `json:"model"`
+	bridge, err := filer.Owners.bridge("a model call")
+	if err != nil {
+		return sessionFilerVerdict{}, "", fmt.Errorf("ask a model which project the chat belongs to: %w", err)
 	}
-	modelOwners := *filer.Owners
-	modelOwners.HTTP = filer.Owners.ModelHTTP
-	if err := modelOwners.sendJSON(ctx, http.MethodPost, filer.Owners.BridgeURL+"/oneshot", filer.Owners.bridgeHeaders(), request, http.StatusOK, &answer); err != nil {
+	modelContext, cancel := context.WithTimeout(ctx, modelCallTimeout)
+	defer cancel()
+	answer, err := bridge.OneShot(modelContext, msg.OneShotRequest{Prompt: prompt, SystemPrompt: sessionFilerSystemPrompt, ModelRole: filer.ModelRole,
+		Caller: SessionFilerCaller, Schema: schema})
+	if err := askOwner("llm-bridge-server, the one-shot router", err); err != nil {
 		return sessionFilerVerdict{}, "", fmt.Errorf("ask a model which project the chat belongs to: %w", err)
 	}
 	if len(answer.Parsed) == 0 {
@@ -590,6 +544,10 @@ func (filer *SessionFiler) Run(ctx context.Context, request SessionFilerRunReque
 	sort.Strings(waitingOnANewProject)
 	sessionIDs = append(sessionIDs, waitingOnANewProject...)
 
+	bridge, err := filer.Owners.bridge("the sessions to file")
+	if err != nil {
+		return report, err
+	}
 	// Which of them need judging: unfiled by anyone else, and either never
 	// judged or due to be judged again.
 	var toJudge []sessionToFile
@@ -607,8 +565,8 @@ func (filer *SessionFiler) Run(ctx context.Context, request SessionFilerRunReque
 			report.AlreadyJudged[filing.Status]++
 			continue
 		}
-		var record bridgeSessionRecord
-		if err := filer.Owners.getJSON(ctx, filer.Owners.BridgeURL+"/sessions/"+url.PathEscape(sessionID), filer.Owners.bridgeHeaders(), &record); err != nil {
+		record, err := bridge.Session(ctx, sessionID)
+		if err := askOwner("llm-bridge-server, session "+sessionID, err); err != nil {
 			report.Failed = append(report.Failed, SessionFilerFailure{SessionID: sessionID, Error: fmt.Sprintf("read the session: %v", err)})
 			continue
 		}
@@ -622,7 +580,8 @@ func (filer *SessionFiler) Run(ctx context.Context, request SessionFilerRunReque
 		if !hasBrief {
 			// The brief may be older than the window while the session
 			// changed inside it.
-			if err := filer.Owners.getJSON(ctx, filer.Owners.BridgeURL+"/sessions/"+url.PathEscape(sessionID)+"/brief", filer.Owners.bridgeHeaders(), &brief); err != nil {
+			brief, err = bridge.SessionBrief(ctx, sessionID)
+			if err := askOwner("llm-bridge-server, the brief of session "+sessionID, err); err != nil {
 				report.Failed = append(report.Failed, SessionFilerFailure{SessionID: sessionID, Error: fmt.Sprintf("read the brief: %v", err)})
 				continue
 			}

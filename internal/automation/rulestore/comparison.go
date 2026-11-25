@@ -66,7 +66,7 @@ const comparisonRunLimit = 500
 
 // CompareRule checks a rule's shadow runs since a moment against the owners.
 // since 0 means the rule's first activation.
-func (s *Store) CompareRule(ctx context.Context, ruleID string, since int64, kanban *KanbanStore, bridge *LLMBridge) (*Comparison, error) {
+func (s *Store) CompareRule(ctx context.Context, ruleID string, since int64, kanban KanbanFacts, bridge Sessions) (*Comparison, error) {
 	rule, err := s.GetRule(ruleID)
 	if err != nil {
 		return nil, err
@@ -142,7 +142,7 @@ func (s *Store) CompareRule(ctx context.Context, ruleID string, since int64, kan
 	return report, nil
 }
 
-func (s *Store) checkEffect(ctx context.Context, run Run, effect PlannedEffect, kanban *KanbanStore, bridge *LLMBridge) (EffectCheck, error) {
+func (s *Store) checkEffect(ctx context.Context, run Run, effect PlannedEffect, kanban KanbanFacts, bridge Sessions) (EffectCheck, error) {
 	check := EffectCheck{RunID: run.ID, SubjectID: run.SubjectID, DecidedAt: run.DecidedAt, Kind: effect.Kind, Path: effect.Path, Checkable: true}
 	body, _ := effect.Body.(map[string]any)
 	switch effect.Kind {
@@ -197,7 +197,7 @@ func cardIDFromMovePath(path string) string {
 	return ""
 }
 
-func missedArrivals(ctx context.Context, kanban *KanbanStore, effect Effect, since int64, decidedSessions map[string]bool) ([]MissedArrival, error) {
+func missedArrivals(ctx context.Context, kanban KanbanFacts, effect Effect, since int64, decidedSessions map[string]bool) ([]MissedArrival, error) {
 	arrivals, err := kanban.ColumnCards(ctx, effect.BoardID, effect.ToColumnID)
 	if err != nil {
 		return nil, err

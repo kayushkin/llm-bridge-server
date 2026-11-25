@@ -5,19 +5,21 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"strings"
-	"sync"
 	"testing"
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
+	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient/kanbanclienttest"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
+	kanbanapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/api"
+	kanbanmodel "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/model"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// testServerWithKanban is testServer wired to a stub kanban-store. handler
-// serves the session-cards reverse lookup in this process; pass nil for a
-// store that answers every request 502, as it does when noteboard is down.
-func testServerWithKanban(t *testing.T, handler http.HandlerFunc) (*Server, *store.Store) {
+// testServerWithKanban is testServer wired to a stub kanban-store. kanban
+// answers the session-cards reverse lookup in this process; pass nil for a
+// store that refuses every read 502, as it does when noteboard is down.
+func testServerWithKanban(t *testing.T, kanban *kanbanclienttest.Store) (*Server, *store.Store) {
 	t.Helper()
 	dir := t.TempDir()
 	st, err := store.New(filepath.Join(dir, "test.db"))
@@ -26,10 +28,10 @@ func testServerWithKanban(t *testing.T, handler http.HandlerFunc) (*Server, *sto
 	}
 	t.Cleanup(func() { st.Close() })
 
-	if handler == nil {
-		handler = func(w http.ResponseWriter, r *http.Request) {
-			http.Error(w, `{"error":"noteboard did not answer"}`, http.StatusBadGateway)
-		}
+	if kanban == nil {
+		kanban = &kanbanclienttest.Store{EntityCardsAnswer: func(string, string) ([]kanbanmodel.EntityCardView, error) {
+			return nil, &kanbanapi.Refusal{Status: http.StatusBadGateway, Message: "noteboard did not answer"}
+		}}
 	}
 
 	cfg := &config.Config{
@@ -38,87 +40,33 @@ func testServerWithKanban(t *testing.T, handler http.HandlerFunc) (*Server, *sto
 	}
 	testAuthorizationConfig(cfg)
 	srv := New(st, nil, nil, nil, nil, nil, nil, cfg)
-	srv.useKanbanStoreHandlerForTests(handler)
+	srv.kanbanClient = kanbanclient.New(kanban)
 	return srv, st
 }
 
-// sessionCardsStub stands in for kanban-store's entity reverse lookup and
-// ROUTES the way kanban-store actually routes, instead of answering every
-// request with the same body.
-//
-// It mirrors kanban-store's entityScoped (internal/api/api.go), route for
-// route:
-//
-//   - fewer than three segments after /api/entities/ is 400
-//   - a sub-resource other than "cards" is 404
-//   - "cards" under any method but GET is 405
-//   - an entity ref with no links is 200 and an EMPTY array — not 404
-//
-// That last rule is why the routing has to be here rather than in a comment.
-// An unknown ref is indistinguishable from a known one at the status line, so
-// a lookup aimed at the wrong session id fails *silently*: kanban-store
-// answers 200 `[]`, LinkedTodoForSession reads that as "this session has no
-// todo", and the signal is minted unlinked with nothing logged. A stub that
-// serves the canned card for every path cannot tell a right id from a wrong
-// one, so it certifies whichever id the caller happens to pass.
-//
-// It splits r.URL.Path — the DECODED path — because that is what kanban-store
-// splits. Assertions about what the client sent read RequestURI instead, since
-// Go's server decodes %2F back to a slash in URL.Path and a path assertion
-// against it would pass either way.
-type sessionCardsStub struct {
-	todoByRef map[string]string
-
-	mu    sync.Mutex
-	asked []string
+// newSessionCardsStub stands in for kanban-store's entity reverse lookup as
+// kanban-store answers it: a session ref with links is its cards, and an
+// entity with no links is an EMPTY list — not a refusal. That last rule is
+// why the stub has to tell refs apart rather than answer every lookup with
+// the same card. An unknown ref is indistinguishable from a known one with no
+// links, so a lookup aimed at the wrong session id fails *silently*:
+// LinkedTodoForSession reads the empty list as "this session has no todo",
+// and the signal is minted unlinked with nothing logged. A stub that serves
+// the canned card for every ref cannot tell a right id from a wrong one, so
+// it certifies whichever id the caller happens to pass.
+func newSessionCardsStub(todoByRef map[string]string) *kanbanclienttest.Store {
+	return &kanbanclienttest.Store{EntityCardsAnswer: func(entityType, entityRef string) ([]kanbanmodel.EntityCardView, error) {
+		todo, linked := todoByRef[entityRef]
+		if entityType != "session" || !linked {
+			return []kanbanmodel.EntityCardView{}, nil
+		}
+		return []kanbanmodel.EntityCardView{{CardID: todo, Item: map[string]any{"id": todo}}}, nil
+	}}
 }
 
-func newSessionCardsStub(todoByRef map[string]string) *sessionCardsStub {
-	return &sessionCardsStub{todoByRef: todoByRef}
-}
-
-func (s *sessionCardsStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	s.mu.Lock()
-	s.asked = append(s.asked, r.Method+" "+r.RequestURI)
-	s.mu.Unlock()
-
-	rest := strings.TrimPrefix(r.URL.Path, "/api/entities/")
-	parts := strings.Split(rest, "/")
-	if len(parts) < 3 {
-		http.Error(w, "expected /api/entities/:type/:ref/...", http.StatusBadRequest)
-		return
-	}
-	etype, eref, sub := parts[0], parts[1], parts[2]
-	if sub != "cards" {
-		http.Error(w, "not found", http.StatusNotFound)
-		return
-	}
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	todo, linked := s.todoByRef[eref]
-	if etype != "session" || !linked {
-		// The silent case: a ref kanban-store knows nothing about is an empty
-		// list under a 200, exactly like a session that genuinely has no todo.
-		_, _ = w.Write([]byte(`[]`))
-		return
-	}
-	_, _ = w.Write([]byte(`[{"card_id":"` + todo + `","item":{"id":"` + todo + `"}}]`))
-}
-
-// requestLines returns the raw request lines the client produced.
-func (s *sessionCardsStub) requestLines() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]string(nil), s.asked...)
-}
-
-// cardsForSession links one bridge session id to one todo, routing.
-func cardsForSession(bridgeID, todoID string) http.HandlerFunc {
-	return newSessionCardsStub(map[string]string{bridgeID: todoID}).ServeHTTP
+// cardsForSession links one bridge session id to one todo.
+func cardsForSession(bridgeID, todoID string) *kanbanclienttest.Store {
+	return newSessionCardsStub(map[string]string{bridgeID: todoID})
 }
 
 // withHarnessSessionID stamps a harness-native session id on a session, so a
@@ -164,9 +112,7 @@ func TestToolSignalsCarryTheLinkedTodo(t *testing.T) {
 }
 
 func TestSignalsAreUnlinkedWhenTheSessionHasNoTodo(t *testing.T) {
-	srv, st := testServerWithKanban(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`[]`))
-	})
+	srv, st := testServerWithKanban(t, newSessionCardsStub(nil))
 	sess := newSessionForSignals(t, st, "br_1", msg.SessionTypeInteractive)
 
 	srv.recordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
@@ -208,9 +154,13 @@ func TestDerivedSignalsCarryTheLinkedTodo(t *testing.T) {
 // way. A kanban-store that is down, wedged or absent may cost the todo
 // pointer; it may never cost the signal.
 func TestSignalIsStillRecordedWhenTheLookupFails(t *testing.T) {
-	cases := map[string]http.HandlerFunc{
-		"store errors":      func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusInternalServerError) },
-		"store gives junk":  func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`<html>`)) },
+	cases := map[string]*kanbanclienttest.Store{
+		"store errors": {EntityCardsAnswer: func(string, string) ([]kanbanmodel.EntityCardView, error) {
+			return nil, &kanbanapi.Refusal{Status: http.StatusInternalServerError, Message: "boom"}
+		}},
+		"store gives an unreadable card": {EntityCardsAnswer: func(string, string) ([]kanbanmodel.EntityCardView, error) {
+			return []kanbanmodel.EntityCardView{{CardID: "todo-42", Item: map[string]any{"id": "todo-42", "title": 7}}}, nil
+		}},
 		"store unreachable": nil,
 	}
 	for name, handler := range cases {
@@ -255,23 +205,22 @@ func TestNoKanbanStoreConfiguredMeansNoLookup(t *testing.T) {
 // the harness id returns 200 `[]` from a real kanban-store, so every signal
 // would be minted unlinked and nothing anywhere would say why.
 //
-// This pins the whole request line, not just that a todo came back, because
-// the two failures are different sizes: a wrong id still produces a
-// well-formed request, and only the ref inside it is wrong.
+// This pins the ref asked about, not just that a todo came back, because a
+// wrong id still produces a well-formed lookup, and only the ref is wrong.
 func TestTheLinkLookupAsksAboutTheBridgeSessionID(t *testing.T) {
 	stub := newSessionCardsStub(map[string]string{"br_1": "todo-42"})
-	srv, st := testServerWithKanban(t, stub.ServeHTTP)
+	srv, st := testServerWithKanban(t, stub)
 	sess := newSessionForSignals(t, st, "br_1", msg.SessionTypeAutonomous)
 	withHarnessSessionID(t, st, sess)
 
 	srv.recordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
 
-	asked := stub.requestLines()
+	asked := stub.Calls()
 	if len(asked) != 1 {
 		t.Fatalf("kanban-store asked %d times, want exactly 1 for one request: %v", len(asked), asked)
 	}
-	if want := "GET /api/entities/session/br_1/cards"; asked[0] != want {
-		t.Errorf("request line = %q, want %q", asked[0], want)
+	if asked[0].Method != "EntityCards" || asked[0].About != "session/br_1" {
+		t.Errorf("asked = %+v, want the cards of session br_1", asked[0])
 	}
 
 	signals, _ := st.ListSignals(store.SignalFilter{SessionID: "br_1"})
@@ -290,7 +239,7 @@ func TestTheLinkLookupAsksAboutTheBridgeSessionID(t *testing.T) {
 // cannot see one. The signal must still be recorded, and recorded unlinked.
 func TestAnUnknownSessionRefIsAnEmptyListNotAFailure(t *testing.T) {
 	stub := newSessionCardsStub(map[string]string{"br_other": "todo-42"})
-	srv, st := testServerWithKanban(t, stub.ServeHTTP)
+	srv, st := testServerWithKanban(t, stub)
 	sess := newSessionForSignals(t, st, "br_1", msg.SessionTypeAutonomous)
 
 	srv.recordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
@@ -313,7 +262,7 @@ func TestHandleListSignalsFiltersByLinkedTodo(t *testing.T) {
 	srv, st := testServerWithKanban(t, newSessionCardsStub(map[string]string{
 		"br_1": "todo-a",
 		"br_2": "todo-b",
-	}).ServeHTTP)
+	}))
 	first := newSessionForSignals(t, st, "br_1", msg.SessionTypeAutonomous)
 	second := newSessionForSignals(t, st, "br_2", msg.SessionTypeAutonomous)
 	srv.recordAskUserQuestionSignals("br_1", first, "hreq_1", json.RawMessage(askUserQuestionToolInput))

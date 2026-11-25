@@ -221,7 +221,7 @@ func stubTriageByQuestion(t *testing.T, srv *Server, verdictByQuestionText map[s
 }
 
 func TestWorkerTurnWithOneRealQuestionAndOneSignoffSurfacesBothAsOneGroup(t *testing.T) {
-	srv, st := testServerWithKanban(t, (&cardStub{}).handler("card-9"))
+	srv, st := testServerWithKanban(t, (&cardStub{}).kanbanStore("card-9"))
 	sess := seedWorkerSession(t, st, "br_worker_two", msg.PurposeDispatcher)
 	stubClassifier(t, srv, twoQuestionVerdict())
 	stubTriageByQuestion(t, srv, map[string]map[string]any{
@@ -254,7 +254,7 @@ func TestWorkerTurnWithOneRealQuestionAndOneSignoffSurfacesBothAsOneGroup(t *tes
 // reach a person instead, and no answered row is left beside them claiming
 // the worker was told to carry on.
 func TestWorkerSignoffsThatCannotBeSentAreSurfacedWithNoAnsweredRowsBesideThem(t *testing.T) {
-	srv, st := testServerWithKanban(t, (&cardStub{}).handler("card-9"))
+	srv, st := testServerWithKanban(t, (&cardStub{}).kanbanStore("card-9"))
 	sess := seedWorkerSession(t, st, "br_worker_signoffs", msg.PurposeDispatcher)
 	stubClassifier(t, srv, twoQuestionVerdict())
 	stubTriageByQuestion(t, srv, map[string]map[string]any{

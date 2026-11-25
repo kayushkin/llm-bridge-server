@@ -33,7 +33,7 @@ import (
 type Reactor struct {
 	store         *Store
 	caller        EffectCaller
-	bridge        *LLMBridge
+	bridge        Sessions
 	facts         SessionFacts
 	sweepInterval time.Duration
 	clock         func() time.Time
@@ -71,7 +71,7 @@ type ReactorStatus struct {
 }
 
 // NewReactor builds a reactor. Run starts it.
-func NewReactor(store *Store, bridge *LLMBridge, facts SessionFacts, caller EffectCaller, sweepInterval time.Duration) *Reactor {
+func NewReactor(store *Store, bridge Sessions, facts SessionFacts, caller EffectCaller, sweepInterval time.Duration) *Reactor {
 	return &Reactor{store: store, bridge: bridge, facts: facts, caller: caller, sweepInterval: sweepInterval, clock: time.Now,
 		changed: map[string]bool{}, wake: make(chan struct{}, 1), status: ReactorStatus{UnknownFrames: map[string]int{}}}
 }

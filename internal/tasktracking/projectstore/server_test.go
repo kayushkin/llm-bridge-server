@@ -85,10 +85,6 @@ func fakeOwners(t *testing.T) *Owners {
 			json.NewEncoder(writer).Encode(todo)
 			return
 		case "/oneshot":
-			if request.Header.Get(BridgeServiceTokenHeader) != "bridge-token" {
-				http.Error(writer, "no token", http.StatusUnauthorized)
-				return
-			}
 			var oneShot map[string]any
 			body, _ := io.ReadAll(request.Body)
 			json.Unmarshal(body, &oneShot)
@@ -137,10 +133,6 @@ func fakeOwners(t *testing.T) *Owners {
 		case "/deployments":
 			fmt.Fprintf(writer, `[{"commit_sha":"a","deployed_by":"br_1790000000000000002","created_at":%d},{"commit_sha":"abc","deployed_by":"someone","created_at":50}]`, now-day/2)
 		case "/sessions/br_1790000000000000001":
-			if request.Header.Get(BridgeServiceTokenHeader) != "bridge-token" {
-				http.Error(writer, "no token", http.StatusUnauthorized)
-				return
-			}
 			json.NewEncoder(writer).Encode(map[string]any{"session_id": "br_1790000000000000001", "display_name": "Discord signup UI"})
 		case "/api/jobs/500":
 			http.Error(writer, "boom", http.StatusInternalServerError)
@@ -153,9 +145,10 @@ func fakeOwners(t *testing.T) *Owners {
 		}
 	}))
 	t.Cleanup(server.Close)
-	return &Owners{HTTP: server.Client(), Repositories: repositoriesAtTheirRoots(server.Config.Handler), Kanban: server.Client(), KanbanStoreURL: server.URL,
-		Scheduler: server.Client(), SchedulerURL: server.URL, HealthcheckURL: server.URL, Principals: httpPrincipals{client: server.Client(), url: server.URL}, Noteboard: httpNoteboard{client: server.Client(), url: server.URL}, BridgeURL: server.URL, BridgeServiceToken: "bridge-token",
-		SuggestionModelRole: "balanced", ModelHTTP: server.Client()}
+	fake := httpOwners{client: server.Client(), url: server.URL}
+	return &Owners{HTTP: server.Client(), Repositories: fake, Kanban: fake, Scheduler: fake, HealthcheckURL: server.URL,
+		Principals: httpPrincipals{client: server.Client(), url: server.URL}, Noteboard: httpNoteboard{client: server.Client(), url: server.URL}, Bridge: fake,
+		SuggestionModelRole: "balanced"}
 }
 
 type client struct {
@@ -414,19 +407,4 @@ func TestARenamedRepoIsNamedAsRepoStoreNamesItNow(t *testing.T) {
 			t.Fatalf("the link event names the repo %v", event["label"])
 		}
 	}
-}
-
-// repositoriesAtTheirRoots serves repo-store's /repo-store/… and
-// work-graph-store's /work-graph-store/… from a fake that answers both at its
-// root, as the standalone stores did.
-func repositoriesAtTheirRoots(fake http.Handler) http.Handler {
-	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		for _, prefix := range []string{"/repo-store", "/work-graph-store"} {
-			if strings.HasPrefix(request.URL.Path, prefix+"/") {
-				http.StripPrefix(prefix, fake).ServeHTTP(writer, request)
-				return
-			}
-		}
-		http.NotFound(writer, request)
-	})
 }

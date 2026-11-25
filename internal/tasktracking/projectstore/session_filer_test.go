@@ -53,10 +53,6 @@ func (bridge *fakeBridge) handler(t *testing.T) http.Handler {
 			}})
 			return
 		}
-		if request.Header.Get(BridgeServiceTokenHeader) != "bridge-token" {
-			http.Error(writer, "no token", http.StatusUnauthorized)
-			return
-		}
 		switch {
 		case path == "/sessions/summary":
 			query := request.URL.Query()
@@ -178,7 +174,8 @@ func newSessionFilerClient(t *testing.T, bridge *fakeBridge) (client, *time.Time
 	store := newTestStore(t)
 	storeTime := bridge.now.Add(-4 * time.Hour)
 	store.now = func() time.Time { return storeTime }
-	owners := &Owners{HTTP: server.Client(), ModelHTTP: server.Client(), Repositories: repositoriesAtTheirRoots(server.Config.Handler), BridgeURL: server.URL, BridgeServiceToken: "bridge-token"}
+	fake := httpOwners{client: server.Client(), url: server.URL}
+	owners := &Owners{HTTP: server.Client(), Repositories: fake, Bridge: fake}
 	filer := &SessionFiler{Store: store, Owners: owners, ModelRole: "balanced", MinimumConfidence: 0.8, QuietBeforeFilingWithoutABrief: time.Hour, Window: 48 * time.Hour, SessionsPerPass: 20}
 	mux := http.NewServeMux()
 	RegisterHandlers(mux, &Handlers{Store: store, Owners: owners, SessionFiler: filer})
@@ -523,16 +520,16 @@ func TestAPassIsRefusedWithoutAModelRoleAndWhileAnotherRuns(t *testing.T) {
 }
 
 func TestTheFilerFilesOnlyChatsAPersonHasThroughTheBridge(t *testing.T) {
-	chat := bridgeSessionRecord{Type: "interactive", Purpose: "chat", Origin: "frontend"}
+	chat := BridgeSession{Type: "interactive", Purpose: "chat", Origin: "frontend"}
 	if reason := sessionFilerSkipReason(chat); reason != "" {
 		t.Errorf("a chat is skipped: %s", reason)
 	}
-	for name, change := range map[string]func(*bridgeSessionRecord){
-		"an autoworker":        func(session *bridgeSessionRecord) { session.Type, session.Purpose = "autonomous", "autoworker" },
-		"a subagent":           func(session *bridgeSessionRecord) { session.Type, session.Purpose = "system", "subagent" },
-		"a voice command":      func(session *bridgeSessionRecord) { session.Purpose = "voice" },
-		"a discovered session": func(session *bridgeSessionRecord) { session.Origin = "discovery" },
-		"a managed session":    func(session *bridgeSessionRecord) { session.ManagerSessionID = "br_1" },
+	for name, change := range map[string]func(*BridgeSession){
+		"an autoworker":        func(session *BridgeSession) { session.Type, session.Purpose = "autonomous", "autoworker" },
+		"a subagent":           func(session *BridgeSession) { session.Type, session.Purpose = "system", "subagent" },
+		"a voice command":      func(session *BridgeSession) { session.Purpose = "voice" },
+		"a discovered session": func(session *BridgeSession) { session.Origin = "discovery" },
+		"a managed session":    func(session *BridgeSession) { session.ManagerSessionID = "br_1" },
 	} {
 		session := chat
 		change(&session)
