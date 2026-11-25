@@ -18,12 +18,16 @@ import (
 // openSessionLogStore provisions, migrates and opens the session_log module
 // (log-store) on the Postgres at url: its writer pool, and a read-only pool
 // beside it.
-func openSessionLogStore(ctx context.Context, url string) (*logstorestore.Store, error) {
+func openSessionLogStore(ctx context.Context, url string, asynchronousCommit bool) (*logstorestore.Store, error) {
 	module, err := logstorestore.Module()
 	if err != nil {
 		return nil, err
 	}
-	writer, err := openPostgresModule(ctx, url, module)
+	writerURL, err := logstorestore.WriterURL(url, asynchronousCommit)
+	if err != nil {
+		return nil, err
+	}
+	writer, err := openPostgresModule(ctx, writerURL, module)
 	if err != nil {
 		return nil, err
 	}
@@ -46,7 +50,7 @@ func openSessionLogStore(ctx context.Context, url string) (*logstorestore.Store,
 // on, in the session log only; off, in the bridge database's events table,
 // with a copy queued to the session log.
 func enableSessionLog(ctx context.Context, cfg *config.Config, srv *server.Server, bridge *store.Store) (func(), error) {
-	store, err := openSessionLogStore(ctx, cfg.PostgresURL)
+	store, err := openSessionLogStore(ctx, cfg.PostgresURL, cfg.Settings.Boolean(config.SettingSessionLogAsynchronousCommit))
 	if err != nil {
 		return nil, fmt.Errorf("log-store: %w", err)
 	}

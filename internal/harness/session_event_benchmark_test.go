@@ -38,6 +38,7 @@ import (
 	logstorestore "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/store"
 	"github.com/kayushkin/llm-bridge-server/internal/sessionlog/sessionevents"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
+	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -236,14 +237,23 @@ type sessionEventPath struct {
 	build func(b *testing.B) *benchmarkBench
 }
 
-// openBenchmarkSessionLog opens the session_log module on a database of its own.
-func openBenchmarkSessionLog(b *testing.B) (*logstorestore.Store, *logstoreserver.Server) {
+// openBenchmarkSessionLog opens the session_log module on a database of its
+// own, its writer with synchronous_commit off when asynchronousCommit.
+func openBenchmarkSessionLog(b *testing.B, asynchronousCommit bool) (*logstorestore.Store, *logstoreserver.Server) {
 	module, err := logstorestore.Module()
 	if err != nil {
 		b.Fatal(err)
 	}
 	database := postgrestest.NewDatabase(b, module)
-	writer := database.Open(module)
+	writerURL, err := logstorestore.WriterURL(database.URL(), asynchronousCommit)
+	if err != nil {
+		b.Fatal(err)
+	}
+	writer, err := postgresstorage.Open(context.Background(), writerURL, module)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { writer.Close() })
 	reader, err := logstorestore.OpenReader(context.Background(), database.URL(), module)
 	if err != nil {
 		b.Fatal(err)
@@ -265,7 +275,7 @@ var bridgeDatabasePath = sessionEventPath{
 			b.Fatal(err)
 		}
 		b.Cleanup(func() { bridgeStore.Close() })
-		_, sessionLog := openBenchmarkSessionLog(b)
+		_, sessionLog := openBenchmarkSessionLog(b, false)
 		newManager := func() *Manager {
 			m := NewManager(bridgeStore, "http://127.0.0.1:0", "", 0, nil)
 			m.SetSessionEventLog(sessionLog)
@@ -275,34 +285,40 @@ var bridgeDatabasePath = sessionEventPath{
 	},
 }
 
-// singleCopyPath is the merged path: session_log is the only copy, written
-// once per event in order, and serves every read.
-var singleCopyPath = sessionEventPath{
-	name: "single_copy",
-	build: func(b *testing.B) *benchmarkBench {
-		databasePath := filepath.Join(b.TempDir(), "bridge.db")
-		bridgeStore, err := store.New(databasePath)
-		if err != nil {
-			b.Fatal(err)
-		}
-		b.Cleanup(func() { bridgeStore.Close() })
-		_, sessionLog := openBenchmarkSessionLog(b)
-		singleCopy, err := sessionevents.OpenSingleCopy(context.Background(), bridgeStore, sessionLog)
-		if err != nil {
-			b.Fatal(err)
-		}
-		newManager := func() *Manager {
-			m := NewManager(bridgeStore, "http://127.0.0.1:0", "", 0, nil)
-			m.SetSessionEventLog(sessionLog)
-			m.SetSessionEventStore(singleCopy, true)
-			return m
-		}
-		return &benchmarkBench{manager: newManager(), bridgeStore: bridgeStore, reads: singleCopy, sessionLog: sessionLog, databasePath: databasePath, restart: newManager}
-	},
+// singleCopyPathWith is the merged path: session_log is the only copy,
+// written once per event in order, and serves every read.
+func singleCopyPathWith(name string, asynchronousCommit bool) sessionEventPath {
+	return sessionEventPath{
+		name: name,
+		build: func(b *testing.B) *benchmarkBench {
+			databasePath := filepath.Join(b.TempDir(), "bridge.db")
+			bridgeStore, err := store.New(databasePath)
+			if err != nil {
+				b.Fatal(err)
+			}
+			b.Cleanup(func() { bridgeStore.Close() })
+			_, sessionLog := openBenchmarkSessionLog(b, asynchronousCommit)
+			singleCopy, err := sessionevents.OpenSingleCopy(context.Background(), bridgeStore, sessionLog)
+			if err != nil {
+				b.Fatal(err)
+			}
+			newManager := func() *Manager {
+				m := NewManager(bridgeStore, "http://127.0.0.1:0", "", 0, nil)
+				m.SetSessionEventLog(sessionLog)
+				m.SetSessionEventStore(singleCopy, true)
+				return m
+			}
+			return &benchmarkBench{manager: newManager(), bridgeStore: bridgeStore, reads: singleCopy, sessionLog: sessionLog, databasePath: databasePath, restart: newManager}
+		},
+	}
 }
 
 // benchmarkSessionEventPaths lists the paths compared.
-var benchmarkSessionEventPaths = []sessionEventPath{bridgeDatabasePath, singleCopyPath}
+var benchmarkSessionEventPaths = []sessionEventPath{
+	bridgeDatabasePath,
+	singleCopyPathWith("single_copy", false),
+	singleCopyPathWith("single_copy_asynchronous_commit", true),
+}
 
 // latencies collects durations and reports their quantiles.
 type latencies struct {

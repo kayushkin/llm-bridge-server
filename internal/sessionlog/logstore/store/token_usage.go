@@ -27,7 +27,7 @@ import (
 
 // addAPICallToSessionUsage adds one newly stored api_call event to its
 // session's total for its query source.
-func (s *Store) addAPICallToSessionUsage(db execer, sessionID string, data []byte) error {
+func (s *Store) addAPICallToSessionUsage(db statementWriter, sessionID string, data []byte) error {
 	var ev struct {
 		APICall *msg.APICallEvent `json:"api_call"`
 	}

@@ -34,10 +34,6 @@ import (
 // before these tables existed in a background pass; the Postgres module has
 // them from its first migration (see token_usage.go).
 
-// hourStartUnixSQL turns events.created_at into the unix time its clock hour
-// began.
-const hourStartUnixSQL = `(floor(extract(epoch FROM created_at))::bigint / 3600) * 3600`
-
 // hourStartUnixOf is the unix time the clock hour holding t began.
 func hourStartUnixOf(t time.Time) int64 {
 	return t.Unix() / 3600 * 3600
@@ -103,22 +99,16 @@ func apiCallUsageByHourArguments(sessionID string, hourStartUnix int64, u APICal
 		u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens}
 }
 
-// addEventToUsageByHour adds one newly stored event to its session's hour.
+// addEventToUsageByHour adds one newly stored event to its session's hour,
+// the clock hour starting at hourStartUnix that holds its created_at.
 // Only four event types carry anything the hourly projections count; every
 // other type returns at once.
-func (s *Store) addEventToUsageByHour(db execer, eventID int64, sessionID, eventType string, data []byte) error {
+func (s *Store) addEventToUsageByHour(db statementWriter, hourStartUnix int64, sessionID, eventType string, data []byte) error {
 	switch eventType {
 	case "user_message", "result", "api_call", "session_cost":
 	default:
 		return nil
 	}
-	var hourStartUnix int64
-	if err := db.QueryRow(
-		`SELECT `+hourStartUnixSQL+` FROM events WHERE id = $1`, eventID,
-	).Scan(&hourStartUnix); err != nil {
-		return fmt.Errorf("read the hour of event %d: %w", eventID, err)
-	}
-
 	switch eventType {
 	case "user_message":
 		_, err := db.Exec(addToUsageByHourSQL,

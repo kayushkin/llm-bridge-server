@@ -80,6 +80,20 @@ func OpenReader(ctx context.Context, url string, module postgresstorage.Module) 
 	return postgresstorage.Open(ctx, readOnlyURL, module)
 }
 
+// WriterURL is the address the module's writer pool opens on the Postgres at
+// url. With asynchronousCommit each of its commits returns once the commit is
+// in Postgres's memory, before it reaches disk (synchronous_commit off):
+// Postgres writes it out within three times wal_writer_delay (600 ms by
+// default). A crash of this server loses nothing that way, since Postgres has
+// the commit; a crash of Postgres or of the machine loses the commits of that
+// last stretch, which readers and the event stream may already have seen.
+func WriterURL(url string, asynchronousCommit bool) (string, error) {
+	if !asynchronousCommit {
+		return url, nil
+	}
+	return withRuntimeParameter(url, "synchronous_commit", "off")
+}
+
 // withRuntimeParameter adds a session setting to a Postgres connection
 // string, in either of its two forms. pgx passes a parameter it does not know
 // to the server as a setting.
@@ -149,11 +163,9 @@ func (s *Store) RebuildMissingSessionRows() (int64, error) {
 }
 
 // StoreEvent persists a raw event and updates the per-session projection,
-// through AppendEvent, with the columns read from the body.
-// The projection is a derived cache; failure to update is logged but does
-// not fail the underlying event insert (the event is still queryable; the
-// next StoreEvent call rolls forward correctly, and RebuildMissingSessionRows
-// adds a row whose seed failed).
+// through AppendEvent, with the columns read from the body. A total the body
+// does not carry readably is logged and left out; a failed statement fails
+// the whole write (see AppendEvent).
 //
 // ctx bounds the insert: an insert it cancels may still have been stored, as
 // a commit that is cut off cannot say whether it landed.
@@ -170,7 +182,7 @@ func (s *Store) StoreEvent(ctx context.Context, sessionID, eventType string, dat
 // new event. Idempotent on re-application of the same event because
 // last_active uses CURRENT_TIMESTAMP and turn_count / token sums are
 // monotonic only when StoreEvent is called once per event (the caller's job).
-func (s *Store) updateSessionProjection(db execer, sessionID, eventType string, data []byte) error {
+func (s *Store) updateSessionProjection(db statementWriter, sessionID, eventType string, data []byte) error {
 	// Ensure the row exists. INSERT OR IGNORE is a no-op for established
 	// sessions; for the first event of a new session it seeds started_at /
 	// last_active to now().
