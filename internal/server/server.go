@@ -174,6 +174,9 @@ type Server struct {
 	// budgetStore answers /budget-store/ once EnableBudgetStore has run
 	// (budget_store_routes.go); nil answers it 503.
 	budgetStore atomic.Pointer[budgetStoreModule]
+	// possessions answers /possession-store/ once EnablePossessions has run
+	// (possessions_routes.go); nil answers it 503.
+	possessions atomic.Pointer[possessionStores]
 	// fileStoreModule is the file-store module EnableFileStore was given:
 	// photo-store keeps its thumbnails' bytes there, called in Go.
 	fileStoreModule atomic.Pointer[filestore.Store]
@@ -386,6 +389,7 @@ func (s *Server) routes() {
 	s.registerAutomationRoutes()
 	s.registerPhotosAndLocationsRoutes()
 	s.registerBudgetStoreRoutes()
+	s.registerPossessionsRoutes()
 	// This server's own settings, served the way every service serves them.
 	serviceSettingsHandler := servicesettings.Handler(s.settings, "/settings")
 	s.mux.Handle("GET /settings", serviceSettingsHandler)

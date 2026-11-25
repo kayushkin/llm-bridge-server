@@ -104,6 +104,14 @@ func LocationStoreGeonamesDirectory() string {
 	return filepath.Join(homeDirectory(), ".llm-bridge", "location-store", "geonames")
 }
 
+// PossessionStoreCoverCacheDirectory is where the possession-store module
+// keeps the outfit covers it has cut, a cache any file of which may be
+// deleted. It is under this server's own folder, not the standalone store's
+// data directory.
+func PossessionStoreCoverCacheDirectory() string {
+	return filepath.Join(homeDirectory(), ".llm-bridge", "possession-store", "outfit-covers")
+}
+
 // WorkGraphHookSpoolPath is the file work-graph-store's git hook appends ref
 // updates to and the store's ingest reads. The hook reads no settings, so
 // this is the one place both agree on.

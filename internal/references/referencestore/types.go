@@ -523,7 +523,7 @@ func possessionType(typeName, get, description, labelField string, summary []Sum
 	return ReferenceType{
 		Type: typeName, Service: "possession-store", Glyph: "🧺", Description: description,
 		Get: get, IDPatterns: []string{typeName + `_\d{6,}`}, LabelField: labelField,
-		Summary: summary, Page: page, Access: AccessByGrant,
+		Summary: summary, Page: page, Access: AccessByGrantAndOwner,
 	}
 }
 

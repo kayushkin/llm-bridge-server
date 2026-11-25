@@ -285,6 +285,7 @@ func SettingDefinitions() []servicesettings.Definition {
 	definitions = append(definitions, automationSettingDefinitions()...)
 	definitions = append(definitions, photosAndLocationsSettingDefinitions()...)
 	definitions = append(definitions, budgetStoreSettingDefinitions()...)
+	definitions = append(definitions, possessionsSettingDefinitions()...)
 
 	// One proxy backend per known harness. The variable is per harness, so the
 	// declarations are read off the harness registry rather than listed.

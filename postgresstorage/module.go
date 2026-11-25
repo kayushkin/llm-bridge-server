@@ -24,6 +24,7 @@ import (
 	"database/sql"
 	"fmt"
 	"regexp"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
@@ -73,12 +74,30 @@ func (module Module) check() error {
 // module's schema and nowhere else, so a query cannot land in another module's
 // tables by leaving the schema off. The schema must exist: Provision makes it.
 func Open(ctx context.Context, url string, module Module) (*sql.DB, error) {
+	return OpenWithSessionSettings(ctx, url, module, nil)
+}
+
+// sessionSettingPattern is the name of a setting a module defines for its own
+// use: its schema's name, a dot and a plain name (possessions.owner_principal_id).
+var sessionSettingPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}\.[a-z][a-z0-9_]{0,62}$`)
+
+// OpenWithSessionSettings is Open with settings every connection of the pool
+// starts with, each named after the module's schema (<schema>.<name>). A
+// module whose row-level security policies read current_setting opens one
+// pool per value, so a connection can never carry another pool's value.
+func OpenWithSessionSettings(ctx context.Context, url string, module Module, settings map[string]string) (*sql.DB, error) {
 	if err := module.check(); err != nil {
 		return nil, err
 	}
 	config, err := pgx.ParseConfig(url)
 	if err != nil {
 		return nil, fmt.Errorf("postgresstorage: the database URL does not parse: %w", err)
+	}
+	for name, value := range settings {
+		if !sessionSettingPattern.MatchString(name) || !strings.HasPrefix(name, module.Schema+".") {
+			return nil, fmt.Errorf("postgresstorage: session setting %q must be named %s.<lower-case name>", name, module.Schema)
+		}
+		config.RuntimeParams[name] = value
 	}
 	config.RuntimeParams["search_path"] = module.Schema
 	if module.Role != "" {
