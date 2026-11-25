@@ -493,46 +493,141 @@ func (s *Server) handleFolders(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
-	acct := r.URL.Query().Get("account")
-	folder := r.URL.Query().Get("folder")
-	cursor := r.URL.Query().Get("cursor")
 	limit := 50
 	if s := r.URL.Query().Get("limit"); s != "" {
 		if n, err := strconv.Atoi(s); err == nil {
 			limit = n
 		}
 	}
-	if acct == "" {
-		writeError(w, http.StatusBadRequest, errors.New("account query param required"))
+	query := r.URL.Query()
+	msgs, next, refused := s.listMessages(r.Context(), query.Get("account"), query.Get("folder"), query.Get("q"), query.Get("cursor"), limit)
+	if refused != nil {
+		writeRefusal(w, refused)
 		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"messages": msgs, "next_cursor": next})
+}
+
+// writeRefusal answers a refusal as the routes do: with its code when it has
+// one.
+func writeRefusal(w http.ResponseWriter, refused *accessRefusal) {
+	if refused.code == "" {
+		writeError(w, refused.status, refused.err)
+		return
+	}
+	writeCodedError(w, refused.status, refused.code, refused.err)
+}
+
+// listMessages is one page of an account's messages, a folder's or those a
+// search finds: what GET /api/messages answers once its caller may read the
+// account.
+func (s *Server) listMessages(ctx context.Context, acct, folder, query, cursor string, limit int) ([]backend.MessageMeta, string, *accessRefusal) {
+	if acct == "" {
+		return nil, "", &accessRefusal{status: http.StatusBadRequest, err: errors.New("account query param required")}
 	}
 	b, _, err := s.backendFor(acct)
 	if err != nil {
-		writeBackendError(w, err)
-		return
+		return nil, "", backendRefusal(err)
 	}
 	var msgs []backend.MessageMeta
 	var next string
-	if query := r.URL.Query().Get("q"); query != "" {
+	if query != "" {
 		searcher, ok := b.(backend.Searcher)
 		if !ok {
-			writeError(w, http.StatusNotImplemented, fmt.Errorf("account %s's provider has no search here; q works on Gmail accounts", acct))
-			return
+			return nil, "", &accessRefusal{status: http.StatusNotImplemented, err: fmt.Errorf("account %s's provider has no search here; q works on Gmail accounts", acct)}
 		}
 		if folder != "" {
-			writeError(w, http.StatusBadRequest, errors.New("q searches every folder; send q or folder, not both (Gmail syntax: label:… inside q)"))
-			return
+			return nil, "", &accessRefusal{status: http.StatusBadRequest, err: errors.New("q searches every folder; send q or folder, not both (Gmail syntax: label:… inside q)")}
 		}
-		msgs, next, err = searcher.Search(r.Context(), query, cursor, limit)
+		msgs, next, err = searcher.Search(ctx, query, cursor, limit)
 	} else {
-		msgs, next, err = b.List(r.Context(), folder, cursor, limit)
+		msgs, next, err = b.List(ctx, folder, cursor, limit)
 	}
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err)
-		return
+		return nil, "", &accessRefusal{status: http.StatusBadGateway, err: err}
 	}
 	s.indexMessages(acct, msgs)
-	writeJSON(w, http.StatusOK, map[string]any{"messages": msgs, "next_cursor": next})
+	return msgs, next, nil
+}
+
+// backendRefusal is writeBackendError's answer as a refusal.
+func backendRefusal(err error) *accessRefusal {
+	if errors.Is(err, ErrProviderConnectionsOff) {
+		return &accessRefusal{status: http.StatusServiceUnavailable, code: errorCodeProviderConnectionsOff, err: err}
+	}
+	return &accessRefusal{status: http.StatusBadRequest, err: err}
+}
+
+// MailRefusal is mailstack refusing a call made in this process: the status
+// and code its route answers the same refusal with.
+type MailRefusal struct {
+	Status int
+	Code   string
+	Err    error
+}
+
+func (refused *MailRefusal) Error() string {
+	if refused.Code == "" {
+		return fmt.Sprintf("mailstack refused (%d): %v", refused.Status, refused.Err)
+	}
+	return fmt.Sprintf("mailstack refused (%d %s): %v", refused.Status, refused.Code, refused.Err)
+}
+
+func (refused *MailRefusal) Unwrap() error { return refused.Err }
+
+func asMailRefusal(refused *accessRefusal) error {
+	if refused == nil {
+		return nil
+	}
+	return &MailRefusal{Status: refused.status, Code: refused.code, Err: refused.err}
+}
+
+// admitCaller is routeFor's check for a caller in this process: the internal
+// service passes, a principal is held to rule as the route holds it, and a
+// caller naming neither is refused.
+func (s *Server) admitCaller(ctx context.Context, caller Caller, rule accessRule, accountID, messageID, route string) *accessRefusal {
+	if caller.InternalService {
+		return nil
+	}
+	if caller.PrincipalID == "" {
+		return refusal(http.StatusUnauthorized, errorCodeNoCaller, "no caller: mailstack answers a principal or the internal service, as the server it runs in verified them")
+	}
+	_, refused := s.admitPrincipal(ctx, caller.PrincipalID, rule, accountID, messageID, route)
+	return refused
+}
+
+// ListMessagesAs is GET /api/messages for caller: one page of an account's
+// messages, or those query finds, with the same check the route makes (a
+// principal holds can_read_mail on the account) and the same refusals, as
+// a *MailRefusal.
+func (s *Server) ListMessagesAs(ctx context.Context, caller Caller, accountID, folder, query, cursor string, limit int) ([]backend.MessageMeta, string, error) {
+	if refused := s.admitCaller(ctx, caller, ruleReadAccount, accountID, "", "GET /api/messages"); refused != nil {
+		return nil, "", asMailRefusal(refused)
+	}
+	msgs, next, refused := s.listMessages(ctx, accountID, folder, query, cursor, limit)
+	return msgs, next, asMailRefusal(refused)
+}
+
+// ReadMessageAs is GET /api/messages/{id} for caller: the message whole, with
+// the same check the route makes (can_read_mail on the account, or a card
+// the principal may view that links the message) and the same refusals, as
+// a *MailRefusal.
+func (s *Server) ReadMessageAs(ctx context.Context, caller Caller, accountID, folderID, id string) (backend.Message, error) {
+	if refused := s.admitCaller(ctx, caller, ruleReadMessage, accountID, id, "GET /api/messages/{id}"); refused != nil {
+		return backend.Message{}, asMailRefusal(refused)
+	}
+	if accountID == "" {
+		return backend.Message{}, &MailRefusal{Status: http.StatusBadRequest, Err: errors.New("account query param required")}
+	}
+	msg, err := s.ReadMessage(ctx, accountID, folderID, id)
+	var unavailable *accountUnavailableError
+	if errors.As(err, &unavailable) {
+		return backend.Message{}, asMailRefusal(backendRefusal(unavailable.err))
+	}
+	if err != nil {
+		return backend.Message{}, &MailRefusal{Status: http.StatusBadGateway, Err: err}
+	}
+	return msg, nil
 }
 
 func (s *Server) handleGetMessage(w http.ResponseWriter, r *http.Request) {

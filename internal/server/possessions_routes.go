@@ -39,20 +39,10 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessionstore"
 	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
-	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack"
 )
 
 // possessionStoreMountPrefix is where possession-store is mounted.
 const possessionStoreMountPrefix = "/possession-store"
-
-// Hosts of the in-process services possession-store calls. A request to any
-// other host leaves the process.
-const (
-	possessionPhotoStoreHost    = "photo-store.in-process"
-	possessionLocationStoreHost = "location-store.in-process"
-	possessionMailstackHost     = "mailstack.in-process"
-	possessionBudgetStoreHost   = "budget-store.in-process"
-)
 
 // possessionStores is possession-store as this server serves it.
 type possessionStores struct {
@@ -98,35 +88,36 @@ func (s *Server) EnablePossessions(module PossessionsModule) error {
 	if module.Open == nil || module.OwnerLocation == nil || module.CoverCacheDirectory == "" {
 		return errors.New("possession-store: the pool opener, the owner's time zone and the cover cache directory are required")
 	}
-	client := s.possessionOutboundClient()
+	photos := possessionPhotoStore{server: s}
+	budget := possessionBudgetStore{server: s}
 	references := possessionstore.ServiceReferences{
-		PhotoStoreURL:    "http://" + possessionPhotoStoreHost,
-		LocationStoreURL: "http://" + possessionLocationStoreHost,
-		ArticleStoreURL:  strings.TrimRight(module.ArticleStoreURL, "/"),
-		BudgetStoreURL:   "http://" + possessionBudgetStoreHost,
-		HTTPClient:       client,
-		Machines:         possessionHarnessMachines{server: s},
+		Photos:          photos,
+		Places:          possessionPlaces{server: s},
+		Transactions:    budget,
+		ArticleStoreURL: strings.TrimRight(module.ArticleStoreURL, "/"),
+		// article-store runs apart, so its checks go over the network, bounded
+		// and with no redirect followed, as they were.
+		HTTPClient: &http.Client{Timeout: 15 * time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
+		Machines:   possessionHarnessMachines{server: s},
 	}
 	store, err := possessionstore.New(module.Open, references, PossessionOriginalFiles(files, s.fileStoreLimits))
 	if err != nil {
 		return err
 	}
-	budget := possessionstore.BudgetStore{URL: "http://" + possessionBudgetStoreHost, HTTPClient: client}
 	store.UseBudgetStore(budget)
 	reviewer := &possessionstore.Reviewer{
 		Store:  store,
 		Models: possessionstore.OneShotModelCaller{RunRole: s.oneShotRouter.RunRole, ListPrice: s.possessionModelPrice},
 		Photos: possessionstore.PhotoStoreSource{
-			PhotoStoreURL: "http://" + possessionPhotoStoreHost,
-			Originals:     store,
-			LongestSide:   module.ReviewImageLongestSide,
-			HTTPClient:    client,
+			PhotoStore:  photos,
+			Originals:   store,
+			LongestSide: module.ReviewImageLongestSide,
 		},
 		FirstReaderRole:  module.FirstReaderRole,
 		SecondReaderRole: module.SecondReaderRole,
 		Articles:         possessionstore.ArticleStore{URL: strings.TrimRight(module.ArticleStoreURL, "/"), HTTPClient: &http.Client{Timeout: time.Minute}},
 		Budget:           budget,
-		Mail:             possessionstore.Mailstack{URL: "http://" + possessionMailstackHost, HTTPClient: client},
+		Mail:             possessionMail{server: s},
 		OwnerLocation:    module.OwnerLocation,
 		ReadCoverWearersInBackgroundFor: func(owner string) bool {
 			return slices.Contains(module.ReviewOwners, owner)
@@ -139,96 +130,6 @@ func (s *Server) EnablePossessions(module PossessionsModule) error {
 	s.referenceReadable.possessionsAt.Store(possessionServer)
 	s.possessions.Store(&possessionStores{store: store, reviewer: reviewer, handler: mux, patterns: patterns})
 	return nil
-}
-
-// possessionOutboundClient is the one client possession-store's calls to
-// other stores go through: the in-process hosts to their handlers as the
-// caller in the request context, every other host over the network.
-func (s *Server) possessionOutboundClient() *http.Client {
-	return &http.Client{
-		Transport: photoFacePassTransport{
-			byHost: map[string]http.Handler{
-				possessionPhotoStoreHost:    s.possessionInProcessStore("photo-store", func(stores *photosAndLocationsStores) http.Handler { return stores.photoHandler }),
-				possessionLocationStoreHost: s.possessionInProcessStore("location-store", func(stores *photosAndLocationsStores) http.Handler { return stores.locationHandler }),
-				possessionMailstackHost:     http.HandlerFunc(s.possessionMailstack),
-				possessionBudgetStoreHost:   http.HandlerFunc(s.possessionBudgetStore),
-			},
-			network: http.DefaultTransport,
-		},
-		Timeout:       15 * time.Minute,
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
-}
-
-// possessionInProcessStore serves a store's handler with only the caller the
-// request context carries, which possession-store set to its request's
-// caller or to the owner it acts for; a request with none is refused.
-func (s *Server) possessionInProcessStore(storeName string, handlerOf func(*photosAndLocationsStores) http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := ownership.CallerFromContext(r.Context()); !ok {
-			writeJSONError(w, http.StatusUnauthorized, "possession_store_call_without_a_caller", "possession-store asked "+storeName+" with no caller in its context")
-			return
-		}
-		stores := s.photosAndLocations.Load()
-		if stores == nil {
-			photosAndLocationsOff(storeName, strings.ReplaceAll(storeName, "-", "_")+"_off").ServeHTTP(w, r)
-			return
-		}
-		served := r.Clone(r.Context())
-		served.Header = keptHeaders(r.Header)
-		handlerOf(stores).ServeHTTP(w, served)
-	})
-}
-
-// possessionMailstack serves mailstack's /api routes as the principal the
-// request context names. Mail is read only for one owner, so a context that
-// names no principal is refused rather than read as the internal service.
-func (s *Server) possessionMailstack(w http.ResponseWriter, r *http.Request) {
-	caller, ok := ownership.CallerFromContext(r.Context())
-	if !ok || caller.PrincipalID == "" {
-		writeJSONError(w, http.StatusUnauthorized, "possession_store_mail_without_a_principal", "possession-store reads mail only as one owner, and the call names none")
-		return
-	}
-	mail := s.mailstack.Load()
-	if mail == nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "mailstack_off", errMailstackOff.Error())
-		return
-	}
-	served := r.Clone(mailstack.ContextWithCaller(r.Context(), mailstack.Caller{PrincipalID: caller.PrincipalID}))
-	served.Header = keptHeaders(r.Header)
-	mail.Handler().ServeHTTP(w, served)
-}
-
-// possessionBudgetStore serves budget-store's routes as the owner the request
-// context names, in that owner's own books. Every call possession-store makes
-// there acts for one owner's possessions, so a context that names no
-// principal is refused, and an administrator's sight of every owner's books
-// is not passed on.
-func (s *Server) possessionBudgetStore(w http.ResponseWriter, r *http.Request) {
-	caller, ok := ownership.CallerFromContext(r.Context())
-	if !ok || caller.PrincipalID == "" {
-		writeJSONError(w, http.StatusUnauthorized, "possession_store_budget_without_a_principal", "possession-store asks budget-store only as one owner, and the call names none")
-		return
-	}
-	module := s.budgetStore.Load()
-	if module == nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "budget_store_off", "budget-store is not open on this server: EnableBudgetStore was never called")
-		return
-	}
-	served := r.Clone(ownership.ContextWithCaller(r.Context(), ownership.Caller{PrincipalID: caller.PrincipalID}))
-	served.Header = keptHeaders(r.Header)
-	module.handler.ServeHTTP(w, served)
-}
-
-// keptHeaders are the only request headers an in-process store sees.
-func keptHeaders(header http.Header) http.Header {
-	kept := http.Header{}
-	for _, name := range []string{"Content-Type", "Accept"} {
-		if value := header.Get(name); value != "" {
-			kept.Set(name, value)
-		}
-	}
-	return kept
 }
 
 // possessionModelPrice is model-store's list price for a model, from the
