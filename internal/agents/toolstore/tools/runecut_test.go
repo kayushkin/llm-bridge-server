@@ -151,7 +151,7 @@ func TestSchedulerRunOutputTruncationDoesNotSplitARune(t *testing.T) {
 				mustJSONString(t, output))
 		}))
 
-		out, err := handleRuns(context.Background(), server.URL, "", 1)
+		out, err := handleRuns(context.Background(), server.URL, http.DefaultClient, 1)
 		server.Close()
 		if err != nil {
 			t.Fatalf("lead=%d: runs failed: %v", lead, err)

@@ -411,8 +411,8 @@ func (s *Server) describeSessionAction(ctx context.Context, session *store.Sessi
 		if job.Type == "agent" {
 			what = fmt.Sprintf("the %s agent with this prompt: %s", job.Agent, job.Prompt)
 		}
-		return fmt.Sprintf("POST %s — start scheduler job %d, %s (a %s job), which runs %s",
-			s.schedulerJobRunURL(job.ID), job.ID, job.Name, job.Type, what), nil
+		return fmt.Sprintf("POST %s/api/jobs/%d/run on this server — start scheduler job %d, %s (a %s job), which runs %s",
+			schedulerMountPrefix, job.ID, job.ID, job.Name, job.Type, what), nil
 	case msg.SessionActionSendMessage:
 		return fmt.Sprintf("send session %s this message: %s", session.SessionID, offer.Message), nil
 	case msg.SessionActionForkAndSend:
@@ -503,13 +503,10 @@ type schedulerJobRecord struct {
 	Prompt  string `json:"prompt"`
 }
 
+// schedulerJob reads the job from the scheduler in this process.
 func (s *Server) schedulerJob(ctx context.Context, jobID int64) (schedulerJobRecord, *sessionActionRefusal) {
-	if s.cfg.SchedulerURL == "" {
-		return schedulerJobRecord{}, &sessionActionRefusal{http.StatusServiceUnavailable, "scheduler_not_configured",
-			"LLMBRIDGE_SCHEDULER_URL is not set, so this server cannot run a scheduler job"}
-	}
 	var job schedulerJobRecord
-	if refusal := s.getJSONForSessionAction(ctx, fmt.Sprintf("%s/api/jobs/%d", strings.TrimRight(s.cfg.SchedulerURL, "/"), jobID), "the scheduler", &job); refusal != nil {
+	if refusal := s.getJSONForSessionAction(ctx, s.SchedulerHTTPClient(), fmt.Sprintf("%s/api/jobs/%d", SchedulerInProcessBaseURL, jobID), "the scheduler", &job); refusal != nil {
 		return schedulerJobRecord{}, refusal
 	}
 	if job.ID != jobID {
@@ -519,21 +516,21 @@ func (s *Server) schedulerJob(ctx context.Context, jobID int64) (schedulerJobRec
 	return job, nil
 }
 
-func (s *Server) schedulerJobRunURL(jobID int64) string {
-	return fmt.Sprintf("%s/api/jobs/%d/run", strings.TrimRight(s.cfg.SchedulerURL, "/"), jobID)
+func schedulerJobRunURL(jobID int64) string {
+	return fmt.Sprintf("%s/api/jobs/%d/run", SchedulerInProcessBaseURL, jobID)
 }
 
 // getJSONForSessionAction reads one record from a store. A 404 is the
 // caller's mistake (422: the offer names a record that does not exist); any
 // other failure is the store's (502).
-func (s *Server) getJSONForSessionAction(ctx context.Context, address, storeName string, into any) *sessionActionRefusal {
+func (s *Server) getJSONForSessionAction(ctx context.Context, client *http.Client, address, storeName string, into any) *sessionActionRefusal {
 	ctx, cancel := context.WithTimeout(ctx, sessionActionStoreRequestTimeout)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
 	if err != nil {
 		return &sessionActionRefusal{http.StatusInternalServerError, "store_request", err.Error()}
 	}
-	response, err := http.DefaultClient.Do(request)
+	response, err := client.Do(request)
 	if err != nil {
 		return &sessionActionRefusal{http.StatusBadGateway, "store_unavailable", fmt.Sprintf("%s did not answer GET %s: %v", storeName, address, err)}
 	}
@@ -566,18 +563,18 @@ func (s *Server) runDeployAction(session *store.Session, action store.SessionAct
 	return s.runShellForSessionAction(session, action, repo.Path, "./deploy.sh", nil)
 }
 
+// runSchedulerJobAction asks the scheduler in this process to run the job
+// now. While scheduler.runs.enabled is off the scheduler answers 503, and the
+// action fails with that answer.
 func (s *Server) runSchedulerJobAction(jobID int64) sessionActionOutcome {
-	if s.cfg.SchedulerURL == "" {
-		return sessionActionOutcome{err: errors.New("LLMBRIDGE_SCHEDULER_URL is not set, so this server cannot run a scheduler job")}
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), sessionActionStoreRequestTimeout)
 	defer cancel()
-	address := s.schedulerJobRunURL(jobID)
+	address := schedulerJobRunURL(jobID)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, address, nil)
 	if err != nil {
 		return sessionActionOutcome{err: err}
 	}
-	response, err := http.DefaultClient.Do(request)
+	response, err := s.SchedulerHTTPClient().Do(request)
 	if err != nil {
 		return sessionActionOutcome{err: fmt.Errorf("the scheduler did not answer POST %s: %w", address, err)}
 	}

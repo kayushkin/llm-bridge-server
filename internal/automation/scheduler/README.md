@@ -1,5 +1,21 @@
 # Scheduler
 
+> **In llm-bridge-server.** This copy runs inside llm-bridge-server on a
+> Postgres module (`scheduler`), not as a service of its own: its routes are
+> the server's `/scheduler/<path>` (this README's `<path>`), operator only, and
+> the server authorizes each request, so `SCHEDULER_TOKEN` is gone. It runs no
+> job unless the server's `scheduler.runs.enabled` is on; off, the jobs, holds,
+> runs and stored model roles are read and written and run now answers 503.
+> `scheduler.nats_url` gives agent jobs, event triggers and the bus commands
+> their NATS, and `scheduler.noteboard_url` the address agent prompts name.
+> `GET /scheduler/settings` describes only the stored model roles.
+> `llm-bridge-server import-scheduler -sqlite <copy> [-newest-runs-per-job N]`
+> copies a standalone scheduler in, keeping every job id, hold and run. The
+> standalone daemon (`cmd/scheduler`) and its `deploy.sh` are gone from this
+> copy; the job binaries under `cmd/` are still separate programs that a
+> shell job runs. Everything below about SQLite, the port and the unit
+> describes the standalone service.
+
 Centralized job scheduler for the inber ecosystem.
 
 ## Architecture

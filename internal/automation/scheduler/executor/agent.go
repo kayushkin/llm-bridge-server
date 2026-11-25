@@ -57,6 +57,13 @@ func NewAgentExecutor(client *natsbus.Client, bridgeURL, noteboardURL string, de
 	}
 }
 
+// SetBridgeHTTPClient makes every call to llm-bridge-server go through client.
+// Where the scheduler runs inside llm-bridge-server, client serves each call
+// with the server's own handler, timed as the network calls were.
+func (e *AgentExecutor) SetBridgeHTTPClient(client *http.Client) {
+	e.httpClient = client
+}
+
 // orchestratorHarness maps scheduler's free-form orchestrator string to the
 // canonical llm-bridge harness kind. Anything unrecognized falls through to
 // claude-code (the interactive default).

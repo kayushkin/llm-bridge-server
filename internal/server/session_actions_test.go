@@ -85,13 +85,14 @@ func testServerForSessionActions(t *testing.T) (*Server, *store.Store, *fakeSess
 	cfg := &config.Config{
 		ImagesDir:       filepath.Join(dir, "images"),
 		BridgePrefsPath: filepath.Join(dir, "prefs.json"),
-		SchedulerURL:    storesServer.URL,
 		ListenAddr:      "127.0.0.1:8160",
 	}
 	testAuthorizationConfig(cfg)
 	srv := New(st, nil, nil, nil, nil, testModelStore(t), nil, cfg)
 	enableLogStoreAt(t, srv, fakeLogStore(t).URL)
 	srv.repoRegistryForDeploys = fake
+	// The scheduler runs in this process; the fake stands in for its routes.
+	srv.EnableScheduler(storesServer.Config.Handler)
 	return srv, st, fake
 }
 

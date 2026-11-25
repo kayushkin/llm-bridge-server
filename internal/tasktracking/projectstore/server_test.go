@@ -154,7 +154,7 @@ func fakeOwners(t *testing.T) *Owners {
 	}))
 	t.Cleanup(server.Close)
 	return &Owners{HTTP: server.Client(), Repositories: repositoriesAtTheirRoots(server.Config.Handler), Kanban: server.Client(), KanbanStoreURL: server.URL,
-		SchedulerURL: server.URL, HealthcheckURL: server.URL, Principals: httpPrincipals{client: server.Client(), url: server.URL}, Noteboard: httpNoteboard{client: server.Client(), url: server.URL}, BridgeURL: server.URL, BridgeServiceToken: "bridge-token",
+		Scheduler: server.Client(), SchedulerURL: server.URL, HealthcheckURL: server.URL, Principals: httpPrincipals{client: server.Client(), url: server.URL}, Noteboard: httpNoteboard{client: server.Client(), url: server.URL}, BridgeURL: server.URL, BridgeServiceToken: "bridge-token",
 		SuggestionModelRole: "balanced", ModelHTTP: server.Client()}
 }
 

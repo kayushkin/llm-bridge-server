@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -73,7 +74,7 @@ func TestGetShowsTheWorkspaceOfAShellJob(t *testing.T) {
 	job := shellJobWithEveryFieldTheReadPathsHid()
 	baseURL, _ := fakeScheduler(t, job, nil)
 
-	report, err := handleGet(context.Background(), baseURL, "", job.ID)
+	report, err := handleGet(context.Background(), baseURL, http.DefaultClient, job.ID)
 	if err != nil {
 		t.Fatalf("handleGet returned an error: %s", err)
 	}
@@ -90,7 +91,7 @@ func TestListShowsTheWorkspaceOfAShellJob(t *testing.T) {
 	job := shellJobWithEveryFieldTheReadPathsHid()
 	baseURL, _ := fakeScheduler(t, job, nil)
 
-	report, err := handleList(context.Background(), baseURL, "")
+	report, err := handleList(context.Background(), baseURL, http.DefaultClient)
 	if err != nil {
 		t.Fatalf("handleList returned an error: %s", err)
 	}
@@ -107,7 +108,7 @@ func TestListShowsTheDescriptionTimeoutAndWorkspaceOfEveryJobType(t *testing.T) 
 	agentJob := agentJobWithEveryField()
 	baseURL, _ := fakeScheduler(t, shellJob, nil, agentJob)
 
-	report, err := handleList(context.Background(), baseURL, "")
+	report, err := handleList(context.Background(), baseURL, http.DefaultClient)
 	if err != nil {
 		t.Fatalf("handleList returned an error: %s", err)
 	}
@@ -136,7 +137,7 @@ func TestListLeavesOutATimeoutOfZeroBecauseZeroMeansTheDefault(t *testing.T) {
 	job.WorkspaceID = ""
 	baseURL, _ := fakeScheduler(t, job, nil)
 
-	report, err := handleList(context.Background(), baseURL, "")
+	report, err := handleList(context.Background(), baseURL, http.DefaultClient)
 	if err != nil {
 		t.Fatalf("handleList returned an error: %s", err)
 	}
@@ -170,11 +171,11 @@ func TestBothReadPathsShowEveryFieldTheWritePathsCanSet(t *testing.T) {
 	job := agentJobWithEveryField()
 	baseURL, _ := fakeScheduler(t, job, nil)
 
-	listing, err := handleList(context.Background(), baseURL, "")
+	listing, err := handleList(context.Background(), baseURL, http.DefaultClient)
 	if err != nil {
 		t.Fatalf("handleList returned an error: %s", err)
 	}
-	single, err := handleGet(context.Background(), baseURL, "", job.ID)
+	single, err := handleGet(context.Background(), baseURL, http.DefaultClient, job.ID)
 	if err != nil {
 		t.Fatalf("handleGet returned an error: %s", err)
 	}
@@ -202,11 +203,11 @@ func TestTheTwoReadPathsDescribeAJobIdentically(t *testing.T) {
 	job := shellJobWithEveryFieldTheReadPathsHid()
 	baseURL, _ := fakeScheduler(t, job, nil)
 
-	listing, err := handleList(context.Background(), baseURL, "")
+	listing, err := handleList(context.Background(), baseURL, http.DefaultClient)
 	if err != nil {
 		t.Fatalf("handleList returned an error: %s", err)
 	}
-	single, err := handleGet(context.Background(), baseURL, "", job.ID)
+	single, err := handleGet(context.Background(), baseURL, http.DefaultClient, job.ID)
 	if err != nil {
 		t.Fatalf("handleGet returned an error: %s", err)
 	}
@@ -229,11 +230,11 @@ func TestBothReadPathsNameTheTimeAHoldExpires(t *testing.T) {
 	job.HoldUntil = &heldUntil
 	baseURL, _ := fakeScheduler(t, job, nil)
 
-	listing, err := handleList(context.Background(), baseURL, "")
+	listing, err := handleList(context.Background(), baseURL, http.DefaultClient)
 	if err != nil {
 		t.Fatalf("handleList returned an error: %s", err)
 	}
-	single, err := handleGet(context.Background(), baseURL, "", job.ID)
+	single, err := handleGet(context.Background(), baseURL, http.DefaultClient, job.ID)
 	if err != nil {
 		t.Fatalf("handleGet returned an error: %s", err)
 	}
@@ -258,7 +259,7 @@ func TestAReadPathDoesNotReportAnExpiredHold(t *testing.T) {
 	job.HoldUntil = &expired
 	baseURL, _ := fakeScheduler(t, job, nil)
 
-	single, err := handleGet(context.Background(), baseURL, "", job.ID)
+	single, err := handleGet(context.Background(), baseURL, http.DefaultClient, job.ID)
 	if err != nil {
 		t.Fatalf("handleGet returned an error: %s", err)
 	}
@@ -274,7 +275,7 @@ func TestAReadPathDoesNotReportAnExpiredHold(t *testing.T) {
 func TestGetSaysNotFoundRatherThanDescribingSomeOtherJob(t *testing.T) {
 	baseURL, _ := fakeScheduler(t, shellJobWithEveryFieldTheReadPathsHid(), nil)
 
-	report, err := handleGet(context.Background(), baseURL, "", 999)
+	report, err := handleGet(context.Background(), baseURL, http.DefaultClient, 999)
 	if err != nil {
 		t.Fatalf("handleGet returned an error: %s", err)
 	}

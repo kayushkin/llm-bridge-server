@@ -27,21 +27,16 @@ func requestsSeenBy(t *testing.T, body string) (baseURL string, authorizations *
 
 func TestTheSchedulerToolCallsTheConnectionItWasBuiltWith(t *testing.T) {
 	t.Setenv("SCHEDULER_URL", "http://127.0.0.1:1")
-	t.Setenv("SCHEDULER_TOKEN", "token-from-the-environment")
 	baseURL, authorizations := requestsSeenBy(t, `[]`)
 
-	if _, err := Scheduler(SchedulerConnection{BaseURL: baseURL, Token: "token-from-the-argument"}).Run(context.Background(), `{"action":"list"}`); err != nil {
+	if _, err := Scheduler(SchedulerConnection{BaseURL: baseURL, HTTP: http.DefaultClient}).Run(context.Background(), `{"action":"list"}`); err != nil {
 		t.Fatal(err)
 	}
-	if len(*authorizations) != 1 || (*authorizations)[0] != "Bearer token-from-the-argument" {
-		t.Errorf("the stub scheduler saw Authorization headers %q, want one request carrying the argument's token", *authorizations)
+	if len(*authorizations) != 1 || (*authorizations)[0] != "" {
+		t.Errorf("the stub scheduler saw Authorization headers %q, want one request with none", *authorizations)
 	}
-
-	if _, err := Scheduler(SchedulerConnection{BaseURL: baseURL}).Run(context.Background(), `{"action":"list"}`); err != nil {
-		t.Fatal(err)
-	}
-	if len(*authorizations) != 2 || (*authorizations)[1] != "" {
-		t.Errorf("with no token the stub scheduler saw %q, want a second request with no Authorization header", *authorizations)
+	if _, err := Scheduler(SchedulerConnection{}).Run(context.Background(), `{"action":"list"}`); err == nil {
+		t.Error("a scheduler tool built with no address and client ran")
 	}
 }
 

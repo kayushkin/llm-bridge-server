@@ -70,9 +70,6 @@ type Config struct {
 	// SessionFilesDir is where a file shared into a session is copied for its
 	// agent to read: <dir>/<session id>/<file id>/<filename>.
 	SessionFilesDir string
-	// SchedulerURL is the scheduler's base URL, which runs a scheduler job
-	// action. Empty refuses those actions.
-	SchedulerURL    string
 	BridgePrefsPath string
 	ConformancePath string
 	// PublicURL is the externally-reachable bridge URL that runners use
@@ -90,14 +87,12 @@ type Config struct {
 	// LLMBRIDGE_SKILL_STORE_INSTALL_DIRECTORY.
 	SkillStoreDataDirectory    string
 	SkillStoreInstallDirectory string
-	// LocalToolsPinchtabURL, LocalToolsPinchtabToken, LocalToolsBraveAPIKey
-	// and LocalToolsSchedulerToken are what tool-store's in-process browser,
-	// web_search and scheduler tools are built with; the scheduler tool calls
-	// SchedulerURL.
-	LocalToolsPinchtabURL    string
-	LocalToolsPinchtabToken  string
-	LocalToolsBraveAPIKey    string
-	LocalToolsSchedulerToken string
+	// LocalToolsPinchtabURL, LocalToolsPinchtabToken and LocalToolsBraveAPIKey
+	// are what tool-store's in-process browser and web_search tools are built
+	// with. Its scheduler tool calls the scheduler in this process.
+	LocalToolsPinchtabURL   string
+	LocalToolsPinchtabToken string
+	LocalToolsBraveAPIKey   string
 	// PostgresURL is the Postgres the modules keep their records in, as the
 	// login that provisions them. Empty switches those modules off, and their
 	// routes answer 503. LLMBRIDGE_POSTGRES_URL.
@@ -260,11 +255,10 @@ const (
 	// and may carry its password. An agent holding it could read and rewrite
 	// every module's tables past every rule this server enforces.
 	PostgresURLEnvironmentVariable = "LLMBRIDGE_POSTGRES_URL"
-	// The credentials tool-store's in-process tools present to PinchTab, Brave
-	// Search and the scheduler. They are this server's, not a harness's.
-	LocalToolsPinchtabTokenEnvironmentVariable  = "LLMBRIDGE_LOCAL_TOOLS_PINCHTAB_TOKEN"
-	LocalToolsBraveAPIKeyEnvironmentVariable    = "LLMBRIDGE_LOCAL_TOOLS_BRAVE_API_KEY"
-	LocalToolsSchedulerTokenEnvironmentVariable = "LLMBRIDGE_LOCAL_TOOLS_SCHEDULER_TOKEN"
+	// The credentials tool-store's in-process tools present to PinchTab and
+	// Brave Search. They are this server's, not a harness's.
+	LocalToolsPinchtabTokenEnvironmentVariable = "LLMBRIDGE_LOCAL_TOOLS_PINCHTAB_TOKEN"
+	LocalToolsBraveAPIKeyEnvironmentVariable   = "LLMBRIDGE_LOCAL_TOOLS_BRAVE_API_KEY"
 )
 
 // The two sign-in settings that switch sign-in-store's routes on, named here
@@ -296,7 +290,6 @@ func SecretEnvironmentVariableNames() []string {
 		PostgresURLEnvironmentVariable,
 		LocalToolsPinchtabTokenEnvironmentVariable,
 		LocalToolsBraveAPIKeyEnvironmentVariable,
-		LocalToolsSchedulerTokenEnvironmentVariable,
 	}
 }
 
@@ -414,7 +407,6 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		HookStoreDB:                           settings.String("hook_store.database_path"),
 		ImagesDir:                             settings.String("images.directory"),
 		SessionFilesDir:                       settings.String("session_files.directory"),
-		SchedulerURL:                          settings.String("scheduler.url"),
 		BridgePrefsPath:                       settings.String("bridge_preferences.path"),
 		ConformancePath:                       settings.String("conformance.path"),
 		PublicURL:                             settings.String("public_url"),
@@ -432,7 +424,6 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		LocalToolsPinchtabURL:                 settings.String("local_tools.pinchtab_url"),
 		LocalToolsPinchtabToken:               settings.String("local_tools.pinchtab_token"),
 		LocalToolsBraveAPIKey:                 settings.String("local_tools.brave_api_key"),
-		LocalToolsSchedulerToken:              settings.String("local_tools.scheduler_token"),
 		PostgresURL:                           settings.String("database.postgres_url"),
 		ChatLinksNATSURL:                      settings.String("chat_links.nats_url"),
 		MultichatURL:                          settings.String("multichat.url"),

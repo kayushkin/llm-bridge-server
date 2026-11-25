@@ -63,17 +63,15 @@ type schedulerInput struct {
 	Enabled      *bool   `json:"enabled,omitempty"`         // enable/disable for update
 }
 
-// DefaultSchedulerURL is where the scheduler answers when nothing says otherwise.
-const DefaultSchedulerURL = "http://localhost:8092"
-
 // SchedulerConnection is where the scheduler tool finds the scheduler and what
 // it presents there. The tool does not read the environment: whoever builds it
 // says where the scheduler is.
 type SchedulerConnection struct {
-	// BaseURL is the scheduler's address. Empty means DefaultSchedulerURL.
+	// BaseURL is the scheduler's address, as HTTP reaches it.
 	BaseURL string
-	// Token is sent as a bearer token when it is not empty.
-	Token string
+	// HTTP carries every call. In llm-bridge-server the scheduler runs in the
+	// same process, and HTTP serves each call with its handler.
+	HTTP *http.Client
 }
 
 // Scheduler returns a tool that interacts with the scheduler HTTP API at
@@ -105,38 +103,37 @@ func Scheduler(connection SchedulerConnection) Impl {
 				return "", err
 			}
 
-			baseURL := connection.BaseURL
-			if baseURL == "" {
-				baseURL = DefaultSchedulerURL
+			if connection.BaseURL == "" || connection.HTTP == nil {
+				return "", fmt.Errorf("the scheduler tool was built without the scheduler's address and client")
 			}
-
-			token := connection.Token
+			baseURL := connection.BaseURL
+			client := connection.HTTP
 
 			switch in.Action {
 			case "list":
-				return handleList(ctx, baseURL, token)
+				return handleList(ctx, baseURL, client)
 			case "create":
-				return handleCreate(ctx, baseURL, token, in)
+				return handleCreate(ctx, baseURL, client, in)
 			case "get":
 				if in.ID == nil {
 					return "error: id is required for get action", nil
 				}
-				return handleGet(ctx, baseURL, token, *in.ID)
+				return handleGet(ctx, baseURL, client, *in.ID)
 			case "update":
 				if in.ID == nil {
 					return "error: id is required for update action", nil
 				}
-				return handleUpdate(ctx, baseURL, token, *in.ID, in)
+				return handleUpdate(ctx, baseURL, client, *in.ID, in)
 			case "delete":
 				if in.ID == nil {
 					return "error: id is required for delete action", nil
 				}
-				return handleDelete(ctx, baseURL, token, *in.ID)
+				return handleDelete(ctx, baseURL, client, *in.ID)
 			case "runs":
 				if in.ID == nil {
 					return "error: id is required for runs action", nil
 				}
-				return handleRuns(ctx, baseURL, token, *in.ID)
+				return handleRuns(ctx, baseURL, client, *in.ID)
 			default:
 				return "error: invalid action. Must be one of: list, create, get, update, delete, runs", nil
 			}
@@ -144,24 +141,19 @@ func Scheduler(connection SchedulerConnection) Impl {
 	}
 }
 
-func makeRequest(ctx context.Context, method, url, token string, body io.Reader) (*http.Response, error) {
+func makeRequest(ctx context.Context, method, url string, client *http.Client, body io.Reader) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
 		return nil, err
 	}
-
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-
-	return http.DefaultClient.Do(req)
+	return client.Do(req)
 }
 
-func handleList(ctx context.Context, baseURL, token string) (string, error) {
-	resp, err := makeRequest(ctx, "GET", baseURL+"/api/jobs", token, nil)
+func handleList(ctx context.Context, baseURL string, client *http.Client) (string, error) {
+	resp, err := makeRequest(ctx, "GET", baseURL+"/api/jobs", client, nil)
 	if err != nil {
 		return fmt.Sprintf("error: %s", err), nil
 	}
@@ -205,7 +197,7 @@ func describeHold(job Job) string {
 	return fmt.Sprintf("On hold until: %s\n", job.HoldUntil.Format(time.RFC3339))
 }
 
-func handleCreate(ctx context.Context, baseURL, token string, in schedulerInput) (string, error) {
+func handleCreate(ctx context.Context, baseURL string, client *http.Client, in schedulerInput) (string, error) {
 	if in.Name == nil || in.Schedule == nil {
 		return "error: name and schedule are required for create action", nil
 	}
@@ -254,7 +246,7 @@ func handleCreate(ctx context.Context, baseURL, token string, in schedulerInput)
 		return fmt.Sprintf("error marshaling request: %s", err), nil
 	}
 
-	resp, err := makeRequest(ctx, "POST", baseURL+"/api/jobs", token, bytes.NewReader(jsonBody))
+	resp, err := makeRequest(ctx, "POST", baseURL+"/api/jobs", client, bytes.NewReader(jsonBody))
 	if err != nil {
 		return fmt.Sprintf("error: %s", err), nil
 	}
@@ -307,9 +299,9 @@ func describeCreateOutcome(job Job, requestedFields []requestedChange) string {
 	return strings.TrimRight(result, "\n")
 }
 
-func handleGet(ctx context.Context, baseURL, token string, id int64) (string, error) {
+func handleGet(ctx context.Context, baseURL string, client *http.Client, id int64) (string, error) {
 	url := fmt.Sprintf("%s/api/jobs/%d", baseURL, id)
-	resp, err := makeRequest(ctx, "GET", url, token, nil)
+	resp, err := makeRequest(ctx, "GET", url, client, nil)
 	if err != nil {
 		return fmt.Sprintf("error: %s", err), nil
 	}
@@ -453,7 +445,7 @@ func describeValue(value any) string {
 	return fmt.Sprintf("%v", value)
 }
 
-func handleUpdate(ctx context.Context, baseURL, token string, id int64, in schedulerInput) (string, error) {
+func handleUpdate(ctx context.Context, baseURL string, client *http.Client, id int64, in schedulerInput) (string, error) {
 	reqBody := map[string]interface{}{}
 	var requestedChanges []requestedChange
 	for _, field := range schedulerJobFields {
@@ -478,7 +470,7 @@ func handleUpdate(ctx context.Context, baseURL, token string, id int64, in sched
 	}
 
 	url := fmt.Sprintf("%s/api/jobs/%d", baseURL, id)
-	resp, err := makeRequest(ctx, "PATCH", url, token, bytes.NewReader(jsonBody))
+	resp, err := makeRequest(ctx, "PATCH", url, client, bytes.NewReader(jsonBody))
 	if err != nil {
 		return fmt.Sprintf("error: %s", err), nil
 	}
@@ -569,9 +561,9 @@ func describeUpdateOutcome(job Job, requestedChanges []requestedChange) string {
 	return result
 }
 
-func handleDelete(ctx context.Context, baseURL, token string, id int64) (string, error) {
+func handleDelete(ctx context.Context, baseURL string, client *http.Client, id int64) (string, error) {
 	url := fmt.Sprintf("%s/api/jobs/%d", baseURL, id)
-	resp, err := makeRequest(ctx, "DELETE", url, token, nil)
+	resp, err := makeRequest(ctx, "DELETE", url, client, nil)
 	if err != nil {
 		return fmt.Sprintf("error: %s", err), nil
 	}
@@ -588,9 +580,9 @@ func handleDelete(ctx context.Context, baseURL, token string, id int64) (string,
 	return fmt.Sprintf("Job %d deleted successfully", id), nil
 }
 
-func handleRuns(ctx context.Context, baseURL, token string, id int64) (string, error) {
+func handleRuns(ctx context.Context, baseURL string, client *http.Client, id int64) (string, error) {
 	url := fmt.Sprintf("%s/api/jobs/%d/runs", baseURL, id)
-	resp, err := makeRequest(ctx, "GET", url, token, nil)
+	resp, err := makeRequest(ctx, "GET", url, client, nil)
 	if err != nil {
 		return fmt.Sprintf("error: %s", err), nil
 	}

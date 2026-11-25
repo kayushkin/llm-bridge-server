@@ -62,7 +62,7 @@ func enableAgentsStoreModules(ctx context.Context, srv *server.Server, cfg *conf
 	tools.RegisterToolsThatReachOutsideServices(tools.OutsideServiceConnections{
 		Pinchtab:    tools.PinchtabConnection{BaseURL: cfg.LocalToolsPinchtabURL, Token: cfg.LocalToolsPinchtabToken},
 		BraveAPIKey: cfg.LocalToolsBraveAPIKey,
-		Scheduler:   tools.SchedulerConnection{BaseURL: cfg.SchedulerURL, Token: cfg.LocalToolsSchedulerToken},
+		Scheduler:   tools.SchedulerConnection{BaseURL: server.SchedulerInProcessBaseURL, HTTP: srv.SchedulerHTTPClient()},
 	})
 	toolStore := toolstore.New(open("tool-store", toolstore.Module))
 	if err := toolstore.SeedRegistry(ctx, toolStore); err != nil {

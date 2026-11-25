@@ -790,6 +790,47 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `GET` | `/model-store/api/roles/{role}` | A role's first model, resolved | operator |
 | `GET` | `/model-store/api/roles/{role}/models` | Every model in a role's list, in the order to try them | operator |
 
+### scheduler, mounted in this process
+
+| Method | Route | What it does | Who may call |
+|---|---|---|---|
+| `GET` | `/scheduler/api/calendar/events` | Every enabled job's cron occurrences between `from` and `to` (RFC3339) | operator |
+| `GET` | `/scheduler/api/event-trigger-subjects` | The bus subjects a job's event trigger may name, with each one's fields | operator |
+| `GET` | `/scheduler/api/job-references/{reference}` | A job by its reference id (`scheduler_job_000076`), with `reference_id` and `last_run` | operator |
+| `GET` | `/scheduler/api/jobs` | Every job, by id | operator |
+| `POST` | `/scheduler/api/jobs` | Create a shell or agent job; `"enabled":false` creates it switched off. 201 | operator |
+| `DELETE` | `/scheduler/api/jobs/{id}` | Delete a job; its runs stay. 204 | operator |
+| `GET` | `/scheduler/api/jobs/{id}` | One job | operator |
+| `PATCH` | `/scheduler/api/jobs/{id}` | Change any field; an unknown field, a bad cron expression or an unrunnable job is 400 | operator |
+| `DELETE` | `/scheduler/api/jobs/{id}/hold` | Clear a job's hold | operator |
+| `POST` | `/scheduler/api/jobs/{id}/hold` | Hold a job: `{"days"}` or `{"until"}` (RFC3339) | operator |
+| `POST` | `/scheduler/api/jobs/{id}/run` | Run a job now; 503 while `scheduler.runs.enabled` is off, 409 for a triggered job | operator |
+| `GET` | `/scheduler/api/jobs/{id}/runs` | A job's newest runs with output, newest first: `limit` (1 to 100) | operator |
+| `GET` | `/scheduler/api/runs/latest` | Every job's newest run, without output | operator |
+| `GET` | `/scheduler/health` | `{"status","uptime_s","started_at"}` | operator |
+| `GET` | `/scheduler/settings` | The model role each job binary and agent job asks for, stored here | operator |
+| `PUT` | `/scheduler/settings/{key}` | Store a model role, checked with model-store: `{"value"}` | operator |
+
+### rule-store, mounted in this process
+
+| Method | Route | What it does | Who may call |
+|---|---|---|---|
+| `GET` | `/rule-store/activity` | The reactor's recent activity, newest first: `after`, `kind`, `limit` | operator |
+| `GET` | `/rule-store/health` | Counts of each record, and the reactor's state | operator |
+| `GET` | `/rule-store/rules` | Every rule, oldest first: `state` | operator |
+| `POST` | `/rule-store/rules` | Create a draft rule: `{name, description?, source, created_by}`. 201 | operator |
+| `GET` | `/rule-store/rules/{id}` | A rule with its revisions and activations | operator |
+| `POST` | `/rule-store/rules/{id}/activate` | Activate a revision in `shadow` or `live` mode | operator |
+| `GET` | `/rule-store/rules/{id}/comparison` | Whether each run's planned effects are visible at their owners now | operator |
+| `POST` | `/rule-store/rules/{id}/pause` | Pause an active rule | operator |
+| `POST` | `/rule-store/rules/{id}/preview` | What a revision or definition would decide about every session held now; records nothing | operator |
+| `POST` | `/rule-store/rules/{id}/retire` | Retire a rule, for good | operator |
+| `POST` | `/rule-store/rules/{id}/revisions` | Add a validated, immutable revision. 201 | operator |
+| `GET` | `/rule-store/runs` | Decisions, newest first: `rule_id`, `subject_id`, `since`, `limit` | operator |
+| `GET` | `/rule-store/subjects/{type}/{id}` | rule-store's copy of a subject and its state episode | operator |
+| `GET` | `/rule-store/summary` | Counts, the reactor's state and every rule with its run counts | operator |
+| `GET` | `/rule-store/vocabulary` | Sources, condition kinds, session fields, effect kinds, modes and rule states | operator |
+
 ### people-store, mounted in this process
 
 | Method | Route | What it does | Who may call |

@@ -36,7 +36,7 @@ func intPointer(value int) *int { return &value }
 func TestCreateForwardsTheDescriptionTimeoutAndWorkspaceTheCallerNamed(t *testing.T) {
 	baseURL, lastRequest := fakeScheduler(t, jobAsCreated(), fieldsTheSchedulerStoresOnCreate)
 
-	report, err := handleCreate(context.Background(), baseURL, "", schedulerInput{
+	report, err := handleCreate(context.Background(), baseURL, http.DefaultClient, schedulerInput{
 		Name:        stringPointer("nightly summary"),
 		Schedule:    stringPointer("0 8 * * *"),
 		Type:        stringPointer("agent"),
@@ -83,7 +83,7 @@ func TestCreateNamesTheWorkspaceTheServerDidNotStore(t *testing.T) {
 	storesEverythingButTheWorkspace := []string{"name", "schedule", "type", "agent", "prompt"}
 	baseURL, _ := fakeScheduler(t, jobAsCreated(), storesEverythingButTheWorkspace)
 
-	report, err := handleCreate(context.Background(), baseURL, "", schedulerInput{
+	report, err := handleCreate(context.Background(), baseURL, http.DefaultClient, schedulerInput{
 		Name:        stringPointer("nightly summary"),
 		Schedule:    stringPointer("0 8 * * *"),
 		Type:        stringPointer("agent"),
@@ -119,7 +119,7 @@ func TestCreateNamesTheWorkspaceTheServerDidNotStore(t *testing.T) {
 func TestCreateSendsEnabledFalseAndTheJobIsCreatedOff(t *testing.T) {
 	baseURL, lastRequest := fakeScheduler(t, jobAsCreated(), fieldsTheSchedulerStoresOnCreate)
 
-	report, err := handleCreate(context.Background(), baseURL, "", schedulerInput{
+	report, err := handleCreate(context.Background(), baseURL, http.DefaultClient, schedulerInput{
 		Name:     stringPointer("nightly summary"),
 		Schedule: stringPointer("0 8 * * *"),
 		Command:  stringPointer("echo hi"),
@@ -145,7 +145,7 @@ func TestCreateSendsEnabledFalseAndTheJobIsCreatedOff(t *testing.T) {
 func TestCreateDoesNotSendEnabledWhenTheCallerDidNotNameIt(t *testing.T) {
 	baseURL, lastRequest := fakeScheduler(t, jobAsCreated(), fieldsTheSchedulerStoresOnCreate)
 
-	_, err := handleCreate(context.Background(), baseURL, "", schedulerInput{
+	_, err := handleCreate(context.Background(), baseURL, http.DefaultClient, schedulerInput{
 		Name:     stringPointer("nightly summary"),
 		Schedule: stringPointer("0 8 * * *"),
 		Command:  stringPointer("echo hi"),
@@ -165,7 +165,7 @@ func TestCreateDoesNotSendEnabledWhenTheCallerDidNotNameIt(t *testing.T) {
 func TestCreatePOSTsToTheJobsCollection(t *testing.T) {
 	baseURL, lastRequest := fakeScheduler(t, jobAsCreated(), fieldsTheSchedulerStoresOnCreate)
 
-	if _, err := handleCreate(context.Background(), baseURL, "", schedulerInput{
+	if _, err := handleCreate(context.Background(), baseURL, http.DefaultClient, schedulerInput{
 		Name:     stringPointer("nightly summary"),
 		Schedule: stringPointer("0 8 * * *"),
 		Command:  stringPointer("echo hi"),
@@ -195,7 +195,7 @@ func TestCreateRefusesA200BecauseCreateAnswers201(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	report, err := handleCreate(context.Background(), server.URL, "", schedulerInput{
+	report, err := handleCreate(context.Background(), server.URL, http.DefaultClient, schedulerInput{
 		Name:     stringPointer("nightly summary"),
 		Schedule: stringPointer("0 8 * * *"),
 		Command:  stringPointer("echo hi"),
@@ -221,7 +221,7 @@ func TestCreateRefusesA200BecauseCreateAnswers201(t *testing.T) {
 func TestCreateComparesTheTimeoutByValueAndNotByItsJSONType(t *testing.T) {
 	baseURL, _ := fakeScheduler(t, jobAsCreated(), fieldsTheSchedulerStoresOnCreate)
 
-	report, err := handleCreate(context.Background(), baseURL, "", schedulerInput{
+	report, err := handleCreate(context.Background(), baseURL, http.DefaultClient, schedulerInput{
 		Name:        stringPointer("nightly summary"),
 		Schedule:    stringPointer("0 8 * * *"),
 		Command:     stringPointer("echo hi"),
@@ -244,7 +244,7 @@ func TestCreateComparesTheTimeoutByValueAndNotByItsJSONType(t *testing.T) {
 func TestCreateForwardsTheDefaultedTypeAndReportsIt(t *testing.T) {
 	baseURL, lastRequest := fakeScheduler(t, jobAsCreated(), fieldsTheSchedulerStoresOnCreate)
 
-	report, err := handleCreate(context.Background(), baseURL, "", schedulerInput{
+	report, err := handleCreate(context.Background(), baseURL, http.DefaultClient, schedulerInput{
 		Name:     stringPointer("nightly summary"),
 		Schedule: stringPointer("0 8 * * *"),
 		Command:  stringPointer("echo hi"),
@@ -268,7 +268,7 @@ func TestCreateForwardsTheDefaultedTypeAndReportsIt(t *testing.T) {
 func TestCreateSendsTheModelRoleUnderTheKeyTheSchedulerDecodes(t *testing.T) {
 	baseURL, lastRequest := fakeScheduler(t, jobAsCreated(), fieldsTheSchedulerStoresOnCreate)
 
-	_, err := handleCreate(context.Background(), baseURL, "", schedulerInput{
+	_, err := handleCreate(context.Background(), baseURL, http.DefaultClient, schedulerInput{
 		Name:      stringPointer("nightly summary"),
 		Schedule:  stringPointer("0 8 * * *"),
 		Type:      stringPointer("agent"),
