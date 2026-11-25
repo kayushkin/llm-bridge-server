@@ -13,7 +13,7 @@
 #                                               on this machine's own logins
 #
 # <folder of binaries> holds llm-bridge-server, llm-bridge-runner,
-# llm-bridge-mock and log-store, built for this machine. The
+# llm-bridge-mock and the real harness wrappers, built for this machine. The
 # machine itself needs no Go or Node, only systemd user
 # units, curl, jq, sqlite3 and the Postgres 18 server programs (initdb,
 # postgres, pg_isready, psql) in $BRIDGE_TEST_POSTGRES_BIN, by default where the
@@ -21,15 +21,21 @@
 # system's own (create_main_cluster = false). Running install again replaces the
 # binaries and restarts; settings, secrets and data are kept.
 #
-# What it runs:
+# What it runs, and nothing else (no store runs as a unit of its own):
 #   the server, with its front end at /ui/ and demo login switched on. It holds
-#   principal-store, grant-store, sign-in-store, permission-store, tool-store,
-#   skill-store, bundle-store, noteboard, kanban-store, project-store,
-#   prediction-store, repo-store, work-graph-store and file-store in its own
-#   process, in Postgres modules, each under /<store>/ (kanban-store under
-#   /kanban/ and /kanban-store/), with file-store's bytes under
-#   data/file-store; log-store, the session event log, under /log-store/;
-#   and reference-store, which keeps no records, at /reference-store/
+#   every store the consolidation moved in, in its own process and in Postgres
+#   modules, each under /<store>/: the access stores, the agent stores
+#   (tool-store, skill-store, bundle-store, agent-store, model-store,
+#   memory-store, usage-store, eval-store), the task stores (noteboard,
+#   kanban-store also under /kanban/, project-store, prediction-store), the
+#   repository stores, file-store (bytes under data/file-store), log-store,
+#   mailstack, the scheduler and rule-store, and the connected records stores
+#   (people-store, calendar-store, journal-store, message-store,
+#   activity-store, time-ledger-store, photo-store, location-store,
+#   budget-store, possession-store); and reference-store, which keeps no
+#   records. Every background loop (scheduler runs, the rule reactor, usage
+#   refreshes, eval runs, face passes, the possession review worker, mail
+#   provider connections, bank sync) is off, as it is by default.
 #   a Postgres of its own (llm-bridge-test-postgres), data under data/postgres,
 #   on 127.0.0.1 and a socket inside the folder, holding database bridge for
 #   the server's login bridge_server, which may create roles
@@ -38,12 +44,14 @@
 # Every address a store would otherwise default to is set here, because the
 # defaults are a real install's ports, and on a machine with a real runner
 # 127.0.0.1:8160 is a tunnel to the real server. A service the test instance
-# does not run (auth-store, PinchTab) is set to a port nothing listens on, and
-# what needs it answers an error.
+# does not run (auth-store, PinchTab, healthcheck) is set to a port nothing
+# listens on, and what needs it answers an error. Every folder a store keeps
+# files in is inside the instance's folder; location-store's GeoNames folder
+# is left empty, so naming localities answers that the dump is missing.
 #
 # An instance installed before principal-store, grant-store, tool-store,
-# permission-store, kanban-store and reference-store moved into the server ran
-# each as a unit of its own. The first install of a server that holds them
+# permission-store, kanban-store, reference-store and log-store moved into the
+# server ran each as a unit of its own. The first install of a server that holds them
 # copies each one's SQLite file into the server's module, once (import-<store>,
 # keeping every id), then removes the unit and leaves the file where it was,
 # unused. reference-store kept no records, so only its unit goes.
@@ -271,7 +279,7 @@ install_instance() {
   done
 
   step "laying out $ROOT"
-  mkdir -p "$ROOT"/{bin,data,env,home,runner,runner-assets,run/postgres} "$ROOT"/data/{file-store,work-graph-store} "$UNIT_DIR"
+  mkdir -p "$ROOT"/{bin,data,env,home,runner,runner-assets,run/postgres} "$ROOT"/data/{file-store,work-graph-store,skill-store,location-store/geonames,possession-store/outfit-covers} "$UNIT_DIR"
   chmod 700 "$ROOT" "$ROOT/env" "$ROOT/run/postgres"
 
   # Ports keep a real install's offsets from the server's port. A key already
@@ -322,10 +330,14 @@ LLMBRIDGE_IMAGES_DIR=$ROOT/data/images
 LLMBRIDGE_SESSION_FILES_DIR=$ROOT/data/session-files
 LLMBRIDGE_RUNNER_ASSETS_DIR=$ROOT/runner-assets
 LLMBRIDGE_SKILL_STORE_DATA_DIRECTORY=$ROOT/data/skill-store
+LLMBRIDGE_SKILL_STORE_INSTALL_DIRECTORY=$ROOT/home/.claude/skills
 LLMBRIDGE_LOCAL_TOOLS_PINCHTAB_URL=$nowhere
+LLMBRIDGE_HEALTHCHECK_URL=$nowhere
 AUTH_STORE_URL=$nowhere
 LLMBRIDGE_FILE_STORE_DATA_DIRECTORY=$ROOT/data/file-store
 LLMBRIDGE_WORK_GRAPH_STORE_SPOOL_PATH=$ROOT/data/work-graph-store/ref-updates.jsonl
+LLMBRIDGE_LOCATION_STORE_GEONAMES_DIRECTORY=$ROOT/data/location-store/geonames
+LLMBRIDGE_POSSESSION_STORE_COVER_CACHE_DIRECTORY=$ROOT/data/possession-store/outfit-covers
 LLMBRIDGE_POSTGRES_URL=postgres://$POSTGRES_SERVER_LOGIN@/$POSTGRES_DATABASE?host=$POSTGRES_SOCKET_DIR&port=$POSTGRES_PORT
 EOF
 
@@ -334,7 +346,8 @@ EOF
   # The files of the stores the server now holds.
   rm -f "$ROOT/env/stores.env" "$ROOT/env/tool-store.env" "$ROOT/env/principal-store.env" "$ROOT/env/grant-store.env" "$ROOT/env/permission-store.env" \
     "$ROOT/env/kanban-store.env" "$ROOT/env/kanban-store-secrets.env" \
-    "$ROOT/env/reference-store.env" "$ROOT/env/reference-store-secrets.env" "$ROOT/env/server-store-tokens.env"
+    "$ROOT/env/reference-store.env" "$ROOT/env/reference-store-secrets.env" "$ROOT/env/server-store-tokens.env" \
+    "$ROOT/env/log-store.env"
 
   step "stopping what is running, to replace the binaries"
   systemctl --user stop "$UNIT_PREFIX-runner.service" "$UNIT_PREFIX.service" 2>/dev/null || true
