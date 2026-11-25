@@ -377,9 +377,10 @@ func startSessionDriver(b *testing.B, m *Manager, st *store.Store, sessionID str
 }
 
 // runTurns plays turns turns. paced waits the measured gaps between frames;
-// unpaced hands them over as fast as the pump takes them.
-func (d *sessionDriver) runTurns(b *testing.B, m *Manager, turns int, paced bool) int {
-	sent := 0
+// unpaced hands them over as fast as the pump takes them. Each turn's next
+// user message waits until the subscriber has had the turn before it, as a
+// person's next message follows the answer.
+func (d *sessionDriver) runTurns(b *testing.B, m *Manager, turns int, paced bool) {
 	random := rand.New(rand.NewSource(int64(len(d.sessionID)) + int64(turns)))
 	for turn := 0; turn < turns; turn++ {
 		user := d.factory.userMessage()
@@ -390,7 +391,7 @@ func (d *sessionDriver) runTurns(b *testing.B, m *Manager, turns int, paced bool
 			b.Errorf("send the user message of %s: %v", d.sessionID, err)
 		}
 		d.send.add(time.Since(start))
-		sent++
+		sent := 1
 		for i := 0; i < benchmarkEventsPerTurn; i++ {
 			ev := d.factory.harnessEvent(i == benchmarkEventsPerTurn-1)
 			sequence, _ := sequenceOfBenchmarkEvent(&ev)
@@ -405,8 +406,8 @@ func (d *sessionDriver) runTurns(b *testing.B, m *Manager, turns int, paced bool
 			d.process.ch <- ev
 			sent++
 		}
+		d.waitFor(b, sent)
 	}
-	return sent
 }
 
 // waitFor waits until the subscriber has had count events.
@@ -475,8 +476,7 @@ func benchmarkPacedIngest(b *testing.B, results *benchmarkResults, path sessionE
 		wait.Add(1)
 		go func(driver *sessionDriver) {
 			defer wait.Done()
-			sent := driver.runTurns(b, bench.manager, pacedTurnsPerSession(sessions), true)
-			driver.waitFor(b, sent)
+			driver.runTurns(b, bench.manager, pacedTurnsPerSession(sessions), true)
 		}(driver)
 	}
 	wait.Wait()
@@ -515,8 +515,7 @@ func benchmarkUnpacedIngest(b *testing.B, results *benchmarkResults, path sessio
 		wait.Add(1)
 		go func(driver *sessionDriver) {
 			defer wait.Done()
-			sent := driver.runTurns(b, bench.manager, turns, false)
-			driver.waitFor(b, sent)
+			driver.runTurns(b, bench.manager, turns, false)
 		}(driver)
 	}
 	wait.Wait()
@@ -554,9 +553,8 @@ func populateSession(b *testing.B, bench *benchmarkBench, sessionID string, turn
 			}
 			continue
 		}
-		sent += driver.runTurns(b, bench.manager, 1, false)
+		driver.runTurns(b, bench.manager, 1, false)
 	}
-	// The user messages are timed through BroadcastEvent, not the pump.
 	driver.waitFor(b, sent)
 	bench.manager.FlushLogStoreWrites(sessionID)
 	driver.stop(bench.manager)
