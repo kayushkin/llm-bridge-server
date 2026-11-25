@@ -148,6 +148,10 @@ type Server struct {
 	fileStoreHandler      atomic.Pointer[mountedStore]
 	referenceStoreHandler atomic.Pointer[mountedStore]
 	referenceResolver     atomic.Pointer[referencestore.Resolver]
+	// connectedRecords answers /people-store/, /calendar-store/ and
+	// /journal-store/ once EnableConnectedRecords has run
+	// (connected_records_routes.go); nil answers them 503.
+	connectedRecords atomic.Pointer[connectedRecordsStores]
 	// repoRegistryForDeploys is repo-store as a deploy action reads it; nil
 	// until EnableRepositories, which refuses deploy actions.
 	repoRegistryForDeploys repoRegistry
@@ -257,11 +261,11 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 	// machine.
 	srv.harness.SetTurnEndObserver(srv.onTurnEnd)
 	srv.harness.SetUnpromptedTurnStartObserver(srv.onUnpromptedTurnStart)
-	if cfg.ChatLinksNATSURL != "" && cfg.MultichatURL != "" && cfg.PeopleStoreURL != "" {
+	if cfg.ChatLinksNATSURL != "" && cfg.MultichatURL != "" {
 		srv.chatLinks = &chatLinks{
-			multichatURL:   cfg.MultichatURL,
-			peopleStoreURL: cfg.PeopleStoreURL,
-			httpClient:     &http.Client{Timeout: 60 * time.Second},
+			multichatURL: cfg.MultichatURL,
+			senders:      chatLinkSendersInPeopleStore{server: srv},
+			httpClient:   &http.Client{Timeout: 60 * time.Second},
 			token: func(ctx context.Context) (string, error) {
 				resolved, err := authClient.ResolveByProvider(ctx, chatLinkMultichatProvider, "", "", "read multichat's accounts and send a chat link's reply")
 				if err != nil {
@@ -358,6 +362,7 @@ func (s *Server) routes() {
 	s.registerProjectStoreRoutes()
 	s.registerAccessRoutes()
 	s.registerRepositoriesAndReferencesRoutes()
+	s.registerConnectedRecordsRoutes()
 	// This server's own settings, served the way every service serves them.
 	serviceSettingsHandler := servicesettings.Handler(s.settings, "/settings")
 	s.mux.Handle("GET /settings", serviceSettingsHandler)

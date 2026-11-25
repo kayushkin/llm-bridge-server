@@ -57,9 +57,9 @@ const (
 // chatLinks is the server's chat-link machinery; nil when it is switched off.
 type chatLinks struct {
 	multichatURL string
-	// peopleStoreURL is asked who owns the account a message came from.
-	peopleStoreURL string
-	httpClient     *http.Client
+	// senders is people-store, asked who owns the account a message came from.
+	senders    chatLinkSenderDirectory
+	httpClient *http.Client
 	// token answers multichat's bearer.
 	token func(ctx context.Context) (string, error)
 	// kick wakes the sweep early, after a message arrives or a turn ends.
@@ -75,7 +75,7 @@ type chatLinks struct {
 	references chatLinkReferencePatterns
 }
 
-var errChatLinksOff = errors.New("chat links are off: LLMBRIDGE_NATS_URL, LLMBRIDGE_MULTICHAT_URL and LLMBRIDGE_PEOPLE_STORE_URL must all be set")
+var errChatLinksOff = errors.New("chat links are off: LLMBRIDGE_NATS_URL and LLMBRIDGE_MULTICHAT_URL must both be set")
 
 func (c *chatLinks) wake() {
 	if c == nil {
@@ -471,7 +471,7 @@ func (s *Server) deliverChatLinkInbound(ctx context.Context, link store.ChatLink
 	if !chatLinkSessionIsFree(msg.SessionState(session.State)) {
 		return
 	}
-	pending, err = s.resolveChatLinkSenders(ctx, link, pending)
+	pending, err = s.resolveChatLinkSenders(ctx, link, session.PrincipalID, pending)
 	if err != nil {
 		return
 	}

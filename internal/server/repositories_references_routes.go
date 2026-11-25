@@ -146,6 +146,9 @@ var InProcessReferenceServices = map[string]string{
 	"principal-store":   "/principal-store",
 	"repo-store":        repoStoreMountPrefix,
 	"work-graph-store":  workGraphStoreMountPrefix,
+	"people-store":      peopleStoreMountPrefix,
+	"journal-store":     journalStoreMountPrefix,
+	"calendar-store":    calendarStoreMountPrefix,
 }
 
 // EnableReferenceStore serves reference-store from resolver, and makes the

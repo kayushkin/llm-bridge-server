@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -45,33 +46,30 @@ func (f *fakeMultichat) handler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// fakePeopleStore answers GET /identities/resolve from persons, by Discord
-// user id; down makes it answer 500.
+// fakePeopleStore is people-store as chat links read it: the operator's
+// records, by Discord user id; down makes it fail. It records whose records
+// each lookup read.
 type fakePeopleStore struct {
 	mu      sync.Mutex
-	persons map[string]string // discord user id → person JSON
+	owner   string
+	persons map[string]store.ChatLinkMessageSender // discord user id → sender
 	down    bool
 	asked   int
+	askedAs []string
 }
 
-func (f *fakePeopleStore) handler(w http.ResponseWriter, r *http.Request) {
+func (f *fakePeopleStore) SenderOfAccount(_ context.Context, ownerPrincipalID, kind, value string) (store.ChatLinkMessageSender, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.asked++
+	f.askedAs = append(f.askedAs, ownerPrincipalID)
 	if f.down {
-		http.Error(w, `{"error":"database is locked"}`, http.StatusInternalServerError)
-		return
+		return store.ChatLinkMessageSender{}, errors.New("people-store answered 500: database is locked")
 	}
-	if r.URL.Path != "/identities/resolve" || r.URL.Query().Get("kind") != "discord" {
-		http.NotFound(w, r)
-		return
+	if kind != "discord" || ownerPrincipalID != f.owner {
+		return store.ChatLinkMessageSender{}, nil
 	}
-	person, ok := f.persons[r.URL.Query().Get("value")]
-	if !ok {
-		http.Error(w, `{"error":"not found: no person has discord `+r.URL.Query().Get("value")+`"}`, http.StatusNotFound)
-		return
-	}
-	w.Write([]byte(`{"identity":{"kind":"discord","value":"` + r.URL.Query().Get("value") + `"},"person":` + person + `}`))
+	return f.persons[value], nil
 }
 
 func (f *fakePeopleStore) setDown(down bool) {
@@ -110,10 +108,8 @@ func (c *chatLinkTest) sentSoFar() []msg.SendMessageRequest {
 }
 
 func (c *chatLinkTest) newChatLinks(multichat *httptest.Server) *chatLinks {
-	people := httptest.NewServer(http.HandlerFunc(c.people.handler))
-	c.cleanups = append(c.cleanups, people.Close)
 	return &chatLinks{
-		multichatURL: multichat.URL, peopleStoreURL: people.URL, httpClient: multichat.Client(),
+		multichatURL: multichat.URL, senders: c.people, httpClient: multichat.Client(),
 		token: func(context.Context) (string, error) { return "multichat-token", nil },
 		kick:  make(chan struct{}, 1),
 		now:   func() time.Time { return c.clock },
@@ -130,9 +126,9 @@ func newChatLinkTest(t *testing.T) *chatLinkTest {
 	t.Helper()
 	srv, st := testServer(t)
 	test := &chatLinkTest{srv: srv, st: st, multichat: &fakeMultichat{}, clock: time.Date(2026, 1, 2, 3, 0, 0, 0, time.UTC),
-		people: &fakePeopleStore{persons: map[string]string{
-			testOperatorDiscordUserID: `{"id":"person_000001","display_name":"Dana","principal_id":"` + testOperatorPrincipalID + `"}`,
-			testCarolDiscordUserID:    `{"id":"person_000002","display_name":"Carol Ng","principal_id":"principal_000002"}`,
+		people: &fakePeopleStore{owner: testOperatorPrincipalID, persons: map[string]store.ChatLinkMessageSender{
+			testOperatorDiscordUserID: {PersonID: "person_000001", PersonDisplayName: "Dana", PrincipalID: testOperatorPrincipalID},
+			testCarolDiscordUserID:    {PersonID: "person_000002", PersonDisplayName: "Carol Ng", PrincipalID: "principal_000002"},
 		}}}
 	multichat := httptest.NewServer(http.HandlerFunc(test.multichat.handler))
 	t.Cleanup(multichat.Close)
@@ -284,6 +280,13 @@ func TestChatLinkDeliveryReadsEachSenderFromPeopleStore(t *testing.T) {
 	}
 	if messages[2].SenderPersonID != "" || messages[2].SenderResolvedAt.IsZero() || messages[2].SenderPlatformDisplayName != "shown-name-"+testUnknownDiscordUserID {
 		t.Errorf("unknown row: %+v", messages[2])
+	}
+	// Every sender was read in the records of the principal the session runs
+	// as, and no one else's.
+	for _, owner := range c.people.askedAs {
+		if owner != testOperatorPrincipalID {
+			t.Errorf("a sender was read in %s's records", owner)
+		}
 	}
 
 	// The log a client reads shows the senders.

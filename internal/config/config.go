@@ -112,10 +112,6 @@ type Config struct {
 	// same multichat.
 	ChatLinksNATSURL string
 	MultichatURL     string
-	// PeopleStoreURL is people-store, which says who owns the account a chat
-	// link message came from, and which person owns a handle typed on the
-	// sign-in page. Chat links need it too.
-	PeopleStoreURL string
 	// AuthStoreURL and AuthStoreToken reach auth-store, which sign-in-store
 	// reads multichat's token and Discord's client secret from.
 	AuthStoreURL   string
@@ -452,7 +448,6 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		PostgresURL:                           settings.String("database.postgres_url"),
 		ChatLinksNATSURL:                      settings.String("chat_links.nats_url"),
 		MultichatURL:                          settings.String("multichat.url"),
-		PeopleStoreURL:                        settings.String("people_store.url"),
 		MailstackURL:                          settings.String("mailstack.url"),
 		MailstackToken:                        settings.String("mailstack.token"),
 		HealthcheckURL:                        settings.String("healthcheck.url"),
