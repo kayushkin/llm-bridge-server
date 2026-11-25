@@ -1081,6 +1081,154 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `GET` | `/location-store/visits/{id}/revisions` | A visit as it was before each change | principal or session agent |
 | `GET` | `/location-store/vocabularies` | The kinds, sources, modes and reasons location-store knows | principal or session agent |
 
+### possession-store, mounted in this process
+
+| Method | Route | What it does | Who may call |
+|---|---|---|---|
+| `GET` | `/possession-store/appliances` | The caller's possessions of kind appliance, by the possession filters | principal or session agent |
+| `GET` | `/possession-store/appliances/{id}` | The possession a appliance record (`appliance_…`) belongs to | principal or session agent |
+| `GET` | `/possession-store/appliances/{id}/image` | The cover of the possession a appliance record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possession-store/art-and-decor` | The caller's possessions of kind art and decor, by the possession filters | principal or session agent |
+| `GET` | `/possession-store/art-and-decor/{id}` | The possession a art and decor record (`art_and_decor_…`) belongs to | principal or session agent |
+| `GET` | `/possession-store/art-and-decor/{id}/image` | The cover of the possession a art and decor record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possession-store/audio-devices` | The caller's possessions of kind audio device, by the possession filters | principal or session agent |
+| `GET` | `/possession-store/audio-devices/{id}` | The possession a audio device record (`audio_device_…`) belongs to | principal or session agent |
+| `GET` | `/possession-store/audio-devices/{id}/image` | The cover of the possession a audio device record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possession-store/bags-and-cases` | The caller's possessions of kind bag or case, by the possession filters | principal or session agent |
+| `GET` | `/possession-store/bags-and-cases/{id}` | The possession a bag or case record (`bag_or_case_…`) belongs to | principal or session agent |
+| `GET` | `/possession-store/bags-and-cases/{id}/image` | The cover of the possession a bag or case record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possession-store/collectibles` | The caller's possessions of kind collectible, by the possession filters | principal or session agent |
+| `GET` | `/possession-store/collectibles/{id}` | The possession a collectible record (`collectible_…`) belongs to | principal or session agent |
+| `GET` | `/possession-store/collectibles/{id}/image` | The cover of the possession a collectible record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possession-store/computer-parts` | The caller's possessions of kind computer part, by the possession filters | principal or session agent |
+| `GET` | `/possession-store/computer-parts/{id}` | The possession a computer part record (`computer_part_…`) belongs to | principal or session agent |
+| `GET` | `/possession-store/computer-parts/{id}/image` | The cover of the possession a computer part record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possession-store/computers` | The caller's possessions of kind computer, by the possession filters | principal or session agent |
+| `GET` | `/possession-store/computers/{id}` | The possession a computer record (`computer_…`) belongs to | principal or session agent |
+| `GET` | `/possession-store/computers/{id}/image` | The cover of the possession a computer record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possession-store/electronic-accessories` | The caller's possessions of kind electronic accessory, by the possession filters | principal or session agent |
+| `GET` | `/possession-store/electronic-accessories/{id}` | The possession a electronic accessory record (`electronic_accessory_…`) belongs to | principal or session agent |
+| `GET` | `/possession-store/electronic-accessories/{id}/image` | The cover of the possession a electronic accessory record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possession-store/eyewear` | The caller's possessions of kind eyewear, by the possession filters | principal or session agent |
+| `GET` | `/possession-store/eyewear/{id}` | The possession a eyewear record (`eyewear_…`) belongs to | principal or session agent |
+| `GET` | `/possession-store/eyewear/{id}/image` | The cover of the possession a eyewear record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possession-store/fitness-equipment` | The caller's possessions of kind fitness equipment, by the possession filters | principal or session agent |
+| `GET` | `/possession-store/fitness-equipment/{id}` | The possession a fitness equipment record (`fitness_equipment_…`) belongs to | principal or session agent |
+| `GET` | `/possession-store/fitness-equipment/{id}/image` | The cover of the possession a fitness equipment record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possession-store/furniture` | The caller's possessions of kind furniture, by the possession filters | principal or session agent |
+| `GET` | `/possession-store/furniture/{id}` | The possession a furniture record (`furniture_…`) belongs to | principal or session agent |
+| `GET` | `/possession-store/furniture/{id}/image` | The cover of the possession a furniture record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possession-store/garments` | The caller's possessions of kind garment, by the possession filters | principal or session agent |
+| `GET` | `/possession-store/garments/{id}` | The possession a garment record (`garment_…`) belongs to | principal or session agent |
+| `GET` | `/possession-store/garments/{id}/image` | The cover of the possession a garment record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possession-store/harness-machines/{machine_id}/computer` | The caller's computer a harness-store machine is | principal or session agent |
+| `GET` | `/possession-store/health` | `{"status":"ok","counts":…}`, counted over the caller's own records | principal or session agent |
+| `GET` | `/possession-store/home-textiles` | The caller's possessions of kind home textile, by the possession filters | principal or session agent |
+| `GET` | `/possession-store/home-textiles/{id}` | The possession a home textile record (`home_textile_…`) belongs to | principal or session agent |
+| `GET` | `/possession-store/home-textiles/{id}/image` | The cover of the possession a home textile record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possession-store/household-tools` | The caller's possessions of kind household tool, by the possession filters | principal or session agent |
+| `GET` | `/possession-store/household-tools/{id}` | The possession a household tool record (`household_tool_…`) belongs to | principal or session agent |
+| `GET` | `/possession-store/household-tools/{id}/image` | The cover of the possession a household tool record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possession-store/jewelry` | The caller's possessions of kind jewelry, by the possession filters | principal or session agent |
+| `GET` | `/possession-store/jewelry/{id}` | The possession a jewelry record (`jewelry_…`) belongs to | principal or session agent |
+| `GET` | `/possession-store/jewelry/{id}/image` | The cover of the possession a jewelry record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possession-store/kinds` | The kinds a possession may have, each with its fields and id prefix | principal or session agent |
+| `POST` | `/possession-store/marketplace-order-lines/match` | Both readers match one owner's open order lines to possessions | principal or session agent |
+| `POST` | `/possession-store/marketplace-orders/import-ebay-mail` | Read one owner's eBay order mail with the first reader and record each order in budget-store | principal or session agent |
+| `GET` | `/possession-store/media` | The caller's possessions of kind media, by the possession filters | principal or session agent |
+| `GET` | `/possession-store/media/{id}` | The possession a media record (`media_…`) belongs to | principal or session agent |
+| `GET` | `/possession-store/media/{id}/image` | The cover of the possession a media record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possession-store/music-accessories` | The caller's possessions of kind music accessory, by the possession filters | principal or session agent |
+| `GET` | `/possession-store/music-accessories/{id}` | The possession a music accessory record (`music_accessory_…`) belongs to | principal or session agent |
+| `GET` | `/possession-store/music-accessories/{id}/image` | The cover of the possession a music accessory record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possession-store/musical-instruments` | The caller's possessions of kind musical instrument, by the possession filters | principal or session agent |
+| `GET` | `/possession-store/musical-instruments/{id}` | The possession a musical instrument record (`musical_instrument_…`) belongs to | principal or session agent |
+| `GET` | `/possession-store/musical-instruments/{id}/image` | The cover of the possession a musical instrument record belongs to, as a JPEG | principal or session agent |
+| `PUT` | `/possession-store/originals/{sha256}` | Keep an original's bytes in file-store for the owner the request acts for; answers where photo-store should say it is | principal or session agent |
+| `POST` | `/possession-store/outfit-covers/read-wearer-boxes` | Read the wearer box of every cover photo of one owner's outfits that has none | principal or session agent |
+| `GET` | `/possession-store/outfit-looks` | The caller's looks by `worn_on` and `outfit_id` | principal or session agent |
+| `POST` | `/possession-store/outfit-looks/read` | Both readers read each day's photos of one owner into looks and slots | principal or session agent |
+| `GET` | `/possession-store/outfit-looks/{id}` | One look with its photos and slots | principal or session agent |
+| `GET` | `/possession-store/outfit-merges` | The caller's outfit merges, by `outfit_id`, newest first | principal or session agent |
+| `GET` | `/possession-store/outfit-merges/{id}` | One outfit merge and every row it moved | principal or session agent |
+| `POST` | `/possession-store/outfit-merges/{id}/undo` | Undo an outfit merge | principal or session agent |
+| `POST` | `/possession-store/outfit-pieces/rematch` | Match one owner's stuck outfit pieces by picture with both readers | principal or session agent |
+| `GET` | `/possession-store/outfit-rebuilds/{id}` | One rebuild of outfits from looks | principal or session agent |
+| `POST` | `/possession-store/outfit-rebuilds/{id}/undo` | Undo a rebuild | principal or session agent |
+| `POST` | `/possession-store/outfit-slots/identify` | Both readers sort one owner's slots into pieces and link each to its best guess | principal or session agent |
+| `GET` | `/possession-store/outfit-slots/{id}` | One slot with its boxes and candidates | principal or session agent |
+| `GET` | `/possession-store/outfit-slots/{id}/image` | One slot cut from its photo, as a JPEG | principal or session agent |
+| `GET` | `/possession-store/outfit-tags` | Every tag on the caller's live outfits, the most used first | principal or session agent |
+| `GET` | `/possession-store/outfits` | The caller's outfits by `status`, `possession_id`, `favorite`, `tag`, `limit` and `offset`, with their covers | principal or session agent |
+| `POST` | `/possession-store/outfits` | Make an outfit owned by the caller of its wearables; 201 | principal or session agent |
+| `POST` | `/possession-store/outfits/consolidate` | Both readers look for one owner's outfits recorded twice, combining what both see as one | principal or session agent |
+| `POST` | `/possession-store/outfits/rebuild-from-looks` | Place every look of one owner into outfits again, undoably | principal or session agent |
+| `DELETE` | `/possession-store/outfits/{id}` | Delete an outfit; 204 | principal or session agent |
+| `GET` | `/possession-store/outfits/{id}` | One outfit with its cover | principal or session agent |
+| `PATCH` | `/possession-store/outfits/{id}` | Change an outfit, its pieces, favorite or tags | principal or session agent |
+| `POST` | `/possession-store/outfits/{id}/combine` | Combine a duplicate outfit into another of the same owner's, undoably | principal or session agent |
+| `PUT` | `/possession-store/outfits/{id}/cover` | Pick an outfit's cover photo, or take the pick away | principal or session agent |
+| `GET` | `/possession-store/outfits/{id}/image` | An outfit's cover cut to the wearer, as a JPEG | principal or session agent |
+| `POST` | `/possession-store/outfits/{id}/wearings` | Record a day an outfit was worn; 201 | principal or session agent |
+| `GET` | `/possession-store/owner-questions` | The caller's questions, open ones by default, by `photo_review_id`, `purpose`, `include_answered` | principal or session agent |
+| `POST` | `/possession-store/owner-questions/triage-outfit-doubts` | Sort one owner's outfit questions into decisions and details | principal or session agent |
+| `GET` | `/possession-store/owner-questions/{id}` | One question with its choices | principal or session agent |
+| `POST` | `/possession-store/owner-questions/{id}/answer` | Answer a question by a choice or in words, applying what it decides | principal or session agent |
+| `GET` | `/possession-store/owner-questions/{id}/image` | The picture a question asks about, as a JPEG | principal or session agent |
+| `GET` | `/possession-store/personal-care` | The caller's possessions of kind personal care, by the possession filters | principal or session agent |
+| `GET` | `/possession-store/personal-care/{id}` | The possession a personal care record (`personal_care_…`) belongs to | principal or session agent |
+| `GET` | `/possession-store/personal-care/{id}/image` | The cover of the possession a personal care record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possession-store/photo-reviews` | The caller's photo reviews by `status`, newest first | principal or session agent |
+| `POST` | `/possession-store/photo-reviews` | Queue one of the caller's photos for review; 201, or 200 with the review already queued | principal or session agent |
+| `GET` | `/possession-store/photo-reviews/{id}` | One review with its readings, sightings and questions | principal or session agent |
+| `POST` | `/possession-store/photo-reviews/{id}/retry` | Queue a failed review again | principal or session agent |
+| `GET` | `/possession-store/possession-merges` | The caller's possession merges, by `possession_id`, newest first | principal or session agent |
+| `GET` | `/possession-store/possession-merges/{id}` | One possession merge and every row it moved | principal or session agent |
+| `POST` | `/possession-store/possession-merges/{id}/undo` | Undo a possession merge | principal or session agent |
+| `GET` | `/possession-store/possessions` | The caller's possessions by `q`, `status`, `kind`, `place_id`, `include_deleted`, `limit` and `offset`, newest first | principal or session agent |
+| `POST` | `/possession-store/possessions` | Make a possession owned by the caller, with at most one kind and its photos; 201 | principal or session agent |
+| `POST` | `/possession-store/possessions/classify-kindless` | Give one owner's possessions with no kind one, by the first reader; asks when unsure | principal or session agent |
+| `DELETE` | `/possession-store/possessions/{id}` | Delete a possession, reversibly; 204 | principal or session agent |
+| `GET` | `/possession-store/possessions/{id}` | One possession with its kind, photos, outfits and product | principal or session agent |
+| `PATCH` | `/possession-store/possessions/{id}` | Change a possession's fields or give it a kind | principal or session agent |
+| `GET` | `/possession-store/possessions/{id}/image` | A possession's cover cut from its photo, as a JPEG | principal or session agent |
+| `PUT` | `/possession-store/possessions/{id}/kind` | Move a possession to another kind | principal or session agent |
+| `POST` | `/possession-store/possessions/{id}/merge` | Merge a duplicate possession into another of the same owner's, undoably | principal or session agent |
+| `POST` | `/possession-store/possessions/{id}/photos` | Link a photo of the owner's to a possession, with its box | principal or session agent |
+| `DELETE` | `/possession-store/possessions/{id}/photos/{photo_id}` | Unlink a photo from a possession | principal or session agent |
+| `POST` | `/possession-store/possessions/{id}/restore` | Undo a delete | principal or session agent |
+| `GET` | `/possession-store/possessions/{id}/revisions` | A possession's rows as they were before each change, newest first | principal or session agent |
+| `GET` | `/possession-store/products` | The caller's products by `q`, newest first | principal or session agent |
+| `POST` | `/possession-store/products` | Make a product owned by the caller from its listing in article-store; 201 | principal or session agent |
+| `GET` | `/possession-store/products/{id}` | One product with its possessions | principal or session agent |
+| `PATCH` | `/possession-store/products/{id}` | Change a product, reading its listing again when it moves | principal or session agent |
+| `PATCH` | `/possession-store/purchase-lines/{id}` | Say what a purchase line became; 204 | principal or session agent |
+| `GET` | `/possession-store/purchases` | The caller's purchases by `marketplace`, newest first | principal or session agent |
+| `POST` | `/possession-store/purchases` | Record a purchase owned by the caller, line by line; 201 | principal or session agent |
+| `DELETE` | `/possession-store/purchases/{id}` | Delete a purchase, withdrawing its questions | principal or session agent |
+| `GET` | `/possession-store/purchases/{id}` | One purchase with its lines | principal or session agent |
+| `POST` | `/possession-store/sightings/record-agreed` | Record the sightings of one owner both readers agreed on that earlier reviews held back | principal or session agent |
+| `GET` | `/possession-store/sightings/{id}` | One sighting | principal or session agent |
+| `GET` | `/possession-store/sightings/{id}/image` | One sighting cut from its photo, as a JPEG | principal or session agent |
+| `GET` | `/possession-store/sports-gear` | The caller's possessions of kind sports gear, by the possession filters | principal or session agent |
+| `GET` | `/possession-store/sports-gear/{id}` | The possession a sports gear record (`sports_gear_…`) belongs to | principal or session agent |
+| `GET` | `/possession-store/sports-gear/{id}/image` | The cover of the possession a sports gear record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possession-store/tabletop-games` | The caller's possessions of kind tabletop game, by the possession filters | principal or session agent |
+| `GET` | `/possession-store/tabletop-games/{id}` | The possession a tabletop game record (`tabletop_game_…`) belongs to | principal or session agent |
+| `GET` | `/possession-store/tabletop-games/{id}/image` | The cover of the possession a tabletop game record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possession-store/vehicles` | The caller's possessions of kind vehicle, by the possession filters | principal or session agent |
+| `GET` | `/possession-store/vehicles/{id}` | The possession a vehicle record (`vehicle_…`) belongs to | principal or session agent |
+| `GET` | `/possession-store/vehicles/{id}/image` | The cover of the possession a vehicle record belongs to, as a JPEG | principal or session agent |
+| `POST` | `/possession-store/vehicles/{id}/odometer-readings` | Record a vehicle's odometer; 201 | principal or session agent |
+| `GET` | `/possession-store/vocabulary` | Every vocabulary a field takes its words from | principal or session agent |
+| `GET` | `/possession-store/watches` | The caller's possessions of kind watch, by the possession filters | principal or session agent |
+| `GET` | `/possession-store/watches/{id}` | The possession a watch record (`watch_…`) belongs to | principal or session agent |
+| `GET` | `/possession-store/watches/{id}/image` | The cover of the possession a watch record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possession-store/wearable-groups` | The caller's wearable groups with their members by status | principal or session agent |
+| `PUT` | `/possession-store/wearable-groups/{group}` | Close or open a wearable group, or say how many pieces it holds | principal or session agent |
+| `POST` | `/possession-store/wearables/check-duplicates` | Both readers look for one owner's wearables recorded twice, merging what both see as one | principal or session agent |
+| `POST` | `/possession-store/wearables/check-links` | Both readers check one owner's wearables' photo links, unlinking what both doubt | principal or session agent |
+
 ### repo-store, mounted in this process
 
 | Method | Route | What it does | Who may call |

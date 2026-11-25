@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -388,6 +389,11 @@ func (references ServiceReferences) checkURL(ctx context.Context, address, servi
 		return fmt.Errorf("ask %s about %s: %w", service, id, err)
 	}
 	defer response.Body.Close()
+	// Read to the end, so a store answering in this process finishes its
+	// answer rather than writing into a closed pipe.
+	if _, err := io.Copy(io.Discard, response.Body); err != nil {
+		return fmt.Errorf("ask %s about %s: reading the answer: %w", service, id, err)
+	}
 	switch response.StatusCode {
 	case http.StatusOK:
 		return nil

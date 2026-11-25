@@ -23,9 +23,14 @@ type Server struct {
 	LocalMachine func(ctx context.Context) (string, error)
 }
 
-// RegisterHandlers adds every route to mux.
-func (server *Server) RegisterHandlers(mux *http.ServeMux) {
-	handle := server.handlerOn(mux)
+// RegisterHandlers adds every route to mux, and answers their patterns.
+func (server *Server) RegisterHandlers(mux *http.ServeMux) []string {
+	var patterns []string
+	register := server.handlerOn(mux)
+	handle := func(pattern string, build func(*Server) http.HandlerFunc) {
+		patterns = append(patterns, pattern)
+		register(pattern, build)
+	}
 	handle("GET /health", func(server *Server) http.HandlerFunc { return server.health })
 	handle("GET /vocabulary", func(server *Server) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, Vocabulary()) }
@@ -701,6 +706,7 @@ func (server *Server) RegisterHandlers(mux *http.ServeMux) {
 			})
 		}
 	})
+	return patterns
 }
 
 // auditPass serves one wearable audit pass. It runs until done; a pass

@@ -156,6 +156,7 @@ var InProcessReferenceServices = map[string]string{
 	"scheduler":         schedulerMountPrefix,
 	"photo-store":       photoStoreMountPrefix,
 	"location-store":    locationStoreMountPrefix,
+	"possession-store":  possessionStoreMountPrefix,
 }
 
 // EnableReferenceStore serves reference-store from resolver, and makes the
