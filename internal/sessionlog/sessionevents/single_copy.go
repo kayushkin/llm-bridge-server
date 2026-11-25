@@ -179,10 +179,12 @@ func eventToAppend(record store.SessionEventRecord) logstorestore.EventToAppend 
 	return logstorestore.EventToAppend{
 		SessionID: record.SessionID,
 		Type:      record.Type,
-		Columns: logstorestore.EventColumns{
+		Fields: logstorestore.EventFields{
 			MessageID:        record.MessageID,
 			HarnessMessageID: record.HarnessMessageID,
 			ToolUseID:        record.ToolUseID,
+			TurnID:           record.Event.TurnID,
+			HarnessSessionID: record.Event.HarnessSessionID,
 		},
 		Data: record.Data,
 	}
@@ -246,6 +248,7 @@ func (c *SingleCopy) writeSessionStatus(bridgeID string, ev *msg.Event, touchUpd
 	appended, err := c.append(ev, logstorestore.EventToAppend{
 		SessionID:      bridgeID,
 		Type:           string(msg.EventSessionStatus),
+		Fields:         logstorestore.EventFields{TurnID: ev.TurnID, HarnessSessionID: ev.HarnessSessionID},
 		IdempotencyKey: key,
 		DataForID: func(id int64) ([]byte, error) {
 			ev.Status.AsOf = id

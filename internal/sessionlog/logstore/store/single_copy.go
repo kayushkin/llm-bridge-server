@@ -18,18 +18,26 @@ import (
 // its ids above the bridge database's, and the reads that used to go to the
 // bridge database's events table. Migration 0002 adds what they need.
 
-// EventColumns are an event's own values that readers select by, kept beside
-// its body. Each is ” when the event names none.
-type EventColumns struct {
+// EventFields are the values of an event its write reads, which a writer
+// holding the event passes rather than have the store read its body again.
+// Each is ” when the event names none.
+type EventFields struct {
+	// MessageID, HarnessMessageID and ToolUseID are kept beside the body,
+	// for the readers that select by them. ToolUseID is the tool call's id
+	// on a tool_call or tool_result event.
 	MessageID        string
 	HarnessMessageID string
-	// ToolUseID is the tool call's id on a tool_call or tool_result event.
-	ToolUseID string
+	ToolUseID        string
+	// TurnID places the event in its turn.
+	TurnID string
+	// HarnessSessionID is the harness's own id for the session, which the
+	// sessions row carries.
+	HarnessSessionID string
 }
 
-// EventColumnsOf reads the columns from an event.
-func EventColumnsOf(ev *msg.Event) EventColumns {
-	columns := EventColumns{MessageID: ev.MessageID, HarnessMessageID: ev.HarnessMessageID}
+// EventFieldsOf reads the fields from an event.
+func EventFieldsOf(ev *msg.Event) EventFields {
+	columns := EventFields{MessageID: ev.MessageID, HarnessMessageID: ev.HarnessMessageID, TurnID: ev.TurnID, HarnessSessionID: ev.HarnessSessionID}
 	switch {
 	case ev.ToolCall != nil:
 		columns.ToolUseID = ev.ToolCall.ToolID
@@ -39,10 +47,12 @@ func EventColumnsOf(ev *msg.Event) EventColumns {
 	return columns
 }
 
-// eventColumnFields is the part of a stored body EventColumnsOfBody reads.
-type eventColumnFields struct {
+// eventFieldsOfBody is the part of a stored body EventFieldsOfBody reads.
+type eventFieldsOfBody struct {
 	MessageID        string `json:"message_id"`
 	HarnessMessageID string `json:"harness_message_id"`
+	TurnID           string `json:"turn_id"`
+	HarnessSessionID string `json:"harness_session_id"`
 	ToolCall         *struct {
 		ToolID string `json:"tool_id"`
 	} `json:"tool_call"`
@@ -51,14 +61,14 @@ type eventColumnFields struct {
 	} `json:"tool_result"`
 }
 
-// EventColumnsOfBody reads the columns from an event's JSON, for a writer
-// that holds only the body: the HTTP ingest route, the import.
-func EventColumnsOfBody(data []byte) (EventColumns, error) {
-	var fields eventColumnFields
+// EventFieldsOfBody reads the fields from an event's JSON, for a writer that
+// holds only the body: StoreEvent, the import.
+func EventFieldsOfBody(data []byte) (EventFields, error) {
+	var fields eventFieldsOfBody
 	if err := json.Unmarshal(data, &fields); err != nil {
-		return EventColumns{}, err
+		return EventFields{}, err
 	}
-	columns := EventColumns{MessageID: fields.MessageID, HarnessMessageID: fields.HarnessMessageID}
+	columns := EventFields{MessageID: fields.MessageID, HarnessMessageID: fields.HarnessMessageID, TurnID: fields.TurnID, HarnessSessionID: fields.HarnessSessionID}
 	switch {
 	case fields.ToolCall != nil:
 		columns.ToolUseID = fields.ToolCall.ToolID
@@ -72,7 +82,7 @@ func EventColumnsOfBody(data []byte) (EventColumns, error) {
 type EventToAppend struct {
 	SessionID string
 	Type      string
-	Columns   EventColumns
+	Fields    EventFields
 	// IdempotencyKey names the write. Empty stores the event whatever was
 	// stored before; set, a second write with the same key stores nothing
 	// and answers the first one's row.

@@ -83,7 +83,7 @@ func (s *Server) ingestEventBody(ctx context.Context, body []byte) (int64, error
 		return 0, &client.EventRejectedError{Reason: "missing bridge_session_id"}
 	}
 	appended, err := s.appendEvent(ctx, &ev, store.EventToAppend{
-		SessionID: ev.BridgeSessionID, Type: string(ev.Type), Columns: store.EventColumnsOf(&ev), Data: body,
+		SessionID: ev.BridgeSessionID, Type: string(ev.Type), Fields: store.EventFieldsOf(&ev), Data: body,
 	})
 	return appended.ID, err
 }

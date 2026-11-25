@@ -163,18 +163,18 @@ func (s *Store) RebuildMissingSessionRows() (int64, error) {
 }
 
 // StoreEvent persists a raw event and updates the per-session projection,
-// through AppendEvent, with the columns read from the body. A total the body
+// through AppendEvent, with the fields read from the body. A total the body
 // does not carry readably is logged and left out; a failed statement fails
 // the whole write (see AppendEvent).
 //
 // ctx bounds the insert: an insert it cancels may still have been stored, as
 // a commit that is cut off cannot say whether it landed.
 func (s *Store) StoreEvent(ctx context.Context, sessionID, eventType string, data []byte) (int64, error) {
-	columns, err := EventColumnsOfBody(data)
+	fields, err := EventFieldsOfBody(data)
 	if err != nil {
-		return 0, fmt.Errorf("read the event's columns: %w", err)
+		return 0, fmt.Errorf("read the event's fields: %w", err)
 	}
-	appended, err := s.AppendEvent(ctx, EventToAppend{SessionID: sessionID, Type: eventType, Columns: columns, Data: data})
+	appended, err := s.AppendEvent(ctx, EventToAppend{SessionID: sessionID, Type: eventType, Fields: fields, Data: data})
 	return appended.ID, err
 }
 
@@ -182,7 +182,7 @@ func (s *Store) StoreEvent(ctx context.Context, sessionID, eventType string, dat
 // new event. Idempotent on re-application of the same event because
 // last_active uses CURRENT_TIMESTAMP and turn_count / token sums are
 // monotonic only when StoreEvent is called once per event (the caller's job).
-func (s *Store) updateSessionProjection(db statementWriter, sessionID, eventType string, data []byte) error {
+func (s *Store) updateSessionProjection(db statementWriter, sessionID, eventType, harnessSessionID string, data []byte) error {
 	// Ensure the row exists. INSERT OR IGNORE is a no-op for established
 	// sessions; for the first event of a new session it seeds started_at /
 	// last_active to now().
@@ -205,7 +205,7 @@ func (s *Store) updateSessionProjection(db statementWriter, sessionID, eventType
 	// just an ordinary event, and a resumed session reports a new harness
 	// uuid partway through. Last writer wins, matching the migration's
 	// MAX(id) backfill and the gateway's own row.
-	if harnessSessionID := harnessSessionIDOf(data); harnessSessionID != "" {
+	if harnessSessionID != "" {
 		if _, err := db.Exec(
 			`UPDATE sessions SET harness_session_id = $1
 			 WHERE session_id = $2 AND harness_session_id <> $1`,
@@ -327,20 +327,6 @@ func injectEventID(data []byte, rowID int64) json.RawMessage {
 	out = append(out, prefix...)
 	out = append(out, trimmed[1:]...)
 	return out
-}
-
-// harnessSessionIDOf reads the harness-native session id an event carries.
-// Returns "" for a malformed body or an event that names no harness id —
-// both are ordinary, so neither is an error: 1,675 of this host's 11,640
-// sessions have no harness id anywhere in their event stream.
-func harnessSessionIDOf(data []byte) string {
-	var ev struct {
-		HarnessSessionID string `json:"harness_session_id"`
-	}
-	if err := json.Unmarshal(data, &ev); err != nil {
-		return ""
-	}
-	return ev.HarnessSessionID
 }
 
 // SearchSessions returns session IDs with events whose raw data contains query.

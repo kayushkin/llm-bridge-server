@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -103,11 +102,11 @@ func (s *Store) appendEventOnConnection(ctx context.Context, connection *pgx.Con
 	batch.Exec(`INSERT INTO events (id, session_id, type, data, created_at, message_id, harness_message_id, tool_use_id, idempotency_key)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
 		appended.ID, event.SessionID, event.Type, string(appended.Data), state.createdAt,
-		event.Columns.MessageID, event.Columns.HarnessMessageID, event.Columns.ToolUseID, key)
-	if err := s.indexLiveEvent(batch, state, event.SessionID, appended.ID, event.Type, appended.Data); err != nil {
+		event.Fields.MessageID, event.Fields.HarnessMessageID, event.Fields.ToolUseID, key)
+	if err := s.indexLiveEvent(batch, state, event.SessionID, appended.ID, event.Type, event.Fields.TurnID, appended.Data); err != nil {
 		return AppendedEvent{}, fmt.Errorf("index event in its turn: %w", err)
 	}
-	if err := s.updateSessionProjection(batch, event.SessionID, event.Type, appended.Data); err != nil {
+	if err := s.updateSessionProjection(batch, event.SessionID, event.Type, event.Fields.HarnessSessionID, appended.Data); err != nil {
 		logProjectionFailure("sessions projection", event.SessionID, event.Type, err)
 	}
 	if err := s.addEventToUsageByHour(batch, hourStartUnixOf(state.createdAt), event.SessionID, event.Type, appended.Data); err != nil {
@@ -124,7 +123,7 @@ func (s *Store) appendEventOnConnection(ctx context.Context, connection *pgx.Con
 // session's last turn, else a turn named for the event. A session whose index
 // is built by other rules, or that has older events and no index yet, is left
 // to BuildTurnIndex, which indexes this event with the rest.
-func (s *Store) indexLiveEvent(batch *statementBatch, state appendState, sessionID string, eventID int64, eventType string, data []byte) error {
+func (s *Store) indexLiveEvent(batch *statementBatch, state appendState, sessionID string, eventID int64, eventType, rawTurnID string, data []byte) error {
 	var turn sessionTurnState
 	switch {
 	case state.indexVersion.Valid && int(state.indexVersion.Int64) != s.turnIndexVersion:
@@ -140,11 +139,7 @@ func (s *Store) indexLiveEvent(batch *statementBatch, state appendState, session
 			sessionID, s.turnIndexVersion)
 	}
 
-	var fields eventTurnFields
-	if err := json.Unmarshal(data, &fields); err != nil {
-		return fmt.Errorf("read turn_id from event %d: %w", eventID, err)
-	}
-	turnID := turn.assignTurn(eventID, fields.TurnID)
+	turnID := turn.assignTurn(eventID, rawTurnID)
 	isPrompt := eventType == "user_message"
 	proposedTurnSeq := turn.nextTurnSeq
 

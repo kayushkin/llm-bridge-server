@@ -24,3 +24,11 @@ CREATE TABLE single_copy_numbering (
     bridge_database_highest_event_id bigint NOT NULL,
     raised_at                        timestamptz NOT NULL DEFAULT now()
 );
+
+-- lz4 rather than pglz for the bodies and the stored reading pages: it
+-- compresses and decompresses several times faster, which the event write
+-- and every read of a large tool result pay, for a little more disk. It
+-- applies to values written from here on, the import's included.
+ALTER TABLE events ALTER COLUMN data SET COMPRESSION lz4;
+ALTER TABLE turns ALTER COLUMN turn_json SET COMPRESSION lz4;
+ALTER TABLE turn_entries ALTER COLUMN entry_json SET COMPRESSION lz4;

@@ -377,7 +377,7 @@ func convertStandaloneValue(column string, kind valueKind, value any) (any, erro
 // eventColumnsOfImportedBody reads an imported event's message ids and tool
 // use id from its body (the fourth column), as the writer stores them.
 func eventColumnsOfImportedBody(converted []any) ([]any, error) {
-	columns, err := EventColumnsOfBody([]byte(converted[3].(string)))
+	columns, err := EventFieldsOfBody([]byte(converted[3].(string)))
 	if err != nil {
 		return nil, fmt.Errorf("read the message ids from data: %w", err)
 	}
