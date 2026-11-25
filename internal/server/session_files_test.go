@@ -15,13 +15,13 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	"github.com/kayushkin/llm-bridge-server/internal/filestoreclient"
+	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// fakeFileStore is file-store's routes as this server uses them: /limits, an
-// upload, and content with the headers file-store sends.
+// fakeFileStore is file-store as this server uses it for session files: the
+// limits, an upload, and content with the headers file-store sends.
 type fakeFileStore struct {
 	mu               sync.Mutex
 	maximumFileBytes int64
@@ -30,41 +30,44 @@ type fakeFileStore struct {
 	ownerRefs        map[string]string
 }
 
-// newFakeFileStore is the fake and the handler the file-store client is
-// given, as the module's handler is in production.
-func newFakeFileStore() (*fakeFileStore, http.Handler) {
-	fake := &fakeFileStore{maximumFileBytes: 1024, uploads: map[string][]byte{}, contentTypes: map[string]string{}, ownerRefs: map[string]string{}}
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fake.mu.Lock()
-		defer fake.mu.Unlock()
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/limits":
-			json.NewEncoder(w).Encode(map[string]any{"maximum_file_bytes": fake.maximumFileBytes})
-		case r.Method == http.MethodPost && r.URL.Path == "/files":
-			body, _ := io.ReadAll(r.Body)
-			id := "file_00000" + string(rune('1'+len(fake.uploads)))
-			fake.uploads[id] = body
-			fake.contentTypes[id] = r.Header.Get("Content-Type")
-			fake.ownerRefs[id] = r.URL.Query().Get("owner_ref")
-			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(map[string]any{"id": id, "filename": r.URL.Query().Get("filename"),
-				"size_bytes": len(body), "content_type": r.Header.Get("Content-Type")})
-		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/content"):
-			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/files/"), "/content")
-			w.Header().Set("X-Content-Type-Options", "nosniff")
-			w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'")
-			if r.URL.Query().Get("inline") == "true" {
-				w.Header().Set("Content-Type", fake.contentTypes[id])
-			} else {
-				w.Header().Set("Content-Type", "application/octet-stream")
-				w.Header().Set("Content-Disposition", "attachment")
-			}
-			w.Write(fake.uploads[id])
-		default:
-			http.NotFound(w, r)
-		}
-	})
-	return fake, handler
+func newFakeFileStore() *fakeFileStore {
+	return &fakeFileStore{maximumFileBytes: 1024, uploads: map[string][]byte{}, contentTypes: map[string]string{}, ownerRefs: map[string]string{}}
+}
+
+func (fake *fakeFileStore) CurrentLimits() filestore.Limits {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	return filestore.Limits{MaximumFileBytes: fake.maximumFileBytes}
+}
+
+func (fake *fakeFileStore) Accept(content io.Reader, _ int64, contentType string, file filestore.NewFile) (*filestore.File, error) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	body, _ := io.ReadAll(content)
+	id := "file_00000" + string(rune('1'+len(fake.uploads)))
+	fake.uploads[id] = body
+	fake.contentTypes[id] = contentType
+	fake.ownerRefs[id] = file.OwnerRef
+	return &filestore.File{ID: id, Filename: file.Filename, SizeBytes: int64(len(body)), ContentType: contentType}, nil
+}
+
+func (fake *fakeFileStore) ServeContentOf(w http.ResponseWriter, _ *http.Request, id, inline string) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	body, held := fake.uploads[id]
+	if !held {
+		http.NotFound(w, nil)
+		return
+	}
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'")
+	if inline == "true" {
+		w.Header().Set("Content-Type", fake.contentTypes[id])
+	} else {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Disposition", "attachment")
+	}
+	w.Write(body)
 }
 
 // fakeLogStore takes every event push, as log-store does.
@@ -86,7 +89,7 @@ func testServerWithFileStore(t *testing.T) (*Server, *store.Store, *fakeFileStor
 		t.Fatalf("new store: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	fake, fileStoreHandler := newFakeFileStore()
+	fake := newFakeFileStore()
 	sessionFilesDir := filepath.Join(dir, "session-files")
 	cfg := &config.Config{
 		ImagesDir:       filepath.Join(dir, "images"),
@@ -97,7 +100,7 @@ func testServerWithFileStore(t *testing.T) (*Server, *store.Store, *fakeFileStor
 	testAuthorizationConfig(cfg)
 	srv := New(st, nil, nil, nil, nil, testModelStore(t), nil, cfg)
 	enableLogStoreAt(t, srv, fakeLogStore(t).URL)
-	srv.fileStore = filestoreclient.New(fileStoreHandler)
+	srv.fileStore = fake
 	return srv, st, fake, sessionFilesDir
 }
 

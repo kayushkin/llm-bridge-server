@@ -2,42 +2,37 @@ package mailstackclient
 
 import (
 	"context"
-	"net/http"
+	"errors"
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/backend"
 )
 
-// The body is what mailstack's GET /api/messages/{id} actually returns on this
-// host (read 2026-09-09 against demo-work:lmf8c5178e02571eae), trimmed: the
-// headers live under "meta", not at the top level.
-const liveMessageShape = `{
-  "meta": {
-    "id": "lmf8c5178e02571eae",
-    "account_id": "demo-work",
-    "folder_id": "INBOX",
-    "subject": "Small thing in internal/httpapi/server.go — expose the total in the health response?",
-    "from": {"name": "Helena Vos", "email": "helena.vos@northwind-eng.example"},
-    "date": "2026-09-08T16:02:00Z"
-  },
-  "body": {"text": "…"}
-}`
-
-func stub(t *testing.T, status int, body string) (*Client, *http.Request) {
-	t.Helper()
-	var got *http.Request
-	c := New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got = r.Clone(context.Background())
-		w.WriteHeader(status)
-		_, _ = w.Write([]byte(body))
-	}))
-	return c, got
+// messageReader answers every read with one message, or one error, and keeps
+// what it was asked.
+type messageReader struct {
+	message             backend.Message
+	err                 error
+	accountID, folderID string
+	id                  string
 }
 
+func (reader *messageReader) ReadMessage(_ context.Context, accountID, folderID, id string) (backend.Message, error) {
+	reader.accountID, reader.folderID, reader.id = accountID, folderID, id
+	return reader.message, reader.err
+}
+
+// The headers of a message as mailstack reads it on this kind of account.
+var helenaMessage = backend.Message{Meta: backend.MessageMeta{
+	ID: "lmf8c5178e02571eae", AccountID: "demo-work", FolderID: "INBOX",
+	Subject: "Small thing in internal/httpapi/server.go — expose the total in the health response?",
+	From:    backend.Address{Name: "Helena Vos", Email: "helena.vos@northwind-eng.example"},
+}, BodyText: "…"}
+
 func TestGetMessageHeadersReadsMeta(t *testing.T) {
-	c, _ := stub(t, http.StatusOK, liveMessageShape)
-	h, err := c.GetMessageHeaders(context.Background(), "demo-work", "lmf8c5178e02571eae")
+	reader := &messageReader{message: helenaMessage}
+	h, err := New(reader).GetMessageHeaders(context.Background(), "demo-work", "lmf8c5178e02571eae")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,33 +42,25 @@ func TestGetMessageHeadersReadsMeta(t *testing.T) {
 	if !strings.HasPrefix(h.Subject, "Small thing") {
 		t.Errorf("subject = %q", h.Subject)
 	}
+	if reader.accountID != "demo-work" || reader.id != "lmf8c5178e02571eae" || reader.folderID != "" {
+		t.Errorf("read account %q folder %q id %q", reader.accountID, reader.folderID, reader.id)
+	}
 }
 
 func TestGetMessageHeadersRefusesAMessageWithNoSender(t *testing.T) {
-	// The top-level shape the client used to decode: every field empty, no
-	// error. That must be an error now, not a reply drafted to nobody.
-	c, _ := stub(t, http.StatusOK, `{"id":"x","subject":"s","from":{"name":"","email":""}}`)
-	if _, err := c.GetMessageHeaders(context.Background(), "demo-work", "x"); err == nil {
+	// A message with every header empty must be an error, not a reply drafted
+	// to nobody.
+	reader := &messageReader{message: backend.Message{Meta: backend.MessageMeta{ID: "x", Subject: "s"}}}
+	if _, err := New(reader).GetMessageHeaders(context.Background(), "demo-work", "x"); err == nil {
 		t.Fatal("no error for a message with no sender address")
 	}
 }
 
-// The handler is mailstack's own, so the request carries the internal
-// service in its context, as the mounting server's verified callers do, and
-// the account in the query.
-func TestGetMessageHeadersCallsAsTheInternalServiceWithTheAccount(t *testing.T) {
-	var account string
-	var unrestricted bool
-	c := New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		account = r.URL.Query().Get("account")
-		unrestricted = mailstack.CallerIsInternalService(r.Context())
-		_, _ = w.Write([]byte(liveMessageShape))
-	}))
-	if _, err := c.GetMessageHeaders(context.Background(), "demo-work", "lmf8c5178e02571eae"); err != nil {
-		t.Fatal(err)
-	}
-	if !unrestricted || account != "demo-work" {
-		t.Errorf("internal service=%v account=%q", unrestricted, account)
+func TestGetMessageHeadersPassesMailstacksErrorOn(t *testing.T) {
+	refused := errors.New("account demo-work is google")
+	_, err := New(&messageReader{err: refused}).GetMessageHeaders(context.Background(), "demo-work", "x")
+	if !errors.Is(err, refused) {
+		t.Fatalf("err = %v, want mailstack's", err)
 	}
 }
 

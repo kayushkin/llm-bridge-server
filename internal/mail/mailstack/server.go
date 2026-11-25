@@ -39,7 +39,7 @@ type Server struct {
 
 	// files holds imported attachments' bytes. Nil refuses attachments on
 	// local accounts with 503.
-	files *filestore.Client
+	files filestore.Files
 
 	// people is where a person's access is read. Nil refuses every request
 	// that names a principal; see principal_access.go.
@@ -59,7 +59,7 @@ type ServerParts struct {
 	// their providers.
 	ProviderConnectionsEnabled bool
 	// Files keeps imported attachments' bytes; nil refuses attachments.
-	Files *filestore.Client
+	Files filestore.Files
 	// People answers who a principal is and what it was granted; nil refuses
 	// every request that names a person.
 	People PeopleDirectory
@@ -542,22 +542,46 @@ func (s *Server) handleGetMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("account query param required"))
 		return
 	}
-	b, _, err := s.backendFor(acct)
-	if err != nil {
-		writeBackendError(w, err)
+	msg, err := s.ReadMessage(r.Context(), acct, r.URL.Query().Get("folder"), id)
+	var unavailable *accountUnavailableError
+	if errors.As(err, &unavailable) {
+		writeBackendError(w, unavailable.err)
 		return
 	}
-	msg, err := b.Get(r.Context(), r.URL.Query().Get("folder"), id)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return
+	}
+	writeJSON(w, http.StatusOK, msg)
+}
+
+// accountUnavailableError is an account ReadMessage could not reach a backend
+// for: unknown, misconfigured, or on a provider this server does not connect
+// to (ErrProviderConnectionsOff).
+type accountUnavailableError struct{ err error }
+
+func (unavailable *accountUnavailableError) Error() string { return unavailable.err.Error() }
+func (unavailable *accountUnavailableError) Unwrap() error { return unavailable.err }
+
+// ReadMessage reads one message of an account, as GET /api/messages/{id}
+// does once its caller may read it: the route checks the caller, and a
+// caller in the same process calls this as the internal service, past every
+// per-person check. folderID may be empty.
+func (s *Server) ReadMessage(ctx context.Context, accountID, folderID, id string) (backend.Message, error) {
+	b, _, err := s.backendFor(accountID)
+	if err != nil {
+		return backend.Message{}, &accountUnavailableError{err}
+	}
+	msg, err := b.Get(ctx, folderID, id)
+	if err != nil {
+		return backend.Message{}, err
 	}
 	// The get path carries headers the list path does not, so this is where a
 	// message's References chain usually first becomes known — and the only
 	// place its body passes through, so this is also where the payload is
 	// recorded for search.
-	s.recordFullMessage(acct, msg)
-	writeJSON(w, http.StatusOK, msg)
+	s.recordFullMessage(accountID, msg)
+	return msg, nil
 }
 
 // handleGetAttachment answers one attachment's bytes, with the content type

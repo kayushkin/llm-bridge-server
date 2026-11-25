@@ -21,17 +21,15 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/activitystore"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messagestore"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/timeledgerstore"
-	"github.com/kayushkin/llm-bridge-server/internal/inprocesshttp"
+	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
 )
 
 // Where each store is mounted.
@@ -65,13 +63,14 @@ func (s *Server) EnableMessageActivityAndTimeLedgerStores(modules MessageActivit
 	if s.connectedRecords.Load() == nil {
 		return errors.New("message-store, activity-store and time-ledger-store: EnableConnectedRecords must run first; they are served the way its stores are")
 	}
-	if s.fileStoreHandler.Load() == nil {
+	files := s.fileStoreCalls.Load()
+	if files == nil {
 		return errors.New("activity-store: EnableFileStore must run first, since activity-store keeps its attachments' bytes in file-store")
 	}
 	messageMux := http.NewServeMux()
 	messagestore.RegisterHandlers(messageMux, messagestore.New(modules.Messages))
 	activityMux := http.NewServeMux()
-	activitystore.RegisterHandlers(activityMux, activitystore.New(modules.Activity, ActivityAttachmentFilesIn(s.FileStoreModuleHandler())))
+	activitystore.RegisterHandlers(activityMux, activitystore.New(modules.Activity, ActivityAttachmentFilesIn(files)))
 	timeLedgerMux := http.NewServeMux()
 	timeledgerstore.RegisterHandlers(timeLedgerMux, timeledgerstore.New(modules.TimeLedger))
 	s.messageActivityAndTimeLedger.Store(&messageActivityAndTimeLedgerStores{
@@ -114,83 +113,48 @@ func (s *Server) timeLedgerStoreRoute() http.HandlerFunc {
 // carry in file-store.
 const activityAttachmentOwnerService = "activity-store"
 
-// ActivityAttachmentFilesIn is file-store, answered by handler (the file-store
-// module's own routes, in this process), as activity-store keeps attachment
-// bytes: each file is owned by activity-store and the activity it came with.
-// Going through file-store's routes keeps its size limit and its checks.
-func ActivityAttachmentFilesIn(handler http.Handler) activitystore.AttachmentFiles {
-	return activityAttachmentFiles{client: inprocesshttp.Client(handler)}
+// ActivityAttachmentFilesIn is file-store, the module in this process called
+// in Go, as activity-store keeps attachment bytes: each file is owned by
+// activity-store and the activity it came with. Each call goes through the
+// same checks and size limit as file-store's own routes.
+func ActivityAttachmentFilesIn(files *filestore.Server) activitystore.AttachmentFiles {
+	return activityAttachmentFiles{files: files}
 }
 
 type activityAttachmentFiles struct {
-	client *http.Client
+	files *filestore.Server
 }
 
-func (files activityAttachmentFiles) Put(ctx context.Context, content io.Reader, file activitystore.AttachmentFile) (string, error) {
+func (attachments activityAttachmentFiles) Put(_ context.Context, content io.Reader, file activitystore.AttachmentFile) (string, error) {
 	// file-store refuses an upload over its limit by its declared length, so
-	// the length is sent; attachments are voice clips and small pictures.
+	// the length is given; attachments are voice clips and small pictures.
 	body, err := io.ReadAll(content)
 	if err != nil {
 		return "", fmt.Errorf("reading attachment %s: %w", file.FileName, err)
 	}
-	query := url.Values{"filename": {file.FileName}, "owner_service": {activityAttachmentOwnerService}, "owner_ref": {file.ActivityID}}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, inprocesshttp.BaseURL+"/files?"+query.Encode(), bytes.NewReader(body))
-	if err != nil {
-		return "", err
+	kept, err := attachments.files.Accept(bytes.NewReader(body), int64(len(body)), file.ContentType,
+		filestore.NewFile{Filename: file.FileName, OwnerService: activityAttachmentOwnerService, OwnerRef: file.ActivityID})
+	var refusal *filestore.Refusal
+	if errors.As(err, &refusal) {
+		return "", fmt.Errorf("file-store answered %d keeping attachment %s: %s", refusal.Status, file.FileName, refusal.Message)
 	}
-	request.ContentLength = int64(len(body))
-	request.Header.Set("Content-Type", file.ContentType)
-	response, err := files.client.Do(request)
 	if err != nil {
 		return "", fmt.Errorf("file-store, keeping attachment %s: %w", file.FileName, err)
-	}
-	defer response.Body.Close()
-	answer, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
-	if err != nil {
-		return "", fmt.Errorf("file-store, reading its answer about attachment %s: %w", file.FileName, err)
-	}
-	if response.StatusCode != http.StatusCreated {
-		return "", fmt.Errorf("file-store answered %d keeping attachment %s: %s", response.StatusCode, file.FileName, bytes.TrimSpace(answer))
-	}
-	var kept struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal(answer, &kept); err != nil || kept.ID == "" {
-		return "", fmt.Errorf("file-store answered 201 with no file id for attachment %s: %s", file.FileName, bytes.TrimSpace(answer))
 	}
 	return kept.ID, nil
 }
 
-func (files activityAttachmentFiles) Open(ctx context.Context, fileID string) (io.ReadCloser, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, inprocesshttp.BaseURL+"/files/"+url.PathEscape(fileID)+"/content", nil)
-	if err != nil {
-		return nil, err
-	}
-	response, err := files.client.Do(request)
+func (attachments activityAttachmentFiles) Open(_ context.Context, fileID string) (io.ReadCloser, error) {
+	_, blob, err := attachments.files.OpenLiveContent(fileID)
 	if err != nil {
 		return nil, fmt.Errorf("file-store, reading %s: %w", fileID, err)
 	}
-	if response.StatusCode != http.StatusOK {
-		defer response.Body.Close()
-		answer, _ := io.ReadAll(io.LimitReader(response.Body, 1<<16))
-		return nil, fmt.Errorf("file-store answered %d reading %s: %s", response.StatusCode, fileID, bytes.TrimSpace(answer))
-	}
-	return response.Body, nil
+	return blob, nil
 }
 
-func (files activityAttachmentFiles) Purge(ctx context.Context, fileID string) error {
-	request, err := http.NewRequestWithContext(ctx, http.MethodDelete, inprocesshttp.BaseURL+"/files/"+url.PathEscape(fileID)+"?hard=true", nil)
-	if err != nil {
-		return err
-	}
-	response, err := files.client.Do(request)
-	if err != nil {
+func (attachments activityAttachmentFiles) Purge(_ context.Context, fileID string) error {
+	if err := attachments.files.PurgeFile(fileID); err != nil {
 		return fmt.Errorf("file-store, purging %s: %w", fileID, err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusNoContent {
-		answer, _ := io.ReadAll(io.LimitReader(response.Body, 1<<16))
-		return fmt.Errorf("file-store answered %d purging %s: %s", response.StatusCode, fileID, bytes.TrimSpace(answer))
 	}
 	return nil
 }

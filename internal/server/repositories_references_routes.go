@@ -22,7 +22,6 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/access/principalstore"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
-	"github.com/kayushkin/llm-bridge-server/internal/filestoreclient"
 	"github.com/kayushkin/llm-bridge-server/internal/references/referencestore"
 	"github.com/kayushkin/llm-bridge-server/internal/repositories/repostore"
 	"github.com/kayushkin/llm-bridge-server/internal/repositories/workgraphstore"
@@ -104,7 +103,8 @@ func (s *Server) EnableFileStore(files *filestore.Store) error {
 	}
 	module := filestore.NewServer(files, s.fileStoreLimits)
 	handler := module.Handler()
-	s.fileStore = filestoreclient.New(handler)
+	s.fileStore = module
+	s.fileStoreCalls.Store(module)
 	s.fileStoreModule.Store(files)
 	s.fileStoreHandler.Store(&mountedStore{handler: handler})
 	return nil
@@ -328,35 +328,4 @@ func (s *Server) RepositoriesHandler() http.Handler {
 	mux.Handle(repoStoreMountPrefix+"/", s.repoStoreRoute())
 	mux.Handle(workGraphStoreMountPrefix+"/", s.workGraphStoreRoute())
 	return mux
-}
-
-// ReferenceStoreModuleHandler serves reference-store's routes at their own
-// paths (/types, /resolve, …), past this server's route rules and with no
-// caller in the context, for the modules in this process that read its
-// catalog (kanban-store's reference types). It answers 503 until
-// EnableReferenceStore has run.
-func (s *Server) ReferenceStoreModuleHandler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		store := s.referenceStoreHandler.Load()
-		if store == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "reference_store_off", "reference-store is not open on this server")
-			return
-		}
-		store.handler.ServeHTTP(w, r)
-	})
-}
-
-// FileStoreModuleHandler serves file-store's routes at their own paths, past
-// this server's route rules, for the modules in this process that keep files
-// there (kanban-store's attachments), each of which checks who may read a
-// file before it asks. It answers 503 until EnableFileStore has run.
-func (s *Server) FileStoreModuleHandler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		store := s.fileStoreHandler.Load()
-		if store == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "file_store_off", config.PostgresURLEnvironmentVariable+" is not set, so this server keeps no files")
-			return
-		}
-		store.handler.ServeHTTP(w, r)
-	})
 }

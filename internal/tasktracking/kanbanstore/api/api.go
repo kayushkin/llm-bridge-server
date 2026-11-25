@@ -25,13 +25,13 @@ import (
 
 type API struct {
 	store     *db.Store
-	noteboard *noteboard.Client
+	noteboard noteboard.Notes
 	// principals is consulted on exactly one write: assigning a principal to a
 	// card. See internal/principalstore for why this otherwise-dumb store checks
 	// that one reference.
 	principals principalstore.Directory
 	// references is reference-store, which owns the list of reference types.
-	references *referencestore.Client
+	references referencestore.Types
 	// bridge is consulted on one write: setting a board's default agent or
 	// default instance. See internal/llmbridge for why.
 	bridge llmbridge.AgentsAndInstances
@@ -48,13 +48,13 @@ type API struct {
 	principalEnforcement *PrincipalEnforcement
 	// files is file-store, which owns uploaded bytes. Nil until SetFileStore is
 	// called, and then every attachment route answers 503; see attachments.go.
-	files *filestore.Client
+	files filestore.Files
 }
 
 // New builds the API over its store and the owners it asks. What the process
 // was started with is the mounting server's to describe, so the store has no
 // /settings of its own.
-func New(store *db.Store, nb *noteboard.Client, principals principalstore.Directory, bridge llmbridge.AgentsAndInstances, bundles bundlestore.Bundles) *API {
+func New(store *db.Store, nb noteboard.Notes, principals principalstore.Directory, bridge llmbridge.AgentsAndInstances, bundles bundlestore.Bundles) *API {
 	return &API{store: store, noteboard: nb, principals: principals, bridge: bridge, bundles: bundles, messages: messaging.NewDispatcher(store, nb)}
 }
 
@@ -1330,7 +1330,7 @@ func (a *API) entityTypes(w http.ResponseWriter, r *http.Request) {
 
 // SetReferenceStore gives the API reference-store, which owns the list of
 // reference types.
-func (a *API) SetReferenceStore(references *referencestore.Client) { a.references = references }
+func (a *API) SetReferenceStore(references referencestore.Types) { a.references = references }
 
 func (a *API) allTags(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()

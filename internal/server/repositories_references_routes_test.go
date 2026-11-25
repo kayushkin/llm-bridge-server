@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -130,26 +129,42 @@ func TestRepoStoreWorkGraphStoreAndFileStoreAreTheOperators(t *testing.T) {
 func TestSessionFilesGoToTheFileStoreModule(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
 	enableRepositoriesAndReferencesOnTestDatabase(t, gated.server)
-	stored, err := gated.server.fileStore.Upload(strings.NewReader("the bytes"), 9, "text/plain", "note.txt", "br_files")
+	stored, err := gated.server.fileStore.Accept(strings.NewReader("the bytes"), 9, "text/plain", filestore.NewFile{Filename: "note.txt", OwnerService: sessionFileOwnerService, OwnerRef: "br_files"})
 	if err != nil || stored.ID != "file_000001" || stored.SizeBytes != 9 {
 		t.Fatalf("upload: %v %+v", err, stored)
 	}
-	response, err := gated.server.fileStore.Content(stored.ID, true, "")
-	if err != nil {
-		t.Fatal(err)
+	response := httptest.NewRecorder()
+	gated.server.fileStore.ServeContentOf(response, httptest.NewRequest(http.MethodGet, "/", nil), stored.ID, "true")
+	if response.Code != http.StatusOK || response.Body.String() != "the bytes" || response.Header().Get("Content-Type") != "text/plain" ||
+		response.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("content = %d %q %v", response.Code, response.Body, response.Header())
 	}
-	body, _ := io.ReadAll(response.Body)
-	response.Body.Close()
-	if response.StatusCode != http.StatusOK || string(body) != "the bytes" || response.Header.Get("Content-Type") != "text/plain" ||
-		response.Header.Get("X-Content-Type-Options") != "nosniff" {
-		t.Fatalf("content = %d %q %v", response.StatusCode, body, response.Header)
+	// A part of the file, as a browser asks for a video.
+	partial := httptest.NewRecorder()
+	ranged := httptest.NewRequest(http.MethodGet, "/", nil)
+	ranged.Header.Set("Range", "bytes=4-6")
+	gated.server.fileStore.ServeContentOf(partial, ranged, stored.ID, "false")
+	if partial.Code != http.StatusPartialContent || partial.Body.String() != "byt" || partial.Header().Get("Content-Type") != "application/octet-stream" {
+		t.Fatalf("range = %d %q %v", partial.Code, partial.Body, partial.Header())
+	}
+	missing := httptest.NewRecorder()
+	gated.server.fileStore.ServeContentOf(missing, httptest.NewRequest(http.MethodGet, "/", nil), "file_000099", "true")
+	if missing.Code != http.StatusNotFound || !strings.Contains(missing.Body.String(), `"error":"not found"`) {
+		t.Fatalf("an unknown file = %d %s", missing.Code, missing.Body)
+	}
+	var refusal *filestore.Refusal
+	if _, err := gated.server.fileStore.Accept(strings.NewReader("x"), 1, "text/plain", filestore.NewFile{Filename: "../x", OwnerService: sessionFileOwnerService, OwnerRef: "br_files"}); !errors.As(err, &refusal) || refusal.Status != http.StatusBadRequest {
+		t.Fatalf("a name with a path separator: %v", err)
+	}
+	if _, err := gated.server.fileStore.Accept(strings.NewReader("x"), 26*1024*1024, "text/plain", filestore.NewFile{Filename: "big", OwnerService: sessionFileOwnerService, OwnerRef: "br_files"}); !errors.As(err, &refusal) || refusal.Status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("a file over the limit: %v", err)
 	}
 	listed := gated.requestAsService(t, "GET", "/file-store/files?owner_service=llm-bridge-server&owner_ref=br_files")
 	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), `"id":"file_000001"`) {
 		t.Fatalf("listed = %d %s", listed.Code, listed.Body)
 	}
-	if limits, err := gated.server.fileStore.Limits(); err != nil || limits.MaximumFileBytes != 25*1024*1024 {
-		t.Fatalf("limits = %+v %v", limits, err)
+	if limits := gated.server.fileStore.CurrentLimits(); limits.MaximumFileBytes != 25*1024*1024 {
+		t.Fatalf("limits = %+v", limits)
 	}
 }
 

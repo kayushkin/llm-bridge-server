@@ -3,11 +3,12 @@ package server
 import (
 	"context"
 	"flag"
-	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
 	"github.com/kayushkin/llm-bridge-server/internal/references/referencestore"
 	"github.com/kayushkin/llm-bridge-server/internal/repositories/repostore"
 )
@@ -89,21 +90,19 @@ func TestInternalCallTimings(t *testing.T) {
 		gated := newGatedTestServer(t, nil)
 		enableRepositoriesAndReferencesOnTestDatabase(t, gated.server)
 		content := strings.Repeat("a session file's bytes\n", 2800) // about 64 KB
-		stored, err := gated.server.fileStore.Upload(strings.NewReader(content), int64(len(content)), "text/plain", "notes.txt", "br_timed")
+		stored, err := gated.server.fileStore.Accept(strings.NewReader(content), int64(len(content)), "text/plain",
+			filestore.NewFile{Filename: "notes.txt", OwnerService: sessionFileOwnerService, OwnerRef: "br_timed"})
 		if err != nil {
 			t.Fatal(err)
 		}
+		request := httptest.NewRequest(http.MethodGet, "/", nil)
 		reportInternalCallTiming(t, func(b *testing.B) {
 			b.ReportAllocs()
 			for range b.N {
-				response, err := gated.server.fileStore.Content(stored.ID, true, "")
-				if err != nil {
-					b.Fatal(err)
-				}
-				read, err := io.Copy(io.Discard, response.Body)
-				response.Body.Close()
-				if err != nil || response.StatusCode != http.StatusOK || read != int64(len(content)) {
-					b.Fatalf("content = %d, %d bytes, %v", response.StatusCode, read, err)
+				response := &countingResponseWriter{header: http.Header{}}
+				gated.server.fileStore.ServeContentOf(response, request, stored.ID, "true")
+				if response.status != http.StatusOK || response.written != int64(len(content)) {
+					b.Fatalf("content = %d, %d bytes", response.status, response.written)
 				}
 			}
 		})
@@ -126,4 +125,27 @@ func TestInternalCallTimings(t *testing.T) {
 			}
 		})
 	})
+}
+
+// countingResponseWriter keeps only the status and how many bytes were
+// written, as io.Discard keeps nothing, so a timing counts the call and not a
+// copy into memory.
+type countingResponseWriter struct {
+	header  http.Header
+	status  int
+	written int64
+}
+
+func (writer *countingResponseWriter) Header() http.Header { return writer.header }
+
+func (writer *countingResponseWriter) WriteHeader(status int) {
+	if writer.status == 0 {
+		writer.status = status
+	}
+}
+
+func (writer *countingResponseWriter) Write(data []byte) (int, error) {
+	writer.WriteHeader(http.StatusOK)
+	writer.written += int64(len(data))
+	return len(data), nil
 }
