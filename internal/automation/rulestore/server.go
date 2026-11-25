@@ -20,11 +20,11 @@ type Server struct {
 	lifetime context.Context
 	store    *Store
 	reactor  *Reactor
-	kanban   *KanbanStore
+	kanban   KanbanFacts
 }
 
 // RegisterHandlers mounts the API on mux.
-func RegisterHandlers(lifetime context.Context, mux *http.ServeMux, store *Store, reactor *Reactor, kanban *KanbanStore) {
+func RegisterHandlers(lifetime context.Context, mux *http.ServeMux, store *Store, reactor *Reactor, kanban KanbanFacts) {
 	s := &Server{lifetime: lifetime, store: store, reactor: reactor, kanban: kanban}
 	mux.HandleFunc("GET /health", s.health)
 	mux.HandleFunc("GET /vocabulary", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, CurrentVocabulary()) })

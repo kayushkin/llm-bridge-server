@@ -1228,30 +1228,14 @@ func (s *Server) serveAsCaller(w http.ResponseWriter, r *http.Request, pattern s
 			writeJSONError(w, http.StatusInternalServerError, "route_rule_invalid", err.Error())
 			return
 		}
-		if !s.sessionIDIsInScope(sessionID, sessionScopeOfCaller(caller)) {
-			// A service that started this session as another principal
-			// drives it while it holds can_start_sessions_as on that one.
-			drives, err := s.callerStartedSessionIDAndMayDriveIt(r.Context(), caller, sessionID)
-			if err != nil {
-				writeJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
-				return
-			}
-			if drives {
-				break
-			}
-			if !requestOnlyReads(r, pattern) {
-				http.Error(w, "session not found", http.StatusNotFound)
-				return
-			}
-			observes, err := s.mayObserveSession(r, caller, sessionID)
-			if err != nil {
-				writeJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
-				return
-			}
-			if !observes {
-				http.Error(w, "session not found", http.StatusNotFound)
-				return
-			}
+		reached, err := s.sessionReachedByCaller(r.Context(), caller, sessionID, requestOnlyReads(r, pattern))
+		if err != nil {
+			writeJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
+			return
+		}
+		if !reached {
+			http.Error(w, "session not found", http.StatusNotFound)
+			return
 		}
 	case routePrincipalOwnsSignal:
 		signalID, err := pathValueForPattern(pattern, r.URL.EscapedPath(), rule.ownedResourcePathValueName)
@@ -1267,7 +1251,7 @@ func (s *Server) serveAsCaller(w http.ResponseWriter, r *http.Request, pattern s
 		if !s.sessionIDIsInScope(signal.SessionID, sessionScopeOfCaller(caller)) {
 			observes := false
 			if requestOnlyReads(r, pattern) {
-				if observes, err = s.mayObserveSession(r, caller, signal.SessionID); err != nil {
+				if observes, err = s.mayObserveSession(r.Context(), caller, signal.SessionID); err != nil {
 					writeJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
 					return
 				}

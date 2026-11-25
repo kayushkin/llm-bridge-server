@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	schedulercron "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/cron"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/db/dbtest"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
+	"github.com/kayushkin/llm-bridge/msg"
 )
 
 // enableSchedulerOnTestDatabase serves a scheduler with runs switched off,
@@ -34,7 +36,9 @@ func enableSchedulerOnTestDatabase(t *testing.T, server *Server) {
 	if err := scheduler.Start(); err != nil {
 		t.Fatal(err)
 	}
-	server.EnableScheduler(schedulerapi.New(store, scheduler, "", settings, func(string) error { return nil }).Routes())
+	routes := schedulerapi.New(store, scheduler, "", settings, func(string) error { return nil })
+	server.EnableScheduler(routes)
+	server.EnableSchedulerJobReferences(routes)
 }
 
 // The scheduler answers under /scheduler/ with its own paths, to the operator
@@ -137,14 +141,21 @@ func TestRuleStoreRoutesAnswerAndDecideNothingWhileTheReactorIsOff(t *testing.T)
 	}
 }
 
-// rule-store reads this server's sessions and follows its session feed in
-// process, through HTTPClientToThisServer, as the internal service.
+// rule-store reads this server's sessions from its store and follows its
+// session feed through HTTPClientToThisServer, as the internal service.
 func TestRuleStoreReadsSessionsAndTheirFeedFromThisServerInProcess(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
 	baseURL, client := gated.server.HTTPClientToThisServer(0)
-	bridge := &rulestore.LLMBridge{BaseURL: baseURL, Client: client, Stream: client}
-	if _, err := bridge.ListSessions(context.Background()); err != nil {
-		t.Fatalf("ListSessions = %v", err)
+	bridge := gated.server.RuleStoreSessions(&rulestore.LLMBridge{BaseURL: baseURL, Stream: client})
+	newSessionForSignals(t, gated.store, "br_ruled", msg.SessionTypeAutonomous)
+	if sessions, err := bridge.ListSessions(context.Background()); err != nil || len(sessions) != 1 || !strings.Contains(string(sessions[0]), `"session_id":"br_ruled"`) {
+		t.Fatalf("ListSessions = %s, %v", sessions, err)
+	}
+	if session, found, err := bridge.GetSession(context.Background(), "br_ruled"); err != nil || !found || session.SessionID != "br_ruled" {
+		t.Fatalf("GetSession = %+v, %v, %v", session, found, err)
+	}
+	if _, found, err := bridge.GetSession(context.Background(), "br_nobody"); err != nil || found {
+		t.Fatalf("GetSession of a session the server does not have = %v, %v; want not found", found, err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -165,5 +176,36 @@ func TestRuleStoreReadsSessionsAndTheirFeedFromThisServerInProcess(t *testing.T)
 		t.Fatalf("the feed ended before its hello: %v", err)
 	case <-time.After(10 * time.Second):
 		t.Fatal("no hello on the session feed within 10 seconds")
+	}
+}
+
+// rule-store reads cards, columns and entity tags through kanban-store's Go
+// methods, as the internal service.
+func TestRuleStoreReadsKanbanInProcess(t *testing.T) {
+	test := newKanbanTestServer(t)
+	kanban := test.server.RuleStoreKanban()
+	ctx := context.Background()
+	if placements, err := kanban.LinkedCardPlacements(ctx, "br_unlinked"); err != nil || len(placements) != 0 {
+		t.Errorf("LinkedCardPlacements of a session no card links = %+v, %v", placements, err)
+	}
+	if tags, err := kanban.SessionTags(ctx, "br_unlinked"); err != nil || len(tags) != 0 {
+		t.Errorf("SessionTags = %v, %v", tags, err)
+	}
+	card, err := kanban.Card(ctx, test.unseenCardID)
+	if err != nil || len(card.Placements) != 1 || card.Placements[0].BoardID != test.unseenBoardID || card.Placements[0].UpdatedAt == "" {
+		t.Fatalf("Card = %+v, %v", card, err)
+	}
+	if _, err := kanban.Card(ctx, "card-nobody-has"); !errors.Is(err, rulestore.ErrKanbanNotFound) {
+		t.Errorf("a card on no board: %v, want ErrKanbanNotFound", err)
+	}
+	arrivals, err := kanban.ColumnCards(ctx, test.unseenBoardID, test.unseenColumnID)
+	if err != nil || len(arrivals) != 1 || arrivals[0].CardID != test.unseenCardID {
+		t.Fatalf("ColumnCards = %+v, %v", arrivals, err)
+	}
+	if _, err := time.Parse(time.RFC3339Nano, arrivals[0].ArrivedAt); err != nil {
+		t.Errorf("the arrival time %q does not parse as the comparison reads it: %v", arrivals[0].ArrivedAt, err)
+	}
+	if _, err := kanban.ColumnCards(ctx, test.seenBoardID, test.unseenColumnID); err == nil {
+		t.Error("a column read as on another board answered")
 	}
 }

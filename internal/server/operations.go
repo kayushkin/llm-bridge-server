@@ -45,8 +45,7 @@ func (s *Server) operationsOrRefuse(w http.ResponseWriter) (*operations.Coordina
 const maximumOperationIntentBytes = 4 << 20
 
 func (s *Server) handleCreateOperation(w http.ResponseWriter, r *http.Request) {
-	coordinator, ok := s.operationsOrRefuse(w)
-	if !ok {
+	if _, ok := s.operationsOrRefuse(w); !ok {
 		return
 	}
 	var intent msg.OperationIntent
@@ -56,32 +55,10 @@ func (s *Server) handleCreateOperation(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_intent", "body is not an operation intent: "+err.Error())
 		return
 	}
-	// Whatever the body says, the operation is the verified caller's.
-	intent.PrincipalID, _ = principalIdentityOfRequest(r)
-	if status, code, message := s.checkOperationOrganization(r, intent.OrganizationID); status != 0 {
-		writeJSONError(w, status, code, message)
-		return
-	}
-	if status, code, message := s.checkOperationGrant(r, intent.Type); status != 0 {
-		writeJSONError(w, status, code, message)
-		return
-	}
-	receipt, created, err := coordinator.Submit(intent)
-	var intentError *operations.IntentError
-	var budgetError *operations.BudgetError
-	switch {
-	case errors.As(err, &intentError):
-		writeJSONError(w, http.StatusBadRequest, intentError.Code, intentError.Message)
-		return
-	case errors.As(err, &budgetError):
-		writeJSONError(w, http.StatusPaymentRequired, budgetError.Code, budgetError.Message)
-		return
-	case errors.Is(err, operationstore.ErrIdempotencyKeyReused):
-		writeJSONError(w, http.StatusConflict, "idempotency_key_reused", err.Error())
-		return
-	case err != nil:
-		log.Printf("operations: submit: %v", err)
-		writeJSONError(w, http.StatusInternalServerError, "operation_not_stored", err.Error())
+	caller, _ := callerOfRequest(r)
+	receipt, created, refusal := s.submitOperation(r.Context(), caller, intent)
+	if refusal != nil {
+		writeJSONError(w, refusal.status, refusal.code, refusal.message)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -94,18 +71,72 @@ func (s *Server) handleCreateOperation(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(receipt)
 }
 
+// operationRefusal is an operation call refused: the status, code and
+// message the operation routes answer it with.
+type operationRefusal struct {
+	status  int
+	code    string
+	message string
+}
+
+func (refusal *operationRefusal) Error() string {
+	return fmt.Sprintf("%d %s: %s", refusal.status, refusal.code, refusal.message)
+}
+
+// refusalOf turns a check's zero-or-status answer into a refusal.
+func refusalOf(status int, code, message string) *operationRefusal {
+	if status == 0 {
+		return nil
+	}
+	return &operationRefusal{status: status, code: code, message: message}
+}
+
+// submitOperation checks and submits an intent as caller: the operation is
+// the caller's whatever the intent says, the organization must be an active
+// group the caller belongs to, and the caller must hold can_run_operation on
+// the type. The zero caller is this server's internal service, acting as no
+// principal, which belongs to every organization and needs no grant. Both
+// POST /operations and the callers inside this server go through here.
+func (s *Server) submitOperation(ctx context.Context, caller requestCaller, intent msg.OperationIntent) (msg.OperationReceipt, bool, *operationRefusal) {
+	if s.operations == nil {
+		return msg.OperationReceipt{}, false, &operationRefusal{http.StatusServiceUnavailable, "operations_not_configured", "this server was started without an operations coordinator"}
+	}
+	intent.PrincipalID = caller.principalID
+	if refusal := refusalOf(s.checkOperationOrganization(ctx, caller, intent.OrganizationID)); refusal != nil {
+		return msg.OperationReceipt{}, false, refusal
+	}
+	if refusal := refusalOf(s.checkOperationGrant(ctx, caller, intent.Type)); refusal != nil {
+		return msg.OperationReceipt{}, false, refusal
+	}
+	receipt, created, err := s.operations.Submit(intent)
+	var intentError *operations.IntentError
+	var budgetError *operations.BudgetError
+	switch {
+	case errors.As(err, &intentError):
+		return msg.OperationReceipt{}, false, &operationRefusal{http.StatusBadRequest, intentError.Code, intentError.Message}
+	case errors.As(err, &budgetError):
+		return msg.OperationReceipt{}, false, &operationRefusal{http.StatusPaymentRequired, budgetError.Code, budgetError.Message}
+	case errors.Is(err, operationstore.ErrIdempotencyKeyReused):
+		return msg.OperationReceipt{}, false, &operationRefusal{http.StatusConflict, "idempotency_key_reused", err.Error()}
+	case err != nil:
+		log.Printf("operations: submit: %v", err)
+		return msg.OperationReceipt{}, false, &operationRefusal{http.StatusInternalServerError, "operation_not_stored", err.Error()}
+	}
+	return receipt, created, nil
+}
+
 // checkOperationOrganization makes sure the organization is an active
 // principal-store group and, for a principal who is not an administrator,
 // one they belong to. A zero status means it passed.
-func (s *Server) checkOperationOrganization(r *http.Request, organizationID string) (status int, code, message string) {
-	if status, code, message := s.checkOrganizationIsAnActiveGroup(r, organizationID); status != 0 {
+func (s *Server) checkOperationOrganization(ctx context.Context, caller requestCaller, organizationID string) (status int, code, message string) {
+	if status, code, message := s.checkOrganizationIsAnActiveGroup(ctx, organizationID); status != 0 {
 		return status, code, message
 	}
-	principalID, restricted := principalRestrictingRequest(r)
-	if !restricted {
+	if !caller.narrowsToOnePrincipal() {
 		return 0, "", ""
 	}
-	groupIDs, err := s.principalClient.GroupIDsOf(r.Context(), principalID)
+	principalID := caller.principalID
+	groupIDs, err := s.principalClient.GroupIDsOf(ctx, principalID)
 	if err != nil {
 		return http.StatusBadGateway, "principal_store_unavailable", err.Error()
 	}
@@ -119,11 +150,11 @@ func (s *Server) checkOperationOrganization(r *http.Request, organizationID stri
 
 // checkOrganizationIsAnActiveGroup makes sure principal-store has the
 // organization as an active group. A zero status means it passed.
-func (s *Server) checkOrganizationIsAnActiveGroup(r *http.Request, organizationID string) (status int, code, message string) {
+func (s *Server) checkOrganizationIsAnActiveGroup(ctx context.Context, organizationID string) (status int, code, message string) {
 	if organizationID == "" {
 		return http.StatusBadRequest, "organization_required", "organization_id is required: the principal-store group the operation runs for"
 	}
-	organization, err := s.principalClient.Get(r.Context(), organizationID)
+	organization, err := s.principalClient.Get(ctx, organizationID)
 	switch {
 	case errors.Is(err, principalclient.ErrNotFound):
 		return http.StatusBadRequest, "unknown_organization", fmt.Sprintf("principal-store has no principal %s", organizationID)
@@ -452,18 +483,17 @@ const (
 // principal starting an operation, as operations.grant_enforcement says. An
 // administrator and the service token are not checked. A zero status means
 // it passed.
-func (s *Server) checkOperationGrant(r *http.Request, operationType msg.OperationType) (status int, code, message string) {
-	principalID, restricted := principalRestrictingRequest(r)
-	if !restricted {
+func (s *Server) checkOperationGrant(ctx context.Context, caller requestCaller, operationType msg.OperationType) (status int, code, message string) {
+	if !caller.narrowsToOnePrincipal() {
 		return 0, "", ""
 	}
+	principalID := caller.principalID
 	enforcement := s.settings.String(config.SettingOperationsGrantEnforcement)
 	if enforcement != config.OperationsGrantEnforcementLenient && enforcement != config.OperationsGrantEnforcementStrict {
 		return http.StatusInternalServerError, "grant_enforcement_misconfigured", fmt.Sprintf(
 			"operations.grant_enforcement is %q, not one of %v", enforcement, config.OperationsGrantEnforcementValues)
 	}
-	caller, _ := callerOfRequest(r)
-	granted, err := s.grantedResourcesOf(r.Context(), grantSubjectOfCaller(caller), operationRunGrantRelation, operationTypeResourceType)
+	granted, err := s.grantedResourcesOf(ctx, grantSubjectOfCaller(caller), operationRunGrantRelation, operationTypeResourceType)
 	switch {
 	case errors.Is(err, grantclient.ErrPrincipalUnknown):
 		return http.StatusBadRequest, "unknown_principal", err.Error()
@@ -525,7 +555,7 @@ func (s *Server) handlePutOperationBudget(w http.ResponseWriter, r *http.Request
 		return
 	}
 	organizationID := r.PathValue("organization_id")
-	if status, code, message := s.checkOrganizationIsAnActiveGroup(r, organizationID); status != 0 {
+	if status, code, message := s.checkOrganizationIsAnActiveGroup(r.Context(), organizationID); status != 0 {
 		writeJSONError(w, status, code, message)
 		return
 	}

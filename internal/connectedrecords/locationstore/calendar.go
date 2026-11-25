@@ -1169,3 +1169,29 @@ func EventLocationNamesSomewhere(event GoogleCalendarEvent) bool {
 	location := strings.TrimSpace(event.Location)
 	return location != "" && !onlineMeetingPattern.MatchString(location) && !linkOnlyPattern.MatchString(location)
 }
+
+// GetVisitWithCalendarEventLinks is one visit in scope with the live calendar
+// events linked to it, as GET /visits/{id} answers it.
+func (s *Store) GetVisitWithCalendarEventLinks(ctx context.Context, scope ownership.Scope, id string, includeDeleted bool) (*Visit, error) {
+	visit, err := s.GetVisit(ctx, scope, id, includeDeleted)
+	if err != nil {
+		return nil, err
+	}
+	if visit.CalendarEventLinks, err = s.liveCalendarEventLinksTo(ctx, ownership.OwnedBy(visit.OwnerPrincipalID), []string{visit.ID}); err != nil {
+		return nil, err
+	}
+	return visit, nil
+}
+
+// GetTripWithCalendarEventLinks is one trip in scope with the live calendar
+// events linked to it, as GET /trips/{id} answers it.
+func (s *Store) GetTripWithCalendarEventLinks(ctx context.Context, scope ownership.Scope, id string, includeDeleted bool) (*Trip, error) {
+	trip, err := s.GetTrip(ctx, scope, id, includeDeleted)
+	if err != nil {
+		return nil, err
+	}
+	if trip.CalendarEventLinks, err = s.liveCalendarEventLinksTo(ctx, ownership.OwnedBy(trip.OwnerPrincipalID), []string{trip.ID}); err != nil {
+		return nil, err
+	}
+	return trip, nil
+}

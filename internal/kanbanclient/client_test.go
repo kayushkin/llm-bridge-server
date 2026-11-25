@@ -2,70 +2,42 @@ package kanbanclient
 
 import (
 	"context"
-	kanbanapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/api"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient/kanbanclienttest"
+	kanbanapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/api"
+	kanbanmodel "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/model"
 )
 
-// stubKanban stands in for kanban-store on the session-cards route.
-//
-// It routes the way kanban-store routes, rather than answering every request
-// with the canned body. kanban-store's entityScoped handler splits
-// r.URL.Path — the percent-DECODED path — on "/" and dispatches on the third
-// segment, answering 404 {"error":"not found"} when that segment is not one it
-// serves. A fixture that ignores the path cannot notice a request aimed at the
-// wrong URL, and this client builds its URL from a caller-supplied id.
-//
-// Verified against the running standalone kanban-store, because source is a
-// claim: an unknown session ref returns 200 [], and the escaped path this
-// client sends for an id containing a slash returns 404 {"error":"not found"}.
-func stubKanban(t *testing.T, status int, body string) (*Client, *string) {
-	t.Helper()
-	var gotPath string
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// RequestURI is the raw request line. r.URL.Path would show the
-		// server's percent-decoding of it, which is not what this asserts.
-		gotPath = r.RequestURI
-		w.Header().Set("Content-Type", "application/json")
+// item is a noteboard item as kanban-store passes it through.
+func item(id string) map[string]any { return map[string]any{"id": id} }
 
-		// kanban-store's routing, reproduced from internal/api/api.go. It
-		// reads URL.Path, so Go has already turned any %2F back into a real
-		// slash by this point and the segments shift.
-		rest := strings.TrimPrefix(r.URL.Path, "/api/entities/")
-		parts := strings.Split(rest, "/")
-		if len(parts) < 3 {
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(`{"error":"expected /api/entities/:type/:ref/..."}`))
-			return
+// sessionCards is kanban-store answering the session-cards lookup for one
+// session with cards, and with no cards (not a refusal) for any other: an
+// unknown session ref is 200 [] on the route, so a lookup aimed at the wrong
+// id would read as "no todo" without this distinction in a test.
+func sessionCards(sessionID string, cards []kanbanmodel.EntityCardView) (*Client, *kanbanclienttest.Store) {
+	store := &kanbanclienttest.Store{EntityCardsAnswer: func(entityType, entityRef string) ([]kanbanmodel.EntityCardView, error) {
+		if entityType != "session" || entityRef != sessionID {
+			return []kanbanmodel.EntityCardView{}, nil
 		}
-		if parts[2] != "cards" {
-			w.WriteHeader(http.StatusNotFound)
-			_, _ = w.Write([]byte(`{"error":"not found"}`))
-			return
-		}
-		w.WriteHeader(status)
-		_, _ = w.Write([]byte(body))
-	})
-	return New(handler), &gotPath
+		return cards, nil
+	}}
+	return New(store), store
 }
 
 func TestLinkedTodoForSessionTakesTheFirstCard(t *testing.T) {
-	// kanban-store returns links oldest-first, and the first is the todo the
-	// session was created for. Re-sorting here would second-guess the store
-	// that owns the ordering.
-	//
-	// That ordering is kanban-store's ListCardsByEntity —
-	// ORDER BY MIN(created_at), card_id — and it is pinned on that side by
-	// TestListCardsByEntityIsOldestLinkFirst. The tiebreak on card_id matters:
-	// without a total order, two links written in the same clock tick would
-	// come back in an arbitrary order and "the first card" would not be a
-	// stable answer.
-	client, path := stubKanban(t, http.StatusOK, `[
-		{"card_id":"todo-oldest","item":{"id":"todo-oldest","title":"dispatch"}},
-		{"card_id":"todo-newer","item":{"id":"todo-newer","title":"classified work"}}
-	]`)
-
+	// kanban-store returns links oldest-first (ListCardsByEntity orders by
+	// MIN(created_at), card_id, pinned by TestListCardsByEntityIsOldestLinkFirst),
+	// and the first is the todo the session was created for. Re-sorting here
+	// would second-guess the store that owns the ordering.
+	client, store := sessionCards("br_1", []kanbanmodel.EntityCardView{
+		{CardID: "todo-oldest", Item: map[string]any{"id": "todo-oldest", "title": "dispatch"}},
+		{CardID: "todo-newer", Item: map[string]any{"id": "todo-newer", "title": "classified work"}},
+	})
 	got, err := client.LinkedTodoForSession(context.Background(), "br_1")
 	if err != nil {
 		t.Fatalf("lookup: %v", err)
@@ -73,27 +45,34 @@ func TestLinkedTodoForSessionTakesTheFirstCard(t *testing.T) {
 	if got != "todo-oldest" {
 		t.Errorf("todo = %q, want todo-oldest", got)
 	}
-	if want := "/api/entities/session/br_1/cards"; *path != want {
-		t.Errorf("path = %q, want %q", *path, want)
+	if calls := store.Calls(); len(calls) != 1 || calls[0].About != "session/br_1" {
+		t.Errorf("calls = %+v, want one lookup of session br_1", calls)
+	}
+}
+
+func TestLinkedCardForSessionReadsTheTitleAndBody(t *testing.T) {
+	client, _ := sessionCards("br_1", []kanbanmodel.EntityCardView{
+		{CardID: "todo-1", Item: map[string]any{"id": "todo-1", "title": "printer jammed", "body": "third floor"}},
+	})
+	card, err := client.LinkedCardForSession(context.Background(), "br_1")
+	if err != nil || card == nil || card.Title != "printer jammed" || card.Body != "third floor" {
+		t.Fatalf("card = %+v, %v", card, err)
+	}
+	client, _ = sessionCards("br_1", []kanbanmodel.EntityCardView{{CardID: "todo-1", Item: map[string]any{"id": "todo-1", "title": 7}}})
+	if _, err := client.LinkedCardForSession(context.Background(), "br_1"); err == nil {
+		t.Fatal("a title that is not text read as a card")
 	}
 }
 
 func TestLinkedTodoForSessionSkipsOrphanedLinks(t *testing.T) {
-	// A null item is a link that outlived its noteboard item. Returning its
-	// card id would point the signal at a todo no view can render.
-	//
-	// kanban-store produces that null in GetItems, which resolves each card id
-	// against noteboard concurrently and stores nil for a 404 while keeping the
-	// slice index-aligned with the ids. So item==null means precisely "noteboard
-	// has no live row for this card id" — a deleted todo, since noteboard's
-	// delete is a soft one that drops the row out of every read path. It does
-	// NOT mean "held": noteboard's GetItem filters on deleted_at only, so a held
-	// item still resolves and is returned here rather than being skipped.
-	client, _ := stubKanban(t, http.StatusOK, `[
-		{"card_id":"todo-deleted","item":null},
-		{"card_id":"todo-alive","item":{"id":"todo-alive"}}
-	]`)
-
+	// A null item is a link that outlived its noteboard item: kanban-store
+	// keeps the slot index-aligned and leaves the item nil. Returning its card
+	// id would point the signal at a todo no view can render.
+	var gone map[string]any
+	client, _ := sessionCards("br_1", []kanbanmodel.EntityCardView{
+		{CardID: "todo-deleted", Item: gone},
+		{CardID: "todo-alive", Item: item("todo-alive")},
+	})
 	got, err := client.LinkedTodoForSession(context.Background(), "br_1")
 	if err != nil {
 		t.Fatalf("lookup: %v", err)
@@ -103,26 +82,14 @@ func TestLinkedTodoForSessionSkipsOrphanedLinks(t *testing.T) {
 	}
 }
 
-// A row whose card_id is absent or blank is skipped, and the next usable card
-// is returned.
-//
-// kanban-store cannot emit this: the link route takes the card id from the URL
-// path, refuses an empty rest, and Go's mux collapses "/api/cards//links"
-// before the handler sees it — measured, and zero of the 6,590 live session
-// links have a blank card_id. So this pins the client's tolerance of a
-// malformed body rather than a behavior of the store.
-//
-// The good row after the blank one is what makes the test discriminating. With
-// only the blank row present, the client returns "" — and so does a client
-// with the skip deleted, so that version asserts nothing. Scored: the
-// blank-row-only case left the skip untested.
+// A row whose card_id is blank is skipped, and the next usable card is
+// returned. kanban-store cannot emit this; the good row after the blank one is
+// what makes the test discriminating.
 func TestLinkedTodoForSessionSkipsRowsWithNoCardID(t *testing.T) {
-	client, _ := stubKanban(t, http.StatusOK, `[
-		{"item":{"id":"no-card-id"}},
-		{"card_id":"","item":{"id":"blank-card-id"}},
-		{"card_id":"todo-alive","item":{"id":"todo-alive"}}
-	]`)
-
+	client, _ := sessionCards("br_1", []kanbanmodel.EntityCardView{
+		{CardID: "", Item: item("blank-card-id")},
+		{CardID: "todo-alive", Item: item("todo-alive")},
+	})
 	got, err := client.LinkedTodoForSession(context.Background(), "br_1")
 	if err != nil {
 		t.Fatalf("lookup: %v", err)
@@ -133,20 +100,14 @@ func TestLinkedTodoForSessionSkipsRowsWithNoCardID(t *testing.T) {
 }
 
 func TestLinkedTodoForSessionWithNoLinks(t *testing.T) {
-	for name, body := range map[string]string{
-		// What the running kanban-store actually returns for a session with no
-		// links, and for a session ref it has never heard of: 200 with an empty
-		// array. Both were probed on :8305 rather than assumed — the route
-		// builds its response with make([]map[string]any, len(ids)), which
-		// marshals to [] and never to null.
-		"empty array": `[]`,
-		// Not a shape kanban-store emits; kept because a JSON null decodes into
-		// a nil slice and the loop must not treat that as an error.
-		"json null":    `null`,
-		"all orphaned": `[{"card_id":"gone","item":null}]`,
+	var gone map[string]any
+	for name, cards := range map[string][]kanbanmodel.EntityCardView{
+		"empty list":   {},
+		"nil list":     nil,
+		"all orphaned": {{CardID: "gone", Item: gone}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			client, _ := stubKanban(t, http.StatusOK, body)
+			client, _ := sessionCards("br_1", cards)
 			got, err := client.LinkedTodoForSession(context.Background(), "br_1")
 			if err != nil {
 				t.Fatalf("lookup: %v", err)
@@ -158,130 +119,61 @@ func TestLinkedTodoForSessionWithNoLinks(t *testing.T) {
 	}
 }
 
-// A store that answers with an error or with something that is not the
-// documented shape must produce an error, never a confident empty string:
-// the caller logs an error but treats "" as "this session has no todo".
+// A store that refuses must produce an error naming the status, never a
+// confident empty string: the caller treats "" as "this session has no todo".
 func TestLinkedTodoForSessionErrors(t *testing.T) {
-	t.Run("non-200", func(t *testing.T) {
-		client, _ := stubKanban(t, http.StatusInternalServerError, `{"error":"boom"}`)
+	for _, status := range []int{http.StatusInternalServerError, http.StatusBadGateway} {
+		client := New(&kanbanclienttest.Store{EntityCardsAnswer: func(string, string) ([]kanbanmodel.EntityCardView, error) {
+			return nil, &kanbanapi.Refusal{Status: status, Message: "noteboard: connection refused"}
+		}})
 		_, err := client.LinkedTodoForSession(context.Background(), "br_1")
-		if err == nil {
-			t.Fatal("expected an error for a 500")
+		if err == nil || !strings.Contains(err.Error(), strconv.Itoa(status)) {
+			t.Errorf("a %d refusal: %v, want an error naming the status", status, err)
 		}
-		// The status has to reach the message, and asserting merely that an
-		// error came back does not check that. kanban-store's error bodies are
-		// JSON objects, so with the status check deleted the read still fails
-		// one step later in the decoder — reporting a refused read as a
-		// malformed one, and losing the 500 that says which service is down.
-		// Scored: deleting the status check left the old assertion green.
-		if !strings.Contains(err.Error(), "500") {
-			t.Errorf("error = %q, want it to name the 500 status", err)
-		}
-	})
-	t.Run("502 when kanban-store cannot reach noteboard", func(t *testing.T) {
-		// kanban-store answers 502, not 500, when its own noteboard lookup
-		// fails — a distinct code for "my upstream is down" that the message
-		// must carry through for the same reason.
-		client, _ := stubKanban(t, http.StatusBadGateway, `{"error":"noteboard: connection refused"}`)
-		_, err := client.LinkedTodoForSession(context.Background(), "br_1")
-		if err == nil {
-			t.Fatal("expected an error for a 502")
-		}
-		if !strings.Contains(err.Error(), "502") {
-			t.Errorf("error = %q, want it to name the 502 status", err)
-		}
-	})
-	t.Run("unparseable body", func(t *testing.T) {
-		client, _ := stubKanban(t, http.StatusOK, `{"not":"an array"}`)
-		if _, err := client.LinkedTodoForSession(context.Background(), "br_1"); err == nil {
-			t.Fatal("expected an error for a body that is not the documented shape")
-		}
-	})
-	t.Run("empty session id", func(t *testing.T) {
-		client, _ := stubKanban(t, http.StatusOK, `[]`)
-		if _, err := client.LinkedTodoForSession(context.Background(), ""); err == nil {
-			t.Fatal("expected an error for an empty session id")
-		}
-	})
-}
-
-// The cry-wolf control for the error assertions above: the ordinary quiet case
-// — a real session that simply has no links yet — must stay silent. Every
-// repair in this family fails by making the error surface fire on the
-// legitimate case, and "" with a nil error is what the caller reads as "this
-// session has no todo".
-func TestLinkedTodoForSessionIsQuietWhenThereIsNothingToFind(t *testing.T) {
-	client, _ := stubKanban(t, http.StatusOK, `[]`)
-	got, err := client.LinkedTodoForSession(context.Background(), "br_1784416900461396845")
-	if err != nil {
-		t.Fatalf("a session with no links is not an error: %v", err)
 	}
-	if got != "" {
-		t.Errorf("todo = %q, want empty", got)
+	client, _ := sessionCards("br_1", nil)
+	if _, err := client.LinkedTodoForSession(context.Background(), ""); err == nil {
+		t.Fatal("expected an error for an empty session id")
 	}
 }
 
-// The client percent-encodes the session id into the path segment. That stops
-// the id from forging extra path segments in the request line — but it does
-// NOT make such an id work, because kanban-store routes on the decoded path.
-//
-// Measured against the running kanban-store on :8305: the request line this
-// client sends for "br_1/../br_2" is
-// /api/entities/session/br_1%2F..%2Fbr_2/cards, and the answer is
-// 404 {"error":"not found"} — not a redirect, and not br_2's cards. The
-// server decodes %2F back to a slash in URL.Path, so kanban-store's split
-// sees ["session","br_1","..","br_2","cards"], reads ".." as the sub-resource,
-// and falls through to its default 404.
-//
-// So the escaping's real job is containment, not compatibility: an id carrying
-// a slash fails loudly with a status in the message, rather than silently
-// resolving to a DIFFERENT session's cards. Asserting err == nil here — which
-// is what the old test did, against a fixture that served every path alike —
-// pinned behavior kanban-store does not have.
-//
-// Every session id in use today (br_…, autoworker-anthropic-…, herald-…,
-// tcl-…) is already free of slashes: measured over all 6,590 session links in
-// kanban-store's live card_links, zero contain a slash, a percent or a space.
-// This guards the boundary against a future id shape.
-func TestLinkedTodoForSessionEscapesTheSessionIDIntoOneSegment(t *testing.T) {
-	client, path := stubKanban(t, http.StatusOK, `[{"card_id":"br_2-todo","item":{"id":"br_2-todo"}}]`)
-
+// An id carrying slashes is one entity ref: it is asked for whole, and it can
+// never reach another session's cards.
+func TestLinkedTodoForSessionAsksForTheWholeIDAndNoOther(t *testing.T) {
+	client, store := sessionCards("br_2", []kanbanmodel.EntityCardView{{CardID: "br_2-todo", Item: item("br_2-todo")}})
 	got, err := client.LinkedTodoForSession(context.Background(), "br_1/../br_2")
-
-	// The request line must carry the id as a single escaped segment.
-	if want := "/api/entities/session/br_1%2F..%2Fbr_2/cards"; *path != want {
-		t.Errorf("path = %q, want %q", *path, want)
+	if err != nil || got != "" {
+		t.Fatalf("todo = %q, %v; want none — never another session's card", got, err)
 	}
-	// And kanban-store refuses it rather than serving br_2.
-	if err == nil {
-		t.Fatalf("expected an error; kanban-store 404s this path, got todo %q", got)
-	}
-	if !strings.Contains(err.Error(), "404") {
-		t.Errorf("error = %q, want it to name the 404 status", err)
-	}
-	if got != "" {
-		t.Errorf("todo = %q, want empty — never another session's card", got)
+	if calls := store.Calls(); len(calls) != 1 || calls[0].About != "session/br_1/../br_2" {
+		t.Errorf("calls = %+v", calls)
 	}
 }
 
-// TestLookupsAreMadeAsTheInternalService pins who a lookup is made as: the
-// internal service, past every board check, as the standalone store's service
-// token was. Made as nobody, kanban-store answers 401, and every signal would
-// be minted with no linked todo — a quiet loss, not a loud one.
+// Every read this server makes for itself is made as the internal service,
+// past every board check. Made as nobody, kanban-store refuses 401, and every
+// signal would be minted with no linked todo — a quiet loss, not a loud one.
 func TestLookupsAreMadeAsTheInternalService(t *testing.T) {
-	seen := make(chan kanbanapi.Caller, 1)
-	client := New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		caller, named := kanbanapi.CallerFrom(r.Context())
-		if !named {
-			t.Error("the lookup named no caller")
-		}
-		seen <- caller
-		w.Write([]byte(`[]`))
-	}))
+	client, store := sessionCards("br_1", nil)
 	if _, err := client.LinkedTodoForSession(context.Background(), "br_1"); err != nil {
 		t.Fatal(err)
 	}
-	if got := <-seen; !got.InternalService || got.PrincipalID != "" {
+	if got := store.Calls()[0].Caller; !got.InternalService || got.PrincipalID != "" {
 		t.Fatalf("caller = %+v, want the internal service", got)
+	}
+}
+
+func TestCardTagsAndItsNotFound(t *testing.T) {
+	client := New(&kanbanclienttest.Store{CardTagsAnswer: func(cardID string) ([]string, error) {
+		if cardID == "card-1" {
+			return []string{"billing"}, nil
+		}
+		return nil, &kanbanapi.Refusal{Status: http.StatusNotFound, Message: "not found"}
+	}})
+	if tags, err := client.CardTags(context.Background(), "card-1"); err != nil || len(tags) != 1 || tags[0] != "billing" {
+		t.Fatalf("tags = %v, %v", tags, err)
+	}
+	if _, err := client.CardTags(context.Background(), "card-gone"); !strings.Contains(err.Error(), "404") || !isNotFound(err) {
+		t.Fatalf("a card kanban-store does not have: %v, want ErrNotFound", err)
 	}
 }

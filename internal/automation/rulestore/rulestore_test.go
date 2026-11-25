@@ -243,7 +243,7 @@ func TestALinkedCardOnNoBoardHasNoPlacement(t *testing.T) {
 		t.Fatalf("placements %+v", placements)
 	}
 	var card CardDetail
-	if err := kanban.getJSON(context.Background(), "/api/cards/broken", &card); err == nil || errors.Is(err, errKanbanNotFound) {
+	if err := kanban.getJSON(context.Background(), "/api/cards/broken", &card); err == nil || errors.Is(err, ErrKanbanNotFound) {
 		t.Fatalf("a 500 must stay an error, got %v", err)
 	}
 }

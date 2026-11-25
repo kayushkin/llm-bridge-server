@@ -55,7 +55,7 @@ type Resolver struct {
 	Access      *AccessChecker
 	// HTTPClient asks the services that run apart, at ServiceURLs.
 	HTTPClient *http.Client
-	// InProcess are the services in this process, asked through a handler.
+	// InProcess are the services in this process, read by Go calls.
 	InProcess     InProcessServices
 	RecordTTL     time.Duration
 	MissTTL       time.Duration
@@ -218,6 +218,13 @@ func (r *Resolver) cachedFetch(ctx context.Context, key string, row *ReferenceTy
 func (r *Resolver) fetch(ctx context.Context, row *ReferenceType, id string, caller Caller, asCaller bool) (json.RawMessage, bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, r.LookupTimeout)
 	defer cancel()
+	reader, inProcess, err := r.inProcessReader(row)
+	if err != nil {
+		return nil, false, err
+	}
+	if inProcess {
+		return fetchInProcess(ctx, row, reader, id, caller, asCaller)
+	}
 	request, client, err := r.newRequest(ctx, row, strings.Replace(row.Get, "{id}", url.PathEscape(id), 1))
 	if err != nil {
 		return nil, false, err
@@ -378,6 +385,23 @@ func (r *Resolver) Attachment(ctx context.Context, caller Caller, id string) (st
 	}
 	ctx, cancel := context.WithTimeout(ctx, r.LookupTimeout)
 	defer cancel()
+	reader, inProcess, err := r.inProcessReader(row)
+	if err != nil {
+		return "", nil, err
+	}
+	if inProcess {
+		if reader.Attachment == nil {
+			return "", nil, fmt.Errorf("type %q of %s has no attachment reader", row.Type, row.Service)
+		}
+		contentType, body, err := reader.Attachment(ctx, id)
+		if errors.Is(err, ErrNoAttachment) {
+			return "", nil, ErrNoAttachment
+		}
+		if err != nil {
+			return "", nil, fmt.Errorf("%s: %w", row.Service, err)
+		}
+		return checkAttachment(row, id, contentType, body)
+	}
 	request, client, err := r.newRequest(ctx, row, strings.Replace(row.Attachment, "{id}", url.PathEscape(id), 1))
 	if err != nil {
 		return "", nil, err
@@ -398,33 +422,40 @@ func (r *Resolver) Attachment(ctx context.Context, caller Caller, id string) (st
 	if response.StatusCode != http.StatusOK {
 		return "", nil, fmt.Errorf("%s answered %d: %s", row.Service, response.StatusCode, firstLine(body))
 	}
+	return checkAttachment(row, id, response.Header.Get("Content-Type"), body)
+}
+
+// checkAttachment holds a picture, however it was read, to the size limit
+// and to being an image.
+func checkAttachment(row *ReferenceType, id, contentType string, body []byte) (string, []byte, error) {
 	if len(body) > MaximumAttachmentBytes {
 		return "", nil, fmt.Errorf("%s's picture of %s is over %d bytes", row.Service, id, MaximumAttachmentBytes)
 	}
-	contentType := response.Header.Get("Content-Type")
 	if !strings.HasPrefix(contentType, "image/") {
 		return "", nil, fmt.Errorf("%s answered %q for a picture of %s", row.Service, contentType, id)
 	}
 	return contentType, body, nil
 }
 
-// newRequest is a GET of path on row's service, with the credential the
-// service takes when it runs apart, and the client that reaches it.
+// newRequest is a GET of path on row's service, which runs apart, with the
+// credential the service takes and the client that reaches it. A service
+// that runs in this process is read by Go calls and has no address.
 func (r *Resolver) newRequest(ctx context.Context, row *ReferenceType, path string) (*http.Request, *http.Client, error) {
-	endpoint, err := r.endpoint(row.Service)
+	if r.InProcess.runsHere(row.Service) {
+		return nil, nil, fmt.Errorf("%s runs in this process and is read by Go calls, never by a request", row.Service)
+	}
+	baseURL, err := r.serviceURL(row.Service)
 	if err != nil {
 		return nil, nil, err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.baseURL+path, nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+path, nil)
 	if err != nil {
 		return nil, nil, err
 	}
-	if !endpoint.inProcess {
-		if err := r.Credentials.Apply(ctx, request, row); err != nil {
-			return nil, nil, err
-		}
+	if err := r.Credentials.Apply(ctx, request, row); err != nil {
+		return nil, nil, err
 	}
-	return request, endpoint.client, nil
+	return request, r.HTTPClient, nil
 }
 
 // serviceURL refuses to turn an unconfigured service into a relative request.

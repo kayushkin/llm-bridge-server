@@ -1,7 +1,10 @@
-// Package noteboard is a minimal HTTP client for the upstream noteboard
-// service. It treats noteboard items as opaque JSON (map[string]any) so we
-// pass through fields without redefining noteboard's schema in this repo
-// (per CLAUDE.md: layers are transparent).
+// Package noteboard is noteboard as kanban-store calls it. It treats noteboard
+// items as opaque JSON (map[string]any) so fields pass through without
+// redefining noteboard's schema here (layers are transparent).
+//
+// noteboard runs in the same process, and the server that mounts kanban-store
+// gives it noteboard as Notes, called in Go. Client is the same calls over
+// HTTP, for kanban-store's own tests, which fake noteboard's routes.
 package noteboard
 
 import (
@@ -18,6 +21,26 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/boundedtext"
 )
 
+// Notes is noteboard as kanban-store calls it. A call about a named item that
+// noteboard does not hold is an error IsNotFound reports.
+type Notes interface {
+	CreateItem(p CreateItemPayload) (Item, error)
+	GetItem(id string) (Item, error)
+	PatchItem(id string, patch map[string]any) (Item, error)
+	// PatchItemIfMatch applies the patch only when ifMatch, the If-Match the
+	// caller holds, is the item's version; otherwise *ItemChangedError.
+	PatchItemIfMatch(id string, patch map[string]any, ifMatch string) (Item, error)
+	HoldItem(id, reason string) (Item, error)
+	UnholdItem(id string) (Item, error)
+	DeleteItem(id string, hard bool) error
+	GetItems(ids []string) ([]Item, error)
+	Search(q string, limit int) ([]Item, error)
+	// QueryItems refuses a query noteboard will not run with
+	// *QueryRefusedError.
+	QueryItems(query ItemsQuery) (*ItemsQueryResult, error)
+}
+
+// Client is Notes over noteboard's HTTP routes.
 type Client struct {
 	BaseURL string
 	HTTP    *http.Client
@@ -218,6 +241,9 @@ func (c *Client) Search(q string, limit int) ([]Item, error) {
 // notFoundError lets callers distinguish missing items from real failures.
 type notFoundError struct{ id string }
 
+// NotFound is the error a Notes answers for an item id it does not hold.
+func NotFound(id string) error { return &notFoundError{id: id} }
+
 func (e *notFoundError) Error() string { return "noteboard item not found: " + boundedtext.Value(e.id) }
 
 // ItemChangedError is noteboard's 412: the patch was made against a version of
@@ -343,3 +369,4 @@ func (c *Client) QueryItems(query ItemsQuery) (*ItemsQueryResult, error) {
 	}
 	return &result, nil
 }
+var _ Notes = (*Client)(nil)

@@ -382,11 +382,8 @@ func (h *handler) getVisit(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	visit, err := h.s.GetVisit(r.Context(), scope, r.PathValue("id"), r.URL.Query().Get("include_deleted") == "true")
+	visit, err := h.s.GetVisitWithCalendarEventLinks(r.Context(), scope, r.PathValue("id"), r.URL.Query().Get("include_deleted") == "true")
 	if respondError(w, err) {
-		return
-	}
-	if visit.CalendarEventLinks, err = h.s.liveCalendarEventLinksTo(r.Context(), ownership.OwnedBy(visit.OwnerPrincipalID), []string{visit.ID}); respondError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, visit)
@@ -453,11 +450,8 @@ func (h *handler) getTrip(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	trip, err := h.s.GetTrip(r.Context(), scope, r.PathValue("id"), r.URL.Query().Get("include_deleted") == "true")
+	trip, err := h.s.GetTripWithCalendarEventLinks(r.Context(), scope, r.PathValue("id"), r.URL.Query().Get("include_deleted") == "true")
 	if respondError(w, err) {
-		return
-	}
-	if trip.CalendarEventLinks, err = h.s.liveCalendarEventLinksTo(r.Context(), ownership.OwnedBy(trip.OwnerPrincipalID), []string{trip.ID}); respondError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, trip)

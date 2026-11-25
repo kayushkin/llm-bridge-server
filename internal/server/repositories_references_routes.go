@@ -22,7 +22,6 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/access/principalstore"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
-	"github.com/kayushkin/llm-bridge-server/internal/filestoreclient"
 	"github.com/kayushkin/llm-bridge-server/internal/references/referencestore"
 	"github.com/kayushkin/llm-bridge-server/internal/repositories/repostore"
 	"github.com/kayushkin/llm-bridge-server/internal/repositories/workgraphstore"
@@ -64,6 +63,10 @@ func mountedStoreRoute(prefix string, mounted func() *mountedStore, offCode, off
 type repositoryStores struct {
 	repoStore      http.Handler
 	workGraphStore http.Handler
+	// The stores themselves, for project-store's reads in process.
+	repos          *repostore.Store
+	workGraph      *workgraphstore.Store
+	workGraphRepos workgraphstore.RepoDirectory
 }
 
 // repoRegistry is repo-store as a deploy action reads it; the repo-store
@@ -85,9 +88,12 @@ func (s *Server) EnableRepositories(repos *repostore.Store, syncer *repostore.Pu
 		repostore.RegisterPullRequestHandlersWithoutSync(repoStoreMux, repos, syncerOffReason)
 	}
 	workGraphStoreMux := http.NewServeMux()
-	workgraphstore.RegisterHandlers(workGraphStoreMux, &workgraphstore.Handlers{Store: workGraph, RepoStore: workgraphstore.RepoStoreModule{Store: repos}})
+	workGraphRepos := workgraphstore.RepoStoreModule{Store: repos}
+	workgraphstore.RegisterHandlers(workGraphStoreMux, &workgraphstore.Handlers{Store: workGraph, RepoStore: workGraphRepos})
 	s.repoRegistryForDeploys = repos
-	s.repositories.Store(&repositoryStores{repoStore: repoStoreMux, workGraphStore: workGraphStoreMux})
+	s.repositories.Store(&repositoryStores{repoStore: repoStoreMux, workGraphStore: workGraphStoreMux, repos: repos, workGraph: workGraph, workGraphRepos: workGraphRepos})
+	s.referenceReadable.repos.Store(repos)
+	s.referenceReadable.workGraph.Store(workGraph)
 }
 
 // EnableFileStore serves file-store from its module, and makes the session
@@ -104,7 +110,8 @@ func (s *Server) EnableFileStore(files *filestore.Store) error {
 	}
 	module := filestore.NewServer(files, s.fileStoreLimits)
 	handler := module.Handler()
-	s.fileStore = filestoreclient.New(handler)
+	s.fileStore = module
+	s.fileStoreCalls.Store(module)
 	s.fileStoreModule.Store(files)
 	s.fileStoreHandler.Store(&mountedStore{handler: handler})
 	return nil
@@ -132,42 +139,18 @@ func (s *Server) checkFileStoreSettings() error {
 	return nil
 }
 
-// InProcessReferenceServices are the services reference-store asks through
-// this server's own handler, by the service name the type rows use, and the
-// prefix their routes are mounted under here. Every other service a type
-// names is asked over HTTP at reference_store.service_urls.
-var InProcessReferenceServices = map[string]string{
-	"llm-bridge-server": "",
-	"agent-store":       "",
-	"prediction-store":  "/prediction-store",
-	"noteboard":         "/noteboard",
-	"project-store":     "/project-store",
-	"tool-store":        "/tool-store",
-	"skill-store":       "/skill-store",
-	"principal-store":   "/principal-store",
-	"repo-store":        repoStoreMountPrefix,
-	"work-graph-store":  workGraphStoreMountPrefix,
-	"people-store":      peopleStoreMountPrefix,
-	"journal-store":     journalStoreMountPrefix,
-	"calendar-store":    calendarStoreMountPrefix,
-	"message-store":     messageStoreMountPrefix,
-	"activity-store":    activityStoreMountPrefix,
-	"time-ledger-store": timeLedgerStoreMountPrefix,
-	"budget-store":      budgetStoreMountPrefix,
-	"scheduler":         schedulerMountPrefix,
-	"photo-store":       photoStoreMountPrefix,
-	"location-store":    locationStoreMountPrefix,
-	"possession-store":  possessionStoreMountPrefix,
-}
-
 // EnableReferenceStore serves reference-store from resolver, and makes the
 // chat links' references and grant-store's reference checks call it in
 // process. main calls it once, after EnableAccess.
-func (s *Server) EnableReferenceStore(resolver *referencestore.Resolver) {
+func (s *Server) EnableReferenceStore(resolver *referencestore.Resolver) error {
+	if err := referencestore.ValidateInProcessReaders(resolver.Types, resolver.InProcess); err != nil {
+		return err
+	}
 	s.referenceResolver.Store(resolver)
 	mux := http.NewServeMux()
 	referencestore.RegisterHandlers(mux, &referencestore.Server{Resolver: resolver})
 	s.referenceStoreHandler.Store(&mountedStore{handler: mux})
+	return nil
 }
 
 // ReferenceAccessDirectory is what reference-store's access check reads,
@@ -204,26 +187,6 @@ func (d referenceAccessDirectory) Grants(ctx context.Context, principalID string
 			ResourceID: grant.ResourceID, Revoked: grant.RevokedAt != 0})
 	}
 	return held, nil
-}
-
-// InProcessReferenceHandler is the handler reference-store asks the services
-// in this process through: this server itself, answering as its internal
-// service. A request it is handed names the caller in X-Principal-Id only for
-// an owner-decided type, and then this server narrows the answer to that
-// principal, as it does for dash. Every other credential a request carries is
-// dropped. The requests are made by reference-store in this process and never
-// come from a client.
-func (s *Server) InProcessReferenceHandler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		request := r.Clone(r.Context())
-		principalID := request.Header.Get(principalIdentityHeader)
-		request.Header = http.Header{}
-		request.Header.Set(serviceTokenHeader, s.cfg.ServiceToken)
-		if principalID != "" {
-			request.Header.Set(principalIdentityHeader, principalID)
-		}
-		s.ServeHTTP(w, request)
-	})
 }
 
 // referenceStoreRoute answers one reference-store route as the caller: the
@@ -317,46 +280,4 @@ func (s *Server) registerRepositoriesAndReferencesRoutes() {
 	s.mux.HandleFunc("POST /reference-store/resolve", s.referenceStoreRoute)
 	s.mux.HandleFunc("GET /reference-store/search", s.referenceStoreRoute)
 	s.mux.HandleFunc("GET /reference-store/attachments/{id}", s.referenceStoreRoute)
-}
-
-// RepositoriesHandler serves repo-store's routes under /repo-store and
-// work-graph-store's under /work-graph-store, past this server's route rules,
-// for the modules in this process that read them (project-store). It answers
-// 503 until EnableRepositories has run.
-func (s *Server) RepositoriesHandler() http.Handler {
-	mux := http.NewServeMux()
-	mux.Handle(repoStoreMountPrefix+"/", s.repoStoreRoute())
-	mux.Handle(workGraphStoreMountPrefix+"/", s.workGraphStoreRoute())
-	return mux
-}
-
-// ReferenceStoreModuleHandler serves reference-store's routes at their own
-// paths (/types, /resolve, …), past this server's route rules and with no
-// caller in the context, for the modules in this process that read its
-// catalog (kanban-store's reference types). It answers 503 until
-// EnableReferenceStore has run.
-func (s *Server) ReferenceStoreModuleHandler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		store := s.referenceStoreHandler.Load()
-		if store == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "reference_store_off", "reference-store is not open on this server")
-			return
-		}
-		store.handler.ServeHTTP(w, r)
-	})
-}
-
-// FileStoreModuleHandler serves file-store's routes at their own paths, past
-// this server's route rules, for the modules in this process that keep files
-// there (kanban-store's attachments), each of which checks who may read a
-// file before it asks. It answers 503 until EnableFileStore has run.
-func (s *Server) FileStoreModuleHandler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		store := s.fileStoreHandler.Load()
-		if store == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "file_store_off", config.PostgresURLEnvironmentVariable+" is not set, so this server keeps no files")
-			return
-		}
-		store.handler.ServeHTTP(w, r)
-	})
 }

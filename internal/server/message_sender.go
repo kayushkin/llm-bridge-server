@@ -7,7 +7,7 @@ package server
 // SenderDisplayName), so the chat can say who spoke in a session several
 // people write in. The sender is the request's caller; a message held over
 // a restart is sent later without a request, so the hold keeps the sender
-// and the replay names them on the context (withHeldMessageSender).
+// and the replay passes it to sendMessageToSession.
 
 import (
 	"context"
@@ -17,22 +17,10 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-type heldMessageSenderContextKey struct{}
-
-// withHeldMessageSender names the sender of a held message being replayed.
-// Only deliverHeldMessage sets it: a request through the route table never
-// carries it, because serveInternally is not reachable from outside.
-func withHeldMessageSender(ctx context.Context, principalID string) context.Context {
-	return context.WithValue(ctx, heldMessageSenderContextKey{}, principalID)
-}
-
 // senderPrincipalIDOfRequest is the principal who wrote the request's
-// message: the held message's sender on a replay, else the caller. Empty
-// when the caller acts as no principal (the internal service, a harness).
+// message: the caller. Empty when the caller acts as no principal (the
+// internal service, a harness).
 func senderPrincipalIDOfRequest(r *http.Request) string {
-	if principalID, ok := r.Context().Value(heldMessageSenderContextKey{}).(string); ok {
-		return principalID
-	}
 	if caller, ok := callerOfRequest(r); ok {
 		return caller.principalID
 	}
@@ -49,14 +37,19 @@ type messageSender struct {
 // messageSenderOfRequest is the request's sender, with the principal's
 // current name from principal-store.
 func (s *Server) messageSenderOfRequest(r *http.Request) (messageSender, error) {
-	principalID := senderPrincipalIDOfRequest(r)
+	return s.messageSenderOf(r.Context(), senderPrincipalIDOfRequest(r))
+}
+
+// messageSenderOf is principalID as a sender, with the principal's current
+// name from principal-store. An empty id is no principal.
+func (s *Server) messageSenderOf(ctx context.Context, principalID string) (messageSender, error) {
 	if principalID == "" {
 		return messageSender{}, nil
 	}
 	if s.principalLookupCache == nil {
 		return messageSender{}, fmt.Errorf("the sender %s is named from principal-store, and this server has no principal lookup", principalID)
 	}
-	principal, err := s.principalLookupCache.lookUp(r.Context(), principalID)
+	principal, err := s.principalLookupCache.lookUp(ctx, principalID)
 	if err != nil {
 		return messageSender{}, fmt.Errorf("read the sender %s from principal-store: %w", principalID, err)
 	}

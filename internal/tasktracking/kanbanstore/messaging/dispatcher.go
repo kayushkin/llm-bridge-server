@@ -27,7 +27,7 @@ type Sender interface {
 
 type Dispatcher struct {
 	store       *db.Store
-	noteboard   *noteboard.Client
+	noteboard   noteboard.Notes
 	sendTimeout time.Duration
 
 	mu     sync.RWMutex
@@ -36,7 +36,7 @@ type Dispatcher struct {
 
 // NewDispatcher starts with no sender: every matching trigger records a
 // not_configured delivery until SetSender is called.
-func NewDispatcher(store *db.Store, nb *noteboard.Client) *Dispatcher {
+func NewDispatcher(store *db.Store, nb noteboard.Notes) *Dispatcher {
 	return &Dispatcher{store: store, noteboard: nb, sendTimeout: 60 * time.Second}
 }
 

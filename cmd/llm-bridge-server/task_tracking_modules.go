@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"sort"
 	"time"
@@ -44,32 +43,14 @@ func openProjectStoreModule(ctx context.Context, url string) (*sql.DB, error) {
 	return openPostgresModule(ctx, url, module)
 }
 
-// ownAddress is where this process answers on its own machine, from the
-// address it listens on: a host left empty, or the unspecified address,
-// listens on loopback too, so loopback is where it answers itself.
-func ownAddress(listenAddress string) (string, error) {
-	host, port, err := net.SplitHostPort(listenAddress)
-	if err != nil {
-		return "", fmt.Errorf("the listen address %q: %w", listenAddress, err)
-	}
-	switch host {
-	case "", "0.0.0.0":
-		host = "127.0.0.1"
-	case "::":
-		host = "::1"
-	}
-	return "http://" + net.JoinHostPort(host, port), nil
-}
-
 // enableTaskTrackingModules opens noteboard, kanban-store and project-store in
 // Postgres, serves them from srv, and when project_store.session_filer.enabled
 // is on starts the filer's passes. kanban-store calls noteboard and the access
-// stores in this process; project-store calls noteboard and kanban-store in
-// this process, and calls this server's own routes (sessions, briefs, the
-// one-shot router) over HTTP with the service token, as it did when it was a
-// service of its own: the passes move to bridge-worker, another process, in
-// the end. It reads repo-store and work-graph-store in this process. The
-// returned function closes the pools.
+// stores in this process; project-store calls noteboard, kanban-store,
+// repo-store, work-graph-store, the scheduler and this server's sessions,
+// briefs and one-shot router through their Go methods, in this process. Only
+// healthcheck, a service of its own, is asked over HTTP. The returned
+// function closes the pools.
 func enableTaskTrackingModules(ctx context.Context, cfg *config.Config, srv *server.Server, accessStores *access.Stores) (func(), error) {
 	principals := accessStores.Principals
 	noteboardDB, err := openNoteboardModule(ctx, cfg.PostgresURL)
@@ -92,12 +73,6 @@ func enableTaskTrackingModules(ctx context.Context, cfg *config.Config, srv *ser
 			log.Printf("postgres: closing the task tracking modules: %v", err)
 		}
 	}
-	bridgeURL, err := ownAddress(cfg.ListenAddr)
-	if err != nil {
-		closeModules()
-		return nil, fmt.Errorf("project-store: %w", err)
-	}
-
 	noteboardStore := items.New(noteboardDB)
 	srv.EnableNoteboard(noteboardStore)
 
@@ -107,28 +82,19 @@ func enableTaskTrackingModules(ctx context.Context, cfg *config.Config, srv *ser
 		return nil, fmt.Errorf("kanban-store: %w", err)
 	}
 	srv.EnableKanbanStore(kanbandb.New(kanbanStoreDB), server.KanbanStoreOwners{Noteboard: noteboardStore, Access: accessStores, MessageTriggersEnabled: kanbanMessageTriggersEnabled})
-	kanbanForProjects, err := srv.KanbanStoreHTTPClientAsInternalService()
-	if err != nil {
-		closeModules()
-		return nil, fmt.Errorf("project-store: %w", err)
-	}
 
 	settings := cfg.Settings
 	projects := projectstore.New(projectStoreDB)
 	owners := &projectstore.Owners{
 		HTTP:                &http.Client{Timeout: 10 * time.Second},
-		Repositories:        srv.RepositoriesHandler(),
-		Kanban:              kanbanForProjects,
-		KanbanStoreURL:      server.KanbanStoreInProcessBaseURL,
-		Scheduler:           srv.SchedulerHTTPClient(),
-		SchedulerURL:        server.SchedulerInProcessBaseURL,
+		Repositories:        srv.ProjectStoreRepositories(),
+		Kanban:              srv.ProjectStoreKanban(),
+		Scheduler:           srv.ProjectStoreScheduler(),
 		HealthcheckURL:      cfg.HealthcheckURL,
 		Principals:          projectstore.PrincipalStoreModule{Store: principals},
 		Noteboard:           projectstore.NoteboardModule{Store: noteboardStore},
-		BridgeURL:           bridgeURL,
-		BridgeServiceToken:  cfg.ServiceToken,
+		Bridge:              srv.ProjectStoreBridge(),
 		SuggestionModelRole: settings.String(config.SettingProjectStoreSuggestionModelRole),
-		ModelHTTP:           &http.Client{Timeout: 5 * time.Minute},
 	}
 	filer := &projectstore.SessionFiler{
 		Store:                          projects,

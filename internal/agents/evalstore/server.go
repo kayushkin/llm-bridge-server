@@ -162,7 +162,7 @@ func (s *Server) importOperations(w http.ResponseWriter, r *http.Request) {
 		source = s.bridge
 	}
 	result, err := s.store.ImportOperations(r.Context(), r.PathValue("id"), request, source)
-	if errors.Is(err, ErrIntentRouteMissing) {
+	if errors.Is(err, ErrOperationIntentsNotServed) {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}

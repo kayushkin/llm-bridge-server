@@ -9,7 +9,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -68,8 +67,9 @@ type chatLinks struct {
 	mu sync.Mutex
 	// now is the clock.
 	now func() time.Time
-	// sendIntoSession runs POST /sessions/{id}/send through the server's own
-	// routes (serveInternally); a test replaces it.
+	// sendIntoSession sends into a session as POST /sessions/{id}/send does
+	// (sendMessageToSession), answering its status and body; a test replaces
+	// it.
 	sendIntoSession func(sessionID string, request msg.SendMessageRequest) (int, []byte)
 	// references reads reference-store's id patterns, once a while.
 	references chatLinkReferencePatterns
@@ -248,9 +248,12 @@ type multichatSendResult struct {
 	MessageIDs []string `json:"message_ids"`
 }
 
-// sendIntoSessionThroughRoutes is chatLinks.sendIntoSession in production.
-func (s *Server) sendIntoSessionThroughRoutes(sessionID string, request msg.SendMessageRequest) (int, []byte) {
-	return s.serveInternally(http.MethodPost, "/sessions/"+url.PathEscape(sessionID)+"/send", request)
+// sendIntoSessionAsTheServer is chatLinks.sendIntoSession in production: the
+// send POST /sessions/{id}/send makes, as the server, with its status and
+// body.
+func (s *Server) sendIntoSessionAsTheServer(sessionID string, request msg.SendMessageRequest) (int, []byte) {
+	answer := s.sendMessageFromThisServer(context.Background(), sessionID, request, "")
+	return answer.status, answer.body
 }
 
 // --- routes ---

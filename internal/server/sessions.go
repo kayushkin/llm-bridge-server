@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -800,70 +801,127 @@ func (s *Server) stopSession(bridgeID string) error {
 }
 
 func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
-	bridgeID := r.PathValue("id")
-	sess, err := s.store.GetSession(bridgeID)
+	// A session that does not exist, or that its parent harness controls, is
+	// refused whatever the body says, before the body is read.
+	sess, err := s.store.GetSession(r.PathValue("id"))
 	if err != nil {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
+	}
+	if sess.ControlledBy == msg.ControlledByHarness {
+		notBridgeControlledSendAnswer().write(w)
+		return
+	}
+	var req SendMessageRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	s.sendMessageToSession(r.Context(), r.PathValue("id"), req, senderPrincipalIDOfRequest(r)).write(w)
+}
+
+// sessionSendAnswer is the answer to one send: the status, content type and
+// body POST /sessions/{id}/send writes. A sender inside this server reads the
+// same answer a person calling the route gets.
+type sessionSendAnswer struct {
+	status      int
+	contentType string
+	body        []byte
+}
+
+// write answers a request with it, as http.Error and writeJSON would have.
+func (answer sessionSendAnswer) write(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", answer.contentType)
+	if strings.HasPrefix(answer.contentType, "text/plain") {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+	}
+	w.WriteHeader(answer.status)
+	w.Write(answer.body)
+}
+
+// sent reports whether the message went to the session or was held.
+func (answer sessionSendAnswer) sent() bool {
+	return answer.status >= 200 && answer.status <= 299
+}
+
+// plainTextSendAnswer is what http.Error writes.
+func plainTextSendAnswer(status int, text string) sessionSendAnswer {
+	return sessionSendAnswer{status: status, contentType: "text/plain; charset=utf-8", body: []byte(text + "\n")}
+}
+
+// jsonSendAnswer is a JSON body, encoded as writeJSON and writeJSONError
+// encode it.
+func jsonSendAnswer(status int, value any) sessionSendAnswer {
+	var body bytes.Buffer
+	if err := json.NewEncoder(&body).Encode(value); err != nil {
+		return plainTextSendAnswer(http.StatusInternalServerError, fmt.Sprintf("encode the answer: %v", err))
+	}
+	return sessionSendAnswer{status: status, contentType: "application/json", body: body.Bytes()}
+}
+
+func jsonErrorSendAnswer(status int, code, message string) sessionSendAnswer {
+	return jsonSendAnswer(status, map[string]any{"error": map[string]string{"code": code, "message": message}})
+}
+
+func notBridgeControlledSendAnswer() sessionSendAnswer {
+	return jsonErrorSendAnswer(http.StatusConflict, "not_bridge_controlled",
+		"this session is controlled by its parent harness process and cannot be messaged directly; message the session that spawned it")
+}
+
+// sendMessageToSession sends a message into a session as senderPrincipalID
+// (empty for none): every check and step of POST /sessions/{id}/send, which
+// calls it, and the answer that route writes. A sender inside this server
+// calls it directly, so its message is checked and sent exactly as a
+// person's is; such a caller goes through sendMessageFromThisServer, which
+// also does what the route's wrapper does.
+func (s *Server) sendMessageToSession(ctx context.Context, bridgeID string, req SendMessageRequest, senderPrincipalID string) sessionSendAnswer {
+	sess, err := s.store.GetSession(bridgeID)
+	if err != nil {
+		return plainTextSendAnswer(http.StatusNotFound, "session not found")
 	}
 
 	// Sending to a harness subagent would spawn a fresh agent rather than
 	// reach the one that ran, for the same reason resume does — see the gate
 	// in handleResumeSession. The parent is the addressable session.
 	if sess.ControlledBy == msg.ControlledByHarness {
-		writeJSONError(w, http.StatusConflict, "not_bridge_controlled",
-			"this session is controlled by its parent harness process and cannot be messaged directly; message the session that spawned it")
-		return
-	}
-
-	var req SendMessageRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
-		return
+		return notBridgeControlledSendAnswer()
 	}
 
 	// Message and Blocks are mutually exclusive — fail fast at the boundary
 	// so harnesses never see both populated.
 	if req.Message != "" && len(req.Blocks) > 0 {
-		http.Error(w, "message and blocks are mutually exclusive", http.StatusBadRequest)
-		return
+		return plainTextSendAnswer(http.StatusBadRequest, "message and blocks are mutually exclusive")
 	}
 	if req.Message == "" && len(req.Blocks) == 0 {
-		http.Error(w, "message or blocks must be set", http.StatusBadRequest)
-		return
+		return plainTextSendAnswer(http.StatusBadRequest, "message or blocks must be set")
 	}
 
 	// Refuse to spend past the session's ceiling. Checked before the
 	// harness is started below, so an over-budget session does not get a
 	// process spawned for a message it will not be allowed to send.
-	if s.writeRefusalIfOverBudget(w, bridgeID) {
-		return
+	if refusal, over := s.overBudgetSendAnswer(bridgeID); over {
+		return refusal
 	}
 
 	// While the server drains before a restart, a new turn waits: the
 	// message is kept and sent once the drain ends (restart_drain.go).
-	if heldMessageID, held, err := s.holdMessageIfRestartDraining(bridgeID, req, senderPrincipalIDOfRequest(r), "send"); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "hold_failed", err.Error())
-		return
+	if heldMessageID, held, err := s.holdMessageIfRestartDraining(bridgeID, req, senderPrincipalID, "send"); err != nil {
+		return jsonErrorSendAnswer(http.StatusInternalServerError, "hold_failed", err.Error())
 	} else if held {
-		writeHeldMessageAnswer(w, heldMessageID)
-		return
+		return jsonSendAnswer(http.StatusAccepted, msg.SendMessageResponse{Status: msg.SendStatusHeld, HeldMessageID: heldMessageID})
 	}
 
 	if s.harness.Get(bridgeID) == nil {
 		if sess.InstanceID == "" || s.harnessStore == nil {
-			http.Error(w, "session has no instance bound", http.StatusInternalServerError)
-			return
+			return plainTextSendAnswer(http.StatusInternalServerError, "session has no instance bound")
 		}
 		inst, err := s.harnessStore.GetInstance(sess.InstanceID)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("instance not found: %v", err), http.StatusInternalServerError)
-			return
+			return plainTextSendAnswer(http.StatusInternalServerError, fmt.Sprintf("instance not found: %v", err))
 		}
 		credID := resolveCredential(s.harnessStore, inst.ID)
-		if _, startErr := s.startOnInstance(r.Context(), sess, inst, credID); startErr != nil {
-			http.Error(w, fmt.Sprintf("failed to start harness: %v", startErr), http.StatusInternalServerError)
-			return
+		if _, startErr := s.startOnInstance(ctx, sess, inst, credID); startErr != nil {
+			return plainTextSendAnswer(http.StatusInternalServerError, fmt.Sprintf("failed to start harness: %v", startErr))
 		}
 	}
 
@@ -874,10 +932,11 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		Timestamp:       time.Now(),
 		Result:          &msg.ResultEvent{Text: req.Message, Blocks: req.Blocks},
 	}
-	if err := s.stampMessageSender(r, &userEvent); err != nil {
-		writeJSONError(w, http.StatusBadGateway, "principal_store_unavailable", err.Error())
-		return
+	sender, err := s.messageSenderOf(ctx, senderPrincipalID)
+	if err != nil {
+		return jsonErrorSendAnswer(http.StatusBadGateway, "principal_store_unavailable", err.Error())
 	}
+	sender.stamp(&userEvent)
 	// Persist before forwarding to the harness. If either store can't take
 	// the user_message, refuse the send — otherwise the assistant runs against
 	// a prompt that's missing from the durable log (log-store is what the
@@ -885,8 +944,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	// seen the message yet. BroadcastEvent now writes both stores and returns
 	// the log-store error if it fails.
 	if _, err := s.harness.BroadcastEvent(&userEvent); err != nil {
-		http.Error(w, fmt.Sprintf("persist user_message: %v", err), http.StatusInternalServerError)
-		return
+		return plainTextSendAnswer(http.StatusInternalServerError, fmt.Sprintf("persist user_message: %v", err))
 	}
 
 	if name := displayNameFromMessage(req.Message); name != "" {
@@ -896,8 +954,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.harness.Send(bridgeID, req.Message, req.Blocks); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return plainTextSendAnswer(http.StatusInternalServerError, err.Error())
 	}
 
 	// Replying to a chat that was marked done reopens it: pull it back out of
@@ -921,7 +978,22 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	// channel, not through the next message.
 	s.closeQuestionsAnsweredByMessage(bridgeID, req.Message)
 
-	writeJSON(w, msg.SendMessageResponse{Status: msg.SendStatusSent, MessageID: userEvent.MessageID})
+	return jsonSendAnswer(http.StatusOK, msg.SendMessageResponse{Status: msg.SendStatusSent, MessageID: userEvent.MessageID})
+}
+
+// sendMessageFromThisServer sends a message the server itself sends — a
+// button's message, a chat link's delivery, a loose end's answer, a wakeup,
+// a held message — through sendMessageToSession, as POST /sessions/{id}/send
+// does, after the touch of keep-awake that route's wrapper makes. These
+// senders were let through request authorization when they started (the
+// person who pressed the button, the link's owner) or are the server's own,
+// so no route rule is skipped.
+func (s *Server) sendMessageFromThisServer(ctx context.Context, sessionID string, req SendMessageRequest, senderPrincipalID string) sessionSendAnswer {
+	if s.keepAwake != nil {
+		// Taking a block can wait on a child starting; the send must not.
+		go s.keepAwake.Touch()
+	}
+	return s.sendMessageToSession(ctx, sessionID, req, senderPrincipalID)
 }
 
 // writeRefusalIfOverBudget refuses the request when the session has spent its
@@ -940,15 +1012,31 @@ func (s *Server) writeRefusalIfOverBudget(w http.ResponseWriter, bridgeID string
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusPaymentRequired)
-	json.NewEncoder(w).Encode(map[string]any{
+	json.NewEncoder(w).Encode(overBudgetRefusalBody(spendUSD, maxBudgetUSD))
+	return true
+}
+
+// overBudgetRefusalBody names both numbers so a client can say what happened
+// without a second round trip.
+func overBudgetRefusalBody(spendUSD, maxBudgetUSD float64) map[string]any {
+	return map[string]any{
 		"error": map[string]any{
 			"code":           msg.ErrCodeBudgetExceeded,
 			"message":        fmt.Sprintf("session has spent $%.2f of its $%.2f ceiling; raise max_budget to continue", spendUSD, maxBudgetUSD),
 			"spend_usd":      spendUSD,
 			"max_budget_usd": maxBudgetUSD,
 		},
-	})
-	return true
+	}
+}
+
+// overBudgetSendAnswer is writeRefusalIfOverBudget's refusal as a send
+// answer, and true, when the session has spent its ceiling.
+func (s *Server) overBudgetSendAnswer(bridgeID string) (sessionSendAnswer, bool) {
+	over, spendUSD, maxBudgetUSD := s.harness.SessionOverBudget(bridgeID)
+	if !over {
+		return sessionSendAnswer{}, false
+	}
+	return jsonSendAnswer(http.StatusPaymentRequired, overBudgetRefusalBody(spendUSD, maxBudgetUSD)), true
 }
 
 func (s *Server) handleSessionEvents(w http.ResponseWriter, r *http.Request) {

@@ -128,24 +128,45 @@ func (a *API) CreateItem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid JSON")
 		return
 	}
-	if err := req.Validate(); err != nil {
-		writeError(w, 400, err.Error())
+	item, err := a.Create(&req)
+	var refusal *RequestRefusal
+	if errors.As(err, &refusal) {
+		writeError(w, 400, refusal.Error())
 		return
 	}
-	item, err := a.store.CreateItem(&req)
+	if err != nil {
+		writeError(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 201, item)
+}
+
+// RequestRefusal is noteboard refusing a request as the caller's mistake: the
+// routes answer it 400.
+type RequestRefusal struct{ err error }
+
+func (refusal *RequestRefusal) Error() string { return refusal.err.Error() }
+func (refusal *RequestRefusal) Unwrap() error { return refusal.err }
+
+// Create checks req and keeps the item, as POST /api/items does, for a caller
+// in the same process. A request the checks refuse is a *RequestRefusal; any
+// other error is the store failing.
+func (a *API) Create(req *model.CreateItemRequest) (*model.Item, error) {
+	if err := req.Validate(); err != nil {
+		return nil, &RequestRefusal{err}
+	}
+	item, err := a.store.CreateItem(req)
 	if err != nil {
 		// A parent_id naming no item is the caller's mistake, not the
 		// store's failure, and it has to read as one: a 500 says "try
 		// again" about a request that will never succeed as written, and
 		// the caller keeps the id it got wrong.
 		if errors.Is(err, items.ErrUnknownParent) || errors.Is(err, items.ErrTextHoldsNulCharacter) {
-			writeError(w, 400, err.Error())
-			return
+			return nil, &RequestRefusal{err}
 		}
-		writeError(w, 500, err.Error())
-		return
+		return nil, err
 	}
-	writeJSON(w, 201, item)
+	return item, nil
 }
 
 // itemChangedResponse is the body of a 412 on PATCH /api/items/{id}.
@@ -198,13 +219,9 @@ func (a *API) QueryItems(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid JSON: "+err.Error())
 		return
 	}
-	if err := query.Validate(); err != nil {
-		writeError(w, 400, err.Error())
-		return
-	}
-	result, err := a.store.QueryItems(&query)
+	result, err := a.Query(&query)
 	if err != nil {
-		writeError(w, 500, err.Error())
+		writeCallError(w, err)
 		return
 	}
 	writeJSON(w, 200, result)
@@ -219,7 +236,7 @@ func (a *API) GetItem(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("include_deleted") == "true" {
 		item, err = a.store.GetItemIncludingDeleted(id)
 	} else {
-		item, err = a.store.GetItem(id)
+		item, err = a.Item(id)
 	}
 	if err != nil {
 		writeError(w, 404, "not found")
@@ -238,17 +255,7 @@ func (a *API) PatchItem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid JSON")
 		return
 	}
-	if err := req.Validate(); err != nil {
-		writeError(w, 400, err.Error())
-		return
-	}
-	expectedUpdatedAt, err := expectedUpdatedAtFromIfMatch(r.Header.Get("If-Match"))
-	if err != nil {
-		writeError(w, 400, err.Error())
-		return
-	}
-	req.ExpectedUpdatedAt = expectedUpdatedAt
-	item, err := a.store.UpdateItem(id, &req)
+	item, err := a.Patch(id, &req, r.Header.Get("If-Match"))
 	var changed *items.ItemChangedError
 	if errors.As(err, &changed) {
 		// 412 carries the item as it is now, so the caller can show what
@@ -258,15 +265,7 @@ func (a *API) PatchItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		// A rejected schedule is a bad request, not a missing item. Collapsing
-		// every store error to 404 would report "not found" for an item that is
-		// plainly there, and hide the one message that says what is wrong with
-		// the rule.
-		if _, missing := a.store.GetItem(id); missing != nil {
-			writeError(w, 404, "not found")
-			return
-		}
-		writeError(w, 400, err.Error())
+		writeCallError(w, err)
 		return
 	}
 	w.Header().Set("ETag", itemVersionTag(item))
@@ -278,16 +277,12 @@ func (a *API) PatchItem(w http.ResponseWriter, r *http.Request) {
 // snapshots into item_revisions first.
 func (a *API) DeleteItem(w http.ResponseWriter, r *http.Request) {
 	hard := r.URL.Query().Get("hard") == "true"
-	if err := a.store.DeleteItem(r.PathValue("id"), hard); err != nil {
+	if err := a.Delete(r.PathValue("id"), hard); err != nil {
 		// An id that names no row is the caller's mistake, and it reads as
 		// one here for the same reason it does on create: a 500 says "try
 		// again" about a request that will never succeed as written. Anything
 		// that is not a missing row is still a server fault and still says so.
-		if errors.Is(err, items.ErrItemNotFound) {
-			writeError(w, 404, "not found")
-			return
-		}
-		writeError(w, 500, err.Error())
+		writeCallError(w, err)
 		return
 	}
 	writeJSON(w, 200, map[string]string{"status": "ok"})
@@ -336,13 +331,9 @@ func (a *API) HoldItem(w http.ResponseWriter, r *http.Request) {
 		Reason string `json:"reason"`
 	}
 	json.NewDecoder(r.Body).Decode(&req)
-	item, err := a.store.HoldItem(r.PathValue("id"), req.Reason)
-	if errors.Is(err, items.ErrTextHoldsNulCharacter) {
-		writeError(w, 400, err.Error())
-		return
-	}
+	item, err := a.Hold(r.PathValue("id"), req.Reason)
 	if err != nil {
-		writeError(w, 404, "not found")
+		writeCallError(w, err)
 		return
 	}
 	writeJSON(w, 200, item)
@@ -350,9 +341,9 @@ func (a *API) HoldItem(w http.ResponseWriter, r *http.Request) {
 
 // UnholdItem is POST /api/items/{id}/unhold.
 func (a *API) UnholdItem(w http.ResponseWriter, r *http.Request) {
-	item, err := a.store.UnholdItem(r.PathValue("id"))
+	item, err := a.Unhold(r.PathValue("id"))
 	if err != nil {
-		writeError(w, 404, "not found")
+		writeCallError(w, err)
 		return
 	}
 	writeJSON(w, 200, item)
@@ -484,14 +475,9 @@ func (a *API) Tags(w http.ResponseWriter, r *http.Request) {
 // Search is GET /api/search.
 func (a *API) Search(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	query := q.Get("q")
-	if query == "" {
-		writeError(w, 400, "q parameter is required")
-		return
-	}
 	limit, _ := strconv.Atoi(q.Get("limit"))
-	found, err := a.store.Search(items.SearchParams{
-		Query:       query,
+	found, err := a.SearchItems(items.SearchParams{
+		Query:       q.Get("q"),
 		Type:        q.Get("type"),
 		Tag:         q.Get("tag"),
 		Status:      q.Get("status"),
@@ -499,7 +485,7 @@ func (a *API) Search(w http.ResponseWriter, r *http.Request) {
 		IncludeHeld: q.Get("include_held") == "true",
 	})
 	if err != nil {
-		writeError(w, 500, err.Error())
+		writeCallError(w, err)
 		return
 	}
 	writeJSON(w, 200, found)

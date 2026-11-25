@@ -14,6 +14,7 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient/kanbanclienttest"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	kanbanapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/api"
 )
@@ -187,11 +188,11 @@ func newFakeKanbanStore(t *testing.T) *fakeKanbanStore {
 	return fake
 }
 
-// useKanbanStoreHandlerForTests serves /kanban/ and /kanban-store/, and this
-// server's own kanban reads, from handler, as EnableKanbanStore does from the
-// store's.
+// useKanbanStoreHandlerForTests serves /kanban/ and /kanban-store/ from
+// handler, as EnableKanbanStore does from the store's, and this server's own
+// kanban reads from a store that answers none of them (501).
 func (s *Server) useKanbanStoreHandlerForTests(handler http.Handler) {
-	s.kanbanClient = kanbanclient.New(handler)
+	s.kanbanClient = kanbanclient.New(&kanbanclienttest.Store{})
 	s.kanbanStore.Store(&kanbanStoreHandlers{handler: handler})
 }
 

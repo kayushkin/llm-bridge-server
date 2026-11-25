@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -237,25 +236,21 @@ func BuildRollup(ctx context.Context, store *Store, owners *Owners, id string) (
 
 // ProjectCards asks kanban-store for every card linked to the project.
 func (owners *Owners) ProjectCards(ctx context.Context, projectID string) ([]ProjectCard, error) {
-	var rows []struct {
-		CardID string `json:"card_id"`
-		Item   *struct {
-			Title  string `json:"title"`
-			Status string `json:"status"`
-		} `json:"item"`
-		WorkState *string `json:"work_state"`
+	if owners.Kanban == nil {
+		return nil, fmt.Errorf("cards linked to %s: %w: this server has no kanban-store to read them from", projectID, ErrOwnerUnavailable)
 	}
-	if err := owners.getKanbanJSON(ctx, "/api/entities/project/"+url.PathEscape(projectID)+"/cards", &rows); err != nil {
+	rows, err := owners.Kanban.ProjectCards(ctx, projectID)
+	if err := askOwner("kanban-store, the cards of project "+projectID, err); err != nil {
 		return nil, fmt.Errorf("cards linked to %s: %w", projectID, err)
 	}
 	cards := []ProjectCard{}
 	for _, row := range rows {
 		// A link whose noteboard item is gone is kanban-store's orphan; it is
 		// no card of the project's.
-		if row.Item == nil {
+		if !row.HasItem {
 			continue
 		}
-		card := ProjectCard{CardID: row.CardID, Title: row.Item.Title, Status: row.Item.Status}
+		card := ProjectCard{CardID: row.CardID, Title: row.Title, Status: row.Status}
 		if row.WorkState != nil {
 			card.WorkState = *row.WorkState
 		}
@@ -264,31 +259,34 @@ func (owners *Owners) ProjectCards(ctx context.Context, projectID string) ([]Pro
 	return cards, nil
 }
 
-// repoGraph is the part of work-graph-store's graph of a repo a rollup reads.
-type repoGraph struct {
-	DefaultBranch string `json:"default_branch"`
-	Commits       []struct {
-		SHA         string   `json:"sha"`
-		Parents     []string `json:"parents"`
-		CommittedAt int64    `json:"committed_at"`
-		AuthorName  string   `json:"author_name"`
-		Subject     string   `json:"subject"`
-		MadeBy      *struct {
-			SessionID string `json:"session_id"`
-		} `json:"made_by"`
-		OnOriginBranch bool `json:"on_origin_branch"`
-	} `json:"commits"`
-	Branches []struct {
-		Name              string `json:"name"`
-		IsRemote          bool   `json:"is_remote"`
-		HeadSHA           string `json:"head_sha"`
-		CommittedAt       int64  `json:"committed_at"`
-		MergedIntoDefault bool   `json:"merged_into_default"`
-		WorktreePath      string `json:"worktree_path"`
-		Sessions          []struct {
-			SessionID string `json:"session_id"`
-		} `json:"sessions"`
-	} `json:"branches"`
+// RepoGraph is the part of work-graph-store's graph of a repo a rollup reads.
+type RepoGraph struct {
+	DefaultBranch string
+	Commits       []GraphCommit
+	Branches      []GraphBranch
+}
+
+// GraphCommit is one commit in a repo's graph. MadeBySessionID is "" for a
+// commit no session is known to have made.
+type GraphCommit struct {
+	SHA             string
+	Parents         []string
+	CommittedAt     int64
+	AuthorName      string
+	Subject         string
+	MadeBySessionID string
+	OnOriginBranch  bool
+}
+
+// GraphBranch is one branch in a repo's graph, with the sessions that moved it.
+type GraphBranch struct {
+	Name              string
+	IsRemote          bool
+	HeadSHA           string
+	CommittedAt       int64
+	MergedIntoDefault bool
+	WorktreePath      string
+	SessionIDs        []string
 }
 
 // graphCommitsRead is how many commits a rollup asks work-graph-store for,
@@ -298,7 +296,7 @@ const graphCommitsRead = 400
 // defaultBranchCommits walks the default branch from its head along first
 // parents, newest first, stopping at the first commit older than since or at
 // limit commits.
-func (graph repoGraph) defaultBranchCommits(since int64, limit int) []Commit {
+func (graph RepoGraph) defaultBranchCommits(since int64, limit int) []Commit {
 	commits := []Commit{}
 	bySHA := map[string]int{}
 	for index, commit := range graph.Commits {
@@ -319,10 +317,8 @@ func (graph repoGraph) defaultBranchCommits(since int64, limit int) []Commit {
 		if raw.CommittedAt < since {
 			break
 		}
-		commit := Commit{SHA: raw.SHA, Subject: raw.Subject, AuthorName: raw.AuthorName, CommittedAt: raw.CommittedAt, OnOriginBranch: raw.OnOriginBranch}
-		if raw.MadeBy != nil {
-			commit.SessionID = raw.MadeBy.SessionID
-		}
+		commit := Commit{SHA: raw.SHA, Subject: raw.Subject, AuthorName: raw.AuthorName, CommittedAt: raw.CommittedAt, OnOriginBranch: raw.OnOriginBranch,
+			SessionID: raw.MadeBySessionID}
 		commits = append(commits, commit)
 		sha = ""
 		if len(raw.Parents) > 0 {
@@ -332,10 +328,14 @@ func (graph repoGraph) defaultBranchCommits(since int64, limit int) []Commit {
 	return commits
 }
 
-func (owners *Owners) repoGraph(ctx context.Context, repoStoreID int64) (repoGraph, error) {
-	var graph repoGraph
-	err := owners.repositoriesGetJSON(ctx, "/work-graph-store/repos/"+strconv.FormatInt(repoStoreID, 10)+"/graph?max_commits="+strconv.Itoa(graphCommitsRead), &graph)
+func (owners *Owners) repoGraph(ctx context.Context, repoStoreID int64) (RepoGraph, error) {
+	what := fmt.Sprintf("work-graph-store, the graph of repo %d", repoStoreID)
+	repositories, err := owners.repositories(what)
 	if err != nil {
+		return RepoGraph{}, fmt.Errorf("graph of repo %d: %w", repoStoreID, err)
+	}
+	graph, err := repositories.Graph(ctx, repoStoreID, graphCommitsRead)
+	if err := askOwner(what, err); err != nil {
 		return graph, fmt.Errorf("graph of repo %d: %w", repoStoreID, err)
 	}
 	return graph, nil
@@ -346,38 +346,56 @@ func (owners *Owners) repoGraph(ctx context.Context, repoStoreID int64) (repoGra
 // became orchestrator), so anything that names a repo to the reader — a
 // `repo:<name>` or `<repo>@<sha>` chip above all — takes it from here.
 func (owners *Owners) RepoName(ctx context.Context, repoStoreID int64) (string, error) {
-	var repo struct {
-		Name string `json:"name"`
-	}
-	err := owners.repositoriesGetJSON(ctx, "/repo-store/repos/"+strconv.FormatInt(repoStoreID, 10), &repo)
-	if errors.Is(err, ErrNotFound) {
-		return "", fmt.Errorf("%w: repo-store has no repo %d, which a project link names", ErrOwnerUnavailable, repoStoreID)
-	}
+	what := fmt.Sprintf("repo-store, repo %d", repoStoreID)
+	repositories, err := owners.repositories(what)
 	if err != nil {
 		return "", fmt.Errorf("name of repo %d: %w", repoStoreID, err)
 	}
-	return repo.Name, nil
+	name, err := repositories.RepoName(ctx, repoStoreID)
+	if errors.Is(err, ErrNotFound) {
+		return "", fmt.Errorf("%w: repo-store has no repo %d, which a project link names", ErrOwnerUnavailable, repoStoreID)
+	}
+	if err := askOwner(what, err); err != nil {
+		return "", fmt.Errorf("name of repo %d: %w", repoStoreID, err)
+	}
+	return name, nil
 }
 
 // PullRequests asks repo-store for a repo's pull requests in one state
 // (open, closed, merged or all).
 func (owners *Owners) PullRequests(ctx context.Context, repoStoreID int64, state string) ([]PullRequest, error) {
-	var answer struct {
-		PullRequests []PullRequest `json:"pull_requests"`
-	}
-	err := owners.repositoriesGetJSON(ctx, "/repo-store/pull-requests?repo_id="+strconv.FormatInt(repoStoreID, 10)+"&state="+url.QueryEscape(state), &answer)
-	if errors.Is(err, ErrNotFound) {
-		// The project links the repo, so repo-store knowing no such repo, or
-		// no such route, is repo-store failing, not the caller's mistake.
-		return nil, fmt.Errorf("%w: repo-store answered 404 for the pull requests of repo %d", ErrOwnerUnavailable, repoStoreID)
-	}
+	what := fmt.Sprintf("repo-store, the pull requests of repo %d", repoStoreID)
+	repositories, err := owners.repositories(what)
 	if err != nil {
 		return nil, fmt.Errorf("pull requests of repo %d: %w", repoStoreID, err)
 	}
-	if answer.PullRequests == nil {
+	pullRequests, err := repositories.PullRequests(ctx, repoStoreID, state)
+	if errors.Is(err, ErrNotFound) {
+		// The project links the repo, so repo-store knowing no such repo is
+		// repo-store failing, not the caller's mistake.
+		return nil, fmt.Errorf("%w: repo-store has no pull requests of repo %d to read", ErrOwnerUnavailable, repoStoreID)
+	}
+	if err := askOwner(what, err); err != nil {
+		return nil, fmt.Errorf("pull requests of repo %d: %w", repoStoreID, err)
+	}
+	if pullRequests == nil {
 		return []PullRequest{}, nil
 	}
-	return answer.PullRequests, nil
+	return pullRequests, nil
+}
+
+// deployments asks repo-store's ledger for a repo's newest deploys.
+func (owners *Owners) deployments(ctx context.Context, repoStoreID int64, limit int) ([]Deploy, error) {
+	what := fmt.Sprintf("repo-store, the deploys of repo %d", repoStoreID)
+	repositories, err := owners.repositories(what)
+	if err != nil {
+		return nil, fmt.Errorf("deploys of repo %d: %w", repoStoreID, err)
+	}
+	deploys, err := repositories.Deployments(ctx, repoStoreID, limit)
+	if err := askOwner(what, err); err != nil {
+		return nil, fmt.Errorf("deploys of repo %d: %w", repoStoreID, err)
+	}
+	return deploys, nil
 }
 
 // RepoRollup reads a repo's unmerged branches and recent commits from
@@ -395,18 +413,16 @@ func (owners *Owners) RepoRollup(ctx context.Context, repoStoreID int64, name st
 			continue
 		}
 		unmerged := UnmergedBranch{Name: branch.Name, HeadSHA: branch.HeadSHA, CommittedAt: branch.CommittedAt, WorktreePath: branch.WorktreePath, SessionIDs: []string{}}
-		for _, session := range branch.Sessions {
-			unmerged.SessionIDs = append(unmerged.SessionIDs, session.SessionID)
-		}
+		unmerged.SessionIDs = append(unmerged.SessionIDs, branch.SessionIDs...)
 		rollup.UnmergedBranches = append(rollup.UnmergedBranches, unmerged)
 	}
 	sort.Slice(rollup.UnmergedBranches, func(left, right int) bool {
 		return rollup.UnmergedBranches[left].CommittedAt > rollup.UnmergedBranches[right].CommittedAt
 	})
 
-	var deploys []Deploy
-	if err := owners.repositoriesGetJSON(ctx, "/repo-store/deployments?repo_id="+strconv.FormatInt(repoStoreID, 10)+"&limit=1", &deploys); err != nil {
-		return rollup, fmt.Errorf("deploys of repo %d: %w", repoStoreID, err)
+	deploys, err := owners.deployments(ctx, repoStoreID, 1)
+	if err != nil {
+		return rollup, err
 	}
 	if len(deploys) > 0 {
 		rollup.LatestDeploy = &deploys[0]

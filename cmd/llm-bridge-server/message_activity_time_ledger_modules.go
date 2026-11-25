@@ -119,18 +119,18 @@ func importActivityStoreCmd(args []string) {
 	if err != nil {
 		importFailed(err)
 	}
-	fileStoreHandler := filestore.NewServer(files, func() filestore.Limits {
+	fileStoreCalls := filestore.NewServer(files, func() filestore.Limits {
 		return filestore.Limits{
 			MaximumFileBytes:   int64(cfg.Settings.Integer(config.SettingFileStoreMaximumFileBytes)),
 			InlineContentTypes: cfg.Settings.StringList(config.SettingFileStoreInlineContentTypes),
 		}
-	}).Handler()
+	})
 	db, err := activityStoreModule.open(ctx, url)
 	if err != nil {
 		importFailed(err)
 	}
 	defer db.Close()
-	counts, err := activitystore.ImportStandaloneDatabase(ctx, db, server.ActivityAttachmentFilesIn(fileStoreHandler), *sqlitePath, *attachments, *owner)
+	counts, err := activitystore.ImportStandaloneDatabase(ctx, db, server.ActivityAttachmentFilesIn(fileStoreCalls), *sqlitePath, *attachments, *owner)
 	if err != nil {
 		importFailed(fmt.Errorf("nothing was imported: %w", err))
 	}

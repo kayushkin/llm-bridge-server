@@ -5,6 +5,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	schedulerapi "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/api"
+	schedulerdb "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/db"
 	"github.com/kayushkin/llm-bridge-server/internal/inprocesshttp"
 )
 
@@ -19,6 +21,7 @@ import (
 // modules; until then their routes answer 503.
 type automationStores struct {
 	scheduler atomic.Pointer[http.Handler]
+	jobs      atomic.Pointer[schedulerJobs]
 	ruleStore atomic.Pointer[http.Handler]
 }
 
@@ -27,10 +30,33 @@ const (
 	ruleStoreMountPrefix = "/rule-store"
 )
 
-// EnableScheduler serves the scheduler's routes from routes, which answer
-// the paths without the /scheduler prefix.
-func (s *Server) EnableScheduler(routes http.Handler) {
+// schedulerJobs is the scheduler's jobs as this server reads and runs them,
+// in process: schedulerapi.Server, or a fake in a test. Each refuses as its
+// route does (schedulerapi.ErrJobNotFound for the route's 404).
+type schedulerJobs interface {
+	Job(id int64) (*schedulerdb.Job, error)
+	RunJobNow(id int64) (*schedulerdb.Run, error)
+}
+
+// EnableScheduler serves the scheduler's routes from scheduler, at the paths
+// without the /scheduler prefix, and reads and runs its jobs in process.
+func (s *Server) EnableScheduler(scheduler *schedulerapi.Server) {
+	s.enableSchedulerParts(scheduler.Routes(), scheduler)
+}
+
+func (s *Server) enableSchedulerParts(routes http.Handler, jobs schedulerJobs) {
+	s.automationStores.jobs.Store(&jobs)
 	s.automationStores.scheduler.Store(&routes)
+}
+
+// schedulerJobsInProcess is the scheduler's jobs, or nil while its module is
+// not open.
+func (s *Server) schedulerJobsInProcess() schedulerJobs {
+	jobs := s.automationStores.jobs.Load()
+	if jobs == nil {
+		return nil
+	}
+	return *jobs
 }
 
 // EnableRuleStore serves rule-store's routes from routes, which answer the
@@ -69,8 +95,9 @@ func (s *Server) ruleStoreHandler() http.Handler {
 const SchedulerInProcessBaseURL = inprocesshttp.BaseURL
 
 // SchedulerHTTPClient carries a call to the scheduler to its handler in this
-// process, with no socket and no credential between: the callers are this
-// server's own code, which the standalone scheduler answered without a token.
+// process, with no socket and no credential between. Only tool-store's
+// scheduler tool uses it: that tool is a client of the scheduler's whole job
+// API (list, create, update, delete, runs), written against its routes.
 func (s *Server) SchedulerHTTPClient() *http.Client {
 	return inprocesshttp.Client(s.schedulerHandler())
 }

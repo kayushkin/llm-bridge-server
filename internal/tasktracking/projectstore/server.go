@@ -151,12 +151,26 @@ func (handlers *Handlers) ListProjects(writer http.ResponseWriter, request *http
 			return
 		}
 	}
-	projects, err := handlers.Store.Projects(ProjectFilter{Query: query.Get("q"), Kind: query.Get("kind"), ParentID: query.Get("parent_id"), IncludeArchived: query.Get("include_archived") == "true"})
+	list, err := handlers.Store.ProjectList(ProjectFilter{Query: query.Get("q"), Kind: query.Get("kind"), ParentID: query.Get("parent_id"), IncludeArchived: query.Get("include_archived") == "true"})
 	if err != nil {
 		writeError(writer, err)
 		return
 	}
-	writeJSON(writer, http.StatusOK, map[string]any{"projects": projects})
+	writeJSON(writer, http.StatusOK, list)
+}
+
+// ProjectList is GET /projects's answer.
+type ProjectList struct {
+	Projects []Project `json:"projects"`
+}
+
+// ProjectList is the projects filter names, as GET /projects answers them.
+func (store *Store) ProjectList(filter ProjectFilter) (ProjectList, error) {
+	projects, err := store.Projects(filter)
+	if err != nil {
+		return ProjectList{}, err
+	}
+	return ProjectList{Projects: projects}, nil
 }
 
 func (handlers *Handlers) CreateProject(writer http.ResponseWriter, request *http.Request) {

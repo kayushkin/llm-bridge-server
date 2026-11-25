@@ -1,10 +1,8 @@
 package executor
 
 import (
-	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
 	"time"
 
@@ -23,15 +21,14 @@ import (
 // rather than the fact that a message was sent (agent_session_outcome.go).
 //
 // For the first turn (empty BusSessionID) the executor looks up the first
-// enabled harness instance matching the job's orchestrator via
-// llm-bridge-server's GET /instances and builds a CreateSessionRequest
+// enabled harness instance matching the job's orchestrator in
+// llm-bridge-server's instances and builds a CreateSessionRequest
 // identical in shape to what bridge-ui sends, naming the model-store role the
 // session runs on: the job's model_role, or the agent_job_model_role setting.
 type AgentExecutor struct {
 	client       *natsbus.Client
-	bridgeURL    string
+	bridge       Bridge
 	noteboardURL string
-	httpClient   *http.Client
 	// defaultModelRole reads the agent_job_model_role setting when a run
 	// starts, so a change on the settings page applies to the next session.
 	defaultModelRole func() string
@@ -41,27 +38,35 @@ type AgentExecutor struct {
 	sessionPollInterval time.Duration
 }
 
-// NewAgentExecutor takes both addresses from the caller, which reads them from
-// the service's settings; this package reads no environment variable.
+// Bridge is llm-bridge-server as an agent run reads it: the instances a
+// session can start on, and the session a run follows. The scheduler runs
+// inside llm-bridge-server, which implements it in process as its internal
+// service.
+type Bridge interface {
+	// Instances answers every instance, enabled or not.
+	Instances() ([]msg.Instance, error)
+	// Session answers one session, or an error wrapping ErrSessionNotFound
+	// when there is none.
+	Session(sessionID string) (*msg.ManagedSession, error)
+}
+
+// ErrSessionNotFound is the bridge holding no such session: the inbound
+// message has not become a session yet, or never will.
+var ErrSessionNotFound = errors.New("session not found")
+
+// NewAgentExecutor takes noteboard's address from the caller, which reads it
+// from the service's settings; this package reads no environment variable.
 // noteboardURL is where a job's agent reads and rewrites its working memory.
 // defaultModelRole returns the role a job that names none starts its session
 // on, and modelRoles checks that the session's harness can run it.
-func NewAgentExecutor(client *natsbus.Client, bridgeURL, noteboardURL string, defaultModelRole func() string, modelRoles sessionmodelrole.RoleChecker) *AgentExecutor {
+func NewAgentExecutor(client *natsbus.Client, bridge Bridge, noteboardURL string, defaultModelRole func() string, modelRoles sessionmodelrole.RoleChecker) *AgentExecutor {
 	return &AgentExecutor{
 		client:           client,
-		bridgeURL:        bridgeURL,
+		bridge:           bridge,
 		noteboardURL:     strings.TrimRight(noteboardURL, "/"),
-		httpClient:       &http.Client{Timeout: 5 * time.Second},
 		defaultModelRole: defaultModelRole,
 		modelRoles:       modelRoles,
 	}
-}
-
-// SetBridgeHTTPClient makes every call to llm-bridge-server go through client.
-// Where the scheduler runs inside llm-bridge-server, client serves each call
-// with the server's own handler, timed as the network calls were.
-func (e *AgentExecutor) SetBridgeHTTPClient(client *http.Client) {
-	e.httpClient = client
 }
 
 // orchestratorHarness maps scheduler's free-form orchestrator string to the
@@ -84,22 +89,16 @@ func orchestratorHarness(orchestrator string) msg.Harness {
 	}
 }
 
-// firstEnabledInstance calls GET /instances on llm-bridge-server and returns
-// the ID of the first enabled instance whose harness_type matches h. Errors
-// surface back to the caller so the run record captures the failure.
+// firstEnabledInstance returns the ID of the first enabled instance whose
+// harness_type matches h. Errors surface back to the caller so the run record
+// captures the failure.
 func (e *AgentExecutor) firstEnabledInstance(h msg.Harness) (string, error) {
-	resp, err := e.httpClient.Get(e.bridgeURL + "/instances")
+	if e.bridge == nil {
+		return "", fmt.Errorf("the agent executor has no llm-bridge-server to read instances from")
+	}
+	instances, err := e.bridge.Instances()
 	if err != nil {
-		return "", fmt.Errorf("GET %s/instances: %w", e.bridgeURL, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("instances returned %d: %s", resp.StatusCode, body)
-	}
-	var instances []msg.Instance
-	if err := json.NewDecoder(resp.Body).Decode(&instances); err != nil {
-		return "", fmt.Errorf("decode instances: %w", err)
+		return "", fmt.Errorf("reading llm-bridge-server's instances: %w", err)
 	}
 	for _, inst := range instances {
 		if inst.Enabled && inst.HarnessType == h {

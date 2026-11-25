@@ -1,6 +1,7 @@
 package predictionstore
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -109,16 +110,32 @@ func filterFrom(r *http.Request) Filter {
 
 // ListPredictions answers GET /predictions.
 func (h *Handlers) ListPredictions(w http.ResponseWriter, r *http.Request) {
-	f := filterFrom(r)
-	predictions, err := h.s.List(r.Context(), f)
+	list, err := h.s.ListWithTotal(r.Context(), filterFrom(r))
 	if respondStoreError(w, err) {
 		return
 	}
-	total, err := h.s.Count(r.Context(), f)
-	if respondStoreError(w, err) {
-		return
+	writeJSON(w, http.StatusOK, list)
+}
+
+// PredictionList is GET /predictions's answer: one page of predictions, and
+// how many match the filter in all.
+type PredictionList struct {
+	Predictions []*Prediction `json:"predictions"`
+	Total       int           `json:"total"`
+}
+
+// ListWithTotal is the page of predictions f names and the count of all that
+// match it, as GET /predictions answers them.
+func (s *Store) ListWithTotal(ctx context.Context, f Filter) (PredictionList, error) {
+	predictions, err := s.List(ctx, f)
+	if err != nil {
+		return PredictionList{}, err
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"predictions": predictions, "total": total})
+	total, err := s.Count(ctx, f)
+	if err != nil {
+		return PredictionList{}, err
+	}
+	return PredictionList{Predictions: predictions, Total: total}, nil
 }
 
 // CreatePrediction answers POST /predictions.

@@ -3,8 +3,8 @@
 // a card was filed from.
 //
 // mailstack runs in this process (internal/mail/mailstack); the client calls
-// its handler with no socket, as the internal service, which is past every
-// per-person check, as the standalone service's bearer token was.
+// it in Go, as the internal service, which is past every per-person check, as
+// the standalone service's bearer token was.
 //
 // It reads and never writes: mailstack has no send route, and this client
 // must not be the place one is invented.
@@ -12,35 +12,35 @@ package mailstackclient
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/inprocesshttp"
-	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/backend"
 )
 
-type Client struct {
-	http *http.Client
+// MessageReader is mailstack as the client reads it: *mailstack.Server's
+// ReadMessage, which reads as the internal service.
+type MessageReader interface {
+	ReadMessage(ctx context.Context, accountID, folderID, id string) (backend.Message, error)
 }
 
-// New builds a client that calls handler, mailstack's own, in this process.
-// The handler reaches a mail provider only when the server's provider
-// connections are on; otherwise a message on a Gmail, Outlook or IMAP account
-// is 503 and GetMessageHeaders an error.
-func New(handler http.Handler) *Client {
-	if handler == nil {
-		panic("mailstackclient: New needs mailstack's handler")
+type Client struct {
+	mail MessageReader
+}
+
+// readTimeout bounds one read, as the HTTP client's timeout did: a provider
+// read can hang, and a local account answers from Postgres.
+const readTimeout = 5 * time.Second
+
+// New builds a client of mail, mailstack in this process. mailstack reaches a
+// mail provider only when the server's provider connections are on;
+// otherwise a message on a Gmail, Outlook or IMAP account is an error.
+func New(mail MessageReader) *Client {
+	if mail == nil {
+		panic("mailstackclient: New needs mailstack")
 	}
-	client := inprocesshttp.Client(handler)
-	// A provider read is bounded as the HTTP client's was; a local account
-	// answers from Postgres.
-	client.Timeout = 5 * time.Second
-	return &Client{http: client}
+	return &Client{mail: mail}
 }
 
 // Address is a mail address with its display name, as mailstack returns it.
@@ -76,38 +76,21 @@ func (c *Client) GetMessageHeaders(ctx context.Context, accountID, providerID st
 	if accountID == "" || providerID == "" {
 		return nil, fmt.Errorf("account id and message id are required")
 	}
-	endpoint := fmt.Sprintf("%s/api/messages/%s?account=%s", inprocesshttp.BaseURL, url.PathEscape(providerID), url.QueryEscape(accountID))
-	ctx = mailstack.ContextWithCaller(ctx, mailstack.Caller{InternalService: true})
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, fmt.Errorf("build message request: %w", err)
-	}
-	resp, err := c.http.Do(req)
+	ctx, cancel := context.WithTimeout(ctx, readTimeout)
+	defer cancel()
+	message, err := c.mail.ReadMessage(ctx, accountID, "", providerID)
 	if err != nil {
 		return nil, fmt.Errorf("mailstack message lookup: %w", err)
 	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	if err != nil {
-		return nil, fmt.Errorf("read message response: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("mailstack message lookup: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	// mailstack answers {"meta": {...headers...}, "body": ...}. Only meta is
-	// read; the body stays on the wire.
-	var envelope struct {
-		Meta MessageHeaders `json:"meta"`
-	}
-	if err := json.Unmarshal(body, &envelope); err != nil {
-		return nil, fmt.Errorf("parse message response: %w", err)
-	}
-	if envelope.Meta.From.Email == "" {
+	// Only the headers are read; the body stays in mailstack.
+	headers := MessageHeaders{ID: message.Meta.ID, AccountID: message.Meta.AccountID, Subject: message.Meta.Subject,
+		From: Address{Name: message.Meta.From.Name, Email: message.Meta.From.Email}, MessageID: message.Meta.MessageID}
+	if headers.From.Email == "" {
 		// A message with no sender cannot be replied to, and a caller that
 		// got an empty address back would draft a reply to nobody without
 		// knowing. Measured once already: reading the top level instead of
 		// meta gave exactly that, silently.
 		return nil, fmt.Errorf("message %s in account %s carries no sender address", providerID, accountID)
 	}
-	return &envelope.Meta, nil
+	return &headers, nil
 }
