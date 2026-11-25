@@ -332,17 +332,24 @@ func requireRow(transaction *databaseTransaction, table, id string) error {
 }
 
 // ServiceReferences checks ids against the stores that own them, each asked
-// about the records of the owner the write is for: photo-store and
-// location-store and budget-store through HTTPClient, whose transport answers
-// their in-process hosts as the caller on the request's context;
-// article-store over HTTP; harness-store through Machines.
+// about the records of the owner the write is for: photo-store,
+// location-store and budget-store in this process through their
+// RecordFinders, which read the owner from the context; article-store over
+// HTTP; harness-store through Machines.
 type ServiceReferences struct {
-	PhotoStoreURL    string
-	LocationStoreURL string
-	ArticleStoreURL  string
-	BudgetStoreURL   string
-	HTTPClient       *http.Client
-	Machines         HarnessMachines
+	Photos          RecordFinder
+	Places          RecordFinder
+	Transactions    RecordFinder
+	ArticleStoreURL string
+	HTTPClient      *http.Client
+	Machines        HarnessMachines
+}
+
+// RecordFinder says whether a store holds a record among those of the owner
+// the context's ownership.Caller names. A record outside them is not found,
+// as a missing one.
+type RecordFinder interface {
+	RecordExists(ctx context.Context, id string) (bool, error)
 }
 
 // HarnessMachines answers whether harness-store has a machine.
@@ -356,13 +363,13 @@ func (references ServiceReferences) Check(ctx context.Context, ownerPrincipalID 
 	ctx = ownership.ContextWithCaller(ctx, ownership.Caller{PrincipalID: ownerPrincipalID})
 	switch kind {
 	case ReferencePhoto:
-		return references.checkURL(ctx, references.PhotoStoreURL+"/photos/"+url.PathEscape(id), "photo-store", id)
+		return checkRecord(ctx, references.Photos, "photo-store", id)
 	case ReferencePlace:
-		return references.checkURL(ctx, references.LocationStoreURL+"/places/"+url.PathEscape(id), "location-store", id)
+		return checkRecord(ctx, references.Places, "location-store", id)
 	case ReferenceBudgetTransaction:
-		return references.checkURL(ctx, references.BudgetStoreURL+"/transactions/"+url.PathEscape(id), "budget-store", id)
+		return checkRecord(ctx, references.Transactions, "budget-store", id)
 	case ReferenceArticle:
-		return references.checkURL(ctx, references.ArticleStoreURL+"/articles/"+url.PathEscape(id), "article-store", id)
+		return references.checkURL(ctx, strings.TrimRight(references.ArticleStoreURL, "/")+"/articles/"+url.PathEscape(id), "article-store", id)
 	case ReferenceHarnessMachine:
 		exists, err := references.Machines.MachineExists(ctx, id)
 		if err != nil {
@@ -374,6 +381,22 @@ func (references ServiceReferences) Check(ctx context.Context, ownerPrincipalID 
 		return nil
 	}
 	return fmt.Errorf("no way to check a %s reference", kind)
+}
+
+// checkRecord asks finder whether it holds id; a record it does not hold is
+// ErrInvalid, as the HTTP check's 404 was.
+func checkRecord(ctx context.Context, finder RecordFinder, service, id string) error {
+	if finder == nil {
+		return fmt.Errorf("%s is not wired into this possession-store, so %s cannot be checked", service, id)
+	}
+	exists, err := finder.RecordExists(ctx, id)
+	if err != nil {
+		return fmt.Errorf("ask %s about %s: %w", service, id, err)
+	}
+	if !exists {
+		return fmt.Errorf("%w: %s has no %s", ErrInvalid, service, id)
+	}
+	return nil
 }
 
 func (references ServiceReferences) checkURL(ctx context.Context, address, service, id string) error {

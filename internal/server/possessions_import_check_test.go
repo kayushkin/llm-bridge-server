@@ -130,7 +130,7 @@ func TestAnImportedPossessionStoreAnswersAsTheStandaloneOne(t *testing.T) {
 
 	plain := &http.Client{Timeout: time.Minute}
 	reviewer := &possessionstore.Reviewer{Store: root, CoverImagesDirectory: t.TempDir(),
-		Photos: possessionstore.PhotoStoreSource{PhotoStoreURL: *livePhotoStoreURL, Originals: root, LongestSide: 2048, HTTPClient: plain}}
+		Photos: possessionstore.PhotoStoreSource{PhotoStore: possessionstore.PhotoStoreOverHTTP{URL: *livePhotoStoreURL, HTTPClient: plain}, Originals: root, LongestSide: 2048}}
 	mux := http.NewServeMux()
 	(&possessionstore.Server{Store: root, Reviewer: reviewer}).RegisterHandlers(mux)
 	caller := ownership.Caller{PrincipalID: *possessionImportOwner}
