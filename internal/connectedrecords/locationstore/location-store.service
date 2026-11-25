@@ -1,0 +1,21 @@
+[Unit]
+Description=location-store — where the user has been: places, visits, trips and raw location points
+After=network.target
+
+# A systemd user unit: install it to ~/.config/systemd/user/ and the binary to
+# ~/bin. %h is the user's home directory, so nothing here names a user.
+[Service]
+Type=simple
+ExecStart=%h/bin/location-store
+
+# Loopback, deliberately. Location history is private and the service has no
+# auth of its own; put a front door that adds it in front. settings.go
+# defaults to the same address, so an empty environment is safe too.
+Environment=LOCATION_STORE_ADDR=127.0.0.1:8333
+
+WorkingDirectory=%h
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
