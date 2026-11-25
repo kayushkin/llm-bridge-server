@@ -119,14 +119,46 @@ func (s *Server) handleRoutedOneShot(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_body", "invalid request body: "+err.Error())
 		return
 	}
-	if strings.TrimSpace(request.Prompt) == "" {
-		writeJSONError(w, http.StatusBadRequest, "prompt_required", "prompt is required")
+	response, refusal := s.routedOneShot(r.Context(), request)
+	if refusal != nil {
+		if refusal.attempts != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(refusal.status)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error":    map[string]string{"code": refusal.code, "message": refusal.message},
+				"attempts": refusal.attempts,
+			})
+			return
+		}
+		writeJSONError(w, refusal.status, refusal.code, refusal.message)
 		return
 	}
+	writeJSON(w, response)
+}
+
+// oneShotRefusal is the one-shot router refusing a call, with the status and
+// code POST /oneshot answers. attempts is set when every model failed.
+type oneShotRefusal struct {
+	status   int
+	code     string
+	message  string
+	attempts any
+}
+
+func (refusal *oneShotRefusal) Error() string {
+	return fmt.Sprintf("%s (%d): %s", refusal.code, refusal.status, refusal.message)
+}
+
+// routedOneShot is one stateless model call for a model-store role, routed
+// and fallen back by the server, with the checks POST /oneshot makes: a
+// prompt is required, and the request names a model_role, never a model.
+func (s *Server) routedOneShot(ctx context.Context, request msg.OneShotRequest) (msg.OneShotResponse, *oneShotRefusal) {
+	if strings.TrimSpace(request.Prompt) == "" {
+		return msg.OneShotResponse{}, &oneShotRefusal{status: http.StatusBadRequest, code: "prompt_required", message: "prompt is required"}
+	}
 	if request.Model != "" {
-		writeJSONError(w, http.StatusBadRequest, "model_not_accepted",
-			"name a model_role ("+strings.Join(modelstore.CanonicalRoles, ", ")+"), not a model: the server picks the model, the instance and the fallbacks. POST /instances/{id}/oneshot takes a model")
-		return
+		return msg.OneShotResponse{}, &oneShotRefusal{status: http.StatusBadRequest, code: "model_not_accepted",
+			message: "name a model_role (" + strings.Join(modelstore.CanonicalRoles, ", ") + "), not a model: the server picks the model, the instance and the fallbacks. POST /instances/{id}/oneshot takes a model"}
 	}
 	route, err := s.oneShotRouter.ResolveRole(request.ModelRole)
 	if err != nil {
@@ -138,25 +170,17 @@ func (s *Server) handleRoutedOneShot(w http.ResponseWriter, r *http.Request) {
 				status = http.StatusBadRequest
 			}
 		}
-		writeJSONError(w, status, code, err.Error())
-		return
+		return msg.OneShotResponse{}, &oneShotRefusal{status: status, code: code, message: err.Error()}
 	}
-	response, err := s.oneShotRouter.Run(r.Context(), request.Caller, route, request, nil)
+	response, err := s.oneShotRouter.Run(ctx, request.Caller, route, request, nil)
 	if err != nil {
 		var allFailed *oneshotrouting.AllModelsFailedError
 		if errors.As(err, &allFailed) {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadGateway)
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"error":    map[string]string{"code": "all_models_failed", "message": err.Error()},
-				"attempts": allFailed.Attempts,
-			})
-			return
+			return msg.OneShotResponse{}, &oneShotRefusal{status: http.StatusBadGateway, code: "all_models_failed", message: err.Error(), attempts: allFailed.Attempts}
 		}
-		writeJSONError(w, http.StatusBadGateway, "oneshot_failed", err.Error())
-		return
+		return msg.OneShotResponse{}, &oneShotRefusal{status: http.StatusBadGateway, code: "oneshot_failed", message: err.Error()}
 	}
-	writeJSON(w, response)
+	return response, nil
 }
 
 // checkSettingNamesAnAssignedModelRole is the write check on every model_role

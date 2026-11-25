@@ -254,9 +254,9 @@ func (owners *Owners) repoActivity(ctx context.Context, repoStoreID int64, name 
 			RepoStoreID: repoStoreID, RepoName: name, CommitSHA: commit.SHA, Subject: commit.Subject})
 	}
 
-	var deploys []Deploy
-	if err := owners.repositoriesGetJSON(ctx, "/repo-store/deployments?repo_id="+strconv.FormatInt(repoStoreID, 10)+"&limit="+strconv.Itoa(deploymentsRead), &deploys); err != nil {
-		return nil, fmt.Errorf("deploys of repo %d: %w", repoStoreID, err)
+	deploys, err := owners.deployments(ctx, repoStoreID, deploymentsRead)
+	if err != nil {
+		return nil, err
 	}
 	for _, deploy := range deploys {
 		if deploy.CreatedAt >= since {

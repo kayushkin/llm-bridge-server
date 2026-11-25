@@ -233,3 +233,15 @@ func (a *API) PublishClassificationDecision(caller Caller, publication msg.Board
 	}
 	return a.publishClassificationDecisionFor(publication.BoardID, publication)
 }
+
+// Board is GET /api/boards/{id}: the board's own record.
+func (a *API) Board(caller Caller, boardID string) (*model.Board, error) {
+	if _, err := a.authorizeCall(caller, a.viewOnBoard(boardID, "GET /api/boards/"+boardID)); err != nil {
+		return nil, err
+	}
+	board, err := a.store.GetBoard(boardID)
+	if err != nil {
+		return nil, dbRefusal(err)
+	}
+	return board, nil
+}

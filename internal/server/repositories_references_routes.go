@@ -64,6 +64,10 @@ func mountedStoreRoute(prefix string, mounted func() *mountedStore, offCode, off
 type repositoryStores struct {
 	repoStore      http.Handler
 	workGraphStore http.Handler
+	// The stores themselves, for project-store's reads in process.
+	repos          *repostore.Store
+	workGraph      *workgraphstore.Store
+	workGraphRepos workgraphstore.RepoDirectory
 }
 
 // repoRegistry is repo-store as a deploy action reads it; the repo-store
@@ -85,9 +89,10 @@ func (s *Server) EnableRepositories(repos *repostore.Store, syncer *repostore.Pu
 		repostore.RegisterPullRequestHandlersWithoutSync(repoStoreMux, repos, syncerOffReason)
 	}
 	workGraphStoreMux := http.NewServeMux()
-	workgraphstore.RegisterHandlers(workGraphStoreMux, &workgraphstore.Handlers{Store: workGraph, RepoStore: workgraphstore.RepoStoreModule{Store: repos}})
+	workGraphRepos := workgraphstore.RepoStoreModule{Store: repos}
+	workgraphstore.RegisterHandlers(workGraphStoreMux, &workgraphstore.Handlers{Store: workGraph, RepoStore: workGraphRepos})
 	s.repoRegistryForDeploys = repos
-	s.repositories.Store(&repositoryStores{repoStore: repoStoreMux, workGraphStore: workGraphStoreMux})
+	s.repositories.Store(&repositoryStores{repoStore: repoStoreMux, workGraphStore: workGraphStoreMux, repos: repos, workGraph: workGraph, workGraphRepos: workGraphRepos})
 }
 
 // EnableFileStore serves file-store from its module, and makes the session
@@ -317,17 +322,6 @@ func (s *Server) registerRepositoriesAndReferencesRoutes() {
 	s.mux.HandleFunc("POST /reference-store/resolve", s.referenceStoreRoute)
 	s.mux.HandleFunc("GET /reference-store/search", s.referenceStoreRoute)
 	s.mux.HandleFunc("GET /reference-store/attachments/{id}", s.referenceStoreRoute)
-}
-
-// RepositoriesHandler serves repo-store's routes under /repo-store and
-// work-graph-store's under /work-graph-store, past this server's route rules,
-// for the modules in this process that read them (project-store). It answers
-// 503 until EnableRepositories has run.
-func (s *Server) RepositoriesHandler() http.Handler {
-	mux := http.NewServeMux()
-	mux.Handle(repoStoreMountPrefix+"/", s.repoStoreRoute())
-	mux.Handle(workGraphStoreMountPrefix+"/", s.workGraphStoreRoute())
-	return mux
 }
 
 // ReferenceStoreModuleHandler serves reference-store's routes at their own
