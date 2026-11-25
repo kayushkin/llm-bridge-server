@@ -352,6 +352,18 @@ func (s *Store) EventsAfter(operationID string, afterSequence int64) ([]msg.Oper
 // Claim takes the oldest queued operation for a worker: running, attempt
 // raised by one, a new lease token. found is false when nothing is queued.
 func (s *Store) Claim(leaseOwner string, leaseDuration time.Duration, now time.Time) (operation Operation, found bool, err error) {
+	// Every idle worker claims once a second. Asking first, outside a
+	// transaction, whether anything is queued costs one round trip where the
+	// transaction costs three, and the transaction below asks again under
+	// its lock, so an operation queued or taken in between is still claimed
+	// once.
+	var anythingQueued bool
+	if err := s.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM operations WHERE state = 'queued')`).Scan(&anythingQueued); err != nil {
+		return Operation{}, false, fmt.Errorf("look for a queued operation: %w", err)
+	}
+	if !anythingQueued {
+		return Operation{}, false, nil
+	}
 	var events []msg.OperationEvent
 	err = s.inTransaction(func(tx *sql.Tx) error {
 		row := tx.QueryRow(`SELECT ` + operationColumns + ` FROM operations WHERE state = 'queued' ORDER BY created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED`)

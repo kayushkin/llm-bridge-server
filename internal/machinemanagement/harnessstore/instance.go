@@ -29,14 +29,27 @@ func (s *Store) CreateInstance(inst *msg.Instance) error {
 // scanning stays consistent.
 const instanceRowCols = `id, harness_type, name, machine_id, working_dir, max_concurrent_sessions, enabled, created_at, updated_at`
 
-func scanInstance(row interface{ Scan(dest ...any) error }) (*msg.Instance, error) {
-	var inst msg.Instance
-	if err := row.Scan(&inst.ID, &inst.HarnessType, &inst.Name, &inst.MachineID, &inst.WorkingDir,
-		&inst.MaxConcurrentSessions, &inst.Enabled, &inst.CreatedAt, &inst.UpdatedAt); err != nil {
-		return nil, err
-	}
+// instanceRowColsOfInstancesTable is instanceRowCols named by table, for a
+// query that joins machines.
+const instanceRowColsOfInstancesTable = `instances.id, instances.harness_type, instances.name, instances.machine_id, instances.working_dir,
+	instances.max_concurrent_sessions, instances.enabled, instances.created_at, instances.updated_at`
+
+func instanceScanDestinations(inst *msg.Instance) []any {
+	return []any{&inst.ID, &inst.HarnessType, &inst.Name, &inst.MachineID, &inst.WorkingDir,
+		&inst.MaxConcurrentSessions, &inst.Enabled, &inst.CreatedAt, &inst.UpdatedAt}
+}
+
+func finishScannedInstance(inst *msg.Instance) {
 	inUTC(&inst.CreatedAt)
 	inUTC(&inst.UpdatedAt)
+}
+
+func scanInstance(row interface{ Scan(dest ...any) error }) (*msg.Instance, error) {
+	var inst msg.Instance
+	if err := row.Scan(instanceScanDestinations(&inst)...); err != nil {
+		return nil, err
+	}
+	finishScannedInstance(&inst)
 	return &inst, nil
 }
 
@@ -56,18 +69,19 @@ func (s *Store) GetInstanceByName(name string) (*msg.Instance, error) {
 
 // GetInstanceWithMachine joins instances with machines so the caller
 // receives the instance plus its joined Machine populated. Used by API
-// handlers serializing for the client.
+// handlers serializing for the client. It is one query: sql.ErrNoRows when
+// the instance is missing or names a machine that is.
 func (s *Store) GetInstanceWithMachine(id string) (*msg.Instance, error) {
-	inst, err := s.GetInstance(id)
+	row := s.db.QueryRow(`SELECT `+instanceRowColsOfInstancesTable+`, `+machineRowColsOfMachinesTable+`
+		FROM instances JOIN machines ON machines.id = instances.machine_id WHERE instances.id = $1`, id)
+	var inst msg.Instance
+	machine, err := scanMachine(rowAfter(row, instanceScanDestinations(&inst)...))
 	if err != nil {
 		return nil, err
 	}
-	m, err := s.GetMachine(inst.MachineID)
-	if err != nil {
-		return nil, err
-	}
-	inst.Machine = m
-	return inst, nil
+	finishScannedInstance(&inst)
+	inst.Machine = machine
+	return &inst, nil
 }
 
 // listInstances is the shared body for the list-style queries.

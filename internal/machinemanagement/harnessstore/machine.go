@@ -9,6 +9,28 @@ import (
 
 const machineRowCols = `id, name, emoji, hostname, os, arch, transport, ssh_user, ssh_key_path, ssh_port, default_working_dir, operating_system_user, notes, computer_use_allowed, last_seen_at, created_at, updated_at`
 
+// machineRowColsOfMachinesTable is machineRowCols named by table, for a query
+// that joins instances.
+const machineRowColsOfMachinesTable = `machines.id, machines.name, machines.emoji, machines.hostname, machines.os, machines.arch,
+	machines.transport, machines.ssh_user, machines.ssh_key_path, machines.ssh_port, machines.default_working_dir,
+	machines.operating_system_user, machines.notes, machines.computer_use_allowed, machines.last_seen_at,
+	machines.created_at, machines.updated_at`
+
+// scannedAfter is a row whose first columns go to leading, and whose rest
+// go to whatever its Scan is then called with.
+type scannedAfter struct {
+	row     interface{ Scan(dest ...any) error }
+	leading []any
+}
+
+func (row scannedAfter) Scan(dest ...any) error {
+	return row.row.Scan(append(append([]any{}, row.leading...), dest...)...)
+}
+
+func rowAfter(row interface{ Scan(dest ...any) error }, leading ...any) scannedAfter {
+	return scannedAfter{row: row, leading: leading}
+}
+
 func scanMachine(row interface{ Scan(dest ...any) error }) (*msg.Machine, error) {
 	var m msg.Machine
 	var lastSeen sql.NullTime

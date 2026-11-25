@@ -1,5 +1,7 @@
+-- Text the store sorts by is in the "C" collation, byte order, as SQLite
+-- compared it, so lists come back in the order they always did.
 CREATE TABLE hooks (
-	id         text PRIMARY KEY,
+	id         text COLLATE "C" PRIMARY KEY,
 	harness    text NOT NULL,
 	event      text NOT NULL,
 	matcher    text NOT NULL DEFAULT '',

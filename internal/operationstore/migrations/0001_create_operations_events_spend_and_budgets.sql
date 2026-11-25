@@ -1,8 +1,11 @@
+-- Text the store sorts by is in the "C" collation, byte order, as SQLite
+-- compared it, so lists come back in the order they always did.
+--
 -- Every time is Unix nanoseconds, as the SQLite store kept it, so ordering by
 -- created_at and the times inside the JSON agree to the nanosecond.
 
 CREATE TABLE operations (
-	id                  text PRIMARY KEY,
+	id                  text COLLATE "C" PRIMARY KEY,
 	type                text NOT NULL,
 	organization_id     text NOT NULL,
 	principal_id        text NOT NULL,
@@ -56,7 +59,7 @@ CREATE INDEX operation_spend_root ON operation_spend (root_operation_id);
 CREATE INDEX operation_spend_operation ON operation_spend (operation_id);
 
 CREATE TABLE organization_budgets (
-	organization_id   text PRIMARY KEY,
+	organization_id   text COLLATE "C" PRIMARY KEY,
 	monthly_limit_usd double precision NOT NULL,
 	updated_by        text NOT NULL,
 	updated_at        bigint NOT NULL

@@ -1,3 +1,6 @@
+-- Text the store sorts by is in the "C" collation, byte order, as SQLite
+-- compared it, so lists come back in the order they always did.
+--
 -- No table here declares a foreign key. The SQLite file this came from had
 -- REFERENCES clauses that SQLite never enforced (foreign_keys was off), and it
 -- holds rows that break them: enrollments naming machines that are gone and a
@@ -7,7 +10,7 @@
 -- orphans cleaned and a person's say-so first.
 
 CREATE TABLE harness_types (
-	name       text PRIMARY KEY,
+	name       text COLLATE "C" PRIMARY KEY,
 	label      text NOT NULL DEFAULT '',
 	emoji      text NOT NULL DEFAULT '',
 	image      text NOT NULL DEFAULT '',
@@ -15,8 +18,8 @@ CREATE TABLE harness_types (
 );
 
 CREATE TABLE machines (
-	id                    text PRIMARY KEY,
-	name                  text NOT NULL UNIQUE,
+	id                    text COLLATE "C" PRIMARY KEY,
+	name                  text COLLATE "C" NOT NULL UNIQUE,
 	emoji                 text NOT NULL DEFAULT '',
 	hostname              text NOT NULL DEFAULT '',
 	os                    text NOT NULL DEFAULT '',
@@ -49,9 +52,9 @@ CREATE TABLE runner_enrollments (
 );
 
 CREATE TABLE instances (
-	id                      text PRIMARY KEY,
+	id                      text COLLATE "C" PRIMARY KEY,
 	harness_type            text NOT NULL,
-	name                    text NOT NULL,
+	name                    text COLLATE "C" NOT NULL,
 	machine_id              text NOT NULL,
 	working_dir             text NOT NULL DEFAULT '',
 	max_concurrent_sessions integer NOT NULL DEFAULT 1,
@@ -64,7 +67,7 @@ CREATE INDEX instances_machine ON instances (machine_id);
 CREATE INDEX instances_name ON instances (name);
 
 CREATE TABLE instance_credentials (
-	instance_id    text NOT NULL,
+	instance_id    text COLLATE "C" NOT NULL,
 	credential_id  text NOT NULL,
 	priority       integer NOT NULL DEFAULT 0,
 	-- Kept from files that have it; nothing reads it.
