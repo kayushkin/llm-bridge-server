@@ -1,9 +1,11 @@
 package childprocess
 
 import (
+	"errors"
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -15,7 +17,10 @@ import (
 // process being torn down.
 func processIsRunning(pid int) bool {
 	stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
-	if os.IsNotExist(err) {
+	// A process that exits while its stat file is being read makes the read
+	// fail with ESRCH rather than ENOENT; either way it has exited. Measured:
+	// "read /proc/701897/stat: no such process" panicked a full suite run.
+	if os.IsNotExist(err) || errors.Is(err, syscall.ESRCH) {
 		return false
 	}
 	if err != nil {
