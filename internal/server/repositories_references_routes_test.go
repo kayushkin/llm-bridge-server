@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -78,14 +79,16 @@ func enableRepositoryModulesOnTestDatabase(t *testing.T, server *Server) testRep
 		t.Fatal(err)
 	}
 	modules.files = files
-	server.EnableReferenceStore(&referencestore.Resolver{
+	if err := server.EnableReferenceStore(&referencestore.Resolver{
 		Types:       referencestore.Types,
 		Credentials: &referencestore.Credentials{HTTPClient: http.DefaultClient},
 		Access:      &referencestore.AccessChecker{Directory: testReferenceAccess{}, TTL: time.Minute},
 		HTTPClient:  http.DefaultClient,
-		InProcess:   referencestore.InProcessServices{Handler: server.InProcessReferenceHandler(), PathPrefixes: InProcessReferenceServices},
+		InProcess:   server.InProcessReferenceReaders(),
 		RecordTTL:   time.Minute, MissTTL: time.Second, LookupTimeout: 5 * time.Second, Concurrency: 4,
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 	return modules
 }
 
@@ -218,29 +221,22 @@ func TestReferenceStoreResolvesInProcessAsTheCaller(t *testing.T) {
 	}
 }
 
-// Every route a reference type asks a service in this process for is a route
-// this server has, under the prefix InProcessReferenceServices names. A
-// search route is asked only for a type the @ picker offers (Mentionable).
-func TestEveryInProcessReferenceRouteIsMounted(t *testing.T) {
+// Every type of a service in this process has a reader for each thing a
+// row asks of it, and nothing is read over the network: the server's
+// readers pass the check EnableReferenceStore makes at start.
+func TestEveryInProcessReferenceTypeHasAReader(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
+	if err := referencestore.ValidateInProcessReaders(referencestore.Types, gated.server.InProcessReferenceReaders()); err != nil {
+		t.Fatal(err)
+	}
+	inProcessTypes := 0
 	for _, row := range referencestore.Types {
-		prefix, inProcess := InProcessReferenceServices[row.Service]
-		if !inProcess {
-			continue
+		if slices.Contains(InProcessReferenceServices, row.Service) && row.Get != "" {
+			inProcessTypes++
 		}
-		routes := []string{row.Get, row.Attachment}
-		if row.Mentionable() {
-			routes = append(routes, row.Search)
-		}
-		for _, route := range routes {
-			if route == "" {
-				continue
-			}
-			path := prefix + strings.NewReplacer("{id}", "x").Replace(route)
-			if _, pattern := gated.server.mux.Handler(httptest.NewRequest(http.MethodGet, path, nil)); pattern == "" {
-				t.Errorf("type %s asks %s for GET %s, which this server does not mount", row.Type, row.Service, path)
-			}
-		}
+	}
+	if inProcessTypes < 40 {
+		t.Errorf("only %d types with a record route are read in this process; the list of in-process services lost some", inProcessTypes)
 	}
 }
 

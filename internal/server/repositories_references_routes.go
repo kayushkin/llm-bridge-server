@@ -88,6 +88,8 @@ func (s *Server) EnableRepositories(repos *repostore.Store, syncer *repostore.Pu
 	workgraphstore.RegisterHandlers(workGraphStoreMux, &workgraphstore.Handlers{Store: workGraph, RepoStore: workgraphstore.RepoStoreModule{Store: repos}})
 	s.repoRegistryForDeploys = repos
 	s.repositories.Store(&repositoryStores{repoStore: repoStoreMux, workGraphStore: workGraphStoreMux})
+	s.referenceReadable.repos.Store(repos)
+	s.referenceReadable.workGraph.Store(workGraph)
 }
 
 // EnableFileStore serves file-store from its module, and makes the session
@@ -132,42 +134,18 @@ func (s *Server) checkFileStoreSettings() error {
 	return nil
 }
 
-// InProcessReferenceServices are the services reference-store asks through
-// this server's own handler, by the service name the type rows use, and the
-// prefix their routes are mounted under here. Every other service a type
-// names is asked over HTTP at reference_store.service_urls.
-var InProcessReferenceServices = map[string]string{
-	"llm-bridge-server": "",
-	"agent-store":       "",
-	"prediction-store":  "/prediction-store",
-	"noteboard":         "/noteboard",
-	"project-store":     "/project-store",
-	"tool-store":        "/tool-store",
-	"skill-store":       "/skill-store",
-	"principal-store":   "/principal-store",
-	"repo-store":        repoStoreMountPrefix,
-	"work-graph-store":  workGraphStoreMountPrefix,
-	"people-store":      peopleStoreMountPrefix,
-	"journal-store":     journalStoreMountPrefix,
-	"calendar-store":    calendarStoreMountPrefix,
-	"message-store":     messageStoreMountPrefix,
-	"activity-store":    activityStoreMountPrefix,
-	"time-ledger-store": timeLedgerStoreMountPrefix,
-	"budget-store":      budgetStoreMountPrefix,
-	"scheduler":         schedulerMountPrefix,
-	"photo-store":       photoStoreMountPrefix,
-	"location-store":    locationStoreMountPrefix,
-	"possession-store":  possessionStoreMountPrefix,
-}
-
 // EnableReferenceStore serves reference-store from resolver, and makes the
 // chat links' references and grant-store's reference checks call it in
 // process. main calls it once, after EnableAccess.
-func (s *Server) EnableReferenceStore(resolver *referencestore.Resolver) {
+func (s *Server) EnableReferenceStore(resolver *referencestore.Resolver) error {
+	if err := referencestore.ValidateInProcessReaders(resolver.Types, resolver.InProcess); err != nil {
+		return err
+	}
 	s.referenceResolver.Store(resolver)
 	mux := http.NewServeMux()
 	referencestore.RegisterHandlers(mux, &referencestore.Server{Resolver: resolver})
 	s.referenceStoreHandler.Store(&mountedStore{handler: mux})
+	return nil
 }
 
 // ReferenceAccessDirectory is what reference-store's access check reads,
@@ -204,26 +182,6 @@ func (d referenceAccessDirectory) Grants(ctx context.Context, principalID string
 			ResourceID: grant.ResourceID, Revoked: grant.RevokedAt != 0})
 	}
 	return held, nil
-}
-
-// InProcessReferenceHandler is the handler reference-store asks the services
-// in this process through: this server itself, answering as its internal
-// service. A request it is handed names the caller in X-Principal-Id only for
-// an owner-decided type, and then this server narrows the answer to that
-// principal, as it does for dash. Every other credential a request carries is
-// dropped. The requests are made by reference-store in this process and never
-// come from a client.
-func (s *Server) InProcessReferenceHandler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		request := r.Clone(r.Context())
-		principalID := request.Header.Get(principalIdentityHeader)
-		request.Header = http.Header{}
-		request.Header.Set(serviceTokenHeader, s.cfg.ServiceToken)
-		if principalID != "" {
-			request.Header.Set(principalIdentityHeader, principalID)
-		}
-		s.ServeHTTP(w, request)
-	})
 }
 
 // referenceStoreRoute answers one reference-store route as the caller: the

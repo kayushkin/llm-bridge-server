@@ -16,6 +16,7 @@ import (
 // Postgres URL, the routes answer 503.
 func (s *Server) EnableNoteboard(store *items.Store) {
 	s.noteboard.Store(noteboardapi.New(store))
+	s.referenceReadable.noteboard.Store(store)
 }
 
 // noteboardRoute answers one route with the store's handler for it.

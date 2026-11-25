@@ -258,6 +258,27 @@ func (s *Server) mayAskTypeWhole(ctx context.Context, caller Caller, row *Refere
 func (s *Server) searchOne(ctx context.Context, caller Caller, row *ReferenceType, query string) (json.RawMessage, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.Resolver.LookupTimeout)
 	defer cancel()
+	reader, inProcess, err := s.Resolver.inProcessReader(row)
+	if err != nil {
+		return nil, err
+	}
+	if inProcess {
+		if reader.Search == nil {
+			return nil, fmt.Errorf("type %q of %s has no in-process search", row.Type, row.Service)
+		}
+		asker := InProcessAsker{}
+		if row.Access.ownerDecides() && !caller.Unchecked {
+			asker.PrincipalID = caller.PrincipalID
+		}
+		data, err := reader.Search(ctx, query, asker)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", row.Service, err)
+		}
+		if !json.Valid(data) {
+			return nil, fmt.Errorf("%s answered something that is not JSON", row.Service)
+		}
+		return data, nil
+	}
 	request, client, err := s.Resolver.newRequest(ctx, row, row.Search+url.QueryEscape(query))
 	if err != nil {
 		return nil, err

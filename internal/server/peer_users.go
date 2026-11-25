@@ -22,6 +22,7 @@ package server
 // as the peer alone, as before phase 2.
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -111,11 +112,32 @@ func requestOnlyReads(r *http.Request, pattern string) bool {
 	return true
 }
 
+// sessionReachedByCaller reports whether a caller who is not an
+// administrator reaches one session on a session route: the session is in
+// its scope, it started the session as another principal and may still drive
+// it, or, on a route that only reads, its grants let it observe the session.
+// A session it does not reach answers as a missing one.
+func (s *Server) sessionReachedByCaller(ctx context.Context, caller requestCaller, sessionID string, onlyReads bool) (bool, error) {
+	if s.sessionIDIsInScope(sessionID, sessionScopeOfCaller(caller)) {
+		return true, nil
+	}
+	// A service that started this session as another principal drives it
+	// while it holds can_start_sessions_as on that one.
+	drives, err := s.callerStartedSessionIDAndMayDriveIt(ctx, caller, sessionID)
+	if err != nil || drives {
+		return drives, err
+	}
+	if !onlyReads {
+		return false, nil
+	}
+	return s.mayObserveSession(ctx, caller, sessionID)
+}
+
 // mayObserveSession reports whether the caller's grants let it read this
 // session it does not own: can_observe_sessions_on naming the session's
 // instance or its machine, for the caller's principal and, through a peer,
 // for the peer too.
-func (s *Server) mayObserveSession(r *http.Request, caller requestCaller, sessionID string) (bool, error) {
+func (s *Server) mayObserveSession(ctx context.Context, caller requestCaller, sessionID string) (bool, error) {
 	session, err := s.store.GetSession(sessionID)
 	if err != nil {
 		return false, nil
@@ -127,7 +149,7 @@ func (s *Server) mayObserveSession(r *http.Request, caller requestCaller, sessio
 		}
 	}
 	subject := grantSubjectOfCaller(caller)
-	instances, err := s.grantedResourcesOf(r.Context(), subject, observeSessionsRelation, "instance")
+	instances, err := s.grantedResourcesOf(ctx, subject, observeSessionsRelation, "instance")
 	if err != nil {
 		return false, err
 	}
@@ -137,7 +159,7 @@ func (s *Server) mayObserveSession(r *http.Request, caller requestCaller, sessio
 	if machineID == "" {
 		return false, nil
 	}
-	machines, err := s.grantedResourcesOf(r.Context(), subject, observeSessionsRelation, "machine")
+	machines, err := s.grantedResourcesOf(ctx, subject, observeSessionsRelation, "machine")
 	if err != nil {
 		return false, err
 	}

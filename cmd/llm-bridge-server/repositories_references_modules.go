@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"slices"
 	"sort"
 	"time"
 
@@ -130,7 +131,7 @@ func enableRepositoriesAndReferences(ctx context.Context, cfg *config.Config, sr
 	// reference-store.
 	serviceURLs := settings.StringMap(config.SettingReferenceStoreServiceURLs)
 	for service := range serviceURLs {
-		if _, inProcess := server.InProcessReferenceServices[service]; inProcess {
+		if slices.Contains(server.InProcessReferenceServices, service) {
 			return fail(fmt.Errorf("reference-store: %s names %s, which runs in this server and is asked here; take it out", config.SettingReferenceStoreServiceURLs, service))
 		}
 	}
@@ -140,7 +141,7 @@ func enableRepositoriesAndReferences(ctx context.Context, cfg *config.Config, sr
 	}
 	seconds := func(key string) time.Duration { return time.Duration(settings.Integer(key)) * time.Second }
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	srv.EnableReferenceStore(&referencestore.Resolver{
+	if err := srv.EnableReferenceStore(&referencestore.Resolver{
 		Types:       referencestore.Types,
 		ServiceURLs: serviceURLs,
 		SiteURLs:    siteURLs,
@@ -156,18 +157,16 @@ func enableRepositoriesAndReferences(ctx context.Context, cfg *config.Config, sr
 			TTL:       seconds(config.SettingReferenceStoreAccessCacheSeconds),
 		},
 		HTTPClient:    client,
-		InProcess:     referencestore.InProcessServices{Handler: srv.InProcessReferenceHandler(), PathPrefixes: server.InProcessReferenceServices},
+		InProcess:     srv.InProcessReferenceReaders(),
 		RecordTTL:     seconds(config.SettingReferenceStoreRecordCacheSeconds),
 		MissTTL:       seconds(config.SettingReferenceStoreMissCacheSeconds),
 		LookupTimeout: seconds(config.SettingReferenceStoreLookupTimeout),
 		Concurrency:   settings.Integer(config.SettingReferenceStoreLookupConcurrency),
-	})
-	inProcess := make([]string, 0, len(server.InProcessReferenceServices))
-	for service := range server.InProcessReferenceServices {
-		inProcess = append(inProcess, service)
+	}); err != nil {
+		return fail(err)
 	}
-	sort.Strings(inProcess)
-	log.Printf("postgres: repo-store, work-graph-store and file-store open, served at /repo-store/, /work-graph-store/ and /file-store/ (file bytes in %s); reference-store served at /reference-store/, asking %v in this process and %d services over HTTP",
+	inProcess := slices.Sorted(slices.Values(server.InProcessReferenceServices))
+	log.Printf("postgres: repo-store, work-graph-store and file-store open, served at /repo-store/, /work-graph-store/ and /file-store/ (file bytes in %s); reference-store served at /reference-store/, reading %v in this process by Go calls and asking %d services over HTTP",
 		dataDirectory, inProcess, len(serviceURLs))
 	return closeAll, nil
 }

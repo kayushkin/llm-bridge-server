@@ -105,6 +105,7 @@ func (s *Server) EnableAccess(stores *access.Stores) {
 		handlers.signInOffReason = offReason
 	}
 	s.access.Store(handlers)
+	s.referenceReadable.principals.Store(stores.Principals)
 }
 
 // signInConfiguration is sign-in-store's wiring from this server's settings,

@@ -168,6 +168,7 @@ func enableScheduler(ctx context.Context, cfg *config.Config, srv *server.Server
 	routes := api.New(store, scheduler, "", storedSettings, roles.CheckRole)
 	routes.SetLogger(logger)
 	srv.EnableScheduler(routes.Routes())
+	srv.EnableSchedulerJobReferences(routes)
 	if runsEnabled {
 		log.Printf("postgres: scheduler open, served at /scheduler/; jobs run here")
 	} else {

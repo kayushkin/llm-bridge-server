@@ -20,7 +20,9 @@ package budgetstore
 //     acting as nobody must name one.
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 
@@ -77,25 +79,102 @@ func (store *Store) ownerOfRequest(w http.ResponseWriter, r *http.Request, owner
 	if respondRefusal(w, refusal) {
 		return "", false
 	}
-	if !scope.IsEveryOwner() {
-		// The caller's own books, or the one owner an administrator named:
-		// a record kept by anyone else is not found there.
-		return scope.OwnerPrincipalID(), true
+	owner, err := store.ownerOfRecordInScope(r.Context(), scope, ownerOf, r.PathValue(ownerOf.pathValue))
+	if err != nil {
+		writeError(w, err)
+		return "", false
 	}
-	id := r.PathValue(ownerOf.pathValue)
+	return owner, true
+}
+
+// ownerOfRecordInScope is whose books hold the record id names, for a read
+// in scope: the one owner scope names, whose books a record kept by anyone
+// else is not found in, or, for every owner's scope, the owner who keeps it.
+func (store *Store) ownerOfRecordInScope(ctx context.Context, scope ownership.Scope, ownerOf recordOwner, id string) (string, error) {
+	if !scope.IsEveryOwner() {
+		return scope.OwnerPrincipalID(), nil
+	}
 	for _, lookup := range ownerOf.lookups {
-		owner, err := store.ownerOfRecord(r.Context(), lookup.table, lookup.column, id)
+		owner, err := store.ownerOfRecord(ctx, lookup.table, lookup.column, id)
 		if errors.Is(err, ErrNotFound) {
 			continue
 		}
 		if err != nil {
-			writeError(w, err)
-			return "", false
+			return "", err
 		}
-		return owner, true
+		return owner, nil
 	}
-	writeError(w, ErrNotFound)
-	return "", false
+	return "", ErrNotFound
+}
+
+// RecordKind is a kind of record the store answers by id alone, by the
+// path its GET route is under: "accounts" for GET /accounts/{id}.
+type RecordKind string
+
+// The kinds a reference can name.
+const (
+	RecordKindAccount              RecordKind = "accounts"
+	RecordKindTransaction          RecordKind = "transactions"
+	RecordKindCategory             RecordKind = "categories"
+	RecordKindPayee                RecordKind = "payees"
+	RecordKindMarketplaceOrder     RecordKind = "marketplace-orders"
+	RecordKindMarketplaceOrderLine RecordKind = "marketplace-order-lines"
+	RecordKindImportBatch          RecordKind = "import-batches"
+)
+
+// recordByID is how one kind's record is found: whose books keep it, and
+// the ledger's read of it there.
+type recordByID struct {
+	owner recordOwner
+	read  func(ledger *Ledger, id string) (any, error)
+}
+
+func readAs[T any](read func(*Ledger, string) (T, error)) func(*Ledger, string) (any, error) {
+	return func(ledger *Ledger, id string) (any, error) { return read(ledger, id) }
+}
+
+// recordsByID is every kind GET /<kind>/{id} answers, the one table the
+// routes and RecordInScope read.
+var recordsByID = map[RecordKind]recordByID{
+	RecordKindAccount:              {accountOwner, readAs((*Ledger).GetAccount)},
+	RecordKindTransaction:          {transactionOwner, readAs((*Ledger).GetTransaction)},
+	RecordKindCategory:             {categoryOwner, readAs((*Ledger).GetCategory)},
+	RecordKindPayee:                {payeeOwner, readAs((*Ledger).GetPayee)},
+	RecordKindMarketplaceOrder:     {marketplaceOrderOwner, readAs((*Ledger).GetMarketplaceOrder)},
+	RecordKindMarketplaceOrderLine: {marketplaceOrderLineOwner, readAs((*Ledger).GetMarketplaceOrderLine)},
+	RecordKindImportBatch:          {importBatchOwner, readAs((*Ledger).GetImportBatch)},
+}
+
+// recordRoute is GET /<kind>/{id}: the record, in its keeper's books.
+func (store *Store) recordRoute(kind RecordKind) http.HandlerFunc {
+	byID := recordsByID[kind]
+	return store.ledgerRoute(byID.owner, func(ledger *Ledger, w http.ResponseWriter, r *http.Request) {
+		record, err := byID.read(ledger, r.PathValue(byID.owner.pathValue))
+		respond(w, http.StatusOK, record, err)
+	})
+}
+
+// RecordInScope reads one record of kind by its id, in the books of the
+// owner who keeps it, as GET /<kind>/{id} answers it to a caller reading in
+// scope: a record outside scope is ErrNotFound, as a missing one is.
+func (store *Store) RecordInScope(ctx context.Context, scope ownership.Scope, kind RecordKind, id string) (any, error) {
+	byID, known := recordsByID[kind]
+	if !known {
+		return nil, fmt.Errorf("budget-store answers no record of kind %q by id", kind)
+	}
+	owner, err := store.ownerOfRecordInScope(ctx, scope, byID.owner, id)
+	if err != nil {
+		return nil, err
+	}
+	ledger, err := store.OpenLedger(ctx, owner)
+	if err != nil {
+		return nil, err
+	}
+	record, readErr := byID.read(ledger, id)
+	if err := ledger.Close(); err != nil {
+		log.Printf("budget-store: %v", err)
+	}
+	return record, readErr
 }
 
 // ledgerRoute serves one route in the books the request works in.

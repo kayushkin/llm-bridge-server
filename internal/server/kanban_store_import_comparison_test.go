@@ -54,7 +54,9 @@ func TestImportedStandaloneKanbanStoreAnswers(t *testing.T) {
 	server, _, _ := testServerWithInstance(t, msg.HarnessMock)
 	// GET /api/entity-types serves reference-store's list of types, from
 	// reference-store in this process.
-	server.EnableReferenceStore(&referencestore.Resolver{Types: referencestore.Types, Credentials: &referencestore.Credentials{}})
+	if err := server.EnableReferenceStore(&referencestore.Resolver{Types: referencestore.Types, Credentials: &referencestore.Credentials{}}); err != nil {
+		t.Fatal(err)
+	}
 
 	accessModules, err := access.Modules()
 	if err != nil {

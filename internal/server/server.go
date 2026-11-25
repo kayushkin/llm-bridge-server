@@ -138,6 +138,9 @@ type Server struct {
 	// automationStores answers /scheduler/ and /rule-store/ once their
 	// Postgres modules are open (automation_routes.go).
 	automationStores automationStores
+	// referenceReadable are the stores reference-store's readers call
+	// (reference_readers.go).
+	referenceReadable referenceReadableStores
 	// kanbanClient answers "which noteboard todo is this session linked
 	// to?" when a signal is minted, and every other read this server makes of
 	// kanban-store. EnableKanbanStore sets it; nil until then, which leaves
