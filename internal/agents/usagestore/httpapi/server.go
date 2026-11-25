@@ -164,17 +164,27 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 // ---- subscription limits (legacy) ----
 
 func (s *Server) handleLimits(w http.ResponseWriter, r *http.Request) {
+	out, err := s.LatestLimits()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, out)
+}
+
+// LatestLimits is every provider's latest snapshot with its StaleAfter set,
+// the answer of GET /api/usage/limits. A provider with no snapshot is nil.
+func (s *Server) LatestLimits() (map[string]*usagestore.ProviderLimits, error) {
 	out := map[string]*usagestore.ProviderLimits{}
 	for _, p := range []string{"anthropic", "codex"} {
 		snap, err := s.store.LatestLimits(p)
 		if err != nil {
-			writeErr(w, http.StatusInternalServerError, fmt.Errorf("latest %s: %w", p, err))
-			return
+			return nil, fmt.Errorf("latest %s: %w", p, err)
 		}
 		s.markStaleness(snap)
 		out[p] = snap
 	}
-	writeJSON(w, out)
+	return out, nil
 }
 
 // markStaleness sets StaleAfter from the snapshot's age budget.

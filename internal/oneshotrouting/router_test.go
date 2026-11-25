@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -235,17 +233,12 @@ func TestAdmitSkipsAModel(t *testing.T) {
 
 func TestUsageStoreLimitsReadsAFullFreshWindowAndIgnoresAStaleOne(t *testing.T) {
 	now := time.Unix(1790730100, 0)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/usage/limits" {
-			http.NotFound(w, r)
-			return
-		}
-		fmt.Fprintf(w, `{
-			"anthropic":{"windows":{"five_hour":{"used_percent":12},"seven_day":{"used_percent":100}},"stale_after":%d},
-			"codex":{"windows":{"weekly":{"used_percent":100}},"stale_after":%d}}`, now.Unix()+60, now.Unix()-60)
-	}))
-	defer server.Close()
-	limits := NewUsageStoreLimits(server.URL, &http.Client{Timeout: 3 * time.Second})
+	limits := NewUsageStoreLimits(func(context.Context) (map[string]UsageProviderLimits, error) {
+		return map[string]UsageProviderLimits{
+			"anthropic": {UsedPercentByWindow: map[string]float64{"five_hour": 12, "seven_day": 100}, StaleAfter: now.Unix() + 60},
+			"codex":     {UsedPercentByWindow: map[string]float64{"weekly": 100}, StaleAfter: now.Unix() - 60},
+		}, nil
+	})
 	limits.now = func() time.Time { return now }
 	for provider, want := range map[string]string{"anthropic": "seven_day limit at 100%", "codex": "", "gemini": ""} {
 		got, err := limits.ExhaustedWindow(context.Background(), provider)
@@ -253,7 +246,10 @@ func TestUsageStoreLimitsReadsAFullFreshWindowAndIgnoresAStaleOne(t *testing.T) 
 			t.Errorf("%s: %q %v, want %q", provider, got, err, want)
 		}
 	}
-	if _, err := NewUsageStoreLimits("http://127.0.0.1:1", &http.Client{Timeout: 3 * time.Second}).ExhaustedWindow(context.Background(), "anthropic"); err == nil {
-		t.Error("an unreachable usage-store read as no limit instead of an error")
+	unreadable := NewUsageStoreLimits(func(context.Context) (map[string]UsageProviderLimits, error) {
+		return nil, errors.New("usage-store is not open")
+	})
+	if _, err := unreadable.ExhaustedWindow(context.Background(), "anthropic"); err == nil {
+		t.Error("a usage-store that cannot answer read as no limit instead of an error")
 	}
 }

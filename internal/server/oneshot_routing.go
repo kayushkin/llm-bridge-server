@@ -12,7 +12,6 @@ import (
 	modelstore "github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/executors"
-	"github.com/kayushkin/llm-bridge-server/internal/inprocesshttp"
 	"github.com/kayushkin/llm-bridge-server/internal/oneshotrouting"
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
@@ -50,9 +49,9 @@ func (s *Server) newOneShotRouter() *oneshotrouting.Router {
 	if s.harnessStore != nil {
 		router.Instances = s.harnessStore
 	}
-	// usage-store runs in this process. Until its module is open its routes
-	// answer 503, which the router logs and calls anyway.
-	router.Limits = oneshotrouting.NewUsageStoreLimits(inprocesshttp.BaseURL, s.usageStoreLimitsClient())
+	// usage-store runs in this process. Until its module is open a read is
+	// an error, which the router logs and calls anyway.
+	router.Limits = oneshotrouting.NewUsageStoreLimits(s.readUsageStoreLimits)
 	return router
 }
 

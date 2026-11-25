@@ -1,6 +1,8 @@
 package server
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -10,7 +12,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/agents/evalstore"
 	usagestorehttpapi "github.com/kayushkin/llm-bridge-server/internal/agents/usagestore/httpapi"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	"github.com/kayushkin/llm-bridge-server/internal/inprocesshttp"
+	"github.com/kayushkin/llm-bridge-server/internal/oneshotrouting"
 )
 
 // usage-store and eval-store run in this process from their Postgres modules.
@@ -51,13 +53,38 @@ func (s *Server) usageStoreHandler() http.Handler {
 	})
 }
 
-// usageStoreLimitsClient is the HTTP client the one-shot router reads
-// usage-store's limits with: it never leaves this process. A read is bounded
-// as the old one over the network was.
-func (s *Server) usageStoreLimitsClient() *http.Client {
-	client := inprocesshttp.Client(s.usageStoreHandler())
-	client.Timeout = 3 * time.Second
-	return client
+// errUsageStoreOff is a read of usage-store on a server whose module is not
+// open.
+var errUsageStoreOff = errors.New("this server's usage-store module is not open")
+
+// readUsageStoreLimits is usage-store's latest limits, read in this process
+// from the same function its GET /api/usage/limits answers from.
+func (s *Server) readUsageStoreLimits(context.Context) (map[string]oneshotrouting.UsageProviderLimits, error) {
+	handlers := s.usageAndEvalStores.usage.Load()
+	if handlers == nil {
+		return nil, errUsageStoreOff
+	}
+	latest, err := handlers.LatestLimits()
+	if err != nil {
+		return nil, err
+	}
+	providers := make(map[string]oneshotrouting.UsageProviderLimits, len(latest))
+	for provider, snapshot := range latest {
+		if snapshot == nil {
+			continue
+		}
+		limits := oneshotrouting.UsageProviderLimits{UsedPercentByWindow: make(map[string]float64, len(snapshot.Windows))}
+		if snapshot.StaleAfter != nil {
+			limits.StaleAfter = *snapshot.StaleAfter
+		}
+		for name, window := range snapshot.Windows {
+			if window != nil {
+				limits.UsedPercentByWindow[name] = window.UsedPercent
+			}
+		}
+		providers[provider] = limits
+	}
+	return providers, nil
 }
 
 // EvalStoreOptions are the eval-store settings the runner takes.
@@ -71,19 +98,16 @@ type EvalStoreOptions struct {
 // EnableEvalStore serves eval-store's routes from store and returns the
 // runner that carries its runs out, which main closes at shutdown. Every
 // model call is an llm.completion operation on this server, and prices and
-// subscription usage come from model-store and usage-store, all in process
-// and as the internal service, as the standalone eval-store called them with
-// the service token alone.
+// subscription usage come from model-store and usage-store, all called in
+// process as the internal service (evalStoreInThisServer), as the standalone
+// eval-store called them with the service token alone.
 func (s *Server) EnableEvalStore(store *evalstore.Store, options EvalStoreOptions) (*evalstore.Runner, error) {
 	if options.RunsEnabled && options.OperationPollingInterval <= 0 {
 		return nil, fmt.Errorf("eval-store: %s is %s; it must be longer than nothing", config.SettingEvalStoreOperationPollingInterval, options.OperationPollingInterval)
 	}
-	asInternalService := inprocesshttp.Client(s.mux)
-	bridge := &evalstore.BridgeClient{BaseURL: inprocesshttp.BaseURL, HTTP: asInternalService, PollInterval: options.OperationPollingInterval}
-	runner := evalstore.NewRunner(store, bridge,
-		&evalstore.ModelStoreClient{BaseURL: inprocesshttp.BaseURL + "/model-store", HTTP: asInternalService},
-		&evalstore.UsageStoreClient{BaseURL: inprocesshttp.BaseURL + usageStoreRoutePrefix, HTTP: asInternalService},
-		options.Defaults)
+	thisServer := evalStoreInThisServer{server: s}
+	bridge := &evalstore.BridgeOperations{Operations: thisServer, PollInterval: options.OperationPollingInterval}
+	runner := evalstore.NewRunner(store, bridge, thisServer, thisServer, options.Defaults)
 	if !options.RunsEnabled {
 		runner.SwitchRunsOff(config.SettingEvalStoreRunsEnabled + " is off on this server")
 	}
