@@ -165,12 +165,12 @@ func (s *Server) updateSessionBriefAtTurnEnd(bridgeID string, state msg.SessionS
 	lock.(*sync.Mutex).Lock()
 	defer lock.(*sync.Mutex).Unlock()
 
-	userMessage, assistantTexts, err := s.store.CurrentTurnText(bridgeID)
+	userMessage, assistantTexts, err := s.harness.SessionEvents().CurrentTurnText(bridgeID)
 	if err != nil {
 		log.Printf("[session-brief] %s: ERROR read the turn: %v", bridgeID, err)
 		return
 	}
-	firstUserMessage, err := s.store.FirstUserMessage(bridgeID)
+	firstUserMessage, err := s.harness.SessionEvents().FirstUserMessage(bridgeID)
 	if err != nil {
 		log.Printf("[session-brief] %s: ERROR read the first message: %v", bridgeID, err)
 		return

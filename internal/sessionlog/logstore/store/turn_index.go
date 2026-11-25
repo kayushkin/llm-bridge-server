@@ -2,7 +2,6 @@ package store
 
 import (
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -126,64 +125,12 @@ type execer interface {
 	QueryRow(query string, args ...any) *sql.Row
 }
 
-// indexEventInTx records one newly inserted event in the turn index, inside the
-// transaction that inserted it. It does nothing for a session whose index is not
-// current yet: that session's events are indexed in order by BuildTurnIndex, which
-// also picks up this one.
-func (s *Store) indexEventInTx(tx *sql.Tx, sessionID string, eventID int64, eventType string, data []byte) error {
-	var st sessionTurnState
-	var indexedThrough int64
-	var version int
-	err := tx.QueryRow(
-		`SELECT index_version, indexed_through_event_id, last_turn_id, next_turn_seq FROM turn_index_sessions WHERE session_id = $1`,
-		sessionID,
-	).Scan(&version, &indexedThrough, &st.lastTurnID, &st.nextTurnSeq)
-	if err == nil && version != s.turnIndexVersion {
-		// Built by other rules: BuildTurnIndex rebuilds the whole session, this event
-		// included.
-		return nil
-	}
-	if errors.Is(err, sql.ErrNoRows) {
-		// No index row. A session whose ONLY event is this one is brand new, and its
-		// index starts current right here. Any other session still has older events
-		// waiting for BuildTurnIndex.
-		var olderEventExists bool
-		if err := tx.QueryRow(
-			`SELECT EXISTS(SELECT 1 FROM events WHERE session_id = $1 AND id < $2)`, sessionID, eventID,
-		).Scan(&olderEventExists); err != nil {
-			return fmt.Errorf("check for older events: %w", err)
-		}
-		if olderEventExists {
-			return nil
-		}
-		st = sessionTurnState{nextTurnSeq: 1}
-		if _, err := tx.Exec(
-			`INSERT INTO turn_index_sessions (session_id, index_version, indexed_through_event_id, last_turn_id, next_turn_seq) VALUES ($1, $2, 0, '', 1)`,
-			sessionID, s.turnIndexVersion,
-		); err != nil {
-			return fmt.Errorf("open turn index: %w", err)
-		}
-	} else if err != nil {
-		return fmt.Errorf("read turn index state: %w", err)
-	}
-
-	var fields eventTurnFields
-	if err := json.Unmarshal(data, &fields); err != nil {
-		return fmt.Errorf("read turn_id from event %d: %w", eventID, err)
-	}
-	if err := s.writeEventTurn(tx, sessionID, &st, eventID, eventType, fields.TurnID, data); err != nil {
-		return err
-	}
-	_, err = tx.Exec(
-		`UPDATE turn_index_sessions SET indexed_through_event_id = $1, last_turn_id = $2, next_turn_seq = $3 WHERE session_id = $4`,
-		eventID, st.lastTurnID, st.nextTurnSeq, sessionID,
-	)
-	return err
-}
-
 // writeEventTurn assigns one event to its turn and writes event_turns, turns and,
 // for a possible dual-emitted copy, dedup_candidates. `data` may be nil for event
-// types that are never candidates.
+// types that are never candidates. BuildTurnIndex writes through it; a new event
+// is placed by indexLiveEvent (append_event.go), which applies the same rule
+// in one batch, and TestTurnIndex_BuildMatchesIngestIndexingAndResumesIngest
+// holds the two to the same answer.
 func (s *Store) writeEventTurn(db execer, sessionID string, st *sessionTurnState, eventID int64, eventType, rawTurnID string, data []byte) error {
 	turnID := st.assignTurn(eventID, rawTurnID)
 	isPrompt := eventType == "user_message"

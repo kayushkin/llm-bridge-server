@@ -76,9 +76,10 @@ type Manager struct {
 	ptySidecars         map[string]*ptySidecar        // sessionID → the PTY session's sidecar (ptySidecarStarters; nil for non-PTY sessions)
 	pending             *pendingHooks                 // awaiting_resolution hooks indexed by sessionID, request_id
 	store               *store.Store
-	logStore            atomic.Pointer[sessionEventLogHolder] // the session event log (log-store); see SetSessionEventLog
-	logStoreWrites      *logStoreQueue                        // ordered per-session writer; keeps the log-store write off the SSE fan-out path
-	runners             *RunnerRegistry                       // optional; nil disables TransportRunner spawns
+	logStore            atomic.Pointer[sessionEventLogHolder]   // the session event log (log-store); see SetSessionEventLog
+	sessionEventStore   atomic.Pointer[sessionEventStoreHolder] // where events are stored and read back; see SetSessionEventStore
+	logStoreWrites      *logStoreQueue                          // ordered per-session writer; keeps the log-store write off the SSE fan-out path
+	runners             *RunnerRegistry                         // optional; nil disables TransportRunner spawns
 	authClient          *authstoreclient.Client
 	publicServerURL     string                      // public bridge URL runners use for /api/runner/binary fetches
 	localBridgeURL      string                      // localhost URL the per-session OTel sidecar POSTs translated events to; derived from ListenAddr at startup
@@ -301,10 +302,10 @@ func (m *Manager) loadMsgState(bridgeID string) *sessionMsgState {
 		harnessToBridge:  make(map[string]string),
 		toolUseToMessage: make(map[string]store.ToolUseBinding),
 	}
-	if mp, err := m.store.HarnessToBridgeMap(bridgeID); err == nil {
+	if mp, err := m.SessionEvents().HarnessToBridgeMap(bridgeID); err == nil {
 		st.harnessToBridge = mp
 	}
-	if mp, err := m.store.ToolUseToMessageMap(bridgeID); err == nil {
+	if mp, err := m.SessionEvents().ToolUseToMessageMap(bridgeID); err == nil {
 		st.toolUseToMessage = mp
 	}
 	// Recover in-flight turn state so events emitted after a process restart
@@ -846,7 +847,9 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 	// pump. Closed in the exit path below, which drains it, so a session
 	// whose process has gone is complete in log-store before its
 	// subscribers are told the stream ended.
-	m.logStoreWrites.Open(bridgeID)
+	if !m.singleCopy() {
+		m.logStoreWrites.Open(bridgeID)
+	}
 
 	for event := range proc.Events() {
 		// Drop harness-emitted EventSessionState entirely. SessionState
@@ -907,14 +910,14 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 					System:           &msg.SystemEvent{Subtype: "harness_id_set", Message: harnessID},
 				}
 				if data, err := json.Marshal(idEvent); err == nil {
-					rowID, err := m.store.StoreEventReturningID(bridgeID, string(idEvent.Type), "", "", data)
+					rowID, err := m.SessionEvents().StoreSessionEvent(sessionEventRecord(bridgeID, &idEvent, "", "", data))
 					if err != nil {
 						log.Printf("[harness] failed to store harness_id_set event for %s: %v", bridgeID, err)
 					}
-					// log-store keeps the durable copy of every event; it is
-					// queued ahead of the event that carried the id, the same
-					// order bridge.db holds them in.
-					m.logStoreWrites.Enqueue(bridgeID, "event", idEvent)
+					// On the old path log-store keeps the durable copy of
+					// every event; it is queued ahead of the event that
+					// carried the id, the same order bridge.db holds them in.
+					m.mirrorToSessionLog(bridgeID, "event", idEvent)
 					stored := StoredEvent{Event: idEvent, RowID: rowID}
 					m.mu.RLock()
 					for _, ch := range m.subscribers[bridgeID] {
@@ -943,9 +946,9 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 			// An event that came as a numbered entry from a runner is stored
 			// with its number, in one write: see runner_sequenced.go.
 			if spawnID, sequence, sequenced := entryBeingHandled(proc); sequenced {
-				rowID, err = m.store.StoreEventAdvancingRunnerSpawn(routeID, string(event.Type), event.MessageID, event.HarnessMessageID, data, bridgeID, spawnID, sequence)
+				rowID, err = m.SessionEvents().StoreSessionEventAdvancingRunnerSpawn(sessionEventRecord(routeID, &event, event.MessageID, event.HarnessMessageID, data), bridgeID, spawnID, sequence)
 			} else {
-				rowID, err = m.store.StoreEventReturningID(routeID, string(event.Type), event.MessageID, event.HarnessMessageID, data)
+				rowID, err = m.SessionEvents().StoreSessionEvent(sessionEventRecord(routeID, &event, event.MessageID, event.HarnessMessageID, data))
 			}
 			if err != nil {
 				log.Printf("[harness] failed to store event: %v", err)
@@ -959,8 +962,9 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 		// blocks rather than drops when it fills; the read-back paths
 		// (RecoverInFlightTurn, InterruptedTurn, RecentTurnTexts,
 		// ListToolCallInputs) and the synchronous /send push drain it
-		// first, so nothing observes a half-written session.
-		m.logStoreWrites.Enqueue(bridgeID, "event", event)
+		// first, so nothing observes a half-written session. With the
+		// session log as the only copy, the write above was that write.
+		m.mirrorToSessionLog(bridgeID, "event", event)
 
 		// Update bookkeeping based on event type. SessionState row
 		// updates are owned by the derivation path (deriveAndBroadcast
@@ -1055,7 +1059,9 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 
 	// Process exited — drain everything still queued for log-store before
 	// tearing the session down, so the durable history is complete.
-	m.logStoreWrites.Close(bridgeID)
+	if !m.singleCopy() {
+		m.logStoreWrites.Close(bridgeID)
+	}
 
 	// Close all subscriber channels. Subagent sessions live and die with the
 	// process that hosts them, so they are torn down here too: their
@@ -1412,7 +1418,7 @@ func (m *Manager) storeAndFanOutDerived(bridgeID string, ev *msg.Event, logStore
 		// A status is stored together with the session row it describes, and
 		// comes back stamped with its own row id as AsOf — see
 		// store.WriteSessionStatus. Nothing else writes a session's state.
-		rowID, storeErr = m.store.WriteSessionStatus(bridgeID, ev)
+		rowID, storeErr = m.SessionEvents().WriteSessionStatus(bridgeID, ev)
 		if storeErr != nil {
 			// The write rolled back, and its AsOf names the row id it would
 			// have had, which bridge.db hands to the next event. Sent on, the
@@ -1423,15 +1429,15 @@ func (m *Manager) storeAndFanOutDerived(bridgeID string, ev *msg.Event, logStore
 			return storeErr
 		}
 	} else if data, err := json.Marshal(ev); err == nil {
-		rowID, storeErr = m.store.StoreEventReturningID(bridgeID, string(ev.Type), "", "", data)
+		rowID, storeErr = m.SessionEvents().StoreSessionEvent(sessionEventRecord(bridgeID, ev, "", "", data))
 		if storeErr != nil {
 			log.Printf("[harness] failed to store derived event: %v", storeErr)
 		}
 	}
 	if logStoreOffCallerGoroutine {
-		go m.logStoreWrites.Enqueue(bridgeID, "derived event", *ev)
+		go m.mirrorToSessionLog(bridgeID, "derived event", *ev)
 	} else {
-		m.logStoreWrites.Enqueue(bridgeID, "derived event", *ev)
+		m.mirrorToSessionLog(bridgeID, "derived event", *ev)
 	}
 
 	stored := StoredEvent{Event: *ev, RowID: rowID}
@@ -1578,7 +1584,7 @@ func (m *Manager) BroadcastEvent(ev *msg.Event) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	rowID, err := m.store.StoreEventReturningID(bridgeID, string(ev.Type), ev.MessageID, ev.HarnessMessageID, data)
+	rowID, err := m.SessionEvents().StoreSessionEvent(sessionEventRecord(bridgeID, ev, ev.MessageID, ev.HarnessMessageID, data))
 	if err != nil {
 		return 0, err
 	}
@@ -1593,8 +1599,10 @@ func (m *Manager) BroadcastEvent(ev *msg.Event) (int64, error) {
 	// returned, not logged: PushSync drains the session's write queue
 	// first so the event still lands after everything the pump queued
 	// before it, then writes it here and hands back the real failure.
-	if _, err := m.logStoreWrites.PushSync(bridgeID, *ev); err != nil {
-		return rowID, fmt.Errorf("push to log-store: %w", err)
+	if !m.singleCopy() {
+		if _, err := m.logStoreWrites.PushSync(bridgeID, *ev); err != nil {
+			return rowID, fmt.Errorf("push to log-store: %w", err)
+		}
 	}
 
 	// Mirror readEvents: hook events drive the awaiting_resolution →
@@ -1639,13 +1647,16 @@ func (m *Manager) BroadcastEvent(ev *msg.Event) (int64, error) {
 // goroutine with up to the queue's retry deadline, and startup must not wait
 // behind a log-store that is down.
 func (m *Manager) ReconcileStaleSessions() ([]store.Session, error) {
-	reconciled, err := m.store.ReconcileSessions(msg.ActiveSessionStates()...)
+	reconciled, err := m.SessionEvents().ReconcileSessions(msg.ActiveSessionStates()...)
 	if err != nil {
 		return nil, err
 	}
 	sessions := make([]store.Session, len(reconciled))
 	for i := range reconciled {
 		sessions[i] = reconciled[i].Session
+	}
+	if m.singleCopy() {
+		return sessions, nil
 	}
 	go func() {
 		for _, r := range reconciled {

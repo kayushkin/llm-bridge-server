@@ -80,6 +80,20 @@ func OpenReader(ctx context.Context, url string, module postgresstorage.Module) 
 	return postgresstorage.Open(ctx, readOnlyURL, module)
 }
 
+// WriterURL is the address the module's writer pool opens on the Postgres at
+// url. With asynchronousCommit each of its commits returns once the commit is
+// in Postgres's memory, before it reaches disk (synchronous_commit off):
+// Postgres writes it out within three times wal_writer_delay (600 ms by
+// default). A crash of this server loses nothing that way, since Postgres has
+// the commit; a crash of Postgres or of the machine loses the commits of that
+// last stretch, which readers and the event stream may already have seen.
+func WriterURL(url string, asynchronousCommit bool) (string, error) {
+	if !asynchronousCommit {
+		return url, nil
+	}
+	return withRuntimeParameter(url, "synchronous_commit", "off")
+}
+
 // withRuntimeParameter adds a session setting to a Postgres connection
 // string, in either of its two forms. pgx passes a parameter it does not know
 // to the server as a setting.
@@ -148,61 +162,38 @@ func (s *Store) RebuildMissingSessionRows() (int64, error) {
 	return result.RowsAffected()
 }
 
-// StoreEvent persists a raw event and updates the per-session projection.
-// The projection is a derived cache; failure to update is logged but does
-// not fail the underlying event insert (the event is still queryable; the
-// next StoreEvent call rolls forward correctly, and RebuildMissingSessionRows
-// adds a row whose seed failed).
+// StoreEvent persists a raw event and updates the per-session projection,
+// through AppendEvent, with the fields read from the body. A total the body
+// does not carry readably is logged and left out; a failed statement fails
+// the whole write (see AppendEvent).
 //
 // ctx bounds the insert: an insert it cancels may still have been stored, as
 // a commit that is cut off cannot say whether it landed.
 func (s *Store) StoreEvent(ctx context.Context, sessionID, eventType string, data []byte) (int64, error) {
-	// The event and its place in the turn index are written together, so the index
-	// can never hold an event the table does not, or miss one it does.
-	tx, err := s.writer.BeginTx(ctx, nil)
+	fields, err := EventFieldsOfBody(data)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("read the event's fields: %w", err)
 	}
-	defer tx.Rollback()
-	var id int64
-	if err := tx.QueryRowContext(ctx,
-		`INSERT INTO events (session_id, type, data) VALUES ($1, $2, $3) RETURNING id`,
-		sessionID, eventType, string(data),
-	).Scan(&id); err != nil {
-		return 0, err
-	}
-	if err := s.indexEventInTx(tx, sessionID, id, eventType, data); err != nil {
-		return 0, fmt.Errorf("index event in its turn: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, err
-	}
-	if err := s.updateSessionProjection(sessionID, eventType, data); err != nil {
-		log.Printf("[log-store] update sessions projection for %s/%s: %v", sessionID, eventType, err)
-	}
-	// Its own call, so a failure in one projection does not skip the other.
-	if err := s.addEventToUsageByHour(id, sessionID, eventType, data); err != nil {
-		log.Printf("[log-store] update hourly usage for %s/%s: %v", sessionID, eventType, err)
-	}
-	return id, nil
+	appended, err := s.AppendEvent(ctx, EventToAppend{SessionID: sessionID, Type: eventType, Fields: fields, Data: data})
+	return appended.ID, err
 }
 
 // updateSessionProjection rolls forward the per-session sessions row for one
 // new event. Idempotent on re-application of the same event because
 // last_active uses CURRENT_TIMESTAMP and turn_count / token sums are
 // monotonic only when StoreEvent is called once per event (the caller's job).
-func (s *Store) updateSessionProjection(sessionID, eventType string, data []byte) error {
+func (s *Store) updateSessionProjection(db statementWriter, sessionID, eventType, harnessSessionID string, data []byte) error {
 	// Ensure the row exists. INSERT OR IGNORE is a no-op for established
 	// sessions; for the first event of a new session it seeds started_at /
 	// last_active to now().
-	if _, err := s.writer.Exec(
+	if _, err := db.Exec(
 		`INSERT INTO sessions (session_id) VALUES ($1) ON CONFLICT (session_id) DO NOTHING`,
 		sessionID,
 	); err != nil {
 		return fmt.Errorf("seed sessions row: %w", err)
 	}
 	// Bump last_active on every event regardless of type.
-	if _, err := s.writer.Exec(
+	if _, err := db.Exec(
 		`UPDATE sessions SET last_active = now() WHERE session_id = $1`,
 		sessionID,
 	); err != nil {
@@ -214,8 +205,8 @@ func (s *Store) updateSessionProjection(sessionID, eventType string, data []byte
 	// just an ordinary event, and a resumed session reports a new harness
 	// uuid partway through. Last writer wins, matching the migration's
 	// MAX(id) backfill and the gateway's own row.
-	if harnessSessionID := harnessSessionIDOf(data); harnessSessionID != "" {
-		if _, err := s.writer.Exec(
+	if harnessSessionID != "" {
+		if _, err := db.Exec(
 			`UPDATE sessions SET harness_session_id = $1
 			 WHERE session_id = $2 AND harness_session_id <> $1`,
 			harnessSessionID, sessionID,
@@ -225,7 +216,7 @@ func (s *Store) updateSessionProjection(sessionID, eventType string, data []byte
 	}
 	switch eventType {
 	case "user_message":
-		_, err := s.writer.Exec(
+		_, err := db.Exec(
 			`UPDATE sessions SET turn_count = turn_count + 1 WHERE session_id = $1`,
 			sessionID,
 		)
@@ -251,13 +242,13 @@ func (s *Store) updateSessionProjection(sessionID, eventType string, data []byte
 			log.Printf("[log-store] decode result event %s: %v", sessionID, err)
 			// Still set ended_at — the event terminated the turn even if
 			// the body was malformed.
-			_, err := s.writer.Exec(
+			_, err := db.Exec(
 				`UPDATE sessions SET ended_at = now() WHERE session_id = $1`,
 				sessionID,
 			)
 			return err
 		}
-		_, err := s.writer.Exec(
+		_, err := db.Exec(
 			`UPDATE sessions SET
 				input_tokens = input_tokens + $1,
 				output_tokens = output_tokens + $2,
@@ -277,9 +268,9 @@ func (s *Store) updateSessionProjection(sessionID, eventType string, data []byte
 		)
 		return err
 	case "api_call":
-		return s.addAPICallToSessionUsage(sessionID, data)
+		return s.addAPICallToSessionUsage(db, sessionID, data)
 	case "error":
-		_, err := s.writer.Exec(
+		_, err := db.Exec(
 			`UPDATE sessions SET ended_at = now() WHERE session_id = $1`,
 			sessionID,
 		)
@@ -336,20 +327,6 @@ func injectEventID(data []byte, rowID int64) json.RawMessage {
 	out = append(out, prefix...)
 	out = append(out, trimmed[1:]...)
 	return out
-}
-
-// harnessSessionIDOf reads the harness-native session id an event carries.
-// Returns "" for a malformed body or an event that names no harness id —
-// both are ordinary, so neither is an error: 1,675 of this host's 11,640
-// sessions have no harness id anywhere in their event stream.
-func harnessSessionIDOf(data []byte) string {
-	var ev struct {
-		HarnessSessionID string `json:"harness_session_id"`
-	}
-	if err := json.Unmarshal(data, &ev); err != nil {
-		return ""
-	}
-	return ev.HarnessSessionID
 }
 
 // SearchSessions returns session IDs with events whose raw data contains query.

@@ -231,7 +231,7 @@ func main() {
 
 	// log-store: every session event. Nothing below may start or resume a
 	// session before it is the harness manager's session event log.
-	closeSessionLog, err := enableSessionLog(context.Background(), cfg, srv)
+	closeSessionLog, err := enableSessionLog(context.Background(), cfg, srv, st)
 	if err != nil {
 		log.Fatalf("%v", err)
 	}

@@ -335,14 +335,12 @@ func (s *Server) handleRecentBundle(w http.ResponseWriter, r *http.Request) {
 	// cached, so a client can receive an old head — and an old head resumes EARLIER,
 	// replaying events it already has rather than skipping ones it does not. The model
 	// in that cache entry is equally old, so the two stay consistent.
-	heads := make(map[string]int64, len(ids))
+	heads, err := s.harness.SessionEvents().MaxEventRowIDs(ids)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("stream heads unavailable: %v", err), http.StatusInternalServerError)
+		return
+	}
 	for _, id := range ids {
-		head, err := s.store.MaxEventRowID(id)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("stream head unavailable for %s: %v", id, err), http.StatusInternalServerError)
-			return
-		}
-		heads[id] = head
 		// Drain this session's queued writes so log-store's bundle really does contain
 		// everything at or below the head just read.
 		s.harness.FlushLogStoreWrites(id)

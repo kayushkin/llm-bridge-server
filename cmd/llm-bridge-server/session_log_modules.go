@@ -11,17 +11,23 @@ import (
 	logstack "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/logstack"
 	logstoreserver "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/server"
 	logstorestore "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/store"
+	"github.com/kayushkin/llm-bridge-server/internal/sessionlog/sessionevents"
+	"github.com/kayushkin/llm-bridge-server/internal/store"
 )
 
 // openSessionLogStore provisions, migrates and opens the session_log module
 // (log-store) on the Postgres at url: its writer pool, and a read-only pool
 // beside it.
-func openSessionLogStore(ctx context.Context, url string) (*logstorestore.Store, error) {
+func openSessionLogStore(ctx context.Context, url string, asynchronousCommit bool) (*logstorestore.Store, error) {
 	module, err := logstorestore.Module()
 	if err != nil {
 		return nil, err
 	}
-	writer, err := openPostgresModule(ctx, url, module)
+	writerURL, err := logstorestore.WriterURL(url, asynchronousCommit)
+	if err != nil {
+		return nil, err
+	}
+	writer, err := openPostgresModule(ctx, writerURL, module)
 	if err != nil {
 		return nil, err
 	}
@@ -39,8 +45,12 @@ func openSessionLogStore(ctx context.Context, url string) (*logstorestore.Store,
 // in this process. It must run before any session starts or resumes. Result
 // statistics go to logstack at session_log.logstack_url, or nowhere when that
 // is empty. The returned function closes the pools.
-func enableSessionLog(ctx context.Context, cfg *config.Config, srv *server.Server) (func(), error) {
-	store, err := openSessionLogStore(ctx, cfg.PostgresURL)
+//
+// session_log.single_copy decides where every event is stored and read back:
+// on, in the session log only; off, in the bridge database's events table,
+// with a copy queued to the session log.
+func enableSessionLog(ctx context.Context, cfg *config.Config, srv *server.Server, bridge *store.Store) (func(), error) {
+	store, err := openSessionLogStore(ctx, cfg.PostgresURL, cfg.Settings.Boolean(config.SettingSessionLogAsynchronousCommit))
 	if err != nil {
 		return nil, fmt.Errorf("log-store: %w", err)
 	}
@@ -56,6 +66,10 @@ func enableSessionLog(ctx context.Context, cfg *config.Config, srv *server.Serve
 	logServer := logstoreserver.New(store, forwarder)
 	srv.EnableSessionLog(logServer, logServer)
 	log.Printf("postgres: log-store open, served at /log-store/ and as the session event log")
+	if err := chooseSessionEventStore(ctx, cfg, srv, bridge, logServer); err != nil {
+		store.Close()
+		return nil, err
+	}
 
 	// Repairs of the derived tables, beside the server's work and never before
 	// it, as the standalone service ran them: each reads every session.
@@ -75,6 +89,40 @@ func enableSessionLog(ctx context.Context, cfg *config.Config, srv *server.Serve
 			log.Printf("postgres: closing log-store: %v", err)
 		}
 	}, nil
+}
+
+// chooseSessionEventStore names where the harness manager stores events and
+// the server reads them back, by session_log.single_copy.
+func chooseSessionEventStore(ctx context.Context, cfg *config.Config, srv *server.Server, bridge *store.Store, logServer *logstoreserver.Server) error {
+	if cfg.Settings.Boolean(config.SettingSessionLogSingleCopy) {
+		singleCopy, err := sessionevents.OpenSingleCopy(ctx, bridge, logServer)
+		if err != nil {
+			return fmt.Errorf("session events: %w", err)
+		}
+		srv.UseSessionEventStore(singleCopy, true)
+		numbering := singleCopy.Numbering()
+		log.Printf("session events: the session log is the only copy, numbering from %d (the bridge database's events table had handed out %d); the bridge database's events table is no longer written",
+			numbering.FirstEventID, numbering.BridgeDatabaseHighestEventID)
+		return nil
+	}
+	// The old path after the session log was the only copy: the bridge
+	// database numbers on above every id the session log handed out, so no
+	// status or cursor a client holds outranks what it writes next.
+	if _, wasSingleCopy, err := logServer.Store().SingleCopyNumberingRecord(); err != nil {
+		return fmt.Errorf("session events: read the session log's numbering record: %w", err)
+	} else if wasSingleCopy {
+		highest, err := logServer.Store().HighestEventID()
+		if err != nil {
+			return fmt.Errorf("session events: %w", err)
+		}
+		if err := bridge.RaiseEventNumberingAbove(highest); err != nil {
+			return fmt.Errorf("session events: raise the bridge database's numbering above %d: %w", highest, err)
+		}
+		log.Printf("session events: the session log was the only copy before; the bridge database's events table numbers on above %d", highest)
+	}
+	srv.UseSessionEventStore(sessionevents.BridgeDatabase{Store: bridge}, false)
+	log.Printf("session events: stored in the bridge database's events table and queued to the session log (%s is off)", config.SettingSessionLogSingleCopy)
+	return nil
 }
 
 // importLogStoreCmd copies a standalone log-store's SQLite file into the
