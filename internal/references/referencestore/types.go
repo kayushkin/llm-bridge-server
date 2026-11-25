@@ -509,7 +509,7 @@ func budgetType(typeName, idPrefix, get, labelField, description string, summary
 	return ReferenceType{
 		Type: typeName, Service: "budget-store", Glyph: "💵", Description: description,
 		Get: get, IDPatterns: []string{idPrefix + `_\d{6,}`}, LabelField: labelField,
-		Summary: summary, Page: page, Access: AccessByGrant,
+		Summary: summary, Page: page, Access: AccessByGrantAndOwner,
 	}
 }
 

@@ -78,6 +78,9 @@ func New(db *sql.DB) *Store {
 // SetPlaidVault turns Plaid on. Without one every Plaid route is ErrPlaidOff.
 func (s *Store) SetPlaidVault(vault PlaidVault) { s.plaid = vault }
 
+// PlaidIsOn reports whether SetPlaidVault turned Plaid on.
+func (s *Store) PlaidIsOn() bool { return s.plaid != nil }
+
 // Ledger is one owner's books, on one connection that reads and writes only
 // that owner's rows. It is for one request or one pass at a time; Close hands
 // the connection back.
