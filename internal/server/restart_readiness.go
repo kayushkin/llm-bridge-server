@@ -70,7 +70,7 @@ func (s *Server) sessionsARestartWouldCutOff(processRunning func(sessionID strin
 			}
 			entry := sessionARestartWouldCutOff{SessionID: session.SessionID, DisplayName: session.DisplayName, State: session.State}
 			if state == msg.SessionBackgroundTasksRunning {
-				tasks, err := s.store.LastReportedBackgroundTasks(session.SessionID)
+				tasks, err := s.harness.SessionEvents().LastReportedBackgroundTasks(session.SessionID)
 				if err != nil {
 					return nil, err
 				}

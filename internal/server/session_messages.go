@@ -77,7 +77,7 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// STEP 1 — before the flush. See above.
-	head, err := s.store.MaxEventRowID(id)
+	head, err := s.harness.SessionEvents().MaxEventRowID(id)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("stream head unavailable: %v", err), http.StatusInternalServerError)
 		return

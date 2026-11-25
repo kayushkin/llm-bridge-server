@@ -886,7 +886,7 @@ func (s *Server) ReconcileAndResume() {
 	var resumed int
 	for i := range sessions {
 		sess := sessions[i]
-		lastAt, err := s.store.LastActivityAt(sess.SessionID)
+		lastAt, err := s.harness.SessionEvents().LastActivityAt(sess.SessionID)
 		if err != nil {
 			log.Printf("[reconcile] %s: last-activity lookup failed: %v", sess.SessionID, err)
 			continue
@@ -1001,7 +1001,7 @@ func (s *Server) reapIdleTick() {
 		// Last activity = most recent event of any kind. Zero means no
 		// events yet (just spawned); the decision falls back to the row's
 		// updated_at so a fresh process isn't reaped before its first event.
-		lastAt, err := s.store.LastActivityAt(id)
+		lastAt, err := s.harness.SessionEvents().LastActivityAt(id)
 		if err != nil {
 			log.Printf("[reaper] %s: last-activity lookup failed: %v", id, err)
 			continue
@@ -1015,7 +1015,7 @@ func (s *Server) reapIdleTick() {
 		}
 		// Only this process's wakeup counts: one set by an earlier process
 		// died with it, and redeliverWakeupsLostInRestart owns that case.
-		wakeup, err := s.store.LatestScheduledWakeup(id, processStartedAt)
+		wakeup, err := s.harness.SessionEvents().LatestScheduledWakeup(id, processStartedAt)
 		if err != nil {
 			log.Printf("[reaper] %s: pending-wakeup lookup failed: %v", id, err)
 			continue
@@ -1196,7 +1196,7 @@ func (s *Server) tellResumedSessionItsBackgroundTasksDied(sess store.Session) {
 	if msg.SessionState(sess.State) != msg.SessionBackgroundTasksRunning {
 		return
 	}
-	tasks, err := s.store.LastReportedBackgroundTasks(sess.SessionID)
+	tasks, err := s.harness.SessionEvents().LastReportedBackgroundTasks(sess.SessionID)
 	if err != nil {
 		log.Printf("[auto-resume] %s: reading the background tasks it lost failed: %v", sess.SessionID, err)
 		return

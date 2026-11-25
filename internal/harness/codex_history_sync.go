@@ -95,16 +95,22 @@ func (m *Manager) SyncCodexHistory(ctx context.Context, bridgeID string) (int, e
 		ev.BridgeSessionID = bridgeID
 		// Make the canonical transcript durable first. If an acknowledgement is
 		// lost, the next attempt re-reads log-store and skips this exact record.
-		if _, err := m.sessionEventLog().PushEvent(*ev); err != nil {
+		rowID, err := m.sessionEventLog().PushEvent(*ev)
+		if err != nil {
 			return i, err
 		}
-		data, err := json.Marshal(ev)
-		if err != nil {
-			return i + 1, err
-		}
-		rowID, err := m.store.StoreEventReturningID(bridgeID, string(ev.Type), ev.MessageID, ev.HarnessMessageID, data)
-		if err != nil {
-			return i + 1, err
+		// On the old path the bridge database keeps its own copy, whose id
+		// the stream carries. With the session log as the only copy, the
+		// push was the one write.
+		if !m.singleCopy() {
+			data, err := json.Marshal(ev)
+			if err != nil {
+				return i + 1, err
+			}
+			rowID, err = m.store.StoreEventReturningID(bridgeID, string(ev.Type), ev.MessageID, ev.HarnessMessageID, data)
+			if err != nil {
+				return i + 1, err
+			}
 		}
 		// History must not trigger agents, tasks, status derivation or automation.
 		m.mu.RLock()

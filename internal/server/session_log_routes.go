@@ -6,6 +6,7 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/inprocesshttp"
+	"github.com/kayushkin/llm-bridge-server/internal/sessionlog/sessionevents"
 )
 
 // The session event log, moved in from the standalone log-store: its routes
@@ -35,6 +36,16 @@ var errSessionLogOff = errors.New("the session event log is not enabled in this 
 func (s *Server) EnableSessionLog(handler http.Handler, events harness.SessionEventLog) {
 	s.sessionLog.Store(&sessionLogModule{handler: handler, client: inprocesshttp.Client(handler)})
 	s.harness.SetSessionEventLog(events)
+}
+
+// UseSessionEventStore names where the harness manager stores every event
+// and where this server reads them back: the stream, the stream head, crash
+// recovery, the renamer, the brief pass, the reaper and wakeup redelivery.
+// singleCopy says events is the session log itself, so nothing is queued to
+// it beside. main calls it once, after EnableSessionLog and before any
+// session starts or resumes.
+func (s *Server) UseSessionEventStore(events sessionevents.Store, singleCopy bool) {
+	s.harness.SetSessionEventStore(events, singleCopy)
 }
 
 // getFromLogStore asks log-store, in this process, for target, written

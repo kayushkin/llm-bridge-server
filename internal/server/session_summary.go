@@ -337,7 +337,7 @@ func (s *Server) handleRecentBundle(w http.ResponseWriter, r *http.Request) {
 	// in that cache entry is equally old, so the two stay consistent.
 	heads := make(map[string]int64, len(ids))
 	for _, id := range ids {
-		head, err := s.store.MaxEventRowID(id)
+		head, err := s.harness.SessionEvents().MaxEventRowID(id)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("stream head unavailable for %s: %v", id, err), http.StatusInternalServerError)
 			return

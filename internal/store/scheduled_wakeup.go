@@ -6,10 +6,10 @@ import (
 	"time"
 )
 
-// claudeCodeScheduleWakeupToolName is Claude Code's tool for waking its own
+// ClaudeCodeScheduleWakeupToolName is Claude Code's tool for waking its own
 // session later. The timer lives inside the claude process, so the process
 // must be alive when it comes due.
-const claudeCodeScheduleWakeupToolName = "ScheduleWakeup"
+const ClaudeCodeScheduleWakeupToolName = "ScheduleWakeup"
 
 // ScheduledWakeup is a ScheduleWakeup call whose result named a time.
 type ScheduledWakeup struct {
@@ -57,7 +57,7 @@ func (s *Store) LatestScheduledWakeup(bridgeID string, callsLoggedSince time.Tim
 		 AND json_extract(result.data, '$.tool_result.tool_id') = json_extract(call.data, '$.tool_call.tool_id')
 		ORDER BY result.id DESC
 		LIMIT 1`,
-		bridgeID, callsLoggedSince.UTC().Format("2006-01-02 15:04:05"), claudeCodeScheduleWakeupToolName, bridgeID,
+		bridgeID, callsLoggedSince.UTC().Format("2006-01-02 15:04:05"), ClaudeCodeScheduleWakeupToolName, bridgeID,
 	).Scan(&toolID, &prompt, &scheduledForMilliseconds)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil

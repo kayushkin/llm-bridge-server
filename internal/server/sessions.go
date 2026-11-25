@@ -999,9 +999,16 @@ func (s *Server) handleSessionEvents(w http.ResponseWriter, r *http.Request) {
 		fmt.Sscanf(lastEventID, "%d", &lastRowID)
 	}
 
+	// A cursor numbered by the store the session log replaced names no
+	// event here, so the stream starts as a new connection does, with the
+	// current turn.
+	if s.harness.SessionEvents().StreamCursorFromEarlierNumbering(int64(lastRowID)) {
+		lastRowID = 0
+	}
+
 	replayedIDs := make(map[int]bool)
 	if lastRowID > 0 {
-		if stored, err := s.store.ListEventsSinceID(bridgeID, lastRowID); err == nil {
+		if stored, err := s.harness.SessionEvents().ListEventsSinceID(bridgeID, lastRowID); err == nil {
 			for _, ev := range stored {
 				var parsed msg.Event
 				if json.Unmarshal(ev.Data, &parsed) == nil {
@@ -1012,7 +1019,7 @@ func (s *Server) handleSessionEvents(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	} else {
-		if stored, err := s.store.ListCurrentTurnEventsWithIDs(bridgeID); err == nil && len(stored) > 0 {
+		if stored, err := s.harness.SessionEvents().ListCurrentTurnEventsWithIDs(bridgeID); err == nil && len(stored) > 0 {
 			for _, ev := range stored {
 				var parsed msg.Event
 				if json.Unmarshal(ev.Data, &parsed) == nil {

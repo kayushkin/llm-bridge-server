@@ -82,21 +82,44 @@ func (s *Server) ingestEventBody(ctx context.Context, body []byte) (int64, error
 	if ev.BridgeSessionID == "" {
 		return 0, &client.EventRejectedError{Reason: "missing bridge_session_id"}
 	}
-	storeID := ev.BridgeSessionID
-
-	rowID, err := s.store.StoreEvent(ctx, storeID, string(ev.Type), body)
-	if err != nil {
-		return 0, err
-	}
-
-	s.materializer.noteEvent(storeID, ev.Type)
-
-	// Forward result events to logstack
-	if s.forwarder != nil && ev.Type == msg.EventResult && ev.Result != nil {
-		s.forwarder.Forward(ev)
-	}
-	return rowID, nil
+	appended, err := s.appendEvent(ctx, &ev, store.EventToAppend{
+		SessionID: ev.BridgeSessionID, Type: string(ev.Type), Columns: store.EventColumnsOf(&ev), Data: body,
+	})
+	return appended.ID, err
 }
+
+// appendEvent stores one event and does what a stored event sets off here:
+// its turn's stored page goes stale, and a result's statistics go to
+// logstack. ev is the event the body says, for the forwarder.
+func (s *Server) appendEvent(ctx context.Context, ev *msg.Event, event store.EventToAppend) (store.AppendedEvent, error) {
+	appended, err := s.store.AppendEvent(ctx, event)
+	if err != nil || appended.AlreadyStored {
+		return appended, err
+	}
+	s.materializer.noteEvent(event.SessionID, msg.EventType(event.Type))
+	if s.forwarder != nil && ev.Type == msg.EventResult && ev.Result != nil {
+		s.forwarder.Forward(*ev)
+	}
+	return appended, nil
+}
+
+// AppendEvent stores one event the harness manager already marshalled, as the
+// server's only copy of it: ev is the event, and event its row. A body that
+// is not UTF-8 is refused, as the ingest route refuses one. A write that
+// outlives pushTimeout comes back as context.DeadlineExceeded, and may have
+// been stored.
+func (s *Server) AppendEvent(ev *msg.Event, event store.EventToAppend) (store.AppendedEvent, error) {
+	if event.Data != nil && !utf8.Valid(event.Data) {
+		return store.AppendedEvent{}, &client.EventRejectedError{Reason: "event JSON is not UTF-8"}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), pushTimeout)
+	defer cancel()
+	return s.appendEvent(ctx, ev, event)
+}
+
+// Store is the store the server serves, for the bridge's readers of session
+// events.
+func (s *Server) Store() *store.Store { return s.store }
 
 // handleIngestEvent accepts a single msg.Event, stores it verbatim, and forwards result events to logstack.
 func (s *Server) handleIngestEvent(w http.ResponseWriter, r *http.Request) {

@@ -1263,44 +1263,8 @@ type ReconciledSession struct {
 // Pass msg.ActiveSessionStates() to cover every state implying a live
 // subprocess. The variadic shape lets tests target a subset.
 func (s *Store) ReconcileSessions(states ...msg.SessionState) ([]ReconciledSession, error) {
-	if len(states) == 0 {
-		return nil, nil
-	}
-	placeholders := make([]string, len(states))
-	args := make([]any, len(states))
-	for i, st := range states {
-		placeholders[i] = "?"
-		args[i] = string(st)
-	}
-	in := strings.Join(placeholders, ",")
-	// A session whose process a runner may still be holding is left as it is:
-	// the runner says, when it reconnects, whether the process is alive. So
-	// is a harness subagent of such a session, which lives in that process.
-	// The watchdog deals with either if no runner ever claims it.
-	notHeld := ` AND session_id NOT IN (SELECT session_id FROM runner_spawns WHERE ended = 0)
-		AND NOT (controlled_by = '` + string(msg.ControlledByHarness) + `'
-			AND COALESCE(manager_session_id, '') IN (SELECT session_id FROM runner_spawns WHERE ended = 0))`
-	rows, err := s.db.Query(`SELECT `+sessionColumns+` FROM sessions WHERE state IN (`+in+`)`+notHeld, args...)
-	if err != nil {
-		return nil, err
-	}
-	var sessions []Session
-	for rows.Next() {
-		sess, err := scanSession(rows)
-		if err != nil {
-			rows.Close()
-			return nil, err
-		}
-		sessions = append(sessions, *sess)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if len(sessions) == 0 {
-		return nil, nil
-	}
-	if _, err := s.db.Exec(`UPDATE sessions SET pid=0 WHERE state IN (`+in+`)`+notHeld, args...); err != nil {
+	sessions, err := s.ResetStaleSessions(states...)
+	if err != nil || len(sessions) == 0 {
 		return nil, err
 	}
 	// One status per session rather than one UPDATE for the lot: a client
@@ -1313,16 +1277,12 @@ func (s *Store) ReconcileSessions(states ...msg.SessionState) ([]ReconciledSessi
 	// idle for good; it is recorded as the error it is.
 	reconciled := make([]ReconciledSession, 0, len(sessions))
 	for i := range sessions {
-		status := &msg.SessionStatus{State: msg.SessionIdle, Reason: msg.ReasonStartupReconcile, ChangedAt: time.Now()}
-		if sessions[i].ControlledBy == msg.ControlledByHarness {
-			status = &msg.SessionStatus{State: msg.SessionError, Reason: msg.ReasonParentProcessExited, ChangedAt: time.Now()}
-		}
 		ev := &msg.Event{
 			Type:            msg.EventSessionStatus,
 			Harness:         sessions[i].Harness,
 			BridgeSessionID: sessions[i].SessionID,
 			Timestamp:       time.Now(),
-			Status:          status,
+			Status:          StartupReconcileStatus(&sessions[i]),
 		}
 		if _, err := s.writeSessionStatus(sessions[i].SessionID, ev, false); err != nil {
 			return nil, fmt.Errorf("reconcile session %s: %w", sessions[i].SessionID, err)

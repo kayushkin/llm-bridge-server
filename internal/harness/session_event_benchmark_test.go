@@ -36,6 +36,7 @@ import (
 
 	logstoreserver "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/server"
 	logstorestore "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/store"
+	"github.com/kayushkin/llm-bridge-server/internal/sessionlog/sessionevents"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -213,6 +214,8 @@ type sessionEventReads interface {
 	LastActivityAt(sessionID string) (time.Time, error)
 	CountUserTurns(sessionID string) (int, error)
 	CurrentTurnText(sessionID string) (string, []string, error)
+	LastReportedBackgroundTasks(sessionID string) ([]msg.BackgroundTask, error)
+	LatestScheduledWakeup(sessionID string, callsLoggedSince time.Time) (*store.ScheduledWakeup, error)
 }
 
 // benchmarkBench is one path built on fresh stores.
@@ -272,8 +275,34 @@ var bridgeDatabasePath = sessionEventPath{
 	},
 }
 
+// singleCopyPath is the merged path: session_log is the only copy, written
+// once per event in order, and serves every read.
+var singleCopyPath = sessionEventPath{
+	name: "single_copy",
+	build: func(b *testing.B) *benchmarkBench {
+		databasePath := filepath.Join(b.TempDir(), "bridge.db")
+		bridgeStore, err := store.New(databasePath)
+		if err != nil {
+			b.Fatal(err)
+		}
+		b.Cleanup(func() { bridgeStore.Close() })
+		_, sessionLog := openBenchmarkSessionLog(b)
+		singleCopy, err := sessionevents.OpenSingleCopy(context.Background(), bridgeStore, sessionLog)
+		if err != nil {
+			b.Fatal(err)
+		}
+		newManager := func() *Manager {
+			m := NewManager(bridgeStore, "http://127.0.0.1:0", "", 0, nil)
+			m.SetSessionEventLog(sessionLog)
+			m.SetSessionEventStore(singleCopy, true)
+			return m
+		}
+		return &benchmarkBench{manager: newManager(), bridgeStore: bridgeStore, reads: singleCopy, sessionLog: sessionLog, databasePath: databasePath, restart: newManager}
+	},
+}
+
 // benchmarkSessionEventPaths lists the paths compared.
-var benchmarkSessionEventPaths = []sessionEventPath{bridgeDatabasePath}
+var benchmarkSessionEventPaths = []sessionEventPath{bridgeDatabasePath, singleCopyPath}
 
 // latencies collects durations and reports their quantiles.
 type latencies struct {
@@ -633,9 +662,12 @@ func benchmarkReads(b *testing.B, results *benchmarkResults, path sessionEventPa
 			return readingPage(bench, session.id)
 		})
 	}
-	timeRead(b, results, path.name, fmt.Sprintf("last activity of %d sessions (reaper tick)", activityReadSessions), 20, func() error {
+	timeRead(b, results, path.name, fmt.Sprintf("last activity and wakeup of %d sessions (reaper tick)", activityReadSessions), 20, func() error {
 		for i := 0; i < activityReadSessions; i++ {
 			if _, err := bench.reads.LastActivityAt(fmt.Sprintf("br_benchmark_activity_%d", i)); err != nil {
+				return err
+			}
+			if _, err := bench.reads.LatestScheduledWakeup(fmt.Sprintf("br_benchmark_activity_%d", i), time.Now().Add(-time.Hour)); err != nil {
 				return err
 			}
 		}
@@ -648,6 +680,23 @@ func benchmarkReads(b *testing.B, results *benchmarkResults, path sessionEventPa
 			}
 		}
 		return nil
+	})
+	timeRead(b, results, path.name, "reaper reads (last activity, wakeup), large session", 20, func() error {
+		if _, err := bench.reads.LastActivityAt(large); err != nil {
+			return err
+		}
+		_, err := bench.reads.LatestScheduledWakeup(large, time.Now().Add(-time.Hour))
+		return err
+	})
+	timeRead(b, results, path.name, "message id maps on spawn (loadMsgState), large session", 10, func() error {
+		bench.manager.mu.Lock()
+		defer bench.manager.mu.Unlock()
+		bench.manager.loadMsgState(large)
+		return nil
+	})
+	timeRead(b, results, path.name, "background tasks (restart readiness), large session", 20, func() error {
+		_, err := bench.reads.LastReportedBackgroundTasks(large)
+		return err
 	})
 	timeRead(b, results, path.name, "renamer turn count, large session", 20, func() error {
 		_, err := bench.reads.CountUserTurns(large)
@@ -686,7 +735,7 @@ func benchmarkCrashRecovery(b *testing.B, results *benchmarkResults, path sessio
 		if err != nil || turn == nil {
 			b.Fatalf("%s: interrupted turn %v, %v", id, turn, err)
 		}
-		if _, err := bench.bridgeStore.LastReportedBackgroundTasks(id); err != nil {
+		if _, err := bench.reads.LastReportedBackgroundTasks(id); err != nil {
 			b.Fatal(err)
 		}
 		restarted.mu.Lock()

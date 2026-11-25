@@ -148,7 +148,8 @@ func (s *Store) RebuildMissingSessionRows() (int64, error) {
 	return result.RowsAffected()
 }
 
-// StoreEvent persists a raw event and updates the per-session projection.
+// StoreEvent persists a raw event and updates the per-session projection,
+// through AppendEvent, with the columns read from the body.
 // The projection is a derived cache; failure to update is logged but does
 // not fail the underlying event insert (the event is still queryable; the
 // next StoreEvent call rolls forward correctly, and RebuildMissingSessionRows
@@ -157,34 +158,12 @@ func (s *Store) RebuildMissingSessionRows() (int64, error) {
 // ctx bounds the insert: an insert it cancels may still have been stored, as
 // a commit that is cut off cannot say whether it landed.
 func (s *Store) StoreEvent(ctx context.Context, sessionID, eventType string, data []byte) (int64, error) {
-	// The event and its place in the turn index are written together, so the index
-	// can never hold an event the table does not, or miss one it does.
-	tx, err := s.writer.BeginTx(ctx, nil)
+	columns, err := EventColumnsOfBody(data)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("read the event's columns: %w", err)
 	}
-	defer tx.Rollback()
-	var id int64
-	if err := tx.QueryRowContext(ctx,
-		`INSERT INTO events (session_id, type, data) VALUES ($1, $2, $3) RETURNING id`,
-		sessionID, eventType, string(data),
-	).Scan(&id); err != nil {
-		return 0, err
-	}
-	if err := s.indexEventInTx(tx, sessionID, id, eventType, data); err != nil {
-		return 0, fmt.Errorf("index event in its turn: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, err
-	}
-	if err := s.updateSessionProjection(sessionID, eventType, data); err != nil {
-		log.Printf("[log-store] update sessions projection for %s/%s: %v", sessionID, eventType, err)
-	}
-	// Its own call, so a failure in one projection does not skip the other.
-	if err := s.addEventToUsageByHour(id, sessionID, eventType, data); err != nil {
-		log.Printf("[log-store] update hourly usage for %s/%s: %v", sessionID, eventType, err)
-	}
-	return id, nil
+	appended, err := s.AppendEvent(ctx, EventToAppend{SessionID: sessionID, Type: eventType, Columns: columns, Data: data})
+	return appended.ID, err
 }
 
 // updateSessionProjection rolls forward the per-session sessions row for one

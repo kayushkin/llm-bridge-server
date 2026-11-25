@@ -68,7 +68,7 @@ func (s *Server) applyAutoRename(bridgeID, slot, title string) error {
 	if name == "" {
 		return fmt.Errorf("the title is empty")
 	}
-	turnCount, err := s.store.CountUserTurns(bridgeID)
+	turnCount, err := s.harness.SessionEvents().CountUserTurns(bridgeID)
 	if err != nil {
 		return fmt.Errorf("count user turns: %w", err)
 	}
@@ -151,7 +151,7 @@ func (s *Server) maybeAutoRename(bridgeID string) {
 		}
 	}
 
-	turnCount, err := s.store.CountUserTurns(bridgeID)
+	turnCount, err := s.harness.SessionEvents().CountUserTurns(bridgeID)
 	if err != nil {
 		log.Printf("[renamer] %s: count user turns: %v", bridgeID, err)
 		return

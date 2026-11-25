@@ -80,14 +80,14 @@ func (s *Server) lostWakeup(sessionID string, oldestCallToRead time.Time) (*stor
 	if sessionEndedBeforeRestart(sess) || sess.ControlledBy == msg.ControlledByHarness {
 		return nil, nil
 	}
-	wakeup, err := s.store.LatestScheduledWakeup(sessionID, oldestCallToRead)
+	wakeup, err := s.harness.SessionEvents().LatestScheduledWakeup(sessionID, oldestCallToRead)
 	if err != nil {
 		return nil, fmt.Errorf("read latest wakeup: %w", err)
 	}
 	if wakeup == nil {
 		return nil, nil
 	}
-	fired, err := s.store.UserMessageLoggedSince(sessionID, wakeup.DueAt)
+	fired, err := s.harness.SessionEvents().UserMessageLoggedSince(sessionID, wakeup.DueAt)
 	if err != nil {
 		return nil, fmt.Errorf("read messages since the wakeup came due: %w", err)
 	}

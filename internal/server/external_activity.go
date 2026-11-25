@@ -209,7 +209,7 @@ func (s *Server) externalActivityStartingMark(bridgeID string, watcherStarted ti
 	if err != nil || ok {
 		return mark, err
 	}
-	last, err := s.store.LastActivityAt(bridgeID)
+	last, err := s.harness.SessionEvents().LastActivityAt(bridgeID)
 	if err != nil {
 		return time.Time{}, err
 	}
