@@ -128,24 +128,45 @@ func (a *API) CreateItem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid JSON")
 		return
 	}
-	if err := req.Validate(); err != nil {
-		writeError(w, 400, err.Error())
+	item, err := a.Create(&req)
+	var refusal *RequestRefusal
+	if errors.As(err, &refusal) {
+		writeError(w, 400, refusal.Error())
 		return
 	}
-	item, err := a.store.CreateItem(&req)
+	if err != nil {
+		writeError(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 201, item)
+}
+
+// RequestRefusal is noteboard refusing a request as the caller's mistake: the
+// routes answer it 400.
+type RequestRefusal struct{ err error }
+
+func (refusal *RequestRefusal) Error() string { return refusal.err.Error() }
+func (refusal *RequestRefusal) Unwrap() error { return refusal.err }
+
+// Create checks req and keeps the item, as POST /api/items does, for a caller
+// in the same process. A request the checks refuse is a *RequestRefusal; any
+// other error is the store failing.
+func (a *API) Create(req *model.CreateItemRequest) (*model.Item, error) {
+	if err := req.Validate(); err != nil {
+		return nil, &RequestRefusal{err}
+	}
+	item, err := a.store.CreateItem(req)
 	if err != nil {
 		// A parent_id naming no item is the caller's mistake, not the
 		// store's failure, and it has to read as one: a 500 says "try
 		// again" about a request that will never succeed as written, and
 		// the caller keeps the id it got wrong.
 		if errors.Is(err, items.ErrUnknownParent) || errors.Is(err, items.ErrTextHoldsNulCharacter) {
-			writeError(w, 400, err.Error())
-			return
+			return nil, &RequestRefusal{err}
 		}
-		writeError(w, 500, err.Error())
-		return
+		return nil, err
 	}
-	writeJSON(w, 201, item)
+	return item, nil
 }
 
 // itemChangedResponse is the body of a 412 on PATCH /api/items/{id}.

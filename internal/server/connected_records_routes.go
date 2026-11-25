@@ -18,13 +18,10 @@ package server
 // calendar-store's attendee lookups — call the module in process.
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -34,9 +31,10 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/journalstore"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/peoplestore"
-	"github.com/kayushkin/llm-bridge-server/internal/inprocesshttp"
 	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
+	noteboardapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/api"
+	noteboardmodel "github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/model"
 )
 
 // Where each store is mounted.
@@ -102,7 +100,7 @@ func (s *Server) EnableConnectedRecords(ctx context.Context, modules ConnectedRe
 	if err := registry.Refresh(ctx); err != nil {
 		return fmt.Errorf("journal-store: reading reference-store's list of types: %w", err)
 	}
-	journal := journalstore.New(modules.Journal, registry, journalNoteboard{handler: noteboard.Handler()})
+	journal := journalstore.New(modules.Journal, registry, journalNoteboard{notes: noteboard})
 	typed, err := journal.BackfillMentionTypes(ctx)
 	if err != nil {
 		return fmt.Errorf("journal-store: typing the mentions stored untyped: %w", err)
@@ -349,41 +347,22 @@ func (people signInPeople) PersonPointingAtPrincipal(ctx context.Context, princi
 }
 
 // journalNoteboard is noteboard, in this process, as journal-store's
-// promote-todo makes a todo: through noteboard's own POST /api/items, so the
-// todo is checked as any other.
+// promote-todo makes a todo: through noteboard's own Create, so the todo is
+// checked as any other.
 type journalNoteboard struct {
-	handler http.Handler
+	notes *noteboardapi.API
 }
 
-func (noteboard journalNoteboard) CreateTodo(ctx context.Context, title, body string, tags, links []string) (string, error) {
-	payload, err := json.Marshal(map[string]any{"type": "todo", "title": title, "body": body, "tags": tags, "links": links})
-	if err != nil {
-		return "", err
+func (noteboard journalNoteboard) CreateTodo(_ context.Context, title, body string, tags, links []string) (string, error) {
+	item, err := noteboard.notes.Create(&noteboardmodel.CreateItemRequest{Type: "todo", Title: title, Body: &body, Tags: tags, Links: links})
+	var refusal *noteboardapi.RequestRefusal
+	if errors.As(err, &refusal) {
+		return "", fmt.Errorf("%w: noteboard answered 400: %v", journalstore.ErrUpstream, refusal)
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, inprocesshttp.BaseURL+"/api/items", bytes.NewReader(payload))
-	if err != nil {
-		return "", err
-	}
-	request.Header.Set("Content-Type", "application/json")
-	response, err := inprocesshttp.Client(noteboard.handler).Do(request)
 	if err != nil {
 		return "", fmt.Errorf("%w: noteboard: %v", journalstore.ErrUpstream, err)
 	}
-	defer response.Body.Close()
-	answer, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
-	if err != nil {
-		return "", fmt.Errorf("%w: reading noteboard's answer: %v", journalstore.ErrUpstream, err)
-	}
-	if response.StatusCode != http.StatusCreated && response.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("%w: noteboard answered %d: %s", journalstore.ErrUpstream, response.StatusCode, bytes.TrimSpace(answer))
-	}
-	var created struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal(answer, &created); err != nil || created.ID == "" {
-		return "", fmt.Errorf("%w: noteboard answered %d with no item id: %s", journalstore.ErrUpstream, response.StatusCode, bytes.TrimSpace(answer))
-	}
-	return created.ID, nil
+	return item.ID, nil
 }
 
 // registerConnectedRecordsRoutes mounts the three stores.

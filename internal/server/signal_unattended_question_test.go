@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,7 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/backend"
+
 	"github.com/kayushkin/llm-bridge-server/internal/mailstackclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -119,19 +121,21 @@ func (c *cardStub) eventKinds() []string {
 	return out
 }
 
+// stubMailstackMessages is mailstack's ReadMessage with one message in one
+// account.
+type stubMailstackMessages struct{}
+
+func (stubMailstackMessages) ReadMessage(_ context.Context, accountID, _, _ string) (backend.Message, error) {
+	if accountID != "demo-work" {
+		return backend.Message{}, fmt.Errorf("unknown account %q", accountID)
+	}
+	return backend.Message{Meta: backend.MessageMeta{ID: "lmf8c5178e02571eae", AccountID: "demo-work", Subject: "Catalog size in /health",
+		From: backend.Address{Name: "Helena Ortiz", Email: "helena@example.com"}}, BodyText: "…"}, nil
+}
+
 func stubMailstack(t *testing.T, srv *Server) {
 	t.Helper()
-	srv.mailstackClient = mailstackclient.New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !mailstack.CallerIsInternalService(r.Context()) {
-			http.Error(w, "no caller", http.StatusUnauthorized)
-			return
-		}
-		if r.URL.Query().Get("account") != "demo-work" {
-			http.Error(w, "account query param required", http.StatusBadRequest)
-			return
-		}
-		_, _ = w.Write([]byte(`{"meta":{"id":"lmf8c5178e02571eae","account_id":"demo-work","subject":"Catalog size in /health","from":{"name":"Helena Ortiz","email":"helena@example.com"}},"body":{"text":"…"}}`))
-	}))
+	srv.mailstackClient = mailstackclient.New(stubMailstackMessages{})
 }
 
 func TestSurfacingWorkerSignoffIsAnsweredWithoutAPerson(t *testing.T) {

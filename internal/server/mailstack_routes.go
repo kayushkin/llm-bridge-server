@@ -44,7 +44,7 @@ var errMailstackOff = errors.New("mailstack is off: EnableMailstack was never ca
 // triage's sender lookup is off.
 func (s *Server) EnableMailstack(mail *mailstack.Server) {
 	s.mailstack.Store(mail)
-	s.mailstackClient = mailstackclient.New(mail.Handler())
+	s.mailstackClient = mailstackclient.New(mail)
 }
 
 // MailstackPeopleDirectory is what mailstack reads a person's access from:
