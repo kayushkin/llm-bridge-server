@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge/msg"
 	schedulerconfig "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/config"
+	"github.com/kayushkin/llm-bridge/msg"
 )
 
 // The stubs below stand in for kanban-store and llm-bridge-server's oneshot

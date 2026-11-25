@@ -7,8 +7,6 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	_ "modernc.org/sqlite"
-
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/db"
 )
 

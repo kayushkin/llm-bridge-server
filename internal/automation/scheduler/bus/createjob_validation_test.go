@@ -5,8 +5,6 @@ import (
 	"testing"
 
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/db"
-
-	_ "modernc.org/sqlite"
 )
 
 // The bus and the HTTP handler are the only two ways a job gets created, and
@@ -27,7 +25,7 @@ import (
 // every API, and never runs. That is the exact failure validateJob's own
 // comment says was fixed — it was fixed at one edge of two.
 func TestCreateJobRejectsAnUnparseableCron(t *testing.T) {
-	store, _, _, handler, err := setupTest()
+	store, _, _, handler, err := setupTest(t)
 	if err != nil {
 		t.Fatalf("setup failed: %v", err)
 	}
@@ -45,7 +43,7 @@ func TestCreateJobRejectsAnUnparseableCron(t *testing.T) {
 // was neither, so "banana" was stored with no command and no prompt — a job no
 // executor has a branch for.
 func TestCreateJobRejectsAnUnknownType(t *testing.T) {
-	store, _, _, handler, err := setupTest()
+	store, _, _, handler, err := setupTest(t)
 	if err != nil {
 		t.Fatalf("setup failed: %v", err)
 	}
@@ -82,7 +80,7 @@ func TestCreateJobStillRejectsWhatItAlreadyRejected(t *testing.T) {
 		{"an agent job with no prompt", Command{Name: "j", Schedule: "* * * * *", Type: "agent", Agent: "claude-code"}, "agent and prompt is required for agent jobs"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			store, _, _, handler, err := setupTest()
+			store, _, _, handler, err := setupTest(t)
 			if err != nil {
 				t.Fatalf("setup failed: %v", err)
 			}
@@ -112,7 +110,7 @@ func TestCreateJobStillAcceptsARunnableJob(t *testing.T) {
 		{"an agent job", Command{Name: "j", Schedule: "0 3 * * *", Type: "agent", Agent: "claude-code", Prompt: "hi"}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			store, _, _, handler, err := setupTest()
+			store, _, _, handler, err := setupTest(t)
 			if err != nil {
 				t.Fatalf("setup failed: %v", err)
 			}

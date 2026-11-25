@@ -37,6 +37,9 @@ const (
 // executes in the background. The run id is 0 unless the outcome is
 // TriggeredRunStarted.
 func (s *Scheduler) StartTriggeredRun(jobID int64, message eventtriggers.Message) (TriggeredRunOutcome, int64, error) {
+	if err := s.refuseRunWhenSwitchedOff(); err != nil {
+		return 0, 0, err
+	}
 	current, err := s.store.GetJob(jobID)
 	if err == sql.ErrNoRows {
 		return TriggeredRunNotRunnable, 0, nil

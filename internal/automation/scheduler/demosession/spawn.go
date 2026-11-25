@@ -41,9 +41,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/bridgeclient"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/sessionmodelrole"
+	"github.com/kayushkin/llm-bridge/msg"
 )
 
 // Task is one piece of work to hand an agent.

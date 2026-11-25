@@ -52,13 +52,13 @@ import (
 
 	natsbus "github.com/kayushkin/bus"
 	"github.com/kayushkin/bus/messages"
-	"github.com/kayushkin/llm-bridge/msg"
-	"github.com/kayushkin/llm-bridge/servicesettings"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/bridgeauth"
 	schedulerconfig "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/config"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/schedulersettings"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/sessionmodelrole"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/textcut"
+	"github.com/kayushkin/llm-bridge/msg"
+	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
 // Wire values another program reads back, and the --from default, declared once

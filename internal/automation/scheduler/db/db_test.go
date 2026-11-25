@@ -4,23 +4,7 @@ import (
 	"database/sql"
 	"testing"
 	"time"
-
-	_ "modernc.org/sqlite"
 )
-
-func testStore(t *testing.T) *Store {
-	t.Helper()
-	d, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	s, err := NewWithDB(d)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { s.Close() })
-	return s
-}
 
 func TestCreateAndListJobs(t *testing.T) {
 	s := testStore(t)

@@ -50,7 +50,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kayushkin/llm-bridge/servicesettings"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/boundedtext"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/bridgeauth"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/completionoperation"
@@ -60,6 +59,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/principalstore"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/schedulerjobs"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/schedulersettings"
+	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
 const (

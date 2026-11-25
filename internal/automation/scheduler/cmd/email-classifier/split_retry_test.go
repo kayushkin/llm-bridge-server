@@ -10,9 +10,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/degradations"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/kanbanclient"
+	"github.com/kayushkin/llm-bridge/msg"
 )
 
 // The message Anthropic really returned on 2026-08-29, when this job went red on

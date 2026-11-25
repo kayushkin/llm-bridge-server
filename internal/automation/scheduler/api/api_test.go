@@ -2,16 +2,15 @@ package api
 
 import (
 	"bytes"
-	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/db/dbtest"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	_ "modernc.org/sqlite"
 
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/cron"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/db"
@@ -19,15 +18,7 @@ import (
 
 func setup(t *testing.T, token string) *Server {
 	t.Helper()
-	d, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	store, err := db.NewWithDB(d)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { store.Close() })
+	store := dbtest.NewStore(t)
 	sched := cron.New(store)
 	return New(store, sched, token, settingsRegistryForTests(t, token), checkModelRoleForTests)
 }

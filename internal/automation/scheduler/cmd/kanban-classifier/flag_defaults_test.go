@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge/servicesettings"
 	schedulerconfig "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/config"
+	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
 // The defaults that ship, and the wiring that carries them to the tick.

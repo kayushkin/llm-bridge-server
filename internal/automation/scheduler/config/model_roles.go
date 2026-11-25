@@ -124,3 +124,26 @@ func modelRoleDefinitions() []servicesettings.Definition {
 			Description: "Where model-store answers. A new model role is checked against its GET /api/roles before it is stored, and an agent job's session role against GET /api/roles/{role} before the session starts; while it is down no role can be changed and no agent job starts."},
 	}
 }
+
+// StoredSettingDefinitions are the settings the scheduler keeps in its own
+// records: every model role, editable at PUT /settings/{key}. Where the
+// scheduler runs inside llm-bridge-server these are the whole of what its
+// GET /settings answers; its addresses and switches are the server's own
+// settings there.
+func StoredSettingDefinitions() []servicesettings.Definition {
+	var stored []servicesettings.Definition
+	for _, definition := range modelRoleDefinitions() {
+		if definition.Editable {
+			stored = append(stored, definition)
+		}
+	}
+	return stored
+}
+
+// NewStoredSettingsRegistry describes StoredSettingDefinitions. It reads no
+// environment: a role takes its default until a stored value replaces it, so
+// the process environment of the server that hosts the scheduler seeds
+// nothing.
+func NewStoredSettingsRegistry() (*servicesettings.Registry, error) {
+	return servicesettings.New(ServiceName, nil, StoredSettingDefinitions(), servicesettings.MapEnvironment(nil))
+}

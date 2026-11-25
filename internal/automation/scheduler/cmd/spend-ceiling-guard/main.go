@@ -43,7 +43,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/kayushkin/llm-bridge/servicesettings"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/bridgeauth"
 	schedulerconfig "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/config"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/degradations"
@@ -51,6 +50,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/kanbanvocab"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/noteboarditems"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/spendtree"
+	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
 type sessionAggregate struct {

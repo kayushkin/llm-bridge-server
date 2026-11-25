@@ -7,8 +7,6 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/db"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/eventtriggers"
-
-	_ "modernc.org/sqlite"
 )
 
 // A job can be created from two places, and the file next door pins them to the
@@ -108,7 +106,7 @@ var creationRequests = []creationRequest{
 func TestCreateJobOverTheBusStoresEveryFieldItWasSent(t *testing.T) {
 	for _, request := range creationRequests {
 		t.Run(request.name, func(t *testing.T) {
-			store, _, _, handler, err := setupTest()
+			store, _, _, handler, err := setupTest(t)
 			if err != nil {
 				t.Fatalf("setup failed: %v", err)
 			}
@@ -137,7 +135,7 @@ func TestCreateJobOverTheBusStoresEveryFieldItWasSent(t *testing.T) {
 // that defaulted the three new fields to something non-empty would pass the test
 // above and quietly give every bus-created job a timeout nobody asked for.
 func TestCreateJobOverTheBusLeavesAnOmittedFieldEmpty(t *testing.T) {
-	store, _, _, handler, err := setupTest()
+	store, _, _, handler, err := setupTest(t)
 	if err != nil {
 		t.Fatalf("setup failed: %v", err)
 	}
@@ -169,7 +167,7 @@ func TestCreateJobOverTheBusLeavesAnOmittedFieldEmpty(t *testing.T) {
 // "default". Wiring a field through can arm a rule that was previously
 // unreachable, and that is worth a case of its own rather than an assumption.
 func TestCreateJobOverTheBusRefusesANegativeTimeout(t *testing.T) {
-	store, _, _, handler, err := setupTest()
+	store, _, _, handler, err := setupTest(t)
 	if err != nil {
 		t.Fatalf("setup failed: %v", err)
 	}

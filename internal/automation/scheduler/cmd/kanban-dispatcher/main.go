@@ -58,8 +58,6 @@ import (
 
 	natsbus "github.com/kayushkin/bus"
 	"github.com/kayushkin/bus/messages"
-	"github.com/kayushkin/llm-bridge/msg"
-	"github.com/kayushkin/llm-bridge/servicesettings"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/bridgeauth"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/bridgeclient"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/bridgesession"
@@ -71,6 +69,8 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/schedulersettings"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/sessionmodelrole"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/textcut"
+	"github.com/kayushkin/llm-bridge/msg"
+	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
 // linkTypeSession is the canonical session card-link entity_type. Pre-2026-05

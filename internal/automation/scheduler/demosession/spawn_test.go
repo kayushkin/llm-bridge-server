@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/sessionmodelrole"
+	"github.com/kayushkin/llm-bridge/msg"
 )
 
 // anyHarnessRuns stands in for model-store and the bridge's harness table:

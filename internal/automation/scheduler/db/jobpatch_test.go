@@ -12,16 +12,7 @@ import (
 
 func patchTestStore(t *testing.T) *Store {
 	t.Helper()
-	d, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	store, err := NewWithDB(d)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { store.Close() })
-	return store
+	return testStore(t)
 }
 
 func TestUpdateJobWritesOnlyTheFieldsThePatchSets(t *testing.T) {

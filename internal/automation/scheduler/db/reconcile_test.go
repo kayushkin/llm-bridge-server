@@ -189,7 +189,7 @@ func TestReconcileOrphanedRunsReturnsTheOutputItStored(t *testing.T) {
 	// A run that had already written output before the process died. Its own
 	// output is the useful one and must survive.
 	noisy, _ := s.CreateRun(job.ID)
-	if _, err := s.db.Exec(`UPDATE runs SET output='half a log line' WHERE id=?`, noisy.ID); err != nil {
+	if _, err := s.db.Exec(`UPDATE runs SET output='half a log line'::bytea WHERE id=$1`, noisy.ID); err != nil {
 		t.Fatal(err)
 	}
 

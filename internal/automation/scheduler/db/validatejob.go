@@ -5,8 +5,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/robfig/cron/v3"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/eventtriggers"
+	"github.com/robfig/cron/v3"
 )
 
 // This file holds the one definition of what a runnable job is. It lives in db

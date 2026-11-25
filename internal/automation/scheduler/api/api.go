@@ -10,12 +10,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kayushkin/llm-bridge/servicesettings"
-	"github.com/robfig/cron/v3"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/boundedtext"
 	cronpkg "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/cron"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/db"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/eventtriggers"
+	"github.com/kayushkin/llm-bridge/servicesettings"
+	"github.com/robfig/cron/v3"
 )
 
 // APIError is a structured JSON error response.
@@ -73,6 +73,12 @@ func New(store *db.Store, scheduler *cronpkg.Scheduler, token string, settings *
 	s.mux.Handle("GET /settings", settingsHandler)
 	s.mux.Handle("PUT /settings/{key}", settingsHandler)
 	return s
+}
+
+// Routes answers the API's routes with no CORS headers and no bearer check,
+// for a host that authorizes every request itself, as llm-bridge-server does.
+func (s *Server) Routes() http.Handler {
+	return s.mux
 }
 
 // SetLogger sets the logger for the API server
@@ -441,6 +447,10 @@ func (s *Server) handleJobSub(w http.ResponseWriter, r *http.Request) {
 			}
 			if errors.Is(err, cronpkg.ErrRunsOnEventTrigger) {
 				writeError(w, 409, err.Error(), "")
+				return
+			}
+			if errors.Is(err, cronpkg.ErrRunsSwitchedOff) {
+				writeError(w, http.StatusServiceUnavailable, err.Error(), "")
 				return
 			}
 			writeError(w, 500, "failed to run job", err.Error())

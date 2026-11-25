@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/eventtriggers"
 )
@@ -40,23 +39,6 @@ func DecodeEventTrigger(encoded string) (*eventtriggers.Trigger, error) {
 	return &trigger, nil
 }
 
-// event_trigger_deliveries records which message started which run of a job.
-// JetStream delivers at least once, and the scheduler asks for a message again
-// when a job it matches is still running, so the same message reaches the
-// scheduler more than once by design; the primary key is what makes it start
-// each job once.
-func (s *Store) migrateEventTriggerDeliveries() error {
-	_, err := s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS event_trigger_deliveries (
-			job_id          INTEGER NOT NULL,
-			idempotency_key TEXT    NOT NULL,
-			run_id          INTEGER NOT NULL,
-			created_at      DATETIME NOT NULL,
-			PRIMARY KEY (job_id, idempotency_key)
-		)`)
-	return err
-}
-
 // ErrEventAlreadyDelivered means the job already ran for this message.
 var ErrEventAlreadyDelivered = errors.New("this message already started a run of this job")
 
@@ -64,14 +46,14 @@ var ErrEventAlreadyDelivered = errors.New("this message already started a run of
 // the job.
 func (s *Store) EventTriggerDelivered(jobID int64, idempotencyKey string) (bool, error) {
 	var count int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM event_trigger_deliveries WHERE job_id=? AND idempotency_key=?`, jobID, idempotencyKey).Scan(&count)
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM event_trigger_deliveries WHERE job_id=$1 AND idempotency_key=$2`, jobID, idempotencyKey).Scan(&count)
 	return count > 0, err
 }
 
 // RecordEventTriggerDelivery records that the message started this run.
 func (s *Store) RecordEventTriggerDelivery(jobID int64, idempotencyKey string, runID int64) error {
-	result, err := s.db.Exec(`INSERT OR IGNORE INTO event_trigger_deliveries (job_id, idempotency_key, run_id, created_at) VALUES (?,?,?,?)`,
-		jobID, idempotencyKey, runID, time.Now().UTC())
+	result, err := s.db.Exec(`INSERT INTO event_trigger_deliveries (job_id, idempotency_key, run_id, created_at) VALUES ($1,$2,$3,$4) ON CONFLICT (job_id, idempotency_key) DO NOTHING`,
+		jobID, idempotencyKey, runID, storedNow())
 	if err != nil {
 		return err
 	}

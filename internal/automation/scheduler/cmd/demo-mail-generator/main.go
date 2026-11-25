@@ -24,13 +24,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kayushkin/llm-bridge/servicesettings"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/bridgeauth"
 	schedulerconfig "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/config"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/demomail"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/demoteam"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/oneshot"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/schedulersettings"
+	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
 const (

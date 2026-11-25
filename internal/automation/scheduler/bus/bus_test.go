@@ -1,9 +1,9 @@
 package bus
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/db/dbtest"
 	"strings"
 	"testing"
 	"time"
@@ -12,20 +12,11 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/db"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/executor"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/logging"
-
-	_ "modernc.org/sqlite"
 )
 
-func setupTest() (*db.Store, *cronpkg.Scheduler, *logging.Logger, *Handler, error) {
-	sqlDB, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		return nil, nil, nil, nil, err
-	}
-
-	dbStore, err := db.NewWithDB(sqlDB)
-	if err != nil {
-		return nil, nil, nil, nil, err
-	}
+func setupTest(t *testing.T) (*db.Store, *cronpkg.Scheduler, *logging.Logger, *Handler, error) {
+	t.Helper()
+	dbStore := dbtest.NewStore(t)
 
 	mockExec := func(command string, timeout time.Duration) executor.Result {
 		return executor.Result{Status: "success", Output: "mock output"}
@@ -52,7 +43,7 @@ func checkModelRoleForTests(role string) error {
 }
 
 func TestCreateJobRefusesAModelRoleModelStoreDoesNotKnow(t *testing.T) {
-	store, _, _, handler, err := setupTest()
+	store, _, _, handler, err := setupTest(t)
 	if err != nil {
 		t.Fatalf("setup failed: %v", err)
 	}
@@ -70,7 +61,7 @@ func TestCreateJobRefusesAModelRoleModelStoreDoesNotKnow(t *testing.T) {
 }
 
 func TestHandleListJobs(t *testing.T) {
-	dbStore, _, _, handler, err := setupTest()
+	dbStore, _, _, handler, err := setupTest(t)
 	if err != nil {
 		t.Fatalf("setup failed: %v", err)
 	}
@@ -97,7 +88,7 @@ func TestHandleListJobs(t *testing.T) {
 }
 
 func TestHandleCreateJob(t *testing.T) {
-	dbStore, scheduler, logger, handler, err := setupTest()
+	dbStore, scheduler, logger, handler, err := setupTest(t)
 	if err != nil {
 		t.Fatalf("setup failed: %v", err)
 	}
@@ -127,7 +118,7 @@ func TestHandleCreateJob(t *testing.T) {
 }
 
 func TestHandleDeleteJob(t *testing.T) {
-	dbStore, scheduler, logger, handler, err := setupTest()
+	dbStore, scheduler, logger, handler, err := setupTest(t)
 	if err != nil {
 		t.Fatalf("setup failed: %v", err)
 	}
@@ -147,7 +138,7 @@ func TestHandleDeleteJob(t *testing.T) {
 }
 
 func TestHandleToggleJob(t *testing.T) {
-	dbStore, scheduler, logger, handler, err := setupTest()
+	dbStore, scheduler, logger, handler, err := setupTest(t)
 	if err != nil {
 		t.Fatalf("setup failed: %v", err)
 	}
@@ -168,7 +159,7 @@ func TestHandleToggleJob(t *testing.T) {
 }
 
 func TestHandleRequest_InvalidJSON(t *testing.T) {
-	_, _, _, handler, err := setupTest()
+	_, _, _, handler, err := setupTest(t)
 	if err != nil {
 		t.Fatalf("setup failed: %v", err)
 	}
@@ -191,7 +182,7 @@ func TestHandleRequest_InvalidJSON(t *testing.T) {
 // fills the fields it did decode and reports the failure afterwards, so Action and
 // ID arrive populated and the dispatch would go through if nothing stopped it.
 func TestAMalformedCommandIsNeverDispatched(t *testing.T) {
-	dbStore, _, _, handler, err := setupTest()
+	dbStore, _, _, handler, err := setupTest(t)
 	if err != nil {
 		t.Fatalf("setup failed: %v", err)
 	}
@@ -213,7 +204,7 @@ func TestAMalformedCommandIsNeverDispatched(t *testing.T) {
 }
 
 func TestHandleRequest_UnknownAction(t *testing.T) {
-	_, _, _, handler, err := setupTest()
+	_, _, _, handler, err := setupTest(t)
 	if err != nil {
 		t.Fatalf("setup failed: %v", err)
 	}
@@ -247,7 +238,7 @@ func TestHandleCreateJobHonorsEnabled(t *testing.T) {
 		{"true means armed", &enabled, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			dbStore, scheduler, logger, handler, err := setupTest()
+			dbStore, scheduler, logger, handler, err := setupTest(t)
 			if err != nil {
 				t.Fatalf("setup failed: %v", err)
 			}

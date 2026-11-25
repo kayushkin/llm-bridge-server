@@ -2,14 +2,15 @@ package cron
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
 	"time"
 
-	"github.com/robfig/cron/v3"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/db"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/executor"
+	"github.com/robfig/cron/v3"
 
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/runstatus"
 )
@@ -28,6 +29,34 @@ type Scheduler struct {
 	// process, so a fresh process has nothing in flight by definition.
 	inFlightMu sync.Mutex
 	inFlight   map[int64]bool
+
+	// runsSwitchedOffBecause, when set, says why this process runs no job:
+	// no cron tick, no run now and no triggered run. The jobs and their
+	// history are still read and written. A server that holds a copy of the
+	// jobs while another process still runs them must not run them too.
+	runsSwitchedOffBecause string
+}
+
+// ErrRunsSwitchedOff refuses a run on a process whose runs are switched off.
+var ErrRunsSwitchedOff = errors.New("this server runs no scheduler jobs")
+
+// SwitchRunsOff makes the scheduler run no job, for reason, from the next
+// Start on. Start then starts no ticker, Reload does nothing, and RunJobNow
+// and StartTriggeredRun answer ErrRunsSwitchedOff.
+func (s *Scheduler) SwitchRunsOff(reason string) {
+	s.runsSwitchedOffBecause = reason
+}
+
+// RunsSwitchedOff answers whether runs are off, and why.
+func (s *Scheduler) RunsSwitchedOff() (bool, string) {
+	return s.runsSwitchedOffBecause != "", s.runsSwitchedOffBecause
+}
+
+func (s *Scheduler) refuseRunWhenSwitchedOff() error {
+	if s.runsSwitchedOffBecause == "" {
+		return nil
+	}
+	return fmt.Errorf("%w: %s", ErrRunsSwitchedOff, s.runsSwitchedOffBecause)
 }
 
 // Logger interface for logging events
@@ -95,6 +124,9 @@ func (s *Scheduler) SetAgentExecutor(agentExec *executor.AgentExecutor) {
 }
 
 func (s *Scheduler) Start() error {
+	if s.runsSwitchedOffBecause != "" {
+		return nil
+	}
 	// Clear any expired holds on startup
 	if cleared, err := s.store.ClearExpiredHolds(); err != nil {
 		log.Printf("warning: failed to clear expired holds: %v", err)
@@ -135,6 +167,9 @@ func (s *Scheduler) Stop() {
 }
 
 func (s *Scheduler) Reload() error {
+	if s.runsSwitchedOffBecause != "" {
+		return nil
+	}
 	s.Stop()
 	s.cron = cron.New()
 	return s.Start()
@@ -148,6 +183,9 @@ func (s *Scheduler) Reload() error {
 // that is going fine. Read its outcome from GET /api/jobs/{id}/runs.
 // It returns nil when the job was not run: on hold, deleted, or still running.
 func (s *Scheduler) RunJobNow(jobID int64) (*db.Run, error) {
+	if err := s.refuseRunWhenSwitchedOff(); err != nil {
+		return nil, err
+	}
 	job, err := s.store.GetJob(jobID)
 	if err != nil {
 		return nil, err

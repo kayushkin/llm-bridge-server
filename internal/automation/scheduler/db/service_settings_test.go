@@ -1,16 +1,18 @@
 package db
 
 import (
-	"path/filepath"
 	"testing"
+
+	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 )
 
 func TestServiceSettingValuesSaveReplacesAndLoadReturnsEveryKey(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "scheduler.db")
-	store, err := New(path)
+	module, err := Module()
 	if err != nil {
 		t.Fatal(err)
 	}
+	database := postgrestest.NewDatabase(t, module)
+	store := New(database.Open(module))
 	values := store.ServiceSettingValues()
 	if err := values.Save("kanban_scoper_model_role", "efficient"); err != nil {
 		t.Fatal(err)
@@ -24,10 +26,7 @@ func TestServiceSettingValuesSaveReplacesAndLoadReturnsEveryKey(t *testing.T) {
 	store.Close()
 
 	// A second open reads what the first wrote: the record outlives a restart.
-	reopened, err := New(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	reopened := New(database.Open(module))
 	defer reopened.Close()
 	held, err := reopened.ServiceSettingValues().Load()
 	if err != nil {

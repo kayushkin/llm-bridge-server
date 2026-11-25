@@ -54,7 +54,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kayushkin/llm-bridge/servicesettings"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/bridgeauth"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/bridgesession"
 	schedulerconfig "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/config"
@@ -62,6 +61,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/kanbanclient"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/kanbanvocab"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/schedulerjobs"
+	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
 const (

@@ -2,8 +2,6 @@ package db
 
 import (
 	"testing"
-
-	_ "modernc.org/sqlite"
 )
 
 // TestEnabledOnCreateReadsAbsentAsTrue pins the one rule both creation edges

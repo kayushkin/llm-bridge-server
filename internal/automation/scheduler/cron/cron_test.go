@@ -1,11 +1,9 @@
 package cron
 
 import (
-	"database/sql"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/db/dbtest"
 	"testing"
 	"time"
-
-	_ "modernc.org/sqlite"
 
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/db"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/executor"
@@ -13,15 +11,7 @@ import (
 
 func testStore(t *testing.T) *db.Store {
 	t.Helper()
-	d, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	s, err := db.NewWithDB(d)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { s.Close() })
+	s := dbtest.NewStore(t)
 	return s
 }
 

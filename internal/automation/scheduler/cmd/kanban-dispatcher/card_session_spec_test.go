@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/kayushkin/bus/messages"
-	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/degradations"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/kanbanclient"
+	"github.com/kayushkin/llm-bridge/msg"
 )
 
 const testBoardID = "board-tcl"

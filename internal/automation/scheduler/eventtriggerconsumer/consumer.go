@@ -7,10 +7,10 @@ import (
 	"log"
 	"time"
 
-	"github.com/nats-io/nats.go"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/cron"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/db"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/eventtriggers"
+	"github.com/nats-io/nats.go"
 )
 
 // RetryDelay is how long a message waits before JetStream delivers it again,

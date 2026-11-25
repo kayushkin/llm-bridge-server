@@ -1,20 +1,19 @@
 package api
 
 import (
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/db/dbtest"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge/msg"
-	"github.com/kayushkin/llm-bridge/servicesettings"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/config"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/cron"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/db"
+	"github.com/kayushkin/llm-bridge/msg"
+	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
 // settingsRegistryForTests builds the service's registry with token as
@@ -93,15 +92,7 @@ func TestSettingsRefusesAWriteToASettingItDoesNotStore(t *testing.T) {
 // it.
 func storedSettingsServer(t *testing.T, validate func(string) error) *Server {
 	t.Helper()
-	d, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	store, err := db.NewWithDB(d)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { store.Close() })
+	store := dbtest.NewStore(t)
 	registry := settingsRegistryForTests(t, "")
 	if err := registry.AttachStoredValues(store.ServiceSettingValues(), nil); err != nil {
 		t.Fatal(err)
