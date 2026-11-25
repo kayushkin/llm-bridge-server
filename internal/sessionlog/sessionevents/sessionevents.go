@@ -13,6 +13,7 @@
 package sessionevents
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -42,6 +43,9 @@ type Writes interface {
 type Reads interface {
 	// MaxEventRowID is the session's stream head: its highest event id.
 	MaxEventRowID(sessionID string) (int64, error)
+	// MaxEventRowIDs is the stream head of each session, 0 for one with no
+	// events.
+	MaxEventRowIDs(sessionIDs []string) (map[string]int64, error)
 	// ListEventsSinceID is the session's events after afterID, as sent.
 	ListEventsSinceID(sessionID string, afterID int) ([]store.EventWithID, error)
 	// ListCurrentTurnEventsWithIDs is every event after the session's last
@@ -71,6 +75,19 @@ type Store interface {
 // BridgeDatabase is the old path: the bridge database's events table.
 type BridgeDatabase struct {
 	*store.Store
+}
+
+// MaxEventRowIDs reads each session's stream head in turn.
+func (events BridgeDatabase) MaxEventRowIDs(sessionIDs []string) (map[string]int64, error) {
+	heads := make(map[string]int64, len(sessionIDs))
+	for _, sessionID := range sessionIDs {
+		head, err := events.MaxEventRowID(sessionID)
+		if err != nil {
+			return nil, fmt.Errorf("stream head of %s: %w", sessionID, err)
+		}
+		heads[sessionID] = head
+	}
+	return heads, nil
 }
 
 // StreamCursorFromEarlierNumbering is false: the bridge database numbers

@@ -189,6 +189,13 @@ func TestSingleCopyReadersAnswerWhatTheBridgeDatabaseAnswered(t *testing.T) {
 	oldIDs := writeConversation(t, old, sessionID, steps)
 	newIDs := writeConversation(t, single, sessionID, steps)
 
+	for name, events := range map[string]Reads{"bridge database": old, "single copy": single} {
+		heads, err := events.MaxEventRowIDs([]string{sessionID, "br_no_events"})
+		head, _ := events.MaxEventRowID(sessionID)
+		if err != nil || len(heads) != 2 || heads[sessionID] != head || heads["br_no_events"] != 0 {
+			t.Errorf("%s: stream heads %v, %v; want %s at %d and br_no_events at 0", name, heads, err, sessionID, head)
+		}
+	}
 	for name, store := range map[string]struct {
 		events Reads
 		ids    []int64

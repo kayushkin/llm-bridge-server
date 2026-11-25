@@ -218,6 +218,32 @@ func (s *Store) LatestEventID(sessionID string) (int64, error) {
 	return id, err
 }
 
+// LatestEventIDs is the highest event id of each session, 0 for one with
+// none, in one query.
+func (s *Store) LatestEventIDs(sessionIDs []string) (map[string]int64, error) {
+	heads := make(map[string]int64, len(sessionIDs))
+	for _, sessionID := range sessionIDs {
+		heads[sessionID] = 0
+	}
+	rows, err := s.reader.Query(`
+		SELECT requested.session_id,
+		       (SELECT COALESCE(MAX(id), 0) FROM events WHERE events.session_id = requested.session_id)
+		FROM unnest($1::text[]) AS requested(session_id)`, sessionIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var sessionID string
+		var head int64
+		if err := rows.Scan(&sessionID, &head); err != nil {
+			return nil, err
+		}
+		heads[sessionID] = head
+	}
+	return heads, rows.Err()
+}
+
 // EventRowsAfter is a session's events after afterID, oldest first, each as
 // it was sent.
 func (s *Store) EventRowsAfter(sessionID string, afterID int64) ([]StoredEventBody, error) {

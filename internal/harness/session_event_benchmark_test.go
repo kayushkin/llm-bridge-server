@@ -210,6 +210,7 @@ func (f *benchmarkEventFactory) harnessEvent(last bool) msg.Event {
 // The bridge database's store answers all of them.
 type sessionEventReads interface {
 	MaxEventRowID(sessionID string) (int64, error)
+	MaxEventRowIDs(sessionIDs []string) (map[string]int64, error)
 	ListEventsSinceID(sessionID string, afterID int) ([]store.EventWithID, error)
 	ListCurrentTurnEventsWithIDs(sessionID string) ([]store.EventWithID, error)
 	LastActivityAt(sessionID string) (time.Time, error)
@@ -281,7 +282,7 @@ var bridgeDatabasePath = sessionEventPath{
 			m.SetSessionEventLog(sessionLog)
 			return m
 		}
-		return &benchmarkBench{manager: newManager(), bridgeStore: bridgeStore, reads: bridgeStore, sessionLog: sessionLog, databasePath: databasePath, restart: newManager}
+		return &benchmarkBench{manager: newManager(), bridgeStore: bridgeStore, reads: sessionevents.BridgeDatabase{Store: bridgeStore}, sessionLog: sessionLog, databasePath: databasePath, restart: newManager}
 	},
 }
 
@@ -690,12 +691,12 @@ func benchmarkReads(b *testing.B, results *benchmarkResults, path sessionEventPa
 		return nil
 	})
 	timeRead(b, results, path.name, fmt.Sprintf("stream heads of %d sessions (recent bundle)", activityReadSessions), 20, func() error {
-		for i := 0; i < activityReadSessions; i++ {
-			if _, err := bench.reads.MaxEventRowID(fmt.Sprintf("br_benchmark_activity_%d", i)); err != nil {
-				return err
-			}
+		ids := make([]string, activityReadSessions)
+		for i := range ids {
+			ids[i] = fmt.Sprintf("br_benchmark_activity_%d", i)
 		}
-		return nil
+		_, err := bench.reads.MaxEventRowIDs(ids)
+		return err
 	})
 	timeRead(b, results, path.name, "reaper reads (last activity, wakeup), large session", 20, func() error {
 		if _, err := bench.reads.LastActivityAt(large); err != nil {

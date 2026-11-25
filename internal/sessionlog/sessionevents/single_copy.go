@@ -317,6 +317,11 @@ func (c *SingleCopy) MaxEventRowID(sessionID string) (int64, error) {
 	return c.events.LatestEventID(sessionID)
 }
 
+// MaxEventRowIDs reads every session's stream head in one query.
+func (c *SingleCopy) MaxEventRowIDs(sessionIDs []string) (map[string]int64, error) {
+	return c.events.LatestEventIDs(sessionIDs)
+}
+
 func (c *SingleCopy) ListEventsSinceID(sessionID string, afterID int) ([]store.EventWithID, error) {
 	rows, err := c.events.EventRowsAfter(sessionID, int64(afterID))
 	return eventsWithIDs(rows), err
