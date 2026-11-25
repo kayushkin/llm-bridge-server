@@ -96,6 +96,14 @@ func FileStoreDataDirectory() string {
 	return filepath.Join(homeDirectory(), ".llm-bridge", "file-store")
 }
 
+// LocationStoreGeonamesDirectory is where the location-store module reads
+// GeoNames' town dump from, to name localities and match calendar locations.
+// It is under this server's own folder, not the standalone store's data
+// directory, so the two never change each other's copy.
+func LocationStoreGeonamesDirectory() string {
+	return filepath.Join(homeDirectory(), ".llm-bridge", "location-store", "geonames")
+}
+
 // WorkGraphHookSpoolPath is the file work-graph-store's git hook appends ref
 // updates to and the store's ingest reads. The hook reads no settings, so
 // this is the one place both agree on.

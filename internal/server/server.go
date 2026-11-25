@@ -23,6 +23,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore"
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
+	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
 	"github.com/kayushkin/llm-bridge-server/internal/filestoreclient"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
@@ -166,6 +167,13 @@ type Server struct {
 	// and /time-ledger-store/ once EnableMessageActivityAndTimeLedgerStores
 	// has run (message_activity_time_ledger_routes.go); nil answers them 503.
 	messageActivityAndTimeLedger atomic.Pointer[messageActivityAndTimeLedgerStores]
+	// photosAndLocations answers /photo-store/ and /location-store/ once
+	// EnablePhotosAndLocations has run (photos_locations_routes.go); nil
+	// answers them 503.
+	photosAndLocations atomic.Pointer[photosAndLocationsStores]
+	// fileStoreModule is the file-store module EnableFileStore was given:
+	// photo-store keeps its thumbnails' bytes there, called in Go.
+	fileStoreModule atomic.Pointer[filestore.Store]
 	// repoRegistryForDeploys is repo-store as a deploy action reads it; nil
 	// until EnableRepositories, which refuses deploy actions.
 	repoRegistryForDeploys repoRegistry
@@ -373,6 +381,7 @@ func (s *Server) routes() {
 	s.registerConnectedRecordsRoutes()
 	s.registerMessageActivityAndTimeLedgerRoutes()
 	s.registerAutomationRoutes()
+	s.registerPhotosAndLocationsRoutes()
 	// This server's own settings, served the way every service serves them.
 	serviceSettingsHandler := servicesettings.Handler(s.settings, "/settings")
 	s.mux.Handle("GET /settings", serviceSettingsHandler)

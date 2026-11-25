@@ -986,6 +986,101 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `GET` | `/time-ledger-store/time-entries/{id}/revisions` | An entry as it was before each change, newest first | principal or session agent |
 | `GET` | `/time-ledger-store/vocabularies` | Link types, bears-on values, actor kinds and outcomes | principal or session agent |
 
+### photo-store, mounted in this process
+
+| Method | Route | What it does | Who may call |
+|---|---|---|---|
+| `GET` | `/photo-store/date-sources` | The ways a photo's date is known, strongest first | principal or session agent |
+| `GET` | `/photo-store/face-group-statuses` | The statuses a face group may hold | principal or session agent |
+| `GET` | `/photo-store/face-groups` | The caller's face groups by `status`, `person_id`, `limit` and `offset`, the most photos first | principal or session agent |
+| `POST` | `/photo-store/face-groups` | Make an open group of one owner's faces; 201 | principal or session agent |
+| `GET` | `/photo-store/face-groups/{id}` | One face group with every face in it | principal or session agent |
+| `POST` | `/photo-store/face-groups/{id}/decision` | A person saying who a group is, confirming or rejecting its faces as that person | principal or session agent |
+| `POST` | `/photo-store/face-groups/{id}/guesses` | Record who a model or the context thinks a group is; 201 | principal or session agent |
+| `POST` | `/photo-store/face-groups/{id}/members` | Add faces of the group's owner to an open group | principal or session agent |
+| `POST` | `/photo-store/face-scans` | Record what one face model found on one of the caller's photos; 201 | principal or session agent |
+| `GET` | `/photo-store/face-scans/pending` | Ids of the caller's photos a `model` has not scanned, oldest first | principal or session agent |
+| `GET` | `/photo-store/faces` | Faces on the caller's live photos in id order, by `photo_id`, `model`, `after`, `include_embeddings` and `limit` | principal or session agent |
+| `GET` | `/photo-store/faces/{id}/image` | One face cut from its photo's thumbnail, as a JPEG | principal or session agent |
+| `GET` | `/photo-store/health` | `{"status":"ok","counts":…}`, counted over the caller's own photos | principal or session agent |
+| `POST` | `/photo-store/imports` | Upsert photos owned by the caller by the original's sha256, thumbnails kept in file-store; description and tags are never touched | principal or session agent |
+| `GET` | `/photo-store/people-counts` | How many of the caller's photos each person is confirmed and suggested on | principal or session agent |
+| `GET` | `/photo-store/photo-people` | Who is on which of the caller's photos, by `photo_id`, `person_id`, `status`, `limit` and `offset` | principal or session agent |
+| `POST` | `/photo-store/photo-people` | Propose or confirm a person of the photo owner's people on a photo; only ever moves a link upward | principal or session agent |
+| `PATCH` | `/photo-store/photo-people/{id}` | A person's decision on who is on a photo | principal or session agent |
+| `GET` | `/photo-store/photo-person-statuses` | The statuses a person on a photo may hold | principal or session agent |
+| `GET` | `/photo-store/photos` | The caller's live photos by `from`, `to`, `folder`, `q`, `tag`, `person`, `described`, `has_gps`, `sha256`, `exclude_tag`, `limit` and `offset`, oldest taken first | principal or session agent |
+| `DELETE` | `/photo-store/photos/{id}` | Delete a photo, reversibly; 204 | principal or session agent |
+| `GET` | `/photo-store/photos/{id}` | One photo; a deleted one only with `include_deleted=true` | principal or session agent |
+| `PATCH` | `/photo-store/photos/{id}` | Change a photo's description, tags or date | principal or session agent |
+| `GET` | `/photo-store/photos/{id}/faces` | The faces found on one photo | principal or session agent |
+| `POST` | `/photo-store/photos/{id}/purge` | Remove a picture that must not be kept: destroy its thumbnail and blank its description everywhere | principal or session agent |
+| `POST` | `/photo-store/photos/{id}/restore` | Undo a delete; a purged photo is 409 | principal or session agent |
+| `GET` | `/photo-store/photos/{id}/revisions` | A photo as it was before each change, newest first | principal or session agent |
+| `GET` | `/photo-store/photos/{id}/thumbnail` | The photo's JPEG thumbnail, from file-store; a purged photo is 410 | principal or session agent |
+| `GET` | `/photo-store/sightings` | Every place an import found each of the caller's photos, by `source_machine`, `limit` and `offset` | principal or session agent |
+| `GET` | `/photo-store/tags` | Every tag on the caller's live photos, with how many carry it | principal or session agent |
+| `GET` | `/photo-store/taken-activity` | The caller's photos counted per day, week, month or year in `time_zone`, with sample ids | principal or session agent |
+
+### location-store, mounted in this process
+
+| Method | Route | What it does | Who may call |
+|---|---|---|---|
+| `GET` | `/location-store/calendar-event-links` | The caller's links from calendar events to visits, flights and journeys | principal or session agent |
+| `POST` | `/location-store/calendar-event-links` | Link a calendar event to one of the caller's records by hand; 201 | principal or session agent |
+| `DELETE` | `/location-store/calendar-event-links/{id}` | Delete a calendar event link | principal or session agent |
+| `GET` | `/location-store/calendar-event-links/{id}` | One calendar event link | principal or session agent |
+| `GET` | `/location-store/calendar-series-places` | What each recurring calendar series came to in the caller's records | principal or session agent |
+| `GET` | `/location-store/calendar-series-places/{id}` | One series place | principal or session agent |
+| `POST` | `/location-store/calendar/match` | Link the calendar events sent to one owner's visits, flights and journeys | principal or session agent |
+| `GET` | `/location-store/health` | `{"status":"ok","counts":…}`, counted over the caller's own records | principal or session agent |
+| `GET` | `/location-store/home-periods` | The caller's home periods, oldest first | principal or session agent |
+| `GET` | `/location-store/home-periods/{id}` | One home period | principal or session agent |
+| `GET` | `/location-store/imports` | The caller's imports, newest first | principal or session agent |
+| `POST` | `/location-store/imports` | Start an import owned by the caller, or answer the caller's one with that hash | principal or session agent |
+| `GET` | `/location-store/imports/{id}` | One import | principal or session agent |
+| `POST` | `/location-store/imports/{id}/batches` | Add a batch of records to an import, in one transaction | principal or session agent |
+| `POST` | `/location-store/imports/{id}/finish` | Finish an import, applying a snapshot's span | principal or session agent |
+| `GET` | `/location-store/journeys` | The caller's journeys | principal or session agent |
+| `POST` | `/location-store/journeys/group` | Group one owner's movements into home periods and journeys | principal or session agent |
+| `GET` | `/location-store/journeys/{id}` | One journey with its movements | principal or session agent |
+| `POST` | `/location-store/localities/fill` | Name the town of every empty locality in one owner's records, offline, from GeoNames | principal or session agent |
+| `POST` | `/location-store/phone-points/segment` | Make one owner's live phone points into visits and movements | principal or session agent |
+| `GET` | `/location-store/place-suggestions` | The caller's place name suggestions by `status` and `place_id` | principal or session agent |
+| `POST` | `/location-store/place-suggestions/proposals` | Propose names for one owner's unnamed places | principal or session agent |
+| `GET` | `/location-store/place-suggestions/{id}` | One place name suggestion | principal or session agent |
+| `POST` | `/location-store/place-suggestions/{id}/accept` | Accept a suggested name, naming the place | principal or session agent |
+| `POST` | `/location-store/place-suggestions/{id}/reject` | Reject a suggested name | principal or session agent |
+| `GET` | `/location-store/places` | The caller's places by `q`, `kind`, `tag` and `google_place_id`, oldest first | principal or session agent |
+| `POST` | `/location-store/places` | Make a place owned by the caller; 201 | principal or session agent |
+| `DELETE` | `/location-store/places/{id}` | Delete a place, reversibly | principal or session agent |
+| `GET` | `/location-store/places/{id}` | One place; a deleted one only with `include_deleted=true` | principal or session agent |
+| `PATCH` | `/location-store/places/{id}` | Change a place's name, address, description or tags | principal or session agent |
+| `POST` | `/location-store/places/{id}/merge` | Merge this place into another of the same owner's (`into`), moving its visits, trips and links | principal or session agent |
+| `POST` | `/location-store/places/{id}/restore` | Undo a delete | principal or session agent |
+| `GET` | `/location-store/places/{id}/revisions` | A place as it was before each change | principal or session agent |
+| `GET` | `/location-store/points` | The caller's raw location points by `from`, `to`, `source` and `source_ref`, earliest first | principal or session agent |
+| `POST` | `/location-store/points/live` | A phone's fixes as it makes them, owned by the caller | principal or session agent |
+| `GET` | `/location-store/timeline` | The caller's visits and trips overlapping `from` to `to`, in start order | principal or session agent |
+| `GET` | `/location-store/trips` | The caller's trips by `from`, `to`, `mode`, `parent_trip_id`, `source`, `tag` and the rest of CONTRACT.md's filters, earliest first | principal or session agent |
+| `POST` | `/location-store/trips` | Make a trip owned by the caller; 201 | principal or session agent |
+| `DELETE` | `/location-store/trips/{id}` | Delete a trip, reversibly | principal or session agent |
+| `GET` | `/location-store/trips/{id}` | One trip | principal or session agent |
+| `PATCH` | `/location-store/trips/{id}` | Change a trip's parent, places, mode, title, description or tags | principal or session agent |
+| `POST` | `/location-store/trips/{id}/children` | Make trips of the same owner part of this one, all or none | principal or session agent |
+| `GET` | `/location-store/trips/{id}/path` | The points a trip went through, in time order | principal or session agent |
+| `POST` | `/location-store/trips/{id}/restore` | Undo a delete | principal or session agent |
+| `GET` | `/location-store/trips/{id}/revisions` | A trip as it was before each change | principal or session agent |
+| `GET` | `/location-store/unnamed-places` | The caller's places with no name, the most visited first | principal or session agent |
+| `GET` | `/location-store/visits` | The caller's visits by `from`, `to`, `place_id`, `source` and `tag`, earliest first | principal or session agent |
+| `POST` | `/location-store/visits` | Make a visit owned by the caller; 201 | principal or session agent |
+| `DELETE` | `/location-store/visits/{id}` | Delete a visit, reversibly | principal or session agent |
+| `GET` | `/location-store/visits/{id}` | One visit | principal or session agent |
+| `PATCH` | `/location-store/visits/{id}` | Change a visit's place, description or tags | principal or session agent |
+| `POST` | `/location-store/visits/{id}/restore` | Undo a delete | principal or session agent |
+| `GET` | `/location-store/visits/{id}/revisions` | A visit as it was before each change | principal or session agent |
+| `GET` | `/location-store/vocabularies` | The kinds, sources, modes and reasons location-store knows | principal or session agent |
+
 ### repo-store, mounted in this process
 
 | Method | Route | What it does | Who may call |

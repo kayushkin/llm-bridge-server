@@ -302,7 +302,7 @@ func buildTypes() []ReferenceType {
 			Summary:    []SummaryField{seconds("taken_at", "Taken"), text("folder", "Folder")},
 			Page:       "/photos?id={id}",
 			Attachment: "/photos/{id}/thumbnail",
-			Access:     AccessByGrant,
+			Access:     AccessByGrantAndOwner,
 		},
 		{
 			Type: "scheduler_job", Service: "scheduler", Glyph: "⏰",
@@ -325,7 +325,7 @@ func buildTypes() []ReferenceType {
 			Summary: []SummaryField{reference("person_id", "Person"), text("status", "Status"),
 				{"photo_count", "Photos", FormatNumber}},
 			Page:   "/faces?id={id}",
-			Access: AccessByGrant,
+			Access: AccessByGrantAndOwner,
 		},
 		{
 			Type: "place", Service: "location-store", Glyph: "📍",
@@ -334,7 +334,7 @@ func buildTypes() []ReferenceType {
 			LabelField: "name",
 			Summary:    []SummaryField{text("address", "Address"), text("kind", "Kind")},
 			Page:       "/places?id={id}",
-			Access:     AccessByGrant,
+			Access:     AccessByGrantAndOwner,
 		},
 		{
 			Type: "visit", Service: "location-store", Glyph: "📍",
@@ -343,7 +343,7 @@ func buildTypes() []ReferenceType {
 			LabelField: "place_name",
 			Summary:    []SummaryField{seconds("started_at", "From"), seconds("ended_at", "To"), reference("place_id", "Place")},
 			Page:       "/places?id={id}",
-			Access:     AccessByGrant,
+			Access:     AccessByGrantAndOwner,
 		},
 		{
 			Type: "trip", Service: "location-store", Glyph: "🧳",
@@ -352,7 +352,7 @@ func buildTypes() []ReferenceType {
 			LabelField: "title",
 			Summary:    []SummaryField{text("mode", "By"), seconds("started_at", "From"), seconds("ended_at", "To"), {"distance_meters", "Meters", FormatNumber}},
 			Page:       "/places?id={id}",
-			Access:     AccessByGrant,
+			Access:     AccessByGrantAndOwner,
 		},
 		{
 			Type: "conversation", Service: "message-store", Glyph: "🗨️",

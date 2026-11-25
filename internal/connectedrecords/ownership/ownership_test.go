@@ -61,3 +61,26 @@ func TestTheZeroScopeReachesNothing(t *testing.T) {
 		t.Fatalf("%s %v", condition, arguments)
 	}
 }
+
+func TestOwnerActedForIsOneOwner(t *testing.T) {
+	if owner, refusal := OwnerActedFor(requestAs(&Caller{PrincipalID: "principal_000002"}, "")); refusal != nil || owner != "principal_000002" {
+		t.Fatalf("a principal: %q %v", owner, refusal)
+	}
+	if _, refusal := OwnerActedFor(requestAs(&Caller{PrincipalID: "principal_000002"}, "?owner_principal_id=principal_000003")); refusal == nil || refusal.Status != http.StatusForbidden {
+		t.Fatalf("a principal naming another owner: %v", refusal)
+	}
+	administrator := &Caller{PrincipalID: "principal_000001", SeesEveryOwner: true}
+	if owner, refusal := OwnerActedFor(requestAs(administrator, "")); refusal != nil || owner != "principal_000001" {
+		t.Fatalf("an administrator naming nobody: %q %v", owner, refusal)
+	}
+	if owner, refusal := OwnerActedFor(requestAs(administrator, "?owner_principal_id=principal_000004")); refusal != nil || owner != "principal_000004" {
+		t.Fatalf("an administrator naming an owner: %q %v", owner, refusal)
+	}
+	service := &Caller{SeesEveryOwner: true}
+	if _, refusal := OwnerActedFor(requestAs(service, "")); refusal == nil || refusal.Status != http.StatusForbidden {
+		t.Fatalf("the service acting as nobody: %v", refusal)
+	}
+	if owner, refusal := OwnerActedFor(requestAs(service, "?owner_principal_id=principal_000004")); refusal != nil || owner != "principal_000004" {
+		t.Fatalf("the service naming an owner: %q %v", owner, refusal)
+	}
+}
