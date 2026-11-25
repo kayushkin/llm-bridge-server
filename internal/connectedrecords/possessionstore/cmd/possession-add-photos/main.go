@@ -21,9 +21,9 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	photostore "github.com/kayushkin/photo-store"
-	"github.com/kayushkin/photo-store/thumbnail"
-	possessionstore "github.com/kayushkin/possession-store"
+	photostore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore/thumbnail"
+	possessionstore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessionstore"
 )
 
 var mediaTypes = map[string]string{".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}

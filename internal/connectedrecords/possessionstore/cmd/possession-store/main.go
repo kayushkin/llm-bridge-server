@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	possessionstore "github.com/kayushkin/possession-store"
+	possessionstore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessionstore"
 )
 
 func main() {
