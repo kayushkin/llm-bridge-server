@@ -103,140 +103,15 @@ type PeerGrant struct {
 // PeerAccess is one row of peer_access. It holds no secret.
 type PeerAccess = msg.PeerAccess
 
-// migratePeers creates the peer tables, and drops the invite, token and link
-// tables they replaced on 2026-10-27. Those are dropped only while no token
-// was ever issued and no link ever made: a row in either would be a live way
-// in or out that a migration must not erase, so the start stops and says so.
-// Called from migrate().
-func (s *Store) migratePeers() error {
-	for _, table := range []string{"peer_tokens", "peer_links"} {
-		var exists int
-		if err := s.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&exists); err != nil {
-			return err
-		}
-		if exists == 0 {
-			continue
-		}
-		var rows int
-		if err := s.db.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&rows); err != nil {
-			return err
-		}
-		if rows > 0 {
-			return fmt.Errorf("%s holds %d rows: peer connections replaced invites, tokens and links on 2026-10-27, and a migration will not drop a live peer credential; revoke and remove them by hand, then delete the rows", table, rows)
-		}
-	}
-	_, err := s.db.Exec(`
-		DROP TABLE IF EXISTS peer_invites;
-		DROP TABLE IF EXISTS peer_tokens;
-		DROP TABLE IF EXISTS peer_links;
-		CREATE TABLE IF NOT EXISTS peer_connection_invites (
-			id              INTEGER PRIMARY KEY AUTOINCREMENT,
-			passphrase_hash TEXT NOT NULL UNIQUE,
-			created_by      TEXT NOT NULL,
-			created_at      DATETIME NOT NULL,
-			expires_at      DATETIME NOT NULL,
-			redeemed_at     DATETIME,
-			connection_id   TEXT NOT NULL DEFAULT ''
-		);
-		CREATE TABLE IF NOT EXISTS peer_connections (
-			id                      INTEGER PRIMARY KEY AUTOINCREMENT,
-			display_name            TEXT NOT NULL,
-			transport               TEXT NOT NULL,
-			role                    TEXT NOT NULL,
-			remote_base_url         TEXT NOT NULL DEFAULT '',
-			remote_connection_id    TEXT NOT NULL DEFAULT '',
-			inbound_credential_hash TEXT NOT NULL UNIQUE,
-			outbound_credential_id  TEXT NOT NULL,
-			peer_principal_id       TEXT NOT NULL DEFAULT '',
-			created_by              TEXT NOT NULL,
-			created_at              DATETIME NOT NULL,
-			removed_at              DATETIME,
-			removed_by              TEXT NOT NULL DEFAULT '',
-			remove_reason           TEXT NOT NULL DEFAULT ''
-		);
-		CREATE TABLE IF NOT EXISTS peer_grants (
-			id                 INTEGER PRIMARY KEY AUTOINCREMENT,
-			connection_id      TEXT NOT NULL,
-			token_hash         TEXT NOT NULL UNIQUE,
-			peer_principal_id  TEXT NOT NULL,
-			level              TEXT NOT NULL,
-			group_principal_id TEXT NOT NULL DEFAULT '',
-			created_by         TEXT NOT NULL,
-			created_at         DATETIME NOT NULL,
-			delivered_at       DATETIME,
-			revoked_at         DATETIME,
-			revoked_by         TEXT NOT NULL DEFAULT '',
-			revoke_reason      TEXT NOT NULL DEFAULT ''
-		);
-		CREATE INDEX IF NOT EXISTS idx_peer_grants_connection ON peer_grants(connection_id, id);
-		CREATE TABLE IF NOT EXISTS peer_access (
-			id                       INTEGER PRIMARY KEY AUTOINCREMENT,
-			connection_id            TEXT NOT NULL,
-			remote_grant_id          TEXT NOT NULL,
-			remote_peer_principal_id TEXT NOT NULL,
-			level                    TEXT NOT NULL,
-			credential_id            TEXT NOT NULL,
-			received_at              DATETIME NOT NULL,
-			ended_at                 DATETIME,
-			end_reason               TEXT NOT NULL DEFAULT ''
-		);
-		CREATE INDEX IF NOT EXISTS idx_peer_access_connection ON peer_access(connection_id, id);
-		CREATE TABLE IF NOT EXISTS peer_access_levels (
-			level_key          TEXT PRIMARY KEY,
-			group_principal_id TEXT NOT NULL,
-			provisioned_by     TEXT NOT NULL,
-			provisioned_at     DATETIME NOT NULL
-		);
-		CREATE TABLE IF NOT EXISTS peer_user_mappings (
-			id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-			peer_principal_id   TEXT NOT NULL,
-			remote_principal_id TEXT NOT NULL,
-			local_principal_id  TEXT NOT NULL,
-			created_by          TEXT NOT NULL,
-			created_at          DATETIME NOT NULL,
-			removed_at          DATETIME,
-			removed_by          TEXT NOT NULL DEFAULT '',
-			remove_reason       TEXT NOT NULL DEFAULT ''
-		);
-		CREATE UNIQUE INDEX IF NOT EXISTS idx_peer_user_mappings_live
-			ON peer_user_mappings(peer_principal_id, remote_principal_id) WHERE removed_at IS NULL;
-		CREATE TABLE IF NOT EXISTS session_peer_origins (
-			session_id          TEXT PRIMARY KEY,
-			peer_principal_id   TEXT NOT NULL,
-			remote_principal_id TEXT NOT NULL
-		);
-		CREATE INDEX IF NOT EXISTS idx_session_peer_origins_peer ON session_peer_origins(peer_principal_id);
-	`)
-	if err != nil {
-		return err
-	}
-	for _, column := range []string{
-		"ALTER TABLE peer_connections ADD COLUMN removed_by_other_server INTEGER NOT NULL DEFAULT 0",
-		"ALTER TABLE peer_connections ADD COLUMN removal_notice TEXT NOT NULL DEFAULT ''",
-		"ALTER TABLE peer_connections ADD COLUMN other_server_name TEXT NOT NULL DEFAULT ''",
-		"ALTER TABLE peer_connections ADD COLUMN other_server_name_reported_at DATETIME",
-		"ALTER TABLE peer_connections ADD COLUMN other_server_id TEXT NOT NULL DEFAULT ''",
-	} {
-		if _, err := s.db.Exec(column); err != nil && !strings.Contains(err.Error(), "duplicate column") {
-			return err
-		}
-	}
-	return nil
-}
-
 // InsertPeerConnectionInvite records a new invite and sets its ID.
 func (s *Store) InsertPeerConnectionInvite(invite *PeerConnectionInvite) error {
 	if invite.PassphraseHash == "" || invite.CreatedBy == "" || invite.ExpiresAt.IsZero() {
 		return fmt.Errorf("insert peer connection invite: passphrase hash, creator and expiry are all required")
 	}
-	result, err := s.db.Exec(`INSERT INTO peer_connection_invites (passphrase_hash, created_by, created_at, expires_at) VALUES (?, ?, ?, ?)`,
-		invite.PassphraseHash, invite.CreatedBy, invite.CreatedAt.UTC(), invite.ExpiresAt.UTC())
-	if err != nil {
+	var rowID int64
+	if err := s.db.QueryRow(`INSERT INTO peer_connection_invites (passphrase_hash, created_by, created_at, expires_at) VALUES ($1, $2, $3, $4) RETURNING id`,
+		invite.PassphraseHash, invite.CreatedBy, invite.CreatedAt.UTC(), invite.ExpiresAt.UTC()).Scan(&rowID); err != nil {
 		return fmt.Errorf("insert peer connection invite: %w", err)
-	}
-	rowID, err := result.LastInsertId()
-	if err != nil {
-		return err
 	}
 	invite.ID = prefixedIDOf(peerConnectionInviteIDPrefix, rowID)
 	return nil
@@ -246,7 +121,7 @@ func (s *Store) InsertPeerConnectionInvite(invite *PeerConnectionInvite) error {
 // may still be redeemed, without spending it: unknown, already redeemed and
 // expired each have their own error.
 func (s *Store) CheckPeerConnectionInvite(passphraseHash string, at time.Time) (PeerConnectionInvite, error) {
-	return checkPeerConnectionInvite(s.db.QueryRow(peerConnectionInviteSelect+` WHERE passphrase_hash = ?`, passphraseHash), at)
+	return checkPeerConnectionInvite(s.db.QueryRow(peerConnectionInviteSelect+` WHERE passphrase_hash = $1`, passphraseHash), at)
 }
 
 func checkPeerConnectionInvite(row *sql.Row, at time.Time) (PeerConnectionInvite, error) {
@@ -275,7 +150,7 @@ func (s *Store) RedeemPeerConnectionInvite(passphraseHash string, connection *Pe
 		return err
 	}
 	defer transaction.Rollback()
-	invite, err := checkPeerConnectionInvite(transaction.QueryRow(peerConnectionInviteSelect+` WHERE passphrase_hash = ?`, passphraseHash), at)
+	invite, err := checkPeerConnectionInvite(transaction.QueryRow(peerConnectionInviteSelect+` WHERE passphrase_hash = $1`, passphraseHash), at)
 	if err != nil {
 		return err
 	}
@@ -283,7 +158,7 @@ func (s *Store) RedeemPeerConnectionInvite(passphraseHash string, connection *Pe
 		return err
 	}
 	inviteRowID, _ := rowIDOfPrefixed(peerConnectionInviteIDPrefix, invite.ID)
-	if _, err := transaction.Exec(`UPDATE peer_connection_invites SET redeemed_at = ?, connection_id = ? WHERE id = ?`, at.UTC(), connection.ID, inviteRowID); err != nil {
+	if _, err := transaction.Exec(`UPDATE peer_connection_invites SET redeemed_at = $1, connection_id = $2 WHERE id = $3`, at.UTC(), connection.ID, inviteRowID); err != nil {
 		return fmt.Errorf("mark %s redeemed: %w", invite.ID, err)
 	}
 	return transaction.Commit()
@@ -313,7 +188,7 @@ func (s *Store) InsertPeerConnection(connection *PeerConnection) error {
 }
 
 func insertPeerConnection(executor interface {
-	Exec(string, ...any) (sql.Result, error)
+	QueryRow(string, ...any) *sql.Row
 }, connection *PeerConnection) error {
 	if connection.Transport == "" || connection.Role == "" ||
 		connection.InboundCredentialHash == "" || connection.OutboundCredentialID == "" || connection.CreatedBy == "" {
@@ -329,18 +204,14 @@ func insertPeerConnection(executor interface {
 	if connection.OtherServerNameReportedAt != nil {
 		otherServerNameReportedAt = connection.OtherServerNameReportedAt.UTC()
 	}
-	result, err := executor.Exec(`INSERT INTO peer_connections (display_name, transport, role, remote_base_url, remote_connection_id,
+	var rowID int64
+	if err := executor.QueryRow(`INSERT INTO peer_connections (display_name, transport, role, remote_base_url, remote_connection_id,
 		inbound_credential_hash, outbound_credential_id, created_by, created_at, other_server_name, other_server_name_reported_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
 		connection.DisplayName, string(connection.Transport), string(connection.Role), connection.RemoteBaseURL, connection.RemoteConnectionID,
 		connection.InboundCredentialHash, connection.OutboundCredentialID, connection.CreatedBy, connection.CreatedAt.UTC(),
-		connection.OtherServerName, otherServerNameReportedAt)
-	if err != nil {
+		connection.OtherServerName, otherServerNameReportedAt).Scan(&rowID); err != nil {
 		return fmt.Errorf("insert peer connection %q: %w", connection.DisplayName, err)
-	}
-	rowID, err := result.LastInsertId()
-	if err != nil {
-		return err
 	}
 	connection.ID = prefixedIDOf(peerConnectionIDPrefix, rowID)
 	return nil
@@ -352,7 +223,7 @@ func (s *Store) GetPeerConnection(id string) (PeerConnection, error) {
 	if !ok {
 		return PeerConnection{}, ErrPeerConnectionNotFound
 	}
-	found, err := scanPeerConnection(s.db.QueryRow(peerConnectionSelect+` WHERE id = ?`, rowID))
+	found, err := scanPeerConnection(s.db.QueryRow(peerConnectionSelect+` WHERE id = $1`, rowID))
 	return notFoundAs(found, err, ErrPeerConnectionNotFound)
 }
 
@@ -360,7 +231,7 @@ func (s *Store) GetPeerConnection(id string) (PeerConnection, error) {
 // server presents the credential that hashes to credentialHash, removed or
 // not; the caller decides what removed means.
 func (s *Store) GetPeerConnectionByInboundCredentialHash(credentialHash string) (PeerConnection, error) {
-	found, err := scanPeerConnection(s.db.QueryRow(peerConnectionSelect+` WHERE inbound_credential_hash = ?`, credentialHash))
+	found, err := scanPeerConnection(s.db.QueryRow(peerConnectionSelect+` WHERE inbound_credential_hash = $1`, credentialHash))
 	return notFoundAs(found, err, ErrPeerConnectionNotFound)
 }
 
@@ -397,14 +268,14 @@ func (s *Store) RecordPeerConnectionOtherServerID(id, serverID string) (replaced
 	}
 	defer transaction.Rollback()
 	var recorded string
-	if err := transaction.QueryRow(`SELECT other_server_id FROM peer_connections WHERE id = ?`, rowID).Scan(&recorded); err != nil {
+	if err := transaction.QueryRow(`SELECT other_server_id FROM peer_connections WHERE id = $1`, rowID).Scan(&recorded); err != nil {
 		_, err = notFoundAs("", err, ErrPeerConnectionNotFound)
 		return "", false, err
 	}
 	if recorded == serverID {
 		return "", false, nil
 	}
-	if _, err := transaction.Exec(`UPDATE peer_connections SET other_server_id = ? WHERE id = ?`, serverID, rowID); err != nil {
+	if _, err := transaction.Exec(`UPDATE peer_connections SET other_server_id = $1 WHERE id = $2`, serverID, rowID); err != nil {
 		return "", false, fmt.Errorf("record %s's other server id: %w", id, err)
 	}
 	if err := transaction.Commit(); err != nil {
@@ -421,8 +292,8 @@ func (s *Store) RecordPeerConnectionOtherServerName(id, name string, at time.Tim
 	if !ok {
 		return false, ErrPeerConnectionNotFound
 	}
-	result, err := s.db.Exec(`UPDATE peer_connections SET other_server_name = ?, other_server_name_reported_at = ?
-		WHERE id = ? AND (other_server_name != ? OR other_server_name_reported_at IS NULL)`, name, at.UTC(), rowID, name)
+	result, err := s.db.Exec(`UPDATE peer_connections SET other_server_name = $1, other_server_name_reported_at = $2
+		WHERE id = $3 AND (other_server_name != $4 OR other_server_name_reported_at IS NULL)`, name, at.UTC(), rowID, name)
 	if err != nil {
 		return false, fmt.Errorf("record %s's other server name: %w", id, err)
 	}
@@ -441,7 +312,7 @@ func (s *Store) SetPeerConnectionPeerPrincipal(id, principalID string) error {
 	if !ok {
 		return ErrPeerConnectionNotFound
 	}
-	result, err := s.db.Exec(`UPDATE peer_connections SET peer_principal_id = ? WHERE id = ? AND peer_principal_id = ''`, principalID, rowID)
+	result, err := s.db.Exec(`UPDATE peer_connections SET peer_principal_id = $1 WHERE id = $2 AND peer_principal_id = ''`, principalID, rowID)
 	if err != nil {
 		return fmt.Errorf("set %s's peer principal: %w", id, err)
 	}
@@ -462,7 +333,7 @@ func (s *Store) RemovePeerConnection(id, removedBy, reason string, removedAt tim
 	if !ok {
 		return PeerConnection{}, ErrPeerConnectionNotFound
 	}
-	result, err := s.db.Exec(`UPDATE peer_connections SET removed_at = ?, removed_by = ?, remove_reason = ? WHERE id = ? AND removed_at IS NULL`,
+	result, err := s.db.Exec(`UPDATE peer_connections SET removed_at = $1, removed_by = $2, remove_reason = $3 WHERE id = $4 AND removed_at IS NULL`,
 		removedAt.UTC(), removedBy, reason, rowID)
 	if err != nil {
 		return PeerConnection{}, fmt.Errorf("remove peer connection %s: %w", id, err)
@@ -488,7 +359,7 @@ func (s *Store) RecordPeerConnectionRemovalNotice(id, notice string) error {
 	if !ok {
 		return ErrPeerConnectionNotFound
 	}
-	_, err := s.db.Exec(`UPDATE peer_connections SET removal_notice = ? WHERE id = ?`, notice, rowID)
+	_, err := s.db.Exec(`UPDATE peer_connections SET removal_notice = $1 WHERE id = $2`, notice, rowID)
 	return err
 }
 
@@ -499,7 +370,7 @@ func (s *Store) RemovePeerConnectionByOtherServer(id, reason string, removedAt t
 	if !ok {
 		return PeerConnection{}, ErrPeerConnectionNotFound
 	}
-	result, err := s.db.Exec(`UPDATE peer_connections SET removed_at = ?, removed_by = '', remove_reason = ?, removed_by_other_server = 1 WHERE id = ? AND removed_at IS NULL`,
+	result, err := s.db.Exec(`UPDATE peer_connections SET removed_at = $1, removed_by = '', remove_reason = $2, removed_by_other_server = true WHERE id = $3 AND removed_at IS NULL`,
 		removedAt.UTC(), reason, rowID)
 	if err != nil {
 		return PeerConnection{}, fmt.Errorf("remove peer connection %s: %w", id, err)
@@ -531,20 +402,16 @@ func (s *Store) InsertPeerGrant(grant *PeerGrant) error {
 	}
 	defer transaction.Rollback()
 	var live int
-	if err := transaction.QueryRow(`SELECT COUNT(*) FROM peer_grants WHERE connection_id = ? AND revoked_at IS NULL`, grant.ConnectionID).Scan(&live); err != nil {
+	if err := transaction.QueryRow(`SELECT COUNT(*) FROM peer_grants WHERE connection_id = $1 AND revoked_at IS NULL`, grant.ConnectionID).Scan(&live); err != nil {
 		return err
 	}
 	if live > 0 {
 		return fmt.Errorf("%s already has a live grant; revoke it before granting another level", grant.ConnectionID)
 	}
-	result, err := transaction.Exec(`INSERT INTO peer_grants (connection_id, token_hash, peer_principal_id, level, group_principal_id, created_by, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`, grant.ConnectionID, grant.TokenHash, grant.PeerPrincipalID, grant.Level, grant.GroupPrincipalID, grant.CreatedBy, grant.CreatedAt.UTC())
-	if err != nil {
+	var rowID int64
+	if err := transaction.QueryRow(`INSERT INTO peer_grants (connection_id, token_hash, peer_principal_id, level, group_principal_id, created_by, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`, grant.ConnectionID, grant.TokenHash, grant.PeerPrincipalID, grant.Level, grant.GroupPrincipalID, grant.CreatedBy, grant.CreatedAt.UTC()).Scan(&rowID); err != nil {
 		return fmt.Errorf("insert peer grant on %s: %w", grant.ConnectionID, err)
-	}
-	rowID, err := result.LastInsertId()
-	if err != nil {
-		return err
 	}
 	if err := transaction.Commit(); err != nil {
 		return err
@@ -559,21 +426,21 @@ func (s *Store) GetPeerGrant(id string) (PeerGrant, error) {
 	if !ok {
 		return PeerGrant{}, ErrPeerGrantNotFound
 	}
-	found, err := scanPeerGrant(s.db.QueryRow(peerGrantSelect+` WHERE id = ?`, rowID))
+	found, err := scanPeerGrant(s.db.QueryRow(peerGrantSelect+` WHERE id = $1`, rowID))
 	return notFoundAs(found, err, ErrPeerGrantNotFound)
 }
 
 // GetPeerGrantByTokenHash returns the grant whose token hashes to tokenHash,
 // revoked or not; the caller decides what revoked means.
 func (s *Store) GetPeerGrantByTokenHash(tokenHash string) (PeerGrant, error) {
-	found, err := scanPeerGrant(s.db.QueryRow(peerGrantSelect+` WHERE token_hash = ?`, tokenHash))
+	found, err := scanPeerGrant(s.db.QueryRow(peerGrantSelect+` WHERE token_hash = $1`, tokenHash))
 	return notFoundAs(found, err, ErrPeerGrantNotFound)
 }
 
 // LivePeerGrantOfConnection returns the connection's grant that is not
 // revoked, or ErrPeerGrantNotFound.
 func (s *Store) LivePeerGrantOfConnection(connectionID string) (PeerGrant, error) {
-	found, err := scanPeerGrant(s.db.QueryRow(peerGrantSelect+` WHERE connection_id = ? AND revoked_at IS NULL ORDER BY id DESC LIMIT 1`, connectionID))
+	found, err := scanPeerGrant(s.db.QueryRow(peerGrantSelect+` WHERE connection_id = $1 AND revoked_at IS NULL ORDER BY id DESC LIMIT 1`, connectionID))
 	return notFoundAs(found, err, ErrPeerGrantNotFound)
 }
 
@@ -584,7 +451,7 @@ func (s *Store) MarkPeerGrantDelivered(id string, at time.Time) error {
 	if !ok {
 		return ErrPeerGrantNotFound
 	}
-	_, err := s.db.Exec(`UPDATE peer_grants SET delivered_at = ? WHERE id = ?`, at.UTC(), rowID)
+	_, err := s.db.Exec(`UPDATE peer_grants SET delivered_at = $1 WHERE id = $2`, at.UTC(), rowID)
 	return err
 }
 
@@ -595,7 +462,7 @@ func (s *Store) RevokePeerGrant(id, revokedBy, reason string, revokedAt time.Tim
 	if !ok {
 		return PeerGrant{}, ErrPeerGrantNotFound
 	}
-	result, err := s.db.Exec(`UPDATE peer_grants SET revoked_at = ?, revoked_by = ?, revoke_reason = ? WHERE id = ? AND revoked_at IS NULL`,
+	result, err := s.db.Exec(`UPDATE peer_grants SET revoked_at = $1, revoked_by = $2, revoke_reason = $3 WHERE id = $4 AND revoked_at IS NULL`,
 		revokedAt.UTC(), revokedBy, reason, rowID)
 	if err != nil {
 		return PeerGrant{}, fmt.Errorf("revoke peer grant %s: %w", id, err)
@@ -645,7 +512,7 @@ func (s *Store) InsertPeerAccess(access *PeerAccess) (replaced []PeerAccess, err
 		return nil, err
 	}
 	defer transaction.Rollback()
-	rows, err := transaction.Query(peerAccessSelect+` WHERE connection_id = ? AND ended_at IS NULL`, access.ConnectionID)
+	rows, err := transaction.Query(peerAccessSelect+` WHERE connection_id = $1 AND ended_at IS NULL`, access.ConnectionID)
 	if err != nil {
 		return nil, err
 	}
@@ -659,18 +526,14 @@ func (s *Store) InsertPeerAccess(access *PeerAccess) (replaced []PeerAccess, err
 	}
 	rows.Close()
 	reason := "replaced by " + access.RemoteGrantID
-	if _, err := transaction.Exec(`UPDATE peer_access SET ended_at = ?, end_reason = ? WHERE connection_id = ? AND ended_at IS NULL`,
+	if _, err := transaction.Exec(`UPDATE peer_access SET ended_at = $1, end_reason = $2 WHERE connection_id = $3 AND ended_at IS NULL`,
 		access.ReceivedAt.UTC(), reason, access.ConnectionID); err != nil {
 		return nil, err
 	}
-	result, err := transaction.Exec(`INSERT INTO peer_access (connection_id, remote_grant_id, remote_peer_principal_id, level, credential_id, received_at)
-		VALUES (?, ?, ?, ?, ?, ?)`, access.ConnectionID, access.RemoteGrantID, access.RemotePeerPrincipalID, access.Level, access.CredentialID, access.ReceivedAt.UTC())
-	if err != nil {
+	var rowID int64
+	if err := transaction.QueryRow(`INSERT INTO peer_access (connection_id, remote_grant_id, remote_peer_principal_id, level, credential_id, received_at)
+		VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`, access.ConnectionID, access.RemoteGrantID, access.RemotePeerPrincipalID, access.Level, access.CredentialID, access.ReceivedAt.UTC()).Scan(&rowID); err != nil {
 		return nil, fmt.Errorf("insert peer access on %s: %w", access.ConnectionID, err)
-	}
-	rowID, err := result.LastInsertId()
-	if err != nil {
-		return nil, err
 	}
 	if err := transaction.Commit(); err != nil {
 		return nil, err
@@ -682,7 +545,7 @@ func (s *Store) InsertPeerAccess(access *PeerAccess) (replaced []PeerAccess, err
 // LivePeerAccessOfConnection returns the access the connection holds now, or
 // ErrPeerAccessNotFound.
 func (s *Store) LivePeerAccessOfConnection(connectionID string) (PeerAccess, error) {
-	found, err := scanPeerAccess(s.db.QueryRow(peerAccessSelect+` WHERE connection_id = ? AND ended_at IS NULL ORDER BY id DESC LIMIT 1`, connectionID))
+	found, err := scanPeerAccess(s.db.QueryRow(peerAccessSelect+` WHERE connection_id = $1 AND ended_at IS NULL ORDER BY id DESC LIMIT 1`, connectionID))
 	return notFoundAs(found, err, ErrPeerAccessNotFound)
 }
 
@@ -698,7 +561,7 @@ func (s *Store) EndPeerAccess(connectionID, remoteGrantID, reason string, at tim
 		return PeerAccess{}, fmt.Errorf("%w: %s holds %s, not %s", ErrPeerAccessNotFound, connectionID, access.RemoteGrantID, remoteGrantID)
 	}
 	rowID, _ := rowIDOfPrefixed(peerAccessIDPrefix, access.ID)
-	if _, err := s.db.Exec(`UPDATE peer_access SET ended_at = ?, end_reason = ? WHERE id = ? AND ended_at IS NULL`, at.UTC(), reason, rowID); err != nil {
+	if _, err := s.db.Exec(`UPDATE peer_access SET ended_at = $1, end_reason = $2 WHERE id = $3 AND ended_at IS NULL`, at.UTC(), reason, rowID); err != nil {
 		return PeerAccess{}, err
 	}
 	ended := at.UTC()
@@ -711,7 +574,7 @@ func (s *Store) EndPeerAccess(connectionID, remoteGrantID, reason string, at tim
 // or ErrPeerAccessLevelNotProvisioned.
 func (s *Store) PeerAccessLevelGroup(levelKey string) (string, error) {
 	var groupID string
-	err := s.db.QueryRow(`SELECT group_principal_id FROM peer_access_levels WHERE level_key = ?`, levelKey).Scan(&groupID)
+	err := s.db.QueryRow(`SELECT group_principal_id FROM peer_access_levels WHERE level_key = $1`, levelKey).Scan(&groupID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", ErrPeerAccessLevelNotProvisioned
 	}
@@ -721,7 +584,7 @@ func (s *Store) PeerAccessLevelGroup(levelKey string) (string, error) {
 // RecordPeerAccessLevelGroup records the group a level's provisioning made.
 // A level provisioned before keeps its group: the second call is an error.
 func (s *Store) RecordPeerAccessLevelGroup(levelKey, groupPrincipalID, provisionedBy string, at time.Time) error {
-	_, err := s.db.Exec(`INSERT INTO peer_access_levels (level_key, group_principal_id, provisioned_by, provisioned_at) VALUES (?, ?, ?, ?)`,
+	_, err := s.db.Exec(`INSERT INTO peer_access_levels (level_key, group_principal_id, provisioned_by, provisioned_at) VALUES ($1, $2, $3, $4)`,
 		levelKey, groupPrincipalID, provisionedBy, at.UTC())
 	if err != nil {
 		return fmt.Errorf("record the group of peer access level %s: %w", levelKey, err)

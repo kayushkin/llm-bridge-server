@@ -132,22 +132,3 @@ func TestRecordSessionCost_UnknownSessionIsAnError(t *testing.T) {
 		t.Fatal("recording cost for a session with no row succeeded")
 	}
 }
-
-// Rows written before the cost estimate carry the API sum only in spend_usd; the
-// migration copies it into the breakdown so api_spend_total continues from it.
-func TestMigration_CopiesTheOldAPISumIntoTheBreakdown(t *testing.T) {
-	s := spendFixture(t, "br_spend_legacy")
-	if _, err := s.db.Exec(`UPDATE sessions SET spend_usd=4.25, api_spend_detail='{"calls":3}' WHERE bridge_id='br_spend_legacy'`); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.migrate(); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-	totalUSD, detail, err := s.SessionSpend("br_spend_legacy")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if totalUSD != 4.25 || detail.APISpendUSD != 4.25 || detail.Calls != 3 {
-		t.Errorf("after migration: $%.2f %+v", totalUSD, detail)
-	}
-}

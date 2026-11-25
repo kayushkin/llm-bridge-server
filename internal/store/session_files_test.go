@@ -1,56 +1,12 @@
 package store
 
 import (
-	"database/sql"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/kayushkin/llm-bridge/msg"
 )
-
-// A session_files table from before files said where they came from: its
-// rows keep reading, with no origin, once the store has opened it, and
-// opening it again adds nothing twice.
-func TestASessionFileRecordedBeforeOriginsStillLists(t *testing.T) {
-	databasePath := filepath.Join(t.TempDir(), "bridge.db")
-	old, err := sql.Open("sqlite", databasePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := old.Exec(`
-		CREATE TABLE session_files (
-			file_id    TEXT PRIMARY KEY,
-			session_id TEXT NOT NULL,
-			filename   TEXT NOT NULL,
-			media_type TEXT NOT NULL,
-			size_bytes INTEGER NOT NULL,
-			shared_by  TEXT NOT NULL,
-			path       TEXT NOT NULL,
-			created_at DATETIME NOT NULL
-		);
-		INSERT INTO session_files VALUES ('file_000001', 'br_old', 'hood.png', 'image/png', 4, 'user', '/work/session-files/br_old/file_000001/hood.png', '2026-11-01 10:00:00');
-	`); err != nil {
-		t.Fatal(err)
-	}
-	old.Close()
-
-	for opening := 1; opening <= 2; opening++ {
-		s, err := New(databasePath)
-		if err != nil {
-			t.Fatalf("opening %d: %v", opening, err)
-		}
-		files, err := s.ListSessionFiles("br_old")
-		if err != nil || len(files) != 1 {
-			t.Fatalf("opening %d: listed %+v, %v", opening, files, err)
-		}
-		if files[0].FileID != "file_000001" || files[0].SourcePath != "" || files[0].Generation != nil {
-			t.Errorf("opening %d: old row = %+v", opening, files[0])
-		}
-		s.Close()
-	}
-}
 
 func TestASessionFileKeepsItsOrigin(t *testing.T) {
 	s := testStore(t)

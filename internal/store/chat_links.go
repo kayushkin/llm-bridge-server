@@ -31,96 +31,6 @@ var ErrChatLinkNotFound = errors.New("chat link not found")
 // link already holds: one conversation reaches one session.
 var ErrChatLinkConversationTaken = errors.New("another active chat link holds this conversation")
 
-// migrateChatLinks creates the links between sessions and outside
-// conversations, and the log of what went each way. Rows are never deleted:
-// an ended link keeps its log.
-func (s *Store) migrateChatLinks() error {
-	_, err := s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS chat_links (
-			id                       INTEGER PRIMARY KEY AUTOINCREMENT,
-			session_id               TEXT NOT NULL,
-			account_id               TEXT NOT NULL,
-			platform                 TEXT NOT NULL,
-			conversation_id          TEXT NOT NULL,
-			person_display_name      TEXT NOT NULL,
-			created_by_principal_id  TEXT NOT NULL DEFAULT '',
-			created_by_session_agent INTEGER NOT NULL DEFAULT 0,
-			created_at               DATETIME NOT NULL,
-			ended_at                 DATETIME
-		);
-		CREATE INDEX IF NOT EXISTS idx_chat_links_session ON chat_links(session_id, id);
-		CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_links_active_conversation
-			ON chat_links(account_id, platform, conversation_id) WHERE ended_at IS NULL;
-		CREATE TABLE IF NOT EXISTS chat_link_messages (
-			id                   INTEGER PRIMARY KEY AUTOINCREMENT,
-			link_id              INTEGER NOT NULL REFERENCES chat_links(id),
-			direction            TEXT NOT NULL,
-			state                TEXT NOT NULL,
-			body                 TEXT NOT NULL,
-			attachments          TEXT NOT NULL DEFAULT '[]',
-			platform_message_ids TEXT NOT NULL DEFAULT '[]',
-			bus_event_id         TEXT NOT NULL DEFAULT '',
-			delivery_id          TEXT NOT NULL DEFAULT '',
-			bridge_message_id    TEXT NOT NULL DEFAULT '',
-			attempts             INTEGER NOT NULL DEFAULT 0,
-			error                TEXT NOT NULL DEFAULT '',
-			created_at           DATETIME NOT NULL,
-			updated_at           DATETIME NOT NULL,
-			next_attempt_at      DATETIME
-		);
-		CREATE INDEX IF NOT EXISTS idx_chat_link_messages_link ON chat_link_messages(link_id, id);
-		CREATE INDEX IF NOT EXISTS idx_chat_link_messages_state ON chat_link_messages(state, direction);
-		CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_link_messages_bus_event
-			ON chat_link_messages(link_id, bus_event_id) WHERE bus_event_id != '';
-	`)
-	if err != nil {
-		return err
-	}
-	return s.addChatLinkMessageSenderColumns()
-}
-
-// addChatLinkMessageSenderColumns adds who sent a message (2026-11-04), only
-// when missing; any other failure is returned.
-func (s *Store) addChatLinkMessageSenderColumns() error {
-	existing := map[string]bool{}
-	rows, err := s.db.Query(`PRAGMA table_info(chat_link_messages)`)
-	if err != nil {
-		return err
-	}
-	for rows.Next() {
-		var position, notNull, primaryKey int
-		var name, columnType string
-		var defaultValue sql.NullString
-		if err := rows.Scan(&position, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
-			rows.Close()
-			return err
-		}
-		existing[name] = true
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return err
-	}
-	rows.Close()
-	for _, column := range []struct{ name, definition string }{
-		{"sender_platform_user_id", "TEXT NOT NULL DEFAULT ''"},
-		{"sender_platform_display_name", "TEXT NOT NULL DEFAULT ''"},
-		{"sender_person_id", "TEXT NOT NULL DEFAULT ''"},
-		{"sender_principal_id", "TEXT NOT NULL DEFAULT ''"},
-		{"sender_person_display_name", "TEXT NOT NULL DEFAULT ''"},
-		{"sender_resolved_at", "DATETIME"},
-		{"sent_body", "TEXT NOT NULL DEFAULT ''"},
-	} {
-		if existing[column.name] {
-			continue
-		}
-		if _, err := s.db.Exec(`ALTER TABLE chat_link_messages ADD COLUMN ` + column.name + ` ` + column.definition); err != nil {
-			return fmt.Errorf("add chat_link_messages.%s: %w", column.name, err)
-		}
-	}
-	return nil
-}
-
 func chatLinkIDOf(rowID int64) string { return fmt.Sprintf("%s%06d", chatLinkIDPrefix, rowID) }
 
 func chatLinkMessageIDOf(rowID int64) string {
@@ -163,21 +73,18 @@ func scanChatLink(scanner interface{ Scan(...any) error }) (ChatLink, error) {
 // CreateChatLink records an active link. A conversation another active link
 // holds is ErrChatLinkConversationTaken.
 func (s *Store) CreateChatLink(link ChatLink) (ChatLink, error) {
-	result, err := s.db.Exec(`INSERT INTO chat_links (session_id, account_id, platform, conversation_id, person_display_name,
-		created_by_principal_id, created_by_session_agent, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+	var rowID int64
+	err := s.db.QueryRow(`INSERT INTO chat_links (session_id, account_id, platform, conversation_id, person_display_name,
+		created_by_principal_id, created_by_session_agent, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
 		link.SessionID, link.AccountID, link.Platform, link.ConversationID, link.PersonDisplayName,
-		link.CreatedByPrincipalID, link.CreatedBySessionAgent, link.CreatedAt.UTC())
+		link.CreatedByPrincipalID, link.CreatedBySessionAgent, link.CreatedAt.UTC()).Scan(&rowID)
 	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+		if isUniqueViolation(err) {
 			return ChatLink{}, ErrChatLinkConversationTaken
 		}
 		return ChatLink{}, err
 	}
-	rowID, err := result.LastInsertId()
-	if err != nil {
-		return ChatLink{}, err
-	}
-	return scanChatLink(s.db.QueryRow(chatLinkSelect+` WHERE id = ?`, rowID))
+	return scanChatLink(s.db.QueryRow(chatLinkSelect+` WHERE id = $1`, rowID))
 }
 
 // GetChatLink answers one of a session's links.
@@ -186,7 +93,7 @@ func (s *Store) GetChatLink(sessionID, linkID string) (ChatLink, error) {
 	if !ok {
 		return ChatLink{}, ErrChatLinkNotFound
 	}
-	link, err := scanChatLink(s.db.QueryRow(chatLinkSelect+` WHERE session_id = ? AND id = ?`, sessionID, rowID))
+	link, err := scanChatLink(s.db.QueryRow(chatLinkSelect+` WHERE session_id = $1 AND id = $2`, sessionID, rowID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return ChatLink{}, ErrChatLinkNotFound
 	}
@@ -194,12 +101,12 @@ func (s *Store) GetChatLink(sessionID, linkID string) (ChatLink, error) {
 }
 
 func (s *Store) getChatLinkByRowID(rowID int64) (ChatLink, error) {
-	return scanChatLink(s.db.QueryRow(chatLinkSelect+` WHERE id = ?`, rowID))
+	return scanChatLink(s.db.QueryRow(chatLinkSelect+` WHERE id = $1`, rowID))
 }
 
 // ListChatLinks answers a session's links, active and ended, oldest first.
 func (s *Store) ListChatLinks(sessionID string) ([]ChatLink, error) {
-	return s.queryChatLinks(chatLinkSelect+` WHERE session_id = ? ORDER BY id`, sessionID)
+	return s.queryChatLinks(chatLinkSelect+` WHERE session_id = $1 ORDER BY id`, sessionID)
 }
 
 // ActiveChatLinks answers every link not ended, oldest first.
@@ -226,7 +133,7 @@ func (s *Store) queryChatLinks(query string, arguments ...any) ([]ChatLink, erro
 
 // ActiveChatLinkFor answers the active link holding a conversation, or false.
 func (s *Store) ActiveChatLinkFor(accountID, platform, conversationID string) (ChatLink, bool, error) {
-	link, err := scanChatLink(s.db.QueryRow(chatLinkSelect+` WHERE account_id = ? AND platform = ? AND conversation_id = ? AND ended_at IS NULL`,
+	link, err := scanChatLink(s.db.QueryRow(chatLinkSelect+` WHERE account_id = $1 AND platform = $2 AND conversation_id = $3 AND ended_at IS NULL`,
 		accountID, platform, conversationID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return ChatLink{}, false, nil
@@ -245,7 +152,7 @@ func (s *Store) EndChatLink(sessionID, linkID string, endedAt time.Time) (ChatLi
 		return ChatLink{}, err
 	}
 	rowID, _ := rowIDWithPrefix(linkID, chatLinkIDPrefix)
-	if _, err := s.db.Exec(`UPDATE chat_links SET ended_at = ? WHERE id = ? AND ended_at IS NULL`, endedAt.UTC(), rowID); err != nil {
+	if _, err := s.db.Exec(`UPDATE chat_links SET ended_at = $1 WHERE id = $2 AND ended_at IS NULL`, endedAt.UTC(), rowID); err != nil {
 		return ChatLink{}, err
 	}
 	if link, err = s.GetChatLink(sessionID, linkID); err != nil {
@@ -314,7 +221,7 @@ func (s *Store) ChatLinkMessages(linkID string) ([]ChatLinkMessage, error) {
 	if !ok {
 		return nil, ErrChatLinkNotFound
 	}
-	return s.queryChatLinkMessages(chatLinkMessageSelect+` WHERE link_id = ? ORDER BY id`, rowID)
+	return s.queryChatLinkMessages(chatLinkMessageSelect+` WHERE link_id = $1 ORDER BY id`, rowID)
 }
 
 // ChatLinkMessagesInState answers a link's messages one way in one state,
@@ -324,14 +231,14 @@ func (s *Store) ChatLinkMessagesInState(linkID string, direction msg.ChatLinkDir
 	if !ok {
 		return nil, ErrChatLinkNotFound
 	}
-	return s.queryChatLinkMessages(chatLinkMessageSelect+` WHERE link_id = ? AND direction = ? AND state = ? ORDER BY id`,
+	return s.queryChatLinkMessages(chatLinkMessageSelect+` WHERE link_id = $1 AND direction = $2 AND state = $3 ORDER BY id`,
 		rowID, string(direction), string(state))
 }
 
 // ChatLinkMessagesOfDelivery answers the messages one delivery id ties
 // together, oldest first.
 func (s *Store) ChatLinkMessagesOfDelivery(deliveryID string) ([]ChatLinkMessage, error) {
-	return s.queryChatLinkMessages(chatLinkMessageSelect+` WHERE delivery_id = ? ORDER BY id`, deliveryID)
+	return s.queryChatLinkMessages(chatLinkMessageSelect+` WHERE delivery_id = $1 ORDER BY id`, deliveryID)
 }
 
 // ChatLinkOfMessage answers the link a message belongs to.
@@ -381,7 +288,7 @@ func (s *Store) AddInboundChatLinkMessage(inbound InboundChatLinkMessage) (bool,
 	}
 	result, err := s.db.Exec(`INSERT INTO chat_link_messages (link_id, direction, state, body, attachments, platform_message_ids, bus_event_id,
 		sender_platform_user_id, sender_platform_display_name, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT DO NOTHING`,
 		rowID, string(msg.ChatLinkInbound), string(msg.ChatLinkMessagePending), body, string(encodedAttachments), string(encodedIDs), busEventID,
 		inbound.SenderPlatformUserID, inbound.SenderPlatformDisplayName, at.UTC(), at.UTC())
 	if err != nil {
@@ -405,8 +312,8 @@ func (s *Store) RecordChatLinkMessageSender(messageID string, sender ChatLinkMes
 	if !ok {
 		return fmt.Errorf("not a chat link message id: %q", messageID)
 	}
-	_, err := s.db.Exec(`UPDATE chat_link_messages SET sender_person_id = ?, sender_principal_id = ?, sender_person_display_name = ?,
-		sender_resolved_at = ?, updated_at = ? WHERE id = ?`,
+	_, err := s.db.Exec(`UPDATE chat_link_messages SET sender_person_id = $1, sender_principal_id = $2, sender_person_display_name = $3,
+		sender_resolved_at = $4, updated_at = $5 WHERE id = $6`,
 		sender.PersonID, sender.PrincipalID, sender.PersonDisplayName, at.UTC(), at.UTC(), rowID)
 	return err
 }
@@ -424,8 +331,8 @@ func (s *Store) MarkChatLinkMessagesInSession(messageIDs []string, deliveryID, b
 		if !ok {
 			return fmt.Errorf("not a chat link message id: %q", messageID)
 		}
-		result, err := transaction.Exec(`UPDATE chat_link_messages SET state = ?, delivery_id = ?, bridge_message_id = ?, attempts = attempts + 1, error = '', updated_at = ?
-			WHERE id = ? AND state = ?`, string(msg.ChatLinkMessageInSession), deliveryID, bridgeMessageID, at.UTC(), rowID, string(msg.ChatLinkMessagePending))
+		result, err := transaction.Exec(`UPDATE chat_link_messages SET state = $1, delivery_id = $2, bridge_message_id = $3, attempts = attempts + 1, error = '', updated_at = $4
+			WHERE id = $5 AND state = $6`, string(msg.ChatLinkMessageInSession), deliveryID, bridgeMessageID, at.UTC(), rowID, string(msg.ChatLinkMessagePending))
 		if err != nil {
 			return err
 		}
@@ -446,7 +353,7 @@ func (s *Store) RecordChatLinkDeliveryAttemptFailed(messageIDs []string, reason 
 		if !ok {
 			return fmt.Errorf("not a chat link message id: %q", messageID)
 		}
-		if _, err := s.db.Exec(`UPDATE chat_link_messages SET attempts = attempts + 1, error = ?, updated_at = ? WHERE id = ?`,
+		if _, err := s.db.Exec(`UPDATE chat_link_messages SET attempts = attempts + 1, error = $1, updated_at = $2 WHERE id = $3`,
 			reason, at.UTC(), rowID); err != nil {
 			return err
 		}
@@ -462,7 +369,7 @@ func (s *Store) SetChatLinkMessageState(messageID string, state msg.ChatLinkMess
 		return fmt.Errorf("not a chat link message id: %q", messageID)
 	}
 	if platformMessageIDs == nil {
-		_, err := s.db.Exec(`UPDATE chat_link_messages SET state = ?, error = ?, updated_at = ?, next_attempt_at = NULL WHERE id = ?`,
+		_, err := s.db.Exec(`UPDATE chat_link_messages SET state = $1, error = $2, updated_at = $3, next_attempt_at = NULL WHERE id = $4`,
 			string(state), reason, at.UTC(), rowID)
 		return err
 	}
@@ -470,7 +377,7 @@ func (s *Store) SetChatLinkMessageState(messageID string, state msg.ChatLinkMess
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`UPDATE chat_link_messages SET state = ?, error = ?, platform_message_ids = ?, updated_at = ?, next_attempt_at = NULL WHERE id = ?`,
+	_, err = s.db.Exec(`UPDATE chat_link_messages SET state = $1, error = $2, platform_message_ids = $3, updated_at = $4, next_attempt_at = NULL WHERE id = $5`,
 		string(state), reason, string(encoded), at.UTC(), rowID)
 	return err
 }
@@ -484,7 +391,7 @@ func (s *Store) AddOutboundChatLinkMessage(linkID, deliveryID, body string, stat
 	if !ok {
 		return ChatLinkMessage{}, ErrChatLinkNotFound
 	}
-	existing, err := s.queryChatLinkMessages(chatLinkMessageSelect+` WHERE link_id = ? AND direction = ? AND delivery_id = ?`,
+	existing, err := s.queryChatLinkMessages(chatLinkMessageSelect+` WHERE link_id = $1 AND direction = $2 AND delivery_id = $3`,
 		rowID, string(msg.ChatLinkOutbound), deliveryID)
 	if err != nil {
 		return ChatLinkMessage{}, err
@@ -492,17 +399,13 @@ func (s *Store) AddOutboundChatLinkMessage(linkID, deliveryID, body string, stat
 	if len(existing) > 0 {
 		return existing[0], nil
 	}
-	result, err := s.db.Exec(`INSERT INTO chat_link_messages (link_id, direction, state, body, delivery_id, error, created_at, updated_at, next_attempt_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		rowID, string(msg.ChatLinkOutbound), string(state), body, deliveryID, reason, at.UTC(), at.UTC(), at.UTC())
-	if err != nil {
+	var messageRowID int64
+	if err := s.db.QueryRow(`INSERT INTO chat_link_messages (link_id, direction, state, body, delivery_id, error, created_at, updated_at, next_attempt_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+		rowID, string(msg.ChatLinkOutbound), string(state), body, deliveryID, reason, at.UTC(), at.UTC(), at.UTC()).Scan(&messageRowID); err != nil {
 		return ChatLinkMessage{}, err
 	}
-	messageRowID, err := result.LastInsertId()
-	if err != nil {
-		return ChatLinkMessage{}, err
-	}
-	return scanChatLinkMessage(s.db.QueryRow(chatLinkMessageSelect+` WHERE id = ?`, messageRowID))
+	return scanChatLinkMessage(s.db.QueryRow(chatLinkMessageSelect+` WHERE id = $1`, messageRowID))
 }
 
 // RecordChatLinkSendFailed counts a failed send of an outbound message and
@@ -512,7 +415,7 @@ func (s *Store) RecordChatLinkSendFailed(messageID, reason string, nextAttemptAt
 	if !ok {
 		return fmt.Errorf("not a chat link message id: %q", messageID)
 	}
-	_, err := s.db.Exec(`UPDATE chat_link_messages SET attempts = attempts + 1, error = ?, next_attempt_at = ?, updated_at = ? WHERE id = ?`,
+	_, err := s.db.Exec(`UPDATE chat_link_messages SET attempts = attempts + 1, error = $1, next_attempt_at = $2, updated_at = $3 WHERE id = $4`,
 		reason, nextAttemptAt.UTC(), at.UTC(), rowID)
 	return err
 }
@@ -521,7 +424,7 @@ func (s *Store) RecordChatLinkSendFailed(messageID, reason string, nextAttemptAt
 // due, oldest first, whether or not their link has since ended: a reply the
 // session wrote before the end is still owed.
 func (s *Store) DueOutboundChatLinkMessages(now time.Time) ([]ChatLinkMessage, error) {
-	return s.queryChatLinkMessages(chatLinkMessageSelect+` WHERE direction = ? AND state = ? AND (next_attempt_at IS NULL OR next_attempt_at <= ?) ORDER BY id`,
+	return s.queryChatLinkMessages(chatLinkMessageSelect+` WHERE direction = $1 AND state = $2 AND (next_attempt_at IS NULL OR next_attempt_at <= $3) ORDER BY id`,
 		string(msg.ChatLinkOutbound), string(msg.ChatLinkMessagePending), now.UTC())
 }
 
@@ -532,7 +435,7 @@ func (s *Store) SetChatLinkMessageSentBody(messageID, sentBody string) error {
 	if !ok {
 		return fmt.Errorf("not a chat link message id: %q", messageID)
 	}
-	_, err := s.db.Exec(`UPDATE chat_link_messages SET sent_body = ? WHERE id = ?`, sentBody, rowID)
+	_, err := s.db.Exec(`UPDATE chat_link_messages SET sent_body = $1 WHERE id = $2`, sentBody, rowID)
 	return err
 }
 
@@ -547,7 +450,7 @@ func (s *Store) ChatLinkRecipientPrincipalID(linkID, sessionPrincipalID string) 
 	}
 	var principalID string
 	err := s.db.QueryRow(`SELECT sender_principal_id FROM chat_link_messages
-		WHERE link_id = ? AND direction = ? AND sender_principal_id != '' AND sender_principal_id != ?
+		WHERE link_id = $1 AND direction = $2 AND sender_principal_id != '' AND sender_principal_id != $3
 		ORDER BY id DESC LIMIT 1`, linkRowID, string(msg.ChatLinkInbound), sessionPrincipalID).Scan(&principalID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil

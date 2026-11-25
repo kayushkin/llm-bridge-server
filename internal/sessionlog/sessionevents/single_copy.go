@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -22,33 +23,41 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// SingleCopy keeps every session event in the session log only. The bridge
-// database keeps the rows events describe — a session's status, a runner
-// spawn's stored-through number — and those are written after their event.
+// SingleCopy keeps every session event in the session log, the only copy.
+// The bridge's core module keeps the rows events describe — a session's
+// status, a runner spawn's stored-through number — and each is written in the
+// transaction of its event, on the session log's writer connection.
 //
-// # Two writes across two databases
+// # The rows written with their events
 //
-// A status and its session row, and a runner entry and its spawn's number,
-// were each one SQLite transaction. Across two databases the event is
-// written first, with an idempotency key, and the row second:
+// The session log's role may read and write only those columns of the core
+// module's tables (store.GrantSessionLogWrites), and the statements come from
+// the core module (store.SessionRowLockForStatus, store.SessionStatusRowWrite,
+// store.RunnerSpawnAdvance), which owns their tables:
 //
-//   - A runner entry's key is its spawn and number. If the server stops
-//     after the event and before the number, the runner sends the entry
-//     again; the event is found under its key and not stored twice, and the
-//     number is then written.
-//   - A status's key is drawn for each write, so a write retried after a
-//     commit that may have landed stores one event. The row write is
-//     conditional on AsOf, so an older status never replaces a newer one
-//     and writing a status twice changes nothing. If the server stops
-//     between the two, the row is behind its newest status event, and
-//     RepairSessionStatusRows copies that status onto the row at the next
-//     start, before the startup reconcile reads the rows.
+//   - A status locks its session row first, in the same round trip as the
+//     event's own first read, and is stored only when the row exists; the
+//     row is written in the batch that stores the event, and both commit
+//     together. A session with no row gets no status event.
+//   - A runner entry's event and its spawn's number commit together, so a
+//     runner is never told an entry is stored that is not, nor sent one
+//     twice.
+//
+// # Retries
+//
+// Each write still carries an idempotency key: a runner entry's names its
+// spawn and number, and a status's is drawn for each write. A write is
+// retried while Postgres restarts, and a retry after a commit that was cut
+// off cannot know whether it landed; the key makes it find the stored event
+// rather than store a second one. The rows committed with that event, so the
+// retry writes nothing else.
 //
 // # Numbering
 //
 // OpenSingleCopy moves the session log's numbering above the highest id the
-// bridge database handed out, so a Last-Event-ID or a status AsOf that a
-// client holds from it is below every id stored here.
+// bridge's archived SQLite events table handed out, which the import of the
+// bridge database recorded, so a Last-Event-ID or a status AsOf that a client
+// holds from it is below every id stored here.
 type SingleCopy struct {
 	bridge     *store.Store
 	sessionLog *logstoreserver.Server
@@ -71,79 +80,30 @@ const (
 	writeRetryDeadline  = 30 * time.Second
 )
 
-// statusRepairWindow is how many of the newest events RepairSessionStatusRows
-// reads. A status whose row write was cut off is among the last events the
-// stopped process wrote, and tens of thousands of events are many minutes of
-// the busiest load measured.
-const statusRepairWindow = 20000
-
-// OpenSingleCopy makes the session log the only copy: it raises the session
-// log's numbering above the bridge database's, and repairs any session row a
-// stop left behind its newest status. Call it before any session starts.
+// OpenSingleCopy makes the session log the only copy of session events: it
+// raises the session log's numbering above the archived events' highest id.
+// Call it before any session starts.
 func OpenSingleCopy(ctx context.Context, bridge *store.Store, sessionLog *logstoreserver.Server) (*SingleCopy, error) {
-	highest, err := bridge.HighestEventID()
+	highest, _, err := bridge.HighestArchivedEventID()
 	if err != nil {
-		return nil, fmt.Errorf("read the bridge database's highest event id: %w", err)
+		return nil, fmt.Errorf("read the highest id of the archived session events: %w", err)
 	}
 	events := sessionLog.Store()
 	numbering, err := events.RaiseNumberingAboveBridgeDatabase(ctx, highest)
 	if err != nil {
 		return nil, fmt.Errorf("raise the session log's numbering above %d: %w", highest, err)
 	}
-	c := &SingleCopy{bridge: bridge, sessionLog: sessionLog, events: events, numbering: numbering, sleep: time.Sleep}
-	repaired, err := c.RepairSessionStatusRows()
-	if err != nil {
-		return nil, fmt.Errorf("repair session rows from their status events: %w", err)
-	}
-	if repaired > 0 {
-		log.Printf("[session-events] %d session rows were behind their newest status event and now carry it", repaired)
-	}
-	return c, nil
+	return &SingleCopy{bridge: bridge, sessionLog: sessionLog, events: events, numbering: numbering, sleep: time.Sleep}, nil
 }
 
 // Numbering is the record of where the session log's own numbering starts.
 func (c *SingleCopy) Numbering() logstorestore.SingleCopyNumbering { return c.numbering }
 
-// RepairSessionStatusRows copies onto each session row the newest status
-// event stored for it since the session log became the only copy, where the
-// row holds an older one. It answers how many rows changed.
-func (c *SingleCopy) RepairSessionStatusRows() (int, error) {
-	statuses, err := c.events.LatestSessionStatusesAmongNewestEvents(statusRepairWindow)
-	if err != nil {
-		return 0, err
-	}
-	repaired := 0
-	for _, status := range statuses {
-		if status.ID < c.numbering.FirstEventID {
-			// Written by the old path, which wrote its row in the same
-			// transaction and stamped it with the bridge database's id.
-			continue
-		}
-		var ev msg.Event
-		if err := json.Unmarshal(status.Data, &ev); err != nil {
-			return repaired, fmt.Errorf("decode status event %d: %w", status.ID, err)
-		}
-		if ev.Status == nil {
-			return repaired, fmt.Errorf("status event %d carries no status", status.ID)
-		}
-		changed, err := c.bridge.WriteSessionStatusRow(status.SessionID, ev.Status, false)
-		if errors.Is(err, sql.ErrNoRows) {
-			continue
-		}
-		if err != nil {
-			return repaired, fmt.Errorf("session %s: %w", status.SessionID, err)
-		}
-		if changed {
-			log.Printf("[session-events] session %s: its row was behind status event %d (%s); repaired", status.SessionID, status.ID, ev.Status.State)
-			repaired++
-		}
-	}
-	return repaired, nil
-}
-
 // append writes one event, retrying a failure that is safe to retry: any
 // failure of a write with an idempotency key, and for one without, a failure
-// before anything was sent. A refused event is never retried.
+// before anything was sent. An event the session log refused, one whose
+// session row is missing, and a write Postgres refused (refusedByPostgres)
+// are never retried.
 func (c *SingleCopy) append(ev *msg.Event, event logstorestore.EventToAppend) (logstorestore.AppendedEvent, error) {
 	deadline := time.Now().Add(writeRetryDeadline)
 	delay := writeRetryBaseDelay
@@ -158,10 +118,10 @@ func (c *SingleCopy) append(ev *msg.Event, event logstorestore.EventToAppend) (l
 			return appended, nil
 		}
 		var rejected *client.EventRejectedError
-		if errors.As(err, &rejected) {
+		if errors.As(err, &rejected) || errors.Is(err, logstorestore.ErrRequiredRowMissing) || errors.Is(err, errBuildingCompanionWrite) {
 			return appended, err
 		}
-		retryable := event.IdempotencyKey != "" || pgconn.SafeToRetry(err)
+		retryable := !refusedByPostgres(err) && (event.IdempotencyKey != "" || pgconn.SafeToRetry(err))
 		if !retryable || c.downSince.Load() != 0 {
 			return appended, fmt.Errorf("store %s event of %s: %w", event.Type, event.SessionID, err)
 		}
@@ -173,6 +133,26 @@ func (c *SingleCopy) append(ev *msg.Event, event logstorestore.EventToAppend) (l
 		c.sleep(delay)
 		delay = min(delay*2, writeRetryMaxDelay)
 	}
+}
+
+// refusedByPostgres says Postgres ran the write and refused it — a constraint,
+// a permission, a statement it could not run — which trying again would only
+// repeat. A lost connection, a server shutting down or not yet taking
+// connections, and a transaction that lost a deadlock or a serialization race
+// are not refusals.
+func refusedByPostgres(err error) bool {
+	var postgresError *pgconn.PgError
+	if !errors.As(err, &postgresError) {
+		return false
+	}
+	switch {
+	case strings.HasPrefix(postgresError.Code, "08"), // connection exception
+		strings.HasPrefix(postgresError.Code, "57P"), // shutdown, cannot connect now
+		postgresError.Code == "40001",                // serialization failure
+		postgresError.Code == "40P01":                // deadlock detected
+		return false
+	}
+	return true
 }
 
 func eventToAppend(record store.SessionEventRecord) logstorestore.EventToAppend {
@@ -202,28 +182,34 @@ func RunnerEntryIdempotencyKey(spawnID string, sequence uint64) string {
 	return "runner_entry:" + spawnID + ":" + strconv.FormatUint(sequence, 10)
 }
 
-// StoreSessionEventAdvancingRunnerSpawn stores the event under its entry's
-// key, then records the spawn as stored through the entry. An entry sent
-// again after a stop between the two is found stored, and only the number
-// is written.
+// errBuildingCompanionWrite marks a failure to build a row's statement, which
+// a retry would only repeat.
+var errBuildingCompanionWrite = errors.New("build the write of the event's row")
+
+func sessionLogStatement(statement store.SessionLogStatement) logstorestore.Statement {
+	return logstorestore.Statement{Query: statement.Query, Arguments: statement.Arguments}
+}
+
+// StoreSessionEventAdvancingRunnerSpawn stores the event and records the
+// spawn as stored through the entry, in one transaction.
 func (c *SingleCopy) StoreSessionEventAdvancingRunnerSpawn(record store.SessionEventRecord, spawnSessionID, spawnID string, sequence uint64) (int64, error) {
 	event := eventToAppend(record)
 	event.IdempotencyKey = RunnerEntryIdempotencyKey(spawnID, sequence)
+	event.AlsoWrite = func(int64) ([]logstorestore.Statement, error) {
+		return []logstorestore.Statement{sessionLogStatement(store.RunnerSpawnAdvance(spawnSessionID, spawnID, sequence))}, nil
+	}
 	appended, err := c.append(record.Event, event)
 	if err != nil {
 		return 0, err
 	}
 	if appended.AlreadyStored {
-		log.Printf("[session-events] session %s: runner entry %d of %s was already stored as event %d; recording the spawn as stored through it", spawnSessionID, sequence, spawnID, appended.ID)
-	}
-	if err := c.bridge.AdvanceRunnerSpawn(spawnSessionID, spawnID, sequence); err != nil {
-		return appended.ID, err
+		log.Printf("[session-events] session %s: runner entry %d of %s was already stored as event %d, with the spawn's number", spawnSessionID, sequence, spawnID, appended.ID)
 	}
 	return appended.ID, nil
 }
 
-// WriteSessionStatus stores the status event in the session log, then writes
-// the status onto the session row.
+// WriteSessionStatus stores the status event and writes the status onto the
+// session row, in one transaction.
 func (c *SingleCopy) WriteSessionStatus(bridgeID string, ev *msg.Event) (int64, error) {
 	return c.writeSessionStatus(bridgeID, ev, true)
 }
@@ -232,38 +218,41 @@ func (c *SingleCopy) writeSessionStatus(bridgeID string, ev *msg.Event, touchUpd
 	if ev == nil || ev.Type != msg.EventSessionStatus || ev.Status == nil {
 		return 0, fmt.Errorf("WriteSessionStatus: want a %s event carrying a status", msg.EventSessionStatus)
 	}
-	// A session with no row gets no status event, as in one transaction: a
-	// hook-only session raises a status on every event and has no row.
-	exists, err := c.bridge.SessionExists(bridgeID)
-	if err != nil {
-		return 0, err
-	}
-	if !exists {
-		return 0, sql.ErrNoRows
-	}
 	key, err := newSessionStatusIdempotencyKey(bridgeID)
 	if err != nil {
 		return 0, err
 	}
+	requiredRow := sessionLogStatement(store.SessionRowLockForStatus(bridgeID))
 	ev.Status.AsOf = 0
 	appended, err := c.append(ev, logstorestore.EventToAppend{
 		SessionID:      bridgeID,
 		Type:           string(msg.EventSessionStatus),
 		Fields:         logstorestore.EventFields{TurnID: ev.TurnID, HarnessSessionID: ev.HarnessSessionID},
 		IdempotencyKey: key,
+		RequiredRow:    &requiredRow,
 		DataForID: func(id int64) ([]byte, error) {
 			ev.Status.AsOf = id
 			return json.Marshal(ev)
 		},
+		AlsoWrite: func(id int64) ([]logstorestore.Statement, error) {
+			ev.Status.AsOf = id
+			write, err := store.SessionStatusRowWrite(bridgeID, ev.Status, touchUpdatedAt)
+			if err != nil {
+				return nil, errors.Join(errBuildingCompanionWrite, err)
+			}
+			return []logstorestore.Statement{sessionLogStatement(write)}, nil
+		},
 	})
+	if errors.Is(err, logstorestore.ErrRequiredRowMissing) {
+		ev.Status.AsOf = 0
+		return 0, sql.ErrNoRows
+	}
 	if err != nil {
 		ev.Status.AsOf = 0
 		return 0, err
 	}
 	ev.Status.AsOf = appended.ID
-	if _, err := c.bridge.WriteSessionStatusRow(bridgeID, ev.Status, touchUpdatedAt); err != nil {
-		return appended.ID, fmt.Errorf("status event %d is stored, but writing it onto the session row failed (the next start repairs the row): %w", appended.ID, err)
-	}
+	c.bridge.NotifySessionChanged(bridgeID)
 	return appended.ID, nil
 }
 

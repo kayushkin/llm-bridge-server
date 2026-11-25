@@ -1,17 +1,16 @@
 package store
 
 import (
+	"context"
 	"database/sql"
+	"embed"
 	"encoding/json"
 	"fmt"
-	"log"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 	"github.com/kayushkin/llm-bridge/msg"
-	_ "modernc.org/sqlite"
 )
 
 // Session is the canonical type from llm-bridge/msg/server.go.
@@ -40,17 +39,100 @@ type Notifier interface {
 	OnSessionBriefChanged(bridgeID string)
 }
 
+// Store is the bridge's own records in Postgres, in the module Module names:
+// sessions and what is kept about them, sign-in, peers, settings and the
+// machines' readings. Session events are not here; the session log keeps
+// them (internal/sessionlog).
 type Store struct {
-	db       *sql.DB // writer pool, pinned to 1 connection
-	dbRO     *sql.DB // reader pool, concurrent readers under WAL
+	// db runs every write, on one connection. The store was written for
+	// SQLite's single writer, and several writes read a row and then change
+	// it (a renamer slot, a discovered session's fields, a delivery claim)
+	// trusting that no other write lands between the two.
+	db *sql.DB
+	// dbRO runs reads, on a pool whose transactions are read only.
+	dbRO     *sql.DB
 	notifier Notifier
 	// serverID is this server's own id, read from server_identity at open.
 	serverID string
 }
 
+// ModuleSchema is the schema the bridge's own records live in. The session
+// log names it in the statements that write a session row or a runner spawn
+// in the same transaction as their event (see GrantSessionLogWrites).
+const ModuleSchema = "bridge_core"
+
+//go:embed migrations/*.sql
+var migrationFiles embed.FS
+
+// Module is the Postgres schema and role the bridge keeps its own records in,
+// with the migrations that build them.
+func Module() (postgresstorage.Module, error) {
+	migrations, err := postgresstorage.MigrationsFromFiles(migrationFiles, "migrations")
+	if err != nil {
+		return postgresstorage.Module{}, err
+	}
+	return postgresstorage.Module{Schema: ModuleSchema, Role: "bridge_core_module", Migrations: migrations}, nil
+}
+
+// readerPoolSize is how many reads run at once, as the SQLite reader pool did.
+const readerPoolSize = 8
+
+// OpenReader opens the module's read-only pool on the Postgres at url.
+func OpenReader(ctx context.Context, url string, module postgresstorage.Module) (*sql.DB, error) {
+	readOnlyURL, err := withRuntimeParameter(url, "default_transaction_read_only", "on")
+	if err != nil {
+		return nil, err
+	}
+	return postgresstorage.Open(ctx, readOnlyURL, module, postgresstorage.ScanTimestampsInUTC)
+}
+
+// withRuntimeParameter adds a session setting to a Postgres connection
+// string, in either of its two forms.
+func withRuntimeParameter(connectionString, name, value string) (string, error) {
+	if strings.Contains(connectionString, "://") {
+		separator := "?"
+		if strings.Contains(connectionString, "?") {
+			separator = "&"
+		}
+		return connectionString + separator + name + "=" + value, nil
+	}
+	if strings.TrimSpace(connectionString) == "" {
+		return "", fmt.Errorf("store: the Postgres connection string is empty")
+	}
+	return connectionString + " " + name + "=" + value, nil
+}
+
+// New builds the store over the module's pools: writer, provisioned and
+// migrated and opened with postgresstorage.ScanTimestampsInUTC, and reader,
+// from OpenReader. It makes this server's id the first time, and marks the
+// linked subagents a previous version left unmarked. The store closes both
+// pools in Close.
+func New(writer, reader *sql.DB) (*Store, error) {
+	writer.SetMaxOpenConns(1)
+	reader.SetMaxOpenConns(readerPoolSize)
+	reader.SetMaxIdleConns(4)
+	s := &Store{db: writer, dbRO: reader}
+	if err := s.openServerIdentity(); err != nil {
+		return nil, fmt.Errorf("server identity: %w", err)
+	}
+	// A subagent the bridge knows the parent of runs inside that parent's
+	// process, so the bridge must never resume it, send to it or offer a
+	// button on it — and controlled_by='harness' is the flag every one of
+	// those gates reads. Idempotent: it fills only an empty flag.
+	if _, err := s.db.Exec(markLinkedSubagentsHarnessControlled); err != nil {
+		return nil, fmt.Errorf("mark linked subagents controlled_by=harness: %w", err)
+	}
+	return s, nil
+}
+
 // SetNotifier registers a callback fired after successful session-row
 // mutations. Pass nil to clear. Replays the new state on UpsertDiscovered too.
 func (s *Store) SetNotifier(n Notifier) { s.notifier = n }
+
+// NotifySessionChanged tells the notifier a session row changed. The session
+// log calls it after it writes a status onto the row, in the transaction of
+// the status's event.
+func (s *Store) NotifySessionChanged(bridgeID string) { s.notifyChanged(bridgeID) }
 
 func (s *Store) notifyChanged(bridgeID string) {
 	if s.notifier != nil && bridgeID != "" {
@@ -76,528 +158,12 @@ func (s *Store) notifyDeleted(bridgeID string) {
 	}
 }
 
-// busyTimeoutMillisecondsWanted is how long a connection waits for a lock
-// before giving up. Named so the DSN that sets it and the check that proves it
-// took effect cannot drift apart.
-const busyTimeoutMillisecondsWanted = 5000
-
-// dataSourceName builds the sqlite DSN for a database path.
-//
-// busy_timeout MUST be set here rather than with a PRAGMA statement after
-// Open: it is a per-connection setting, and *sql.DB is a pool. A one-shot
-// db.Exec("PRAGMA busy_timeout=5000") reaches only whichever connection the
-// pool happened to hand out, so every other connection keeps SQLite's default
-// of 0 and fails instantly on a lock instead of waiting.
-//
-// _pragma=... is modernc's syntax and it is the only one that works here. The
-// reader pool used to be opened with the mattn/go-sqlite3 spelling,
-// "?_busy_timeout=5000", directly above a comment saying each connection got
-// the setting on open. This driver ignores an unrecognized DSN key without
-// complaint, so that DSN opened cleanly and configured nothing: measured,
-// 0 of 8 pooled reader connections had a busy_timeout above 0. That is why
-// both pools now verify the value after opening rather than trusting the
-// connection string.
-func dataSourceName(dbPath string) string {
-	return fmt.Sprintf("%s?_pragma=busy_timeout(%d)", dbPath, busyTimeoutMillisecondsWanted)
-}
-
-// verifyBusyTimeoutTookEffect proves the DSN was understood by the driver.
-func verifyBusyTimeoutTookEffect(db *sql.DB) error {
-	var busyTimeoutMilliseconds int
-	if err := db.QueryRow("PRAGMA busy_timeout").Scan(&busyTimeoutMilliseconds); err != nil {
-		return fmt.Errorf("read busy_timeout pragma: %w", err)
-	}
-	if busyTimeoutMilliseconds != busyTimeoutMillisecondsWanted {
-		return fmt.Errorf("busy_timeout is %d, want %d: the DSN did not take effect",
-			busyTimeoutMilliseconds, busyTimeoutMillisecondsWanted)
-	}
-	return nil
-}
-
-func New(dbPath string) (*Store, error) {
-	dir := filepath.Dir(dbPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, fmt.Errorf("create db dir: %w", err)
-	}
-	d, err := sql.Open("sqlite", dataSourceName(dbPath))
-	if err != nil {
-		return nil, err
-	}
-
-	// journal_mode is the one pragma that belongs here rather than in the DSN:
-	// it is a property of the database file, so setting it once is permanent.
-	// busy_timeout is per-connection and lives in dataSourceName.
-	if _, err := d.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		d.Close()
-		return nil, fmt.Errorf("enable WAL: %w", err)
-	}
-	if err := verifyBusyTimeoutTookEffect(d); err != nil {
-		d.Close()
-		return nil, fmt.Errorf("writer pool: %w", err)
-	}
-
-	// Single connection serializes writes through Go's sql pool. Without this,
-	// modernc.org/sqlite still hits SQLITE_BUSY (5) under concurrent writers
-	// from multiple harness streams + /send handlers, despite WAL+busy_timeout.
-	d.SetMaxOpenConns(1)
-
-	// Reader pool — separate sql.DB so reads don't queue behind the single
-	// writer connection. WAL allows many concurrent readers alongside one
-	// writer; the SetMaxOpenConns(1) limit applies only to the writer.
-	// busy_timeout via DSN so each connection in the pool gets it on open.
-	dbRO, err := sql.Open("sqlite", dataSourceName(dbPath))
-	if err != nil {
-		d.Close()
-		return nil, fmt.Errorf("sqlite open ro: %w", err)
-	}
-	dbRO.SetMaxOpenConns(8)
-	dbRO.SetMaxIdleConns(4)
-	if err := verifyBusyTimeoutTookEffect(dbRO); err != nil {
-		d.Close()
-		dbRO.Close()
-		return nil, fmt.Errorf("reader pool: %w", err)
-	}
-
-	s := &Store{db: d, dbRO: dbRO}
-	if err := s.migrate(); err != nil {
-		d.Close()
-		dbRO.Close()
-		return nil, err
-	}
-	return s, nil
-}
-
 func (s *Store) Close() error {
-	if s.dbRO != nil {
-		s.dbRO.Close()
-	}
-	return s.db.Close()
-}
-
-func (s *Store) migrate() error {
-	_, err := s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS sessions (
-			bridge_id          TEXT PRIMARY KEY,
-			harness_session_id TEXT NOT NULL DEFAULT '',
-			display_name       TEXT NOT NULL DEFAULT '',
-			harness            TEXT NOT NULL,
-			state              TEXT NOT NULL,
-			pid                INTEGER NOT NULL DEFAULT 0,
-			agent_id           TEXT NOT NULL DEFAULT '',
-			parent_id          TEXT NOT NULL DEFAULT '',
-			instance_id        TEXT NOT NULL DEFAULT '',
-			created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			updated_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-		);
-		CREATE INDEX IF NOT EXISTS idx_sessions_state ON sessions(state);
-		CREATE INDEX IF NOT EXISTS idx_sessions_harness ON sessions(harness);
-
-		CREATE TABLE IF NOT EXISTS events (
-			id                 INTEGER PRIMARY KEY AUTOINCREMENT,
-			session_id         TEXT NOT NULL,
-			type               TEXT NOT NULL,
-			message_id         TEXT NOT NULL DEFAULT '',
-			harness_message_id TEXT NOT NULL DEFAULT '',
-			data               TEXT NOT NULL,
-			created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			FOREIGN KEY (session_id) REFERENCES sessions(bridge_id)
-		);
-		CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
-	`)
-	if err != nil {
+	readerErr := s.dbRO.Close()
+	if err := s.db.Close(); err != nil {
 		return err
 	}
-	// Add message id columns to existing event tables created by older versions.
-	s.db.Exec(`ALTER TABLE events ADD COLUMN message_id TEXT NOT NULL DEFAULT ''`)
-	s.db.Exec(`ALTER TABLE events ADD COLUMN harness_message_id TEXT NOT NULL DEFAULT ''`)
-	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_events_message_id ON events(session_id, message_id)`)
-	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_events_harness_msg_id ON events(session_id, harness_message_id)`)
-	// Migrations for existing DBs (old schema used 'id' as PK)
-	s.db.Exec("ALTER TABLE sessions ADD COLUMN parent_id TEXT NOT NULL DEFAULT ''")
-	s.db.Exec("ALTER TABLE sessions ADD COLUMN instance_id TEXT NOT NULL DEFAULT ''")
-	// Session lineage (docs/plans/TEAM-ORCHESTRATION.md §21). Idempotent ADD COLUMNs.
-	// forked_from_session_id is the honest replacement for parent_id: it holds the
-	// FORK PARENT'S bridge_id, where parent_id holds the parent's harness UUID (fed
-	// to --fork). parent_id stays until the fork plumbing resolves the harness id
-	// from the parent row; then it is dropped.
-	s.db.Exec("ALTER TABLE sessions ADD COLUMN forked_from_session_id TEXT NOT NULL DEFAULT ''")
-	s.db.Exec("ALTER TABLE sessions ADD COLUMN manager_session_id TEXT NOT NULL DEFAULT ''")
-	s.db.Exec("ALTER TABLE sessions ADD COLUMN root_session_id TEXT NOT NULL DEFAULT ''")
-	s.db.Exec("ALTER TABLE sessions ADD COLUMN depth INTEGER NOT NULL DEFAULT 0")
-	s.db.Exec("ALTER TABLE sessions ADD COLUMN controlled_by TEXT NOT NULL DEFAULT ''")
-	s.db.Exec("ALTER TABLE sessions ADD COLUMN refreshed_from_session_id TEXT NOT NULL DEFAULT ''")
-	// Session-level working directory — the top of the working-directory
-	// cascade (session > instance > machine default). Empty means "inherit
-	// the instance", which is what every existing row means.
-	s.db.Exec("ALTER TABLE sessions ADD COLUMN working_dir TEXT NOT NULL DEFAULT ''")
-	// Who the session was started as: a principal-store id, or '' for a
-	// session with no principal. Set at creation only.
-	s.db.Exec("ALTER TABLE sessions ADD COLUMN principal_id TEXT NOT NULL DEFAULT ''")
-	// The bundle-store bundle the session was started with, or '' for none.
-	// Set at creation only.
-	s.db.Exec("ALTER TABLE sessions ADD COLUMN bundle_id TEXT NOT NULL DEFAULT ''")
-	// The kanban-store card the session works, or '' for none. Set at
-	// creation only; its tags select the context sections each spawn injects.
-	s.db.Exec("ALTER TABLE sessions ADD COLUMN card_id TEXT NOT NULL DEFAULT ''")
-	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_manager ON sessions(manager_session_id) WHERE manager_session_id != ''")
-	// harness_session_id was introduced in this column under the older name
-	// `harness_id`. The rename block below handles the rename for DBs that
-	// already added the old column. Fresh DBs get harness_session_id from the
-	// CREATE TABLE above. We still ADD COLUMN here (idempotent) so a DB that
-	// pre-dates harness_id entirely still gets the column under the new name.
-	s.db.Exec("ALTER TABLE sessions ADD COLUMN harness_session_id TEXT NOT NULL DEFAULT ''")
-	s.db.Exec("ALTER TABLE sessions ADD COLUMN client_id TEXT NOT NULL DEFAULT ''")
-	// Backfill: old rows have 'id' but no bridge_id — handled by the rename below.
-	// If upgrading from old schema where PK was 'id', rename it to bridge_id.
-	s.db.Exec("ALTER TABLE sessions RENAME COLUMN id TO bridge_id")
-	s.db.Exec("ALTER TABLE sessions RENAME COLUMN client_request_id TO client_id")
-	// Phase I sub-step 6 of the session-identity migration: client_id is
-	// retired. DROP runs AFTER the legacy renames above so any DB whose
-	// migration ever resurrects client_id (via the client_request_id rename)
-	// still ends up without it. Idempotent: errors swallowed on already-
-	// migrated DBs that no longer have the column.
-	// See llm-bridge MIGRATION-session-identity.md.
-	s.db.Exec("ALTER TABLE sessions DROP COLUMN client_id")
-	// session-chain rename: harness_id -> harness_session_id. Detect and run only
-	// on DBs that still have the old column. Fresh DBs and already-migrated DBs
-	// no-op cleanly. (RENAME COLUMN was added in SQLite 3.25.)
-	if rows, err := s.db.Query("PRAGMA table_info(sessions)"); err == nil {
-		hasOld := false
-		hasNew := false
-		for rows.Next() {
-			var cid int
-			var name, ctype string
-			var notnull, pk int
-			var dflt sql.NullString
-			if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err == nil {
-				switch name {
-				case "harness_id":
-					hasOld = true
-				case "harness_session_id":
-					hasNew = true
-				}
-			}
-		}
-		rows.Close()
-		if hasOld && !hasNew {
-			s.db.Exec("ALTER TABLE sessions RENAME COLUMN harness_id TO harness_session_id")
-			s.db.Exec("DROP INDEX IF EXISTS idx_sessions_harness_id")
-		} else if hasOld && hasNew {
-			// Both columns coexist (interrupted migration or extra ADD COLUMN
-			// landed after rename). Coalesce into harness_session_id and drop
-			// the duplicate. Use UPDATE+SELECT since SQLite has no merge.
-			s.db.Exec("UPDATE sessions SET harness_session_id = harness_id WHERE COALESCE(harness_session_id, '') = '' AND COALESCE(harness_id, '') != ''")
-			s.db.Exec("DROP INDEX IF EXISTS idx_sessions_harness_id")
-			// SQLite supports DROP COLUMN since 3.35.
-			s.db.Exec("ALTER TABLE sessions DROP COLUMN harness_id")
-		}
-	}
-	s.db.Exec("ALTER TABLE sessions ADD COLUMN harness_config TEXT NOT NULL DEFAULT ''")
-	s.db.Exec("ALTER TABLE sessions ADD COLUMN info TEXT NOT NULL DEFAULT ''")
-	s.db.Exec("ALTER TABLE sessions ADD COLUMN folder_name TEXT NOT NULL DEFAULT ''")
-	// Legacy: older DBs added a `source` column under that name; the
-	// rename to `purpose` happens later in this migrate() block. Keep
-	// the additive ADD here so DBs that pre-date `source` still gain
-	// the column before the rename.
-	s.db.Exec("ALTER TABLE sessions ADD COLUMN source TEXT NOT NULL DEFAULT ''")
-	// The session's whole status as msg.SessionStatus JSON, of which `state`
-	// is one field kept as its own column for the queries that filter on it.
-	// Both are written together, by WriteSessionStatus and nothing else.
-	// Empty on a row last written before 2026-09-17.
-	s.db.Exec("ALTER TABLE sessions ADD COLUMN status TEXT NOT NULL DEFAULT ''")
-	// Auto-rename bookkeeping. autogenerated defaults to 1: every fresh session
-	// is treated as auto-named until the user explicitly renames it via the
-	// /rename endpoint. named_at_turn is the user turn count (CountUserTurns) at
-	// which the most recent auto-rename ran; before 2026-10-20 it held the
-	// user_message row count, which ran two rows per turn (0 = never). renamer_session_id holds the
-	// bridge_id of an in-flight renamer session, used as a CAS lock.
-	s.db.Exec("ALTER TABLE sessions ADD COLUMN display_name_autogenerated INTEGER NOT NULL DEFAULT 1")
-	s.db.Exec("ALTER TABLE sessions ADD COLUMN display_name_named_at_turn INTEGER NOT NULL DEFAULT 0")
-	s.db.Exec("ALTER TABLE sessions ADD COLUMN renamer_session_id TEXT NOT NULL DEFAULT ''")
-	// pty-mode child 2: per-session I/O mode. Empty / "events" = legacy
-	// structured-events flow; "pty" = pseudoterminal attached over WS.
-	s.db.Exec("ALTER TABLE sessions ADD COLUMN mode TEXT NOT NULL DEFAULT ''")
-	// Phase I sub-step 3 of the session-identity migration: add session_id
-	// (mirror of bridge_id during the dual-write window) and session_type
-	// (caller-declared category). bridge_id stays as the PK until the rename
-	// in sub-step 7. session_type is empty on legacy rows; backfill on read
-	// is unsafe (callers must declare), so older rows surface as "" type.
-	// See llm-bridge MIGRATION-session-identity.md.
-	s.db.Exec("ALTER TABLE sessions ADD COLUMN session_id TEXT NOT NULL DEFAULT ''")
-	// The summary query names sessions by summarySessionIDExpression, and an
-	// index on that same expression is what lets its session-id lookup search
-	// instead of scanning. The expression is spelled from the constant so the
-	// two cannot drift apart: SQLite matches an expression index textually.
-	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_summary_session_id ON sessions(" + summarySessionIDExpression + ")")
-	s.db.Exec("ALTER TABLE sessions ADD COLUMN session_type TEXT NOT NULL DEFAULT ''")
-	// One-time backfill: populate session_id from bridge_id for any row that
-	// pre-dates this migration. New inserts write both columns directly.
-	s.db.Exec("UPDATE sessions SET session_id = bridge_id WHERE session_id = ''")
-	// Source/Purpose/Origin reshape (2026-05-09): rename the overloaded
-	// `source` column to `purpose` (the function/category of the session),
-	// rename `session_type` to `type` (drop the redundant session_ prefix —
-	// the field already lives on the sessions row), add `origin` for the
-	// service that POST'd /sessions. Backfill origin from purpose since
-	// for most sessions the originating service IS the function (autoworker
-	// spawns autoworker work). Index renames track the column rename.
-	// See llm-bridge MIGRATION-session-identity.md.
-	s.db.Exec("ALTER TABLE sessions RENAME COLUMN source TO purpose")
-	s.db.Exec("ALTER TABLE sessions RENAME COLUMN session_type TO type")
-	s.db.Exec("ALTER TABLE sessions ADD COLUMN origin TEXT NOT NULL DEFAULT ''")
-	s.db.Exec("UPDATE sessions SET origin = purpose WHERE origin = '' AND purpose != ''")
-	s.db.Exec("DROP INDEX IF EXISTS idx_sessions_source")
-	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_purpose ON sessions(purpose)")
-	// Backfill type for legacy rows pre-dating sub-step 3 (when the column
-	// was added). Idempotent: WHERE type = '' guards against overwriting
-	// caller-declared values. The mapping mirrors the well-known purpose
-	// values documented on msg.SessionType. Unknown/new purposes left
-	// empty — graceful failure beats silent misclassification.
-	s.db.Exec(`UPDATE sessions SET type = 'autonomous'
-		WHERE type = '' AND purpose IN
-		('autoworker','dispatcher','kanban-dispatcher','scheduler','scheduled-task','harness-watch')`)
-	s.db.Exec(`UPDATE sessions SET type = 'system'
-		WHERE type = '' AND purpose IN
-		('renamer','conformance','subagent','workflow-subagent','classifier','scoper')`)
-	// 'healthcheck' used to be in the list above, which typed its remediation
-	// agents as system. They are not: healthcheck spawns them to go clean up a
-	// full disk with nobody watching, which is what autonomous means. The
-	// caller was sending no type at all when that guess was made, and now
-	// sends 'autonomous' explicitly, so the guess loses to the declaration.
-	s.db.Exec(`UPDATE sessions SET type = 'autonomous'
-		WHERE purpose = 'healthcheck' AND type = 'system'`)
-	s.db.Exec(`UPDATE sessions SET type = 'interactive'
-		WHERE type = '' AND purpose = 'chat'`)
-	// The rule above used to also match purpose = '', which made it a standing
-	// mislabeler rather than a backfill.
-	//
-	// migrate() runs on every open, not once, so every session that arrived
-	// with no type got relabeled "interactive" at the next restart. Discovery
-	// imports arrive exactly that way — a `claude -p` one-shot from a shell
-	// became a human chat on the next deploy, indistinguishable in the UI from
-	// a session someone actually opened. The same rule had already done this to
-	// 226 workflow subagents, which is what the repair below cleans up; that
-	// repair fixed the rows and left the rule that produced them.
-	//
-	// Empty purpose is now what it looks like: unclassified. Nothing infers a
-	// type from it, discovery declares its own (external), and
-	// session-taxonomy-guard reports whatever is left rather than papering
-	// over it.
-
-	// Repair the workflow subagents this backfill itself mislabeled.
-	//
-	// 'workflow-subagent' was missing from the system list above, so every
-	// Workflow-tool subagent fell through to the purpose='' rule and was typed
-	// INTERACTIVE — a fire-and-forget agent recorded as a human chat, and shown
-	// as one. 226 sessions on this host, against 734 correctly-typed Task()
-	// subagents; the only difference between them is which tool spawned them.
-	//
-	// Unlike the backfills above, this one overwrites a NON-empty type, which
-	// they deliberately refuse to do. That is safe here precisely because it is
-	// keyed on purpose: a workflow subagent is never interactive by
-	// construction — nobody is at a keyboard — so 'interactive' on such a row is
-	// not a caller's declaration to be preserved, it is this bug's fingerprint.
-	s.db.Exec(`UPDATE sessions SET type = 'system'
-		WHERE purpose = 'workflow-subagent' AND type = 'interactive'`)
-	// Backfill origin for legacy rows where it was lazily defaulted to the
-	// purpose value. Origin is meant to be the SERVICE that hosts the
-	// spawning code, not the binary or the kind of session. WHERE origin =
-	// purpose AND purpose IN (...) limits the rewrite to the lazy-defaulted
-	// rows; explicit caller-supplied origins (e.g. healthcheck-set
-	// origin=healthcheck) are left alone.
-	s.db.Exec(`UPDATE sessions SET origin = 'scheduler' WHERE origin = purpose AND purpose IN
-		('autoworker','dispatcher','kanban-dispatcher','scheduled-task','classifier','scoper')`)
-	s.db.Exec(`UPDATE sessions SET origin = 'llm-bridge-server' WHERE origin = purpose AND purpose IN
-		('renamer','conformance')`)
-	s.db.Exec(`UPDATE sessions SET origin = 'inber' WHERE origin = purpose AND purpose = 'harness-watch'`)
-	s.db.Exec(`UPDATE sessions SET origin = 'llm-bridge-claudecode' WHERE origin = purpose AND purpose = 'subagent'`)
-	// Legacy interactive sessions: bridge-ui defaults origin='frontend' for
-	// new ones, but pre-rename rows have empty origin. Backfill so the
-	// frontend's chat sessions all attribute to "frontend".
-	//
-	// Keyed on purpose='chat' only. It used to also match purpose='', which
-	// credited every unclassified session to the frontend on the same faulty
-	// reasoning as the type rule above: absence of a declaration is not a
-	// declaration of chat.
-	s.db.Exec(`UPDATE sessions SET origin = 'frontend'
-		WHERE origin = '' AND purpose = 'chat'`)
-
-	// Repair the discovery imports that the purpose='' rules above mislabeled.
-	//
-	// Discovery wrote type='' and origin='llm-bridge-<harness>' for sessions it
-	// found on disk; the type rule then read the empty type as interactive. The
-	// result is a session that reports it was a human chat originating from a
-	// harness adapter — two false statements about a `claude -p` one-shot that
-	// the bridge never ran.
-	//
-	// Keyed on origin: only discovery ever wrote an origin of llm-bridge-<x>,
-	// and a genuine subagent from the same adapter carries purpose='subagent',
-	// so restricting to purpose='' selects exactly the cold imports. Like the
-	// workflow-subagent repair above, this overwrites a non-empty type, and for
-	// the same reason — 'interactive' here is the bug's fingerprint, not a
-	// caller's declaration, because no caller ever spoke for these rows.
-	s.db.Exec(`UPDATE sessions SET type = 'external', purpose = 'discovered', origin = 'discovery'
-		WHERE purpose = '' AND origin LIKE 'llm-bridge-%' AND type IN ('', 'interactive')`)
-	// Discovered subagents that predate the live promotion path: purpose was
-	// recognized from the on-disk layout but type was left empty, and no rule
-	// above covers purpose='subagent' with an empty type.
-	s.db.Exec(`UPDATE sessions SET type = 'system'
-		WHERE type = '' AND purpose IN ('subagent','workflow-subagent')`)
-	// A subagent the bridge knows the parent of runs inside that parent's
-	// process, so the bridge must never resume it, send to it or offer a
-	// button on it — and controlled_by='harness' is the flag every one of
-	// those gates reads. Only live promotion set it, so on 2026-10-19 1,254
-	// linked subagent rows (every discovery import, and every one older than
-	// August) lacked it. Idempotent: it fills only an empty flag.
-	if _, err := s.db.Exec(markLinkedSubagentsHarnessControlled); err != nil {
-		return fmt.Errorf("mark linked subagents controlled_by=harness: %w", err)
-	}
-
-	// Legacy frontend chats created before the frontends sent a purpose at
-	// all. The rows already say type='interactive' and origin='frontend', and
-	// the frontends create nothing but chats, so 'chat' is the only purpose
-	// these can have — this names what the row already says rather than
-	// inferring something new from silence, which is the mistake the rules
-	// above made.
-	s.db.Exec(`UPDATE sessions SET purpose = 'chat'
-		WHERE purpose = '' AND type = 'interactive' AND origin = 'frontend'`)
-	// Spend ceiling and spend high-water mark. Both REAL, both defaulting to
-	// 0, and 0 on max_budget_usd means NO CEILING — see the warning on
-	// msg.ManagedSession.MaxBudgetUSD. A default of 0 is therefore also the
-	// correct value for every pre-existing row: no session created before
-	// this column existed had a ceiling, and the backfill must not invent
-	// one for them.
-	s.db.Exec("ALTER TABLE sessions ADD COLUMN max_budget_usd REAL NOT NULL DEFAULT 0")
-	s.db.Exec("ALTER TABLE sessions ADD COLUMN spend_usd REAL NOT NULL DEFAULT 0")
-	// The rest of the cumulative api_spend_total aggregate — token usage,
-	// call count, per-model and per-query-source dollars — as JSON. See
-	// SessionSpendDetail for why the dollar total is not in here. Empty is
-	// the correct value for every pre-existing row: the breakdown for spend
-	// that predates this column was never persisted anywhere, and inventing
-	// one would attribute dollars to a model nobody measured.
-	s.db.Exec("ALTER TABLE sessions ADD COLUMN api_spend_detail TEXT NOT NULL DEFAULT ''")
-	// Until 2026-09-16 spend_usd WAS the per-call API sum; from then it is the
-	// session cost estimate, which can exceed it, and the API sum moved into the
-	// breakdown as api_spend_usd so api_spend_total can keep continuing it. Every
-	// row written before then carries the API sum only in spend_usd, so it is
-	// copied across once. Idempotent: rows that already have the field are left.
-	if _, err := s.db.Exec(`UPDATE sessions
-		SET api_spend_detail = json_set(COALESCE(NULLIF(api_spend_detail, ''), '{}'), '$.api_spend_usd', spend_usd)
-		WHERE spend_usd > 0 AND json_extract(COALESCE(NULLIF(api_spend_detail, ''), '{}'), '$.api_spend_usd') IS NULL`); err != nil {
-		log.Printf("[store] migrate api_spend_usd into the spend breakdown: %v", err)
-	}
-	// Index on harness_session_id must be created after ALTER TABLE migration adds/renames the column.
-	// Drop the legacy non-unique index in favor of a partial UNIQUE one below.
-	s.db.Exec("DROP INDEX IF EXISTS idx_sessions_harness_session_id")
-	// Self-heal phantom rows from the StoredSession.ID-polymorphism bug:
-	// the harness bridge had been stuffing bridge_session_id values into the
-	// harness_session_id slot. Two phantom signatures, both invalid under
-	// the post-fix contract:
-	//   1. harness_session_id matches another row's bridge_id — same-table
-	//      collision (rare; only when the original session still exists).
-	//   2. harness_session_id has the `br_*` prefix — by definition a
-	//      bridge_session_id, never a harness-native id (CC UUID, Codex
-	//      thread_id, Hermes id).
-	// Either way the row is a phantom; the canonical session lives elsewhere
-	// (or has since been deleted). Clear them before adding the UNIQUE
-	// constraint so the migration doesn't trip on legitimate pre-bug data.
-	s.db.Exec("DELETE FROM sessions WHERE harness_session_id != '' AND (harness_session_id LIKE 'br_%' OR harness_session_id IN (SELECT bridge_id FROM sessions))")
-	// Partial UNIQUE: harness_session_id is empty for fresh sessions before
-	// the harness reports its first event, and we cannot allow those empty
-	// strings to collide. Once populated it must be unique — the phantom-row
-	// bug existed precisely because the column wasn't constrained.
-	s.db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_harness_session_id ON sessions(harness_session_id) WHERE harness_session_id != ''")
-	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_folder ON sessions(folder_name)")
-	// idx_sessions_source removed: the source column was renamed to purpose;
-	// the corresponding idx_sessions_purpose index is created in the
-	// purpose/origin block above.
-	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at)")
-
-	// Folder registry — tracks the ordered list of user-defined folders.
-	// Folders may exist with no sessions (created and not yet populated).
-	_, err = s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS folders (
-			name     TEXT PRIMARY KEY,
-			position INTEGER NOT NULL
-		);
-		CREATE INDEX IF NOT EXISTS idx_folders_position ON folders(position);
-	`)
-	if err != nil {
-		return err
-	}
-
-	// Source-folder mapping — runtime overrides for the env-var defaults
-	// (config.SourceFolders). The effective mapping is the env defaults
-	// merged with this table; a row here for "scheduler" wins over the
-	// env's "scheduler:Scheduled" entry. Deleting a row falls back to the
-	// env default. updated_at is wall-clock for audit.
-	_, err = s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS source_folders (
-			source      TEXT PRIMARY KEY,
-			folder_name TEXT NOT NULL,
-			updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-		);
-	`)
-	if err != nil {
-		return err
-	}
-	if err := s.migrateSessionBriefs(); err != nil {
-		return fmt.Errorf("migrate session briefs: %w", err)
-	}
-	if err := s.migrateSignals(); err != nil {
-		return err
-	}
-	if err := s.migrateServiceSettings(); err != nil {
-		return err
-	}
-	if err := s.migrateSessionFiles(); err != nil {
-		return err
-	}
-	if err := s.migrateSessionActions(); err != nil {
-		return err
-	}
-	if err := s.migrateChatLinks(); err != nil {
-		return fmt.Errorf("migrate chat links: %w", err)
-	}
-	if err := s.migrateServerIdentity(); err != nil {
-		return fmt.Errorf("migrate server identity: %w", err)
-	}
-	if err := s.migratePeers(); err != nil {
-		return fmt.Errorf("migrate peers: %w", err)
-	}
-	if err := s.migrateServicePrincipals(); err != nil {
-		return fmt.Errorf("migrate service principals: %w", err)
-	}
-	if err := s.migratePeerMessages(); err != nil {
-		return fmt.Errorf("migrate peer messages: %w", err)
-	}
-	if err := s.migratePeerMessageAttachments(); err != nil {
-		return fmt.Errorf("migrate peer message attachments: %w", err)
-	}
-	if err := s.migrateSessionPostingSpawns(); err != nil {
-		return fmt.Errorf("migrate session posting spawns: %w", err)
-	}
-	if err := s.migrateRunnerSpawns(); err != nil {
-		return fmt.Errorf("migrate session posting spawns: %w", err)
-	}
-	if err := s.migrateLoginSessions(); err != nil {
-		return err
-	}
-	if err := s.migrateLoginAttempts(); err != nil {
-		return err
-	}
-	if err := s.migrateExternalActivityMarks(); err != nil {
-		return err
-	}
-	if err := s.migrateMachineStatsSamples(); err != nil {
-		return err
-	}
-	if err := s.migrateMachineDiskDeletions(); err != nil {
-		return err
-	}
-	if err := s.migrateHeldMessages(); err != nil {
-		return err
-	}
-	return nil
+	return readerErr
 }
 
 func (s *Store) CreateSession(sess *Session) error {
@@ -615,14 +181,14 @@ func (s *Store) CreateSession(sess *Session) error {
 	defer tx.Rollback()
 	if sess.FolderName != "" {
 		if _, err := tx.Exec(
-			`INSERT INTO folders (name, position) VALUES (?, COALESCE((SELECT MAX(position)+1 FROM folders), 0)) ON CONFLICT(name) DO NOTHING`,
+			`INSERT INTO folders (name, position) VALUES ($1, COALESCE((SELECT MAX(position)+1 FROM folders), 0)) ON CONFLICT(name) DO NOTHING`,
 			sess.FolderName,
 		); err != nil {
 			return err
 		}
 	}
 	if _, err := tx.Exec(
-		`INSERT INTO sessions (bridge_id, session_id, harness_session_id, display_name, harness, instance_id, state, pid, agent_id, principal_id, bundle_id, card_id, parent_id, forked_from_session_id, manager_session_id, root_session_id, depth, controlled_by, refreshed_from_session_id, working_dir, harness_config, purpose, type, origin, folder_name, mode, max_budget_usd, spend_usd, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO sessions (bridge_id, session_id, harness_session_id, display_name, harness, instance_id, state, pid, agent_id, principal_id, bundle_id, card_id, parent_id, forked_from_session_id, manager_session_id, root_session_id, depth, controlled_by, refreshed_from_session_id, working_dir, harness_config, purpose, type, origin, folder_name, mode, max_budget_usd, spend_usd, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30)`,
 		sess.SessionID, sess.SessionID, sess.HarnessSessionID, sess.DisplayName, sess.Harness, sess.InstanceID, sess.State, sess.PID, sess.AgentID, sess.PrincipalID, sess.BundleID, sess.CardID, sess.ParentID, sess.ForkedFromSessionID, sess.ManagerSessionID, sess.RootSessionID, sess.Depth, sess.ControlledBy, sess.RefreshedFromSessionID, sess.WorkingDir, harnessConfig, sess.Purpose, string(sess.Type), sess.Origin, sess.FolderName, string(sess.Mode), sess.MaxBudgetUSD, sess.SpendUSD, sess.CreatedAt, sess.UpdatedAt,
 	); err != nil {
 		return err
@@ -686,21 +252,21 @@ func (s *Store) SetSessionInfo(bridgeID string, info *msg.SessionInfo) error {
 		}
 		payload = string(data)
 	}
-	_, err := s.db.Exec(`UPDATE sessions SET info=?, updated_at=? WHERE bridge_id=?`, payload, now, bridgeID)
+	_, err := s.db.Exec(`UPDATE sessions SET info=$1, updated_at=$2 WHERE bridge_id=$3`, payload, now, bridgeID)
 	return err
 }
 
 // GetSession looks up a session by bridge_id.
 func (s *Store) GetSession(bridgeID string) (*Session, error) {
 	return scanSession(s.dbRO.QueryRow(
-		`SELECT `+sessionColumns+` FROM sessions WHERE bridge_id=?`, bridgeID,
+		`SELECT `+sessionColumns+` FROM sessions WHERE bridge_id=$1`, bridgeID,
 	))
 }
 
 // GetSessionByHarnessSessionID looks up a session by its harness-reported session ID.
 func (s *Store) GetSessionByHarnessSessionID(harnessSessionID string) (*Session, error) {
 	return scanSession(s.dbRO.QueryRow(
-		`SELECT `+sessionColumns+` FROM sessions WHERE harness_session_id=?`, harnessSessionID,
+		`SELECT `+sessionColumns+` FROM sessions WHERE harness_session_id=$1`, harnessSessionID,
 	))
 }
 
@@ -714,10 +280,9 @@ func (s *Store) ListSessions() ([]Session, error) {
 // applied only when limit > 0 (a bare offset with no limit is meaningless).
 func (s *Store) ListSessionsPaged(limit, offset int) ([]Session, error) {
 	query := `SELECT ` + sessionColumns + ` FROM sessions ORDER BY created_at DESC`
-	var args []any
+	var args queryArguments
 	if limit > 0 {
-		query += ` LIMIT ? OFFSET ?`
-		args = append(args, limit, offset)
+		query += ` LIMIT ` + args.add(limit) + ` OFFSET ` + args.add(offset)
 	}
 	rows, err := s.dbRO.Query(query, args...)
 	if err != nil {
@@ -749,20 +314,17 @@ func (s *Store) ListSessionsOwnedByPrincipalPaged(principalID, throughPeerPrinci
 	if principalID == "" {
 		return nil, fmt.Errorf("ListSessionsOwnedByPrincipalPaged: principal id is required")
 	}
-	query := `SELECT ` + sessionColumns + ` FROM sessions WHERE principal_id=?`
-	args := []any{principalID}
+	var args queryArguments
+	query := `SELECT ` + sessionColumns + ` FROM sessions WHERE principal_id=` + args.add(principalID)
 	if throughPeerPrincipalID != "" {
-		query += ` AND COALESCE(NULLIF(session_id, ''), bridge_id) IN (SELECT session_id FROM session_peer_origins WHERE peer_principal_id = ?)`
-		args = append(args, throughPeerPrincipalID)
+		query += ` AND COALESCE(NULLIF(session_id, ''), bridge_id) IN (SELECT session_id FROM session_peer_origins WHERE peer_principal_id = ` + args.add(throughPeerPrincipalID) + `)`
 	}
 	if state != "" {
-		query += ` AND state=?`
-		args = append(args, state)
+		query += ` AND state=` + args.add(state)
 	}
 	query += ` ORDER BY created_at DESC`
 	if limit > 0 {
-		query += ` LIMIT ? OFFSET ?`
-		args = append(args, limit, offset)
+		query += ` LIMIT ` + args.add(limit) + ` OFFSET ` + args.add(offset)
 	}
 	rows, err := s.dbRO.Query(query, args...)
 	if err != nil {
@@ -791,14 +353,10 @@ func (s *Store) SessionIDsOwnedByPrincipal(principalID, throughPeerPrincipalID s
 	if len(sessionIDs) == 0 {
 		return []string{}, nil
 	}
-	args := []any{principalID}
-	for _, id := range sessionIDs {
-		args = append(args, id)
-	}
-	query := `SELECT bridge_id FROM sessions WHERE principal_id=? AND bridge_id IN (` + sqlPlaceholders(len(sessionIDs)) + `)`
+	var args queryArguments
+	query := `SELECT bridge_id FROM sessions WHERE principal_id=` + args.add(principalID) + ` AND bridge_id = ANY(` + args.add(sessionIDs) + `)`
 	if throughPeerPrincipalID != "" {
-		query += ` AND COALESCE(NULLIF(session_id, ''), bridge_id) IN (SELECT session_id FROM session_peer_origins WHERE peer_principal_id = ?)`
-		args = append(args, throughPeerPrincipalID)
+		query += ` AND COALESCE(NULLIF(session_id, ''), bridge_id) IN (SELECT session_id FROM session_peer_origins WHERE peer_principal_id = ` + args.add(throughPeerPrincipalID) + `)`
 	}
 	rows, err := s.dbRO.Query(query, args...)
 	if err != nil {
@@ -822,13 +380,8 @@ func (s *Store) CountSessionsInStates(states []string) (int, error) {
 	if len(states) == 0 {
 		return 0, nil
 	}
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(states)), ",")
-	args := make([]any, len(states))
-	for index, state := range states {
-		args[index] = state
-	}
 	var count int
-	if err := s.dbRO.QueryRow(`SELECT COUNT(*) FROM sessions WHERE state IN (`+placeholders+`)`, args...).Scan(&count); err != nil {
+	if err := s.dbRO.QueryRow(`SELECT COUNT(*) FROM sessions WHERE state = ANY($1)`, states).Scan(&count); err != nil {
 		return 0, fmt.Errorf("count sessions in states %v: %w", states, err)
 	}
 	return count, nil
@@ -841,11 +394,10 @@ func (s *Store) ListSessionsByState(state string) ([]Session, error) {
 // ListSessionsByStatePaged is ListSessionsByState with the same limit/offset
 // bounding semantics as ListSessionsPaged (limit <= 0 means unbounded).
 func (s *Store) ListSessionsByStatePaged(state string, limit, offset int) ([]Session, error) {
-	query := `SELECT ` + sessionColumns + ` FROM sessions WHERE state=? ORDER BY created_at DESC`
-	args := []any{state}
+	var args queryArguments
+	query := `SELECT ` + sessionColumns + ` FROM sessions WHERE state=` + args.add(state) + ` ORDER BY created_at DESC`
 	if limit > 0 {
-		query += ` LIMIT ? OFFSET ?`
-		args = append(args, limit, offset)
+		query += ` LIMIT ` + args.add(limit) + ` OFFSET ` + args.add(offset)
 	}
 	rows, err := s.dbRO.Query(query, args...)
 	if err != nil {
@@ -877,84 +429,6 @@ func sessionStatusFromColumns(state, statusJSON string) *msg.SessionStatus {
 	return &msg.SessionStatus{State: msg.SessionState(state)}
 }
 
-// WriteSessionStatus is the only way a session's state or status is written.
-//
-// It stores ev — an EventSessionStatus — as a row of the session's event
-// stream, stamps the status with that row's id as its AsOf, and writes the
-// status and its state onto the session row, all in one transaction. The id is
-// what makes two copies of a session's status comparable wherever they were
-// read from: the session stream carries the event, the session-list stream
-// carries the row, and the larger AsOf is the newer one.
-//
-// It replaced UpdateSessionState, which wrote the one-word state with nothing
-// to order it by. Twelve callers used that to change a session's state without
-// telling the session's own stream, so a client watching the session learned
-// of a kill, a reaped process or a failed spawn only from the list.
-//
-// ev.Status.AsOf is set on return. sql.ErrNoRows means no such session.
-func (s *Store) WriteSessionStatus(bridgeID string, ev *msg.Event) (int64, error) {
-	return s.writeSessionStatus(bridgeID, ev, true)
-}
-
-func (s *Store) writeSessionStatus(bridgeID string, ev *msg.Event, touchUpdatedAt bool) (int64, error) {
-	if ev == nil || ev.Type != msg.EventSessionStatus || ev.Status == nil {
-		return 0, fmt.Errorf("WriteSessionStatus: want a %s event carrying a status", msg.EventSessionStatus)
-	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback()
-
-	// Stored first with AsOf 0 to learn the row id, then rewritten to carry it.
-	ev.Status.AsOf = 0
-	placeholder, err := json.Marshal(ev)
-	if err != nil {
-		return 0, fmt.Errorf("marshal session_status event: %w", err)
-	}
-	res, err := tx.Exec(
-		`INSERT INTO events (session_id, type, message_id, harness_message_id, data) VALUES (?,?,?,?,?)`,
-		bridgeID, string(ev.Type), "", "", string(placeholder),
-	)
-	if err != nil {
-		return 0, err
-	}
-	rowID, err := res.LastInsertId()
-	if err != nil {
-		return 0, err
-	}
-	ev.Status.AsOf = rowID
-	data, err := json.Marshal(ev)
-	if err != nil {
-		return 0, fmt.Errorf("marshal session_status event: %w", err)
-	}
-	if _, err := tx.Exec(`UPDATE events SET data=? WHERE id=?`, string(data), rowID); err != nil {
-		return 0, err
-	}
-	status, err := json.Marshal(ev.Status)
-	if err != nil {
-		return 0, fmt.Errorf("marshal session status: %w", err)
-	}
-	query := `UPDATE sessions SET state=?, status=?, updated_at=? WHERE bridge_id=?`
-	args := []any{string(ev.Status.State), string(status), time.Now().UTC(), bridgeID}
-	if !touchUpdatedAt {
-		query = `UPDATE sessions SET state=?, status=? WHERE bridge_id=?`
-		args = []any{string(ev.Status.State), string(status), bridgeID}
-	}
-	updated, err := tx.Exec(query, args...)
-	if err != nil {
-		return 0, err
-	}
-	if n, _ := updated.RowsAffected(); n == 0 {
-		return 0, sql.ErrNoRows
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, err
-	}
-	s.notifyChanged(bridgeID)
-	return rowID, nil
-}
-
 // SetSessionMaxBudgetUSD writes the session's spend ceiling in US dollars.
 // Zero clears the ceiling (see the warning on msg.ManagedSession.MaxBudgetUSD
 // — zero is "unset", never "halt now"). Callers validate the sign; a
@@ -962,7 +436,7 @@ func (s *Store) writeSessionStatus(bridgeID string, ev *msg.Event, touchUpdatedA
 // rejected at the HTTP boundary rather than silently clamped here.
 func (s *Store) SetSessionMaxBudgetUSD(bridgeID string, maxBudgetUSD float64) error {
 	now := time.Now().UTC()
-	res, err := s.db.Exec(`UPDATE sessions SET max_budget_usd=?, updated_at=? WHERE bridge_id=?`, maxBudgetUSD, now, bridgeID)
+	res, err := s.db.Exec(`UPDATE sessions SET max_budget_usd=$1, updated_at=$2 WHERE bridge_id=$3`, maxBudgetUSD, now, bridgeID)
 	if err != nil {
 		return err
 	}
@@ -1011,7 +485,7 @@ func (s *Store) RecordAPISpendBreakdown(bridgeID string, detail SessionSpendDeta
 	}
 	defer tx.Rollback()
 	var encoded string
-	if err := tx.QueryRow(`SELECT COALESCE(api_spend_detail, '') FROM sessions WHERE bridge_id=?`, bridgeID).Scan(&encoded); err != nil {
+	if err := tx.QueryRow(`SELECT COALESCE(api_spend_detail, '') FROM sessions WHERE bridge_id=$1`, bridgeID).Scan(&encoded); err != nil {
 		return err
 	}
 	if encoded != "" {
@@ -1027,7 +501,7 @@ func (s *Store) RecordAPISpendBreakdown(bridgeID string, detail SessionSpendDeta
 	if err != nil {
 		return fmt.Errorf("marshal spend detail for %s: %w", bridgeID, err)
 	}
-	if _, err := tx.Exec(`UPDATE sessions SET api_spend_detail=?, updated_at=? WHERE bridge_id=?`, string(next), now, bridgeID); err != nil {
+	if _, err := tx.Exec(`UPDATE sessions SET api_spend_detail=$1, updated_at=$2 WHERE bridge_id=$3`, string(next), now, bridgeID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -1044,13 +518,13 @@ func (s *Store) RecordAPISpendBreakdown(bridgeID string, detail SessionSpendDeta
 func (s *Store) RecordSessionCost(bridgeID string, totalUSD, turnResultUSD float64) (float64, error) {
 	now := time.Now().UTC()
 	res, err := s.db.Exec(`UPDATE sessions
-		SET spend_usd        = MAX(spend_usd, ?),
+		SET spend_usd        = GREATEST(spend_usd, $1),
 		    api_spend_detail = CASE
-		        WHEN ? > COALESCE(json_extract(COALESCE(NULLIF(api_spend_detail, ''), '{}'), '$.turn_result_usd'), 0)
-		        THEN json_set(COALESCE(NULLIF(api_spend_detail, ''), '{}'), '$.turn_result_usd', ?)
+		        WHEN $2::double precision > COALESCE((COALESCE(NULLIF(api_spend_detail, ''), '{}')::jsonb ->> 'turn_result_usd')::double precision, 0)
+		        THEN jsonb_set(COALESCE(NULLIF(api_spend_detail, ''), '{}')::jsonb, '{turn_result_usd}', to_jsonb($2::double precision))::text
 		        ELSE api_spend_detail END,
-		    updated_at       = ?
-		WHERE bridge_id = ?`, totalUSD, turnResultUSD, turnResultUSD, now, bridgeID)
+		    updated_at       = $3
+		WHERE bridge_id = $4`, totalUSD, turnResultUSD, now, bridgeID)
 	if err != nil {
 		return 0, err
 	}
@@ -1058,7 +532,7 @@ func (s *Store) RecordSessionCost(bridgeID string, totalUSD, turnResultUSD float
 		return 0, sql.ErrNoRows
 	}
 	var stored float64
-	if err := s.dbRO.QueryRow(`SELECT COALESCE(spend_usd, 0) FROM sessions WHERE bridge_id=?`, bridgeID).Scan(&stored); err != nil {
+	if err := s.dbRO.QueryRow(`SELECT COALESCE(spend_usd, 0) FROM sessions WHERE bridge_id=$1`, bridgeID).Scan(&stored); err != nil {
 		return 0, err
 	}
 	s.notifyChanged(bridgeID)
@@ -1079,7 +553,7 @@ func (s *Store) SessionSpend(bridgeID string) (float64, SessionSpendDetail, erro
 		detail   SessionSpendDetail
 	)
 	err := s.dbRO.QueryRow(`SELECT COALESCE(spend_usd, 0), COALESCE(api_spend_detail, '')
-		FROM sessions WHERE bridge_id=?`, bridgeID).Scan(&totalUSD, &encoded)
+		FROM sessions WHERE bridge_id=$1`, bridgeID).Scan(&totalUSD, &encoded)
 	if err != nil {
 		return 0, detail, err
 	}
@@ -1093,7 +567,7 @@ func (s *Store) SessionSpend(bridgeID string) (float64, SessionSpendDetail, erro
 
 func (s *Store) UpdateSessionPID(bridgeID string, pid int) error {
 	now := time.Now().UTC()
-	res, err := s.db.Exec(`UPDATE sessions SET pid=?, updated_at=? WHERE bridge_id=?`, pid, now, bridgeID)
+	res, err := s.db.Exec(`UPDATE sessions SET pid=$1, updated_at=$2 WHERE bridge_id=$3`, pid, now, bridgeID)
 	if err != nil {
 		return err
 	}
@@ -1111,7 +585,7 @@ func (s *Store) UpdateSessionPID(bridgeID string, pid int) error {
 // stored bit).
 func (s *Store) UpdateSessionMode(bridgeID string, mode msg.SessionMode) error {
 	now := time.Now().UTC()
-	res, err := s.db.Exec(`UPDATE sessions SET mode=?, updated_at=? WHERE bridge_id=?`, string(mode), now, bridgeID)
+	res, err := s.db.Exec(`UPDATE sessions SET mode=$1, updated_at=$2 WHERE bridge_id=$3`, string(mode), now, bridgeID)
 	if err != nil {
 		return err
 	}
@@ -1132,7 +606,7 @@ func (s *Store) UpdateSessionHarnessConfig(bridgeID string, cfg json.RawMessage)
 	if len(cfg) > 0 {
 		payload = string(cfg)
 	}
-	res, err := s.db.Exec(`UPDATE sessions SET harness_config=?, updated_at=? WHERE bridge_id=?`, payload, now, bridgeID)
+	res, err := s.db.Exec(`UPDATE sessions SET harness_config=$1, updated_at=$2 WHERE bridge_id=$3`, payload, now, bridgeID)
 	if err != nil {
 		return err
 	}
@@ -1164,83 +638,6 @@ type InterruptedTurn struct {
 	ToolCallsAlreadyRun int
 }
 
-// InterruptedTurn returns the most recent turn when no 'result' or 'error'
-// event follows its user_message — the signal of a turn killed mid-flight.
-// Returns nil when the last turn is balanced or when no user_message exists.
-func (s *Store) InterruptedTurn(bridgeID string) (*InterruptedTurn, error) {
-	var userID int
-	var userData string
-	err := s.db.QueryRow(
-		`SELECT id, data FROM events WHERE session_id=? AND type='user_message' ORDER BY id DESC LIMIT 1`,
-		bridgeID,
-	).Scan(&userID, &userData)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	var resultID int
-	if err := s.db.QueryRow(
-		`SELECT COALESCE(MAX(id), 0) FROM events WHERE session_id=? AND type IN ('result','error')`,
-		bridgeID,
-	).Scan(&resultID); err != nil {
-		return nil, err
-	}
-	if resultID >= userID {
-		return nil, nil
-	}
-	var ev msg.Event
-	if err := json.Unmarshal([]byte(userData), &ev); err != nil {
-		return nil, err
-	}
-	if ev.Result == nil {
-		return nil, nil
-	}
-	var toolCalls int
-	if err := s.db.QueryRow(
-		`SELECT COUNT(*) FROM events WHERE session_id=? AND type='tool_call' AND id > ?`,
-		bridgeID, userID,
-	).Scan(&toolCalls); err != nil {
-		return nil, err
-	}
-	return &InterruptedTurn{
-		UserMessageText:     ev.Result.Text,
-		ToolCallsAlreadyRun: toolCalls,
-	}, nil
-}
-
-// LastReportedBackgroundTasks returns the background tasks the harness listed
-// in the session's most recent background_tasks_changed event: what was
-// running inside the harness process the last time it said. Empty when the
-// last report was an empty list, and when the session never reported one.
-//
-// Auto-resume reads it after the process died, to tell the model which of its
-// subagents and backgrounded commands went down with it.
-func (s *Store) LastReportedBackgroundTasks(bridgeID string) ([]msg.BackgroundTask, error) {
-	var data string
-	err := s.db.QueryRow(
-		`SELECT data FROM events
-		  WHERE session_id=? AND type='system' AND json_extract(data,'$.system.subtype')=?
-		  ORDER BY id DESC LIMIT 1`,
-		bridgeID, msg.SystemSubtypeBackgroundTasksChanged,
-	).Scan(&data)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	var ev msg.Event
-	if err := json.Unmarshal([]byte(data), &ev); err != nil {
-		return nil, err
-	}
-	if ev.System == nil {
-		return nil, nil
-	}
-	return ev.System.BackgroundTasks, nil
-}
-
 // ReconciledSession is a session ReconcileSessions reset, and the idle
 // session_status event it stored for it, carrying that row's id as AsOf.
 // The event is returned so the caller can hand the same bytes to log-store:
@@ -1251,76 +648,10 @@ type ReconciledSession struct {
 	Status msg.Event
 }
 
-// ReconcileSessions resets every session in any of the given states to 'idle'
-// (a harness subagent to 'error', see below) with pid=0 and returns the sessions that were reconciled, each with the
-// status event it wrote. Called at startup:
-// the harness subprocess can only exist in memory, so any row marked with an
-// active state from a previous server lifetime is stale. updated_at is
-// intentionally NOT bumped so FileInactive / ArchiveOld can still see the
-// original last-state-transition time. Auto-resume uses LastActivityAt
-// instead, which reflects real event flow rather than just state changes.
-//
-// Pass msg.ActiveSessionStates() to cover every state implying a live
-// subprocess. The variadic shape lets tests target a subset.
-func (s *Store) ReconcileSessions(states ...msg.SessionState) ([]ReconciledSession, error) {
-	sessions, err := s.ResetStaleSessions(states...)
-	if err != nil || len(sessions) == 0 {
-		return nil, err
-	}
-	// One status per session rather than one UPDATE for the lot: a client
-	// may be holding this session's last status from before the restart, and
-	// only a status with a larger AsOf — its own event row — replaces it.
-	//
-	// A harness subagent is the exception. It ran inside its parent's process,
-	// which the restart killed, so its task will never report an end and it
-	// will never be resumed (the bridge does not control it). Set idle, it sat
-	// idle for good; it is recorded as the error it is.
-	reconciled := make([]ReconciledSession, 0, len(sessions))
-	for i := range sessions {
-		ev := &msg.Event{
-			Type:            msg.EventSessionStatus,
-			Harness:         sessions[i].Harness,
-			BridgeSessionID: sessions[i].SessionID,
-			Timestamp:       time.Now(),
-			Status:          StartupReconcileStatus(&sessions[i]),
-		}
-		if _, err := s.writeSessionStatus(sessions[i].SessionID, ev, false); err != nil {
-			return nil, fmt.Errorf("reconcile session %s: %w", sessions[i].SessionID, err)
-		}
-		reconciled = append(reconciled, ReconciledSession{Session: sessions[i], Status: *ev})
-	}
-	return reconciled, nil
-}
-
-// LastActivityAt returns the timestamp of the most recent event logged for
-// the session, or the zero time if the session has no events yet (which the
-// auto-resume cutoff check correctly treats as "stale, skip"). Auto-resume
-// uses this rather than sessions.updated_at because updated_at only bumps on
-// state transitions and metadata writes — a long turn that emits tool_calls
-// and stream chunks for many minutes without a state flip would otherwise
-// look stale.
-//
-// We scan into a string and parse explicitly: COALESCE / aggregate columns
-// in modernc.org/sqlite lose their declared DATETIME affinity and come back
-// as raw strings, which won't scan into time.Time. events.created_at is
-// always written by CURRENT_TIMESTAMP DEFAULT so the format is fixed.
-func (s *Store) LastActivityAt(bridgeID string) (time.Time, error) {
-	var raw sql.NullString
-	if err := s.db.QueryRow(
-		`SELECT MAX(created_at) FROM events WHERE session_id = ?`, bridgeID,
-	).Scan(&raw); err != nil {
-		return time.Time{}, err
-	}
-	if !raw.Valid {
-		return time.Time{}, nil
-	}
-	return time.ParseInLocation("2006-01-02 15:04:05", raw.String, time.UTC)
-}
-
 // SetHarnessSessionID fills in the harness-reported session ID on a session.
 func (s *Store) SetHarnessSessionID(bridgeID, harnessSessionID string) error {
 	now := time.Now().UTC()
-	_, err := s.db.Exec(`UPDATE sessions SET harness_session_id=?, updated_at=? WHERE bridge_id=?`, harnessSessionID, now, bridgeID)
+	_, err := s.db.Exec(`UPDATE sessions SET harness_session_id=$1, updated_at=$2 WHERE bridge_id=$3`, harnessSessionID, now, bridgeID)
 	return err
 }
 
@@ -1349,9 +680,10 @@ func (s *Store) SetHarnessSessionID(bridgeID, harnessSessionID string) error {
 // with the same values changes nothing.
 func (s *Store) FillOrRepairDiscoveredSessionMetadata(bridgeID, displayName, workingDir string) ([]string, error) {
 	var existingDisplayName, existingWorkingDir string
-	var autogenerated, namedAtTurn int
+	var autogenerated bool
+	var namedAtTurn int
 	err := s.db.QueryRow(
-		`SELECT COALESCE(display_name, ''), COALESCE(working_dir, ''), COALESCE(display_name_autogenerated, 1), COALESCE(display_name_named_at_turn, 0) FROM sessions WHERE bridge_id=?`,
+		`SELECT display_name, working_dir, display_name_autogenerated, display_name_named_at_turn FROM sessions WHERE bridge_id=$1`,
 		bridgeID,
 	).Scan(&existingDisplayName, &existingWorkingDir, &autogenerated, &namedAtTurn)
 	if err != nil {
@@ -1365,7 +697,7 @@ func (s *Store) FillOrRepairDiscoveredSessionMetadata(bridgeID, displayName, wor
 		changed = append(changed, "working_dir")
 	}
 	newDisplayName := existingDisplayName
-	titleChosen := autogenerated == 0 || namedAtTurn > 0
+	titleChosen := !autogenerated || namedAtTurn > 0
 	if !titleChosen && displayName != "" && !msg.IsCodexInjectedText(displayName) &&
 		(existingDisplayName == "" || msg.IsCodexInjectedText(existingDisplayName)) && displayName != existingDisplayName {
 		newDisplayName = displayName
@@ -1374,7 +706,7 @@ func (s *Store) FillOrRepairDiscoveredSessionMetadata(bridgeID, displayName, wor
 	if len(changed) == 0 {
 		return nil, nil
 	}
-	if _, err := s.db.Exec(`UPDATE sessions SET display_name=?, working_dir=? WHERE bridge_id=?`, newDisplayName, newWorkingDir, bridgeID); err != nil {
+	if _, err := s.db.Exec(`UPDATE sessions SET display_name=$1, working_dir=$2 WHERE bridge_id=$3`, newDisplayName, newWorkingDir, bridgeID); err != nil {
 		return nil, fmt.Errorf("FillOrRepairDiscoveredSessionMetadata %s: update: %w", bridgeID, err)
 	}
 	s.notifyChanged(bridgeID)
@@ -1417,7 +749,7 @@ func isClaudeCodeProjectNameMisreading(stored, actual string) bool {
 func (s *Store) SetDisplayNameIfEmpty(bridgeID, displayName string) (bool, error) {
 	now := time.Now().UTC()
 	res, err := s.db.Exec(
-		`UPDATE sessions SET display_name=?, display_name_autogenerated=1, updated_at=? WHERE bridge_id=? AND display_name=''`,
+		`UPDATE sessions SET display_name=$1, display_name_autogenerated=true, updated_at=$2 WHERE bridge_id=$3 AND display_name=''`,
 		displayName, now, bridgeID,
 	)
 	if err != nil {
@@ -1432,7 +764,7 @@ func (s *Store) SetDisplayNameIfEmpty(bridgeID, displayName string) (bool, error
 func (s *Store) UpdateSessionDisplayName(bridgeID, displayName string) error {
 	now := time.Now().UTC()
 	res, err := s.db.Exec(
-		`UPDATE sessions SET display_name=?, display_name_autogenerated=0, updated_at=? WHERE bridge_id=?`,
+		`UPDATE sessions SET display_name=$1, display_name_autogenerated=false, updated_at=$2 WHERE bridge_id=$3`,
 		displayName, now, bridgeID,
 	)
 	if err != nil {
@@ -1446,35 +778,19 @@ func (s *Store) UpdateSessionDisplayName(bridgeID, displayName string) error {
 	return nil
 }
 
-// CountUserTurns returns the number of turns a person (or a caller standing
-// in for one) opened on a session: distinct turn ids among its user_message
-// events. Rows are not counted directly because each message is stored twice
-// — once when the server takes it and again when the harness echoes it back
-// under the same turn id. Used by the auto-renamer to decide whether enough
-// turns have passed since the last title to write another.
-func (s *Store) CountUserTurns(bridgeID string) (int, error) {
-	var n int
-	err := s.db.QueryRow(
-		`SELECT COUNT(DISTINCT json_extract(data, '$.turn_id')) FROM events WHERE session_id=? AND type='user_message'`,
-		bridgeID,
-	).Scan(&n)
-	return n, err
-}
-
 // RenamerState returns the auto-rename bookkeeping for a session: whether the
 // current display name is autogenerated, the user turn count at which the
 // last auto-rename ran (0 = never), and the bridge_id of any in-flight
 // renamer session ("" = none).
 func (s *Store) RenamerState(bridgeID string) (autogenerated bool, namedAtTurn int, renamerSessionID string, err error) {
-	var autogen int
 	err = s.db.QueryRow(
-		`SELECT display_name_autogenerated, display_name_named_at_turn, renamer_session_id FROM sessions WHERE bridge_id=?`,
+		`SELECT display_name_autogenerated, display_name_named_at_turn, renamer_session_id FROM sessions WHERE bridge_id=$1`,
 		bridgeID,
-	).Scan(&autogen, &namedAtTurn, &renamerSessionID)
+	).Scan(&autogenerated, &namedAtTurn, &renamerSessionID)
 	if err != nil {
 		return false, 0, "", err
 	}
-	return autogen != 0, namedAtTurn, renamerSessionID, nil
+	return autogenerated, namedAtTurn, renamerSessionID, nil
 }
 
 // ReserveRenamerSlot atomically claims the renamer slot on a session. Returns
@@ -1483,7 +799,7 @@ func (s *Store) RenamerState(bridgeID string) (autogenerated bool, namedAtTurn i
 // false if another renamer is already in flight.
 func (s *Store) ReserveRenamerSlot(bridgeID, renamerSessionID string) (bool, error) {
 	res, err := s.db.Exec(
-		`UPDATE sessions SET renamer_session_id=? WHERE bridge_id=? AND renamer_session_id=''`,
+		`UPDATE sessions SET renamer_session_id=$1 WHERE bridge_id=$2 AND renamer_session_id=''`,
 		renamerSessionID, bridgeID,
 	)
 	if err != nil {
@@ -1497,7 +813,7 @@ func (s *Store) ReserveRenamerSlot(bridgeID, renamerSessionID string) (bool, err
 // name. Used when the renamer fails to start or aborts before producing a name.
 func (s *Store) ClearRenamerSlot(bridgeID string) error {
 	_, err := s.db.Exec(
-		`UPDATE sessions SET renamer_session_id='' WHERE bridge_id=?`,
+		`UPDATE sessions SET renamer_session_id='' WHERE bridge_id=$1`,
 		bridgeID,
 	)
 	return err
@@ -1511,10 +827,10 @@ func (s *Store) ApplyAutoRename(bridgeID, renamerSessionID, displayName string, 
 	now := time.Now().UTC()
 	res, err := s.db.Exec(
 		`UPDATE sessions
-		   SET display_name=?, display_name_autogenerated=1,
-		       display_name_named_at_turn=?, renamer_session_id='',
-		       updated_at=?
-		 WHERE bridge_id=? AND renamer_session_id=?`,
+		   SET display_name=$1, display_name_autogenerated=true,
+		       display_name_named_at_turn=$2, renamer_session_id='',
+		       updated_at=$3
+		 WHERE bridge_id=$4 AND renamer_session_id=$5`,
 		displayName, namedAtTurn, now, bridgeID, renamerSessionID,
 	)
 	if err != nil {
@@ -1535,228 +851,10 @@ type TurnText struct {
 	Assistant string
 }
 
-// RecentTurnTexts returns up to limit recent turns for a session, oldest first.
-// Walks user_message + result events in chronological order and pairs each user
-// message with the next result. Truncates each text field at 2000 runes so the
-// renamer prompt stays compact even for long turns.
-func (s *Store) RecentTurnTexts(bridgeID string, limit int) ([]TurnText, error) {
-	rows, err := s.db.Query(
-		`SELECT type, data FROM events
-		 WHERE session_id=? AND type IN ('user_message','result')
-		 ORDER BY id ASC`,
-		bridgeID,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var turns []TurnText
-	var pending *TurnText
-	for rows.Next() {
-		var typ, data string
-		if err := rows.Scan(&typ, &data); err != nil {
-			return nil, err
-		}
-		var ev msg.Event
-		if err := json.Unmarshal([]byte(data), &ev); err != nil {
-			continue
-		}
-		var text string
-		if ev.Result != nil {
-			text = ev.Result.Text
-		}
-		text = truncateRunes(text, 2000)
-		if typ == "user_message" {
-			if pending != nil {
-				turns = append(turns, *pending)
-			}
-			pending = &TurnText{User: text}
-			continue
-		}
-		// result
-		if pending == nil {
-			pending = &TurnText{Assistant: text}
-		} else {
-			pending.Assistant = text
-		}
-		turns = append(turns, *pending)
-		pending = nil
-	}
-	if pending != nil {
-		turns = append(turns, *pending)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if limit > 0 && len(turns) > limit {
-		turns = turns[len(turns)-limit:]
-	}
-	return turns, nil
-}
-
-func truncateRunes(s string, max int) string {
-	r := []rune(s)
-	if len(r) <= max {
-		return s
-	}
-	return string(r[:max]) + "…"
-}
-
-// StoreEvent persists a serialized event for a session. messageID and
-// harnessMessageID may be empty for events that don't belong to a chat
-// message (system, session_state, session_info, etc).
-func (s *Store) StoreEvent(sessionID, eventType, messageID, harnessMessageID string, data []byte) error {
-	_, err := s.db.Exec(
-		`INSERT INTO events (session_id, type, message_id, harness_message_id, data) VALUES (?,?,?,?,?)`,
-		sessionID, eventType, messageID, harnessMessageID, string(data),
-	)
-	return err
-}
-
 // EventWithID is a raw event with its database row ID.
 type EventWithID struct {
 	RowID int
 	Data  json.RawMessage
-}
-
-// MaxEventRowID reports the highest event row id stored for a session, or 0 when it has
-// none. This is the SSE stream's resume point: a client holding it can reconnect with
-// `Last-Event-ID` and be sent only what arrived after, instead of having the whole
-// current turn replayed at it.
-//
-// ⚠️ Read it BEFORE flushing pending writes to log-store, never after. The guarantee a
-// caller needs is "every event at or below this id is already in the materialized page",
-// and only that order provides it: the flush drains everything queued at the moment it
-// runs, which necessarily includes every event that existed when the id was read. Read
-// the id after the flush and an event written in between is at or below it while never
-// having reached log-store — present in neither the page nor the resumed stream, and
-// nothing anywhere reports the loss.
-func (s *Store) MaxEventRowID(sessionID string) (int64, error) {
-	var maxID int64
-	err := s.dbRO.QueryRow(
-		`SELECT COALESCE(MAX(id), 0) FROM events WHERE session_id=?`,
-		sessionID,
-	).Scan(&maxID)
-	return maxID, err
-}
-
-// ListCurrentTurnEventsWithIDs returns current-turn events with row IDs.
-func (s *Store) ListCurrentTurnEventsWithIDs(sessionID string) ([]EventWithID, error) {
-	var lastUserID int
-	_ = s.dbRO.QueryRow(
-		`SELECT COALESCE(MAX(id), 0) FROM events WHERE session_id=? AND type='user_message'`,
-		sessionID,
-	).Scan(&lastUserID)
-
-	rows, err := s.dbRO.Query(
-		`SELECT id, data FROM events WHERE session_id=? AND id > ? AND type != 'user_message' ORDER BY id ASC`,
-		sessionID, lastUserID,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var events []EventWithID
-	for rows.Next() {
-		var ev EventWithID
-		var data string
-		if err := rows.Scan(&ev.RowID, &data); err != nil {
-			return nil, err
-		}
-		ev.Data = json.RawMessage(data)
-		events = append(events, ev)
-	}
-	return events, rows.Err()
-}
-
-// ListEventsSinceID returns events after a specific row ID (for SSE reconnection).
-func (s *Store) ListEventsSinceID(sessionID string, afterID int) ([]EventWithID, error) {
-	rows, err := s.dbRO.Query(
-		`SELECT id, data FROM events WHERE session_id=? AND id > ? ORDER BY id ASC`,
-		sessionID, afterID,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var events []EventWithID
-	for rows.Next() {
-		var ev EventWithID
-		var data string
-		if err := rows.Scan(&ev.RowID, &data); err != nil {
-			return nil, err
-		}
-		ev.Data = json.RawMessage(data)
-		events = append(events, ev)
-	}
-	return events, rows.Err()
-}
-
-// StoreEventReturningID persists an event and returns its row ID.
-func (s *Store) StoreEventReturningID(sessionID, eventType, messageID, harnessMessageID string, data []byte) (int64, error) {
-	result, err := s.db.Exec(
-		`INSERT INTO events (session_id, type, message_id, harness_message_id, data) VALUES (?,?,?,?,?)`,
-		sessionID, eventType, messageID, harnessMessageID, string(data),
-	)
-	if err != nil {
-		return 0, err
-	}
-	return result.LastInsertId()
-}
-
-// ListToolCallInputs returns the raw `input` JSON for every tool_call event
-// in the session, ordered oldest first. Used by the git endpoint to discover
-// which file paths (and therefore which repos) the session has touched.
-// Empty/null inputs are skipped.
-func (s *Store) ListToolCallInputs(sessionID string) ([]json.RawMessage, error) {
-	rows, err := s.db.Query(
-		`SELECT json_extract(data, '$.tool_call.input') FROM events
-		 WHERE session_id=? AND type='tool_call' ORDER BY id ASC`,
-		sessionID,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []json.RawMessage
-	for rows.Next() {
-		var raw sql.NullString
-		if err := rows.Scan(&raw); err != nil {
-			return nil, err
-		}
-		if !raw.Valid || raw.String == "" {
-			continue
-		}
-		out = append(out, json.RawMessage(raw.String))
-	}
-	return out, rows.Err()
-}
-
-// HarnessToBridgeMap returns the (harness_message_id → bridge message_id)
-// mapping for a session, used to rehydrate manager state after a process
-// restart so resume-replays from the harness can be reconciled back to
-// their original bridge messages.
-func (s *Store) HarnessToBridgeMap(sessionID string) (map[string]string, error) {
-	rows, err := s.db.Query(
-		`SELECT harness_message_id, message_id FROM events
-		 WHERE session_id=? AND harness_message_id != '' AND message_id != ''
-		 GROUP BY harness_message_id`,
-		sessionID,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := make(map[string]string)
-	for rows.Next() {
-		var h, b string
-		if err := rows.Scan(&h, &b); err != nil {
-			return nil, err
-		}
-		out[h] = b
-	}
-	return out, rows.Err()
 }
 
 // ToolUseBinding pairs a tool_use_id with the bridge and harness message ids
@@ -1765,46 +863,6 @@ func (s *Store) HarnessToBridgeMap(sessionID string) (map[string]string, error) 
 type ToolUseBinding struct {
 	BridgeMessageID  string
 	HarnessMessageID string
-}
-
-// ToolUseToMessageMap returns the (tool_use_id → bubble message ids) mapping
-// for a session, used to rehydrate manager state so task_progress events
-// received after a process restart can still be correlated. Scans existing
-// tool_call/tool_result events in the DB; tool_use_id is pulled from the
-// stored event JSON.
-func (s *Store) ToolUseToMessageMap(sessionID string) (map[string]ToolUseBinding, error) {
-	rows, err := s.db.Query(
-		`SELECT
-			COALESCE(json_extract(data, '$.tool_call.tool_id'),
-			         json_extract(data, '$.tool_result.tool_id')) AS tool_use_id,
-			message_id,
-			harness_message_id
-		 FROM events
-		 WHERE session_id=?
-		   AND type IN ('tool_call', 'tool_result')
-		   AND message_id != ''`,
-		sessionID,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := make(map[string]ToolUseBinding)
-	for rows.Next() {
-		var tid sql.NullString
-		var b, h string
-		if err := rows.Scan(&tid, &b, &h); err != nil {
-			return nil, err
-		}
-		if !tid.Valid || tid.String == "" {
-			continue
-		}
-		if _, seen := out[tid.String]; seen {
-			continue
-		}
-		out[tid.String] = ToolUseBinding{BridgeMessageID: b, HarnessMessageID: h}
-	}
-	return out, rows.Err()
 }
 
 // InFlightTurnState captures the per-session turn-level state that the harness
@@ -1819,82 +877,8 @@ type InFlightTurnState struct {
 	HarnessMessageID string
 }
 
-// RecoverInFlightTurn inspects the events table to recover turn-level state
-// for a session whose process is restarting. A turn is "in flight" when the
-// most recent user_message has no result/error event after it. When in flight,
-// the returned state carries the user_message's turn_id (and client_request_id),
-// plus the most recent assistant bubble's bridge/harness message ids — so
-// post-restart events for the same turn get stamped with the original ids.
-//
-// Returns (nil, nil) when no user_message has been recorded yet, or when the
-// most recent turn already has a terminator. Errors propagate.
-func (s *Store) RecoverInFlightTurn(sessionID string) (*InFlightTurnState, error) {
-	var lastUserID int
-	var lastUserData string
-	err := s.db.QueryRow(
-		`SELECT id, data FROM events
-		 WHERE session_id=? AND type='user_message'
-		 ORDER BY id DESC LIMIT 1`,
-		sessionID,
-	).Scan(&lastUserID, &lastUserData)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	var terminatorID int
-	err = s.db.QueryRow(
-		`SELECT COALESCE(MAX(id), 0) FROM events
-		 WHERE session_id=? AND id > ? AND type IN ('result','error')`,
-		sessionID, lastUserID,
-	).Scan(&terminatorID)
-	if err != nil {
-		return nil, err
-	}
-	if terminatorID > 0 {
-		return nil, nil
-	}
-
-	var userEv msg.Event
-	if err := json.Unmarshal([]byte(lastUserData), &userEv); err != nil {
-		return nil, fmt.Errorf("recover turn: unmarshal user_message: %w", err)
-	}
-	if userEv.TurnID == "" {
-		return nil, nil
-	}
-
-	st := &InFlightTurnState{
-		TurnID:          userEv.TurnID,
-		ClientRequestID: userEv.ClientRequestID,
-	}
-
-	// Most recent assistant-side bubble in the in-flight turn — used so a
-	// post-restart event arriving without a fresh harness id falls back into
-	// the still-open bubble rather than minting a new one.
-	rows, err := s.db.Query(
-		`SELECT message_id, harness_message_id FROM events
-		 WHERE session_id=? AND id > ?
-		   AND type IN ('block','stream','thinking','tool_call','tool_result','plan','approval','result')
-		   AND message_id != ''
-		 ORDER BY id DESC LIMIT 1`,
-		sessionID, lastUserID,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	if rows.Next() {
-		if err := rows.Scan(&st.BridgeMessageID, &st.HarnessMessageID); err != nil {
-			return nil, err
-		}
-	}
-	return st, rows.Err()
-}
-
 func (s *Store) DeleteSession(bridgeID string) error {
-	res, err := s.db.Exec(`DELETE FROM sessions WHERE bridge_id=?`, bridgeID)
+	res, err := s.db.Exec(`DELETE FROM sessions WHERE bridge_id=$1`, bridgeID)
 	if err != nil {
 		return err
 	}
@@ -1929,7 +913,7 @@ func (s *Store) ListFolders() ([]string, error) {
 // CreateFolder appends a folder to the registry. No-op if it already exists.
 func (s *Store) CreateFolder(name string) error {
 	_, err := s.db.Exec(
-		`INSERT INTO folders (name, position) VALUES (?, COALESCE((SELECT MAX(position)+1 FROM folders), 0)) ON CONFLICT(name) DO NOTHING`,
+		`INSERT INTO folders (name, position) VALUES ($1, COALESCE((SELECT MAX(position)+1 FROM folders), 0)) ON CONFLICT(name) DO NOTHING`,
 		name,
 	)
 	return err
@@ -1943,10 +927,10 @@ func (s *Store) DeleteFolder(name string) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`UPDATE sessions SET folder_name='' WHERE folder_name=?`, name); err != nil {
+	if _, err := tx.Exec(`UPDATE sessions SET folder_name='' WHERE folder_name=$1`, name); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DELETE FROM folders WHERE name=?`, name); err != nil {
+	if _, err := tx.Exec(`DELETE FROM folders WHERE name=$1`, name); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -1964,20 +948,20 @@ func (s *Store) RenameFolder(oldName, newName string) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`UPDATE sessions SET folder_name=? WHERE folder_name=?`, newName, oldName); err != nil {
+	if _, err := tx.Exec(`UPDATE sessions SET folder_name=$1 WHERE folder_name=$2`, newName, oldName); err != nil {
 		return err
 	}
 	// Check whether newName already exists (merge case).
 	var exists int
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM folders WHERE name=?`, newName).Scan(&exists); err != nil {
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM folders WHERE name=$1`, newName).Scan(&exists); err != nil {
 		return err
 	}
 	if exists > 0 {
-		if _, err := tx.Exec(`DELETE FROM folders WHERE name=?`, oldName); err != nil {
+		if _, err := tx.Exec(`DELETE FROM folders WHERE name=$1`, oldName); err != nil {
 			return err
 		}
 	} else {
-		if _, err := tx.Exec(`UPDATE folders SET name=? WHERE name=?`, newName, oldName); err != nil {
+		if _, err := tx.Exec(`UPDATE folders SET name=$1 WHERE name=$2`, newName, oldName); err != nil {
 			return err
 		}
 	}
@@ -2002,13 +986,13 @@ func (s *Store) FileInactive(cutoff time.Time, folder string) ([]string, error) 
 	}
 	defer tx.Rollback()
 	if _, err := tx.Exec(
-		`INSERT INTO folders (name, position) VALUES (?, COALESCE((SELECT MAX(position)+1 FROM folders), 0)) ON CONFLICT(name) DO NOTHING`,
+		`INSERT INTO folders (name, position) VALUES ($1, COALESCE((SELECT MAX(position)+1 FROM folders), 0)) ON CONFLICT(name) DO NOTHING`,
 		folder,
 	); err != nil {
 		return nil, err
 	}
 	rows, err := tx.Query(
-		`SELECT bridge_id FROM sessions WHERE folder_name='' AND updated_at < ?`,
+		`SELECT bridge_id FROM sessions WHERE folder_name='' AND updated_at < $1`,
 		cutoff,
 	)
 	if err != nil {
@@ -2034,7 +1018,7 @@ func (s *Store) FileInactive(cutoff time.Time, folder string) ([]string, error) 
 	// activity. Bumping it would make a freshly filed session look active
 	// and defeat the next sweep's cutoff.
 	if _, err := tx.Exec(
-		`UPDATE sessions SET folder_name=? WHERE folder_name='' AND updated_at < ?`,
+		`UPDATE sessions SET folder_name=$1 WHERE folder_name='' AND updated_at < $2`,
 		folder, cutoff,
 	); err != nil {
 		return nil, err
@@ -2058,7 +1042,7 @@ func (s *Store) ArchiveOld(cutoff time.Time) ([]string, error) {
 	}
 	defer tx.Rollback()
 	if _, err := tx.Exec(
-		`INSERT INTO folders (name, position) VALUES (?, COALESCE((SELECT MAX(position)+1 FROM folders), 0)) ON CONFLICT(name) DO NOTHING`,
+		`INSERT INTO folders (name, position) VALUES ($1, COALESCE((SELECT MAX(position)+1 FROM folders), 0)) ON CONFLICT(name) DO NOTHING`,
 		ArchiveFolder,
 	); err != nil {
 		return nil, err
@@ -2067,13 +1051,12 @@ func (s *Store) ArchiveOld(cutoff time.Time) ([]string, error) {
 	// not written 'running' since it split into model_generating, tool_running
 	// and the rest, so the old test spared nothing.
 	activeStates := msg.ActiveSessionStates()
-	archivable := `folder_name != ? AND updated_at < ? AND state NOT IN (` +
-		strings.TrimSuffix(strings.Repeat("?,", len(activeStates)), ",") + `)`
-	archivableArgs := []any{ArchiveFolder, cutoff}
-	for _, state := range activeStates {
-		archivableArgs = append(archivableArgs, string(state))
+	activeStateNames := make([]string, len(activeStates))
+	for index, state := range activeStates {
+		activeStateNames[index] = string(state)
 	}
-	rows, err := tx.Query(`SELECT bridge_id FROM sessions WHERE `+archivable, archivableArgs...)
+	rows, err := tx.Query(`SELECT bridge_id FROM sessions WHERE folder_name != $1 AND updated_at < $2 AND NOT state = ANY($3)`,
+		ArchiveFolder, cutoff, activeStateNames)
 	if err != nil {
 		return nil, err
 	}
@@ -2097,8 +1080,8 @@ func (s *Store) ArchiveOld(cutoff time.Time) ([]string, error) {
 	// activity. Bumping it would make a freshly archived session look active
 	// and defeat the next sweep's cutoff.
 	if _, err := tx.Exec(
-		`UPDATE sessions SET folder_name=? WHERE `+archivable,
-		append([]any{ArchiveFolder}, archivableArgs...)...,
+		`UPDATE sessions SET folder_name=$1 WHERE folder_name != $1 AND updated_at < $2 AND NOT state = ANY($3)`,
+		ArchiveFolder, cutoff, activeStateNames,
 	); err != nil {
 		return nil, err
 	}
@@ -2118,14 +1101,14 @@ func (s *Store) SetSessionFolder(bridgeID, folder string) error {
 	defer tx.Rollback()
 	if folder != "" {
 		if _, err := tx.Exec(
-			`INSERT INTO folders (name, position) VALUES (?, COALESCE((SELECT MAX(position)+1 FROM folders), 0)) ON CONFLICT(name) DO NOTHING`,
+			`INSERT INTO folders (name, position) VALUES ($1, COALESCE((SELECT MAX(position)+1 FROM folders), 0)) ON CONFLICT(name) DO NOTHING`,
 			folder,
 		); err != nil {
 			return err
 		}
 	}
 	res, err := tx.Exec(
-		`UPDATE sessions SET folder_name=?, updated_at=? WHERE bridge_id=?`,
+		`UPDATE sessions SET folder_name=$1, updated_at=$2 WHERE bridge_id=$3`,
 		folder, time.Now().UTC(), bridgeID,
 	)
 	if err != nil {
@@ -2282,8 +1265,8 @@ func (s *Store) LinkDiscoveredSessionParent(bridgeID, parentHarnessSessionID str
 	// every discovery pass: it only fills a link that is absent.
 	res, err := s.db.Exec(`
 		UPDATE sessions
-		   SET manager_session_id=?, root_session_id=?, depth=?
-		 WHERE bridge_id=?
+		   SET manager_session_id=$1, root_session_id=$2, depth=$3
+		 WHERE bridge_id=$4
 		   AND COALESCE(manager_session_id, '')=''`,
 		parent.SessionID, root, parent.Depth+1, bridgeID)
 	if err != nil {
@@ -2296,7 +1279,7 @@ func (s *Store) LinkDiscoveredSessionParent(bridgeID, parentHarnessSessionID str
 	// A linked subagent runs inside its parent's process, so the bridge does
 	// not control it. Run whether or not this call wrote the link: a row
 	// linked before discovery set the flag gets it on the next pass.
-	marked, err := s.db.Exec(markLinkedSubagentsHarnessControlled+` AND bridge_id = ?`, bridgeID)
+	marked, err := s.db.Exec(markLinkedSubagentsHarnessControlled+` AND bridge_id = $1`, bridgeID)
 	if err != nil {
 		return n > 0, fmt.Errorf("mark %s controlled_by=harness: %w", bridgeID, err)
 	}
@@ -2347,13 +1330,18 @@ func (s *Store) UpsertDiscoveredSessionOwnedBy(harnessSessionID, bridgeSessionID
 	if strings.HasPrefix(harnessSessionID, "br_") {
 		return "", false, fmt.Errorf("UpsertDiscoveredSession: harness_session_id %q has bridge_id prefix — harness bridge is emitting a bridge_session_id in the harness slot (contract violation)", harnessSessionID)
 	}
+	// Postgres keeps a time to the microsecond. A file time with nanoseconds
+	// would never equal the stored one, and every pass would write the row
+	// again.
+	createdAt = createdAt.Truncate(time.Microsecond)
+	updatedAt = updatedAt.Truncate(time.Microsecond)
 
 	// Short-circuit: if the harness bridge reports a bridge_session_id that
 	// bridge-server already owns, the session is already adopted; don't
 	// re-discover it.
 	if bridgeSessionID != "" {
 		var bridgeID string
-		err := s.db.QueryRow(`SELECT bridge_id FROM sessions WHERE bridge_id=?`, bridgeSessionID).Scan(&bridgeID)
+		err := s.db.QueryRow(`SELECT bridge_id FROM sessions WHERE bridge_id=$1`, bridgeSessionID).Scan(&bridgeID)
 		if err == nil {
 			return bridgeID, false, nil
 		}
@@ -2365,7 +1353,7 @@ func (s *Store) UpsertDiscoveredSessionOwnedBy(harnessSessionID, bridgeSessionID
 	// Check if session already exists by harness_session_id
 	var existingBridgeID, existingInstanceID, existingDisplayName, existingSource, existingFolder, existingPrincipalID string
 	var existingUpdatedAt time.Time
-	err := s.db.QueryRow(`SELECT bridge_id, COALESCE(instance_id, ''), COALESCE(display_name, ''), COALESCE(purpose, ''), COALESCE(folder_name, ''), updated_at, COALESCE(principal_id, '') FROM sessions WHERE harness_session_id=?`, harnessSessionID).Scan(&existingBridgeID, &existingInstanceID, &existingDisplayName, &existingSource, &existingFolder, &existingUpdatedAt, &existingPrincipalID)
+	err := s.db.QueryRow(`SELECT bridge_id, COALESCE(instance_id, ''), COALESCE(display_name, ''), COALESCE(purpose, ''), COALESCE(folder_name, ''), updated_at, COALESCE(principal_id, '') FROM sessions WHERE harness_session_id=$1`, harnessSessionID).Scan(&existingBridgeID, &existingInstanceID, &existingDisplayName, &existingSource, &existingFolder, &existingUpdatedAt, &existingPrincipalID)
 	if err == nil {
 		// Already exists - update timestamp, display_name, instance_id, source,
 		// and folder where the existing values are empty. Existing non-empty
@@ -2398,7 +1386,7 @@ func (s *Store) UpsertDiscoveredSessionOwnedBy(harnessSessionID, bridgeSessionID
 		if updatedAt.Equal(existingUpdatedAt) && newInstanceID == existingInstanceID && newDisplayName == existingDisplayName && newSource == existingSource && newFolder == existingFolder && newPrincipalID == existingPrincipalID {
 			return existingBridgeID, false, nil
 		}
-		if _, err := s.db.Exec(`UPDATE sessions SET updated_at=?, instance_id=?, display_name=?, purpose=?, folder_name=?, principal_id=? WHERE bridge_id=?`, updatedAt, newInstanceID, newDisplayName, newSource, newFolder, newPrincipalID, existingBridgeID); err != nil {
+		if _, err := s.db.Exec(`UPDATE sessions SET updated_at=$1, instance_id=$2, display_name=$3, purpose=$4, folder_name=$5, principal_id=$6 WHERE bridge_id=$7`, updatedAt, newInstanceID, newDisplayName, newSource, newFolder, newPrincipalID, existingBridgeID); err != nil {
 			return "", false, fmt.Errorf("UpsertDiscoveredSession: update %s: %w", existingBridgeID, err)
 		}
 		s.notifyChanged(existingBridgeID)
@@ -2466,7 +1454,7 @@ func (s *Store) UpsertDiscoveredSessionOwnedBy(harnessSessionID, bridgeSessionID
 	}
 
 	_, err = s.db.Exec(
-		`INSERT INTO sessions (bridge_id, session_id, harness_session_id, display_name, harness, instance_id, state, pid, agent_id, parent_id, purpose, type, origin, folder_name, created_at, updated_at, principal_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO sessions (bridge_id, session_id, harness_session_id, display_name, harness, instance_id, state, pid, agent_id, parent_id, purpose, type, origin, folder_name, created_at, updated_at, principal_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
 		bridgeID, bridgeID, harnessSessionID, displayName, harness, instanceID, "idle", 0, "", "", source, string(sessionType), origin, folderName, createdAt, updatedAt, principalID,
 	)
 	if err != nil {
@@ -2511,10 +1499,10 @@ func (s *Store) ReclassifyDiscoveredSession(bridgeID, purpose, folderName string
 	}
 	res, err := s.db.Exec(
 		`UPDATE sessions
-		    SET purpose = ?,
-		        type = ?,
-		        folder_name = CASE WHEN COALESCE(folder_name, '') IN ('', ?) THEN ? ELSE folder_name END
-		  WHERE bridge_id = ? AND purpose = ?`,
+		    SET purpose = $1,
+		        type = $2,
+		        folder_name = CASE WHEN COALESCE(folder_name, '') IN ('', $3) THEN $4 ELSE folder_name END
+		  WHERE bridge_id = $5 AND purpose = $6`,
 		purpose, string(spec.Type), msg.FolderForPurpose(msg.PurposeDiscovered), folderName, bridgeID, msg.PurposeDiscovered,
 	)
 	if err != nil {
@@ -2571,7 +1559,7 @@ func (s *Store) SourceFolderTimestamps() (map[string]time.Time, error) {
 // UpsertSourceFolder writes (or replaces) a runtime override.
 func (s *Store) UpsertSourceFolder(source, folderName string) error {
 	_, err := s.db.Exec(
-		`INSERT INTO source_folders (source, folder_name, updated_at) VALUES (?,?,?)
+		`INSERT INTO source_folders (source, folder_name, updated_at) VALUES ($1,$2,$3)
 		 ON CONFLICT(source) DO UPDATE SET folder_name=excluded.folder_name, updated_at=excluded.updated_at`,
 		source, folderName, time.Now().UTC(),
 	)
@@ -2581,7 +1569,7 @@ func (s *Store) UpsertSourceFolder(source, folderName string) error {
 // DeleteSourceFolder removes a runtime override; the env default (if any)
 // becomes effective again for this source.
 func (s *Store) DeleteSourceFolder(source string) error {
-	_, err := s.db.Exec(`DELETE FROM source_folders WHERE source=?`, source)
+	_, err := s.db.Exec(`DELETE FROM source_folders WHERE source=$1`, source)
 	return err
 }
 
@@ -2593,7 +1581,7 @@ func (s *Store) DeleteSourceFolder(source string) error {
 // see migrate()), but the session column was renamed to purpose in f03b058.
 func (s *Store) ApplySourceFolder(source, oldFolder, newFolder string) (int64, error) {
 	res, err := s.db.Exec(
-		`UPDATE sessions SET folder_name=?, updated_at=? WHERE purpose=? AND (folder_name='' OR folder_name=?)`,
+		`UPDATE sessions SET folder_name=$1, updated_at=$2 WHERE purpose=$3 AND (folder_name='' OR folder_name=$4)`,
 		newFolder, time.Now().UTC(), source, oldFolder,
 	)
 	if err != nil {

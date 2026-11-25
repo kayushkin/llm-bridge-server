@@ -2,18 +2,13 @@
 // reads them back for the stream, crash recovery, the renamer, the brief
 // pass, the reaper and wakeup redelivery.
 //
-// Two ways exist while the move to one copy is measured, chosen at start by
-// session_log.single_copy:
-//
-//   - BridgeDatabase, the old path: the bridge database's events table holds
-//     every event and serves every read here, and the harness manager also
-//     queues each event to the session log, which serves the reading pages.
-//   - SingleCopy: the session log is the only copy. Each event is written
-//     once, in order, and the id that write returns is the SSE event id.
+// The session log is the only copy (SingleCopy): each event is written once,
+// in order, and the id that write returns is the SSE event id. The bridge's
+// SQLite events table, which held every event until the bridge's own records
+// moved to Postgres, is archived history: nothing reads or writes it.
 package sessionevents
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -38,8 +33,7 @@ type Writes interface {
 	ReconcileSessions(states ...msg.SessionState) ([]store.ReconciledSession, error)
 }
 
-// Reads are the reads of session events that the bridge database's events
-// table used to answer.
+// Reads are the reads of session events the server makes.
 type Reads interface {
 	// MaxEventRowID is the session's stream head: its highest event id.
 	MaxEventRowID(sessionID string) (int64, error)
@@ -52,7 +46,7 @@ type Reads interface {
 	// user_message but user messages.
 	ListCurrentTurnEventsWithIDs(sessionID string) ([]store.EventWithID, error)
 	// StreamCursorFromEarlierNumbering says a Last-Event-ID names an event
-	// numbered by a store this one replaced, so events after it cannot be
+	// numbered by the archived events table, so events after it cannot be
 	// found by id here.
 	StreamCursorFromEarlierNumbering(cursor int64) bool
 	HarnessToBridgeMap(sessionID string) (map[string]string, error)
@@ -72,30 +66,4 @@ type Store interface {
 	Reads
 }
 
-// BridgeDatabase is the old path: the bridge database's events table.
-type BridgeDatabase struct {
-	*store.Store
-}
-
-// MaxEventRowIDs reads each session's stream head in turn.
-func (events BridgeDatabase) MaxEventRowIDs(sessionIDs []string) (map[string]int64, error) {
-	heads := make(map[string]int64, len(sessionIDs))
-	for _, sessionID := range sessionIDs {
-		head, err := events.MaxEventRowID(sessionID)
-		if err != nil {
-			return nil, fmt.Errorf("stream head of %s: %w", sessionID, err)
-		}
-		heads[sessionID] = head
-	}
-	return heads, nil
-}
-
-// StreamCursorFromEarlierNumbering is false: the bridge database numbers
-// every event it holds, and RaiseEventNumberingAbove keeps its numbering
-// above the session log's after the session log was the only copy.
-func (BridgeDatabase) StreamCursorFromEarlierNumbering(int64) bool { return false }
-
-var (
-	_ Store = BridgeDatabase{}
-	_ Store = (*SingleCopy)(nil)
-)
+var _ Store = (*SingleCopy)(nil)

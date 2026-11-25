@@ -117,8 +117,7 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// fetchFromLogStore flushes this session's queued writes and returns log-store's answer
-// for the request's own path and query. Shares its path derivation with
+// fetchFromLogStore returns log-store's answer for the request's own path and query. Shares its path derivation with
 // `proxyToLogStore`, so a route added to one is reachable from the other.
 func (s *Server) fetchFromLogStore(r *http.Request) ([]byte, int, error) {
 	id := r.PathValue("id")
@@ -126,8 +125,6 @@ func (s *Server) fetchFromLogStore(r *http.Request) ([]byte, int, error) {
 	if endpoint == "" {
 		return nil, 0, fmt.Errorf("not a log-store session route: %s", r.URL.EscapedPath())
 	}
-	s.harness.FlushLogStoreWrites(id)
-
 	target := logStoreSessionURL(logStoreBaseURL, id, endpoint)
 	if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery

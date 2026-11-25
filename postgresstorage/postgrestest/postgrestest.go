@@ -45,9 +45,9 @@ func (database *Database) URL() string { return database.url }
 
 // Open returns module's connection pool on the test's database, as a server
 // would open it. The pool is closed when the test ends.
-func (database *Database) Open(module postgresstorage.Module) *sql.DB {
+func (database *Database) Open(module postgresstorage.Module, options ...stdlib.OptionOpenDB) *sql.DB {
 	database.t.Helper()
-	db, err := postgresstorage.Open(context.Background(), database.url, module)
+	db, err := postgresstorage.Open(context.Background(), database.url, module, options...)
 	if err != nil {
 		database.t.Fatalf("postgrestest: %v", err)
 	}

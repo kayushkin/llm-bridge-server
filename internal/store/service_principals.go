@@ -53,31 +53,6 @@ type SessionStarter struct {
 	Backfilled bool `json:"backfilled"`
 }
 
-// migrateServicePrincipals creates both tables. Called from migrate().
-func (s *Store) migrateServicePrincipals() error {
-	_, err := s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS service_principal_tokens (
-			id            INTEGER PRIMARY KEY AUTOINCREMENT,
-			principal_id  TEXT NOT NULL,
-			description   TEXT NOT NULL,
-			token_hash    TEXT NOT NULL UNIQUE,
-			created_by    TEXT NOT NULL,
-			created_at    DATETIME NOT NULL,
-			last_used_at  DATETIME,
-			revoked_at    DATETIME,
-			revoked_by    TEXT NOT NULL DEFAULT '',
-			revoke_reason TEXT NOT NULL DEFAULT ''
-		);
-		CREATE TABLE IF NOT EXISTS session_starters (
-			session_id   TEXT PRIMARY KEY,
-			principal_id TEXT NOT NULL,
-			recorded_by  TEXT NOT NULL,
-			recorded_at  DATETIME NOT NULL,
-			backfilled   INTEGER NOT NULL DEFAULT 0
-		);`)
-	return err
-}
-
 const servicePrincipalTokenSelect = `SELECT id, principal_id, description, created_by, created_at, last_used_at, revoked_at, revoked_by, revoke_reason FROM service_principal_tokens`
 
 func scanServicePrincipalToken(row rowScanner) (ServicePrincipalToken, error) {
@@ -100,14 +75,10 @@ func (s *Store) InsertServicePrincipalToken(token *ServicePrincipalToken, tokenH
 		return fmt.Errorf("insert service principal token: principal, description, creator and hash are all required")
 	}
 	token.CreatedAt = time.Now().UTC()
-	result, err := s.db.Exec(`INSERT INTO service_principal_tokens (principal_id, description, token_hash, created_by, created_at) VALUES (?, ?, ?, ?, ?)`,
-		token.PrincipalID, token.Description, tokenHash, token.CreatedBy, token.CreatedAt)
-	if err != nil {
+	var rowID int64
+	if err := s.db.QueryRow(`INSERT INTO service_principal_tokens (principal_id, description, token_hash, created_by, created_at) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+		token.PrincipalID, token.Description, tokenHash, token.CreatedBy, token.CreatedAt).Scan(&rowID); err != nil {
 		return fmt.Errorf("insert service principal token: %w", err)
-	}
-	rowID, err := result.LastInsertId()
-	if err != nil {
-		return err
 	}
 	token.ID = prefixedIDOf(servicePrincipalTokenIDPrefix, rowID)
 	return nil
@@ -115,7 +86,7 @@ func (s *Store) InsertServicePrincipalToken(token *ServicePrincipalToken, tokenH
 
 // ServicePrincipalTokenByHash returns the token with this hash, revoked or not.
 func (s *Store) ServicePrincipalTokenByHash(tokenHash string) (ServicePrincipalToken, error) {
-	found, err := scanServicePrincipalToken(s.db.QueryRow(servicePrincipalTokenSelect+` WHERE token_hash = ?`, tokenHash))
+	found, err := scanServicePrincipalToken(s.db.QueryRow(servicePrincipalTokenSelect+` WHERE token_hash = $1`, tokenHash))
 	return notFoundAs(found, err, ErrServicePrincipalTokenNotFound)
 }
 
@@ -125,7 +96,7 @@ func (s *Store) GetServicePrincipalToken(id string) (ServicePrincipalToken, erro
 	if !ok {
 		return ServicePrincipalToken{}, ErrServicePrincipalTokenNotFound
 	}
-	found, err := scanServicePrincipalToken(s.db.QueryRow(servicePrincipalTokenSelect+` WHERE id = ?`, rowID))
+	found, err := scanServicePrincipalToken(s.db.QueryRow(servicePrincipalTokenSelect+` WHERE id = $1`, rowID))
 	return notFoundAs(found, err, ErrServicePrincipalTokenNotFound)
 }
 
@@ -154,7 +125,7 @@ func (s *Store) TouchServicePrincipalToken(id string, now time.Time) error {
 	if !ok {
 		return ErrServicePrincipalTokenNotFound
 	}
-	_, err := s.db.Exec(`UPDATE service_principal_tokens SET last_used_at = ? WHERE id = ? AND (last_used_at IS NULL OR last_used_at < ?)`,
+	_, err := s.db.Exec(`UPDATE service_principal_tokens SET last_used_at = $1 WHERE id = $2 AND (last_used_at IS NULL OR last_used_at < $3)`,
 		now.UTC(), rowID, now.UTC().Add(-time.Minute))
 	return err
 }
@@ -172,7 +143,7 @@ func (s *Store) RevokeServicePrincipalToken(id, revokedBy, reason string) (Servi
 		return existing, ErrServicePrincipalTokenAlreadyRevoked
 	}
 	rowID, _ := rowIDOfPrefixed(servicePrincipalTokenIDPrefix, id)
-	if _, err := s.db.Exec(`UPDATE service_principal_tokens SET revoked_at = ?, revoked_by = ?, revoke_reason = ? WHERE id = ? AND revoked_at IS NULL`,
+	if _, err := s.db.Exec(`UPDATE service_principal_tokens SET revoked_at = $1, revoked_by = $2, revoke_reason = $3 WHERE id = $4 AND revoked_at IS NULL`,
 		time.Now().UTC(), revokedBy, reason, rowID); err != nil {
 		return ServicePrincipalToken{}, fmt.Errorf("revoke service principal token %s: %w", id, err)
 	}
@@ -186,7 +157,7 @@ func (s *Store) RecordSessionStarter(starter SessionStarter) error {
 		return fmt.Errorf("record session starter: session, principal and recorder are all required")
 	}
 	starter.RecordedAt = time.Now().UTC()
-	_, err := s.db.Exec(`INSERT INTO session_starters (session_id, principal_id, recorded_by, recorded_at, backfilled) VALUES (?, ?, ?, ?, ?)`,
+	_, err := s.db.Exec(`INSERT INTO session_starters (session_id, principal_id, recorded_by, recorded_at, backfilled) VALUES ($1, $2, $3, $4, $5)`,
 		starter.SessionID, starter.PrincipalID, starter.RecordedBy, starter.RecordedAt, starter.Backfilled)
 	if err != nil {
 		return fmt.Errorf("record session %s's starter: %w", starter.SessionID, err)
@@ -198,7 +169,7 @@ func (s *Store) RecordSessionStarter(starter SessionStarter) error {
 // false when no row says so.
 func (s *Store) SessionStarterOf(sessionID string) (SessionStarter, bool, error) {
 	starter := SessionStarter{SessionID: sessionID}
-	err := s.dbRO.QueryRow(`SELECT principal_id, recorded_by, recorded_at, backfilled FROM session_starters WHERE session_id = ?`, sessionID).
+	err := s.dbRO.QueryRow(`SELECT principal_id, recorded_by, recorded_at, backfilled FROM session_starters WHERE session_id = $1`, sessionID).
 		Scan(&starter.PrincipalID, &starter.RecordedBy, &starter.RecordedAt, &starter.Backfilled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SessionStarter{}, false, nil

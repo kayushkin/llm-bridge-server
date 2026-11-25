@@ -98,7 +98,29 @@ type EventToAppend struct {
 	// that carries its own id (a session status, whose as_of is it). It is
 	// called inside the write, so the id it is given is the one stored.
 	DataForID func(id int64) ([]byte, error)
+
+	// RequiredRow, when set, is read first in the event's transaction, and
+	// the event is stored only when it answers a row; it may lock that row
+	// (FOR NO KEY UPDATE) so the row stays until the transaction ends. With
+	// no row, nothing is stored and AppendEvent answers ErrRequiredRowMissing.
+	// It makes the write an explicit transaction, at no extra round trip.
+	RequiredRow *Statement
+	// AlsoWrite gives the statements that belong with the event, given its
+	// id, run in its transaction after its own writes: a row of another
+	// module that the event describes. A write the key finds already stored
+	// runs none of them; they committed with it.
+	AlsoWrite func(id int64) ([]Statement, error)
 }
+
+// Statement is one statement and its arguments.
+type Statement struct {
+	Query     string
+	Arguments []any
+}
+
+// ErrRequiredRowMissing is an event whose RequiredRow answered no row. Nothing
+// was stored.
+var ErrRequiredRowMissing = errors.New("session log: the row the event belongs with does not exist")
 
 // AppendedEvent is the row AppendEvent stored, or found already stored.
 type AppendedEvent struct {

@@ -13,17 +13,6 @@ import (
 // no longer the session's, so it dies when the session is spawned again, and
 // the server refuses it outright once the session has ended.
 
-func (s *Store) migrateSessionPostingSpawns() error {
-	_, err := s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS session_posting_spawns (
-			session_id TEXT PRIMARY KEY,
-			spawn_key  TEXT NOT NULL,
-			minted_at  DATETIME NOT NULL
-		);
-	`)
-	return err
-}
-
 // RecordSessionPostingSpawn makes spawnKey the session's current spawn, so
 // only a posting token carrying it is accepted from now on.
 func (s *Store) RecordSessionPostingSpawn(sessionID, spawnKey string) error {
@@ -31,7 +20,7 @@ func (s *Store) RecordSessionPostingSpawn(sessionID, spawnKey string) error {
 		return errors.New("a posting spawn needs a session id and a spawn key")
 	}
 	_, err := s.db.Exec(`
-		INSERT INTO session_posting_spawns (session_id, spawn_key, minted_at) VALUES (?, ?, ?)
+		INSERT INTO session_posting_spawns (session_id, spawn_key, minted_at) VALUES ($1, $2, $3)
 		ON CONFLICT(session_id) DO UPDATE SET spawn_key = excluded.spawn_key, minted_at = excluded.minted_at`,
 		sessionID, spawnKey, time.Now().UTC())
 	if err != nil {
@@ -44,7 +33,7 @@ func (s *Store) RecordSessionPostingSpawn(sessionID, spawnKey string) error {
 // none was ever recorded.
 func (s *Store) SessionPostingSpawnKey(sessionID string) (string, bool, error) {
 	var spawnKey string
-	err := s.db.QueryRow(`SELECT spawn_key FROM session_posting_spawns WHERE session_id = ?`, sessionID).Scan(&spawnKey)
+	err := s.db.QueryRow(`SELECT spawn_key FROM session_posting_spawns WHERE session_id = $1`, sessionID).Scan(&spawnKey)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}

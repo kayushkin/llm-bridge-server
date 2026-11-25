@@ -90,7 +90,7 @@ func TestReclassifyDiscoveredSession_NeverOverwritesAPurposeSomethingElseSet(t *
 func TestReclassifyDiscoveredSession_KeepsAFolderSomeoneChose(t *testing.T) {
 	s := testStore(t)
 	id := importUnrecognized(t, s, "uuid-archived", time.Now())
-	if _, err := s.db.Exec(`UPDATE sessions SET folder_name='Archive' WHERE bridge_id=?`, id); err != nil {
+	if _, err := s.db.Exec(`UPDATE sessions SET folder_name='Archive' WHERE bridge_id=$1`, id); err != nil {
 		t.Fatalf("archive: %v", err)
 	}
 	changed, err := s.ReclassifyDiscoveredSession(id, msg.PurposeOneshot, "Oneshot")

@@ -49,20 +49,21 @@ func mustCreateSessionAt(t *testing.T, s *Store, bridgeID string, state msg.Sess
 	if err := s.CreateSession(&Session{SessionID: bridgeID, Harness: "claude_code", State: string(state)}); err != nil {
 		t.Fatalf("create %s: %v", bridgeID, err)
 	}
-	if _, err := s.db.Exec(`UPDATE sessions SET updated_at=? WHERE bridge_id=?`, updatedAt.UTC(), bridgeID); err != nil {
+	if _, err := s.db.Exec(`UPDATE sessions SET updated_at=$1 WHERE bridge_id=$2`, updatedAt.UTC(), bridgeID); err != nil {
 		t.Fatalf("age %s: %v", bridgeID, err)
 	}
 }
 
-// The migration marks every subagent row linked to a parent as harness
+// Opening the store marks every subagent row linked to a parent as harness
 // controlled, leaves rows it should not touch alone, and changes nothing when
-// it runs again — migrate runs on every open.
-func TestMigrationMarksLinkedSubagentsHarnessControlled(t *testing.T) {
-	s := testStore(t)
+// it runs again — it runs on every open.
+func TestOpeningMarksLinkedSubagentsHarnessControlled(t *testing.T) {
+	database := newTestDatabase(t)
+	s := database.open()
 	insert := func(bridgeID, purpose, managerSessionID, controlledBy string) {
 		t.Helper()
 		if _, err := s.db.Exec(`INSERT INTO sessions (bridge_id, session_id, display_name, harness, state, purpose, manager_session_id, controlled_by, created_at, updated_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?)`, bridgeID, bridgeID, bridgeID, "claude_code", "idle", purpose, managerSessionID, controlledBy, time.Now(), time.Now()); err != nil {
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, bridgeID, bridgeID, bridgeID, "claude_code", "idle", purpose, managerSessionID, controlledBy, time.Now(), time.Now()); err != nil {
 			t.Fatalf("insert %s: %v", bridgeID, err)
 		}
 	}
@@ -73,9 +74,7 @@ func TestMigrationMarksLinkedSubagentsHarnessControlled(t *testing.T) {
 	insert("br_linked_delegate", "delegate", "br_parent", "")
 
 	for pass := 1; pass <= 2; pass++ {
-		if err := s.migrate(); err != nil {
-			t.Fatalf("migrate pass %d: %v", pass, err)
-		}
+		s = database.open()
 		want := map[string]string{
 			"br_parent":                   "",
 			"br_linked_subagent":          msg.ControlledByHarness,
@@ -94,31 +93,6 @@ func TestMigrationMarksLinkedSubagentsHarnessControlled(t *testing.T) {
 				t.Errorf("pass %d: %s controlled_by = %q, want %q", pass, id, sess.ControlledBy, wantControlledBy)
 			}
 		}
-	}
-}
-
-// A restart kills the process a subagent ran inside, so its task can never
-// report an end. It used to be reset to idle with everything else and sat
-// there for good.
-func TestReconcileSessionsEndsSubagentsAndIdlesTheRest(t *testing.T) {
-	s := testStore(t)
-	if err := s.CreateSession(&Session{SessionID: "br_parent", Harness: "claude_code", State: string(msg.SessionToolRunning)}); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.CreateSession(&Session{SessionID: "br_subagent", Harness: "claude_code", State: string(msg.SessionRunning),
-		ManagerSessionID: "br_parent", ControlledBy: msg.ControlledByHarness, Purpose: "subagent"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.ReconcileSessions(msg.ActiveSessionStates()...); err != nil {
-		t.Fatalf("ReconcileSessions: %v", err)
-	}
-	parent, _ := s.GetSession("br_parent")
-	if parent.State != string(msg.SessionIdle) || parent.Status == nil || parent.Status.Reason != msg.ReasonStartupReconcile {
-		t.Errorf("parent: state %s status %+v; want idle, startup_reconcile", parent.State, parent.Status)
-	}
-	sub, _ := s.GetSession("br_subagent")
-	if sub.State != string(msg.SessionError) || sub.Status == nil || sub.Status.Reason != msg.ReasonParentProcessExited {
-		t.Errorf("subagent: state %s status %+v; want error, parent_process_exited", sub.State, sub.Status)
 	}
 }
 

@@ -22,7 +22,7 @@ func titleAndFolder(t *testing.T, s *Store, bridgeID string) (string, string, ti
 	t.Helper()
 	var title, folder string
 	var updated time.Time
-	if err := s.db.QueryRow(`SELECT display_name, working_dir, updated_at FROM sessions WHERE bridge_id=?`, bridgeID).Scan(&title, &folder, &updated); err != nil {
+	if err := s.db.QueryRow(`SELECT display_name, working_dir, updated_at FROM sessions WHERE bridge_id=$1`, bridgeID).Scan(&title, &folder, &updated); err != nil {
 		t.Fatalf("read %s: %v", bridgeID, err)
 	}
 	return title, folder, updated
@@ -62,7 +62,7 @@ func TestFillOrRepairDiscoveredSessionMetadataKeepsTitlesSomeoneChose(t *testing
 		t.Fatalf("UpdateSessionDisplayName: %v", err)
 	}
 	renamedByRenamer := discoveredRow(t, s, "01a17f13-7000-7950-be14-de83e37aff1d", "")
-	if _, err := s.db.Exec(`UPDATE sessions SET display_name=?, display_name_named_at_turn=3 WHERE bridge_id=?`, injectedAgentsTitle, renamedByRenamer); err != nil {
+	if _, err := s.db.Exec(`UPDATE sessions SET display_name=$1, display_name_named_at_turn=3 WHERE bridge_id=$2`, injectedAgentsTitle, renamedByRenamer); err != nil {
 		t.Fatalf("stamp renamer: %v", err)
 	}
 	plainTitle := discoveredRow(t, s, "01a17f13-8000-7950-be14-de83e37aff1d", "Fix the date parser")
@@ -85,7 +85,7 @@ func TestFillOrRepairDiscoveredSessionMetadataKeepsTitlesSomeoneChose(t *testing
 func TestFillOrRepairDiscoveredSessionMetadataNeverWritesInjectedTextOrOverwritesAFolder(t *testing.T) {
 	s := testStore(t)
 	id := discoveredRow(t, s, "01a17f13-9000-7950-be14-de83e37aff1d", "")
-	if _, err := s.db.Exec(`UPDATE sessions SET working_dir='/work/chosen' WHERE bridge_id=?`, id); err != nil {
+	if _, err := s.db.Exec(`UPDATE sessions SET working_dir='/work/chosen' WHERE bridge_id=$1`, id); err != nil {
 		t.Fatalf("set folder: %v", err)
 	}
 	changed, err := s.FillOrRepairDiscoveredSessionMetadata(id, "<environment_context>\n  <cwd>/work</cwd>", "/work/other")

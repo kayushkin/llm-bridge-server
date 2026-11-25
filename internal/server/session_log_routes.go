@@ -40,12 +40,11 @@ func (s *Server) EnableSessionLog(handler http.Handler, events harness.SessionEv
 
 // UseSessionEventStore names where the harness manager stores every event
 // and where this server reads them back: the stream, the stream head, crash
-// recovery, the renamer, the brief pass, the reaper and wakeup redelivery.
-// singleCopy says events is the session log itself, so nothing is queued to
-// it beside. main calls it once, after EnableSessionLog and before any
-// session starts or resumes.
-func (s *Server) UseSessionEventStore(events sessionevents.Store, singleCopy bool) {
-	s.harness.SetSessionEventStore(events, singleCopy)
+// recovery, the renamer, the brief pass, the reaper and wakeup redelivery:
+// the session log, the only copy. main calls it once, after EnableSessionLog
+// and before any session starts or resumes.
+func (s *Server) UseSessionEventStore(events sessionevents.Store) {
+	s.harness.SetSessionEventStore(events)
 }
 
 // getFromLogStore asks log-store, in this process, for target, written

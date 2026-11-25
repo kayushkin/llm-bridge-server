@@ -1,13 +1,12 @@
 package store
 
 import (
-	"path/filepath"
 	"testing"
 	"time"
 )
 
 func TestExternalActivityMarkOnlyMovesForward(t *testing.T) {
-	st, err := New(filepath.Join(t.TempDir(), "test.db"))
+	st, err := newTestStore(t), error(nil)
 	if err != nil {
 		t.Fatal(err)
 	}

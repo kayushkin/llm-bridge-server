@@ -271,7 +271,7 @@ func TestLinkDiscoveredSessionParent(t *testing.T) {
 		realParent := mkParent(t, s, "the-real-parent")
 		childID := mkChild(t, s, "agent-a369d3bc")
 
-		if _, err := s.db.Exec(`UPDATE sessions SET manager_session_id=? WHERE bridge_id=?`, realParent, childID); err != nil {
+		if _, err := s.db.Exec(`UPDATE sessions SET manager_session_id=$1 WHERE bridge_id=$2`, realParent, childID); err != nil {
 			t.Fatalf("seed live link: %v", err)
 		}
 		linked, err := s.LinkDiscoveredSessionParent(childID, "parent-uuid")

@@ -2,8 +2,6 @@ package store
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -11,17 +9,10 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// testStore creates a temporary store for testing.
+// testStore creates a store of the test's own for testing.
 func testStore(t *testing.T) *Store {
 	t.Helper()
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
-	s, err := New(dbPath)
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
-	t.Cleanup(func() { s.Close() })
-	return s
+	return newTestStore(t)
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -333,30 +324,6 @@ func TestDeleteSession_NotFound(t *testing.T) {
 // Session state transitions
 // ──────────────────────────────────────────────────────────────────────────────
 
-func TestWriteSessionStatus_WritesTheState(t *testing.T) {
-	s := testStore(t)
-
-	sess := &Session{SessionID: "br_state", Harness: "mock", State: "idle"}
-	s.CreateSession(sess)
-
-	if err := writeSessionState(s, "br_state", "running"); err != nil {
-		t.Fatalf("update state: %v", err)
-	}
-
-	got, _ := s.GetSession("br_state")
-	if got.State != "running" {
-		t.Errorf("state = %q, want running", got.State)
-	}
-}
-
-func TestWriteSessionStatus_NotFound(t *testing.T) {
-	s := testStore(t)
-	err := writeSessionState(s, "nonexistent", "running")
-	if err == nil {
-		t.Fatal("expected error for nonexistent session")
-	}
-}
-
 func TestUpdateSessionPID(t *testing.T) {
 	s := testStore(t)
 
@@ -425,161 +392,6 @@ func TestHarnessConfig(t *testing.T) {
 // ──────────────────────────────────────────────────────────────────────────────
 // Events
 // ──────────────────────────────────────────────────────────────────────────────
-
-func TestStoreAndListEvents(t *testing.T) {
-	s := testStore(t)
-
-	sess := &Session{SessionID: "br_ev", Harness: "mock", State: "idle"}
-	s.CreateSession(sess)
-
-	event1 := msg.Event{Type: msg.EventStream, BridgeSessionID: "br_ev", Timestamp: time.Now()}
-	event2 := msg.Event{Type: msg.EventResult, BridgeSessionID: "br_ev", Timestamp: time.Now()}
-
-	data1, _ := json.Marshal(event1)
-	data2, _ := json.Marshal(event2)
-
-	if err := s.StoreEvent("br_ev", string(event1.Type), "", "", data1); err != nil {
-		t.Fatalf("store event 1: %v", err)
-	}
-	if err := s.StoreEvent("br_ev", string(event2.Type), "", "", data2); err != nil {
-		t.Fatalf("store event 2: %v", err)
-	}
-
-	// ListEventsSinceID should return events after the given ID
-	events, err := s.ListEventsSinceID("br_ev", 0)
-	if err != nil {
-		t.Fatalf("list events: %v", err)
-	}
-	if len(events) != 2 {
-		t.Errorf("event count = %d, want 2", len(events))
-	}
-
-	// List since first event should return only the second
-	events, err = s.ListEventsSinceID("br_ev", events[0].RowID)
-	if err != nil {
-		t.Fatalf("list events since: %v", err)
-	}
-	if len(events) != 1 {
-		t.Errorf("event count after first = %d, want 1", len(events))
-	}
-}
-
-func TestStoreEventReturningID(t *testing.T) {
-	s := testStore(t)
-
-	sess := &Session{SessionID: "br_eid", Harness: "mock", State: "idle"}
-	s.CreateSession(sess)
-
-	data, _ := json.Marshal(msg.Event{Type: msg.EventStream})
-	id, err := s.StoreEventReturningID("br_eid", "stream", "", "", data)
-	if err != nil {
-		t.Fatalf("store event returning id: %v", err)
-	}
-	if id <= 0 {
-		t.Errorf("returned id = %d, want > 0", id)
-	}
-}
-
-func TestListCurrentTurnEvents(t *testing.T) {
-	s := testStore(t)
-
-	sess := &Session{SessionID: "br_turn", Harness: "mock", State: "idle"}
-	s.CreateSession(sess)
-
-	// Store events: stream, result, user_message, stream, result
-	types := []string{"stream", "result", "user_message", "stream", "result"}
-	for _, typ := range types {
-		data, _ := json.Marshal(msg.Event{Type: msg.EventType(typ)})
-		s.StoreEvent("br_turn", typ, "", "", data)
-	}
-
-	// Current turn should only return events after the last user_message
-	events, err := s.ListCurrentTurnEventsWithIDs("br_turn")
-	if err != nil {
-		t.Fatalf("list current turn: %v", err)
-	}
-	if len(events) != 2 {
-		t.Errorf("current turn event count = %d, want 2", len(events))
-	}
-}
-
-func TestRecoverInFlightTurn(t *testing.T) {
-	s := testStore(t)
-
-	sess := &Session{SessionID: "br_recov", Harness: "mock", State: "idle"}
-	s.CreateSession(sess)
-
-	// No user_message yet — nothing to recover.
-	got, err := s.RecoverInFlightTurn("br_recov")
-	if err != nil {
-		t.Fatalf("recover empty: %v", err)
-	}
-	if got != nil {
-		t.Errorf("recover empty = %+v, want nil", got)
-	}
-
-	storeEv := func(typ msg.EventType, ev msg.Event) {
-		t.Helper()
-		ev.Type = typ
-		data, err := json.Marshal(ev)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
-		if _, err := s.StoreEventReturningID("br_recov", string(typ), ev.MessageID, ev.HarnessMessageID, data); err != nil {
-			t.Fatalf("store: %v", err)
-		}
-	}
-
-	// Closed turn: user_message → block → result. Nothing in flight.
-	storeEv(msg.EventUserMessage, msg.Event{TurnID: "turn_a", ClientRequestID: "req_a", MessageID: "msg_user_a"})
-	storeEv(msg.EventBlock, msg.Event{TurnID: "turn_a", MessageID: "msg_assist_a", HarnessMessageID: "h_a"})
-	storeEv(msg.EventResult, msg.Event{TurnID: "turn_a", MessageID: "msg_assist_a", HarnessMessageID: "h_a"})
-
-	got, err = s.RecoverInFlightTurn("br_recov")
-	if err != nil {
-		t.Fatalf("recover after closed: %v", err)
-	}
-	if got != nil {
-		t.Errorf("recover after closed = %+v, want nil", got)
-	}
-
-	// Open a new turn that the harness restart interrupts before any
-	// result/error lands. Recovery must surface the in-flight state.
-	storeEv(msg.EventUserMessage, msg.Event{TurnID: "turn_b", ClientRequestID: "req_b", MessageID: "msg_user_b"})
-	storeEv(msg.EventBlock, msg.Event{TurnID: "turn_b", MessageID: "msg_assist_b1", HarnessMessageID: "h_b1"})
-	storeEv(msg.EventToolCall, msg.Event{TurnID: "turn_b", MessageID: "msg_assist_b2", HarnessMessageID: "h_b2"})
-
-	got, err = s.RecoverInFlightTurn("br_recov")
-	if err != nil {
-		t.Fatalf("recover in-flight: %v", err)
-	}
-	if got == nil {
-		t.Fatalf("recover in-flight = nil, want state")
-	}
-	if got.TurnID != "turn_b" {
-		t.Errorf("TurnID = %q, want turn_b", got.TurnID)
-	}
-	if got.ClientRequestID != "req_b" {
-		t.Errorf("ClientRequestID = %q, want req_b", got.ClientRequestID)
-	}
-	if got.BridgeMessageID != "msg_assist_b2" {
-		t.Errorf("BridgeMessageID = %q, want msg_assist_b2 (most recent bubble)", got.BridgeMessageID)
-	}
-	if got.HarnessMessageID != "h_b2" {
-		t.Errorf("HarnessMessageID = %q, want h_b2", got.HarnessMessageID)
-	}
-
-	// Closing the turn with a result clears the recovery state.
-	storeEv(msg.EventResult, msg.Event{TurnID: "turn_b", MessageID: "msg_assist_b2", HarnessMessageID: "h_b2"})
-
-	got, err = s.RecoverInFlightTurn("br_recov")
-	if err != nil {
-		t.Fatalf("recover after terminator: %v", err)
-	}
-	if got != nil {
-		t.Errorf("recover after terminator = %+v, want nil", got)
-	}
-}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Discovered sessions
@@ -668,7 +480,8 @@ func TestUpsertDiscoveredSessionUnchangedIsSilent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !sess.UpdatedAt.Equal(updatedAt.Add(time.Minute)) {
+	// Postgres keeps the time to the microsecond.
+	if !sess.UpdatedAt.Equal(updatedAt.Add(time.Minute).Truncate(time.Microsecond)) {
 		t.Errorf("updated_at = %v, want the newer time", sess.UpdatedAt)
 	}
 }
@@ -762,179 +575,17 @@ func TestUpsertDiscoveredSession_ColdImportFallthrough(t *testing.T) {
 // Concurrent access
 // ──────────────────────────────────────────────────────────────────────────────
 
-func TestConcurrentWrites(t *testing.T) {
-	s := testStore(t)
-
-	// Create a session for event writes
-	sess := &Session{SessionID: "br_conc", Harness: "mock", State: "idle"}
-	s.CreateSession(sess)
-
-	// Sequential writes (the production code serializes via Manager.mu)
-	for i := range 20 {
-		data, _ := json.Marshal(msg.Event{Type: msg.EventStream, BridgeSessionID: "br_conc"})
-		if err := s.StoreEvent("br_conc", "stream", "", "", data); err != nil {
-			t.Errorf("write %d: %v", i, err)
-		}
-	}
-
-	// Verify all 20 events stored via StoreEventReturningID
-	lastID, err := s.StoreEventReturningID("br_conc", "stream", "", "", []byte(`{}`))
-	if err != nil {
-		t.Fatalf("store returning id: %v", err)
-	}
-	if lastID < 21 {
-		t.Errorf("last insert id = %d, want >= 21", lastID)
-	}
-}
-
 // ──────────────────────────────────────────────────────────────────────────────
 // DB creation in nonexistent directory
 // ──────────────────────────────────────────────────────────────────────────────
 
-func TestNewCreatesDirectory(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "nested", "path")
-	dbPath := filepath.Join(dir, "test.db")
-
-	s, err := New(dbPath)
-	if err != nil {
-		t.Fatalf("new: %v", err)
-	}
-	defer s.Close()
-
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		t.Error("expected directory to be created")
-	}
-}
-
-// An interrupted turn is picked back up by auto-resume, and what it is told
-// depends on whether the turn had already run tools — so the count has to be
-// right for the turn that was actually interrupted, not for the session's
-// whole history.
-func TestInterruptedTurnCountsOnlyTheInterruptedTurnsToolCalls(t *testing.T) {
-	s := testStore(t)
-	s.CreateSession(&Session{SessionID: "br_int", Harness: "mock", State: "idle"})
-
-	storeEv := func(typ msg.EventType, text string) {
-		t.Helper()
-		ev := msg.Event{Type: typ}
-		if text != "" {
-			ev.Result = &msg.ResultEvent{Text: text}
-		}
-		data, err := json.Marshal(ev)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
-		if _, err := s.StoreEventReturningID("br_int", string(typ), "", "", data); err != nil {
-			t.Fatalf("store: %v", err)
-		}
-	}
-
-	got, err := s.InterruptedTurn("br_int")
-	if err != nil {
-		t.Fatalf("no user_message: %v", err)
-	}
-	if got != nil {
-		t.Errorf("no user_message = %+v, want nil", got)
-	}
-
-	// A completed turn that ran two tools. Balanced, so nothing to resume —
-	// and its tool calls must not be charged to any later turn.
-	storeEv(msg.EventUserMessage, "first instruction")
-	storeEv(msg.EventToolCall, "")
-	storeEv(msg.EventToolCall, "")
-	storeEv(msg.EventResult, "")
-
-	got, err = s.InterruptedTurn("br_int")
-	if err != nil {
-		t.Fatalf("balanced turn: %v", err)
-	}
-	if got != nil {
-		t.Errorf("balanced turn = %+v, want nil — a turn with a result is not interrupted", got)
-	}
-
-	// A turn killed before it touched anything: replaying it verbatim repeats
-	// nothing, and the two earlier tool calls belong to the closed turn above.
-	storeEv(msg.EventUserMessage, "second instruction")
-
-	got, err = s.InterruptedTurn("br_int")
-	if err != nil {
-		t.Fatalf("interrupted before tools: %v", err)
-	}
-	if got == nil {
-		t.Fatal("interrupted before tools = nil, want the pending turn")
-	}
-	if got.UserMessageText != "second instruction" {
-		t.Errorf("UserMessageText = %q, want the most recent instruction", got.UserMessageText)
-	}
-	if got.ToolCallsAlreadyRun != 0 {
-		t.Errorf("ToolCallsAlreadyRun = %d, want 0 — the earlier turn's tool calls leaked into this one",
-			got.ToolCallsAlreadyRun)
-	}
-
-	// The same turn, now killed after it ran a tool. This is the case that
-	// must not be replayed verbatim.
-	storeEv(msg.EventToolCall, "")
-
-	got, err = s.InterruptedTurn("br_int")
-	if err != nil {
-		t.Fatalf("interrupted after tools: %v", err)
-	}
-	if got == nil {
-		t.Fatal("interrupted after tools = nil, want the pending turn")
-	}
-	if got.ToolCallsAlreadyRun != 1 {
-		t.Errorf("ToolCallsAlreadyRun = %d, want 1", got.ToolCallsAlreadyRun)
-	}
-}
-
-// writeSessionState writes a bare state through the only write path there is.
+// writeSessionState writes a bare state onto the row, as the session log's
+// status write does in the transaction of its event.
 func writeSessionState(s *Store, bridgeID, state string) error {
-	_, err := s.WriteSessionStatus(bridgeID, &msg.Event{
-		Type:      msg.EventSessionStatus,
-		Timestamp: time.Now(),
-		Status:    &msg.SessionStatus{State: msg.SessionState(state)},
-	})
-	return err
-}
-
-func TestLastReportedBackgroundTasksIsTheNewestListNotAnOlderOne(t *testing.T) {
-	s := testStore(t)
-	s.CreateSession(&Session{SessionID: "br_bg", Harness: "mock", State: "idle"})
-
-	got, err := s.LastReportedBackgroundTasks("br_bg")
-	if err != nil || got != nil {
-		t.Fatalf("no report yet = %+v, %v; want nil, nil", got, err)
-	}
-
-	report := func(tasks ...msg.BackgroundTask) {
-		t.Helper()
-		data, err := json.Marshal(msg.Event{Type: msg.EventSystem, System: &msg.SystemEvent{
-			Subtype: msg.SystemSubtypeBackgroundTasksChanged, BackgroundTasks: tasks,
-		}})
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
-		if _, err := s.StoreEventReturningID("br_bg", string(msg.EventSystem), "", "", data); err != nil {
-			t.Fatalf("store: %v", err)
-		}
-	}
-	subagent := msg.BackgroundTask{TaskID: "a1", TaskType: msg.TaskTypeLocalAgent, Description: "Map dash"}
-	shell := msg.BackgroundTask{TaskID: "b1", TaskType: msg.TaskTypeLocalBash, Description: "Run the tests"}
-
-	report(subagent)
-	report(subagent, shell)
-	got, err = s.LastReportedBackgroundTasks("br_bg")
+	write, err := SessionStatusRowWrite(bridgeID, &msg.SessionStatus{State: msg.SessionState(state), AsOf: time.Now().UnixNano()}, true)
 	if err != nil {
-		t.Fatalf("read: %v", err)
+		return err
 	}
-	if len(got) != 2 || got[0] != subagent || got[1] != shell {
-		t.Fatalf("got %+v, want the newest list of two", got)
-	}
-
-	// The harness saying nothing runs any more is the newest report too.
-	report()
-	got, err = s.LastReportedBackgroundTasks("br_bg")
-	if err != nil || len(got) != 0 {
-		t.Fatalf("after an empty report = %+v, %v; want none", got, err)
-	}
+	_, err = s.db.Exec(write.Query, write.Arguments...)
+	return err
 }

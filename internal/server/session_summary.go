@@ -340,11 +340,6 @@ func (s *Server) handleRecentBundle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("stream heads unavailable: %v", err), http.StatusInternalServerError)
 		return
 	}
-	for _, id := range ids {
-		// Drain this session's queued writes so log-store's bundle really does contain
-		// everything at or below the head just read.
-		s.harness.FlushLogStoreWrites(id)
-	}
 
 	// Fetch materialized tails from log-store, decoding the response streaming.
 	models, err := s.fetchBundleModels(ids, turns)

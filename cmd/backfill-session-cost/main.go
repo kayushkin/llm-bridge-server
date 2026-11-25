@@ -13,6 +13,9 @@
 // live derivation's.
 //
 // Without -apply it only reports what it would change.
+//
+// It works on a bridge.db file, the SQLite database the bridge kept before its
+// records moved to Postgres, and writes that file as the old store did.
 package main
 
 import (
@@ -22,8 +25,8 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/store"
 	_ "modernc.org/sqlite"
 )
 
@@ -43,10 +46,11 @@ func main() {
 		log.Fatalf("open log-store: %v", err)
 	}
 	defer events.Close()
-	bridge, err := store.New(*bridgeDB)
+	bridge, err := sql.Open("sqlite", "file:"+*bridgeDB)
 	if err != nil {
-		log.Fatalf("open bridge store: %v", err)
+		log.Fatalf("open bridge database: %v", err)
 	}
+	defer bridge.Close()
 
 	sessions, err := claudeCodeSessionCosts(*bridgeDB)
 	if err != nil {
@@ -70,7 +74,7 @@ func main() {
 		if !*apply {
 			continue
 		}
-		if _, err := bridge.RecordSessionCost(sess.bridgeID, totalUSD, turnResultUSD); err != nil {
+		if err := recordSessionCost(bridge, sess.bridgeID, totalUSD, turnResultUSD); err != nil {
 			log.Fatalf("record cost of %s: %v", sess.bridgeID, err)
 		}
 	}
@@ -79,6 +83,27 @@ func main() {
 		verb = "raised"
 	}
 	fmt.Printf("%d claude_code/jig sessions: recorded $%.2f, estimate $%.2f; %s %d\n", len(sessions), recordedUSD, estimatedUSD, verb, raised)
+}
+
+// recordSessionCost raises a session's spend_usd to totalUSD and its per-turn
+// result total to turnResultUSD, never lowering either, as the bridge's SQLite
+// store did.
+func recordSessionCost(bridge *sql.DB, bridgeID string, totalUSD, turnResultUSD float64) error {
+	result, err := bridge.Exec(`UPDATE sessions
+		SET spend_usd        = MAX(spend_usd, ?),
+		    api_spend_detail = CASE
+		        WHEN ? > COALESCE(json_extract(COALESCE(NULLIF(api_spend_detail, ''), '{}'), '$.turn_result_usd'), 0)
+		        THEN json_set(COALESCE(NULLIF(api_spend_detail, ''), '{}'), '$.turn_result_usd', ?)
+		        ELSE api_spend_detail END,
+		    updated_at       = ?
+		WHERE bridge_id = ?`, totalUSD, turnResultUSD, turnResultUSD, time.Now().UTC(), bridgeID)
+	if err != nil {
+		return err
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 type sessionCost struct {

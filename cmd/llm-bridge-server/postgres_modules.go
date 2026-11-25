@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"log"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/predictionstore"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage"
@@ -29,7 +29,9 @@ func openPredictionStoreModule(ctx context.Context, url string) (*sql.DB, error)
 // they are missing, brings its schema up to this binary's migrations, and
 // opens its pool. url names a login that may create roles and schemas; each
 // step that fails is the error, and nothing carries on without it.
-func openPostgresModule(ctx context.Context, url string, module postgresstorage.Module) (*sql.DB, error) {
+//
+// options go to the module's pool (postgresstorage.Open).
+func openPostgresModule(ctx context.Context, url string, module postgresstorage.Module, options ...stdlib.OptionOpenDB) (*sql.DB, error) {
 	administrator, err := sql.Open("pgx", url)
 	if err != nil {
 		return nil, fmt.Errorf("the Postgres URL: %w", err)
@@ -41,7 +43,7 @@ func openPostgresModule(ctx context.Context, url string, module postgresstorage.
 	if err := postgresstorage.Provision(ctx, administrator, module); err != nil {
 		return nil, err
 	}
-	db, err := postgresstorage.Open(ctx, url, module)
+	db, err := postgresstorage.Open(ctx, url, module, options...)
 	if err != nil {
 		return nil, err
 	}

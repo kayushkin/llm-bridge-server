@@ -5,51 +5,26 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/server"
-	logstorestore "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/store"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
-	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
+	"github.com/kayushkin/llm-bridge-server/internal/store/storetest"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-func newBridgeStore(t *testing.T) *store.Store {
+// newStores is a bridge core store and the session log as the only copy,
+// in one test database, as a server opens them.
+func newStores(t *testing.T) (*store.Store, *SingleCopy, *storetest.Database) {
 	t.Helper()
-	st, err := store.New(filepath.Join(t.TempDir(), "bridge.db"))
+	database := storetest.NewDatabase(t)
+	bridge := database.OpenStore()
+	singleCopy, err := OpenSingleCopy(context.Background(), bridge, database.OpenSessionLog(false))
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { st.Close() })
-	return st
-}
-
-func newSessionLog(t *testing.T) *server.Server {
-	t.Helper()
-	module, err := logstorestore.Module()
-	if err != nil {
-		t.Fatal(err)
-	}
-	database := postgrestest.NewDatabase(t, module)
-	writer := database.Open(module)
-	reader, err := logstorestore.OpenReader(context.Background(), database.URL(), module)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { reader.Close() })
-	return server.New(logstorestore.New(writer, reader), nil)
-}
-
-func newSingleCopy(t *testing.T, bridge *store.Store) *SingleCopy {
-	t.Helper()
-	singleCopy, err := OpenSingleCopy(context.Background(), bridge, newSessionLog(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return singleCopy
+	return bridge, singleCopy, database
 }
 
 func createSession(t *testing.T, st *store.Store, sessionID string) {
@@ -173,174 +148,144 @@ func positionsOf(t *testing.T, ids []int64, events []store.EventWithID) []string
 	return out
 }
 
-// TestSingleCopyReadersAnswerWhatTheBridgeDatabaseAnswered writes one
-// conversation through both stores and holds every reader of the session
-// log to what the bridge database's events table answers.
-func TestSingleCopyReadersAnswerWhatTheBridgeDatabaseAnswered(t *testing.T) {
+// positionsOf turns event ids into step positions, so an answer compares
+// whatever ids the store handed out. A status's as_of is an id too.
+func positionsOfEvents(t *testing.T, ids []int64, events []store.EventWithID) []int {
+	t.Helper()
+	position := map[int64]int{}
+	for i, id := range ids {
+		position[id] = i
+	}
+	out := make([]int, len(events))
+	for i, event := range events {
+		found, ok := position[int64(event.RowID)]
+		if !ok {
+			t.Fatalf("event %d is none of the conversation's", event.RowID)
+		}
+		out[i] = found
+	}
+	return out
+}
+
+// TestSingleCopyReadersAnswerWhatTheConversationHolds writes one
+// conversation and holds every reader to what it holds.
+func TestSingleCopyReadersAnswerWhatTheConversationHolds(t *testing.T) {
 	const sessionID = "br_parity"
-	oldBridge := newBridgeStore(t)
-	createSession(t, oldBridge, sessionID)
-	old := BridgeDatabase{Store: oldBridge}
-	newBridge := newBridgeStore(t)
-	createSession(t, newBridge, sessionID)
-	single := newSingleCopy(t, newBridge)
-
+	bridge, single, _ := newStores(t)
+	createSession(t, bridge, sessionID)
 	steps := parityConversation()
-	oldIDs := writeConversation(t, old, sessionID, steps)
-	newIDs := writeConversation(t, single, sessionID, steps)
+	ids := writeConversation(t, single, sessionID, steps)
+	last := len(steps) - 1
 
-	for name, events := range map[string]Reads{"bridge database": old, "single copy": single} {
-		heads, err := events.MaxEventRowIDs([]string{sessionID, "br_no_events"})
-		head, _ := events.MaxEventRowID(sessionID)
-		if err != nil || len(heads) != 2 || heads[sessionID] != head || heads["br_no_events"] != 0 {
-			t.Errorf("%s: stream heads %v, %v; want %s at %d and br_no_events at 0", name, heads, err, sessionID, head)
-		}
+	heads, err := single.MaxEventRowIDs([]string{sessionID, "br_no_events"})
+	if err != nil || len(heads) != 2 || heads[sessionID] != ids[last] || heads["br_no_events"] != 0 {
+		t.Errorf("stream heads %v, %v; want %s at %d and br_no_events at 0", heads, err, sessionID, ids[last])
 	}
-	for name, store := range map[string]struct {
-		events Reads
-		ids    []int64
-	}{"bridge database": {old, oldIDs}, "single copy": {single, newIDs}} {
-		head, err := store.events.MaxEventRowID(sessionID)
-		if err != nil || head != store.ids[len(store.ids)-1] {
-			t.Errorf("%s: stream head %d, %v; want the last id written, %d", name, head, err, store.ids[len(store.ids)-1])
-		}
+	if head, err := single.MaxEventRowID(sessionID); err != nil || head != ids[last] {
+		t.Errorf("stream head %d, %v; want the last id written, %d", head, err, ids[last])
 	}
 
-	compare := func(what string, oldAnswer, newAnswer any) {
+	same := func(what string, got, want any) {
 		t.Helper()
-		if !reflect.DeepEqual(oldAnswer, newAnswer) {
-			t.Errorf("%s:\nbridge database %#v\nsingle copy     %#v", what, oldAnswer, newAnswer)
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s:\ngot  %#v\nwant %#v", what, got, want)
 		}
 	}
-	for _, after := range []int{0, 3, 8, len(steps) - 1} {
-		oldEvents, err := old.ListEventsSinceID(sessionID, int(oldIDs[after]))
+	for _, after := range []int{0, 3, 8, last} {
+		events, err := single.ListEventsSinceID(sessionID, int(ids[after]))
 		if err != nil {
 			t.Fatal(err)
 		}
-		newEvents, err := single.ListEventsSinceID(sessionID, int(newIDs[after]))
-		if err != nil {
-			t.Fatal(err)
+		want := []int{}
+		for position := after + 1; position <= last; position++ {
+			want = append(want, position)
 		}
-		compare("events after step", positionsOf(t, oldIDs, oldEvents), positionsOf(t, newIDs, newEvents))
+		same("events after step", positionsOfEvents(t, ids, events), want)
 	}
-	oldTurn, err := old.ListCurrentTurnEventsWithIDs(sessionID)
+	// After the last user message (step 9): everything but user messages.
+	turn, err := single.ListCurrentTurnEventsWithIDs(sessionID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	newTurn, err := single.ListCurrentTurnEventsWithIDs(sessionID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(oldTurn) == 0 {
-		t.Fatal("the bridge database replayed no current turn")
-	}
-	compare("current turn", positionsOf(t, oldIDs, oldTurn), positionsOf(t, newIDs, newTurn))
+	same("current turn", positionsOfEvents(t, ids, turn), []int{10, 11, 12, 13})
 
-	answer := func(read func(Reads) (any, error)) (any, any) {
-		t.Helper()
-		oldAnswer, err := read(old)
-		if err != nil {
-			t.Fatal(err)
-		}
-		newAnswer, err := read(single)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return oldAnswer, newAnswer
+	harnessIDs, err := single.HarnessToBridgeMap(sessionID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	same := func(what string, read func(Reads) (any, error)) {
-		t.Helper()
-		oldAnswer, newAnswer := answer(read)
-		compare(what, oldAnswer, newAnswer)
+	same("harness to bridge message ids", harnessIDs, map[string]string{"harness-1": "message-1", "harness-2": "message-2"})
+	toolUses, err := single.ToolUseToMessageMap(sessionID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	same("harness to bridge message ids", func(r Reads) (any, error) { return r.HarnessToBridgeMap(sessionID) })
-	same("tool use message ids", func(r Reads) (any, error) { return r.ToolUseToMessageMap(sessionID) })
-	same("user turns", func(r Reads) (any, error) { return r.CountUserTurns(sessionID) })
-	same("first user message", func(r Reads) (any, error) { return r.FirstUserMessage(sessionID) })
-	same("background tasks", func(r Reads) (any, error) { return r.LastReportedBackgroundTasks(sessionID) })
-	same("current turn text", func(r Reads) (any, error) {
-		user, texts, err := r.CurrentTurnText(sessionID)
-		return []any{user, texts}, err
+	same("tool use message ids", toolUses, map[string]store.ToolUseBinding{
+		"tool-1": {BridgeMessageID: "message-1", HarnessMessageID: "harness-1"},
+		"tool-2": {BridgeMessageID: "message-2", HarnessMessageID: "harness-2"},
 	})
-	same("wakeup", func(r Reads) (any, error) {
-		return r.LatestScheduledWakeup(sessionID, time.Now().Add(-time.Hour))
-	})
-	same("wakeup before the window", func(r Reads) (any, error) {
-		return r.LatestScheduledWakeup(sessionID, time.Now().Add(time.Hour))
-	})
-	same("user message since an hour ago", func(r Reads) (any, error) {
-		return r.UserMessageLoggedSince(sessionID, time.Now().Add(-time.Hour))
-	})
-	same("user message since an hour on", func(r Reads) (any, error) {
-		return r.UserMessageLoggedSince(sessionID, time.Now().Add(time.Hour))
-	})
-	same("a session with no events", func(r Reads) (any, error) { return r.LastActivityAt("br_no_events") })
-	// The conversation is built so every reader has something to answer;
-	// two empty answers would agree and prove nothing.
-	harnessIDs, _ := single.HarnessToBridgeMap(sessionID)
-	toolUses, _ := single.ToolUseToMessageMap(sessionID)
-	turns, _ := single.CountUserTurns(sessionID)
-	tasks, _ := single.LastReportedBackgroundTasks(sessionID)
-	wakeup, _ := single.LatestScheduledWakeup(sessionID, time.Now().Add(-time.Hour))
-	userMessage, texts, _ := single.CurrentTurnText(sessionID)
-	if len(harnessIDs) != 2 || len(toolUses) != 2 || turns != 2 || len(tasks) != 1 || wakeup == nil || wakeup.Prompt != "wake up" ||
-		userMessage != "second request" || len(texts) != 1 {
-		t.Errorf("readers answered too little: %v %v %d %v %+v %q %q", harnessIDs, toolUses, turns, tasks, wakeup, userMessage, texts)
+	turns, err := single.CountUserTurns(sessionID)
+	same("user turns", []any{turns, err}, []any{2, error(nil)})
+	first, err := single.FirstUserMessage(sessionID)
+	same("first user message", []any{first, err}, []any{"first request", error(nil)})
+	tasks, err := single.LastReportedBackgroundTasks(sessionID)
+	same("background tasks", []any{tasks, err}, []any{[]msg.BackgroundTask{{TaskID: "task-1", Description: "made up"}}, error(nil)})
+	userMessage, texts, err := single.CurrentTurnText(sessionID)
+	same("current turn text", []any{userMessage, texts, err}, []any{"second request", []string{"second answer so far"}, error(nil)})
+	wakeup, err := single.LatestScheduledWakeup(sessionID, time.Now().Add(-time.Hour))
+	if err != nil || wakeup == nil || wakeup.Prompt != "wake up" || wakeup.ToolID != "tool-1" ||
+		!wakeup.DueAt.Equal(time.Date(2026, 11, 25, 13, 0, 0, 0, time.UTC)) {
+		t.Errorf("wakeup %+v, %v; want tool-1's, due at 13:00", wakeup, err)
 	}
-	oldActivity, newActivity := answer(func(r Reads) (any, error) { return r.LastActivityAt(sessionID) })
-	if difference := oldActivity.(time.Time).Sub(newActivity.(time.Time)); difference > time.Second || difference < -time.Second {
-		t.Errorf("last activity: bridge database %v, single copy %v", oldActivity, newActivity)
+	if wakeup, err := single.LatestScheduledWakeup(sessionID, time.Now().Add(time.Hour)); err != nil || wakeup != nil {
+		t.Errorf("a wakeup called before the window: %+v, %v; want none", wakeup, err)
+	}
+	if since, err := single.UserMessageLoggedSince(sessionID, time.Now().Add(-time.Hour)); err != nil || !since {
+		t.Errorf("a user message in the last hour: %v, %v; want one", since, err)
+	}
+	if since, err := single.UserMessageLoggedSince(sessionID, time.Now().Add(time.Hour)); err != nil || since {
+		t.Errorf("a user message from an hour on: %v, %v; want none", since, err)
+	}
+	if activity, err := single.LastActivityAt("br_no_events"); err != nil || !activity.IsZero() {
+		t.Errorf("a session with no events was last active at %v, %v; want the zero time", activity, err)
+	}
+	if activity, err := single.LastActivityAt(sessionID); err != nil || time.Since(activity) > time.Minute || time.Since(activity) < -time.Minute {
+		t.Errorf("last activity %v, %v; want about now", activity, err)
 	}
 
-	oldRow, err := oldBridge.GetSession(sessionID)
+	row, err := bridge.GetSession(sessionID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	newRow, err := newBridge.GetSession(sessionID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if oldRow.State != newRow.State || newRow.State != string(msg.SessionToolRunning) {
-		t.Errorf("session row state: bridge database %q, single copy %q", oldRow.State, newRow.State)
-	}
-	if oldRow.Status.AsOf != oldIDs[len(oldIDs)-1] || newRow.Status.AsOf != newIDs[len(newIDs)-1] {
-		t.Errorf("session row as_of: bridge database %d (want %d), single copy %d (want %d)",
-			oldRow.Status.AsOf, oldIDs[len(oldIDs)-1], newRow.Status.AsOf, newIDs[len(newIDs)-1])
+	if row.State != string(msg.SessionToolRunning) || row.Status.AsOf != ids[last] {
+		t.Errorf("session row %q as of %d; want tool_running as of %d", row.State, row.Status.AsOf, ids[last])
 	}
 
-	oldReconciled, err := old.ReconcileSessions(msg.ActiveSessionStates()...)
+	reconciled, err := single.ReconcileSessions(msg.ActiveSessionStates()...)
 	if err != nil {
 		t.Fatal(err)
 	}
-	newReconciled, err := single.ReconcileSessions(msg.ActiveSessionStates()...)
+	if len(reconciled) != 1 || reconciled[0].Status.Status.State != msg.SessionIdle {
+		t.Fatalf("reconcile: %+v; want the one session made idle", reconciled)
+	}
+	row, err = bridge.GetSession(sessionID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(oldReconciled) != 1 || len(newReconciled) != 1 || oldReconciled[0].Status.Status.State != newReconciled[0].Status.Status.State {
-		t.Fatalf("reconcile: bridge database %+v, single copy %+v", oldReconciled, newReconciled)
-	}
-	newRow, err = newBridge.GetSession(sessionID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	newHead, _ := single.MaxEventRowID(sessionID)
-	if newRow.State != string(msg.SessionIdle) || newRow.Status.AsOf != newHead || newReconciled[0].Status.Status.AsOf != newHead {
+	head, _ := single.MaxEventRowID(sessionID)
+	if row.State != string(msg.SessionIdle) || row.Status.AsOf != head || reconciled[0].Status.Status.AsOf != head {
 		t.Errorf("after reconcile the row is %q as of %d, the status as of %d; want idle as of the session's newest event %d",
-			newRow.State, newRow.Status.AsOf, newReconciled[0].Status.Status.AsOf, newHead)
+			row.State, row.Status.AsOf, reconciled[0].Status.Status.AsOf, head)
+	}
+	if !row.UpdatedAt.Equal(reconciled[0].Session.UpdatedAt) {
+		t.Errorf("reconcile moved updated_at from %v to %v; it is left as the row's last real change", reconciled[0].Session.UpdatedAt, row.UpdatedAt)
 	}
 }
 
-func TestSingleCopyNumbersAboveTheBridgeDatabase(t *testing.T) {
-	bridge := newBridgeStore(t)
-	if err := bridge.RaiseEventNumberingAbove(5_000_000); err != nil {
-		t.Fatal(err)
-	}
+func TestSingleCopyNumbersAboveTheArchivedEvents(t *testing.T) {
+	database := storetest.NewDatabase(t)
+	database.RecordArchivedEventNumbering(5_000_001)
+	bridge := database.OpenStore()
 	createSession(t, bridge, "br_numbering")
-	bridgeID, err := bridge.StoreEventReturningID("br_numbering", "system", "", "", []byte(`{"type":"system"}`))
-	if err != nil || bridgeID != 5_000_001 {
-		t.Fatalf("bridge database id %d, %v; want 5000001", bridgeID, err)
-	}
-	sessionLog := newSessionLog(t)
+	sessionLog := database.OpenSessionLog(false)
 	single, err := OpenSingleCopy(context.Background(), bridge, sessionLog)
 	if err != nil {
 		t.Fatal(err)
@@ -351,10 +296,10 @@ func TestSingleCopyNumbersAboveTheBridgeDatabase(t *testing.T) {
 	ev := msg.Event{Type: msg.EventSystem}
 	id, err := single.StoreSessionEvent(recordOf("br_numbering", &ev))
 	if err != nil || id != 5_000_002 {
-		t.Fatalf("first single-copy id %d, %v; want 5000002", id, err)
+		t.Fatalf("first id %d, %v; want 5000002", id, err)
 	}
-	if !single.StreamCursorFromEarlierNumbering(bridgeID) || single.StreamCursorFromEarlierNumbering(id) || single.StreamCursorFromEarlierNumbering(0) {
-		t.Error("a cursor below the first single-copy id is from the bridge database's numbering, and only such a cursor")
+	if !single.StreamCursorFromEarlierNumbering(5_000_001) || single.StreamCursorFromEarlierNumbering(id) || single.StreamCursorFromEarlierNumbering(0) {
+		t.Error("a cursor below the first id is from the archived numbering, and only such a cursor")
 	}
 
 	// Opening again keeps the record and numbers on.
@@ -369,115 +314,50 @@ func TestSingleCopyNumbersAboveTheBridgeDatabase(t *testing.T) {
 	if err != nil || next <= id {
 		t.Errorf("next id %d, %v; want above %d", next, err, id)
 	}
-
-	// Back on the old path, the bridge database numbers above the session log.
-	highest, err := sessionLog.Store().HighestEventID()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := bridge.RaiseEventNumberingAbove(highest); err != nil {
-		t.Fatal(err)
-	}
-	oldPathID, err := bridge.StoreEventReturningID("br_numbering", "system", "", "", []byte(`{"type":"system"}`))
-	if err != nil || oldPathID <= highest {
-		t.Errorf("old path id %d, %v; want above the session log's %d", oldPathID, err, highest)
-	}
 }
 
-func TestARunnerEntrySentAgainIsStoredOnce(t *testing.T) {
-	bridge := newBridgeStore(t)
+// A runner entry's event and its spawn's number commit together, and an
+// entry written again under its key (a retry after a commit that was cut
+// off) is found stored, not stored twice.
+func TestARunnerEntryAndItsSpawnsNumberAreStoredTogether(t *testing.T) {
+	bridge, single, _ := newStores(t)
 	createSession(t, bridge, "br_runner")
 	if err := bridge.RecordRunnerSpawn("br_runner", "spawn_made_up", "machine_made_up"); err != nil {
 		t.Fatal(err)
 	}
-	single := newSingleCopy(t, bridge)
 	ev := msg.Event{Type: msg.EventToolCall, ToolCall: &msg.ToolCallEvent{ToolID: "tool-1", Name: "Bash"}}
 	record := recordOf("br_runner", &ev)
 
-	// The server stopped after storing entry 1's event and before recording
-	// the spawn as stored through it.
-	event := eventToAppend(record)
-	event.IdempotencyKey = RunnerEntryIdempotencyKey("spawn_made_up", 1)
-	stored, err := single.sessionLog.AppendEvent(&ev, event)
-	if err != nil {
-		t.Fatal(err)
-	}
-	spawn, _ := bridge.RunnerSpawnOfSession("br_runner")
-	if spawn.LastSequence != 0 {
-		t.Fatalf("spawn stored through %d before the replay", spawn.LastSequence)
-	}
-
-	// The runner sends entry 1 again.
 	id, err := single.StoreSessionEventAdvancingRunnerSpawn(record, "br_runner", "spawn_made_up", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if id != stored.ID {
-		t.Errorf("replayed entry stored as %d; want the first write's %d", id, stored.ID)
+	spawn, _ := bridge.RunnerSpawnOfSession("br_runner")
+	if spawn.LastSequence != 1 {
+		t.Fatalf("spawn stored through %d; want 1", spawn.LastSequence)
+	}
+
+	again, err := single.StoreSessionEventAdvancingRunnerSpawn(record, "br_runner", "spawn_made_up", 1)
+	if err != nil || again != id {
+		t.Errorf("entry 1 written again: %d, %v; want the first write's %d", again, err, id)
 	}
 	events, err := single.ListEventsSinceID("br_runner", 0)
 	if err != nil || len(events) != 1 {
 		t.Fatalf("%d events, %v; want the entry stored once", len(events), err)
 	}
-	spawn, _ = bridge.RunnerSpawnOfSession("br_runner")
-	if spawn.LastSequence != 1 {
-		t.Errorf("spawn stored through %d; want 1", spawn.LastSequence)
-	}
 
-	// The next entry is stored as a new event.
 	next, err := single.StoreSessionEventAdvancingRunnerSpawn(record, "br_runner", "spawn_made_up", 2)
 	if err != nil || next <= id {
 		t.Errorf("entry 2 stored as %d, %v", next, err)
 	}
-}
-
-func TestAStatusWhoseRowWriteWasCutOffIsRepairedAtStart(t *testing.T) {
-	bridge := newBridgeStore(t)
-	createSession(t, bridge, "br_repair")
-	single := newSingleCopy(t, bridge)
-	status := func(state msg.SessionState) *msg.Event {
-		return &msg.Event{Type: msg.EventSessionStatus, BridgeSessionID: "br_repair", Status: &msg.SessionStatus{State: state, Reason: msg.ReasonStartupReconcile}}
-	}
-	if _, err := single.WriteSessionStatus("br_repair", status(msg.SessionIdle)); err != nil {
-		t.Fatal(err)
-	}
-
-	// A status event stored with no row write after it, as a stop between
-	// the two leaves it.
-	cutOff := status(msg.SessionModelGenerating)
-	appended, err := single.sessionLog.AppendEvent(cutOff, logstorestore.EventToAppend{
-		SessionID: "br_repair", Type: string(msg.EventSessionStatus), IdempotencyKey: "session_status:br_repair:made-up",
-		DataForID: func(id int64) ([]byte, error) { cutOff.Status.AsOf = id; return json.Marshal(cutOff) },
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	row, _ := bridge.GetSession("br_repair")
-	if row.State != string(msg.SessionIdle) {
-		t.Fatalf("row %q before the repair", row.State)
-	}
-	repaired, err := single.RepairSessionStatusRows()
-	if err != nil || repaired != 1 {
-		t.Fatalf("repaired %d, %v; want 1", repaired, err)
-	}
-	row, _ = bridge.GetSession("br_repair")
-	if row.State != string(msg.SessionModelGenerating) || row.Status.AsOf != appended.ID {
-		t.Errorf("row %q as of %d; want model_generating as of %d", row.State, row.Status.AsOf, appended.ID)
-	}
-	if repaired, err := single.RepairSessionStatusRows(); err != nil || repaired != 0 {
-		t.Errorf("a second repair changed %d rows, %v; want none", repaired, err)
-	}
-
-	// An older status never replaces a newer one on the row.
-	older := &msg.SessionStatus{State: msg.SessionError, AsOf: appended.ID - 1}
-	if changed, err := bridge.WriteSessionStatusRow("br_repair", older, false); err != nil || changed {
-		t.Errorf("an older status changed the row: %v, %v", changed, err)
+	spawn, _ = bridge.RunnerSpawnOfSession("br_runner")
+	if spawn.LastSequence != 2 {
+		t.Errorf("spawn stored through %d; want 2", spawn.LastSequence)
 	}
 }
 
 func TestAStatusForASessionWithNoRowStoresNothing(t *testing.T) {
-	bridge := newBridgeStore(t)
-	single := newSingleCopy(t, bridge)
+	_, single, _ := newStores(t)
 	_, err := single.WriteSessionStatus("br_hook_only", &msg.Event{Type: msg.EventSessionStatus, Status: &msg.SessionStatus{State: msg.SessionIdle}})
 	if !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("err %v; want sql.ErrNoRows", err)
@@ -485,5 +365,34 @@ func TestAStatusForASessionWithNoRowStoresNothing(t *testing.T) {
 	events, err := single.ListEventsSinceID("br_hook_only", 0)
 	if err != nil || len(events) != 0 {
 		t.Errorf("%d events stored, %v; want none", len(events), err)
+	}
+	// The writer's connection is usable after the rolled-back transaction.
+	ev := msg.Event{Type: msg.EventSystem}
+	if _, err := single.StoreSessionEvent(recordOf("br_hook_only", &ev)); err != nil {
+		t.Errorf("the next write failed: %v", err)
+	}
+}
+
+// A status whose row cannot be written stores no event: the two are one
+// transaction.
+func TestAStatusWhoseRowWriteFailsStoresNoEvent(t *testing.T) {
+	bridge, single, database := newStores(t)
+	createSession(t, bridge, "br_refused")
+	// Take away the session log's right to write the row.
+	core := database.Database.Open(database.CoreModule())
+	if _, err := core.Exec(`REVOKE UPDATE (state, status, updated_at) ON sessions FROM session_log_module`); err != nil {
+		t.Fatal(err)
+	}
+	_, err := single.WriteSessionStatus("br_refused", &msg.Event{Type: msg.EventSessionStatus, Status: &msg.SessionStatus{State: msg.SessionModelGenerating}})
+	if err == nil {
+		t.Fatal("the status was written with the row write refused")
+	}
+	events, err := single.ListEventsSinceID("br_refused", 0)
+	if err != nil || len(events) != 0 {
+		t.Errorf("%d events stored, %v; want none", len(events), err)
+	}
+	row, _ := bridge.GetSession("br_refused")
+	if row.State != string(msg.SessionIdle) {
+		t.Errorf("row %q; want it left idle", row.State)
 	}
 }

@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/kayushkin/llm-bridge/msg"
@@ -18,44 +17,6 @@ import (
 // closing the same one race here by design, and the first close is the one
 // that happened.
 var ErrLooseEndNotOpen = errors.New("loose end is not open")
-
-// migrateSessionBriefs creates the three brief tables. Called from migrate().
-func (s *Store) migrateSessionBriefs() error {
-	_, err := s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS session_briefs (
-			session_id     TEXT PRIMARY KEY,
-			overall_goal   TEXT NOT NULL,
-			current_step   TEXT NOT NULL,
-			revision_count INTEGER NOT NULL,
-			created_at     DATETIME NOT NULL,
-			updated_at     DATETIME NOT NULL
-		);
-		CREATE TABLE IF NOT EXISTS session_brief_revisions (
-			id           TEXT PRIMARY KEY,
-			session_id   TEXT NOT NULL,
-			overall_goal TEXT NOT NULL,
-			current_step TEXT NOT NULL,
-			goal_changed INTEGER NOT NULL,
-			turn_change  TEXT NOT NULL DEFAULT '',
-			created_at   DATETIME NOT NULL
-		);
-		CREATE INDEX IF NOT EXISTS idx_session_brief_revisions_session ON session_brief_revisions(session_id, created_at);
-		CREATE TABLE IF NOT EXISTS loose_ends (
-			id          TEXT PRIMARY KEY,
-			session_id  TEXT NOT NULL,
-			kind        TEXT NOT NULL,
-			text        TEXT NOT NULL,
-			context     TEXT NOT NULL DEFAULT '',
-			state       TEXT NOT NULL,
-			resolution  TEXT NOT NULL DEFAULT '',
-			created_at  DATETIME NOT NULL,
-			resolved_at DATETIME
-		);
-		CREATE INDEX IF NOT EXISTS idx_loose_ends_session ON loose_ends(session_id, created_at);
-		CREATE INDEX IF NOT EXISTS idx_loose_ends_state ON loose_ends(state);
-	`)
-	return err
-}
 
 // SessionBriefUpdate is one turn's update to a session's brief: the brief as
 // the turn left it, the loose ends it settled and the ones it raised. Applied
@@ -87,13 +48,13 @@ func (s *Store) ApplySessionBriefUpdate(update SessionBriefUpdate) error {
 
 	revision := update.Revision
 	if _, err := tx.Exec(
-		`INSERT INTO session_brief_revisions (id, session_id, overall_goal, current_step, goal_changed, turn_change, created_at) VALUES (?,?,?,?,?,?,?)`,
+		`INSERT INTO session_brief_revisions (id, session_id, overall_goal, current_step, goal_changed, turn_change, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
 		revision.ID, update.SessionID, revision.OverallGoal, revision.CurrentStep, revision.GoalChanged, revision.TurnChange, now,
 	); err != nil {
 		return fmt.Errorf("insert brief revision: %w", err)
 	}
 	if _, err := tx.Exec(
-		`INSERT INTO session_briefs (session_id, overall_goal, current_step, revision_count, created_at, updated_at) VALUES (?,?,?,1,?,?)
+		`INSERT INTO session_briefs (session_id, overall_goal, current_step, revision_count, created_at, updated_at) VALUES ($1,$2,$3,1,$4,$5)
 		 ON CONFLICT(session_id) DO UPDATE SET overall_goal=excluded.overall_goal, current_step=excluded.current_step,
 		   revision_count=session_briefs.revision_count+1, updated_at=excluded.updated_at`,
 		update.SessionID, revision.OverallGoal, revision.CurrentStep, now, now,
@@ -104,7 +65,7 @@ func (s *Store) ApplySessionBriefUpdate(update SessionBriefUpdate) error {
 		// Only an open loose end of this session moves. An id the model made
 		// up, or one the person closed while the turn ran, changes nothing.
 		if _, err := tx.Exec(
-			`UPDATE loose_ends SET state=?, resolution=?, resolved_at=? WHERE id=? AND session_id=? AND state=?`,
+			`UPDATE loose_ends SET state=$1, resolution=$2, resolved_at=$3 WHERE id=$4 AND session_id=$5 AND state=$6`,
 			string(msg.LooseEndSettled), resolution, now, id, update.SessionID, string(msg.LooseEndOpen),
 		); err != nil {
 			return fmt.Errorf("settle loose end %s: %w", id, err)
@@ -115,7 +76,7 @@ func (s *Store) ApplySessionBriefUpdate(update SessionBriefUpdate) error {
 			return fmt.Errorf("a raised loose end needs an id")
 		}
 		if _, err := tx.Exec(
-			`INSERT INTO loose_ends (id, session_id, kind, text, context, state, created_at) VALUES (?,?,?,?,?,?,?)`,
+			`INSERT INTO loose_ends (id, session_id, kind, text, context, state, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
 			looseEnd.ID, update.SessionID, string(looseEnd.Kind), looseEnd.Text, looseEnd.Context, string(msg.LooseEndOpen), now,
 		); err != nil {
 			return fmt.Errorf("insert loose end: %w", err)
@@ -140,7 +101,7 @@ func (s *Store) CloseLooseEnd(id string, state msg.LooseEndState, resolution str
 		return err
 	}
 	res, err := s.db.Exec(
-		`UPDATE loose_ends SET state=?, resolution=?, resolved_at=? WHERE id=? AND state=?`,
+		`UPDATE loose_ends SET state=$1, resolution=$2, resolved_at=$3 WHERE id=$4 AND state=$5`,
 		string(state), resolution, time.Now().UTC(), id, string(msg.LooseEndOpen),
 	)
 	if err != nil {
@@ -176,7 +137,7 @@ func scanLooseEnd(sc interface{ Scan(...any) error }) (*msg.LooseEnd, error) {
 
 // GetLooseEnd reads one loose end; sql.ErrNoRows when there is none.
 func (s *Store) GetLooseEnd(id string) (*msg.LooseEnd, error) {
-	return scanLooseEnd(s.dbRO.QueryRow(`SELECT `+looseEndColumns+` FROM loose_ends WHERE id=?`, id))
+	return scanLooseEnd(s.dbRO.QueryRow(`SELECT `+looseEndColumns+` FROM loose_ends WHERE id=$1`, id))
 }
 
 // SessionBriefFilter narrows ListSessionBriefs.
@@ -201,29 +162,22 @@ type SessionBriefFilter struct {
 // loose ends but no brief cannot occur: both are written by one transaction.
 func (s *Store) ListSessionBriefs(filter SessionBriefFilter) ([]msg.SessionBriefView, error) {
 	query := `SELECT session_id, overall_goal, current_step, revision_count, created_at, updated_at FROM session_briefs WHERE 1=1`
-	var args []any
+	var args queryArguments
 	if len(filter.SessionIDs) > 0 {
-		query += ` AND session_id IN (` + placeholders(len(filter.SessionIDs)) + `)`
-		for _, id := range filter.SessionIDs {
-			args = append(args, id)
-		}
+		query += ` AND session_id = ANY(` + args.add(filter.SessionIDs) + `)`
 	}
 	if filter.OwnedByPrincipalID != "" {
-		query += ` AND session_id IN (SELECT bridge_id FROM sessions WHERE principal_id=?)`
-		args = append(args, filter.OwnedByPrincipalID)
+		query += ` AND session_id IN (SELECT bridge_id FROM sessions WHERE principal_id=` + args.add(filter.OwnedByPrincipalID) + `)`
 	}
 	if filter.OwnedThroughPeerPrincipalID != "" {
-		query += ` AND session_id IN (SELECT session_id FROM session_peer_origins WHERE peer_principal_id=?)`
-		args = append(args, filter.OwnedThroughPeerPrincipalID)
+		query += ` AND session_id IN (SELECT session_id FROM session_peer_origins WHERE peer_principal_id=` + args.add(filter.OwnedThroughPeerPrincipalID) + `)`
 	}
 	if !filter.UpdatedSince.IsZero() {
-		query += ` AND updated_at >= ?`
-		args = append(args, filter.UpdatedSince.UTC())
+		query += ` AND updated_at >= ` + args.add(filter.UpdatedSince.UTC())
 	}
 	query += ` ORDER BY updated_at DESC, session_id`
 	if filter.Limit > 0 {
-		query += ` LIMIT ?`
-		args = append(args, filter.Limit)
+		query += ` LIMIT ` + args.add(filter.Limit)
 	}
 	rows, err := s.dbRO.Query(query, args...)
 	if err != nil {
@@ -249,13 +203,13 @@ func (s *Store) ListSessionBriefs(filter SessionBriefFilter) ([]msg.SessionBrief
 		return []msg.SessionBriefView{}, nil
 	}
 
-	sessionIDs := make([]any, 0, len(views))
+	sessionIDs := make([]string, 0, len(views))
 	for _, view := range views {
 		sessionIDs = append(sessionIDs, view.Brief.SessionID)
 	}
 	revisionRows, err := s.dbRO.Query(
 		`SELECT id, session_id, overall_goal, current_step, goal_changed, turn_change, created_at FROM session_brief_revisions
-		 WHERE session_id IN (`+placeholders(len(sessionIDs))+`) ORDER BY created_at, id`, sessionIDs...)
+		 WHERE session_id = ANY($1) ORDER BY created_at, id`, sessionIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -274,10 +228,10 @@ func (s *Store) ListSessionBriefs(filter SessionBriefFilter) ([]msg.SessionBrief
 		return nil, err
 	}
 
-	looseEndQuery := `SELECT ` + looseEndColumns + ` FROM loose_ends WHERE session_id IN (` + placeholders(len(sessionIDs)) + `)`
-	looseEndArgs := append([]any{}, sessionIDs...)
+	looseEndQuery := `SELECT ` + looseEndColumns + ` FROM loose_ends WHERE session_id = ANY($1)`
+	looseEndArgs := []any{sessionIDs}
 	if filter.LooseEndState != "" {
-		looseEndQuery += ` AND state=?`
+		looseEndQuery += ` AND state=$2`
 		looseEndArgs = append(looseEndArgs, string(filter.LooseEndState))
 	}
 	looseEndRows, err := s.dbRO.Query(looseEndQuery+` ORDER BY created_at, id`, looseEndArgs...)
@@ -307,61 +261,4 @@ func (s *Store) GetSessionBriefView(sessionID string) (msg.SessionBriefView, err
 		return msg.SessionBriefView{Revisions: []msg.SessionBriefRevision{}, LooseEnds: []msg.LooseEnd{}}, nil
 	}
 	return views[0], nil
-}
-
-func placeholders(n int) string {
-	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
-}
-
-// CurrentTurnText returns what the person said to start the current turn and
-// every piece of text the assistant has written since, oldest first. Thinking
-// and tool calls are left out: the brief is about what was said to the person.
-// The current turn starts at the session's last user_message; a session with
-// none yet answers with an empty message and the text of everything.
-func (s *Store) CurrentTurnText(sessionID string) (userMessage string, assistantTexts []string, err error) {
-	var lastUserMessageID int64
-	var lastUserMessage sql.NullString
-	err = s.dbRO.QueryRow(
-		`SELECT id, json_extract(data, '$.result.text') FROM events WHERE session_id=? AND type='user_message' ORDER BY id DESC LIMIT 1`,
-		sessionID,
-	).Scan(&lastUserMessageID, &lastUserMessage)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return "", nil, err
-	}
-	rows, err := s.dbRO.Query(
-		`SELECT json_extract(data, '$.block.block.text_block.text') FROM events
-		 WHERE session_id=? AND id > ? AND type='block' AND json_extract(data, '$.block.block.type')='text'
-		 ORDER BY id`,
-		sessionID, lastUserMessageID,
-	)
-	if err != nil {
-		return "", nil, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var text sql.NullString
-		if err := rows.Scan(&text); err != nil {
-			return "", nil, err
-		}
-		if strings.TrimSpace(text.String) != "" {
-			assistantTexts = append(assistantTexts, text.String)
-		}
-	}
-	return lastUserMessage.String, assistantTexts, rows.Err()
-}
-
-// FirstUserMessage returns the text of the session's first user_message, or ""
-// when it has none. The brief pass shows it on every turn, so a brief first
-// written late in a chat, or on a turn an automated report started, still
-// knows what the person asked for.
-func (s *Store) FirstUserMessage(sessionID string) (string, error) {
-	var text sql.NullString
-	err := s.dbRO.QueryRow(
-		`SELECT json_extract(data, '$.result.text') FROM events WHERE session_id=? AND type='user_message' ORDER BY id LIMIT 1`,
-		sessionID,
-	).Scan(&text)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	return text.String, err
 }

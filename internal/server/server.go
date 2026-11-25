@@ -807,7 +807,7 @@ func (s *Server) handleSessionAggregates(w http.ResponseWriter, r *http.Request)
 // to log-store unchanged.
 func (s *Server) proxyToLogStore(w http.ResponseWriter, r *http.Request) {
 	// id is the real session id, decoded — that is what every in-process
-	// lookup wants, FlushLogStoreWrites below included.
+	// lookup wants.
 	id := r.PathValue("id")
 	// endpoint is the route's own literal — everything after the id segment, which
 	// is one segment for "messages" and "history" and TWO for "messages/raw".
@@ -822,12 +822,6 @@ func (s *Server) proxyToLogStore(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not a log-store session route", http.StatusNotFound)
 		return
 	}
-
-	// The harness pump writes to log-store through an ordered queue, so
-	// drain this session's queue first. Without it a client loading the
-	// conversation mid-turn can render history that stops short of what
-	// the pump has already streamed to it over SSE.
-	s.harness.FlushLogStoreWrites(id)
 
 	// logStoreSessionURL escapes the id, because that is where it becomes a
 	// URL. The lookups above keep the real one. Measured: Go's mux matches on

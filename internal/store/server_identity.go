@@ -1,9 +1,9 @@
 package store
 
-// This server's own id: msg.ServerIDPrefix and a ULID, made by the first
-// migration that finds none and never changed. Connected servers record it to
-// tell this server from every other, so a new id would read to them as a
-// different server.
+// This server's own id: msg.ServerIDPrefix and a ULID, made at the first open
+// that finds none and never changed. Connected servers record it to tell this
+// server from every other, so a new id would read to them as a different
+// server. The import of a bridge database copies the id it held.
 
 import (
 	"fmt"
@@ -12,15 +12,8 @@ import (
 	serverids "github.com/kayushkin/llm-bridge-server/internal/ids"
 )
 
-func (s *Store) migrateServerIdentity() error {
-	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS server_identity (
-		only_row   INTEGER PRIMARY KEY CHECK (only_row = 1),
-		server_id  TEXT NOT NULL,
-		created_at DATETIME NOT NULL
-	)`); err != nil {
-		return err
-	}
-	if _, err := s.db.Exec(`INSERT OR IGNORE INTO server_identity (only_row, server_id, created_at) VALUES (1, ?, ?)`,
+func (s *Store) openServerIdentity() error {
+	if _, err := s.db.Exec(`INSERT INTO server_identity (only_row, server_id, created_at) VALUES (1, $1, $2) ON CONFLICT (only_row) DO NOTHING`,
 		serverids.NewServerID(), time.Now().UTC()); err != nil {
 		return err
 	}
