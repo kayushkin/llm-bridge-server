@@ -8,12 +8,12 @@ package server
 //
 // A round runs every pass that is on once for each owner named in
 // photo_store.face_passes.owner_principal_ids, as that owner: the pass reads
-// and writes photo-store, people-store and journal-store through their own
-// handlers with a caller that is the owner and sees no one else's records,
-// so two owners' faces are never grouped or matched together, even when the
-// owner is an administrator. Model calls and model-store go through this
-// server's own routes with its service token. message-store and multichat
-// are outside this process and are called over HTTP.
+// and writes photo-store, people-store, journal-store and message-store
+// through their own handlers with a caller that is the owner and sees no one
+// else's records, so two owners' faces are never grouped or matched together,
+// even when the owner is an administrator. Model calls and model-store go
+// through this server's own routes with its service token. multichat is
+// outside this process and is called over HTTP.
 
 import (
 	"context"
@@ -38,6 +38,7 @@ const (
 	facePassPhotoStoreHost   = "photo-store.in-process"
 	facePassPeopleStoreHost  = "people-store.in-process"
 	facePassJournalStoreHost = "journal-store.in-process"
+	facePassMessageStoreHost = "message-store.in-process"
 	facePassBridgeHost       = "bridge.in-process"
 )
 
@@ -45,7 +46,6 @@ const (
 type photoFacePassSettings struct {
 	owners            []string
 	interval          time.Duration
-	messageStoreURL   string
 	multichatURL      string
 	grouping          bool
 	matching          bool
@@ -63,7 +63,6 @@ func (s *Server) readPhotoFacePassSettings() (photoFacePassSettings, error) {
 	settings := photoFacePassSettings{
 		owners:            s.settings.StringList(config.SettingPhotoStoreFacePassesOwnerPrincipalIDs),
 		interval:          s.settings.Duration(config.SettingPhotoStoreFacePassesInterval),
-		messageStoreURL:   strings.TrimRight(s.settings.String(config.SettingPhotoStoreFacePassesMessageStoreURL), "/"),
 		multichatURL:      strings.TrimRight(s.cfg.MultichatURL, "/"),
 		grouping:          s.settings.Boolean(config.SettingPhotoStoreFaceGroupingEnabled),
 		matching:          s.settings.Boolean(config.SettingPhotoStorePeopleMatchingEnabled),
@@ -93,9 +92,6 @@ func checkPhotoFacePassSettings(settings photoFacePassSettings) error {
 		problems = append(problems, config.SettingPhotoStoreFacePassesInterval+" must be longer than nothing")
 	}
 	if settings.matching || settings.guessing {
-		if settings.messageStoreURL == "" {
-			problems = append(problems, config.SettingPhotoStoreFacePassesMessageStoreURL+" is empty, and people matching and face group guessing read message-store")
-		}
 		if settings.multichatURL == "" {
 			problems = append(problems, "multichat.url is empty, and people matching and face group guessing read the chat a photo was sent in from multichat")
 		}
@@ -130,7 +126,7 @@ func checkPhotoFacePassSettings(settings photoFacePassSettings) error {
 // StartPhotoFacePasses checks the face pass settings and, when any pass is
 // on, runs rounds until ctx ends. It refuses settings that could not run, so
 // the server does not start with a pass that would only fail. main calls it
-// after EnablePhotosAndLocations.
+// after EnableMessageActivityAndTimeLedgerStores and EnablePhotosAndLocations.
 func (s *Server) StartPhotoFacePasses(ctx context.Context) error {
 	settings, err := s.readPhotoFacePassSettings()
 	if err != nil {
@@ -143,6 +139,9 @@ func (s *Server) StartPhotoFacePasses(ctx context.Context) error {
 	}
 	if s.photosAndLocations.Load() == nil || s.connectedRecords.Load() == nil {
 		return errors.New("photo-store face passes: EnablePhotosAndLocations must run first")
+	}
+	if (settings.matching || settings.guessing) && s.messageActivityAndTimeLedger.Load() == nil {
+		return errors.New("photo-store face passes: people matching and face group guessing read message-store, so EnableMessageActivityAndTimeLedgerStores must run first")
 	}
 	if len(settings.owners) == 0 {
 		log.Printf("photo-store: face passes are on, and %s names no owner, so they run for nobody", config.SettingPhotoStoreFacePassesOwnerPrincipalIDs)
@@ -228,7 +227,7 @@ func (s *Server) runPhotoFacePassesForOwner(ctx context.Context, settings photoF
 		options.ModelCheckRole = settings.modelCheckRole
 		options.MultichatURL, options.MultichatToken = settings.multichatURL, multichatToken
 		options.JournalStoreURL = "http://" + facePassJournalStoreHost
-		options.MessageStoreURL = settings.messageStoreURL
+		options.MessageStoreURL = "http://" + facePassMessageStoreHost
 		options.PeopleStoreURL = "http://" + facePassPeopleStoreHost
 		options.BridgeURL, options.BridgeServiceToken = "http://"+facePassBridgeHost, s.cfg.ServiceToken
 		options.HTTPClient = client
@@ -248,7 +247,7 @@ func (s *Server) runPhotoFacePassesForOwner(ctx context.Context, settings photoF
 		options.BridgeURL, options.BridgeServiceToken = "http://"+facePassBridgeHost, s.cfg.ServiceToken
 		options.ModelStoreURL = "http://" + facePassBridgeHost + "/model-store"
 		options.PeopleStoreURL = "http://" + facePassPeopleStoreHost
-		options.MessageStoreURL = settings.messageStoreURL
+		options.MessageStoreURL = "http://" + facePassMessageStoreHost
 		options.MultichatURL, options.MultichatToken = settings.multichatURL, multichatToken
 		options.JournalStoreURL = "http://" + facePassJournalStoreHost
 		options.HTTPClient = client
@@ -296,6 +295,8 @@ func (s *Server) photoFacePassMultichatToken(ctx context.Context) (string, error
 // photoFacePassClient is the one client a pass makes every request with: the
 // in-process hosts go to their handlers as owner, the bridge host to this
 // server with its service token, and every other host over the network.
+// message-store's host answers only once message-store is open; grouping,
+// which never reads it, runs without it.
 func (s *Server) photoFacePassClient(owner string) (*http.Client, error) {
 	stores := s.photosAndLocations.Load()
 	connected := s.connectedRecords.Load()
@@ -303,14 +304,18 @@ func (s *Server) photoFacePassClient(owner string) (*http.Client, error) {
 		return nil, errors.New("photo-store or people-store is not open on this server")
 	}
 	caller := ownership.Caller{PrincipalID: owner}
+	byHost := map[string]http.Handler{
+		facePassPhotoStoreHost:   asOwner(caller, stores.photoHandler),
+		facePassPeopleStoreHost:  asOwner(caller, connected.peopleHandler),
+		facePassJournalStoreHost: asOwner(caller, connected.journalHandler),
+		facePassBridgeHost:       s.asTheInternalService(),
+	}
+	if messages := s.messageActivityAndTimeLedger.Load(); messages != nil {
+		byHost[facePassMessageStoreHost] = asOwner(caller, messages.messageHandler)
+	}
 	return &http.Client{
 		Transport: photoFacePassTransport{
-			byHost: map[string]http.Handler{
-				facePassPhotoStoreHost:   asOwner(caller, stores.photoHandler),
-				facePassPeopleStoreHost:  asOwner(caller, connected.peopleHandler),
-				facePassJournalStoreHost: asOwner(caller, connected.journalHandler),
-				facePassBridgeHost:       s.asTheInternalService(),
-			},
+			byHost: byHost,
 			network: http.DefaultTransport,
 		},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },

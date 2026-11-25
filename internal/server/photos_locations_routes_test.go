@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locationstore"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore"
 	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
@@ -179,8 +178,8 @@ func TestAPlaceIsReachedOnlyByItsOwnerAndAnAdministrator(t *testing.T) {
 	}
 }
 
-// The face passes are off by default, and a pass that names people refuses
-// to start without message-store.
+// The face passes are off by default, a pass that names people refuses to
+// start without multichat, and one with every service it reads starts.
 func TestPhotoFacePassesAreOffByDefaultAndRefuseSettingsThatCannotRun(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
 	settings, err := gated.server.readPhotoFacePassSettings()
@@ -191,11 +190,10 @@ func TestPhotoFacePassesAreOffByDefaultAndRefuseSettingsThatCannotRun(t *testing
 		t.Fatalf("starting with every pass off: %v", err)
 	}
 	settings.matching = true
-	settings.multichatURL = "http://multichat.example"
-	if err := checkPhotoFacePassSettings(settings); err == nil || !strings.Contains(err.Error(), config.SettingPhotoStoreFacePassesMessageStoreURL) {
-		t.Errorf("people matching with no message-store: %v", err)
+	if err := checkPhotoFacePassSettings(settings); err == nil || !strings.Contains(err.Error(), "multichat.url") {
+		t.Errorf("people matching with no multichat: %v", err)
 	}
-	settings.messageStoreURL = "http://message-store.example"
+	settings.multichatURL = "http://multichat.example"
 	if err := checkPhotoFacePassSettings(settings); err != nil {
 		t.Errorf("people matching with every service named: %v", err)
 	}
@@ -234,5 +232,51 @@ func TestAFacePassReachesOnlyItsOwnersPhotos(t *testing.T) {
 	}
 	if body := list(administratorTestPrincipalID); !strings.Contains(body, administrators) || strings.Contains(body, first) {
 		t.Errorf("the administrator's pass sees %s", body)
+	}
+}
+
+// A pass's client reaches message-store in this process as its owner only:
+// the owner's message is there, and another owner's pass sees none.
+func TestAFacePassReadsOnlyItsOwnersMessages(t *testing.T) {
+	gated := newGatedTestServer(t, nil)
+	enablePhotosAndLocationsOnTestDatabase(t, gated)
+	enableMessageActivityAndTimeLedgerModulesOnTestDatabase(t, gated)
+	started := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/message-store/imports", map[string]any{"importer": "test", "description": "made up"})
+	if started.Code != http.StatusCreated && started.Code != http.StatusOK {
+		t.Fatalf("start = %d %s", started.Code, started.Body)
+	}
+	importID, _ := decodeRecord(t, started)["id"].(string)
+	batch := map[string]any{
+		"conversations": []map[string]any{{"platform": "discord", "source": "discord", "source_ref": "channel-1", "is_group": false,
+			"participants": []map[string]any{{"handle": "carol", "display_name": "Carol"}, {"handle": "me", "display_name": "Me Self", "is_self": true}}}},
+		"messages": []map[string]any{{"conversation_source": "discord", "conversation_source_ref": "channel-1", "sent_at": 1710100800000,
+			"sender_handle": "carol", "kind": "text", "body": "hello there", "body_source": "platform", "source": "discord", "source_ref": "m-1", "source_hash": "h1"}},
+	}
+	if response := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/message-store/imports/"+importID+"/batches", batch); response.Code != http.StatusOK && response.Code != http.StatusCreated {
+		t.Fatalf("batch = %d %s", response.Code, response.Body)
+	}
+	messagesSeenBy := func(owner string) int {
+		client, err := gated.server.photoFacePassClient(owner)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, err := client.Get("http://" + facePassMessageStoreHost + "/messages")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		var page struct {
+			Messages []any `json:"messages"`
+		}
+		if err := json.NewDecoder(response.Body).Decode(&page); err != nil || response.StatusCode != http.StatusOK {
+			t.Fatalf("messages as %s = %d %v", owner, response.StatusCode, err)
+		}
+		return len(page.Messages)
+	}
+	if seen := messagesSeenBy(firstTestPrincipalID); seen != 1 {
+		t.Errorf("the owner's pass sees %d messages, want 1", seen)
+	}
+	if seen := messagesSeenBy(administratorTestPrincipalID); seen != 0 {
+		t.Errorf("an administrator's pass sees %d of another owner's messages, want 0", seen)
 	}
 }

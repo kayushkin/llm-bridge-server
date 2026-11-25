@@ -15,6 +15,13 @@ import (
 func enableBudgetStoreOnTestDatabase(t *testing.T, gated *gatedTestServer) *budgetstore.Store {
 	t.Helper()
 	enableConnectedRecordsOnTestDatabase(t, gated)
+	return enableBudgetStoreModuleOnTestDatabase(t, gated)
+}
+
+// enableBudgetStoreModuleOnTestDatabase is enableBudgetStoreOnTestDatabase
+// for a server whose connected records stores are already open.
+func enableBudgetStoreModuleOnTestDatabase(t *testing.T, gated *gatedTestServer) *budgetstore.Store {
+	t.Helper()
 	module, err := budgetstore.Module()
 	if err != nil {
 		t.Fatal(err)

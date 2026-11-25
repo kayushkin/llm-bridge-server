@@ -65,7 +65,6 @@ func enablePossessions(ctx context.Context, cfg *config.Config, srv *server.Serv
 		ReviewImageLongestSide: settings.Integer(config.SettingPossessionStoreReviewImageLongestSide),
 		CoverCacheDirectory:    settings.String(config.SettingPossessionStoreCoverCacheDirectory),
 		ArticleStoreURL:        settings.String(config.SettingPossessionStoreArticleStoreURL),
-		BudgetStoreURL:         settings.String(config.SettingPossessionStoreBudgetStoreURL),
 		ReviewOwners:           reviewOwners,
 	}
 	if err := srv.EnablePossessions(module); err != nil {

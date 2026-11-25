@@ -24,7 +24,6 @@ const (
 	SettingPossessionStoreReviewImageLongestSide        = "possession_store.review_image_longest_side"
 	SettingPossessionStoreCoverCacheDirectory           = "possession_store.cover_cache_directory"
 	SettingPossessionStoreArticleStoreURL               = "possession_store.article_store_url"
-	SettingPossessionStoreBudgetStoreURL                = "possession_store.budget_store_url"
 )
 
 // possessionsSettingDefinitions declares the settings above.
@@ -56,7 +55,5 @@ func possessionsSettingDefinitions() []servicesettings.Definition {
 			Description: "Where outfit covers already cut are kept, since cutting a full-size original takes about a second. Every file there may be deleted; it is cut again when asked for. Read at start."},
 		{Key: SettingPossessionStoreArticleStoreURL, EnvironmentVariable: "LLMBRIDGE_POSSESSION_STORE_ARTICLE_STORE_URL", Kind: wiring, ValueType: text, Default: "",
 			Description: "Where article-store answers, outside this server: a product's listing page is saved and read there, and a product's article_id checked there. Empty, those answer that it is not set. Read at start."},
-		{Key: SettingPossessionStoreBudgetStoreURL, EnvironmentVariable: "LLMBRIDGE_POSSESSION_STORE_BUDGET_STORE_URL", Kind: wiring, ValueType: text, Default: "",
-			Description: "Where budget-store answers: the eBay import records orders there, a possession's budget_transaction_id is checked there, and an order line is linked to its possession there. Empty, those answer that it is not set. Read at start."},
 	}
 }

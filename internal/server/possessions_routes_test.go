@@ -26,6 +26,7 @@ import (
 func enablePossessionsOnTestDatabase(t *testing.T, gated *gatedTestServer) {
 	t.Helper()
 	enablePhotosAndLocationsOnTestDatabase(t, gated)
+	enableBudgetStoreModuleOnTestDatabase(t, gated)
 	module, err := possessionstore.Module()
 	if err != nil {
 		t.Fatal(err)
@@ -153,6 +154,44 @@ func TestAPossessionIsReachedOnlyByItsOwnerAndAnAdministrator(t *testing.T) {
 	}
 	if response := gated.requestAsPrincipal(t, secondTestPrincipalID, "POST", "/reference-store/resolve", map[string]any{"ids": []string{id}}); response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"type":"possession"`) {
 		t.Errorf("another principal's resolve = %d %s", response.Code, response.Body)
+	}
+}
+
+// A possession's budget_transaction_id is checked in budget-store, in this
+// process, in the books of the possession's owner: the owner's own
+// transaction is taken, and another owner's is refused as one budget-store
+// does not have, even when an administrator makes the possession for them.
+func TestABudgetTransactionIsCheckedInTheOwnersBooks(t *testing.T) {
+	gated := newGatedTestServer(t, nil)
+	enablePossessionsOnTestDatabase(t, gated)
+	transactionOf := func(principalID string) string {
+		t.Helper()
+		account := gated.requestAsPrincipal(t, principalID, "POST", "/budget-store/accounts", map[string]any{"name": "Checking", "kind": "checking"})
+		category := gated.requestAsPrincipal(t, principalID, "POST", "/budget-store/categories", map[string]any{"name": "Furniture", "kind": "expense"})
+		if account.Code != http.StatusCreated || category.Code != http.StatusCreated {
+			t.Fatalf("%s's account = %d %s, category = %d %s", principalID, account.Code, account.Body, category.Code, category.Body)
+		}
+		created := gated.requestAsPrincipal(t, principalID, "POST", "/budget-store/transactions", map[string]any{"occurred_on": "2026-11-02", "description": "desk lamp",
+			"postings": []map[string]any{{"account_id": decodeRecord(t, account)["id"], "amount_cents": -2500}, {"category_id": decodeRecord(t, category)["id"], "amount_cents": 2500}}})
+		if created.Code != http.StatusCreated {
+			t.Fatalf("%s's transaction = %d %s", principalID, created.Code, created.Body)
+		}
+		return decodeRecord(t, created)["id"].(string)
+	}
+	ownTransaction := transactionOf(firstTestPrincipalID)
+	othersTransaction := transactionOf(secondTestPrincipalID)
+
+	possession := func(transactionID string) map[string]any {
+		return map[string]any{"actor": firstTestPrincipalID, "name": "desk lamp", "budget_transaction_id": transactionID}
+	}
+	if created := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/possession-store/possessions", possession(ownTransaction)); created.Code != http.StatusCreated {
+		t.Errorf("a possession paid by the owner's own transaction = %d %s, want 201", created.Code, created.Body)
+	}
+	if refused := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/possession-store/possessions", possession(othersTransaction)); refused.Code != http.StatusBadRequest {
+		t.Errorf("a possession paid by another owner's transaction = %d %s, want 400", refused.Code, refused.Body)
+	}
+	if refused := gated.requestAsPrincipal(t, administratorTestPrincipalID, "POST", "/possession-store/possessions?owner_principal_id="+firstTestPrincipalID, possession(othersTransaction)); refused.Code != http.StatusBadRequest {
+		t.Errorf("an administrator's possession for the owner, paid by another owner's transaction = %d %s, want 400", refused.Code, refused.Body)
 	}
 }
 

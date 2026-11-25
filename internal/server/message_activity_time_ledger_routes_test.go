@@ -19,6 +19,14 @@ import (
 func enableMessageActivityAndTimeLedgerOnTestDatabase(t *testing.T, gated *gatedTestServer) {
 	t.Helper()
 	enableConnectedRecordsOnTestDatabase(t, gated)
+	enableMessageActivityAndTimeLedgerModulesOnTestDatabase(t, gated)
+}
+
+// enableMessageActivityAndTimeLedgerModulesOnTestDatabase is
+// enableMessageActivityAndTimeLedgerOnTestDatabase for a server whose
+// connected records stores are already open.
+func enableMessageActivityAndTimeLedgerModulesOnTestDatabase(t *testing.T, gated *gatedTestServer) {
+	t.Helper()
 	messageModule, err := messagestore.Module()
 	if err != nil {
 		t.Fatal(err)

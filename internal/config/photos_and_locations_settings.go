@@ -25,7 +25,6 @@ const (
 	SettingLocationStoreGeonamesDirectory           = "location_store.geonames_directory"
 	SettingPhotoStoreFacePassesOwnerPrincipalIDs    = "photo_store.face_passes.owner_principal_ids"
 	SettingPhotoStoreFacePassesInterval             = "photo_store.face_passes.interval"
-	SettingPhotoStoreFacePassesMessageStoreURL      = "photo_store.face_passes.message_store_url"
 	SettingPhotoStoreFaceGroupingEnabled            = "photo_store.face_grouping.enabled"
 	SettingPhotoStorePeopleMatchingEnabled          = "photo_store.people_matching.enabled"
 	SettingPhotoStorePeopleMatchingModelCheckLimit  = "photo_store.people_matching.model_check_limit"
@@ -54,8 +53,6 @@ func photosAndLocationsSettingDefinitions() []servicesettings.Definition {
 			Description: "The principals whose photos photo-store's face passes run over, each pass once per owner and as that owner, so faces of two owners are never grouped or matched together. A pass that names people needs the owner's own person in their people-store records (the person whose principal_id is the owner); an owner without one is skipped and logged. Empty runs the passes for nobody. Read at start."},
 		{Key: SettingPhotoStoreFacePassesInterval, EnvironmentVariable: "LLMBRIDGE_PHOTO_STORE_FACE_PASSES_INTERVAL", Kind: behavior, ValueType: msg.ServiceSettingValueTypeDuration, Default: "1h",
 			Description: "How long the face passes wait after one round (every pass that is on, for every owner) before the next. Read at start."},
-		{Key: SettingPhotoStoreFacePassesMessageStoreURL, EnvironmentVariable: "LLMBRIDGE_PHOTO_STORE_FACE_PASSES_MESSAGE_STORE_URL", Kind: wiring, ValueType: text, Default: "",
-			Description: "Where message-store answers: people matching and face group guessing read the chat message a photo cites and the people in its conversation there. Required when either is on. Read at start."},
 		{Key: SettingPhotoStoreFaceGroupingEnabled, EnvironmentVariable: "LLMBRIDGE_PHOTO_STORE_FACE_GROUPING_ENABLED", Kind: behavior, ValueType: boolean, Default: "false",
 			Description: "Group the faces nobody has named into groups of one person each, and guess a group's person from the groups people decided, as photo-group-faces does. It reads and writes only photo-store and calls no model. Off by default, while the standalone photo-store's scheduler job still runs the command. Read at start."},
 		{Key: SettingPhotoStorePeopleMatchingEnabled, EnvironmentVariable: "LLMBRIDGE_PHOTO_STORE_PEOPLE_MATCHING_ENABLED", Kind: behavior, ValueType: boolean, Default: "false",

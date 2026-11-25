@@ -333,9 +333,9 @@ func requireRow(transaction *databaseTransaction, table, id string) error {
 
 // ServiceReferences checks ids against the stores that own them, each asked
 // about the records of the owner the write is for: photo-store and
-// location-store through HTTPClient, whose transport answers their in-process
-// hosts as the caller on the request's context; article-store and
-// budget-store over HTTP; harness-store through Machines.
+// location-store and budget-store through HTTPClient, whose transport answers
+// their in-process hosts as the caller on the request's context;
+// article-store over HTTP; harness-store through Machines.
 type ServiceReferences struct {
 	PhotoStoreURL    string
 	LocationStoreURL string

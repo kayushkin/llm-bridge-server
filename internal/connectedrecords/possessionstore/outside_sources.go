@@ -241,7 +241,9 @@ type BudgetOrders interface {
 	OrderOfLine(ctx context.Context, lineID string) (BudgetOrder, BudgetOrderLine, error)
 }
 
-// BudgetStore is budget-store over HTTP, at the standalone service.
+// BudgetStore is budget-store's routes at URL, asked through HTTPClient: in
+// the server, a transport that answers budget-store's in-process host as the
+// owner on the request's context.
 type BudgetStore struct {
 	URL        string
 	HTTPClient *http.Client

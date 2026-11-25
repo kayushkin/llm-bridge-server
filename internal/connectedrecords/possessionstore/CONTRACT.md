@@ -41,11 +41,11 @@ The store reads llm-bridge-server's settings (`GET /settings` there):
 | `possession_store.review_image_longest_side` | `2048` | size of the original the readers see; without one they see photo-store's 1024-pixel thumbnail |
 | `possession_store.cover_cache_directory` | under the server's folder | outfit covers already cut; any file may be deleted |
 | `possession_store.article_store_url` | empty | article-store, outside the server: product listings are saved and read there |
-| `possession_store.budget_store_url` | empty | budget-store: eBay orders, `budget_transaction_id` checks, order-line links |
 
 Model calls go through the server's one-shot router, in process, priced at
-model-store's list price. photo-store, location-store, harness-store and
-mailstack are called in process.
+model-store's list price. photo-store, location-store, harness-store,
+mailstack and budget-store (eBay orders, `budget_transaction_id` checks,
+order-line links) are called in process, as the owner the call is for.
 
 ## Records and ids
 

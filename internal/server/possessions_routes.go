@@ -11,11 +11,11 @@ package server
 //
 // What the store asks on the way is in this process too, asked as the
 // caller in the request context: photo-store and location-store through
-// their handlers, mailstack through its handler as that principal,
-// harness-store through its Go store, model calls through the one-shot router
-// priced at model-store's list price, and originals' bytes in the file-store
-// module. article-store and budget-store are outside this process and are
-// called over HTTP at their settings.
+// their handlers, mailstack and budget-store through their handlers as that
+// principal, harness-store through its Go store, model calls through the
+// one-shot router priced at model-store's list price, and originals' bytes in
+// the file-store module. Only article-store is outside this process, called
+// over HTTP at possession_store.article_store_url.
 //
 // The photo review and the background reading of covers' wearer boxes spend
 // money on model calls, so they run only when
@@ -51,6 +51,7 @@ const (
 	possessionPhotoStoreHost    = "photo-store.in-process"
 	possessionLocationStoreHost = "location-store.in-process"
 	possessionMailstackHost     = "mailstack.in-process"
+	possessionBudgetStoreHost   = "budget-store.in-process"
 )
 
 // possessionStores is possession-store as this server serves it.
@@ -71,7 +72,6 @@ type PossessionsModule struct {
 	ReviewImageLongestSide int
 	CoverCacheDirectory    string
 	ArticleStoreURL        string
-	BudgetStoreURL         string
 	// ReviewOwners are the owners whose outfit covers the outfit list may
 	// read wearer boxes for in the background: the review worker's owners
 	// while it is on, and nobody while it is off.
@@ -79,8 +79,8 @@ type PossessionsModule struct {
 }
 
 // EnablePossessions serves possession-store from its module. main calls it
-// once, after EnableFileStore, EnablePhotosAndLocations and EnableMailstack,
-// and before the server listens. Until then its routes answer 503.
+// once, after EnableFileStore, EnablePhotosAndLocations, EnableMailstack and
+// EnableBudgetStore, and before the server listens. Until then its routes answer 503.
 func (s *Server) EnablePossessions(module PossessionsModule) error {
 	files := s.fileStoreModule.Load()
 	if files == nil {
@@ -88,6 +88,9 @@ func (s *Server) EnablePossessions(module PossessionsModule) error {
 	}
 	if s.photosAndLocations.Load() == nil {
 		return errors.New("possession-store: EnablePhotosAndLocations must run first, since possession-store reads photos and checks places there")
+	}
+	if s.budgetStore.Load() == nil {
+		return errors.New("possession-store: EnableBudgetStore must run first, since possession-store records eBay orders and checks transactions there")
 	}
 	if s.harnessStore == nil {
 		return errors.New("possession-store: this server has no harness-store, where a computer's machine is checked")
@@ -100,7 +103,7 @@ func (s *Server) EnablePossessions(module PossessionsModule) error {
 		PhotoStoreURL:    "http://" + possessionPhotoStoreHost,
 		LocationStoreURL: "http://" + possessionLocationStoreHost,
 		ArticleStoreURL:  strings.TrimRight(module.ArticleStoreURL, "/"),
-		BudgetStoreURL:   strings.TrimRight(module.BudgetStoreURL, "/"),
+		BudgetStoreURL:   "http://" + possessionBudgetStoreHost,
 		HTTPClient:       client,
 		Machines:         possessionHarnessMachines{server: s},
 	}
@@ -108,7 +111,7 @@ func (s *Server) EnablePossessions(module PossessionsModule) error {
 	if err != nil {
 		return err
 	}
-	budget := possessionstore.BudgetStore{URL: strings.TrimRight(module.BudgetStoreURL, "/"), HTTPClient: &http.Client{Timeout: time.Minute}}
+	budget := possessionstore.BudgetStore{URL: "http://" + possessionBudgetStoreHost, HTTPClient: client}
 	store.UseBudgetStore(budget)
 	reviewer := &possessionstore.Reviewer{
 		Store:  store,
@@ -146,6 +149,7 @@ func (s *Server) possessionOutboundClient() *http.Client {
 				possessionPhotoStoreHost:    s.possessionInProcessStore("photo-store", func(stores *photosAndLocationsStores) http.Handler { return stores.photoHandler }),
 				possessionLocationStoreHost: s.possessionInProcessStore("location-store", func(stores *photosAndLocationsStores) http.Handler { return stores.locationHandler }),
 				possessionMailstackHost:     http.HandlerFunc(s.possessionMailstack),
+				possessionBudgetStoreHost:   http.HandlerFunc(s.possessionBudgetStore),
 			},
 			network: http.DefaultTransport,
 		},
@@ -191,6 +195,27 @@ func (s *Server) possessionMailstack(w http.ResponseWriter, r *http.Request) {
 	served := r.Clone(mailstack.ContextWithCaller(r.Context(), mailstack.Caller{PrincipalID: caller.PrincipalID}))
 	served.Header = keptHeaders(r.Header)
 	mail.Handler().ServeHTTP(w, served)
+}
+
+// possessionBudgetStore serves budget-store's routes as the owner the request
+// context names, in that owner's own books. Every call possession-store makes
+// there acts for one owner's possessions, so a context that names no
+// principal is refused, and an administrator's sight of every owner's books
+// is not passed on.
+func (s *Server) possessionBudgetStore(w http.ResponseWriter, r *http.Request) {
+	caller, ok := ownership.CallerFromContext(r.Context())
+	if !ok || caller.PrincipalID == "" {
+		writeJSONError(w, http.StatusUnauthorized, "possession_store_budget_without_a_principal", "possession-store asks budget-store only as one owner, and the call names none")
+		return
+	}
+	module := s.budgetStore.Load()
+	if module == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "budget_store_off", "budget-store is not open on this server: EnableBudgetStore was never called")
+		return
+	}
+	served := r.Clone(ownership.ContextWithCaller(r.Context(), ownership.Caller{PrincipalID: caller.PrincipalID}))
+	served.Header = keptHeaders(r.Header)
+	module.handler.ServeHTTP(w, served)
 }
 
 // keptHeaders are the only request headers an in-process store sees.
