@@ -32,6 +32,7 @@ import (
 	"time"
 
 	journalstore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/journalstore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/journalstore/internal/importclient"
 	"github.com/teambition/rrule-go"
 )
 
@@ -342,7 +343,7 @@ func (importer *importer) place(event calendarEvent, calendarTimelineID string, 
 }
 
 func main() {
-	journalURL := flag.String("journal-store-url", "http://"+journalstore.DefaultListenAddress, "journal-store's base URL")
+	journalURL := flag.String("journal-store-url", importclient.DefaultStoreURL, "journal-store's base URL")
 	calendarURL := flag.String("calendar-store-url", "", "calendar-store's base URL (required)")
 	peopleURL := flag.String("people-store-url", "", "people-store's base URL, for the names shown on links (required)")
 	calendarID := flag.String("calendar", "", "calendar-store's calendar id whose events to place (required)")

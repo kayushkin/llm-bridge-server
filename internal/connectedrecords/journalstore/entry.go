@@ -8,8 +8,11 @@ package journalstore
 // and 0 means unset.
 type Entry struct {
 	// ID is entry_000001: what anything else joins on.
-	ID   string `json:"id"`
-	Kind string `json:"kind"`
+	ID string `json:"id"`
+	// OwnerPrincipalID is principal-store's id of the person who keeps the
+	// entry. Set by the store from the caller that created it; never sent.
+	OwnerPrincipalID string `json:"owner_principal_id"`
+	Kind             string `json:"kind"`
 	// Title may be empty only for kind journal.
 	Title string `json:"title"`
 	// Body is markdown. A [text](ref:<id>) link in it is a mention of <id>.
@@ -88,6 +91,8 @@ type EntryPatch struct {
 // Revision is the whole state of an entry just before one change to it.
 type Revision struct {
 	RevisionID int64 `json:"revision_id"`
+	// OwnerPrincipalID is the entry's owner, which a revision takes.
+	OwnerPrincipalID string `json:"owner_principal_id"`
 	// Reason names the change that replaced this state: update, delete,
 	// restore, import or promote-todo.
 	Reason     string `json:"reason"`
@@ -164,6 +169,8 @@ type PromoteTodoResult struct {
 type TimelineItem struct {
 	// ID is timeline_item_000001.
 	ID string `json:"id"`
+	// OwnerPrincipalID is the owner of the timeline the item is on.
+	OwnerPrincipalID string `json:"owner_principal_id"`
 	// TimelineID is the entry, of kind timeline, the item is on.
 	TimelineID string `json:"timeline_id"`
 	// OccurredAt is when it happened, epoch seconds; EndsAt is when it
@@ -217,13 +224,15 @@ type TimelineItemPatch struct {
 
 // TimelineItemRevision is the whole state of an item just before one change.
 type TimelineItemRevision struct {
-	RevisionID int64        `json:"revision_id"`
-	Reason     string       `json:"reason"`
-	ReplacedAt int64        `json:"replaced_at"`
-	Item       TimelineItem `json:"item"`
+	RevisionID int64 `json:"revision_id"`
+	// OwnerPrincipalID is the item's owner, which a revision takes.
+	OwnerPrincipalID string       `json:"owner_principal_id"`
+	Reason           string       `json:"reason"`
+	ReplacedAt       int64        `json:"replaced_at"`
+	Item             TimelineItem `json:"item"`
 }
 
-// Counts is what GET /health counts.
+// Counts is what GET /health counts, among the records the caller reaches.
 type Counts struct {
 	Entries       int `json:"entries"`
 	Deleted       int `json:"deleted"`

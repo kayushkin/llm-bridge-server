@@ -9,41 +9,104 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 )
 
-// RegisterHandlers mounts the API on mux. Routes are rooted at /; dash adds
-// its own prefix and the auth this service has none of. That is why the
-// service binds 127.0.0.1: with no auth, the front door has to be the only
-// door.
+// RegisterHandlers mounts the API on mux. Routes are rooted at /; the server
+// mounts them under its own prefix, and puts the verified caller on each
+// request's context (ownership.ContextWithCaller) before it gets here.
+//
+// Every route, the vocabularies and /health included, answers only a caller
+// that names a principal: this is the most private store on the host, and the
+// server's own service acting as nobody has no business reading it.
 func RegisterHandlers(mux *http.ServeMux, s *Store) {
 	h := &handler{s: s}
-	mux.HandleFunc("GET /health", h.health)
-	mux.HandleFunc("GET /entry-kinds", h.entryKinds)
-	mux.HandleFunc("GET /visibilities", h.visibilities)
+	for _, route := range h.routes() {
+		mux.HandleFunc(route.pattern, h.requirePrincipal(route.serve))
+	}
+}
 
-	mux.HandleFunc("GET /entries", h.listEntries)
-	mux.HandleFunc("POST /entries", h.createEntry)
-	mux.HandleFunc("GET /entries/{id}", h.getEntry)
-	mux.HandleFunc("PATCH /entries/{id}", h.patchEntry)
-	mux.HandleFunc("DELETE /entries/{id}", h.deleteEntry)
-	mux.HandleFunc("POST /entries/{id}/restore", h.restoreEntry)
-	mux.HandleFunc("GET /entries/{id}/revisions", h.listRevisions)
-	mux.HandleFunc("POST /entries/{id}/promote-todo", h.promoteTodo)
+// route is one pattern and what serves it.
+type route struct {
+	pattern string
+	serve   func(w http.ResponseWriter, r *http.Request, caller ownership.Caller)
+}
 
-	mux.HandleFunc("GET /mentions", h.backlinks)
-	mux.HandleFunc("GET /published", h.listPublished)
-	mux.HandleFunc("GET /published/{slug}", h.getPublished)
-	mux.HandleFunc("POST /imports", h.importEntries)
+// routes is every route the store mounts, the one list RegisterHandlers and
+// the tests read.
+func (h *handler) routes() []route {
+	return []route{
+		{"GET /health", h.health},
+		{"GET /entry-kinds", h.entryKinds},
+		{"GET /visibilities", h.visibilities},
 
-	mux.HandleFunc("GET /time-precisions", h.timePrecisions)
-	mux.HandleFunc("GET /timelines/{id}/items", h.listTimelineItems)
-	mux.HandleFunc("POST /timelines/{id}/items", h.createTimelineItems)
-	mux.HandleFunc("GET /timeline-items", h.overlayTimelineItems)
-	mux.HandleFunc("GET /timeline-items/{id}", h.getTimelineItem)
-	mux.HandleFunc("PATCH /timeline-items/{id}", h.patchTimelineItem)
-	mux.HandleFunc("DELETE /timeline-items/{id}", h.deleteTimelineItem)
-	mux.HandleFunc("POST /timeline-items/{id}/restore", h.restoreTimelineItem)
-	mux.HandleFunc("GET /timeline-items/{id}/revisions", h.listTimelineItemRevisions)
+		{"GET /entries", h.listEntries},
+		{"POST /entries", h.createEntry},
+		{"GET /entries/{id}", h.getEntry},
+		{"PATCH /entries/{id}", h.patchEntry},
+		{"DELETE /entries/{id}", h.deleteEntry},
+		{"POST /entries/{id}/restore", h.restoreEntry},
+		{"GET /entries/{id}/revisions", h.listRevisions},
+		{"POST /entries/{id}/promote-todo", h.promoteTodo},
+
+		{"GET /mentions", h.backlinks},
+		{"GET /published", h.listPublished},
+		{"GET /published/{slug}", h.getPublished},
+		{"POST /imports", h.importEntries},
+
+		{"GET /time-precisions", h.timePrecisions},
+		{"GET /timelines/{id}/items", h.listTimelineItems},
+		{"POST /timelines/{id}/items", h.createTimelineItems},
+		{"GET /timeline-items", h.overlayTimelineItems},
+		{"GET /timeline-items/{id}", h.getTimelineItem},
+		{"PATCH /timeline-items/{id}", h.patchTimelineItem},
+		{"DELETE /timeline-items/{id}", h.deleteTimelineItem},
+		{"POST /timeline-items/{id}/restore", h.restoreTimelineItem},
+		{"GET /timeline-items/{id}/revisions", h.listTimelineItemRevisions},
+	}
+}
+
+// refusalOfEmptyPrincipal is what every route answers a caller that names no
+// principal.
+const refusalOfEmptyPrincipal = "journal-store answers only the owner's or an administrator's principal"
+
+// requirePrincipal refuses a request with no caller (401) and a caller with
+// no principal (403), before the route sees it.
+func (h *handler) requirePrincipal(serve func(w http.ResponseWriter, r *http.Request, caller ownership.Caller)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		caller, refusal := ownership.CallerOfRequest(r)
+		if refusal != nil {
+			writeErr(w, refusal.Status, refusal.Message)
+			return
+		}
+		if caller.PrincipalID == "" {
+			writeErr(w, http.StatusForbidden, refusalOfEmptyPrincipal)
+			return
+		}
+		serve(w, r, caller)
+	}
+}
+
+// readScope is the request's scope, or false after answering its refusal.
+func readScope(w http.ResponseWriter, r *http.Request) (ownership.Scope, bool) {
+	scope, refusal := ownership.ReadScope(r)
+	if refusal != nil {
+		writeErr(w, refusal.Status, refusal.Message)
+		return ownership.Scope{}, false
+	}
+	return scope, true
+}
+
+// ownerOfNewRecord is the owner of what the request creates, or false after
+// answering its refusal.
+func ownerOfNewRecord(w http.ResponseWriter, r *http.Request) (string, bool) {
+	owner, refusal := ownership.OwnerOfNewRecord(r)
+	if refusal != nil {
+		writeErr(w, refusal.Status, refusal.Message)
+		return "", false
+	}
+	return owner, true
 }
 
 type handler struct {
@@ -128,8 +191,12 @@ func decodePatch(w http.ResponseWriter, r *http.Request, accepted map[string]boo
 	return true
 }
 
-func (h *handler) health(w http.ResponseWriter, r *http.Request) {
-	counts, err := h.s.Counts()
+func (h *handler) health(w http.ResponseWriter, r *http.Request, caller ownership.Caller) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	counts, err := h.s.Counts(r.Context(), scope)
 	if respondStoreError(w, err) {
 		return
 	}
@@ -141,12 +208,16 @@ func (h *handler) health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, Health{Status: status, Counts: counts, EntityRegistry: registry})
 }
 
-func (h *handler) entryKinds(w http.ResponseWriter, r *http.Request) {
+func (h *handler) entryKinds(w http.ResponseWriter, r *http.Request, caller ownership.Caller) {
 	writeJSON(w, http.StatusOK, EntryKinds)
 }
 
-func (h *handler) visibilities(w http.ResponseWriter, r *http.Request) {
+func (h *handler) visibilities(w http.ResponseWriter, r *http.Request, caller ownership.Caller) {
 	writeJSON(w, http.StatusOK, Visibilities)
+}
+
+func (h *handler) timePrecisions(w http.ResponseWriter, r *http.Request, caller ownership.Caller) {
+	writeJSON(w, http.StatusOK, TimePrecisions)
 }
 
 // integerParameter reads an optional integer query parameter. Present and not
@@ -174,7 +245,11 @@ func pageFrom(w http.ResponseWriter, r *http.Request) (int, int, bool) {
 	return int(limit), int(offset), ok
 }
 
-func (h *handler) listEntries(w http.ResponseWriter, r *http.Request) {
+func (h *handler) listEntries(w http.ResponseWriter, r *http.Request, caller ownership.Caller) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	query := r.URL.Query()
 	filter := Filter{
 		Query:          query.Get("q"),
@@ -186,7 +261,6 @@ func (h *handler) listEntries(w http.ResponseWriter, r *http.Request) {
 		Source:         query.Get("source"),
 		IncludeDeleted: isTrue(query.Get("include_deleted")),
 	}
-	var ok bool
 	if filter.WrittenFrom, ok = integerParameter(w, r, "from"); !ok {
 		return
 	}
@@ -196,85 +270,117 @@ func (h *handler) listEntries(w http.ResponseWriter, r *http.Request) {
 	if filter.Limit, filter.Offset, ok = pageFrom(w, r); !ok {
 		return
 	}
-	entries, err := h.s.List(filter)
+	entries, err := h.s.List(r.Context(), scope, filter)
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, entries)
 }
 
-func (h *handler) createEntry(w http.ResponseWriter, r *http.Request) {
+func (h *handler) createEntry(w http.ResponseWriter, r *http.Request, caller ownership.Caller) {
+	owner, ok := ownerOfNewRecord(w, r)
+	if !ok {
+		return
+	}
 	var input EntryInput
 	if !decode(w, r, &input) {
 		return
 	}
-	created, err := h.s.Create(input)
+	created, err := h.s.Create(r.Context(), owner, input)
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, created)
 }
 
-func (h *handler) getEntry(w http.ResponseWriter, r *http.Request) {
-	entry, err := h.s.Get(r.PathValue("id"), isTrue(r.URL.Query().Get("include_deleted")))
+func (h *handler) getEntry(w http.ResponseWriter, r *http.Request, caller ownership.Caller) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	entry, err := h.s.Get(r.Context(), scope, r.PathValue("id"), isTrue(r.URL.Query().Get("include_deleted")))
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, entry)
 }
 
-func (h *handler) patchEntry(w http.ResponseWriter, r *http.Request) {
+func (h *handler) patchEntry(w http.ResponseWriter, r *http.Request, caller ownership.Caller) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	var patch EntryPatch
 	if !decodePatch(w, r, patchableFields, unpatchableFields, &patch) {
 		return
 	}
-	updated, err := h.s.Patch(r.PathValue("id"), patch)
+	updated, err := h.s.Patch(r.Context(), scope, r.PathValue("id"), patch)
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, updated)
 }
 
-func (h *handler) deleteEntry(w http.ResponseWriter, r *http.Request) {
-	if respondStoreError(w, h.s.Delete(r.PathValue("id"))) {
+func (h *handler) deleteEntry(w http.ResponseWriter, r *http.Request, caller ownership.Caller) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	if respondStoreError(w, h.s.Delete(r.Context(), scope, r.PathValue("id"))) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *handler) restoreEntry(w http.ResponseWriter, r *http.Request) {
-	entry, err := h.s.Restore(r.PathValue("id"))
+func (h *handler) restoreEntry(w http.ResponseWriter, r *http.Request, caller ownership.Caller) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	entry, err := h.s.Restore(r.Context(), scope, r.PathValue("id"))
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, entry)
 }
 
-func (h *handler) listRevisions(w http.ResponseWriter, r *http.Request) {
+func (h *handler) listRevisions(w http.ResponseWriter, r *http.Request, caller ownership.Caller) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	limit, offset, ok := pageFrom(w, r)
 	if !ok {
 		return
 	}
-	revisions, err := h.s.ListRevisions(r.PathValue("id"), limit, offset)
+	revisions, err := h.s.ListRevisions(r.Context(), scope, r.PathValue("id"), limit, offset)
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, revisions)
 }
 
-func (h *handler) promoteTodo(w http.ResponseWriter, r *http.Request) {
+func (h *handler) promoteTodo(w http.ResponseWriter, r *http.Request, caller ownership.Caller) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	var request PromoteTodoRequest
 	if !decode(w, r, &request) {
 		return
 	}
-	result, err := h.s.PromoteTodo(r.PathValue("id"), request.Line)
+	result, err := h.s.PromoteTodo(r.Context(), caller, scope, r.PathValue("id"), request.Line)
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, result)
 }
 
-func (h *handler) backlinks(w http.ResponseWriter, r *http.Request) {
+func (h *handler) backlinks(w http.ResponseWriter, r *http.Request, caller ownership.Caller) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	ref := strings.TrimSpace(r.URL.Query().Get("ref"))
 	if ref == "" {
 		writeErr(w, http.StatusBadRequest, "ref is required: the id whose mentions to list, e.g. ?ref=person_000012")
@@ -284,65 +390,79 @@ func (h *handler) backlinks(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	backlinks, err := h.s.Backlinks(ref, limit, offset)
+	backlinks, err := h.s.Backlinks(r.Context(), scope, ref, limit, offset)
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, backlinks)
 }
 
-func (h *handler) listPublished(w http.ResponseWriter, r *http.Request) {
+func (h *handler) listPublished(w http.ResponseWriter, r *http.Request, caller ownership.Caller) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	limit, offset, ok := pageFrom(w, r)
 	if !ok {
 		return
 	}
-	entries, err := h.s.ListPublished(r.URL.Query().Get("tag"), limit, offset)
+	entries, err := h.s.ListPublished(r.Context(), scope, r.URL.Query().Get("tag"), limit, offset)
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, entries)
 }
 
-func (h *handler) getPublished(w http.ResponseWriter, r *http.Request) {
-	entry, err := h.s.GetPublished(r.PathValue("slug"))
+func (h *handler) getPublished(w http.ResponseWriter, r *http.Request, caller ownership.Caller) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	entry, err := h.s.GetPublished(r.Context(), scope, r.PathValue("slug"))
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, entry)
 }
 
-func (h *handler) importEntries(w http.ResponseWriter, r *http.Request) {
+func (h *handler) importEntries(w http.ResponseWriter, r *http.Request, caller ownership.Caller) {
+	owner, ok := ownerOfNewRecord(w, r)
+	if !ok {
+		return
+	}
 	var request ImportRequest
 	if !decode(w, r, &request) {
 		return
 	}
-	result, err := h.s.Import(request, isTrue(r.URL.Query().Get("dry_run")))
+	result, err := h.s.Import(r.Context(), owner, request, isTrue(r.URL.Query().Get("dry_run")))
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
 }
 
-// decode reads a JSON body, refusing unknown fields so a misspelt key is a
-// 400 rather than a write that silently drops it.
-func (h *handler) timePrecisions(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, TimePrecisions)
-}
-
-func (h *handler) listTimelineItems(w http.ResponseWriter, r *http.Request) {
-	items, err := h.s.ListTimelineItems(r.PathValue("id"), isTrue(r.URL.Query().Get("include_deleted")))
+func (h *handler) listTimelineItems(w http.ResponseWriter, r *http.Request, caller ownership.Caller) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	items, err := h.s.ListTimelineItems(r.Context(), scope, r.PathValue("id"), isTrue(r.URL.Query().Get("include_deleted")))
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, items)
 }
 
-func (h *handler) createTimelineItems(w http.ResponseWriter, r *http.Request) {
+func (h *handler) createTimelineItems(w http.ResponseWriter, r *http.Request, caller ownership.Caller) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	var request TimelineItemsRequest
 	if !decode(w, r, &request) {
 		return
 	}
-	items, err := h.s.CreateTimelineItems(r.PathValue("id"), request.Items)
+	items, err := h.s.CreateTimelineItems(r.Context(), scope, r.PathValue("id"), request.Items)
 	if respondStoreError(w, err) {
 		return
 	}
@@ -351,7 +471,11 @@ func (h *handler) createTimelineItems(w http.ResponseWriter, r *http.Request) {
 
 // overlayTimelineItems answers GET /timeline-items?timeline=<id>&timeline=<id>:
 // the items of every named timeline, merged in time order.
-func (h *handler) overlayTimelineItems(w http.ResponseWriter, r *http.Request) {
+func (h *handler) overlayTimelineItems(w http.ResponseWriter, r *http.Request, caller ownership.Caller) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	timelines := r.URL.Query()["timeline"]
 	if len(timelines) == 0 {
 		writeErr(w, http.StatusBadRequest, "name at least one timeline: ?timeline=entry_000001&timeline=entry_000002")
@@ -369,60 +493,82 @@ func (h *handler) overlayTimelineItems(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	items, err := h.s.OverlayTimelineItems(timelines, from, to, limit, offset)
+	items, err := h.s.OverlayTimelineItems(r.Context(), scope, timelines, from, to, limit, offset)
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, items)
 }
 
-func (h *handler) getTimelineItem(w http.ResponseWriter, r *http.Request) {
-	item, err := h.s.GetTimelineItem(r.PathValue("id"), isTrue(r.URL.Query().Get("include_deleted")))
+func (h *handler) getTimelineItem(w http.ResponseWriter, r *http.Request, caller ownership.Caller) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	item, err := h.s.GetTimelineItem(r.Context(), scope, r.PathValue("id"), isTrue(r.URL.Query().Get("include_deleted")))
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, item)
 }
 
-func (h *handler) patchTimelineItem(w http.ResponseWriter, r *http.Request) {
+func (h *handler) patchTimelineItem(w http.ResponseWriter, r *http.Request, caller ownership.Caller) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	var patch TimelineItemPatch
 	if !decodePatch(w, r, patchableTimelineItemFields, unpatchableTimelineItemFields, &patch) {
 		return
 	}
-	item, err := h.s.PatchTimelineItem(r.PathValue("id"), patch)
+	item, err := h.s.PatchTimelineItem(r.Context(), scope, r.PathValue("id"), patch)
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, item)
 }
 
-func (h *handler) deleteTimelineItem(w http.ResponseWriter, r *http.Request) {
-	if respondStoreError(w, h.s.DeleteTimelineItem(r.PathValue("id"))) {
+func (h *handler) deleteTimelineItem(w http.ResponseWriter, r *http.Request, caller ownership.Caller) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	if respondStoreError(w, h.s.DeleteTimelineItem(r.Context(), scope, r.PathValue("id"))) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *handler) restoreTimelineItem(w http.ResponseWriter, r *http.Request) {
-	item, err := h.s.RestoreTimelineItem(r.PathValue("id"))
+func (h *handler) restoreTimelineItem(w http.ResponseWriter, r *http.Request, caller ownership.Caller) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	item, err := h.s.RestoreTimelineItem(r.Context(), scope, r.PathValue("id"))
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, item)
 }
 
-func (h *handler) listTimelineItemRevisions(w http.ResponseWriter, r *http.Request) {
+func (h *handler) listTimelineItemRevisions(w http.ResponseWriter, r *http.Request, caller ownership.Caller) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	limit, offset, ok := pageFrom(w, r)
 	if !ok {
 		return
 	}
-	revisions, err := h.s.ListTimelineItemRevisions(r.PathValue("id"), limit, offset)
+	revisions, err := h.s.ListTimelineItemRevisions(r.Context(), scope, r.PathValue("id"), limit, offset)
 	if respondStoreError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, revisions)
 }
 
+// decode reads a JSON body, refusing unknown fields so a misspelt key is a
+// 400 rather than a write that silently drops it.
 func decode(w http.ResponseWriter, r *http.Request, target any) bool {
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<20))
 	decoder.DisallowUnknownFields()
@@ -456,6 +602,8 @@ func respondStoreError(w http.ResponseWriter, err error) bool {
 		writeErr(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, ErrConflict):
 		writeErr(w, http.StatusConflict, err.Error())
+	case errors.Is(err, ErrForbidden):
+		writeErr(w, http.StatusForbidden, err.Error())
 	case errors.Is(err, ErrUpstream):
 		log.Printf("journal-store: %v", err)
 		writeErr(w, http.StatusBadGateway, err.Error())

@@ -2,6 +2,8 @@ package journalstore
 
 import (
 	"bytes"
+	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +14,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
+	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 )
 
 // testRegistryRows is a cut of reference-store's list of types: enough to show a
@@ -25,41 +30,63 @@ var testRegistryRows = []EntityTypeRow{
 	{Type: "both-b", Service: "y", Get: "/b/{id}", IDPatterns: []string{`twin_\d+`}},
 }
 
+// receivedTodo is one todo the fake noteboard was asked to create.
+type receivedTodo struct {
+	Title string
+	Body  string
+	Tags  []string
+	Links []string
+}
+
 // fakeNoteboard records every todo it is asked to create and answers with a
-// fixed uuid, or with failWith when set.
+// fixed uuid, or fails as noteboard would when fail is set.
 type fakeNoteboard struct {
 	mutex    sync.Mutex
-	received []noteboardTodo
-	failWith int
-	server   *httptest.Server
+	received []receivedTodo
+	fail     bool
 }
 
 const fakeTodoID = "3f2a9c1e-7b4d-4e8a-9c6f-0a1b2c3d4e5f"
 
-func newFakeNoteboard(t *testing.T) *fakeNoteboard {
-	fake := &fakeNoteboard{}
-	fake.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/api/items" {
-			http.Error(w, "unexpected "+r.Method+" "+r.URL.Path, http.StatusNotFound)
-			return
+func (fake *fakeNoteboard) CreateTodo(ctx context.Context, title, body string, tags, links []string) (string, error) {
+	fake.mutex.Lock()
+	defer fake.mutex.Unlock()
+	if fake.fail {
+		return "", fmt.Errorf("%w: noteboard answered 500: noteboard is down", ErrUpstream)
+	}
+	fake.received = append(fake.received, receivedTodo{Title: title, Body: body, Tags: tags, Links: links})
+	return fakeTodoID, nil
+}
+
+// The made-up people the tests act as.
+const (
+	alicePrincipalID = "principal_000001"
+	bobPrincipalID   = "principal_000002"
+)
+
+var (
+	alice              = ownership.Caller{PrincipalID: alicePrincipalID}
+	bob                = ownership.Caller{PrincipalID: bobPrincipalID}
+	aliceAdministrator = ownership.Caller{PrincipalID: alicePrincipalID, SeesEveryOwner: true}
+)
+
+// The test server reads who the request acts as from these headers, as the
+// real server reads it from the credential it verified. A request with
+// noCallerHeader carries no caller at all.
+const (
+	callerPrincipalHeader     = "X-Test-Caller-Principal"
+	callerAdministratorHeader = "X-Test-Caller-Administrator"
+	noCallerHeader            = "X-Test-No-Caller"
+)
+
+func withTestCaller(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(noCallerHeader) == "" {
+			caller := ownership.Caller{PrincipalID: r.Header.Get(callerPrincipalHeader), SeesEveryOwner: r.Header.Get(callerAdministratorHeader) != ""}
+			r = r.WithContext(ownership.ContextWithCaller(r.Context(), caller))
 		}
-		var todo noteboardTodo
-		if err := json.NewDecoder(r.Body).Decode(&todo); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		fake.mutex.Lock()
-		defer fake.mutex.Unlock()
-		if fake.failWith != 0 {
-			http.Error(w, "noteboard is down", fake.failWith)
-			return
-		}
-		fake.received = append(fake.received, todo)
-		w.WriteHeader(http.StatusCreated)
-		fmt.Fprintf(w, `{"id":%q,"type":"todo","title":%q}`, fakeTodoID, todo.Title)
-	}))
-	t.Cleanup(fake.server.Close)
-	return fake
+		next.ServeHTTP(w, r)
+	})
 }
 
 type testService struct {
@@ -67,27 +94,51 @@ type testService struct {
 	store     *Store
 	server    *httptest.Server
 	noteboard *fakeNoteboard
+	// caller is who call acts as; nil sends no caller.
+	caller *ownership.Caller
+}
+
+// as is the same service called as caller.
+func (s *testService) as(caller ownership.Caller) *testService {
+	copied := *s
+	copied.caller = &caller
+	return &copied
+}
+
+// withoutCaller is the same service called with no caller on the request.
+func (s *testService) withoutCaller() *testService {
+	copied := *s
+	copied.caller = nil
+	return &copied
+}
+
+// newTestDatabase gives the test a Postgres database of its own holding the
+// module, migrated (postgresstorage/postgrestest), and the module's pool on it.
+func newTestDatabase(t *testing.T) *sql.DB {
+	t.Helper()
+	module, err := Module()
+	if err != nil {
+		t.Fatalf("module: %v", err)
+	}
+	database := postgrestest.NewDatabase(t, module)
+	return database.Open(module)
 }
 
 func newTestServiceWithRegistry(t *testing.T, registry *EntityTypeRegistry) *testService {
 	t.Helper()
-	noteboard := newFakeNoteboard(t)
-	store, err := Open(t.TempDir(), registry, NewNoteboardClient(noteboard.server.URL))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { store.Close() })
+	noteboard := &fakeNoteboard{}
+	store := New(newTestDatabase(t), registry, noteboard)
 	mux := http.NewServeMux()
 	RegisterHandlers(mux, store)
-	server := httptest.NewServer(mux)
+	server := httptest.NewServer(withTestCaller(mux))
 	t.Cleanup(server.Close)
-	return &testService{t: t, store: store, server: server, noteboard: noteboard}
+	return &testService{t: t, store: store, server: server, noteboard: noteboard, caller: &alice}
 }
 
 func newTestService(t *testing.T) *testService {
 	t.Helper()
 	registry := NewStaticEntityTypeRegistry(testRegistryRows)
-	if err := registry.Refresh(); err != nil {
+	if err := registry.Refresh(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	return newTestServiceWithRegistry(t, registry)
@@ -113,6 +164,14 @@ func (s *testService) call(method, path string, body any, out any) int {
 		s.t.Fatal(err)
 	}
 	request.Header.Set("Content-Type", "application/json")
+	if s.caller == nil {
+		request.Header.Set(noCallerHeader, "1")
+	} else {
+		request.Header.Set(callerPrincipalHeader, s.caller.PrincipalID)
+		if s.caller.SeesEveryOwner {
+			request.Header.Set(callerAdministratorHeader, "1")
+		}
+	}
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		s.t.Fatal(err)
@@ -239,7 +298,7 @@ func TestMentionsAreTypedFromTheRegistryAndRewrittenOnEveryWrite(t *testing.T) {
 	}
 	want := map[string]string{
 		"person_000012":                        "person",
-		"3F2A9C1E-7B4D-4E8A-9C6F-0A1B2C3D4E5F": "note", // patterns match case-insensitively, as dash's resolver does
+		"3F2A9C1E-7B4D-4E8A-9C6F-0A1B2C3D4E5F": "note", // patterns match case-insensitively, as a resolver does
 		"thing_1":                              "",     // no registry type claims it
 		"twin_7":                               "",     // two types claim it; the reader decides, not this store
 	}
@@ -286,13 +345,13 @@ func TestBacklinksListLiveEntriesMentioningARef(t *testing.T) {
 
 func TestMentionsStoredBeforeTheRegistryCouldBeReadAreTypedAfterward(t *testing.T) {
 	failing := true
-	registry := &EntityTypeRegistry{fetch: func() ([]EntityTypeRow, error) {
+	registry := NewEntityTypeRegistry(func(context.Context) ([]EntityTypeRow, error) {
 		if failing {
 			return nil, errors.New("reference-store unreachable")
 		}
 		return testRegistryRows, nil
-	}}
-	if err := registry.Refresh(); err == nil {
+	})
+	if err := registry.Refresh(context.Background()); err == nil {
 		t.Fatal("the failing registry read succeeded")
 	}
 	service := newTestServiceWithRegistry(t, registry)
@@ -307,10 +366,10 @@ func TestMentionsStoredBeforeTheRegistryCouldBeReadAreTypedAfterward(t *testing.
 		t.Fatalf("with no registry the mention was typed %q", entry.Mentions[0].EntityType)
 	}
 	failing = false
-	if err := registry.Refresh(); err != nil {
+	if err := registry.Refresh(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if typed, err := service.store.BackfillMentionTypes(); err != nil || typed != 1 {
+	if typed, err := service.store.BackfillMentionTypes(context.Background()); err != nil || typed != 1 {
 		t.Fatalf("BackfillMentionTypes = %d, %v; want 1", typed, err)
 	}
 	var fetched Entry
@@ -326,7 +385,7 @@ func TestMentionsStoredBeforeTheRegistryCouldBeReadAreTypedAfterward(t *testing.
 
 func TestARegistryWithAPatternThatDoesNotCompileIsRefusedWhole(t *testing.T) {
 	registry := NewStaticEntityTypeRegistry([]EntityTypeRow{{Type: "bad", IDPatterns: []string{`(`}}})
-	if err := registry.Refresh(); err == nil || !strings.Contains(err.Error(), "does not compile") {
+	if err := registry.Refresh(context.Background()); err == nil || !strings.Contains(err.Error(), "does not compile") {
 		t.Fatalf("Refresh = %v, want a refusal naming the pattern", err)
 	}
 }
@@ -620,7 +679,7 @@ func TestImportIsIdempotentBySourceAndSourceRef(t *testing.T) {
 }
 
 func TestPromoteTodoCreatesANoteboardTodoAndLinksTheLine(t *testing.T) {
-	service := newTestService(t)
+	service := newTestService(t).as(aliceAdministrator)
 	entry := service.mustCreate(EntryInput{Kind: "journal", Body: "Today\n\n  * [ ] call [the] plumber\n- [x] done already\n- [ ] [linked](ref:" + fakeTodoID + ")\nplain line"})
 
 	var result PromoteTodoResult
@@ -638,7 +697,7 @@ func TestPromoteTodoCreatesANoteboardTodoAndLinksTheLine(t *testing.T) {
 		t.Fatalf("noteboard received %d todos", len(service.noteboard.received))
 	}
 	todo := service.noteboard.received[0]
-	if todo.Type != "todo" || todo.Title != "call [the] plumber" || len(todo.Links) != 1 || todo.Links[0] != entry.ID ||
+	if todo.Title != "call [the] plumber" || len(todo.Links) != 1 || todo.Links[0] != entry.ID ||
 		!strings.Contains(todo.Body, entry.ID) {
 		t.Errorf("noteboard was sent %+v", todo)
 	}
@@ -680,9 +739,9 @@ func TestPromoteTodoCreatesANoteboardTodoAndLinksTheLine(t *testing.T) {
 }
 
 func TestPromoteTodoLeavesTheEntryAloneWhenNoteboardFails(t *testing.T) {
-	service := newTestService(t)
+	service := newTestService(t).as(aliceAdministrator)
 	entry := service.mustCreate(EntryInput{Kind: "journal", Body: "- [ ] water plants"})
-	service.noteboard.failWith = http.StatusInternalServerError
+	service.noteboard.fail = true
 	var answer map[string]string
 	if status := service.call(http.MethodPost, "/entries/"+entry.ID+"/promote-todo", `{"line":1}`, &answer); status != http.StatusBadGateway {
 		t.Fatalf("promote-todo with noteboard down = %d %v, want 502", status, answer)
@@ -705,7 +764,8 @@ func TestHealthCountsAndUnknownEntries(t *testing.T) {
 	if health.Counts != want || health.Status != "ok" {
 		t.Errorf("health = %+v, want counts %+v", health, want)
 	}
-	for _, path := range []string{"/entries/entry_999999", "/entries/entry_999999/revisions", "/published/nothing"} {
+	for _, path := range []string{"/entries/entry_999999", "/entries/entry_999999/revisions", "/published/nothing",
+		"/entries/entry_1", "/entries/not-an-id", "/timeline-items/timeline_item_00001", "/timeline-items/entry_000001"} {
 		if status := service.call(http.MethodGet, path, nil, nil); status != http.StatusNotFound {
 			t.Errorf("GET %s = %d, want 404", path, status)
 		}

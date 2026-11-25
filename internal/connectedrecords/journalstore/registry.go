@@ -1,17 +1,16 @@
 package journalstore
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
-	"net/http"
 	"regexp"
 	"sync"
 	"time"
 )
 
-// EntityTypeRow is one row of reference-store's GET /types, the fields this
-// service reads. reference-store owns the list; this is a copy for
-// classifying ids, never a second list.
+// EntityTypeRow is one row of reference-store's list of types, the fields this
+// store reads. reference-store owns the list; this is a copy for classifying
+// ids, never a second list.
 type EntityTypeRow struct {
 	Type       string   `json:"type"`
 	Service    string   `json:"service"`
@@ -25,14 +24,14 @@ type compiledEntityType struct {
 }
 
 // EntityTypeRegistry classifies a ref by the id patterns in reference-store's
-// list, anchored and case-insensitive, the way dash's resolver reads them.
+// list, anchored and case-insensitive, the way a resolver reads them.
 //
 // It never blocks a write. Until the first read succeeds it classifies
 // nothing, and a mention is stored with an empty type; Store.BackfillMention
 // Types fills those in after a later read. A failed read keeps the last good
 // copy and is reported by Status, which GET /health serves.
 type EntityTypeRegistry struct {
-	fetch func() ([]EntityTypeRow, error)
+	fetch func(ctx context.Context) ([]EntityTypeRow, error)
 
 	mutex     sync.RWMutex
 	types     []compiledEntityType
@@ -40,38 +39,24 @@ type EntityTypeRegistry struct {
 	lastError error
 }
 
-// NewReferenceStoreEntityTypeRegistry reads the list from reference-store,
-// whose GET /types is open to any caller. Nothing is read until Refresh.
-func NewReferenceStoreEntityTypeRegistry(referenceStoreURL string) *EntityTypeRegistry {
-	client := &http.Client{Timeout: 10 * time.Second}
-	return &EntityTypeRegistry{fetch: func() ([]EntityTypeRow, error) {
-		response, err := client.Get(referenceStoreURL + "/types")
-		if err != nil {
-			return nil, fmt.Errorf("reference-store's list of types unreachable: %w", err)
-		}
-		defer response.Body.Close()
-		if response.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("reference-store's list of types answered %d", response.StatusCode)
-		}
-		var answer struct {
-			Types []EntityTypeRow `json:"types"`
-		}
-		if err := json.NewDecoder(response.Body).Decode(&answer); err != nil {
-			return nil, fmt.Errorf("reference-store's list of types unparseable: %w", err)
-		}
-		return answer.Types, nil
-	}}
+// NewEntityTypeRegistry reads the list with fetch, which the server gives
+// from reference-store in the same process. Nothing is read until Refresh.
+func NewEntityTypeRegistry(fetch func(ctx context.Context) ([]EntityTypeRow, error)) *EntityTypeRegistry {
+	if fetch == nil {
+		panic("journalstore.NewEntityTypeRegistry: fetch is nil")
+	}
+	return &EntityTypeRegistry{fetch: fetch}
 }
 
 // NewStaticEntityTypeRegistry classifies by rows given in code. For tests.
 func NewStaticEntityTypeRegistry(rows []EntityTypeRow) *EntityTypeRegistry {
-	return &EntityTypeRegistry{fetch: func() ([]EntityTypeRow, error) { return rows, nil }}
+	return NewEntityTypeRegistry(func(context.Context) ([]EntityTypeRow, error) { return rows, nil })
 }
 
 // Refresh reads the registry again. On failure the previous copy stays in use
 // and the error is kept for Status.
-func (r *EntityTypeRegistry) Refresh() error {
-	rows, err := r.fetch()
+func (r *EntityTypeRegistry) Refresh(ctx context.Context) error {
+	rows, err := r.fetch(ctx)
 	if err == nil {
 		var compiled []compiledEntityType
 		compiled, err = compileEntityTypes(rows)

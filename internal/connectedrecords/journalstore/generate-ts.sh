@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Render this repo's Go wire types to TypeScript with tygo (config: tygo.yaml).
+# Render this package's Go wire types to TypeScript with tygo (config: tygo.yaml).
 # The Go structs are the source of truth. Each output file named in tygo.yaml
 # gets a header recording the commit it was generated from.
 set -euo pipefail
 cd "$(dirname "$0")"
 export PATH="$HOME/.local/share/mise/shims:$(go env GOBIN 2>/dev/null || echo "$HOME/go/bin"):$PATH"
 
-MODULE=$(awk '/^module /{print $2}' go.mod)
+MODULE=$(go list .)
 COMMIT=$(git rev-parse HEAD)
 SHORT=$(git rev-parse --short HEAD)
 DIRTY=""

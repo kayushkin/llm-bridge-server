@@ -1,16 +1,20 @@
 # journal-store
 
-A small Go service that keeps your own writing: journal entries, blog posts,
-notes, notes about one person or thing, timelines, and transcripts of
-conversations you took part in. Everything is private by default and lives in
-SQLite behind a loopback HTTP API.
+Keeps your own writing: journal entries, blog posts, notes, notes about one
+person or thing, timelines, and transcripts of conversations you took part in.
+Everything is private by default.
 
-It is one of the stores of the [llm-bridge](https://github.com/kayushkin/llm-bridge)
-ecosystem. Each entry has an id like `entry_000001`, so an agent's note, a
-timeline or another store can cite it, and
-[bridge-ui](https://github.com/kayushkin/bridge-ui) draws that id as a chip,
-using the TypeScript types in `ts/`. It works on its own too: it is a plain
-HTTP API.
+It runs inside [llm-bridge-server](https://github.com/kayushkin/llm-bridge-server),
+which serves its routes at `/journal-store/` and keeps its records in Postgres
+(schema `journal`, role `journal_module`). Until then it was a service of its
+own over SQLite; `ImportStandaloneDatabase` moves such a database in. Each
+entry has an id like `entry_000001`, so an agent's note, a timeline or another
+store can cite it, and [bridge-ui](https://github.com/kayushkin/bridge-ui)
+draws that id as a chip, using the TypeScript types in `ts/`.
+
+Every record has an owner, the principal who keeps it. A person reaches only
+their own records; an administrator reaches everyone's, or one person's with
+`?owner_principal_id=`. A caller that names no principal gets nothing.
 
 ## What it does
 
@@ -28,65 +32,24 @@ HTTP API.
 - **Timelines.** A timeline is an entry whose dated items cite the entries,
   messages or notes they rest on; several timelines can be merged in time
   order.
-- **Import** notes and chat archives: a directory of exported notes (`.txt`,
-  `.md`, `.docx`, `.pdf`, with Samsung Notes file names understood), a NirSoft
-  SkypeLogView export, a Discord data package's direct messages, and a
-  Facebook export's Messenger chats and posts. An import matches entries by
+- **Import** notes and posts: a directory of exported notes (`.txt`, `.md`,
+  `.docx`, `.pdf`, with Samsung Notes file names understood) and a Facebook
+  export's posts. An import matches entries by
   where they came from, so running it again changes only what changed, and it
   never touches what you decided about publishing.
 - **Promote a todo.** A checklist line in an entry can become a
   [noteboard](https://github.com/kayushkin/noteboard) todo, and the line then
-  links to it.
+  links to it. noteboard is open to every agent on the host, so only an
+  administrator may do this, and only with their own entries.
 
 [`CONTRACT.md`](CONTRACT.md) lists every route and field.
 
-## Build
-
-journal-store reads its settings through llm-bridge's `servicesettings`
-package, and `go.mod` points at a checkout beside this one. The
-`sqlite_fts5` build tag is required: without it the binary builds and then
-dies at start with `no such module: fts5`.
-
-```sh
-git clone https://github.com/kayushkin/llm-bridge
-git clone https://github.com/kayushkin/journal-store
-cd journal-store
-go test -tags sqlite_fts5 ./...
-go build -tags sqlite_fts5 ./cmd/...
-```
-
-`make check` runs gofmt, vet, the tests and the build with the tag set.
-
-## Run
-
-```sh
-./journal-store   # listens on 127.0.0.1:8322
-curl -s localhost:8322/health
-```
-
-| Variable | Default | |
-|---|---|---|
-| `JOURNAL_STORE_ADDR` | `127.0.0.1:8322` | listen address |
-| `JOURNAL_STORE_DATA_DIR` | `~/.config/journal-store` | holds `journal-store.db` (directory 0700, file 0600) |
-| `JOURNAL_STORE_NOTEBOARD_URL` | `http://localhost:8191` | where promote-todo creates todos |
-| `JOURNAL_STORE_REFERENCE_STORE_URL` | `http://127.0.0.1:8343` | where the list of reference types is read (`GET /types`, open) |
-
-`GET /settings` describes every setting and the value in force, never a
-secret's value. A set `JOURNAL_STORE_` variable that is not in this table
-stops the start, so a misspelling cannot pass silently.
-
-**There is no authentication.** Keep it on loopback, as the default does, and
-put a front door that checks who is asking in front of it if anyone else
-should reach it.
-
-To run it as a systemd user service, copy the binary to `~/bin` and
-`journal-store.service` to `~/.config/systemd/user/`, then
-`systemctl --user enable --now journal-store`.
-
 ## Use it
 
+Through llm-bridge-server, as a signed-in person (the server decides who the
+request acts as; `$B` is the server's address plus `/journal-store`):
+
 ```sh
-B=http://127.0.0.1:8322
 curl -s -X POST $B/entries -H 'Content-Type: application/json' \
   -d '{"kind":"journal","body":"Lunch with [Carol](ref:person_000012).\n\n- [ ] book the dentist"}'
 curl -s "$B/entries?q=lunch"
@@ -101,27 +64,35 @@ curl -s -X POST $B/entries -d '{"kind":"post","title":"Hello, world","body":"…
 curl -s $B/published/hello-world
 ```
 
+## Test
+
+The tests run against a throwaway Postgres, from the repository root:
+
+```sh
+export POSTGRESTEST_ADMINISTRATOR_URL="$(scripts/test-postgres.sh start)"
+go test ./internal/connectedrecords/journalstore/...
+```
+
 ## Importing
 
 Every importer writes private entries, takes `-dry-run` to ask the store what
-it would do without writing, and `-h` for its flags.
+it would do without writing, and `-h` for its flags. They are HTTP clients:
+by default they call the standalone store's old address,
+`http://127.0.0.1:8322`, and a URL flag (`-store-url` or `-journal-store-url`)
+points them elsewhere.
 
 ```sh
 journal-import-files -time-zone Europe/Lisbon -dry-run <directory>
-journal-import-skype -log <export.txt.gz> -time-zone America/Chicago -self <your skype name>
-journal-import-discord-package -messages <package>/Messages -self-id <your id> -self-name <name> \
-    -time-zones 'Europe/Lisbon,2021-07-11=America/Chicago'
-journal-import-facebook-messages -messages <export>/your_facebook_activity/messages \
-    -self-name '<your name>' -time-zones Europe/Lisbon
 journal-import-facebook-posts -activity <export>/your_facebook_activity -self-name '<your name>'
+journal-point-transcripts-at-messages -dry-run
+journal-timeline-calendar-events -h
+journal-timeline-discord-events -h
 ```
 
-`-time-zones` says where you lived, so a message is filed under the day it was
-where you were: the first zone, then `day=zone` for each move.
 `journal-import-files` reads `.txt`, `.md`, `.docx` and (with `pdftotext`
 installed) `.pdf`; a file that should read and does not stops the run before
-anything is written. The chat importers keep direct messages and small group
-chats only.
+anything is written. The last three place records from message-store,
+calendar-store and discord-signup-store on transcripts and timelines.
 
 ## License
 

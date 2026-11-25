@@ -36,6 +36,7 @@ import (
 	"time"
 
 	journalstore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/journalstore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/journalstore/internal/importclient"
 )
 
 var client = &http.Client{Timeout: time.Minute}
@@ -535,7 +536,7 @@ func (g guildTimelines) Set(value string) error {
 }
 
 func main() {
-	journalURL := flag.String("journal-store-url", "http://"+journalstore.DefaultListenAddress, "journal-store's base URL")
+	journalURL := flag.String("journal-store-url", importclient.DefaultStoreURL, "journal-store's base URL")
 	signupURL := flag.String("discord-signup-store-url", "", "discord-signup-store's base URL (required)")
 	peopleURL := flag.String("people-store-url", "", "people-store's base URL (required)")
 	operatorDiscordID := flag.String("operator-discord-id", "", "the Discord user id whose events these are (required)")

@@ -26,6 +26,7 @@ import (
 	"time"
 
 	journalstore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/journalstore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/journalstore/internal/importclient"
 )
 
 // MovedTag marks an entry whose body now points at message-store.
@@ -114,7 +115,7 @@ func pointerBody(day conversationDay, chat conversation, oldBody string) string 
 }
 
 func main() {
-	journalURL := flag.String("journal-store-url", "http://"+journalstore.DefaultListenAddress, "journal-store's base URL")
+	journalURL := flag.String("journal-store-url", importclient.DefaultStoreURL, "journal-store's base URL")
 	messageURL := flag.String("message-store-url", "http://127.0.0.1:8337", "message-store's base URL")
 	source := flag.String("source", "", "only entries imported under this source (skype, discord-package…); empty: every transcript")
 	dryRun := flag.Bool("dry-run", false, "count what would change and write nothing")

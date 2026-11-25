@@ -27,7 +27,7 @@ import (
 )
 
 func main() {
-	storeURL := flag.String("store-url", "http://"+journalstore.DefaultListenAddress, "journal-store's base URL")
+	storeURL := flag.String("store-url", importclient.DefaultStoreURL, "journal-store's base URL")
 	source := flag.String("source", "samsung-notes", "the source every entry is imported under; also its one tag")
 	dryRun := flag.Bool("dry-run", false, "print what would be imported and ask the store what it would do, writing nothing")
 	batchSize := flag.Int("batch", 100, "entries per POST /imports request")

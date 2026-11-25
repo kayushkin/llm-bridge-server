@@ -1,7 +1,7 @@
--- journal-store schema. Create-only and idempotent: Open() runs this whole file
--- on every boot. A new column goes in an additive migration in store.go, never
--- in an edit to a CREATE TABLE below: an edited CREATE TABLE does nothing to a
--- database that already exists.
+-- The live schema of the standalone journal-store's SQLite database: its
+-- schema.sql as it stood when the store moved into llm-bridge-server. Its
+-- Open() ran only this file, with no migrations after it. The import test
+-- builds a made-up standalone file from it.
 
 PRAGMA foreign_keys = ON;
 

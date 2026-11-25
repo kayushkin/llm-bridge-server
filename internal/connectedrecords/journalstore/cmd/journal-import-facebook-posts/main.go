@@ -29,7 +29,7 @@ func main() {
 	peoplePath := flag.String("people", "", "JSON object mapping names as the export writes them to people-store ids, drawn as chips")
 	sourceEntry := flag.String("source-entry", "", "the journal-store entry that describes the export, linked from every post")
 	source := flag.String("source", "facebook-posts", "the import source every post is filed under")
-	storeURL := flag.String("store-url", "http://"+journalstore.DefaultListenAddress, "journal-store's base URL")
+	storeURL := flag.String("store-url", importclient.DefaultStoreURL, "journal-store's base URL")
 	dryRun := flag.Bool("dry-run", false, "ask the store what it would do and write nothing")
 	batchSize := flag.Int("batch", 100, "posts per POST /imports request")
 	flag.Parse()

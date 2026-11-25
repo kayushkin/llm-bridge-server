@@ -13,6 +13,12 @@ import (
 	journalstore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/journalstore"
 )
 
+// DefaultStoreURL is the journal-store the commands call when no URL flag is
+// given: where the standalone store listened, so a command behaves as it did
+// before the store moved into llm-bridge-server. Pass the URL flag to call it
+// elsewhere.
+const DefaultStoreURL = "http://127.0.0.1:8322"
+
 // Post sends one batch. With dryRun the store counts and writes nothing.
 func Post(storeURL string, entries []journalstore.ImportEntry, dryRun bool) (*journalstore.ImportResult, error) {
 	payload, err := json.Marshal(journalstore.ImportRequest{Entries: entries})

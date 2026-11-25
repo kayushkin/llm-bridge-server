@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,24 +12,42 @@ import (
 	"time"
 
 	journalstore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/journalstore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
+	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 )
 
 // The whole path from a directory of made-up files to stored entries, run
 // twice to show a second run changes nothing.
+// noNoteboard is a noteboard the import never calls.
+type noNoteboard struct{}
+
+func (noNoteboard) CreateTodo(context.Context, string, string, []string, []string) (string, error) {
+	return "", fmt.Errorf("%w: the import test has no noteboard", journalstore.ErrUpstream)
+}
+
+// testOwner is the made-up principal the store is called as, as the server
+// would call it for a signed-in person.
+const testOwner = "principal_000001"
+
 func TestImportingADirectoryTwiceCreatesThenSkips(t *testing.T) {
+	ctx := context.Background()
 	registry := journalstore.NewStaticEntityTypeRegistry(nil)
-	if err := registry.Refresh(); err != nil {
+	if err := registry.Refresh(ctx); err != nil {
 		t.Fatal(err)
 	}
-	store, err := journalstore.Open(t.TempDir(), registry, journalstore.NewNoteboardClient("http://127.0.0.1:1"))
+	module, err := journalstore.Module()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	database := postgrestest.NewDatabase(t, module)
+	store := journalstore.New(database.Open(module), registry, noNoteboard{})
 	mux := http.NewServeMux()
 	journalstore.RegisterHandlers(mux, store)
-	server := httptest.NewServer(mux)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mux.ServeHTTP(w, r.WithContext(ownership.ContextWithCaller(r.Context(), ownership.Caller{PrincipalID: testOwner})))
+	}))
 	defer server.Close()
+	scope := ownership.OwnedBy(testOwner)
 
 	directory := t.TempDir()
 	for name, content := range map[string]string{"a.txt": "Groceries\nbread", "sub/b.md": "# Idea\n2020-05-06\nbuild a shed", "c.jpg": "x"} {
@@ -45,7 +65,7 @@ func TestImportingADirectoryTwiceCreatesThenSkips(t *testing.T) {
 	if !strings.Contains(output.String(), "would have: created 2, updated 0, unchanged 0; 1 files not read") {
 		t.Errorf("dry run said:\n%s", output.String())
 	}
-	if entries, _ := store.List(journalstore.Filter{}); len(entries) != 0 {
+	if entries, _ := store.List(ctx, scope, journalstore.Filter{}); len(entries) != 0 {
 		t.Fatalf("the dry run wrote %d entries", len(entries))
 	}
 
@@ -56,7 +76,7 @@ func TestImportingADirectoryTwiceCreatesThenSkips(t *testing.T) {
 	if !strings.Contains(output.String(), "imported: created 2, updated 0, unchanged 0") {
 		t.Errorf("first run said:\n%s", output.String())
 	}
-	entries, err := store.List(journalstore.Filter{Tag: "samsung-notes"})
+	entries, err := store.List(ctx, scope, journalstore.Filter{Tag: "samsung-notes"})
 	if err != nil || len(entries) != 2 {
 		t.Fatalf("after the first run: %d entries, %v", len(entries), err)
 	}
