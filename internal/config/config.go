@@ -128,14 +128,6 @@ type Config struct {
 	SignInDiscordApplicationID            string
 	SignInDiscordClientSecretCredentialID string
 	SignInDiscordRedirectURL              string
-	// MailstackURL is the base URL of mailstack, asked for the sender and
-	// subject of the mail behind a card when question triage drafts a reply
-	// to the customer. Configured via LLMBRIDGE_MAILSTACK_URL. MailstackToken
-	// is its bearer token, via LLMBRIDGE_MAILSTACK_TOKEN; mailstack answers
-	// 401 without one, so an empty token switches the lookup off and every
-	// draft is minted with an empty To rather than a guessed address.
-	MailstackURL   string
-	MailstackToken string
 	// HealthcheckURL is the base URL of healthcheck, whose /api/status is the
 	// list of services the Services page shows and the only source of their
 	// up/down state. Configured via LLMBRIDGE_HEALTHCHECK_URL.
@@ -453,8 +445,6 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		ChatLinksNATSURL:                      settings.String("chat_links.nats_url"),
 		MultichatURL:                          settings.String("multichat.url"),
 		PeopleStoreURL:                        settings.String("people_store.url"),
-		MailstackURL:                          settings.String("mailstack.url"),
-		MailstackToken:                        settings.String("mailstack.token"),
 		HealthcheckURL:                        settings.String("healthcheck.url"),
 		SnapshotStoreDB:                       settings.String("snapshot_store.database_path"),
 		SnapshotStoreGit:                      settings.String("snapshot_store.git_path"),
@@ -501,7 +491,6 @@ func (c *Config) GuardedAddresses() map[string]string {
 		"HookStoreDB":      c.HookStoreDB,
 		"BridgePrefsPath":  c.BridgePrefsPath,
 		"ConformancePath":  c.ConformancePath,
-		"MailstackURL":     c.MailstackURL,
 		"HealthcheckURL":   c.HealthcheckURL,
 		"UsageStoreURL":    c.UsageStoreURL,
 		"SnapshotStoreDB":  c.SnapshotStoreDB,

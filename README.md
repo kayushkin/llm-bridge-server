@@ -174,7 +174,7 @@ curl -s -c jar -X POST localhost:8160/auth/demo-login -H 'Content-Type: applicat
 
 ### Store proxies
 
-`/kanban/<rest>` is kanban-store's `/api/<rest>` and `/kanban-store/<rest>` its `/<rest>`. kanban-store runs in this process on its Postgres module (`internal/tasktracking/kanbanstore`), and reads its caller from the request context: the verified principal, narrowed by its board grants, or the internal service (this server's service token naming nobody), unrestricted. No header names the caller, so a forged `X-Principal-Id` or kanban-store service token names nobody. `llm-bridge-server import-kanban-store -sqlite <file>` copies a standalone kanban-store's database into the module. `/grant-store/<rest>` is grant-store's `/<rest>`, in this process the same way. `/mailstack/<rest>` and `/reference-store/<rest>` are still proxied: each deletes the caller's `X-Principal-Id`, store tokens, service token, `Authorization` header and cookie, then sets `X-Principal-Id` to the verified principal.
+`/kanban/<rest>` is kanban-store's `/api/<rest>` and `/kanban-store/<rest>` its `/<rest>`. kanban-store runs in this process on its Postgres module (`internal/tasktracking/kanbanstore`), and reads its caller from the request context: the verified principal, narrowed by its board grants, or the internal service (this server's service token naming nobody), unrestricted. No header names the caller, so a forged `X-Principal-Id` or kanban-store service token names nobody. `llm-bridge-server import-kanban-store -sqlite <file>` copies a standalone kanban-store's database into the module. `/grant-store/<rest>` is grant-store's `/<rest>`, in this process the same way. `/mailstack/<rest>` is mailstack's `/<rest>`, in this process on its Postgres module (`internal/mail/mailstack`, module `mail`) the same way: the internal service unrestricted, a principal narrowed to its `can_read_mail` and `can_import_mail` grants and the messages its viewable cards link, and `POST /mailstack/api/ingress/deliveries` open to a sender with an ingress credential. Gmail, Outlook and IMAP accounts reach their providers only while `mailstack.provider_connections.enabled` is on. `llm-bridge-server import-mailstack -accounts-sqlite <file> [-local-mail-sqlite <file>]` copies a standalone mailstack in. `/reference-store/<rest>` runs in this process too.
 
 ### Session agent tokens
 
@@ -408,7 +408,8 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `POST` | `/auth/sessions/{id}/revoke` | End a login session, with a reason | principal, own logins only |
 | `*` | `/kanban-store/` | kanban-store at its root (`/api/…`, `/health`), as the caller | principal or session agent |
 | `*` | `/kanban/` | kanban-store `/api/…`, as the caller | principal or session agent |
-| `*` | `/mailstack/` | mailstack `/…`, as the caller, checked against their mail grants and tickets | principal or session agent |
+| `*` | `/mailstack/` | mailstack `/…`, in this process, as the caller, checked against their mail grants and tickets | principal or session agent |
+| `POST` | `/mailstack/api/ingress/deliveries` | Pushed mail delivery into mailstack's local accounts, with an ingress credential and no login | anyone |
 | `GET` | `/self` | Who the request acts as: its principal and whether it is an administrator, or the internal service | principal |
 | `GET` | `/service-principal-tokens` | Every service principal token's record, revoked or not; never a token | operator |
 | `POST` | `/service-principal-tokens` | Issue a token for a service principal (principal-store kind `service`); the token is answered once and kept as its SHA-256 | operator |

@@ -49,11 +49,10 @@ const AllowInTestsEnvironmentVariable = "LLMBRIDGE_ALLOW_PRODUCTION_IN_TESTS"
 
 // Addresses of the services this gateway talks to over HTTP.
 const (
-	ListenAddr  = ":8160"
+	ListenAddr = ":8160"
 	// PinchtabURL is where tool-store's in-process browser tool finds
 	// PinchTab with nothing set.
 	PinchtabURL    = "http://localhost:9867"
-	MailstackURL   = "http://localhost:8195"
 	HealthcheckURL = "http://localhost:8099"
 	UsageStoreURL  = "http://localhost:8185"
 	// kanban-store, principal-store and grant-store run in this process, so
@@ -152,7 +151,6 @@ var EnvironmentVariableByConfigField = map[string]string{
 	"HookStoreDB":      "LLMBRIDGE_HOOK_DB",
 	"BridgePrefsPath":  "LLMBRIDGE_BRIDGE_PREFS",
 	"ConformancePath":  "LLMBRIDGE_CONFORMANCE_PATH",
-	"MailstackURL":     "LLMBRIDGE_MAILSTACK_URL",
 	"HealthcheckURL":   "LLMBRIDGE_HEALTHCHECK_URL",
 	"UsageStoreURL":    "LLMBRIDGE_USAGE_STORE_URL",
 	"SnapshotStoreDB":  "LLMBRIDGE_SNAPSHOT_DB",
@@ -170,7 +168,6 @@ func AddressByConfigField() map[string]string {
 		"HookStoreDB":      HookStoreDatabasePath(),
 		"BridgePrefsPath":  BridgePreferencesPath(),
 		"ConformancePath":  ConformancePath(),
-		"MailstackURL":     MailstackURL,
 		"HealthcheckURL":   HealthcheckURL,
 		"UsageStoreURL":    UsageStoreURL,
 		"SnapshotStoreDB":  SnapshotStoreDatabasePath(),

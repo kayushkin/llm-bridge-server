@@ -58,6 +58,13 @@ func ContextWithCaller(ctx context.Context, caller Caller) context.Context {
 	return context.WithValue(ctx, callerContextKey{}, caller)
 }
 
+// CallerIsInternalService reports whether ctx names the internal service as
+// its caller.
+func CallerIsInternalService(ctx context.Context) bool {
+	caller, named := ctx.Value(callerContextKey{}).(Caller)
+	return named && caller.InternalService
+}
+
 // callerOf is the request's caller; false when the mounting server named none.
 func callerOf(r *http.Request) (Caller, bool) {
 	caller, named := r.Context().Value(callerContextKey{}).(Caller)

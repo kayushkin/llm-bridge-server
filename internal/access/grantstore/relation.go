@@ -50,6 +50,12 @@ const (
 	// RelationCanSeeReferences lets a principal see records drawn as
 	// reference chips: every record of a type, or one record.
 	RelationCanSeeReferences = "can_see_references"
+	// RelationCanReadMail lets a principal read the mail of one mailstack
+	// account; RelationCanImportMail also lets it import into the account
+	// and change its messages, and includes can_read_mail. mailstack reads
+	// both.
+	RelationCanReadMail   = "can_read_mail"
+	RelationCanImportMail = "can_import_mail"
 )
 
 // AllResources is the resource_id that names every resource of the grant's
@@ -157,6 +163,20 @@ var Relations = []RelationDefinition{
 		ResourceTypes:       []string{ResourceTypeAgent, ResourceTypeInstance, ResourceTypeMachine, ResourceTypeSkill, ResourceTypeTool},
 		Enforced:            false,
 		Description:         "advisory: what this principal usually works with; a card's dispatch picker reads it to put an assignee's instances first, and nothing refuses anything because of it",
+	},
+	{
+		Name:                RelationCanReadMail,
+		allResourcesRefusal: "mailstack reads a mail grant for one account at a time, and every account's mail at once is not a grant it serves",
+		ResourceTypes:       []string{ResourceTypeMailAccount},
+		Enforced:            true,
+		Description:         "may read the folders, threads and messages of this mailstack account; mailstack enforces it, an administrator needs none, and holding none reads only the messages a ticket the principal may view links",
+	},
+	{
+		Name:                RelationCanImportMail,
+		allResourcesRefusal: "mailstack reads a mail grant for one account at a time, and every account's mail at once is not a grant it serves",
+		ResourceTypes:       []string{ResourceTypeMailAccount},
+		Enforced:            true,
+		Description:         "may import mail into this mailstack account and change its messages, and includes can_read_mail; mailstack enforces it",
 	},
 }
 

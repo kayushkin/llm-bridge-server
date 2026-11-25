@@ -153,6 +153,19 @@ func NewServer(parts ServerParts) *Server {
 
 func (s *Server) Handler() http.Handler { return s.mux }
 
+// AccountExists reports whether mailstack has an account with this id, for
+// grant-store's check that a mail_account grant names one.
+func (s *Server) AccountExists(accountID string) (bool, error) {
+	_, err := s.accounts.Get(accountID)
+	if errors.Is(err, accounts.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

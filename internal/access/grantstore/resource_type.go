@@ -44,6 +44,9 @@ const (
 	// ResourceTypeReference is one record drawn as a reference chip, by the
 	// id written in prose, such as prediction_000012.
 	ResourceTypeReference = "reference"
+	// ResourceTypeMailAccount is one of mailstack's mail accounts, by the id
+	// its GET /api/accounts lists.
+	ResourceTypeMailAccount = "mail_account"
 )
 
 // resourceTypeDefinition is everything this store knows about one resource
@@ -127,6 +130,12 @@ var resourceTypeDefinitions = []resourceTypeDefinition{
 		name:          ResourceTypeReference,
 		owner:         "reference-store",
 		idDescription: "a record's id as it is written in prose, e.g. prediction_000012, that reference-store's POST /resolve finds",
+	},
+	{
+		name:          ResourceTypeMailAccount,
+		owner:         "mailstack",
+		idDescription: "a mailstack account id as GET /mailstack/api/accounts lists it",
+		nameIsNotAnID: "the account's label or address is not accepted: an account's id is what mailstack keys its mail by",
 	},
 }
 

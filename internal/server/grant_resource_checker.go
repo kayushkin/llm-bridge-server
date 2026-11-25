@@ -150,6 +150,8 @@ func (checker inProcessResourceChecker) CheckResourceExists(ctx context.Context,
 		return notFound("reference-store")
 	case grantstore.ResourceTypeBoard:
 		return s.checkKanbanBoardExists(resourceID)
+	case grantstore.ResourceTypeMailAccount:
+		return s.checkMailAccountExists(resourceID)
 	case grantstore.ResourceTypePrincipal:
 		if _, err := checker.principals.Get(ctx, resourceID, false); errors.Is(err, principalstore.ErrNotFound) {
 			return notFound("principal-store")

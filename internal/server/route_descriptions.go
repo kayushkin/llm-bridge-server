@@ -285,7 +285,8 @@ var routeDescriptions = map[string]routeDescription{
 	"POST /admin/identity-bindings/{id}/unlink":                   {routeGroupLogin, "Unlink an identity and revoke its live login sessions"},
 	kanbanProxyMountPrefix + "/":                                  {routeGroupLogin, "kanban-store `/api/…`, as the caller"},
 	kanbanStoreProxyMountPrefix + "/":                             {routeGroupLogin, "kanban-store at its root (`/api/…`, `/health`), as the caller"},
-	mailstackProxyMountPrefix + "/":                               {routeGroupLogin, "mailstack `/…`, as the caller, checked against their mail grants and tickets"},
+	mailstackProxyMountPrefix + "/":                               {routeGroupLogin, "mailstack `/…`, in this process, as the caller, checked against their mail grants and tickets"},
+	mailstackIngressDeliveryPattern:                               {routeGroupLogin, "Pushed mail delivery into mailstack's local accounts, with an ingress credential and no login"},
 
 	// Runners and harness callbacks.
 	"GET /api/runner/ws":                         {routeGroupRunners, "A runner's WebSocket"},

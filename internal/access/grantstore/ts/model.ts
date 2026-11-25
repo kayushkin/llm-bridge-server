@@ -69,6 +69,14 @@ export const RelationCanCallThrough = "can_call_through";
  */
 export const RelationCanSeeReferences = "can_see_references";
 /**
+ * RelationCanReadMail lets a principal read the mail of one mailstack
+ * account; RelationCanImportMail also lets it import into the account
+ * and change its messages, and includes can_read_mail. mailstack reads
+ * both.
+ */
+export const RelationCanReadMail = "can_read_mail";
+export const RelationCanImportMail = "can_import_mail";
+/**
  * AllResources is the resource_id that names every resource of the grant's
  * type, now and later.
  */
@@ -129,6 +137,11 @@ export const ResourceTypeReferenceType = "reference_type";
  * id written in prose, such as prediction_000012.
  */
 export const ResourceTypeReference = "reference";
+/**
+ * ResourceTypeMailAccount is one of mailstack's mail accounts, by the id
+ * its GET /api/accounts lists.
+ */
+export const ResourceTypeMailAccount = "mail_account";
 
 //////////
 // source: server.go
