@@ -65,6 +65,8 @@ Served by `GET /relations`, never hardcoded by a caller:
 | `can_start_sessions_as` | principal | yes (llm-bridge-server) | may start a session that runs as this principal, and drive the sessions it started that way; the session holds that principal's grants, not the starter's. Given to a `service` principal such as orchestratord. No `*` |
 | `can_call_through` | peer_connection | yes (llm-bridge-server) | may see this peer connection and call the connected server through it; read for a principal restricted to its grants |
 | `works_with` | agent, instance, machine, skill, tool | **no** | advisory: what this principal usually works with. A card's dispatch picker reads it to put an assignee's instances first. Nothing refuses anything because of it |
+| `can_read_mail` | mail_account | yes (mailstack) | may read this mail account's folders, threads and messages; holding none reads only the messages a ticket the principal may view links. No `*` |
+| `can_import_mail` | mail_account | yes (mailstack) | may import into this mail account and change its messages; includes `can_read_mail`. No `*` |
 
 **Enforced** means llm-bridge-server reads the relation at session start and
 offers only what it names. As of 2026-09-11 it reads `can_use` for tools: a
@@ -110,7 +112,7 @@ in the order shown.
 
 ### `GET /resource-types`
 
-`["agent","instance","machine","skill","tool","board","operation_type","principal","peer_connection","reference_type","reference"]`.
+`["agent","instance","machine","skill","tool","board","operation_type","principal","peer_connection","reference_type","reference","mail_account"]`.
 
 ### `GET /grants`
 
@@ -191,6 +193,7 @@ would start a session with nothing offered and no explanation.
 | `instance`, `machine` | the mounting server's harness-store, in its own process | harness-store's instance id (`inst-cc-local`) or machine id (`m_localhost`) |
 | `peer_connection`, `operation_type` | the mounting server, in its own process | its peer connection id; the operation type's name |
 | `principal` | principal-store, in the same process | `principal_000001` |
+| `mail_account` | mailstack, in the same process | the account id `GET /mailstack/api/accounts` lists |
 | `skill` | skill-store `GET /skills/{id}` | skill-store's numeric `skills.id` |
 | `tool` | tool-store `GET /tools/{id}` | tool-store's numeric `tools.id` |
 | `board` | kanban-store `GET /api/boards/{id}`, sending `X-Kanban-Store-Service-Token` when set | kanban-store's board id (a uuid) |

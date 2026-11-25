@@ -210,8 +210,6 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "the scheduler, which runs the job a scheduler job action names. It has no default; empty refuses those actions."},
 		{Key: "local_tools.pinchtab_url", EnvironmentVariable: "LLMBRIDGE_LOCAL_TOOLS_PINCHTAB_URL", Kind: wiring, ValueType: text, Default: productiondefaults.PinchtabURL,
 			Description: "Where PinchTab answers. tool-store's in-process browser tool sends every action there; a wrong address makes each browser call report a connection error."},
-		{Key: "mailstack.url", EnvironmentVariable: "LLMBRIDGE_MAILSTACK_URL", Kind: wiring, ValueType: text, Default: productiondefaults.MailstackURL,
-			Description: "mailstack, asked for the sender and subject behind a card when triage drafts a customer reply, and the upstream of the /mailstack/ proxy, which forwards a person's mail reads as X-Principal-Id."},
 		{Key: "healthcheck.url", EnvironmentVariable: "LLMBRIDGE_HEALTHCHECK_URL", Kind: wiring, ValueType: text, Default: productiondefaults.HealthcheckURL,
 			Description: "healthcheck, whose status is the list of services the service inventory shows."},
 		{Key: "entra.tenant_id", EnvironmentVariable: "LLMBRIDGE_ENTRA_TENANT_ID", Kind: wiring, ValueType: text,
@@ -268,8 +266,6 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "Not read: kanban-store runs in this server, and the internal service reaches /kanban/ with this server's own service token. Declared because the shared token file this unit loads still sets it for the standalone kanban-store and its callers, and it gives unrestricted access to that store: so GET /settings says only whether it is set, and no harness child gets it."},
 		{Key: "file_store.service_token", EnvironmentVariable: FileStoreServiceTokenEnvironmentVariable, Kind: secret, ValueType: text,
 			Description: "Not read: file-store runs in this server. Declared because a drop-in may still load the standalone file-store's token file, and that token reads every file the standalone store holds: so GET /settings says only whether it is set, and no harness child gets it."},
-		{Key: "mailstack.token", EnvironmentVariable: "LLMBRIDGE_MAILSTACK_TOKEN", Kind: secret, ValueType: text,
-			Description: "mailstack's bearer token, presented on the sender lookup and on every /mailstack/ proxy request. Unset switches the sender lookup off, a customer reply draft carries no recipient, and /mailstack/ answers 503."},
 		{Key: "database.postgres_url", EnvironmentVariable: PostgresURLEnvironmentVariable, Kind: secret, ValueType: text, Required: true,
 			Description: "The Postgres database the modules moved into this server keep their records in: access (principal-store, grant-store, sign-in-store and permission-store), prediction-store, noteboard, project-store, tool-store, skill-store, bundle-store, repo-store, work-graph-store and file-store, each mounted under its own /<store>/ prefix. It is a URL naming a login that may create roles and schemas (CREATEROLE and CREATE on the database). At start the server makes each module's role and schema if they are missing, migrates it and opens it, and refuses to start if any step fails. It is required: every request's principal is read from access. It may carry a password, so it is a secret and never reaches a harness child."},
 		{Key: "local_tools.pinchtab_token", EnvironmentVariable: LocalToolsPinchtabTokenEnvironmentVariable, Kind: secret, ValueType: text,
@@ -289,6 +285,7 @@ func SettingDefinitions() []servicesettings.Definition {
 	definitions = append(definitions, sessionLogSettingDefinitions()...)
 	definitions = append(definitions, kanbanStoreSettingDefinitions()...)
 	definitions = append(definitions, usageAndEvalSettingDefinitions()...)
+	definitions = append(definitions, mailSettingDefinitions()...)
 
 	// One proxy backend per known harness. The variable is per harness, so the
 	// declarations are read off the harness registry rather than listed.

@@ -3,9 +3,10 @@ package mailstackclient
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack"
 )
 
 // The body is what mailstack's GET /api/messages/{id} actually returns on this
@@ -26,16 +27,11 @@ const liveMessageShape = `{
 func stub(t *testing.T, status int, body string) (*Client, *http.Request) {
 	t.Helper()
 	var got *http.Request
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	c := New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got = r.Clone(context.Background())
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(body))
 	}))
-	t.Cleanup(srv.Close)
-	c, err := New(srv.URL, "tok")
-	if err != nil {
-		t.Fatal(err)
-	}
 	return c, got
 }
 
@@ -62,23 +58,22 @@ func TestGetMessageHeadersRefusesAMessageWithNoSender(t *testing.T) {
 	}
 }
 
-func TestGetMessageHeadersSendsTokenAndAccount(t *testing.T) {
-	var auth, account string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		auth = r.Header.Get("Authorization")
+// The handler is mailstack's own, so the request carries the internal
+// service in its context, as the mounting server's verified callers do, and
+// the account in the query.
+func TestGetMessageHeadersCallsAsTheInternalServiceWithTheAccount(t *testing.T) {
+	var account string
+	var unrestricted bool
+	c := New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		account = r.URL.Query().Get("account")
+		unrestricted = mailstack.CallerIsInternalService(r.Context())
 		_, _ = w.Write([]byte(liveMessageShape))
 	}))
-	t.Cleanup(srv.Close)
-	c, err := New(srv.URL, "tok")
-	if err != nil {
-		t.Fatal(err)
-	}
 	if _, err := c.GetMessageHeaders(context.Background(), "demo-work", "lmf8c5178e02571eae"); err != nil {
 		t.Fatal(err)
 	}
-	if auth != "Bearer tok" || account != "demo-work" {
-		t.Errorf("auth=%q account=%q", auth, account)
+	if !unrestricted || account != "demo-work" {
+		t.Errorf("internal service=%v account=%q", unrestricted, account)
 	}
 }
 
@@ -89,11 +84,5 @@ func TestParseLocator(t *testing.T) {
 	}
 	if _, _, err := ParseLocator("no-colon"); err == nil {
 		t.Error("a ref with no colon parsed")
-	}
-}
-
-func TestNewRefusesAnEmptyToken(t *testing.T) {
-	if _, err := New("http://localhost:1", ""); err == nil {
-		t.Error("a client with no token was built; mailstack answers 401 to it")
 	}
 }

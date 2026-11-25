@@ -32,7 +32,7 @@ fi
 if [ -z "${DEPLOY_DETACHED:-}" ]; then
   cd "$(dirname "$0")"
   exec "$HOME/bin/deploy-gate" detach "$HOME/.cache/llm-bridge-deploy.log" \
-    --setenv AUTH_STORE_URL --setenv AUTH_STORE_TOKEN --setenv LLMBRIDGE_MAILSTACK_TOKEN --setenv GOWORK \
+    --setenv AUTH_STORE_URL --setenv AUTH_STORE_TOKEN --setenv GOWORK \
     --setenv DEPLOY_IDLE_WAIT_SECONDS --setenv DEPLOY_SKIP_IDLE_WAIT \
     -- bash "$(pwd)/$(basename "$0")" "$@"
 fi
@@ -402,21 +402,10 @@ if [ -z "$DEPLOY_AUTH_STORE_TOKEN" ]; then
   fi
   echo "WARNING: AUTH_STORE_TOKEN not set in deploy env; service will be unauthed against auth-store"
 fi
-# LLMBRIDGE_MAILSTACK_TOKEN lets question triage read the sender of a card's
-# mail so a drafted customer reply has a recipient, and the /mailstack/ proxy
-# presents it for every person it forwards. ~/.config/mailstack-token.env is
-# the one source of the token — mailstack's unit, grant-store and scheduler
-# job 82 all read it — so an unset deploy env falls back to that rather than
-# blanking it. Unlike
-# AUTH_STORE_TOKEN an empty value is not a downgrade worth refusing over: the
-# server logs it at start and every draft is minted with an empty To.
-DEPLOY_MAILSTACK_TOKEN="${LLMBRIDGE_MAILSTACK_TOKEN:-}"
-if [ -z "$DEPLOY_MAILSTACK_TOKEN" ] && [ -f "$HOME/.config/mailstack-token.env" ]; then
-  DEPLOY_MAILSTACK_TOKEN="$(grep -oP '^MAILSTACK_TOKEN=\K.*' "$HOME/.config/mailstack-token.env" || true)"
-fi
-if [ -z "$DEPLOY_MAILSTACK_TOKEN" ]; then
-  echo "WARNING: no mailstack token found; customer reply drafts will carry no recipient"
-fi
+# mailstack runs in this server, so the LLMBRIDGE_MAILSTACK_TOKEN an older
+# binary read is gone from local.conf: this binary refuses to start on a set
+# LLMBRIDGE_ variable it does not declare. A rollback puts the old drop-in
+# back with the old binary.
 TMP_DROPIN=$(mktemp)
 # CODEX_DISABLE_SANDBOX: this host's kernel rejects bwrap loopback setup
 # ("RTM_NEWADDR: Operation not permitted") so codex's workspace-write
@@ -432,7 +421,6 @@ Environment=PATH=$DEPLOY_PATH
 Environment=HOME=$HOME
 Environment=AUTH_STORE_URL=$DEPLOY_AUTH_STORE_URL
 Environment=AUTH_STORE_TOKEN=$DEPLOY_AUTH_STORE_TOKEN
-Environment=LLMBRIDGE_MAILSTACK_TOKEN=$DEPLOY_MAILSTACK_TOKEN
 Environment=CODEX_DISABLE_SANDBOX=1
 EOF
 sudo cp "$TMP_DROPIN" "$DROPIN_DIR/local.conf"

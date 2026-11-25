@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack"
 	"github.com/kayushkin/llm-bridge-server/internal/mailstackclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -120,9 +121,9 @@ func (c *cardStub) eventKinds() []string {
 
 func stubMailstack(t *testing.T, srv *Server) {
 	t.Helper()
-	mail := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer tok" {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+	srv.mailstackClient = mailstackclient.New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !mailstack.CallerIsInternalService(r.Context()) {
+			http.Error(w, "no caller", http.StatusUnauthorized)
 			return
 		}
 		if r.URL.Query().Get("account") != "demo-work" {
@@ -131,12 +132,6 @@ func stubMailstack(t *testing.T, srv *Server) {
 		}
 		_, _ = w.Write([]byte(`{"meta":{"id":"lmf8c5178e02571eae","account_id":"demo-work","subject":"Catalog size in /health","from":{"name":"Helena Ortiz","email":"helena@example.com"}},"body":{"text":"…"}}`))
 	}))
-	t.Cleanup(mail.Close)
-	client, err := mailstackclient.New(mail.URL, "tok")
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv.mailstackClient = client
 }
 
 func TestSurfacingWorkerSignoffIsAnsweredWithoutAPerson(t *testing.T) {

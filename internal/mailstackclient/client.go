@@ -2,6 +2,10 @@
 // question triage to address a drafted reply to the person who sent the mail
 // a card was filed from.
 //
+// mailstack runs in this process (internal/mail/mailstack); the client calls
+// its handler with no socket, as the internal service, which is past every
+// per-person check, as the standalone service's bearer token was.
+//
 // It reads and never writes: mailstack has no send route, and this client
 // must not be the place one is invented.
 package mailstackclient
@@ -15,29 +19,28 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/kayushkin/llm-bridge-server/internal/inprocesshttp"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack"
 )
 
 type Client struct {
-	baseURL string
-	token   string
-	http    *http.Client
+	http *http.Client
 }
 
-// New builds a client. An empty token is refused: mailstack answers 401 to
-// every read without one, so a client built without it can only ever fail,
-// and the caller is better off knowing that at construction.
-func New(baseURL, token string) (*Client, error) {
-	if strings.TrimSpace(baseURL) == "" {
-		return nil, fmt.Errorf("mailstack url is required")
+// New builds a client that calls handler, mailstack's own, in this process.
+// The handler reaches a mail provider only when the server's provider
+// connections are on; otherwise a message on a Gmail, Outlook or IMAP account
+// is 503 and GetMessageHeaders an error.
+func New(handler http.Handler) *Client {
+	if handler == nil {
+		panic("mailstackclient: New needs mailstack's handler")
 	}
-	if strings.TrimSpace(token) == "" {
-		return nil, fmt.Errorf("mailstack token is required")
-	}
-	return &Client{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		token:   token,
-		http:    &http.Client{Timeout: 5 * time.Second},
-	}, nil
+	client := inprocesshttp.Client(handler)
+	// A provider read is bounded as the HTTP client's was; a local account
+	// answers from Postgres.
+	client.Timeout = 5 * time.Second
+	return &Client{http: client}
 }
 
 // Address is a mail address with its display name, as mailstack returns it.
@@ -73,12 +76,12 @@ func (c *Client) GetMessageHeaders(ctx context.Context, accountID, providerID st
 	if accountID == "" || providerID == "" {
 		return nil, fmt.Errorf("account id and message id are required")
 	}
-	endpoint := fmt.Sprintf("%s/api/messages/%s?account=%s", c.baseURL, url.PathEscape(providerID), url.QueryEscape(accountID))
+	endpoint := fmt.Sprintf("%s/api/messages/%s?account=%s", inprocesshttp.BaseURL, url.PathEscape(providerID), url.QueryEscape(accountID))
+	ctx = mailstack.ContextWithCaller(ctx, mailstack.Caller{InternalService: true})
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build message request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("mailstack message lookup: %w", err)

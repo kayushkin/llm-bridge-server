@@ -28,6 +28,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
 	"github.com/kayushkin/llm-bridge-server/internal/keepawake"
 	harnessstore "github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack"
 	"github.com/kayushkin/llm-bridge-server/internal/mailstackclient"
 	"github.com/kayushkin/llm-bridge-server/internal/oneshotrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/operations"
@@ -141,6 +142,9 @@ type Server struct {
 	// kanbanStore answers /kanban/ and /kanban-store/ once EnableKanbanStore
 	// has run (kanban_store_routes.go); nil answers them 503.
 	kanbanStore atomic.Pointer[kanbanStoreHandlers]
+
+	// mailstack answers /mailstack/ once EnableMailstack has run.
+	mailstack atomic.Pointer[mailstack.Server]
 	// fileStore keeps the bytes of files shared into sessions, through the
 	// file-store module in this process. Nil until EnableFileStore, which
 	// switches session files off.
@@ -170,8 +174,8 @@ type Server struct {
 	// person on its card. See signal_question_triage.go.
 	questionTriage *questionTriage
 	// mailstackClient resolves the sender of a card's mail so a drafted
-	// customer reply has a recipient. Nil when no token is configured, and
-	// every draft is then minted with an empty To.
+	// customer reply has a recipient, from mailstack in this process. Nil
+	// until EnableMailstack, and every draft is then minted with an empty To.
 	mailstackClient *mailstackclient.Client
 	cfg             *config.Config
 	// serviceInventory is the last reading of the host's services and their
@@ -294,13 +298,6 @@ func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harne
 	// role (question_triage.model_role), so either can move to another model
 	// without the other.
 	srv.questionTriage = newQuestionTriage(cfg.QuestionTriageModelRole, cfg.SignalClassifierTimeout, srv.routedOneShotJSON)
-	if cfg.MailstackToken == "" {
-		log.Printf("[triage] LLMBRIDGE_MAILSTACK_TOKEN is not set: customer reply drafts will carry no recipient")
-	} else if client, err := mailstackclient.New(cfg.MailstackURL, cfg.MailstackToken); err != nil {
-		log.Printf("[triage] mailstack client not built: %v", err)
-	} else {
-		srv.mailstackClient = client
-	}
 	// Every request this server answers is authorized first, and it cannot
 	// identify a caller without these. main refuses to start on the same
 	// check plus the store addresses; reaching this means a caller skipped it,

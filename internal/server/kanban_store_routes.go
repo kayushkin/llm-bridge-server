@@ -49,6 +49,9 @@ type kanbanStoreHandlers struct {
 	handler http.Handler
 	// store is the module, for grant-store's check that a board exists.
 	store *kanbandb.Store
+	// api is the store's own, for mailstack's question of which messages a
+	// person sees through a ticket.
+	api *kanbanapi.API
 	// messageTriggersEnabled is whether triggers send, for the start log.
 	messageTriggersEnabled bool
 }
@@ -97,7 +100,7 @@ func (s *Server) EnableKanbanStore(store *kanbandb.Store, owners KanbanStoreOwne
 	}})
 	handler := api.Handler()
 	s.kanbanClient = kanbanclient.New(handler)
-	s.kanbanStore.Store(&kanbanStoreHandlers{handler: handler, store: store, messageTriggersEnabled: owners.MessageTriggersEnabled})
+	s.kanbanStore.Store(&kanbanStoreHandlers{handler: handler, store: store, api: api, messageTriggersEnabled: owners.MessageTriggersEnabled})
 }
 
 // KanbanStoreDescription says, for the start log, what kanban-store was

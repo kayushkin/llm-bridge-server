@@ -481,7 +481,11 @@ var routeAccessRules = map[string]routeAccessRule{
 	// Identity-carrying store proxies.
 	kanbanProxyMountPrefix + "/":      {class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "kanban-store, in this process, as the caller's principal or the internal service"},
 	kanbanStoreProxyMountPrefix + "/": {class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "kanban-store at its root, in this process, as the caller's principal or the internal service"},
-	mailstackProxyMountPrefix + "/":   {class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "mailstack as the caller's principal"},
+	mailstackProxyMountPrefix + "/":   {class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "mailstack, in this process, as the caller's principal or the internal service"},
+	// A sender of mail holds an ingress credential mailstack minted, bound to
+	// its accounts, and no login; mailstack checks it and refuses anything
+	// else.
+	mailstackIngressDeliveryPattern: openRoute("pushed mail delivery, which mailstack checks against an ingress credential"),
 
 	// Operator.
 	"GET /services":                                  operatorRoute("host service inventory"),
