@@ -99,7 +99,7 @@ func (s *Server) EnableKanbanStore(store *kanbandb.Store, owners KanbanStoreOwne
 		checker:   s.grantResourceChecker(owners.Access.Principals),
 	}})
 	handler := api.Handler()
-	s.kanbanClient = kanbanclient.New(handler)
+	s.kanbanClient = kanbanclient.New(api)
 	s.kanbanStore.Store(&kanbanStoreHandlers{handler: handler, store: store, api: api, messageTriggersEnabled: owners.MessageTriggersEnabled})
 }
 

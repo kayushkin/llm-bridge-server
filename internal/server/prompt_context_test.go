@@ -11,23 +11,23 @@ import (
 	agentstore "github.com/kayushkin/llm-bridge-server/internal/agents/agentstore"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient/kanbanclienttest"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
+	kanbanapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/api"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// fakeKanbanCards serves GET /api/cards/{id} for the cards given, each with
-// its noteboard item's tags, and 404 for any other card.
+// fakeKanbanCards answers a card's tags for the cards given, and 404 for any
+// other card.
 func fakeKanbanCards(t *testing.T, tagsByCard map[string][]string) *kanbanclient.Client {
 	t.Helper()
-	return kanbanclient.New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		cardID, ok := strings.CutPrefix(r.URL.Path, "/api/cards/")
+	return kanbanclient.New(&kanbanclienttest.Store{CardTagsAnswer: func(cardID string) ([]string, error) {
 		tags, known := tagsByCard[cardID]
-		if !ok || !known {
-			http.Error(w, `{"error":"card not found"}`, http.StatusNotFound)
-			return
+		if !known {
+			return nil, &kanbanapi.Refusal{Status: http.StatusNotFound, Message: "card not found"}
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"card_id": cardID, "item": map[string]any{"id": cardID, "tags": tags}})
-	}))
+		return tags, nil
+	}})
 }
 
 // contextTestAgentStore holds a native_file Claude Code, an inject Codex, and

@@ -1,65 +1,60 @@
 package kanbanclient
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
-	"strings"
 
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
 // ClassificationSettings reads the complete owning contract as the caller.
-func (c *Client) ClassificationSettings(ctx context.Context, boardID, principalID string) (msg.BoardClassification, error) {
-	var out msg.BoardClassification
-	body, err := c.getAsPrincipal(ctx, c.baseURL+"/api/boards/"+url.PathEscape(boardID)+"/classification", principalID, "classification settings")
+func (c *Client) ClassificationSettings(_ context.Context, boardID, principalID string) (msg.BoardClassification, error) {
+	if principalID == "" {
+		return msg.BoardClassification{}, fmt.Errorf("classification settings: a read as a principal names one")
+	}
+	classification, err := c.store.BoardClassification(asPrincipal(principalID), boardID)
 	if err != nil {
-		return out, err
+		return msg.BoardClassification{}, failureAsPrincipal("classification settings", err)
 	}
-	if err = json.Unmarshal(body, &out); err != nil {
-		return out, err
+	if classification.BoardID != boardID {
+		return *classification, fmt.Errorf("classification settings name another board")
 	}
-	if out.BoardID != boardID {
-		return out, fmt.Errorf("classification settings name another board")
-	}
-	return out, nil
+	return *classification, nil
 }
 
-// ClassificationCard relays the owning response in full. The executor extracts
-// its source snapshot; no narrowed copy of kanban's card/page contracts lives here.
-func (c *Client) ClassificationCard(ctx context.Context, boardID, cardID, principalID string) (json.RawMessage, error) {
-	endpoint := c.baseURL + "/api/boards/" + url.PathEscape(boardID) + "/card-page?" + url.Values{"card_id": {cardID}, "limit": {"1"}, "offset": {"0"}}.Encode()
-	return c.getAsPrincipal(ctx, endpoint, principalID, "classification card")
+// ClassificationCard is the card's page of its board, as the caller sees it,
+// in the form the board's card-page route answers. The executor extracts its
+// source snapshot; no narrowed copy of kanban's card/page contracts lives here.
+func (c *Client) ClassificationCard(_ context.Context, boardID, cardID, principalID string) (json.RawMessage, error) {
+	if principalID == "" {
+		return nil, fmt.Errorf("classification card: a read as a principal names one")
+	}
+	page, err := c.store.BoardCardPage(asPrincipal(principalID), boardID, url.Values{"card_id": {cardID}, "limit": {"1"}, "offset": {"0"}})
+	if err != nil {
+		return nil, failureAsPrincipal("classification card", err)
+	}
+	encoded, err := json.Marshal(page)
+	if err != nil {
+		return nil, fmt.Errorf("classification card: %w", err)
+	}
+	return encoded, nil
 }
 
-func (c *Client) PublishClassification(ctx context.Context, publication msg.BoardClassificationDecisionPublication, headers http.Header) (json.RawMessage, error) {
-	body, err := json.Marshal(publication)
+// PublishClassification publishes the classifier's decision as the internal
+// service, and answers the decision kanban-store keeps. The effect headers are
+// for a call over the network; kanban-store's route never read them, and a
+// Go call has nowhere to carry them, so they are not used.
+func (c *Client) PublishClassification(_ context.Context, publication msg.BoardClassificationDecisionPublication, _ http.Header) (json.RawMessage, error) {
+	decision, _, err := c.store.PublishClassificationDecision(internalService, publication)
 	if err != nil {
-		return nil, err
+		return nil, failure("classification publication", err)
 	}
-	req, err := http.NewRequestWithContext(asInternalService(ctx), http.MethodPost, c.baseURL+"/api/boards/"+url.PathEscape(publication.BoardID)+"/classification/decisions", bytes.NewReader(body))
+	encoded, err := json.Marshal(decision)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("classification publication: %w", err)
 	}
-	req.Header = headers.Clone()
-	req.Header.Set("Content-Type", "application/json")
-	response, err := c.http.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer response.Body.Close()
-	data, err := readKanbanAnswer(response.Body, "classification publication")
-	if err != nil {
-		return nil, err
-	}
-	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusCreated {
-		return nil, fmt.Errorf("publish classification: HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(data)))
-	}
-	if !json.Valid(data) {
-		return nil, fmt.Errorf("publication returned invalid JSON")
-	}
-	return data, nil
+	return encoded, nil
 }

@@ -11,9 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient/kanbanclienttest"
 	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack"
 	"github.com/kayushkin/llm-bridge-server/internal/mailstackclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
+	kanbanmodel "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/model"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -83,28 +85,23 @@ const askMayIProceed = `{"tool_name":"AskUserQuestion","tool_input":{"questions"
 // link, and records every event posted onto it.
 type cardStub struct {
 	mu     sync.Mutex
-	events []map[string]any
+	events []kanbanmodel.CreateCardEventRequest
 }
 
-func (c *cardStub) handler(cardID string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/cards"):
-			_, _ = w.Write([]byte(`[{"card_id":"` + cardID + `","item":{"id":"` + cardID + `","title":"Add catalog product count to /health","body":"Helena asks for a products count on /health."}}]`))
-		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/links"):
-			_, _ = w.Write([]byte(`[{"entity_type":"repo","entity_ref":"/tmp/x"},{"entity_type":"email","entity_ref":"demo-work:lmf8c5178e02571eae"}]`))
-		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/events"):
-			var ev map[string]any
-			_ = json.NewDecoder(r.Body).Decode(&ev)
+func (c *cardStub) kanbanStore(cardID string) *kanbanclienttest.Store {
+	return &kanbanclienttest.Store{
+		EntityCardsAnswer: func(string, string) ([]kanbanmodel.EntityCardView, error) {
+			return []kanbanmodel.EntityCardView{{CardID: cardID, Item: map[string]any{"id": cardID, "title": "Add catalog product count to /health", "body": "Helena asks for a products count on /health."}}}, nil
+		},
+		CardLinksAnswer: func(string) ([]kanbanmodel.CardLink, error) {
+			return []kanbanmodel.CardLink{{EntityType: "repo", EntityRef: "/tmp/x"}, {EntityType: "email", EntityRef: "demo-work:lmf8c5178e02571eae"}}, nil
+		},
+		RecordCardEventAnswer: func(_ string, request kanbanmodel.CreateCardEventRequest) (*kanbanmodel.CardEvent, error) {
 			c.mu.Lock()
-			c.events = append(c.events, ev)
+			c.events = append(c.events, request)
 			c.mu.Unlock()
-			w.WriteHeader(http.StatusCreated)
-			_, _ = w.Write([]byte(`{}`))
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
+			return &kanbanmodel.CardEvent{}, nil
+		},
 	}
 }
 
@@ -113,8 +110,7 @@ func (c *cardStub) eventKinds() []string {
 	defer c.mu.Unlock()
 	out := make([]string, 0, len(c.events))
 	for _, ev := range c.events {
-		kind, _ := ev["kind"].(string)
-		out = append(out, kind)
+		out = append(out, string(ev.Kind))
 	}
 	return out
 }
@@ -165,7 +161,7 @@ func TestSurfacingWorkerSignoffIsAnsweredWithoutAPerson(t *testing.T) {
 
 func TestSurfacingWorkerRealQuestionLandsOnTheCardWithADraftForTheCustomer(t *testing.T) {
 	card := &cardStub{}
-	srv, st := testServerWithKanban(t, card.handler("card-1"))
+	srv, st := testServerWithKanban(t, card.kanbanStore("card-1"))
 	stubMailstack(t, srv)
 	seedWorkerSession(t, st, "demo-builder-2", msg.PurposeDispatcher)
 	prompt := stubTriage(t, srv, map[string]any{
@@ -226,7 +222,7 @@ func TestSurfacingWorkerRealQuestionLandsOnTheCardWithADraftForTheCustomer(t *te
 
 func TestSurfacingWorkerQuestionIsSurfacedUntriagedWhenTriageFails(t *testing.T) {
 	card := &cardStub{}
-	srv, st := testServerWithKanban(t, card.handler("card-2"))
+	srv, st := testServerWithKanban(t, card.kanbanStore("card-2"))
 	seedWorkerSession(t, st, "demo-builder-3", msg.PurposeDispatcher)
 	stubTriage(t, srv, nil, errors.New("oneshot instance is disabled"))
 
@@ -275,7 +271,7 @@ func TestSkipClassifyReasonLetsASurfacingWorkerThrough(t *testing.T) {
 
 func TestDerivedWorkerQuestionSurfacesWithItsAudience(t *testing.T) {
 	card := &cardStub{}
-	srv, st := testServerWithKanban(t, card.handler("card-3"))
+	srv, st := testServerWithKanban(t, card.kanbanStore("card-3"))
 	sess := seedWorkerSession(t, st, "demo-builder-4", msg.PurposeDispatcher)
 	stubClassifier(t, srv, map[string]any{
 		"kind": "question",
@@ -302,7 +298,7 @@ func TestDerivedWorkerQuestionSurfacesWithItsAudience(t *testing.T) {
 
 func TestDerivedSignoffPastTheCapIsSurfacedNotAnswered(t *testing.T) {
 	card := &cardStub{}
-	srv, st := testServerWithKanban(t, card.handler("card-4"))
+	srv, st := testServerWithKanban(t, card.kanbanStore("card-4"))
 	sess := seedWorkerSession(t, st, "demo-builder-5", msg.PurposeDispatcher)
 	now := time.Now().UTC()
 	for i := 0; i < maxAutoContinuesPerSession; i++ {
@@ -331,7 +327,7 @@ func TestDerivedSignoffPastTheCapIsSurfacedNotAnswered(t *testing.T) {
 
 func TestAnsweringASurfacedQuestionEndsTheCardsWait(t *testing.T) {
 	card := &cardStub{}
-	srv, st := testServerWithKanban(t, card.handler("card-5"))
+	srv, st := testServerWithKanban(t, card.kanbanStore("card-5"))
 	sess := seedWorkerSession(t, st, "demo-builder-6", msg.PurposeDispatcher)
 	sig := &msg.Signal{
 		ID: "sig_q", SessionID: sess.SessionID, Kind: msg.SignalKindQuestion, Source: msg.SignalSourceDerived,
