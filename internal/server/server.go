@@ -594,6 +594,8 @@ func (s *Server) routes() {
 		s.mux.HandleFunc("POST /machines/{id}/disk-usage/deletion-checks", s.handleCheckMachineDiskDeletion)
 		s.mux.HandleFunc("POST /machines/{id}/disk-usage/deletions", s.handleDeleteFromMachineDisk)
 		s.mux.HandleFunc("GET /machines/{id}/disk-usage/deletions", s.handleMachineDiskDeletions)
+		s.mux.HandleFunc("POST /machines/{id}/disk-usage/wsl-compaction/set-up", s.handleSetUpMachineWSLCompaction)
+		s.mux.HandleFunc("POST /machines/{id}/disk-usage/wsl-compaction/runs", s.handleStartMachineWSLCompaction)
 	}
 
 	// Runner WebSocket — long-lived connection from llm-bridge-runner

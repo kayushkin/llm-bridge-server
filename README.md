@@ -327,6 +327,8 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `POST` | `/machines/{id}/disk-usage/deletions` | Delete a file or folder on a runner machine for good, recorded first (`{"path","kind","confirmation_name","expected_size_bytes"}`) | operator |
 | `GET` | `/machines/{id}/disk-usage/entries` | An entry of a drive's latest scan and the entries directly inside it, largest first (`?path=C:\`) | operator |
 | `POST` | `/machines/{id}/disk-usage/scans` | Start a scan of one of a runner machine's drives (`{"drive":"C:"}`) | operator |
+| `POST` | `/machines/{id}/disk-usage/wsl-compaction/runs` | Shut a machine's WSL down and compact its disk files (`{"confirm_shutdown":true}`; 409 while a session there is working) | operator |
+| `POST` | `/machines/{id}/disk-usage/wsl-compaction/set-up` | Show the one UAC prompt at a Windows machine that sets up compacting its WSL disks | operator |
 | `GET` | `/machines/{id}/stats/history` | A machine's health readings over a time range, grouped into steps | operator |
 
 ### Hooks
