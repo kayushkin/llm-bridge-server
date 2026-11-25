@@ -2,37 +2,139 @@ package activitystore
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
+	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 )
 
+var testContext = context.Background()
+
+// Two made-up owners, an administrator and this server's own service.
+const (
+	aliceID = "principal_000101"
+	bobID   = "principal_000102"
+)
+
+var (
+	alice         = &ownership.Caller{PrincipalID: aliceID}
+	bob           = &ownership.Caller{PrincipalID: bobID}
+	administrator = &ownership.Caller{PrincipalID: "principal_000001", SeesEveryOwner: true}
+	thisServer    = &ownership.Caller{SeesEveryOwner: true}
+)
+
+// fakeFiles is file-store in memory: each Put is a file of its own, as
+// file-store's are.
+type fakeFiles struct {
+	mutex   sync.Mutex
+	next    int
+	content map[string][]byte
+	told    map[string]AttachmentFile
+	// putsBeforeFailing, when not negative, is how many more Puts succeed
+	// before file-store refuses every one.
+	putsBeforeFailing int
+}
+
+func newFakeFiles() *fakeFiles {
+	return &fakeFiles{content: map[string][]byte{}, told: map[string]AttachmentFile{}, putsBeforeFailing: -1}
+}
+
+func (f *fakeFiles) Put(_ context.Context, content io.Reader, file AttachmentFile) (string, error) {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+	if f.putsBeforeFailing == 0 {
+		return "", fmt.Errorf("file-store is down")
+	}
+	if f.putsBeforeFailing > 0 {
+		f.putsBeforeFailing--
+	}
+	bytes, err := io.ReadAll(content)
+	if err != nil {
+		return "", err
+	}
+	f.next++
+	id := fmt.Sprintf("file_%06d", f.next)
+	f.content[id] = bytes
+	f.told[id] = file
+	return id, nil
+}
+
+func (f *fakeFiles) Open(_ context.Context, fileID string) (io.ReadCloser, error) {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+	content, found := f.content[fileID]
+	if !found {
+		return nil, fmt.Errorf("no file %s", fileID)
+	}
+	return io.NopCloser(bytes.NewReader(content)), nil
+}
+
+func (f *fakeFiles) Purge(_ context.Context, fileID string) error {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+	if _, found := f.content[fileID]; !found {
+		return fmt.Errorf("no file %s", fileID)
+	}
+	delete(f.content, fileID)
+	return nil
+}
+
+func (f *fakeFiles) failAfter(puts int) {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+	f.putsBeforeFailing = puts
+}
+
+func (f *fakeFiles) held() int {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+	return len(f.content)
+}
+
+func testStore(t *testing.T) (*Store, *fakeFiles) {
+	t.Helper()
+	module, err := Module()
+	if err != nil {
+		t.Fatalf("module: %v", err)
+	}
+	database := postgrestest.NewDatabase(t, module)
+	files := newFakeFiles()
+	return New(database.Open(module), files), files
+}
+
 type testServer struct {
-	t     *testing.T
-	store *Store
-	url   string
+	t      *testing.T
+	store  *Store
+	files  *fakeFiles
+	mux    *http.ServeMux
+	caller *ownership.Caller
 }
 
 func newTestServer(t *testing.T) *testServer {
 	t.Helper()
-	store, err := Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	store, files := testStore(t)
 	mux := http.NewServeMux()
 	RegisterHandlers(mux, store)
-	server := httptest.NewServer(mux)
-	t.Cleanup(func() { server.Close(); store.Close() })
-	return &testServer{t: t, store: store, url: server.URL}
+	return &testServer{t: t, store: store, files: files, mux: mux, caller: alice}
 }
 
-func (ts *testServer) do(method, path string, body any, want int, into any) {
+// as is the same server, called as caller (nil for none).
+func (ts *testServer) as(caller *ownership.Caller) *testServer {
+	copied := *ts
+	copied.caller = caller
+	return &copied
+}
+
+func (ts *testServer) raw(method, path string, body any) *httptest.ResponseRecorder {
 	ts.t.Helper()
 	var reader io.Reader
 	if body != nil {
@@ -42,22 +144,24 @@ func (ts *testServer) do(method, path string, body any, want int, into any) {
 		}
 		reader = bytes.NewReader(payload)
 	}
-	request, err := http.NewRequest(method, ts.url+path, reader)
-	if err != nil {
-		ts.t.Fatal(err)
+	request := httptest.NewRequest(method, path, reader)
+	if ts.caller != nil {
+		request = request.WithContext(ownership.ContextWithCaller(request.Context(), *ts.caller))
 	}
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		ts.t.Fatal(err)
-	}
-	defer response.Body.Close()
-	content, _ := io.ReadAll(response.Body)
-	if response.StatusCode != want {
-		ts.t.Fatalf("%s %s = %d, want %d: %s", method, path, response.StatusCode, want, content)
+	recorder := httptest.NewRecorder()
+	ts.mux.ServeHTTP(recorder, request)
+	return recorder
+}
+
+func (ts *testServer) do(method, path string, body any, want int, into any) {
+	ts.t.Helper()
+	recorder := ts.raw(method, path, body)
+	if recorder.Code != want {
+		ts.t.Fatalf("%s %s = %d, want %d: %s", method, path, recorder.Code, want, recorder.Body.String())
 	}
 	if into != nil {
-		if err := json.Unmarshal(content, into); err != nil {
-			ts.t.Fatalf("%s %s: %v: %s", method, path, err, content)
+		if err := json.Unmarshal(recorder.Body.Bytes(), into); err != nil {
+			ts.t.Fatalf("%s %s: %v: %s", method, path, err, recorder.Body.String())
 		}
 	}
 }
@@ -243,14 +347,9 @@ func TestDeleteRestoreAndPurge(t *testing.T) {
 		t.Fatalf("activity = %+v", searched)
 	}
 	attachment := searched.Attachments[0]
-	response, err := http.Get(ts.url + "/attachments/" + attachment.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	audio, _ := io.ReadAll(response.Body)
-	response.Body.Close()
-	if response.StatusCode != 200 || string(audio) != "not really audio" || response.Header.Get("Content-Type") != "audio/mpeg" {
-		t.Fatalf("attachment = %d %q %q", response.StatusCode, audio, response.Header.Get("Content-Type"))
+	response := ts.raw("GET", "/attachments/"+attachment.ID, nil)
+	if response.Code != 200 || response.Body.String() != "not really audio" || response.Header().Get("Content-Type") != "audio/mpeg" {
+		t.Fatalf("attachment = %d %q %q", response.Code, response.Body.String(), response.Header().Get("Content-Type"))
 	}
 
 	ts.do("DELETE", "/activities/"+searched.ID, nil, 204, nil)
@@ -283,9 +382,8 @@ func TestDeleteRestoreAndPurge(t *testing.T) {
 		}
 	}
 	ts.do("GET", "/attachments/"+attachment.ID, nil, 410, nil)
-	files, _ := filepath.Glob(filepath.Join(ts.store.DataDir(), attachmentDirectory, "*", "*"))
-	if len(files) != 0 {
-		t.Errorf("the purged attachment's file is still on disk: %v", files)
+	if held := ts.files.held(); held != 0 {
+		t.Errorf("file-store still holds %d files after the only attachment was purged", held)
 	}
 	ts.do("GET", "/activities?q=sourdough&include_deleted=true", nil, 200, &page)
 	if page.Total != 0 {
@@ -318,23 +416,5 @@ func TestVocabulariesAndStats(t *testing.T) {
 	ts.do("GET", "/stats", nil, 200, &stats)
 	if stats.Total != 2 || len(stats.ByProduct) != 2 || stats.FirstAt != eveningSearchAt || stats.LastAt != eveningSearchAt+600 {
 		t.Errorf("stats = %+v", stats)
-	}
-}
-
-func TestTheDataDirectoryIsPrivate(t *testing.T) {
-	directory := filepath.Join(t.TempDir(), "store")
-	store, err := Open(directory)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	for _, path := range []string{directory, filepath.Join(directory, "activity-store.db")} {
-		info, err := os.Stat(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if info.Mode().Perm()&0o077 != 0 {
-			t.Errorf("%s is %v; nobody else may read it", path, info.Mode().Perm())
-		}
 	}
 }

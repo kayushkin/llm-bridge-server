@@ -1,6 +1,6 @@
--- activity-store schema. Create-only and idempotent: Open() runs this whole
--- file on every boot. A new column goes in an additive migration in store.go,
--- never in an edit to a CREATE TABLE below.
+-- The schema of the standalone activity-store's SQLite file, as the live
+-- store holds it. The import tests write a file with it; the store itself
+-- keeps its records in Postgres (migrations/).
 --
 -- Nothing a person can cite is hard-deleted: DELETE stamps deleted_at, and
 -- every delete, restore and purge first copies the whole row into revisions.

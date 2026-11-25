@@ -7,6 +7,9 @@ package activitystore
 // watched, an app used, a place looked up on a map.
 type Activity struct {
 	ID string `json:"id"` // activity_000001
+	// OwnerPrincipalID is principal-store's id of the person whose activity
+	// it is.
+	OwnerPrincipalID string `json:"owner_principal_id"`
 	// Product is Google's name for where it happened (Search, YouTube, Maps,
 	// Chrome…), as the export names it.
 	Product string `json:"product"`
@@ -95,8 +98,8 @@ type Sighting struct {
 }
 
 // Attachment is a file that came with an activity, such as the recording of a
-// voice search. The file lives under the data directory; GET
-// /attachments/{id} serves it.
+// voice search. file-store keeps its bytes; GET /attachments/{id} serves them.
+// It has its activity's owner.
 type Attachment struct {
 	ID          string `json:"id"` // attachment_000001
 	ActivityID  string `json:"activity_id"`
@@ -110,23 +113,25 @@ type Attachment struct {
 
 // Revision is an activity as it was before a delete, restore or purge.
 type Revision struct {
-	ID         int64    `json:"id"`
-	ActivityID string   `json:"activity_id"`
-	Reason     string   `json:"reason"` // vocabulary.go RevisionReasons
-	RevisedAt  int64    `json:"revised_at"`
-	Activity   Activity `json:"activity"`
+	ID               int64    `json:"id"`
+	OwnerPrincipalID string   `json:"owner_principal_id"`
+	ActivityID       string   `json:"activity_id"`
+	Reason           string   `json:"reason"` // vocabulary.go RevisionReasons
+	RevisedAt        int64    `json:"revised_at"`
+	Activity         Activity `json:"activity"`
 }
 
 // Import is one file brought in, found again by its hash.
 type Import struct {
-	ID            string       `json:"id"` // import_000001
-	Kind          string       `json:"kind"`
-	Sha256        string       `json:"sha256"`
-	SourceMachine string       `json:"source_machine"`
-	SourcePath    string       `json:"source_path"`
-	ImportedAt    int64        `json:"imported_at"`
-	FinishedAt    int64        `json:"finished_at"` // 0 while it is still sending
-	Counts        ImportCounts `json:"counts"`
+	ID               string       `json:"id"` // import_000001
+	OwnerPrincipalID string       `json:"owner_principal_id"`
+	Kind             string       `json:"kind"`
+	Sha256           string       `json:"sha256"`
+	SourceMachine    string       `json:"source_machine"`
+	SourcePath       string       `json:"source_path"`
+	ImportedAt       int64        `json:"imported_at"`
+	FinishedAt       int64        `json:"finished_at"` // 0 while it is still sending
+	Counts           ImportCounts `json:"counts"`
 }
 
 // ImportCounts is what imports did, summed over batches.
@@ -137,7 +142,7 @@ type ImportCounts struct {
 	Folded int `json:"folded"`
 	// Known is records already imported with the same source reference.
 	Known int `json:"known"`
-	// AttachmentsStored is files written to the data directory.
+	// AttachmentsStored is files handed to file-store.
 	AttachmentsStored int `json:"attachments_stored"`
 }
 

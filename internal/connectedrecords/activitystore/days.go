@@ -1,18 +1,22 @@
 package activitystore
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"time"
+
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
+	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 )
 
 // MaxDayFirst bounds how many activities a day summary lists per product.
 const MaxDayFirst = 50
 
-// Day summarizes one calendar day in a time zone: for each product, how many
-// live activities, of which actions, and the earliest few. A day is midnight
+// Day summarizes one calendar day in a time zone, over the activities in
+// scope: for each product, how many live activities, of which actions, and the earliest few. A day is midnight
 // to midnight in the zone, so one with a clock change is 23 or 25 hours.
-func (s *Store) Day(date, timeZone string, first int) (Day, error) {
+func (s *Store) Day(ctx context.Context, scope ownership.Scope, date, timeZone string, first int) (Day, error) {
 	if timeZone == "" {
 		return Day{}, fmt.Errorf("%w: tz is required, an IANA zone such as Europe/Paris: a day starts at midnight somewhere", ErrInvalid)
 	}
@@ -28,8 +32,13 @@ func (s *Store) Day(date, timeZone string, first int) (Day, error) {
 		return Day{}, fmt.Errorf("%w: first must be 0 to %d", ErrInvalid, MaxDayFirst)
 	}
 	answer := Day{Date: date, TimeZone: timeZone, From: day.Unix(), To: day.AddDate(0, 0, 1).Unix(), Products: []DayProduct{}}
-	rows, err := s.db.Query(`SELECT id, product, action, title, url, occurred_at FROM activities
-		WHERE deleted_at = 0 AND occurred_at >= ? AND occurred_at < ? ORDER BY occurred_at, seq`, answer.From, answer.To)
+	args := arguments{answer.From, answer.To}
+	condition, err := scopeCondition(scope, "owner_principal_id", &args)
+	if err != nil {
+		return Day{}, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT seq, product, action, title, url, occurred_at FROM activities
+		WHERE deleted_at = 0 AND occurred_at >= $1 AND occurred_at < $2 AND `+condition+` ORDER BY occurred_at, seq`, args...)
 	if err != nil {
 		return Day{}, err
 	}
@@ -39,9 +48,11 @@ func (s *Store) Day(date, timeZone string, first int) (Day, error) {
 	for rows.Next() {
 		var item DayItem
 		var product string
-		if err := rows.Scan(&item.ID, &product, &item.Action, &item.Title, &item.URL, &item.OccurredAt); err != nil {
+		var seq int64
+		if err := rows.Scan(&seq, &product, &item.Action, &item.Title, &item.URL, &item.OccurredAt); err != nil {
 			return Day{}, err
 		}
+		item.ID = postgresstorage.FormatRecordID(IDPrefixActivity, seq)
 		summary, found := byProduct[product]
 		if !found {
 			summary = &DayProduct{Product: product, FirstAt: item.OccurredAt, First: []DayItem{}}

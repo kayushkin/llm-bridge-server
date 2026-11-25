@@ -1,20 +1,24 @@
 package activitystore
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 )
 
-// RegisterHandlers mounts the API on mux. Routes are rooted at /; a front door
-// such as dash adds its prefix and the auth this service has none of, which
-// is why the service binds 127.0.0.1.
+// RegisterHandlers mounts the API on mux. Every request must carry the
+// ownership.Caller the server verified; one without is 401. Reads and writes
+// reach the caller's own records, or every owner's for a caller that sees
+// them all; a record out of reach answers 404, as a missing one does.
 func RegisterHandlers(mux *http.ServeMux, s *Store) {
 	h := &handler{s: s}
 	mux.HandleFunc("GET /health", h.health)
@@ -42,8 +46,34 @@ type handler struct {
 	s *Store
 }
 
+// respondRefusal answers a request the ownership rules refuse, in the
+// store's own error shape.
+func respondRefusal(w http.ResponseWriter, refusal *ownership.RequestError) bool {
+	if refusal == nil {
+		return false
+	}
+	writeErr(w, refusal.Status, refusal.Message)
+	return true
+}
+
+// readScope is the request's scope, or false once a refusal is answered.
+func readScope(w http.ResponseWriter, r *http.Request) (ownership.Scope, bool) {
+	scope, refusal := ownership.ReadScope(r)
+	if respondRefusal(w, refusal) {
+		return ownership.Scope{}, false
+	}
+	return scope, true
+}
+
 func (h *handler) health(w http.ResponseWriter, r *http.Request) {
-	counts, err := h.s.Counts()
+	if !acceptOnly(w, r, ownership.OwnerParameter) {
+		return
+	}
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	counts, err := h.s.Counts(r.Context(), scope)
 	if respondError(w, err) {
 		return
 	}
@@ -51,12 +81,22 @@ func (h *handler) health(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) vocabularies(w http.ResponseWriter, r *http.Request) {
+	if _, refusal := ownership.CallerOfRequest(r); respondRefusal(w, refusal) {
+		return
+	}
 	writeJSON(w, http.StatusOK, Vocabularies{Actions: Actions, ActionPhrases: ActionPhrases, Sources: Sources,
 		ImportKinds: ImportKinds, RevisionReasons: RevisionReasons})
 }
 
 func (h *handler) stats(w http.ResponseWriter, r *http.Request) {
-	stats, err := h.s.Stats()
+	if !acceptOnly(w, r, ownership.OwnerParameter) {
+		return
+	}
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	stats, err := h.s.Stats(r.Context(), scope)
 	if respondError(w, err) {
 		return
 	}
@@ -114,12 +154,15 @@ const (
 )
 
 func (h *handler) listActivities(w http.ResponseWriter, r *http.Request) {
-	if !acceptOnly(w, r, "from", "to", "product", "action", "source", "q", "include_deleted", "order", "limit", "offset") {
+	if !acceptOnly(w, r, "from", "to", "product", "action", "source", "q", "include_deleted", "order", "limit", "offset", ownership.OwnerParameter) {
+		return
+	}
+	scope, ok := readScope(w, r)
+	if !ok {
 		return
 	}
 	query := r.URL.Query()
 	filter := ActivityFilter{Product: query.Get("product"), Action: query.Get("action"), Source: query.Get("source"), Query: query.Get("q")}
-	var ok bool
 	var value int64
 	if filter.From, ok = queryInteger(w, r, "from", 0, 0); !ok {
 		return
@@ -146,7 +189,7 @@ func (h *handler) listActivities(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "order must be asc or desc")
 		return
 	}
-	page, err := h.s.ListActivities(filter)
+	page, err := h.s.ListActivities(r.Context(), scope, filter)
 	if respondError(w, err) {
 		return
 	}
@@ -154,14 +197,18 @@ func (h *handler) listActivities(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) getActivity(w http.ResponseWriter, r *http.Request) {
-	if !acceptOnly(w, r, "include_deleted") {
+	if !acceptOnly(w, r, "include_deleted", ownership.OwnerParameter) {
+		return
+	}
+	scope, ok := readScope(w, r)
+	if !ok {
 		return
 	}
 	includeDeleted, ok := queryBoolean(w, r, "include_deleted")
 	if !ok {
 		return
 	}
-	activity, err := h.s.GetActivity(r.PathValue("id"), includeDeleted)
+	activity, err := h.s.GetActivity(r.Context(), scope, r.PathValue("id"), includeDeleted)
 	if respondError(w, err) {
 		return
 	}
@@ -169,14 +216,22 @@ func (h *handler) getActivity(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) deleteActivity(w http.ResponseWriter, r *http.Request) {
-	if respondError(w, h.s.DeleteActivity(r.PathValue("id"))) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	if respondError(w, h.s.DeleteActivity(r.Context(), scope, r.PathValue("id"))) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *handler) restoreActivity(w http.ResponseWriter, r *http.Request) {
-	activity, err := h.s.RestoreActivity(r.PathValue("id"))
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	activity, err := h.s.RestoreActivity(r.Context(), scope, r.PathValue("id"))
 	if respondError(w, err) {
 		return
 	}
@@ -184,7 +239,11 @@ func (h *handler) restoreActivity(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) purgeActivity(w http.ResponseWriter, r *http.Request) {
-	activity, err := h.s.PurgeActivity(r.PathValue("id"))
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	activity, err := h.s.PurgeActivity(r.Context(), scope, r.PathValue("id"))
 	if respondError(w, err) {
 		return
 	}
@@ -192,7 +251,11 @@ func (h *handler) purgeActivity(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) revisions(w http.ResponseWriter, r *http.Request) {
-	revisions, err := h.s.Revisions(r.PathValue("id"))
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	revisions, err := h.s.Revisions(r.Context(), scope, r.PathValue("id"))
 	if respondError(w, err) {
 		return
 	}
@@ -200,19 +263,29 @@ func (h *handler) revisions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) attachment(w http.ResponseWriter, r *http.Request) {
-	attachment, path, err := h.s.AttachmentFile(r.PathValue("id"))
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	attachment, content, err := h.s.OpenAttachment(r.Context(), scope, r.PathValue("id"))
 	if respondError(w, err) {
 		return
 	}
-	file, err := os.Open(path)
-	if err != nil {
-		respondError(w, fmt.Errorf("attachment %s: its file is missing: %w", attachment.ID, err))
-		return
+	defer content.Close()
+	seeker, seekable := content.(io.ReadSeeker)
+	if !seekable {
+		// Range requests need a seeker; an attachment is at most
+		// maxAttachmentBytes, so one that cannot seek is read whole.
+		whole, err := io.ReadAll(io.LimitReader(content, maxAttachmentBytes+1))
+		if err != nil {
+			respondError(w, fmt.Errorf("attachment %s: reading its file from file-store: %w", attachment.ID, err))
+			return
+		}
+		seeker = bytes.NewReader(whole)
 	}
-	defer file.Close()
 	w.Header().Set("Content-Type", attachment.ContentType)
 	w.Header().Set("Cache-Control", "private, max-age=3600")
-	http.ServeContent(w, r, "", time.Unix(attachment.CreatedAt, 0), file)
+	http.ServeContent(w, r, "", time.Unix(attachment.CreatedAt, 0), seeker)
 }
 
 // ---- days ----
@@ -220,14 +293,18 @@ func (h *handler) attachment(w http.ResponseWriter, r *http.Request) {
 const defaultDayFirst = 5
 
 func (h *handler) day(w http.ResponseWriter, r *http.Request) {
-	if !acceptOnly(w, r, "tz", "first") {
+	if !acceptOnly(w, r, "tz", "first", ownership.OwnerParameter) {
+		return
+	}
+	scope, ok := readScope(w, r)
+	if !ok {
 		return
 	}
 	first, ok := queryInteger(w, r, "first", defaultDayFirst, MaxDayFirst)
 	if !ok {
 		return
 	}
-	day, err := h.s.Day(r.PathValue("date"), r.URL.Query().Get("tz"), int(first))
+	day, err := h.s.Day(r.Context(), scope, r.PathValue("date"), r.URL.Query().Get("tz"), int(first))
 	if respondError(w, err) {
 		return
 	}
@@ -237,7 +314,11 @@ func (h *handler) day(w http.ResponseWriter, r *http.Request) {
 // ---- imports ----
 
 func (h *handler) listImports(w http.ResponseWriter, r *http.Request) {
-	imports, err := h.s.ListImports()
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	imports, err := h.s.ListImports(r.Context(), scope)
 	if respondError(w, err) {
 		return
 	}
@@ -245,7 +326,11 @@ func (h *handler) listImports(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) getImport(w http.ResponseWriter, r *http.Request) {
-	imported, err := h.s.GetImport(r.PathValue("id"))
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	imported, err := h.s.GetImport(r.Context(), scope, r.PathValue("id"))
 	if respondError(w, err) {
 		return
 	}
@@ -253,11 +338,15 @@ func (h *handler) getImport(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) startImport(w http.ResponseWriter, r *http.Request) {
+	owner, refusal := ownership.OwnerOfNewRecord(r)
+	if respondRefusal(w, refusal) {
+		return
+	}
 	var start ImportStart
 	if !decodeBody(w, r, 1<<16, &start) {
 		return
 	}
-	started, err := h.s.StartImport(start)
+	started, err := h.s.StartImport(r.Context(), owner, start)
 	if respondError(w, err) {
 		return
 	}
@@ -268,11 +357,15 @@ func (h *handler) startImport(w http.ResponseWriter, r *http.Request) {
 const maxBatchBytes = 256 << 20
 
 func (h *handler) importBatch(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	var batch ImportBatch
 	if !decodeBody(w, r, maxBatchBytes, &batch) {
 		return
 	}
-	counts, err := h.s.ImportBatch(r.PathValue("id"), batch)
+	counts, err := h.s.ImportBatch(r.Context(), scope, r.PathValue("id"), batch)
 	if respondError(w, err) {
 		return
 	}
@@ -280,7 +373,11 @@ func (h *handler) importBatch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) finishImport(w http.ResponseWriter, r *http.Request) {
-	imported, err := h.s.FinishImport(r.PathValue("id"))
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	imported, err := h.s.FinishImport(r.Context(), scope, r.PathValue("id"))
 	if respondError(w, err) {
 		return
 	}
