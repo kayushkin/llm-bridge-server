@@ -12,14 +12,11 @@ import (
 	"testing"
 )
 
-// Every environment variable time-ledger-store, and its commands, reads by name is declared. A read that is
+// Every environment variable the package and its commands read by name is declared. A read that is
 // not declared is invisible on the settings page and escapes the startup check.
 // healthcheck's repo-settings-guard runs this test by name every night.
 func TestEveryEnvironmentVariableTheServiceReadsIsDeclared(t *testing.T) {
 	declared := map[string]bool{}
-	for _, definition := range SettingDefinitions() {
-		declared[definition.EnvironmentVariable] = true
-	}
 	for _, definition := range ReviewSettingDefinitions() {
 		declared[definition.EnvironmentVariable] = true
 	}
@@ -89,10 +86,10 @@ func TestEveryEnvironmentVariableTheServiceReadsIsDeclared(t *testing.T) {
 		t.Fatal(err)
 	}
 	// If the package moves, the walk would read the wrong tree and pass.
-	if _, err := os.Stat(filepath.FromSlash("cmd/time-ledger-store/main.go")); err != nil {
+	if _, err := os.Stat(filepath.FromSlash("cmd/time-ledger-review/main.go")); err != nil {
 		t.Fatalf("the scan starts somewhere other than it was written for: %v", err)
 	}
 	if filesRead < 8 {
-		t.Fatalf("the scan read %d files; it is not looking at the service", filesRead)
+		t.Fatalf("the scan read %d files; it is not looking at the package", filesRead)
 	}
 }

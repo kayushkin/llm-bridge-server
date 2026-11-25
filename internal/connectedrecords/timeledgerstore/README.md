@@ -8,11 +8,12 @@ An account of what someone did, when and where: time entries over spans of time,
 - What the person decided is never undone by a model, and what a model decided is never undone by a program.
 - Every review is kept; the person's newest stands, else the model's newest, else the outcome is unknown.
 
-Go, SQLite, one HTTP service on loopback, and three commands: `time-ledger-import` (makes entries from the sources), `time-ledger-gather-evidence` (links visits and photos) and `time-ledger-review` (asks a model whether each entry happened). `CONTRACT.md` is the route table.
+- Every record has an owner (`owner_principal_id`), and a caller reaches only its own unless it sees every owner.
+
+It runs inside llm-bridge-server, at `/time-ledger-store/`, on Postgres (schema `time_ledger`). `CONTRACT.md` is the route table and the owner rules. The server builds the store with `New(db)` and mounts it with `RegisterHandlers`. Three commands talk to it over HTTP: `time-ledger-import` (makes entries from the sources), `time-ledger-gather-evidence` (links visits and photos) and `time-ledger-review` (asks a model whether each entry happened).
 
 ```bash
-go test ./... && go build ./cmd/time-ledger-store
-curl -s -X POST localhost:8344/time-entries -d '{"title":"Dinner","starts_at":1767225600,"ends_at":1767231000,"time_zone":"UTC","by":"me","by_kind":"operator","reason":"I went"}'
+POSTGRESTEST_ADMINISTRATOR_URL="$(scripts/test-postgres.sh url)" go test ./internal/connectedrecords/timeledgerstore/...
 ```
 
 MIT licensed.

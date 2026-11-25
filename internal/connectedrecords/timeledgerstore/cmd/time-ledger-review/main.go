@@ -23,10 +23,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kayushkin/llm-bridge/msg"
-	"github.com/kayushkin/llm-bridge/servicesettings"
 	timeledgerstore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/timeledgerstore"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/timeledgerstore/internal/storeclient"
+	"github.com/kayushkin/llm-bridge/msg"
+	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
 // recordURLs says where each kind of linked record is read whole: the owning

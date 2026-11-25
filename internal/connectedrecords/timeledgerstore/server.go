@@ -7,10 +7,12 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 )
 
-// RegisterHandlers mounts the API on mux. A front door such as dash adds the
-// auth this service has none of, which is why it binds 127.0.0.1.
+// RegisterHandlers mounts the API on mux. Every request must carry the
+// ownership.Caller the server verified; one without is 401.
 func RegisterHandlers(mux *http.ServeMux, s *Store) {
 	h := &handler{s: s}
 	mux.HandleFunc("GET /health", h.health)
@@ -40,7 +42,7 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(value); err != nil {
-		log.Printf("write response: %v", err)
+		log.Printf("time-ledger-store: write response: %v", err)
 	}
 }
 
@@ -58,10 +60,41 @@ func respondError(w http.ResponseWriter, err error) bool {
 		status = http.StatusConflict
 	}
 	if status == http.StatusInternalServerError {
-		log.Printf("error: %v", err)
+		log.Printf("time-ledger-store: error: %v", err)
 	}
 	writeJSON(w, status, map[string]string{"error": err.Error()})
 	return true
+}
+
+// respondRefusal answers a request the ownership rules refuse, in the
+// store's own error shape.
+func respondRefusal(w http.ResponseWriter, refusal *ownership.RequestError) bool {
+	if refusal == nil {
+		return false
+	}
+	writeJSON(w, refusal.Status, map[string]string{"error": refusal.Message})
+	return true
+}
+
+// readScope is the request's scope, or false once a refusal is answered.
+// Writes to a record that exists take it too: a caller changes only what it
+// may read.
+func readScope(w http.ResponseWriter, r *http.Request) (ownership.Scope, bool) {
+	scope, refusal := ownership.ReadScope(r)
+	if respondRefusal(w, refusal) {
+		return ownership.Scope{}, false
+	}
+	return scope, true
+}
+
+// ownerOfNewRecord is the owner a record the request makes gets, or false
+// once a refusal is answered.
+func ownerOfNewRecord(w http.ResponseWriter, r *http.Request) (string, bool) {
+	owner, refusal := ownership.OwnerOfNewRecord(r)
+	if respondRefusal(w, refusal) {
+		return "", false
+	}
+	return owner, true
 }
 
 func decodeStrict(r *http.Request, into any) error {
@@ -98,7 +131,11 @@ func queryActor(r *http.Request) Actor {
 }
 
 func (h *handler) health(w http.ResponseWriter, r *http.Request) {
-	counts, err := h.s.Counts()
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	counts, err := h.s.Counts(r.Context(), scope)
 	if respondError(w, err) {
 		return
 	}
@@ -106,6 +143,9 @@ func (h *handler) health(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) vocabularies(w http.ResponseWriter, r *http.Request) {
+	if _, refusal := ownership.CallerOfRequest(r); respondRefusal(w, refusal) {
+		return
+	}
 	linkTypes := []LinkType{}
 	for _, name := range LinkTypeNames() {
 		linkTypes = append(linkTypes, LinkTypes[name])
@@ -114,7 +154,11 @@ func (h *handler) vocabularies(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) listKinds(w http.ResponseWriter, r *http.Request) {
-	kinds, err := h.s.Kinds()
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	kinds, err := h.s.Kinds(r.Context(), scope)
 	if respondError(w, err) {
 		return
 	}
@@ -122,6 +166,10 @@ func (h *handler) listKinds(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) createKind(w http.ResponseWriter, r *http.Request) {
+	owner, ok := ownerOfNewRecord(w, r)
+	if !ok {
+		return
+	}
 	var body struct {
 		Name        string `json:"name"`
 		Description string `json:"description"`
@@ -131,7 +179,7 @@ func (h *handler) createKind(w http.ResponseWriter, r *http.Request) {
 	if respondError(w, decodeStrict(r, &body)) {
 		return
 	}
-	kind, err := h.s.CreateKind(body.Name, body.Description, Actor{By: body.By, Kind: body.ByKind})
+	kind, err := h.s.CreateKind(r.Context(), owner, body.Name, body.Description, Actor{By: body.By, Kind: body.ByKind})
 	if respondError(w, err) {
 		return
 	}
@@ -139,7 +187,11 @@ func (h *handler) createKind(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) getKind(w http.ResponseWriter, r *http.Request) {
-	kind, err := h.s.Kind(r.PathValue("id"))
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	kind, err := h.s.Kind(r.Context(), scope, r.PathValue("id"))
 	if respondError(w, err) {
 		return
 	}
@@ -147,6 +199,10 @@ func (h *handler) getKind(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) listEntries(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	query := r.URL.Query()
 	filter := EntryFilter{Parent: query.Get("parent"), KindID: query.Get("kind_id"), Outcome: query.Get("outcome"), Query: query.Get("q"),
 		NeedsReview: query.Get("needs_review") == "true", IncludeDeleted: query.Get("include_deleted") == "true"}
@@ -163,7 +219,7 @@ func (h *handler) listEntries(w http.ResponseWriter, r *http.Request) {
 		}
 		*field = int(number)
 	}
-	entries, err := h.s.Entries(filter)
+	entries, err := h.s.Entries(r.Context(), scope, filter)
 	if respondError(w, err) {
 		return
 	}
@@ -171,11 +227,15 @@ func (h *handler) listEntries(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) createEntry(w http.ResponseWriter, r *http.Request) {
+	owner, ok := ownerOfNewRecord(w, r)
+	if !ok {
+		return
+	}
 	var input EntryInput
 	if respondError(w, decodeStrict(r, &input)) {
 		return
 	}
-	entry, err := h.s.CreateEntry(input)
+	entry, err := h.s.CreateEntry(r.Context(), owner, input)
 	if respondError(w, err) {
 		return
 	}
@@ -183,7 +243,11 @@ func (h *handler) createEntry(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) getEntry(w http.ResponseWriter, r *http.Request) {
-	entry, err := h.s.Entry(r.PathValue("id"), true)
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	entry, err := h.s.Entry(r.Context(), scope, r.PathValue("id"), true)
 	if respondError(w, err) {
 		return
 	}
@@ -191,11 +255,15 @@ func (h *handler) getEntry(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) updateEntry(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	var change EntryChange
 	if respondError(w, decodeStrict(r, &change)) {
 		return
 	}
-	entry, err := h.s.UpdateEntry(r.PathValue("id"), change)
+	entry, err := h.s.UpdateEntry(r.Context(), scope, r.PathValue("id"), change)
 	if respondError(w, err) {
 		return
 	}
@@ -203,14 +271,22 @@ func (h *handler) updateEntry(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) deleteEntry(w http.ResponseWriter, r *http.Request) {
-	if respondError(w, h.s.DeleteEntry(r.PathValue("id"), queryActor(r))) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	if respondError(w, h.s.DeleteEntry(r.Context(), scope, r.PathValue("id"), queryActor(r))) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *handler) revisions(w http.ResponseWriter, r *http.Request) {
-	revisions, err := h.s.Revisions(r.PathValue("id"))
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	revisions, err := h.s.Revisions(r.Context(), scope, r.PathValue("id"))
 	if respondError(w, err) {
 		return
 	}
@@ -218,6 +294,10 @@ func (h *handler) revisions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) assignKind(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	var body struct {
 		By     string `json:"by"`
 		ByKind string `json:"by_kind"`
@@ -226,7 +306,7 @@ func (h *handler) assignKind(w http.ResponseWriter, r *http.Request) {
 	if respondError(w, decodeStrict(r, &body)) {
 		return
 	}
-	entry, err := h.s.AssignKind(r.PathValue("id"), r.PathValue("kind_id"), Actor{By: body.By, Kind: body.ByKind}, body.Reason)
+	entry, err := h.s.AssignKind(r.Context(), scope, r.PathValue("id"), r.PathValue("kind_id"), Actor{By: body.By, Kind: body.ByKind}, body.Reason)
 	if respondError(w, err) {
 		return
 	}
@@ -234,13 +314,21 @@ func (h *handler) assignKind(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) removeKind(w http.ResponseWriter, r *http.Request) {
-	if respondError(w, h.s.RemoveKind(r.PathValue("id"), r.PathValue("kind_id"), queryActor(r))) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	if respondError(w, h.s.RemoveKind(r.Context(), scope, r.PathValue("id"), r.PathValue("kind_id"), queryActor(r))) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *handler) addLink(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	var body struct {
 		LinkInput
 		By     string `json:"by"`
@@ -254,7 +342,7 @@ func (h *handler) addLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body.LinkType = r.PathValue("link_type")
-	link, err := h.s.AddLink(r.PathValue("id"), body.LinkInput, Actor{By: body.By, Kind: body.ByKind})
+	link, err := h.s.AddLink(r.Context(), scope, r.PathValue("id"), body.LinkInput, Actor{By: body.By, Kind: body.ByKind})
 	if respondError(w, err) {
 		return
 	}
@@ -262,17 +350,25 @@ func (h *handler) addLink(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) removeLink(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	occurrence, err := queryOptionalInt(r, "occurrence_starts_at")
 	if respondError(w, err) {
 		return
 	}
-	if respondError(w, h.s.RemoveLink(r.PathValue("id"), r.PathValue("link_type"), r.URL.Query().Get("ref"), occurrence, queryActor(r))) {
+	if respondError(w, h.s.RemoveLink(r.Context(), scope, r.PathValue("id"), r.PathValue("link_type"), r.URL.Query().Get("ref"), occurrence, queryActor(r))) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *handler) linksTo(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	ref := r.URL.Query().Get("ref")
 	if ref == "" {
 		respondError(w, fmt.Errorf("%w: ref is required", ErrInvalid))
@@ -282,7 +378,7 @@ func (h *handler) linksTo(w http.ResponseWriter, r *http.Request) {
 	if respondError(w, err) {
 		return
 	}
-	links, err := h.s.LinksTo(r.PathValue("link_type"), ref, occurrence, r.URL.Query().Get("include_removed") == "true")
+	links, err := h.s.LinksTo(r.Context(), scope, r.PathValue("link_type"), ref, occurrence, r.URL.Query().Get("include_removed") == "true")
 	if respondError(w, err) {
 		return
 	}
@@ -290,7 +386,11 @@ func (h *handler) linksTo(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) listReviews(w http.ResponseWriter, r *http.Request) {
-	reviews, err := h.s.Reviews(r.PathValue("id"))
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	reviews, err := h.s.Reviews(r.Context(), scope, r.PathValue("id"))
 	if respondError(w, err) {
 		return
 	}
@@ -298,11 +398,15 @@ func (h *handler) listReviews(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) addReview(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	var input ReviewInput
 	if respondError(w, decodeStrict(r, &input)) {
 		return
 	}
-	review, err := h.s.AddReview(r.PathValue("id"), input)
+	review, err := h.s.AddReview(r.Context(), scope, r.PathValue("id"), input)
 	if respondError(w, err) {
 		return
 	}
@@ -310,7 +414,11 @@ func (h *handler) addReview(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) getReview(w http.ResponseWriter, r *http.Request) {
-	review, err := h.s.Review(r.PathValue("id"))
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	review, err := h.s.Review(r.Context(), scope, r.PathValue("id"))
 	if respondError(w, err) {
 		return
 	}

@@ -1,27 +1,34 @@
-// Package timeledgerstore keeps an account of what the operator did: time
-// entries over spans of time, nested and overlapping, each linked by id to the
-// records that brought it in and the records that show whether it happened,
-// and reviewed by a model and by the operator.
+// Package timeledgerstore keeps an account of what someone did: time entries
+// over spans of time, nested and overlapping, each linked by id to the records
+// that brought it in and the records that show whether it happened, and
+// reviewed by a model and by the person whose account it is.
 //
 // Entries, kinds and reviews are cited elsewhere by their ids
 // (time_entry_000001, time_entry_kind_000001, time_entry_review_000001),
-// which kanban-store's registry claims, so a note or a timeline can link one
-// as a chip.
+// which reference-store lists, so a note or a timeline can link one as a chip.
+//
+// The records live in Postgres, in the schema of Module, through
+// postgresstorage. The server provisions, migrates and opens the module, then
+// hands the pool to New. Every record has an owner (owner_principal_id), and
+// every read and write is narrowed to an ownership.Scope.
 package timeledgerstore
 
 import (
+	"context"
 	"database/sql"
+	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
-	"sync"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
+	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 )
 
 var (
@@ -29,6 +36,27 @@ var (
 	ErrInvalid  = errors.New("invalid")
 	ErrConflict = errors.New("conflict")
 )
+
+// The type parts of the public ids: time_entry_000001,
+// time_entry_kind_000001, time_entry_review_000001.
+const (
+	EntryIDPrefix  = "time_entry"
+	KindIDPrefix   = "time_entry_kind"
+	ReviewIDPrefix = "time_entry_review"
+)
+
+//go:embed migrations/*.sql
+var migrationFiles embed.FS
+
+// Module is the Postgres schema and role the store keeps its records in, with
+// the migrations that build them.
+func Module() (postgresstorage.Module, error) {
+	migrations, err := postgresstorage.MigrationsFromFiles(migrationFiles, "migrations")
+	if err != nil {
+		return postgresstorage.Module{}, err
+	}
+	return postgresstorage.Module{Schema: "time_ledger", Role: "time_ledger_module", Migrations: migrations}, nil
+}
 
 // Actor is who does something, and what kind of actor they are.
 type Actor struct {
@@ -51,14 +79,15 @@ func (actor Actor) mayReplace(setByKind string) bool {
 	return actorRank[actor.Kind] >= actorRank[setByKind]
 }
 
-// Kind is a label an entry can carry; an entry carries any number.
+// Kind is a label an owner's entries can carry; an entry carries any number.
 type Kind struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	Description   string `json:"description"`
-	CreatedBy     string `json:"created_by"`
-	CreatedByKind string `json:"created_by_kind"`
-	CreatedAt     int64  `json:"created_at"`
+	ID               string `json:"id"`
+	OwnerPrincipalID string `json:"owner_principal_id"`
+	Name             string `json:"name"`
+	Description      string `json:"description"`
+	CreatedBy        string `json:"created_by"`
+	CreatedByKind    string `json:"created_by_kind"`
+	CreatedAt        int64  `json:"created_at"`
 }
 
 // KindAssignment is one kind on one entry.
@@ -71,7 +100,7 @@ type KindAssignment struct {
 	AssignedAt     int64  `json:"assigned_at"`
 }
 
-// Link is one record linked to an entry.
+// Link is one record linked to an entry. It has the entry's owner.
 type Link struct {
 	LinkType           string `json:"link_type"`
 	TimeEntryID        string `json:"time_entry_id"`
@@ -89,9 +118,11 @@ type Link struct {
 	RemovedByKind      string `json:"removed_by_kind,omitempty"`
 }
 
-// Review is one judgment of whether an entry happened.
+// Review is one judgment of whether an entry happened. It has the entry's
+// owner.
 type Review struct {
 	ID                         string          `json:"id"`
+	OwnerPrincipalID           string          `json:"owner_principal_id"`
 	TimeEntryID                string          `json:"time_entry_id"`
 	Outcome                    string          `json:"outcome"`
 	Reason                     string          `json:"reason"`
@@ -110,6 +141,7 @@ type Review struct {
 // TimeEntry is one thing done, or planned and skipped, over a span of time.
 type TimeEntry struct {
 	ID                string           `json:"id"`
+	OwnerPrincipalID  string           `json:"owner_principal_id"`
 	Title             string           `json:"title"`
 	TitleBy           string           `json:"title_by"`
 	TitleByKind       string           `json:"title_by_kind"`
@@ -143,43 +175,20 @@ type TimeEntry struct {
 	Reviews           []Review         `json:"reviews,omitempty"`
 }
 
-// Store is the SQLite database behind the service.
+// Store keeps entries, kinds, reviews and links in the module's tables.
 type Store struct {
-	db      *sql.DB
-	dataDir string
-	mu      sync.Mutex
-	now     func() time.Time
+	db  *sql.DB
+	now func() time.Time
 }
 
-// Open opens or creates time-ledger.db in dataDir.
-func Open(dataDir string) (*Store, error) {
-	if err := os.MkdirAll(dataDir, 0o700); err != nil {
-		return nil, err
-	}
-	db, err := sql.Open("sqlite3", filepath.Join(dataDir, "time-ledger.db")+"?_foreign_keys=on&_busy_timeout=5000&_journal_mode=WAL")
-	if err != nil {
-		return nil, err
-	}
-	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(schemaSQL); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("apply schema: %w", err)
-	}
-	if err := seedKinds(db); err != nil {
-		db.Close()
-		return nil, err
-	}
-	return &Store{db: db, dataDir: dataDir, now: time.Now}, nil
+// New is the store over db, the module's pool (Module).
+func New(db *sql.DB) *Store {
+	return &Store{db: db, now: time.Now}
 }
 
-// Close closes the database.
-func (s *Store) Close() error { return s.db.Close() }
-
-// DataDir is where the database lives.
-func (s *Store) DataDir() string { return s.dataDir }
-
-// SeedKinds are the kinds a new database starts with, from the operator's own
-// calendar: anyone may add more with POST /kinds.
+// SeedKinds are the kinds an owner's account starts with: the first time an
+// owner lists kinds or makes one, and holds none, these are made for them.
+// Anyone may add more with POST /kinds.
 var SeedKinds = []Kind{
 	{Name: "journey", Description: "time away from home: more than 80 km away, or a flight"},
 	{Name: "routine", Description: "something done again and again on a schedule"},
@@ -195,56 +204,112 @@ var SeedKinds = []Kind{
 	{Name: "health", Description: "care for body or mind: a checkup, a vaccine, therapy"},
 }
 
-func seedKinds(db *sql.DB) error {
-	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM time_entry_kinds`).Scan(&count); err != nil {
+// seedActor is who makes an owner's first kinds.
+var seedActor = Actor{By: "time-ledger-store seed", Kind: ActorProgram}
+
+// queryer is a pool or a transaction.
+type queryer interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// arguments numbers a query's arguments as they are added.
+type arguments []any
+
+func (args *arguments) add(value any) string {
+	*args = append(*args, value)
+	return "$" + strconv.Itoa(len(*args))
+}
+
+// scopeCondition is the scope as a condition on column, its argument added
+// to args. A scope that was never set is an error, not "everyone".
+func scopeCondition(scope ownership.Scope, column string, args *arguments) (string, error) {
+	if err := scope.Check(); err != nil {
+		return "", err
+	}
+	if scope.IsEveryOwner() {
+		return "TRUE", nil
+	}
+	return column + " = " + args.add(scope.OwnerPrincipalID()), nil
+}
+
+// lockOwner serializes writes to one owner's account for the rest of the
+// transaction, so the checks a write makes (one source per entry, children
+// inside parents) hold when it commits.
+func lockOwner(ctx context.Context, tx *sql.Tx, ownerPrincipalID string) error {
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "timeledgerstore.owner."+ownerPrincipalID); err != nil {
+		return fmt.Errorf("locking the account of %s: %w", ownerPrincipalID, err)
+	}
+	return nil
+}
+
+// isUniqueViolation reports a write a uniqueness rule refused.
+func isUniqueViolation(err error) bool {
+	var postgresError *pgconn.PgError
+	return errors.As(err, &postgresError) && postgresError.Code == "23505"
+}
+
+func checkOwner(ownerPrincipalID string) error {
+	if err := ownership.CheckPrincipalID("owner_principal_id", ownerPrincipalID); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
+	return nil
+}
+
+var kindNamePattern = regexp.MustCompile(`^[a-z][a-z0-9-]*( [a-z0-9-]+)*$`)
+
+func insertKind(ctx context.Context, tx *sql.Tx, ownerPrincipalID, name, description string, actor Actor, now int64) (int64, error) {
+	var seq int64
+	err := tx.QueryRowContext(ctx, `INSERT INTO time_entry_kinds (owner_principal_id, name, description, created_by, created_by_kind, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6) RETURNING seq`, ownerPrincipalID, name, description, actor.By, actor.Kind, now).Scan(&seq)
+	if isUniqueViolation(err) {
+		return 0, fmt.Errorf("%w: a kind named %q exists", ErrConflict, name)
+	}
+	return seq, err
+}
+
+// seedKindsOf makes SeedKinds for an owner who holds no kind. The caller
+// holds the owner's lock.
+func (s *Store) seedKindsOf(ctx context.Context, tx *sql.Tx, ownerPrincipalID string) error {
+	var held int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM time_entry_kinds WHERE owner_principal_id = $1`, ownerPrincipalID).Scan(&held); err != nil {
 		return err
 	}
-	if count > 0 {
+	if held > 0 {
 		return nil
 	}
-	now := time.Now().Unix()
+	now := s.now().Unix()
 	for _, kind := range SeedKinds {
-		if _, err := insertKind(db, kind.Name, kind.Description, Actor{By: "time-ledger-store seed", Kind: ActorProgram}, now); err != nil {
-			return err
+		if _, err := insertKind(ctx, tx, ownerPrincipalID, kind.Name, kind.Description, seedActor, now); err != nil {
+			return fmt.Errorf("seeding kind %s for %s: %w", kind.Name, ownerPrincipalID, err)
 		}
 	}
 	return nil
 }
 
-type execer interface {
-	Exec(query string, args ...any) (sql.Result, error)
-}
-
-// assignID gives the row just inserted its public id, from its seq.
-func assignID(tx execer, table, prefix string, result sql.Result) (string, error) {
-	seq, err := result.LastInsertId()
-	if err != nil {
-		return "", err
+// ensureSeedKinds seeds an owner's kinds when the owner holds none.
+func (s *Store) ensureSeedKinds(ctx context.Context, ownerPrincipalID string) error {
+	var held bool
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM time_entry_kinds WHERE owner_principal_id = $1)`, ownerPrincipalID).Scan(&held); err != nil {
+		return err
 	}
-	id := fmt.Sprintf("%s_%06d", prefix, seq)
-	if _, err := tx.Exec(`UPDATE `+table+` SET id = ? WHERE seq = ?`, id, seq); err != nil {
-		return "", err
+	if held {
+		return nil
 	}
-	return id, nil
-}
-
-var kindNamePattern = regexp.MustCompile(`^[a-z][a-z0-9-]*( [a-z0-9-]+)*$`)
-
-func insertKind(tx execer, name, description string, actor Actor, now int64) (string, error) {
-	result, err := tx.Exec(`INSERT INTO time_entry_kinds (id, name, description, created_by, created_by_kind, created_at)
-		VALUES ('pending-' || hex(randomblob(8)), ?, ?, ?, ?, ?)`, name, description, actor.By, actor.Kind, now)
-	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE") {
-			return "", fmt.Errorf("%w: a kind named %q exists", ErrConflict, name)
+	return postgresstorage.InTransaction(ctx, s.db, func(tx *sql.Tx) error {
+		if err := lockOwner(ctx, tx, ownerPrincipalID); err != nil {
+			return err
 		}
-		return "", err
-	}
-	return assignID(tx, "time_entry_kinds", "time_entry_kind", result)
+		return s.seedKindsOf(ctx, tx, ownerPrincipalID)
+	})
 }
 
-// CreateKind adds a kind.
-func (s *Store) CreateKind(name, description string, actor Actor) (Kind, error) {
+// CreateKind adds a kind to an owner's account.
+func (s *Store) CreateKind(ctx context.Context, ownerPrincipalID, name, description string, actor Actor) (Kind, error) {
+	if err := checkOwner(ownerPrincipalID); err != nil {
+		return Kind{}, err
+	}
 	if err := actor.validate(); err != nil {
 		return Kind{}, err
 	}
@@ -255,35 +320,70 @@ func (s *Store) CreateKind(name, description string, actor Actor) (Kind, error) 
 	if strings.TrimSpace(description) == "" {
 		return Kind{}, fmt.Errorf("%w: description is required", ErrInvalid)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	id, err := insertKind(s.db, name, description, actor, s.now().Unix())
+	var seq int64
+	err := postgresstorage.InTransaction(ctx, s.db, func(tx *sql.Tx) error {
+		if err := lockOwner(ctx, tx, ownerPrincipalID); err != nil {
+			return err
+		}
+		if err := s.seedKindsOf(ctx, tx, ownerPrincipalID); err != nil {
+			return err
+		}
+		var err error
+		seq, err = insertKind(ctx, tx, ownerPrincipalID, name, description, actor, s.now().Unix())
+		return err
+	})
 	if err != nil {
 		return Kind{}, err
 	}
-	return s.Kind(id)
+	return s.Kind(ctx, ownership.OwnedBy(ownerPrincipalID), postgresstorage.FormatRecordID(KindIDPrefix, seq))
 }
 
-const kindColumns = `id, name, description, created_by, created_by_kind, created_at`
+const kindColumns = `seq, owner_principal_id, name, description, created_by, created_by_kind, created_at`
 
 func scanKind(row interface{ Scan(...any) error }) (Kind, error) {
 	var kind Kind
-	err := row.Scan(&kind.ID, &kind.Name, &kind.Description, &kind.CreatedBy, &kind.CreatedByKind, &kind.CreatedAt)
+	var seq int64
+	err := row.Scan(&seq, &kind.OwnerPrincipalID, &kind.Name, &kind.Description, &kind.CreatedBy, &kind.CreatedByKind, &kind.CreatedAt)
+	kind.ID = postgresstorage.FormatRecordID(KindIDPrefix, seq)
 	return kind, err
 }
 
-// Kind reads one kind.
-func (s *Store) Kind(id string) (Kind, error) {
-	kind, err := scanKind(s.db.QueryRow(`SELECT `+kindColumns+` FROM time_entry_kinds WHERE id = ?`, id))
+// Kind reads one kind. A malformed id, a missing kind and one outside the
+// scope are all not found.
+func (s *Store) Kind(ctx context.Context, scope ownership.Scope, id string) (Kind, error) {
+	seq, err := postgresstorage.ParseRecordID(KindIDPrefix, id)
+	if err != nil {
+		return Kind{}, fmt.Errorf("%w: kind %s", ErrNotFound, id)
+	}
+	args := arguments{seq}
+	condition, err := scopeCondition(scope, "owner_principal_id", &args)
+	if err != nil {
+		return Kind{}, err
+	}
+	kind, err := scanKind(s.db.QueryRowContext(ctx, `SELECT `+kindColumns+` FROM time_entry_kinds WHERE seq = $1 AND `+condition, args...))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Kind{}, fmt.Errorf("%w: kind %s", ErrNotFound, id)
 	}
 	return kind, err
 }
 
-// Kinds lists every kind by name.
-func (s *Store) Kinds() ([]Kind, error) {
-	rows, err := s.db.Query(`SELECT ` + kindColumns + ` FROM time_entry_kinds ORDER BY name`)
+// Kinds lists the kinds in scope by name. A scope of one owner who holds no
+// kind yet gets SeedKinds first.
+func (s *Store) Kinds(ctx context.Context, scope ownership.Scope) ([]Kind, error) {
+	if err := scope.Check(); err != nil {
+		return nil, err
+	}
+	if !scope.IsEveryOwner() {
+		if err := s.ensureSeedKinds(ctx, scope.OwnerPrincipalID()); err != nil {
+			return nil, err
+		}
+	}
+	var args arguments
+	condition, err := scopeCondition(scope, "owner_principal_id", &args)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT `+kindColumns+` FROM time_entry_kinds WHERE `+condition+` ORDER BY name, owner_principal_id`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -347,9 +447,13 @@ func validateSpan(startsAt, endsAt int64, allDay bool, startDate, endDate, timeZ
 	return nil
 }
 
-// CreateEntry makes an entry with its kinds and links in one transaction. A
-// source link that already belongs to another entry is a conflict naming it.
-func (s *Store) CreateEntry(input EntryInput) (TimeEntry, error) {
+// CreateEntry makes an entry in an owner's account, with its kinds and links,
+// in one transaction. A source link that already belongs to another of the
+// owner's entries is a conflict naming it.
+func (s *Store) CreateEntry(ctx context.Context, ownerPrincipalID string, input EntryInput) (TimeEntry, error) {
+	if err := checkOwner(ownerPrincipalID); err != nil {
+		return TimeEntry{}, err
+	}
 	actor := Actor{By: input.By, Kind: input.ByKind}
 	if err := actor.validate(); err != nil {
 		return TimeEntry{}, err
@@ -364,178 +468,217 @@ func (s *Store) CreateEntry(input EntryInput) (TimeEntry, error) {
 	if err := validateSpan(input.StartsAt, input.EndsAt, input.AllDay, input.StartDate, input.EndDate, input.TimeZone); err != nil {
 		return TimeEntry{}, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	tx, err := s.db.Begin()
-	if err != nil {
-		return TimeEntry{}, err
-	}
-	defer tx.Rollback()
-	now := s.now().Unix()
-	parentSetBy, parentSetByKind := "", ""
-	if input.ParentTimeEntryID != "" {
-		if err := checkParent(tx, "", input.ParentTimeEntryID, input.StartsAt, input.EndsAt); err != nil {
-			return TimeEntry{}, err
-		}
-		parentSetBy, parentSetByKind = actor.By, actor.Kind
-	}
-	placeBy, placeByKind := "", ""
-	if input.Place != "" {
-		placeBy, placeByKind = actor.By, actor.Kind
-	}
-	result, err := tx.Exec(`INSERT INTO time_entries (id, title, title_by, title_by_kind, span_by, span_by_kind, starts_at, ends_at, all_day, start_date, end_date,
-		time_zone, place, place_by, place_by_kind, parent_time_entry_id, parent_set_by, parent_set_by_kind, created_by, created_by_kind, created_reason,
-		created_at, updated_at, evidence_changed_at)
-		VALUES ('pending-' || hex(randomblob(8)), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?, ?)`,
-		input.Title, actor.By, actor.Kind, actor.By, actor.Kind, input.StartsAt, input.EndsAt, input.AllDay, input.StartDate, input.EndDate,
-		input.TimeZone, input.Place, placeBy, placeByKind, input.ParentTimeEntryID, parentSetBy, parentSetByKind, actor.By, actor.Kind, input.Reason,
-		now, now, now)
-	if err != nil {
-		return TimeEntry{}, err
-	}
-	id, err := assignID(tx, "time_entries", "time_entry", result)
-	if err != nil {
-		return TimeEntry{}, err
-	}
-	for _, kindID := range input.KindIDs {
-		if err := assignKind(tx, id, kindID, actor, input.Reason, now); err != nil {
-			return TimeEntry{}, err
-		}
-	}
-	for _, link := range input.Links {
-		if link.Reason == "" {
-			link.Reason = input.Reason
-		}
-		if _, err := addLink(tx, id, link, actor, now); err != nil {
-			return TimeEntry{}, err
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return TimeEntry{}, err
-	}
-	return s.Entry(id, false)
-}
-
-// checkParent refuses a parent that is missing, deleted, does not contain the
-// span, or is the entry itself or one of its descendants.
-func checkParent(tx *sql.Tx, entryID, parentID string, startsAt, endsAt int64) error {
-	var parentStarts, parentEnds int64
-	var deletedAt sql.NullInt64
-	err := tx.QueryRow(`SELECT starts_at, ends_at, deleted_at FROM time_entries WHERE id = ?`, parentID).Scan(&parentStarts, &parentEnds, &deletedAt)
-	if errors.Is(err, sql.ErrNoRows) || deletedAt.Valid {
-		return fmt.Errorf("%w: parent %s does not exist", ErrInvalid, parentID)
-	}
-	if err != nil {
-		return err
-	}
-	if startsAt < parentStarts || endsAt > parentEnds {
-		return fmt.Errorf("%w: the entry (%d–%d) does not lie inside parent %s (%d–%d)", ErrConflict, startsAt, endsAt, parentID, parentStarts, parentEnds)
-	}
-	for ancestor := parentID; ancestor != ""; {
-		if ancestor == entryID {
-			return fmt.Errorf("%w: %s cannot sit inside itself", ErrConflict, entryID)
-		}
-		var next sql.NullString
-		if err := tx.QueryRow(`SELECT parent_time_entry_id FROM time_entries WHERE id = ?`, ancestor).Scan(&next); err != nil {
+	var seq int64
+	err := postgresstorage.InTransaction(ctx, s.db, func(tx *sql.Tx) error {
+		if err := lockOwner(ctx, tx, ownerPrincipalID); err != nil {
 			return err
 		}
-		ancestor = next.String
+		now := s.now().Unix()
+		var parentSeq sql.NullInt64
+		parentSetBy, parentSetByKind := "", ""
+		if input.ParentTimeEntryID != "" {
+			number, err := checkParent(ctx, tx, ownerPrincipalID, 0, input.ParentTimeEntryID, input.StartsAt, input.EndsAt)
+			if err != nil {
+				return err
+			}
+			parentSeq = sql.NullInt64{Int64: number, Valid: true}
+			parentSetBy, parentSetByKind = actor.By, actor.Kind
+		}
+		placeBy, placeByKind := "", ""
+		if input.Place != "" {
+			placeBy, placeByKind = actor.By, actor.Kind
+		}
+		err := tx.QueryRowContext(ctx, `INSERT INTO time_entries (owner_principal_id, title, title_by, title_by_kind, span_by, span_by_kind, starts_at, ends_at,
+			all_day, start_date, end_date, time_zone, place, place_by, place_by_kind, parent_seq, parent_set_by, parent_set_by_kind, created_by,
+			created_by_kind, created_reason, created_at, updated_at, evidence_changed_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24) RETURNING seq`,
+			ownerPrincipalID, input.Title, actor.By, actor.Kind, actor.By, actor.Kind, input.StartsAt, input.EndsAt,
+			input.AllDay, input.StartDate, input.EndDate, input.TimeZone, input.Place, placeBy, placeByKind, parentSeq, parentSetBy, parentSetByKind, actor.By,
+			actor.Kind, input.Reason, now, now, now).Scan(&seq)
+		if err != nil {
+			return err
+		}
+		for _, kindID := range input.KindIDs {
+			if err := assignKind(ctx, tx, ownerPrincipalID, seq, kindID, actor, input.Reason, now); err != nil {
+				return err
+			}
+		}
+		for _, link := range input.Links {
+			if link.Reason == "" {
+				link.Reason = input.Reason
+			}
+			if _, err := addLink(ctx, tx, ownerPrincipalID, seq, link, actor, now); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return TimeEntry{}, err
 	}
-	return nil
+	return s.Entry(ctx, ownership.OwnedBy(ownerPrincipalID), postgresstorage.FormatRecordID(EntryIDPrefix, seq), false)
 }
 
-func assignKind(tx *sql.Tx, entryID, kindID string, actor Actor, reason string, now int64) error {
-	var exists int
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM time_entry_kinds WHERE id = ?`, kindID).Scan(&exists); err != nil {
-		return err
+// checkParent refuses a parent that is missing, deleted, another owner's,
+// does not contain the span, or is the entry itself or one of its
+// descendants. entrySeq is 0 for an entry not made yet. It answers the
+// parent's number.
+func checkParent(ctx context.Context, tx *sql.Tx, ownerPrincipalID string, entrySeq int64, parentID string, startsAt, endsAt int64) (int64, error) {
+	parentSeq, err := postgresstorage.ParseRecordID(EntryIDPrefix, parentID)
+	if err != nil {
+		return 0, fmt.Errorf("%w: parent %s does not exist", ErrInvalid, parentID)
 	}
-	if exists == 0 {
+	var parentStarts, parentEnds int64
+	var deletedAt sql.NullInt64
+	err = tx.QueryRowContext(ctx, `SELECT starts_at, ends_at, deleted_at FROM time_entries WHERE seq = $1 AND owner_principal_id = $2`,
+		parentSeq, ownerPrincipalID).Scan(&parentStarts, &parentEnds, &deletedAt)
+	if errors.Is(err, sql.ErrNoRows) || deletedAt.Valid {
+		return 0, fmt.Errorf("%w: parent %s does not exist", ErrInvalid, parentID)
+	}
+	if err != nil {
+		return 0, err
+	}
+	if startsAt < parentStarts || endsAt > parentEnds {
+		return 0, fmt.Errorf("%w: the entry (%d–%d) does not lie inside parent %s (%d–%d)", ErrConflict, startsAt, endsAt, parentID, parentStarts, parentEnds)
+	}
+	for ancestor := parentSeq; ancestor != 0; {
+		if ancestor == entrySeq {
+			return 0, fmt.Errorf("%w: %s cannot sit inside itself", ErrConflict, postgresstorage.FormatRecordID(EntryIDPrefix, entrySeq))
+		}
+		var next sql.NullInt64
+		if err := tx.QueryRowContext(ctx, `SELECT parent_seq FROM time_entries WHERE seq = $1`, ancestor).Scan(&next); err != nil {
+			return 0, err
+		}
+		ancestor = next.Int64
+	}
+	return parentSeq, nil
+}
+
+func assignKind(ctx context.Context, tx *sql.Tx, ownerPrincipalID string, entrySeq int64, kindID string, actor Actor, reason string, now int64) error {
+	kindSeq, err := postgresstorage.ParseRecordID(KindIDPrefix, kindID)
+	if err != nil {
 		return fmt.Errorf("%w: kind %s does not exist", ErrInvalid, kindID)
 	}
-	var live int
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM time_entry_kind_assignments WHERE time_entry_id = ? AND kind_id = ? AND removed_at IS NULL`, entryID, kindID).Scan(&live); err != nil {
+	var exists bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM time_entry_kinds WHERE seq = $1 AND owner_principal_id = $2)`, kindSeq, ownerPrincipalID).Scan(&exists); err != nil {
 		return err
 	}
-	if live > 0 {
+	if !exists {
+		return fmt.Errorf("%w: kind %s does not exist", ErrInvalid, kindID)
+	}
+	var live bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM time_entry_kind_assignments WHERE time_entry_seq = $1 AND kind_seq = $2 AND removed_at IS NULL)`,
+		entrySeq, kindSeq).Scan(&live); err != nil {
+		return err
+	}
+	if live {
 		return nil
 	}
 	if actor.Kind != ActorOperator {
-		var removedByOperator int
-		if err := tx.QueryRow(`SELECT COUNT(*) FROM time_entry_kind_assignments WHERE time_entry_id = ? AND kind_id = ? AND removed_by_kind = 'operator'`, entryID, kindID).Scan(&removedByOperator); err != nil {
+		var removedByOperator bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM time_entry_kind_assignments WHERE time_entry_seq = $1 AND kind_seq = $2 AND removed_by_kind = 'operator')`,
+			entrySeq, kindSeq).Scan(&removedByOperator); err != nil {
 			return err
 		}
-		if removedByOperator > 0 {
-			return fmt.Errorf("%w: the operator took kind %s off %s", ErrConflict, kindID, entryID)
+		if removedByOperator {
+			return fmt.Errorf("%w: the operator took kind %s off %s", ErrConflict, kindID, postgresstorage.FormatRecordID(EntryIDPrefix, entrySeq))
 		}
 	}
 	if strings.TrimSpace(reason) == "" {
 		return fmt.Errorf("%w: reason is required", ErrInvalid)
 	}
-	_, err := tx.Exec(`INSERT INTO time_entry_kind_assignments (time_entry_id, kind_id, assigned_by, assigned_by_kind, reason, assigned_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		entryID, kindID, actor.By, actor.Kind, reason, now)
+	_, err = tx.ExecContext(ctx, `INSERT INTO time_entry_kind_assignments (owner_principal_id, time_entry_seq, kind_seq, assigned_by, assigned_by_kind, reason, assigned_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`, ownerPrincipalID, entrySeq, kindSeq, actor.By, actor.Kind, reason, now)
 	return err
 }
 
-// AssignKind puts a kind on an entry. Putting on one it carries changes nothing.
-func (s *Store) AssignKind(entryID, kindID string, actor Actor, reason string) (TimeEntry, error) {
+// entryInScope finds an entry's number and owner within scope. A malformed
+// id, a missing entry and one outside the scope are all not found.
+func entryInScope(ctx context.Context, db queryer, scope ownership.Scope, entryID string) (int64, string, error) {
+	seq, err := postgresstorage.ParseRecordID(EntryIDPrefix, entryID)
+	if err != nil {
+		return 0, "", fmt.Errorf("%w: time entry %s", ErrNotFound, entryID)
+	}
+	args := arguments{seq}
+	condition, err := scopeCondition(scope, "owner_principal_id", &args)
+	if err != nil {
+		return 0, "", err
+	}
+	var owner string
+	err = db.QueryRowContext(ctx, `SELECT owner_principal_id FROM time_entries WHERE seq = $1 AND `+condition, args...).Scan(&owner)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, "", fmt.Errorf("%w: time entry %s", ErrNotFound, entryID)
+	}
+	return seq, owner, err
+}
+
+// writeOnEntry runs work in a transaction holding the lock of the owner of an
+// entry in scope. live refuses a deleted entry.
+func (s *Store) writeOnEntry(ctx context.Context, scope ownership.Scope, entryID string, live bool, work func(tx *sql.Tx, seq int64, owner string) error) error {
+	seq, owner, err := entryInScope(ctx, s.db, scope, entryID)
+	if err != nil {
+		return err
+	}
+	return postgresstorage.InTransaction(ctx, s.db, func(tx *sql.Tx) error {
+		if err := lockOwner(ctx, tx, owner); err != nil {
+			return err
+		}
+		if live {
+			var deletedAt sql.NullInt64
+			if err := tx.QueryRowContext(ctx, `SELECT deleted_at FROM time_entries WHERE seq = $1`, seq).Scan(&deletedAt); err != nil {
+				return err
+			}
+			if deletedAt.Valid {
+				return fmt.Errorf("%w: time entry %s was deleted", ErrConflict, entryID)
+			}
+		}
+		return work(tx, seq, owner)
+	})
+}
+
+// AssignKind puts one of the entry owner's kinds on an entry. Putting on one
+// it carries changes nothing.
+func (s *Store) AssignKind(ctx context.Context, scope ownership.Scope, entryID, kindID string, actor Actor, reason string) (TimeEntry, error) {
 	if err := actor.validate(); err != nil {
 		return TimeEntry{}, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	tx, err := s.db.Begin()
+	var owner string
+	err := s.writeOnEntry(ctx, scope, entryID, true, func(tx *sql.Tx, seq int64, entryOwner string) error {
+		owner = entryOwner
+		return assignKind(ctx, tx, entryOwner, seq, kindID, actor, reason, s.now().Unix())
+	})
 	if err != nil {
 		return TimeEntry{}, err
 	}
-	defer tx.Rollback()
-	if err := liveEntry(tx, entryID); err != nil {
-		return TimeEntry{}, err
-	}
-	if err := assignKind(tx, entryID, kindID, actor, reason, s.now().Unix()); err != nil {
-		return TimeEntry{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return TimeEntry{}, err
-	}
-	return s.Entry(entryID, false)
+	return s.Entry(ctx, ownership.OwnedBy(owner), entryID, false)
 }
 
 // RemoveKind takes a kind off an entry.
-func (s *Store) RemoveKind(entryID, kindID string, actor Actor) error {
+func (s *Store) RemoveKind(ctx context.Context, scope ownership.Scope, entryID, kindID string, actor Actor) error {
 	if err := actor.validate(); err != nil {
 		return err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var assignedByKind string
-	err := s.db.QueryRow(`SELECT assigned_by_kind FROM time_entry_kind_assignments WHERE time_entry_id = ? AND kind_id = ? AND removed_at IS NULL`, entryID, kindID).Scan(&assignedByKind)
-	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("%w: %s does not carry kind %s", ErrNotFound, entryID, kindID)
-	}
-	if err != nil {
+	return s.writeOnEntry(ctx, scope, entryID, false, func(tx *sql.Tx, seq int64, _ string) error {
+		kindSeq, err := postgresstorage.ParseRecordID(KindIDPrefix, kindID)
+		if err != nil {
+			return fmt.Errorf("%w: %s does not carry kind %s", ErrNotFound, entryID, kindID)
+		}
+		var assignedByKind string
+		err = tx.QueryRowContext(ctx, `SELECT assigned_by_kind FROM time_entry_kind_assignments WHERE time_entry_seq = $1 AND kind_seq = $2 AND removed_at IS NULL`,
+			seq, kindSeq).Scan(&assignedByKind)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: %s does not carry kind %s", ErrNotFound, entryID, kindID)
+		}
+		if err != nil {
+			return err
+		}
+		if !actor.mayReplace(assignedByKind) {
+			return fmt.Errorf("%w: kind %s was put on by a %s; a %s may not take it off", ErrConflict, kindID, assignedByKind, actor.Kind)
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE time_entry_kind_assignments SET removed_at = $1, removed_by = $2, removed_by_kind = $3
+			WHERE time_entry_seq = $4 AND kind_seq = $5 AND removed_at IS NULL`, s.now().Unix(), actor.By, actor.Kind, seq, kindSeq)
 		return err
-	}
-	if !actor.mayReplace(assignedByKind) {
-		return fmt.Errorf("%w: kind %s was put on by a %s; a %s may not take it off", ErrConflict, kindID, assignedByKind, actor.Kind)
-	}
-	_, err = s.db.Exec(`UPDATE time_entry_kind_assignments SET removed_at = ?, removed_by = ?, removed_by_kind = ? WHERE time_entry_id = ? AND kind_id = ? AND removed_at IS NULL`,
-		s.now().Unix(), actor.By, actor.Kind, entryID, kindID)
-	return err
-}
-
-func liveEntry(tx *sql.Tx, entryID string) error {
-	var deletedAt sql.NullInt64
-	err := tx.QueryRow(`SELECT deleted_at FROM time_entries WHERE id = ?`, entryID).Scan(&deletedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("%w: time entry %s", ErrNotFound, entryID)
-	}
-	if err != nil {
-		return err
-	}
-	if deletedAt.Valid {
-		return fmt.Errorf("%w: time entry %s was deleted", ErrConflict, entryID)
-	}
-	return nil
+	})
 }
 
 func linkTypeOf(name string) (LinkType, error) {
@@ -548,7 +691,7 @@ func linkTypeOf(name string) (LinkType, error) {
 
 // addLink makes one link, or answers the identical live one. It refuses a
 // link the operator removed unless the operator makes it again.
-func addLink(tx *sql.Tx, entryID string, input LinkInput, actor Actor, now int64) (Link, error) {
+func addLink(ctx context.Context, tx *sql.Tx, ownerPrincipalID string, entrySeq int64, input LinkInput, actor Actor, now int64) (Link, error) {
 	linkType, err := linkTypeOf(input.LinkType)
 	if err != nil {
 		return Link{}, err
@@ -574,8 +717,13 @@ func addLink(tx *sql.Tx, entryID string, input LinkInput, actor Actor, now int64
 	if strings.TrimSpace(input.Reason) == "" {
 		return Link{}, fmt.Errorf("%w: reason is required: why this record bears on the entry", ErrInvalid)
 	}
-	where, args := linkKey(linkType, input.Ref, input.OccurrenceStartsAt)
-	existing, err := queryLinks(tx, linkType, `time_entry_id = ? AND `+where+` AND removed_at IS NULL`, append([]any{entryID}, args...)...)
+	entryID := postgresstorage.FormatRecordID(EntryIDPrefix, entrySeq)
+	onThisEntry := func(extra string) (string, arguments) {
+		args := arguments{entrySeq}
+		return `time_entry_seq = $1 AND ` + linkKey(linkType, input.Ref, input.OccurrenceStartsAt, &args) + extra, args
+	}
+	where, args := onThisEntry(` AND removed_at IS NULL`)
+	existing, err := queryLinks(ctx, tx, linkType, where, args...)
 	if err != nil {
 		return Link{}, err
 	}
@@ -586,7 +734,8 @@ func addLink(tx *sql.Tx, entryID string, input LinkInput, actor Actor, now int64
 		return Link{}, fmt.Errorf("%w: %s %s is already linked to %s as %s; remove it first", ErrConflict, linkType.Name, input.Ref, entryID, existing[0].BearsOn)
 	}
 	if actor.Kind != ActorOperator {
-		removed, err := queryLinks(tx, linkType, `time_entry_id = ? AND `+where+` AND removed_by_kind = 'operator'`, append([]any{entryID}, args...)...)
+		where, args := onThisEntry(` AND removed_by_kind = 'operator'`)
+		removed, err := queryLinks(ctx, tx, linkType, where, args...)
 		if err != nil {
 			return Link{}, err
 		}
@@ -595,7 +744,9 @@ func addLink(tx *sql.Tx, entryID string, input LinkInput, actor Actor, now int64
 		}
 	}
 	if input.BearsOn == BearsOnSource {
-		owners, err := queryLinks(tx, linkType, where+` AND removed_at IS NULL AND bears_on = 'source'`, args...)
+		args := arguments{ownerPrincipalID}
+		where := `owner_principal_id = $1 AND ` + linkKey(linkType, input.Ref, input.OccurrenceStartsAt, &args) + ` AND removed_at IS NULL AND bears_on = 'source'`
+		owners, err := queryLinks(ctx, tx, linkType, where, args...)
 		if err != nil {
 			return Link{}, err
 		}
@@ -603,47 +754,50 @@ func addLink(tx *sql.Tx, entryID string, input LinkInput, actor Actor, now int64
 			return Link{}, fmt.Errorf("%w: %s %s is already the source of %s", ErrConflict, linkType.Name, input.Ref, owners[0].TimeEntryID)
 		}
 	}
-	columns := []string{"time_entry_id", linkType.RefColumn, "bears_on", "linked_by", "linked_by_kind", "reason", "linked_at"}
-	values := []any{entryID, input.Ref, input.BearsOn, actor.By, actor.Kind, input.Reason, now}
+	columns := []string{"owner_principal_id", "time_entry_seq", linkType.RefColumn, "bears_on", "linked_by", "linked_by_kind", "reason", "linked_at"}
+	values := arguments{}
+	placeholders := []string{}
+	for _, value := range []any{ownerPrincipalID, entrySeq, input.Ref, input.BearsOn, actor.By, actor.Kind, input.Reason, now} {
+		placeholders = append(placeholders, values.add(value))
+	}
 	if linkType.HasOccurrence {
-		columns, values = append(columns, "occurrence_starts_at"), append(values, *input.OccurrenceStartsAt)
+		columns, placeholders = append(columns, "occurrence_starts_at"), append(placeholders, values.add(*input.OccurrenceStartsAt))
 	}
 	if linkType.HasOverlap && input.OverlapSeconds != nil {
-		columns, values = append(columns, "overlap_seconds"), append(values, *input.OverlapSeconds)
+		columns, placeholders = append(columns, "overlap_seconds"), append(placeholders, values.add(*input.OverlapSeconds))
 	}
 	if linkType.HasAmount && input.AmountCents != nil {
-		columns, values = append(columns, "amount_cents"), append(values, *input.AmountCents)
+		columns, placeholders = append(columns, "amount_cents"), append(placeholders, values.add(*input.AmountCents))
 	}
-	placeholders := strings.TrimSuffix(strings.Repeat("?, ", len(columns)), ", ")
-	if _, err := tx.Exec(`INSERT INTO `+linkType.Table+` (`+strings.Join(columns, ", ")+`) VALUES (`+placeholders+`)`, values...); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO `+linkType.Table+` (`+strings.Join(columns, ", ")+`) VALUES (`+strings.Join(placeholders, ", ")+`)`, values...); err != nil {
+		if isUniqueViolation(err) {
+			return Link{}, fmt.Errorf("%w: %s %s is already linked: %v", ErrConflict, linkType.Name, input.Ref, err)
+		}
 		return Link{}, err
 	}
-	if _, err := tx.Exec(`UPDATE time_entries SET evidence_changed_at = ? WHERE id = ?`, now, entryID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE time_entries SET evidence_changed_at = $1 WHERE seq = $2`, now, entrySeq); err != nil {
 		return Link{}, err
 	}
-	made, err := queryLinks(tx, linkType, `time_entry_id = ? AND `+where+` AND removed_at IS NULL`, append([]any{entryID}, args...)...)
+	where, args = onThisEntry(` AND removed_at IS NULL`)
+	made, err := queryLinks(ctx, tx, linkType, where, args...)
 	if err != nil {
 		return Link{}, err
 	}
 	return made[0], nil
 }
 
-func linkKey(linkType LinkType, ref string, occurrence *int64) (string, []any) {
-	if linkType.HasOccurrence {
-		if occurrence == nil {
-			return linkType.RefColumn + ` = ?`, []any{ref}
-		}
-		return linkType.RefColumn + ` = ? AND occurrence_starts_at = ?`, []any{ref, *occurrence}
+// linkKey is the condition naming one record of linkType, its arguments
+// added to args.
+func linkKey(linkType LinkType, ref string, occurrence *int64, args *arguments) string {
+	condition := linkType.RefColumn + ` = ` + args.add(ref)
+	if linkType.HasOccurrence && occurrence != nil {
+		condition += ` AND occurrence_starts_at = ` + args.add(*occurrence)
 	}
-	return linkType.RefColumn + ` = ?`, []any{ref}
+	return condition
 }
 
-type querier interface {
-	Query(query string, args ...any) (*sql.Rows, error)
-}
-
-func queryLinks(db querier, linkType LinkType, where string, args ...any) ([]Link, error) {
-	occurrence, overlap, amount := "NULL", "NULL", "NULL"
+func queryLinks(ctx context.Context, db queryer, linkType LinkType, where string, args ...any) ([]Link, error) {
+	occurrence, overlap, amount := "NULL::bigint", "NULL::bigint", "NULL::bigint"
 	if linkType.HasOccurrence {
 		occurrence = "occurrence_starts_at"
 	}
@@ -653,8 +807,8 @@ func queryLinks(db querier, linkType LinkType, where string, args ...any) ([]Lin
 	if linkType.HasAmount {
 		amount = "amount_cents"
 	}
-	rows, err := db.Query(`SELECT time_entry_id, `+linkType.RefColumn+`, `+occurrence+`, `+overlap+`, `+amount+`, bears_on, linked_by, linked_by_kind, reason, linked_at,
-		removed_at, removed_by, removed_by_kind FROM `+linkType.Table+` WHERE `+where+` ORDER BY seq`, args...)
+	rows, err := db.QueryContext(ctx, `SELECT time_entry_seq, `+linkType.RefColumn+`, `+occurrence+`, `+overlap+`, `+amount+`, bears_on, linked_by, linked_by_kind,
+		reason, linked_at, removed_at, removed_by, removed_by_kind FROM `+linkType.Table+` WHERE `+where+` ORDER BY seq`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -662,11 +816,13 @@ func queryLinks(db querier, linkType LinkType, where string, args ...any) ([]Lin
 	links := []Link{}
 	for rows.Next() {
 		link := Link{LinkType: linkType.Name}
+		var entrySeq int64
 		var occurrenceValue, overlapValue, amountValue, removedAt sql.NullInt64
-		if err := rows.Scan(&link.TimeEntryID, &link.Ref, &occurrenceValue, &overlapValue, &amountValue, &link.BearsOn, &link.LinkedBy, &link.LinkedByKind,
+		if err := rows.Scan(&entrySeq, &link.Ref, &occurrenceValue, &overlapValue, &amountValue, &link.BearsOn, &link.LinkedBy, &link.LinkedByKind,
 			&link.Reason, &link.LinkedAt, &removedAt, &link.RemovedBy, &link.RemovedByKind); err != nil {
 			return nil, err
 		}
+		link.TimeEntryID = postgresstorage.FormatRecordID(EntryIDPrefix, entrySeq)
 		link.OccurrenceStartsAt = nullableInt(occurrenceValue)
 		link.OverlapSeconds = nullableInt(overlapValue)
 		link.AmountCents = nullableInt(amountValue)
@@ -685,30 +841,22 @@ func nullableInt(value sql.NullInt64) *int64 {
 }
 
 // AddLink links a record to an entry.
-func (s *Store) AddLink(entryID string, input LinkInput, actor Actor) (Link, error) {
+func (s *Store) AddLink(ctx context.Context, scope ownership.Scope, entryID string, input LinkInput, actor Actor) (Link, error) {
 	if err := actor.validate(); err != nil {
 		return Link{}, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	tx, err := s.db.Begin()
-	if err != nil {
-		return Link{}, err
-	}
-	defer tx.Rollback()
-	if err := liveEntry(tx, entryID); err != nil {
-		return Link{}, err
-	}
-	link, err := addLink(tx, entryID, input, actor, s.now().Unix())
-	if err != nil {
-		return Link{}, err
-	}
-	return link, tx.Commit()
+	var link Link
+	err := s.writeOnEntry(ctx, scope, entryID, true, func(tx *sql.Tx, seq int64, owner string) error {
+		var err error
+		link, err = addLink(ctx, tx, owner, seq, input, actor, s.now().Unix())
+		return err
+	})
+	return link, err
 }
 
 // RemoveLink marks a live link removed. It is kept, and a removal by the
 // operator keeps models and programs from making it again.
-func (s *Store) RemoveLink(entryID, linkTypeName, ref string, occurrence *int64, actor Actor) error {
+func (s *Store) RemoveLink(ctx context.Context, scope ownership.Scope, entryID, linkTypeName, ref string, occurrence *int64, actor Actor) error {
 	if err := actor.validate(); err != nil {
 		return err
 	}
@@ -719,47 +867,47 @@ func (s *Store) RemoveLink(entryID, linkTypeName, ref string, occurrence *int64,
 	if linkType.HasOccurrence && occurrence == nil {
 		return fmt.Errorf("%w: occurrence_starts_at is required to remove a %s link", ErrInvalid, linkType.Name)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	tx, err := s.db.Begin()
-	if err != nil {
+	return s.writeOnEntry(ctx, scope, entryID, false, func(tx *sql.Tx, seq int64, _ string) error {
+		args := arguments{seq}
+		where := `time_entry_seq = $1 AND ` + linkKey(linkType, ref, occurrence, &args) + ` AND removed_at IS NULL`
+		live, err := queryLinks(ctx, tx, linkType, where, args...)
+		if err != nil {
+			return err
+		}
+		if len(live) == 0 {
+			return fmt.Errorf("%w: %s is not linked to %s %s", ErrNotFound, entryID, linkType.Name, ref)
+		}
+		if !actor.mayReplace(live[0].LinkedByKind) {
+			return fmt.Errorf("%w: a %s made this link; a %s may not remove it", ErrConflict, live[0].LinkedByKind, actor.Kind)
+		}
+		now := s.now().Unix()
+		update := arguments{now, actor.By, actor.Kind, seq}
+		if _, err := tx.ExecContext(ctx, `UPDATE `+linkType.Table+` SET removed_at = $1, removed_by = $2, removed_by_kind = $3
+			WHERE time_entry_seq = $4 AND `+linkKey(linkType, ref, occurrence, &update)+` AND removed_at IS NULL`, update...); err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE time_entries SET evidence_changed_at = $1 WHERE seq = $2`, now, seq)
 		return err
-	}
-	defer tx.Rollback()
-	where, args := linkKey(linkType, ref, occurrence)
-	live, err := queryLinks(tx, linkType, `time_entry_id = ? AND `+where+` AND removed_at IS NULL`, append([]any{entryID}, args...)...)
-	if err != nil {
-		return err
-	}
-	if len(live) == 0 {
-		return fmt.Errorf("%w: %s is not linked to %s %s", ErrNotFound, entryID, linkType.Name, ref)
-	}
-	if !actor.mayReplace(live[0].LinkedByKind) {
-		return fmt.Errorf("%w: a %s made this link; a %s may not remove it", ErrConflict, live[0].LinkedByKind, actor.Kind)
-	}
-	now := s.now().Unix()
-	if _, err := tx.Exec(`UPDATE `+linkType.Table+` SET removed_at = ?, removed_by = ?, removed_by_kind = ? WHERE time_entry_id = ? AND `+where+` AND removed_at IS NULL`,
-		append([]any{now, actor.By, actor.Kind, entryID}, args...)...); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`UPDATE time_entries SET evidence_changed_at = ? WHERE id = ?`, now, entryID); err != nil {
-		return err
-	}
-	return tx.Commit()
+	})
 }
 
-// LinksTo lists the links to one record, across every entry: the way an
-// importer finds the entry a source already belongs to.
-func (s *Store) LinksTo(linkTypeName, ref string, occurrence *int64, includeRemoved bool) ([]Link, error) {
+// LinksTo lists the links to one record from every entry in scope: the way
+// an importer finds the entry a source already belongs to.
+func (s *Store) LinksTo(ctx context.Context, scope ownership.Scope, linkTypeName, ref string, occurrence *int64, includeRemoved bool) ([]Link, error) {
 	linkType, err := linkTypeOf(linkTypeName)
 	if err != nil {
 		return nil, err
 	}
-	where, args := linkKey(linkType, ref, occurrence)
+	var args arguments
+	condition, err := scopeCondition(scope, "owner_principal_id", &args)
+	if err != nil {
+		return nil, err
+	}
+	where := condition + ` AND ` + linkKey(linkType, ref, occurrence, &args)
 	if !includeRemoved {
 		where += ` AND removed_at IS NULL`
 	}
-	return queryLinks(s.db, linkType, where, args...)
+	return queryLinks(ctx, s.db, linkType, where, args...)
 }
 
 // EntryChange is what PATCH /time-entries/{id} takes. A field left out stays.
@@ -781,7 +929,7 @@ type EntryChange struct {
 // UpdateEntry changes an entry, copying it to revisions first. A field set by
 // a higher kind of actor than the caller is a conflict, and so is a span that
 // would leave a child outside it.
-func (s *Store) UpdateEntry(entryID string, change EntryChange) (TimeEntry, error) {
+func (s *Store) UpdateEntry(ctx context.Context, scope ownership.Scope, entryID string, change EntryChange) (TimeEntry, error) {
 	actor := Actor{By: change.By, Kind: change.ByKind}
 	if err := actor.validate(); err != nil {
 		return TimeEntry{}, err
@@ -789,209 +937,214 @@ func (s *Store) UpdateEntry(entryID string, change EntryChange) (TimeEntry, erro
 	if strings.TrimSpace(change.Reason) == "" {
 		return TimeEntry{}, fmt.Errorf("%w: reason is required", ErrInvalid)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	tx, err := s.db.Begin()
+	var owner string
+	err := s.writeOnEntry(ctx, scope, entryID, true, func(tx *sql.Tx, seq int64, entryOwner string) error {
+		owner = entryOwner
+		before, err := readEntry(ctx, tx, seq)
+		if err != nil {
+			return err
+		}
+		after := before
+		now := s.now().Unix()
+		if change.Title != nil && *change.Title != before.Title {
+			if !actor.mayReplace(before.TitleByKind) {
+				return fmt.Errorf("%w: a %s set the title; a %s may not change it", ErrConflict, before.TitleByKind, actor.Kind)
+			}
+			after.Title, after.TitleBy, after.TitleByKind = strings.TrimSpace(*change.Title), actor.By, actor.Kind
+			if after.Title == "" {
+				return fmt.Errorf("%w: title may not be empty", ErrInvalid)
+			}
+		}
+		spanChanged := false
+		setInt := func(field *int64, value *int64) {
+			if value != nil && *value != *field {
+				*field, spanChanged = *value, true
+			}
+		}
+		setString := func(field *string, value *string) {
+			if value != nil && *value != *field {
+				*field, spanChanged = *value, true
+			}
+		}
+		setInt(&after.StartsAt, change.StartsAt)
+		setInt(&after.EndsAt, change.EndsAt)
+		setString(&after.StartDate, change.StartDate)
+		setString(&after.EndDate, change.EndDate)
+		setString(&after.TimeZone, change.TimeZone)
+		if change.AllDay != nil && *change.AllDay != after.AllDay {
+			after.AllDay, spanChanged = *change.AllDay, true
+		}
+		if spanChanged {
+			if !actor.mayReplace(before.SpanByKind) {
+				return fmt.Errorf("%w: a %s set the times; a %s may not change them", ErrConflict, before.SpanByKind, actor.Kind)
+			}
+			if err := validateSpan(after.StartsAt, after.EndsAt, after.AllDay, after.StartDate, after.EndDate, after.TimeZone); err != nil {
+				return err
+			}
+			after.SpanBy, after.SpanByKind = actor.By, actor.Kind
+			var outside int
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM time_entries WHERE parent_seq = $1 AND deleted_at IS NULL AND (starts_at < $2 OR ends_at > $3)`,
+				seq, after.StartsAt, after.EndsAt).Scan(&outside); err != nil {
+				return err
+			}
+			if outside > 0 {
+				return fmt.Errorf("%w: %d of %s's children would lie outside the new times", ErrConflict, outside, entryID)
+			}
+		}
+		if change.Place != nil && *change.Place != before.Place {
+			if !actor.mayReplace(before.PlaceByKind) {
+				return fmt.Errorf("%w: a %s set the place; a %s may not change it", ErrConflict, before.PlaceByKind, actor.Kind)
+			}
+			after.Place, after.PlaceBy, after.PlaceByKind = *change.Place, actor.By, actor.Kind
+		}
+		if change.ParentTimeEntryID != nil && *change.ParentTimeEntryID != before.ParentTimeEntryID {
+			if !actor.mayReplace(before.ParentSetByKind) {
+				return fmt.Errorf("%w: a %s set the parent; a %s may not change it", ErrConflict, before.ParentSetByKind, actor.Kind)
+			}
+			after.ParentTimeEntryID, after.ParentSetBy, after.ParentSetByKind = *change.ParentTimeEntryID, actor.By, actor.Kind
+		}
+		var parentSeq sql.NullInt64
+		if after.ParentTimeEntryID != "" {
+			if spanChanged || after.ParentTimeEntryID != before.ParentTimeEntryID {
+				number, err := checkParent(ctx, tx, entryOwner, seq, after.ParentTimeEntryID, after.StartsAt, after.EndsAt)
+				if err != nil {
+					return err
+				}
+				parentSeq = sql.NullInt64{Int64: number, Valid: true}
+			} else {
+				number, err := postgresstorage.ParseRecordID(EntryIDPrefix, after.ParentTimeEntryID)
+				if err != nil {
+					return err
+				}
+				parentSeq = sql.NullInt64{Int64: number, Valid: true}
+			}
+		}
+		if after.Title == before.Title && !spanChanged && after.Place == before.Place && after.ParentTimeEntryID == before.ParentTimeEntryID {
+			return nil
+		}
+		if err := keepRevision(ctx, tx, before, seq, change.Reason, now); err != nil {
+			return err
+		}
+		evidenceChangedAt := before.EvidenceChangedAt
+		if spanChanged {
+			evidenceChangedAt = now
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE time_entries SET title = $1, title_by = $2, title_by_kind = $3, starts_at = $4, ends_at = $5, all_day = $6,
+			start_date = $7, end_date = $8, time_zone = $9, span_by = $10, span_by_kind = $11, place = $12, place_by = $13, place_by_kind = $14,
+			parent_seq = $15, parent_set_by = $16, parent_set_by_kind = $17, updated_at = $18, evidence_changed_at = $19 WHERE seq = $20`,
+			after.Title, after.TitleBy, after.TitleByKind, after.StartsAt, after.EndsAt, after.AllDay,
+			after.StartDate, after.EndDate, after.TimeZone, after.SpanBy, after.SpanByKind, after.Place, after.PlaceBy, after.PlaceByKind,
+			parentSeq, after.ParentSetBy, after.ParentSetByKind, now, evidenceChangedAt, seq)
+		return err
+	})
 	if err != nil {
 		return TimeEntry{}, err
 	}
-	defer tx.Rollback()
-	if err := liveEntry(tx, entryID); err != nil {
-		return TimeEntry{}, err
-	}
-	before, err := readEntry(tx, entryID)
-	if err != nil {
-		return TimeEntry{}, err
-	}
-	after := before
-	now := s.now().Unix()
-	if change.Title != nil && *change.Title != before.Title {
-		if !actor.mayReplace(before.TitleByKind) {
-			return TimeEntry{}, fmt.Errorf("%w: a %s set the title; a %s may not change it", ErrConflict, before.TitleByKind, actor.Kind)
-		}
-		after.Title, after.TitleBy, after.TitleByKind = strings.TrimSpace(*change.Title), actor.By, actor.Kind
-		if after.Title == "" {
-			return TimeEntry{}, fmt.Errorf("%w: title may not be empty", ErrInvalid)
-		}
-	}
-	spanChanged := false
-	setInt := func(field *int64, value *int64) {
-		if value != nil && *value != *field {
-			*field, spanChanged = *value, true
-		}
-	}
-	setString := func(field *string, value *string) {
-		if value != nil && *value != *field {
-			*field, spanChanged = *value, true
-		}
-	}
-	setInt(&after.StartsAt, change.StartsAt)
-	setInt(&after.EndsAt, change.EndsAt)
-	setString(&after.StartDate, change.StartDate)
-	setString(&after.EndDate, change.EndDate)
-	setString(&after.TimeZone, change.TimeZone)
-	if change.AllDay != nil && *change.AllDay != after.AllDay {
-		after.AllDay, spanChanged = *change.AllDay, true
-	}
-	if spanChanged {
-		if !actor.mayReplace(before.SpanByKind) {
-			return TimeEntry{}, fmt.Errorf("%w: a %s set the times; a %s may not change them", ErrConflict, before.SpanByKind, actor.Kind)
-		}
-		if err := validateSpan(after.StartsAt, after.EndsAt, after.AllDay, after.StartDate, after.EndDate, after.TimeZone); err != nil {
-			return TimeEntry{}, err
-		}
-		after.SpanBy, after.SpanByKind = actor.By, actor.Kind
-		var outside int
-		if err := tx.QueryRow(`SELECT COUNT(*) FROM time_entries WHERE parent_time_entry_id = ? AND deleted_at IS NULL AND (starts_at < ? OR ends_at > ?)`,
-			entryID, after.StartsAt, after.EndsAt).Scan(&outside); err != nil {
-			return TimeEntry{}, err
-		}
-		if outside > 0 {
-			return TimeEntry{}, fmt.Errorf("%w: %d of %s's children would lie outside the new times", ErrConflict, outside, entryID)
-		}
-	}
-	if change.Place != nil && *change.Place != before.Place {
-		if !actor.mayReplace(before.PlaceByKind) {
-			return TimeEntry{}, fmt.Errorf("%w: a %s set the place; a %s may not change it", ErrConflict, before.PlaceByKind, actor.Kind)
-		}
-		after.Place, after.PlaceBy, after.PlaceByKind = *change.Place, actor.By, actor.Kind
-	}
-	if change.ParentTimeEntryID != nil && *change.ParentTimeEntryID != before.ParentTimeEntryID {
-		if !actor.mayReplace(before.ParentSetByKind) {
-			return TimeEntry{}, fmt.Errorf("%w: a %s set the parent; a %s may not change it", ErrConflict, before.ParentSetByKind, actor.Kind)
-		}
-		after.ParentTimeEntryID, after.ParentSetBy, after.ParentSetByKind = *change.ParentTimeEntryID, actor.By, actor.Kind
-	}
-	if after.ParentTimeEntryID != "" && (spanChanged || after.ParentTimeEntryID != before.ParentTimeEntryID) {
-		if err := checkParent(tx, entryID, after.ParentTimeEntryID, after.StartsAt, after.EndsAt); err != nil {
-			return TimeEntry{}, err
-		}
-	}
-	if after.Title == before.Title && !spanChanged && after.Place == before.Place && after.ParentTimeEntryID == before.ParentTimeEntryID {
-		return s.entryIn(tx, entryID)
-	}
-	if err := keepRevision(tx, before, change.Reason, now); err != nil {
-		return TimeEntry{}, err
-	}
-	evidenceChangedAt := before.EvidenceChangedAt
-	if spanChanged {
-		evidenceChangedAt = now
-	}
-	if _, err := tx.Exec(`UPDATE time_entries SET title = ?, title_by = ?, title_by_kind = ?, starts_at = ?, ends_at = ?, all_day = ?, start_date = ?, end_date = ?,
-		time_zone = ?, span_by = ?, span_by_kind = ?, place = ?, place_by = ?, place_by_kind = ?, parent_time_entry_id = NULLIF(?, ''), parent_set_by = ?,
-		parent_set_by_kind = ?, updated_at = ?, evidence_changed_at = ? WHERE id = ?`,
-		after.Title, after.TitleBy, after.TitleByKind, after.StartsAt, after.EndsAt, after.AllDay, after.StartDate, after.EndDate,
-		after.TimeZone, after.SpanBy, after.SpanByKind, after.Place, after.PlaceBy, after.PlaceByKind, after.ParentTimeEntryID, after.ParentSetBy,
-		after.ParentSetByKind, now, evidenceChangedAt, entryID); err != nil {
-		return TimeEntry{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return TimeEntry{}, err
-	}
-	return s.Entry(entryID, false)
+	return s.Entry(ctx, ownership.OwnedBy(owner), entryID, false)
 }
 
-func keepRevision(tx *sql.Tx, entry TimeEntry, reason string, now int64) error {
+func keepRevision(ctx context.Context, tx *sql.Tx, entry TimeEntry, seq int64, reason string, now int64) error {
 	body, err := json.Marshal(entry)
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(`INSERT INTO time_entry_revisions (time_entry_id, reason, replaced_at, entry) VALUES (?, ?, ?, ?)`, entry.ID, reason, now, string(body))
+	_, err = tx.ExecContext(ctx, `INSERT INTO time_entry_revisions (owner_principal_id, time_entry_seq, reason, replaced_at, entry) VALUES ($1, $2, $3, $4, $5)`,
+		entry.OwnerPrincipalID, seq, reason, now, string(body))
 	return err
 }
 
 // DeleteEntry soft-deletes an entry with no live children. Its links stay, so
 // an importer finds its source taken and does not make it again.
-func (s *Store) DeleteEntry(entryID string, actor Actor) error {
+func (s *Store) DeleteEntry(ctx context.Context, scope ownership.Scope, entryID string, actor Actor) error {
 	if err := actor.validate(); err != nil {
 		return err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	tx, err := s.db.Begin()
-	if err != nil {
+	return s.writeOnEntry(ctx, scope, entryID, true, func(tx *sql.Tx, seq int64, _ string) error {
+		entry, err := readEntry(ctx, tx, seq)
+		if err != nil {
+			return err
+		}
+		if !actor.mayReplace(entry.CreatedByKind) {
+			return fmt.Errorf("%w: a %s made %s; a %s may not delete it", ErrConflict, entry.CreatedByKind, entryID, actor.Kind)
+		}
+		var children int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM time_entries WHERE parent_seq = $1 AND deleted_at IS NULL`, seq).Scan(&children); err != nil {
+			return err
+		}
+		if children > 0 {
+			return fmt.Errorf("%w: %s has %d live children; move or delete them first", ErrConflict, entryID, children)
+		}
+		now := s.now().Unix()
+		if err := keepRevision(ctx, tx, entry, seq, "deleted by "+actor.By, now); err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE time_entries SET deleted_at = $1, deleted_by = $2, updated_at = $3 WHERE seq = $4`, now, actor.By, now, seq)
 		return err
-	}
-	defer tx.Rollback()
-	if err := liveEntry(tx, entryID); err != nil {
-		return err
-	}
-	entry, err := readEntry(tx, entryID)
-	if err != nil {
-		return err
-	}
-	if !actor.mayReplace(entry.CreatedByKind) {
-		return fmt.Errorf("%w: a %s made %s; a %s may not delete it", ErrConflict, entry.CreatedByKind, entryID, actor.Kind)
-	}
-	var children int
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM time_entries WHERE parent_time_entry_id = ? AND deleted_at IS NULL`, entryID).Scan(&children); err != nil {
-		return err
-	}
-	if children > 0 {
-		return fmt.Errorf("%w: %s has %d live children; move or delete them first", ErrConflict, entryID, children)
-	}
-	now := s.now().Unix()
-	if err := keepRevision(tx, entry, "deleted by "+actor.By, now); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`UPDATE time_entries SET deleted_at = ?, deleted_by = ?, updated_at = ? WHERE id = ?`, now, actor.By, now, entryID); err != nil {
-		return err
-	}
-	return tx.Commit()
+	})
 }
 
-const entryColumns = `e.id, e.title, e.title_by, e.title_by_kind, e.starts_at, e.ends_at, e.all_day, e.start_date, e.end_date, e.time_zone, e.span_by, e.span_by_kind,
-	e.place, e.place_by, e.place_by_kind, COALESCE(e.parent_time_entry_id, ''), e.parent_set_by, e.parent_set_by_kind, e.created_by, e.created_by_kind,
-	e.created_reason, e.created_at, e.updated_at, e.evidence_changed_at, e.deleted_at, e.deleted_by,
-	COALESCE((SELECT r.id FROM time_entry_reviews r WHERE r.time_entry_id = e.id AND r.reviewed_by_kind = 'operator' ORDER BY r.seq DESC LIMIT 1),
-	         (SELECT r.id FROM time_entry_reviews r WHERE r.time_entry_id = e.id AND r.reviewed_by_kind = 'model' ORDER BY r.seq DESC LIMIT 1), '')`
+// entryColumns read an entry with the review that gives its outcome: the
+// newest operator review, else the newest model review (the only two kinds a
+// review has).
+const entryColumns = `e.seq, e.owner_principal_id, e.title, e.title_by, e.title_by_kind, e.starts_at, e.ends_at, e.all_day, e.start_date, e.end_date,
+	e.time_zone, e.span_by, e.span_by_kind, e.place, e.place_by, e.place_by_kind, e.parent_seq, e.parent_set_by, e.parent_set_by_kind, e.created_by,
+	e.created_by_kind, e.created_reason, e.created_at, e.updated_at, e.evidence_changed_at, e.deleted_at, e.deleted_by, o.seq, o.outcome`
 
-func scanEntry(row interface{ Scan(...any) error }) (TimeEntry, error) {
+const entryFrom = ` FROM time_entries e LEFT JOIN LATERAL (SELECT r.seq, r.outcome FROM time_entry_reviews r WHERE r.time_entry_seq = e.seq
+	ORDER BY (r.reviewed_by_kind = 'operator') DESC, r.seq DESC LIMIT 1) o ON TRUE`
+
+func scanEntry(row interface{ Scan(...any) error }) (TimeEntry, int64, error) {
 	var entry TimeEntry
-	var deletedAt sql.NullInt64
-	err := row.Scan(&entry.ID, &entry.Title, &entry.TitleBy, &entry.TitleByKind, &entry.StartsAt, &entry.EndsAt, &entry.AllDay, &entry.StartDate, &entry.EndDate,
-		&entry.TimeZone, &entry.SpanBy, &entry.SpanByKind, &entry.Place, &entry.PlaceBy, &entry.PlaceByKind, &entry.ParentTimeEntryID, &entry.ParentSetBy,
-		&entry.ParentSetByKind, &entry.CreatedBy, &entry.CreatedByKind, &entry.CreatedReason, &entry.CreatedAt, &entry.UpdatedAt, &entry.EvidenceChangedAt,
-		&deletedAt, &entry.DeletedBy, &entry.OutcomeReviewID)
+	var seq int64
+	var parentSeq, deletedAt, outcomeReviewSeq sql.NullInt64
+	var outcome sql.NullString
+	err := row.Scan(&seq, &entry.OwnerPrincipalID, &entry.Title, &entry.TitleBy, &entry.TitleByKind, &entry.StartsAt, &entry.EndsAt, &entry.AllDay,
+		&entry.StartDate, &entry.EndDate, &entry.TimeZone, &entry.SpanBy, &entry.SpanByKind, &entry.Place, &entry.PlaceBy, &entry.PlaceByKind,
+		&parentSeq, &entry.ParentSetBy, &entry.ParentSetByKind, &entry.CreatedBy, &entry.CreatedByKind, &entry.CreatedReason, &entry.CreatedAt,
+		&entry.UpdatedAt, &entry.EvidenceChangedAt, &deletedAt, &entry.DeletedBy, &outcomeReviewSeq, &outcome)
+	if err != nil {
+		return TimeEntry{}, 0, err
+	}
+	entry.ID = postgresstorage.FormatRecordID(EntryIDPrefix, seq)
+	if parentSeq.Valid {
+		entry.ParentTimeEntryID = postgresstorage.FormatRecordID(EntryIDPrefix, parentSeq.Int64)
+	}
 	entry.DeletedAt = nullableInt(deletedAt)
-	return entry, err
+	entry.Outcome = OutcomeUnknown
+	if outcomeReviewSeq.Valid {
+		entry.OutcomeReviewID = postgresstorage.FormatRecordID(ReviewIDPrefix, outcomeReviewSeq.Int64)
+		entry.Outcome = outcome.String
+	}
+	return entry, seq, nil
 }
 
-type rowQuerier interface {
-	querier
-	QueryRow(query string, args ...any) *sql.Row
-}
-
-func readEntry(db rowQuerier, entryID string) (TimeEntry, error) {
-	entry, err := scanEntry(db.QueryRow(`SELECT `+entryColumns+` FROM time_entries e WHERE e.id = ?`, entryID))
+// readEntry reads one entry by number, with its kinds.
+func readEntry(ctx context.Context, db queryer, seq int64) (TimeEntry, error) {
+	entry, _, err := scanEntry(db.QueryRowContext(ctx, `SELECT `+entryColumns+entryFrom+` WHERE e.seq = $1`, seq))
 	if errors.Is(err, sql.ErrNoRows) {
-		return TimeEntry{}, fmt.Errorf("%w: time entry %s", ErrNotFound, entryID)
+		return TimeEntry{}, fmt.Errorf("%w: time entry %s", ErrNotFound, postgresstorage.FormatRecordID(EntryIDPrefix, seq))
 	}
 	if err != nil {
 		return TimeEntry{}, err
 	}
-	return entry, fillEntry(db, &entry, false)
+	return entry, fillEntry(ctx, db, &entry, seq, false)
 }
 
-func fillEntry(db rowQuerier, entry *TimeEntry, full bool) error {
-	entry.Outcome = OutcomeUnknown
-	if entry.OutcomeReviewID != "" {
-		if err := db.QueryRow(`SELECT outcome FROM time_entry_reviews WHERE id = ?`, entry.OutcomeReviewID).Scan(&entry.Outcome); err != nil {
-			return err
-		}
-	}
-	rows, err := db.Query(`SELECT a.kind_id, k.name, a.assigned_by, a.assigned_by_kind, a.reason, a.assigned_at FROM time_entry_kind_assignments a
-		JOIN time_entry_kinds k ON k.id = a.kind_id WHERE a.time_entry_id = ? AND a.removed_at IS NULL ORDER BY k.name`, entry.ID)
+func fillEntry(ctx context.Context, db queryer, entry *TimeEntry, seq int64, full bool) error {
+	rows, err := db.QueryContext(ctx, `SELECT a.kind_seq, k.name, a.assigned_by, a.assigned_by_kind, a.reason, a.assigned_at FROM time_entry_kind_assignments a
+		JOIN time_entry_kinds k ON k.seq = a.kind_seq WHERE a.time_entry_seq = $1 AND a.removed_at IS NULL ORDER BY k.name`, seq)
 	if err != nil {
 		return err
 	}
 	entry.Kinds = []KindAssignment{}
 	for rows.Next() {
 		var assignment KindAssignment
-		if err := rows.Scan(&assignment.KindID, &assignment.Name, &assignment.AssignedBy, &assignment.AssignedByKind, &assignment.Reason, &assignment.AssignedAt); err != nil {
+		var kindSeq int64
+		if err := rows.Scan(&kindSeq, &assignment.Name, &assignment.AssignedBy, &assignment.AssignedByKind, &assignment.Reason, &assignment.AssignedAt); err != nil {
 			rows.Close()
 			return err
 		}
+		assignment.KindID = postgresstorage.FormatRecordID(KindIDPrefix, kindSeq)
 		entry.Kinds = append(entry.Kinds, assignment)
 	}
 	rows.Close()
@@ -1003,50 +1156,53 @@ func fillEntry(db rowQuerier, entry *TimeEntry, full bool) error {
 	}
 	entry.Links = []Link{}
 	for _, name := range LinkTypeNames() {
-		links, err := queryLinks(db, LinkTypes[name], `time_entry_id = ?`, entry.ID)
+		links, err := queryLinks(ctx, db, LinkTypes[name], `time_entry_seq = $1`, seq)
 		if err != nil {
 			return err
 		}
 		entry.Links = append(entry.Links, links...)
 	}
-	childRows, err := db.Query(`SELECT id FROM time_entries WHERE parent_time_entry_id = ? AND deleted_at IS NULL ORDER BY starts_at, seq`, entry.ID)
+	childRows, err := db.QueryContext(ctx, `SELECT seq FROM time_entries WHERE parent_seq = $1 AND deleted_at IS NULL ORDER BY starts_at, seq`, seq)
 	if err != nil {
 		return err
 	}
 	entry.ChildIDs = []string{}
 	for childRows.Next() {
-		var childID string
-		if err := childRows.Scan(&childID); err != nil {
+		var childSeq int64
+		if err := childRows.Scan(&childSeq); err != nil {
 			childRows.Close()
 			return err
 		}
-		entry.ChildIDs = append(entry.ChildIDs, childID)
+		entry.ChildIDs = append(entry.ChildIDs, postgresstorage.FormatRecordID(EntryIDPrefix, childSeq))
 	}
 	childRows.Close()
 	if err := childRows.Err(); err != nil {
 		return err
 	}
-	entry.Reviews, err = queryReviews(db, `time_entry_id = ?`, entry.ID)
+	entry.Reviews, err = queryReviews(ctx, db, `time_entry_seq = $1`, seq)
 	return err
 }
 
-func (s *Store) entryIn(tx *sql.Tx, entryID string) (TimeEntry, error) {
-	if err := tx.Commit(); err != nil {
+// Entry reads one entry in scope; full adds its links, live children and
+// reviews.
+func (s *Store) Entry(ctx context.Context, scope ownership.Scope, entryID string, full bool) (TimeEntry, error) {
+	seq, err := postgresstorage.ParseRecordID(EntryIDPrefix, entryID)
+	if err != nil {
+		return TimeEntry{}, fmt.Errorf("%w: time entry %s", ErrNotFound, entryID)
+	}
+	args := arguments{seq}
+	condition, err := scopeCondition(scope, "e.owner_principal_id", &args)
+	if err != nil {
 		return TimeEntry{}, err
 	}
-	return s.Entry(entryID, false)
-}
-
-// Entry reads one entry; full adds its links, live children and reviews.
-func (s *Store) Entry(entryID string, full bool) (TimeEntry, error) {
-	entry, err := scanEntry(s.db.QueryRow(`SELECT `+entryColumns+` FROM time_entries e WHERE e.id = ?`, entryID))
+	entry, _, err := scanEntry(s.db.QueryRowContext(ctx, `SELECT `+entryColumns+entryFrom+` WHERE e.seq = $1 AND `+condition, args...))
 	if errors.Is(err, sql.ErrNoRows) {
 		return TimeEntry{}, fmt.Errorf("%w: time entry %s", ErrNotFound, entryID)
 	}
 	if err != nil {
 		return TimeEntry{}, err
 	}
-	return entry, fillEntry(s.db, &entry, full)
+	return entry, fillEntry(ctx, s.db, &entry, seq, full)
 }
 
 // EntryFilter is GET /time-entries' query.
@@ -1065,96 +1221,110 @@ type EntryFilter struct {
 // MaxListLimit is the most entries one list answers.
 const MaxListLimit = 1000
 
-// Entries lists entries, earliest first.
-func (s *Store) Entries(filter EntryFilter) ([]TimeEntry, error) {
+// likePattern is text as an ILIKE pattern matching it anywhere, with the
+// pattern's own marks escaped so the text is matched as written.
+func likePattern(text string) string {
+	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(text)
+	return "%" + escaped + "%"
+}
+
+// Entries lists the entries in scope, earliest first.
+func (s *Store) Entries(ctx context.Context, scope ownership.Scope, filter EntryFilter) ([]TimeEntry, error) {
 	if filter.Limit == 0 {
 		filter.Limit = 100
 	}
 	if filter.Limit < 0 || filter.Limit > MaxListLimit {
 		return nil, fmt.Errorf("%w: limit is at most %d", ErrInvalid, MaxListLimit)
 	}
-	conditions, args := []string{}, []any{}
-	if !filter.IncludeDeleted {
-		conditions = append(conditions, `e.deleted_at IS NULL`)
-	}
-	if filter.From != 0 {
-		conditions, args = append(conditions, `e.ends_at > ?`), append(args, filter.From)
-	}
-	if filter.To != 0 {
-		conditions, args = append(conditions, `e.starts_at < ?`), append(args, filter.To)
-	}
-	if filter.EndedBefore != 0 {
-		conditions, args = append(conditions, `e.ends_at <= ?`), append(args, filter.EndedBefore)
-	}
-	switch filter.Parent {
-	case "":
-	case "none":
-		conditions = append(conditions, `e.parent_time_entry_id IS NULL`)
-	default:
-		conditions, args = append(conditions, `e.parent_time_entry_id = ?`), append(args, filter.Parent)
-	}
-	if filter.KindID != "" {
-		conditions, args = append(conditions, `EXISTS (SELECT 1 FROM time_entry_kind_assignments a WHERE a.time_entry_id = e.id AND a.kind_id = ? AND a.removed_at IS NULL)`), append(args, filter.KindID)
-	}
-	if filter.Query != "" {
-		conditions, args = append(conditions, `(e.title LIKE ? OR e.place LIKE ?)`), append(args, "%"+filter.Query+"%", "%"+filter.Query+"%")
-	}
-	if filter.NeedsReview {
-		conditions = append(conditions, `NOT EXISTS (SELECT 1 FROM time_entry_reviews r WHERE r.time_entry_id = e.id AND r.created_at >= e.evidence_changed_at)`)
+	if filter.Offset < 0 {
+		return nil, fmt.Errorf("%w: offset may not be below 0", ErrInvalid)
 	}
 	if filter.Outcome != "" && !contains(Outcomes, filter.Outcome) {
 		return nil, fmt.Errorf("%w: outcome %q is not one of %v", ErrInvalid, filter.Outcome, Outcomes)
 	}
-	where := ""
-	if len(conditions) > 0 {
-		where = ` WHERE ` + strings.Join(conditions, ` AND `)
+	var args arguments
+	condition, err := scopeCondition(scope, "e.owner_principal_id", &args)
+	if err != nil {
+		return nil, err
 	}
-	query := `SELECT ` + entryColumns + ` FROM time_entries e` + where + ` ORDER BY e.starts_at, e.seq`
-	if filter.Outcome == "" {
-		query += ` LIMIT ? OFFSET ?`
-		args = append(args, filter.Limit, filter.Offset)
+	conditions := []string{condition}
+	if !filter.IncludeDeleted {
+		conditions = append(conditions, `e.deleted_at IS NULL`)
 	}
-	rows, err := s.db.Query(query, args...)
+	if filter.From != 0 {
+		conditions = append(conditions, `e.ends_at > `+args.add(filter.From))
+	}
+	if filter.To != 0 {
+		conditions = append(conditions, `e.starts_at < `+args.add(filter.To))
+	}
+	if filter.EndedBefore != 0 {
+		conditions = append(conditions, `e.ends_at <= `+args.add(filter.EndedBefore))
+	}
+	switch filter.Parent {
+	case "":
+	case "none":
+		conditions = append(conditions, `e.parent_seq IS NULL`)
+	default:
+		parentSeq, err := postgresstorage.ParseRecordID(EntryIDPrefix, filter.Parent)
+		if err != nil {
+			// No entry sits inside an entry that cannot exist.
+			return []TimeEntry{}, nil
+		}
+		conditions = append(conditions, `e.parent_seq = `+args.add(parentSeq))
+	}
+	if filter.KindID != "" {
+		kindSeq, err := postgresstorage.ParseRecordID(KindIDPrefix, filter.KindID)
+		if err != nil {
+			return []TimeEntry{}, nil
+		}
+		conditions = append(conditions, `EXISTS (SELECT 1 FROM time_entry_kind_assignments a WHERE a.time_entry_seq = e.seq AND a.kind_seq = `+args.add(kindSeq)+` AND a.removed_at IS NULL)`)
+	}
+	if filter.Query != "" {
+		like := args.add(likePattern(filter.Query))
+		conditions = append(conditions, `(e.title ILIKE `+like+` OR e.place ILIKE `+like+`)`)
+	}
+	if filter.NeedsReview {
+		conditions = append(conditions, `NOT EXISTS (SELECT 1 FROM time_entry_reviews r WHERE r.time_entry_seq = e.seq AND r.created_at >= e.evidence_changed_at)`)
+	}
+	if filter.Outcome != "" {
+		conditions = append(conditions, `COALESCE(o.outcome, 'unknown') = `+args.add(filter.Outcome))
+	}
+	query := `SELECT ` + entryColumns + entryFrom + ` WHERE ` + strings.Join(conditions, ` AND `) + ` ORDER BY e.starts_at, e.seq LIMIT ` +
+		args.add(filter.Limit) + ` OFFSET ` + args.add(filter.Offset)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	entries := []TimeEntry{}
+	seqs := []int64{}
 	for rows.Next() {
-		entry, err := scanEntry(rows)
+		entry, seq, err := scanEntry(rows)
 		if err != nil {
 			rows.Close()
 			return nil, err
 		}
 		entries = append(entries, entry)
+		seqs = append(seqs, seq)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	kept := []TimeEntry{}
 	for i := range entries {
-		if err := fillEntry(s.db, &entries[i], false); err != nil {
+		if err := fillEntry(ctx, s.db, &entries[i], seqs[i], false); err != nil {
 			return nil, err
 		}
-		if filter.Outcome == "" || entries[i].Outcome == filter.Outcome {
-			kept = append(kept, entries[i])
-		}
 	}
-	if filter.Outcome != "" {
-		if filter.Offset >= len(kept) {
-			return []TimeEntry{}, nil
-		}
-		kept = kept[filter.Offset:]
-		if len(kept) > filter.Limit {
-			kept = kept[:filter.Limit]
-		}
-	}
-	return kept, nil
+	return entries, nil
 }
 
 // Revisions lists an entry's earlier versions, newest first.
-func (s *Store) Revisions(entryID string) ([]map[string]any, error) {
-	rows, err := s.db.Query(`SELECT revision_id, reason, replaced_at, entry FROM time_entry_revisions WHERE time_entry_id = ? ORDER BY revision_id DESC`, entryID)
+func (s *Store) Revisions(ctx context.Context, scope ownership.Scope, entryID string) ([]map[string]any, error) {
+	seq, _, err := entryInScope(ctx, s.db, scope, entryID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT revision_id, reason, replaced_at, entry FROM time_entry_revisions WHERE time_entry_seq = $1 ORDER BY revision_id DESC`, seq)
 	if err != nil {
 		return nil, err
 	}
@@ -1188,7 +1358,7 @@ type ReviewInput struct {
 
 // AddReview records a judgment of whether an entry happened. Only operators
 // and models review; a program's rules make links, not judgments.
-func (s *Store) AddReview(entryID string, input ReviewInput) (Review, error) {
+func (s *Store) AddReview(ctx context.Context, scope ownership.Scope, entryID string, input ReviewInput) (Review, error) {
 	actor := Actor{By: input.By, Kind: input.ByKind}
 	if err := actor.validate(); err != nil {
 		return Review{}, err
@@ -1218,37 +1388,25 @@ func (s *Store) AddReview(entryID string, input ReviewInput) (Review, error) {
 	if err != nil {
 		return Review{}, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	tx, err := s.db.Begin()
+	var reviewSeq int64
+	var owner string
+	err = s.writeOnEntry(ctx, scope, entryID, true, func(tx *sql.Tx, seq int64, entryOwner string) error {
+		owner = entryOwner
+		return tx.QueryRowContext(ctx, `INSERT INTO time_entry_reviews (owner_principal_id, time_entry_seq, outcome, reason, reviewed_by, reviewed_by_kind, model,
+			input_tokens, output_tokens, cost_usd, links_seen, suggested_parent_time_entry_id, suggested_kind_names, created_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING seq`,
+			entryOwner, seq, input.Outcome, input.Reason, actor.By, actor.Kind, input.Model,
+			input.InputTokens, input.OutputTokens, input.CostUSD, string(input.LinksSeen), input.SuggestedParentTimeEntryID, string(kindNames), s.now().Unix()).Scan(&reviewSeq)
+	})
 	if err != nil {
 		return Review{}, err
 	}
-	defer tx.Rollback()
-	if err := liveEntry(tx, entryID); err != nil {
-		return Review{}, err
-	}
-	result, err := tx.Exec(`INSERT INTO time_entry_reviews (id, time_entry_id, outcome, reason, reviewed_by, reviewed_by_kind, model, input_tokens, output_tokens,
-		cost_usd, links_seen, suggested_parent_time_entry_id, suggested_kind_names, created_at)
-		VALUES ('pending-' || hex(randomblob(8)), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		entryID, input.Outcome, input.Reason, actor.By, actor.Kind, input.Model, input.InputTokens, input.OutputTokens,
-		input.CostUSD, string(input.LinksSeen), input.SuggestedParentTimeEntryID, string(kindNames), s.now().Unix())
-	if err != nil {
-		return Review{}, err
-	}
-	id, err := assignID(tx, "time_entry_reviews", "time_entry_review", result)
-	if err != nil {
-		return Review{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return Review{}, err
-	}
-	return s.Review(id)
+	return s.Review(ctx, ownership.OwnedBy(owner), postgresstorage.FormatRecordID(ReviewIDPrefix, reviewSeq))
 }
 
-func queryReviews(db querier, where string, args ...any) ([]Review, error) {
-	rows, err := db.Query(`SELECT id, time_entry_id, outcome, reason, reviewed_by, reviewed_by_kind, model, input_tokens, output_tokens, cost_usd, links_seen,
-		suggested_parent_time_entry_id, suggested_kind_names, created_at FROM time_entry_reviews WHERE `+where+` ORDER BY seq DESC`, args...)
+func queryReviews(ctx context.Context, db queryer, where string, args ...any) ([]Review, error) {
+	rows, err := db.QueryContext(ctx, `SELECT seq, owner_principal_id, time_entry_seq, outcome, reason, reviewed_by, reviewed_by_kind, model, input_tokens,
+		output_tokens, cost_usd, links_seen, suggested_parent_time_entry_id, suggested_kind_names, created_at FROM time_entry_reviews WHERE `+where+` ORDER BY seq DESC`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1256,23 +1414,35 @@ func queryReviews(db querier, where string, args ...any) ([]Review, error) {
 	reviews := []Review{}
 	for rows.Next() {
 		var review Review
+		var seq, entrySeq int64
 		var linksSeen, kindNames string
-		if err := rows.Scan(&review.ID, &review.TimeEntryID, &review.Outcome, &review.Reason, &review.ReviewedBy, &review.ReviewedByKind, &review.Model,
+		if err := rows.Scan(&seq, &review.OwnerPrincipalID, &entrySeq, &review.Outcome, &review.Reason, &review.ReviewedBy, &review.ReviewedByKind, &review.Model,
 			&review.InputTokens, &review.OutputTokens, &review.CostUSD, &linksSeen, &review.SuggestedParentTimeEntryID, &kindNames, &review.CreatedAt); err != nil {
 			return nil, err
 		}
+		review.ID = postgresstorage.FormatRecordID(ReviewIDPrefix, seq)
+		review.TimeEntryID = postgresstorage.FormatRecordID(EntryIDPrefix, entrySeq)
 		review.LinksSeen = json.RawMessage(linksSeen)
 		if err := json.Unmarshal([]byte(kindNames), &review.SuggestedKindNames); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("review %s: suggested_kind_names: %w", review.ID, err)
 		}
 		reviews = append(reviews, review)
 	}
 	return reviews, rows.Err()
 }
 
-// Review reads one review.
-func (s *Store) Review(id string) (Review, error) {
-	reviews, err := queryReviews(s.db, `id = ?`, id)
+// Review reads one review in scope.
+func (s *Store) Review(ctx context.Context, scope ownership.Scope, id string) (Review, error) {
+	seq, err := postgresstorage.ParseRecordID(ReviewIDPrefix, id)
+	if err != nil {
+		return Review{}, fmt.Errorf("%w: review %s", ErrNotFound, id)
+	}
+	args := arguments{seq}
+	condition, err := scopeCondition(scope, "owner_principal_id", &args)
+	if err != nil {
+		return Review{}, err
+	}
+	reviews, err := queryReviews(ctx, s.db, `seq = $1 AND `+condition, args...)
 	if err != nil {
 		return Review{}, err
 	}
@@ -1283,20 +1453,29 @@ func (s *Store) Review(id string) (Review, error) {
 }
 
 // Reviews lists an entry's reviews, newest first.
-func (s *Store) Reviews(entryID string) ([]Review, error) {
-	return queryReviews(s.db, `time_entry_id = ?`, entryID)
+func (s *Store) Reviews(ctx context.Context, scope ownership.Scope, entryID string) ([]Review, error) {
+	seq, _, err := entryInScope(ctx, s.db, scope, entryID)
+	if err != nil {
+		return nil, err
+	}
+	return queryReviews(ctx, s.db, `time_entry_seq = $1`, seq)
 }
 
-// Counts is GET /health's counts.
-func (s *Store) Counts() (map[string]int64, error) {
+// Counts is GET /health's counts, over the records in scope.
+func (s *Store) Counts(ctx context.Context, scope ownership.Scope) (map[string]int64, error) {
+	var args arguments
+	condition, err := scopeCondition(scope, "owner_principal_id", &args)
+	if err != nil {
+		return nil, err
+	}
 	counts := map[string]int64{}
 	for name, query := range map[string]string{
-		"time_entries": `SELECT COUNT(*) FROM time_entries WHERE deleted_at IS NULL`,
-		"kinds":        `SELECT COUNT(*) FROM time_entry_kinds`,
-		"reviews":      `SELECT COUNT(*) FROM time_entry_reviews`,
+		"time_entries": `SELECT COUNT(*) FROM time_entries WHERE deleted_at IS NULL AND ` + condition,
+		"kinds":        `SELECT COUNT(*) FROM time_entry_kinds WHERE ` + condition,
+		"reviews":      `SELECT COUNT(*) FROM time_entry_reviews WHERE ` + condition,
 	} {
 		var count int64
-		if err := s.db.QueryRow(query).Scan(&count); err != nil {
+		if err := s.db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
 			return nil, err
 		}
 		counts[name] = count
@@ -1304,7 +1483,7 @@ func (s *Store) Counts() (map[string]int64, error) {
 	var links int64
 	for _, linkType := range LinkTypes {
 		var count int64
-		if err := s.db.QueryRow(`SELECT COUNT(*) FROM ` + linkType.Table + ` WHERE removed_at IS NULL`).Scan(&count); err != nil {
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+linkType.Table+` WHERE removed_at IS NULL AND `+condition, args...).Scan(&count); err != nil {
 			return nil, err
 		}
 		links += count
