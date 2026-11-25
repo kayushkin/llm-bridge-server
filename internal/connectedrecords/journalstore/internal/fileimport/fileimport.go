@@ -13,6 +13,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 	"io"
 	"io/fs"
 	"os"
@@ -310,6 +311,9 @@ func docxText(raw []byte) (string, error) {
 func pdfText(path string) (string, error) {
 	var stderr bytes.Buffer
 	command := exec.Command("pdftotext", "-enc", "UTF-8", "-layout", path, "-")
+	// pdftotext needs nothing of this module's secrets; it gets none of them,
+	// as every process this module starts does.
+	command.Env = childprocessenv.EnvironmentWithoutServerSecrets()
 	command.Stderr = &stderr
 	out, err := command.Output()
 	if err != nil {
