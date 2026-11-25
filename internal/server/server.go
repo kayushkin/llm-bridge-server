@@ -24,7 +24,6 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
-	"github.com/kayushkin/llm-bridge-server/internal/filestoreclient"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
 	"github.com/kayushkin/llm-bridge-server/internal/keepawake"
@@ -149,10 +148,14 @@ type Server struct {
 
 	// mailstack answers /mailstack/ once EnableMailstack has run.
 	mailstack atomic.Pointer[mailstack.Server]
-	// fileStore keeps the bytes of files shared into sessions, through the
-	// file-store module in this process. Nil until EnableFileStore, which
+	// fileStore keeps the bytes of files shared into sessions: the file-store
+	// module in this process, called in Go. Nil until EnableFileStore, which
 	// switches session files off.
-	fileStore *filestoreclient.Client
+	fileStore sessionFileStore
+	// fileStoreCalls is the same module as the other modules in this process
+	// call it (kanban-store's and mailstack's attachments, activity-store's);
+	// nil until EnableFileStore.
+	fileStoreCalls atomic.Pointer[filestore.Server]
 	// The repositories, file_storage and references modules
 	// (repositories_references_routes.go); nil answers their routes 503.
 	repositories          atomic.Pointer[repositoryStores]

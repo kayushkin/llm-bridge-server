@@ -22,7 +22,6 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/access/principalstore"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
-	"github.com/kayushkin/llm-bridge-server/internal/filestoreclient"
 	"github.com/kayushkin/llm-bridge-server/internal/references/referencestore"
 	"github.com/kayushkin/llm-bridge-server/internal/repositories/repostore"
 	"github.com/kayushkin/llm-bridge-server/internal/repositories/workgraphstore"
@@ -104,7 +103,8 @@ func (s *Server) EnableFileStore(files *filestore.Store) error {
 	}
 	module := filestore.NewServer(files, s.fileStoreLimits)
 	handler := module.Handler()
-	s.fileStore = filestoreclient.New(handler)
+	s.fileStore = module
+	s.fileStoreCalls.Store(module)
 	s.fileStoreModule.Store(files)
 	s.fileStoreHandler.Store(&mountedStore{handler: handler})
 	return nil
