@@ -1,63 +1,16 @@
 package photostore
 
 import (
-	"net/http"
-	"os"
-	"path/filepath"
-
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
-// ServiceName is this service's name in its own settings description, as
-// healthcheck and the repo know it.
-const ServiceName = "photo-store"
-
-// OwnedEnvironmentVariablePrefix is the prefix of the variables that are this
-// service's alone. A set variable carrying it that SettingDefinitions does not
-// declare stops the service from starting.
-const OwnedEnvironmentVariablePrefix = "PHOTO_STORE_"
-
-// Keys of the settings, as GET /settings names them.
-const (
-	SettingListenAddress = "listen_address"
-	SettingDataDirectory = "data_directory"
-)
-
-// DefaultListenAddress is loopback, deliberately: these are the user's private
-// photos and the service has no auth of its own. dash is the front door.
+// DefaultListenAddress is where the standalone photo-store listened. The HTTP
+// client commands (photo-import, photo-import-messages, photo-import-facebook,
+// photo-match-people, photo-group-faces, photo-guess-face-groups) still take
+// it as the default of their -store-url, so it is kept for them; the store
+// itself now runs inside llm-bridge-server and listens on nothing of its own.
 const DefaultListenAddress = "127.0.0.1:8329"
-
-// DefaultDataDir is where the database and thumbnails live when the
-// environment says nothing.
-func DefaultDataDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = "."
-	}
-	return filepath.Join(home, ".config", "photo-store")
-}
-
-// SettingDefinitions declares every environment variable this process reads,
-// once. Nothing is Editable: GET /settings is as open as every other route.
-func SettingDefinitions() []servicesettings.Definition {
-	return []servicesettings.Definition{
-		{Key: SettingListenAddress, EnvironmentVariable: "PHOTO_STORE_ADDR", Kind: msg.ServiceSettingKindWiring, ValueType: msg.ServiceSettingValueTypeString, Default: DefaultListenAddress,
-			Description: "The address the HTTP server listens on. Keep it on loopback: the service has no auth."},
-		{Key: SettingDataDirectory, EnvironmentVariable: "PHOTO_STORE_DATA_DIR", Kind: msg.ServiceSettingKindPath, ValueType: msg.ServiceSettingValueTypeString, Default: DefaultDataDir(),
-			Description: "The directory that holds photo-store.db and thumbnails/. Changing it starts the service on whatever is there, or nothing."},
-	}
-}
-
-// NewSettingsRegistry reads this service's settings from environment.
-func NewSettingsRegistry(environment servicesettings.Environment) (*servicesettings.Registry, error) {
-	return servicesettings.New(ServiceName, []string{OwnedEnvironmentVariablePrefix}, SettingDefinitions(), environment)
-}
-
-// RegisterSettingsHandler serves the registry at GET /settings.
-func RegisterSettingsHandler(mux *http.ServeMux, registry *servicesettings.Registry) {
-	mux.Handle("GET /settings", servicesettings.Handler(registry, "/settings"))
-}
 
 // Keys of photo-import-messages' settings: where multichat answers and its
 // bearer token. The command reads them from the environment; the service

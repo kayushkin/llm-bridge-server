@@ -4,21 +4,24 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 )
 
-// RegisterHandlers mounts the API on mux. Routes are rooted at /; dash adds
-// its prefix and the auth this service has none of, which is why the service
-// binds 127.0.0.1.
+// RegisterHandlers mounts the API on mux. Routes are rooted at /; the server
+// mounts them under its own prefix, and puts the verified caller on each
+// request's context (ownership.ContextWithCaller) before it gets here. A
+// request with no caller is 401.
 func RegisterHandlers(mux *http.ServeMux, s *Store) {
 	h := &handler{s: s}
 	mux.HandleFunc("GET /health", h.health)
-	mux.HandleFunc("GET /date-sources", h.dateSources)
+	mux.HandleFunc("GET /date-sources", vocabulary(DateSources))
 	mux.HandleFunc("GET /tags", h.tagCounts)
 	mux.HandleFunc("GET /photos", h.list)
 	mux.HandleFunc("GET /sightings", h.sightings)
@@ -39,11 +42,48 @@ type handler struct {
 	s *Store
 }
 
+// vocabulary serves a fixed list to any caller the server verified.
+func vocabulary(list any) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, refusal := ownership.CallerOfRequest(r); refusal != nil {
+			writeErr(w, refusal.Status, refusal.Message)
+			return
+		}
+		writeJSON(w, http.StatusOK, list)
+	}
+}
+
+// readScope is whose records the request reaches, or false after answering
+// its refusal.
+func readScope(w http.ResponseWriter, r *http.Request) (ownership.Scope, bool) {
+	scope, refusal := ownership.ReadScope(r)
+	if refusal != nil {
+		writeErr(w, refusal.Status, refusal.Message)
+		return ownership.Scope{}, false
+	}
+	return scope, true
+}
+
+// ownerOfNewRecord is who owns what the request creates, or false after
+// answering its refusal.
+func ownerOfNewRecord(w http.ResponseWriter, r *http.Request) (string, bool) {
+	owner, refusal := ownership.OwnerOfNewRecord(r)
+	if refusal != nil {
+		writeErr(w, refusal.Status, refusal.Message)
+		return "", false
+	}
+	return owner, true
+}
+
 // patchableFields is every key PATCH /photos/{id} accepts.
 var patchableFields = map[string]bool{"description": true, "described_by": true, "tags": true, "taken_at": true, "date_source": true}
 
 func (h *handler) health(w http.ResponseWriter, r *http.Request) {
-	counts, err := h.s.Counts()
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	counts, err := h.s.Counts(r.Context(), scope)
 	if respondError(w, err) {
 		return
 	}
@@ -51,15 +91,15 @@ func (h *handler) health(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) tagCounts(w http.ResponseWriter, r *http.Request) {
-	counts, err := h.s.TagCounts()
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	counts, err := h.s.TagCounts(r.Context(), scope)
 	if respondError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, counts)
-}
-
-func (h *handler) dateSources(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, DateSources)
 }
 
 func integerParameter(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
@@ -76,11 +116,14 @@ func integerParameter(w http.ResponseWriter, r *http.Request, name string) (int6
 }
 
 func (h *handler) list(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	query := r.URL.Query()
 	filter := Filter{Folder: query.Get("folder"), Query: query.Get("q"), Tag: query.Get("tag"), Person: query.Get("person"), Described: query.Get("described"),
 		HasGPS: query.Get("has_gps") == "true", Sha256: query.Get("sha256"), IncludeDeleted: query.Get("include_deleted") == "true",
 		ExcludeTags: query["exclude_tag"]}
-	var ok bool
 	if filter.From, ok = integerParameter(w, r, "from"); !ok {
 		return
 	}
@@ -96,7 +139,7 @@ func (h *handler) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	filter.Limit, filter.Offset = int(limit), int(offset)
-	photos, err := h.s.List(filter)
+	photos, err := h.s.List(r.Context(), scope, filter)
 	if respondError(w, err) {
 		return
 	}
@@ -104,6 +147,10 @@ func (h *handler) list(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) importPhotos(w http.ResponseWriter, r *http.Request) {
+	owner, ok := ownerOfNewRecord(w, r)
+	if !ok {
+		return
+	}
 	var request ImportRequest
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 512<<20))
 	decoder.DisallowUnknownFields()
@@ -111,7 +158,7 @@ func (h *handler) importPhotos(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad json: "+err.Error())
 		return
 	}
-	result, err := h.s.Import(request)
+	result, err := h.s.Import(r.Context(), owner, request)
 	if respondError(w, err) {
 		return
 	}
@@ -119,7 +166,11 @@ func (h *handler) importPhotos(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) get(w http.ResponseWriter, r *http.Request) {
-	photo, err := h.s.Get(r.PathValue("id"), r.URL.Query().Get("include_deleted") == "true")
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	photo, err := h.s.Get(r.Context(), scope, r.PathValue("id"), r.URL.Query().Get("include_deleted") == "true")
 	if respondError(w, err) {
 		return
 	}
@@ -127,6 +178,10 @@ func (h *handler) get(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) patch(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	// Decoded into a map first: a misspelt key must be a 400, not a 200 that
 	// changed nothing.
 	var raw map[string]json.RawMessage
@@ -149,13 +204,17 @@ func (h *handler) patch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	body, _ := json.Marshal(raw)
+	body, err := json.Marshal(raw)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad json: "+err.Error())
+		return
+	}
 	var patch PhotoPatch
 	if err := json.Unmarshal(body, &patch); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad json: "+err.Error())
 		return
 	}
-	photo, err := h.s.Patch(r.PathValue("id"), patch)
+	photo, err := h.s.Patch(r.Context(), scope, r.PathValue("id"), patch)
 	if respondError(w, err) {
 		return
 	}
@@ -163,17 +222,25 @@ func (h *handler) patch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) remove(w http.ResponseWriter, r *http.Request) {
-	if respondError(w, h.s.Delete(r.PathValue("id"))) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	if respondError(w, h.s.Delete(r.Context(), scope, r.PathValue("id"))) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *handler) purge(w http.ResponseWriter, r *http.Request) {
-	if respondError(w, h.s.Purge(r.PathValue("id"))) {
+	scope, ok := readScope(w, r)
+	if !ok {
 		return
 	}
-	photo, err := h.s.Get(r.PathValue("id"), true)
+	if respondError(w, h.s.Purge(r.Context(), scope, r.PathValue("id"))) {
+		return
+	}
+	photo, err := h.s.Get(r.Context(), scope, r.PathValue("id"), true)
 	if respondError(w, err) {
 		return
 	}
@@ -181,7 +248,11 @@ func (h *handler) purge(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) restore(w http.ResponseWriter, r *http.Request) {
-	photo, err := h.s.Restore(r.PathValue("id"))
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	photo, err := h.s.Restore(r.Context(), scope, r.PathValue("id"))
 	if respondError(w, err) {
 		return
 	}
@@ -189,6 +260,10 @@ func (h *handler) restore(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) revisions(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	limit, ok := integerParameter(w, r, "limit")
 	if !ok {
 		return
@@ -197,7 +272,7 @@ func (h *handler) revisions(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	revisions, err := h.s.Revisions(r.PathValue("id"), int(limit), int(offset))
+	revisions, err := h.s.Revisions(r.Context(), scope, r.PathValue("id"), int(limit), int(offset))
 	if respondError(w, err) {
 		return
 	}
@@ -207,28 +282,29 @@ func (h *handler) revisions(w http.ResponseWriter, r *http.Request) {
 // thumbnail serves the JPEG. A deleted photo's thumbnail is still served, so a
 // citation of it keeps drawing; the photo's own record says it is deleted.
 func (h *handler) thumbnail(w http.ResponseWriter, r *http.Request) {
-	photo, err := h.s.Get(r.PathValue("id"), true)
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	content, err := h.s.OpenThumbnail(r.Context(), scope, r.PathValue("id"))
 	if respondError(w, err) {
 		return
 	}
-	if photo.PurgedAt != 0 {
-		writeErr(w, http.StatusGone, fmt.Sprintf("photo %s was purged: its thumbnail is gone for good", photo.ID))
-		return
-	}
-	content, err := os.ReadFile(h.s.ThumbnailPath(photo.Sha256))
-	if err != nil {
-		log.Printf("photo-store: thumbnail of %s: %v", photo.ID, err)
-		writeErr(w, http.StatusInternalServerError, fmt.Sprintf("photo %s has no thumbnail on disk: %v", photo.ID, err))
-		return
-	}
+	defer content.Close()
 	w.Header().Set("Content-Type", "image/jpeg")
 	w.Header().Set("Cache-Control", "private, max-age=86400")
-	w.Write(content)
+	if _, err := io.Copy(w, content); err != nil {
+		log.Printf("photo-store: sending the thumbnail of %s: %v", r.PathValue("id"), err)
+	}
 }
 
 // sightings answers GET /sightings?source_machine=&limit=&offset=: every
-// place a live photo was found.
+// place a live photo in scope was found.
 func (h *handler) sightings(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	limit, ok := integerParameter(w, r, "limit")
 	if !ok {
 		return
@@ -237,7 +313,7 @@ func (h *handler) sightings(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	sightings, err := h.s.Sightings(r.URL.Query().Get("source_machine"), int(limit), int(offset))
+	sightings, err := h.s.Sightings(r.Context(), scope, r.URL.Query().Get("source_machine"), int(limit), int(offset))
 	if respondError(w, err) {
 		return
 	}
@@ -265,8 +341,12 @@ func respondError(w http.ResponseWriter, err error) bool {
 		writeErr(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, ErrInvalid):
 		writeErr(w, http.StatusBadRequest, err.Error())
-	case errors.Is(err, ErrConflict):
+	case errors.Is(err, ErrConflict), isUniqueViolation(err):
 		writeErr(w, http.StatusConflict, err.Error())
+	case errors.Is(err, ErrGone):
+		writeErr(w, http.StatusGone, err.Error())
+	case errors.Is(err, ErrUpstream):
+		writeErr(w, http.StatusBadGateway, err.Error())
 	default:
 		log.Printf("photo-store: %v", err)
 		writeErr(w, http.StatusInternalServerError, err.Error())

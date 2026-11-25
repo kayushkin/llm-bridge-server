@@ -3,11 +3,11 @@ package photostore
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	jpegcodec "image/jpeg"
 	"net/http"
-	"os"
 )
 
 func registerFaceHandlers(mux *http.ServeMux, h *handler) {
@@ -16,7 +16,7 @@ func registerFaceHandlers(mux *http.ServeMux, h *handler) {
 	mux.HandleFunc("GET /faces", h.faces)
 	mux.HandleFunc("GET /photos/{id}/faces", h.facesOfPhoto)
 	mux.HandleFunc("GET /faces/{id}/image", h.faceImage)
-	mux.HandleFunc("GET /photo-person-statuses", h.photoPersonStatuses)
+	mux.HandleFunc("GET /photo-person-statuses", vocabulary(PhotoPersonStatuses))
 	mux.HandleFunc("GET /photo-people", h.photoPeople)
 	mux.HandleFunc("POST /photo-people", h.proposePhotoPerson)
 	mux.HandleFunc("PATCH /photo-people/{id}", h.decidePhotoPerson)
@@ -35,11 +35,15 @@ func decodeStrict(w http.ResponseWriter, r *http.Request, limit int64, out any) 
 }
 
 func (h *handler) recordFaceScan(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	var scan FaceScan
 	if !decodeStrict(w, r, 8<<20, &scan) {
 		return
 	}
-	faces, err := h.s.RecordFaceScan(scan)
+	faces, err := h.s.RecordFaceScan(r.Context(), scope, scan)
 	if respondError(w, err) {
 		return
 	}
@@ -47,11 +51,15 @@ func (h *handler) recordFaceScan(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) photosNotScanned(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	limit, ok := integerParameter(w, r, "limit")
 	if !ok {
 		return
 	}
-	ids, err := h.s.PhotosNotScanned(r.URL.Query().Get("model"), int(limit))
+	ids, err := h.s.PhotosNotScanned(r.Context(), scope, r.URL.Query().Get("model"), int(limit))
 	if respondError(w, err) {
 		return
 	}
@@ -59,12 +67,16 @@ func (h *handler) photosNotScanned(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) faces(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	query := r.URL.Query()
 	limit, ok := integerParameter(w, r, "limit")
 	if !ok {
 		return
 	}
-	faces, err := h.s.Faces(FaceFilter{PhotoID: query.Get("photo_id"), Model: query.Get("model"), AfterID: query.Get("after"),
+	faces, err := h.s.Faces(r.Context(), scope, FaceFilter{PhotoID: query.Get("photo_id"), Model: query.Get("model"), AfterID: query.Get("after"),
 		IncludeEmbeddings: query.Get("include_embeddings") == "true", Limit: int(limit)})
 	if respondError(w, err) {
 		return
@@ -73,18 +85,22 @@ func (h *handler) faces(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) facesOfPhoto(w http.ResponseWriter, r *http.Request) {
-	faces, err := h.s.Faces(FaceFilter{PhotoID: r.PathValue("id"), Model: r.URL.Query().Get("model")})
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	faces, err := h.s.Faces(r.Context(), scope, FaceFilter{PhotoID: r.PathValue("id"), Model: r.URL.Query().Get("model")})
 	if respondError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, faces)
 }
 
-func (h *handler) photoPersonStatuses(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, PhotoPersonStatuses)
-}
-
 func (h *handler) photoPeople(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	query := r.URL.Query()
 	limit, ok := integerParameter(w, r, "limit")
 	if !ok {
@@ -94,7 +110,7 @@ func (h *handler) photoPeople(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	links, err := h.s.PhotoPeople(PhotoPersonFilter{PhotoID: query.Get("photo_id"), PersonID: query.Get("person_id"),
+	links, err := h.s.PhotoPeople(r.Context(), scope, PhotoPersonFilter{PhotoID: query.Get("photo_id"), PersonID: query.Get("person_id"),
 		Status: query.Get("status"), Limit: int(limit), Offset: int(offset)})
 	if respondError(w, err) {
 		return
@@ -103,11 +119,15 @@ func (h *handler) photoPeople(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) proposePhotoPerson(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	var proposal PhotoPersonProposal
 	if !decodeStrict(w, r, 1<<20, &proposal) {
 		return
 	}
-	link, created, err := h.s.ProposePhotoPerson(proposal)
+	link, created, err := h.s.ProposePhotoPerson(r.Context(), scope, proposal)
 	if respondError(w, err) {
 		return
 	}
@@ -119,11 +139,15 @@ func (h *handler) proposePhotoPerson(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) decidePhotoPerson(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	var decision PhotoPersonDecision
 	if !decodeStrict(w, r, 1<<20, &decision) {
 		return
 	}
-	link, err := h.s.DecidePhotoPerson(r.PathValue("id"), decision)
+	link, err := h.s.DecidePhotoPerson(r.Context(), scope, r.PathValue("id"), decision)
 	if respondError(w, err) {
 		return
 	}
@@ -131,7 +155,11 @@ func (h *handler) decidePhotoPerson(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) peopleCounts(w http.ResponseWriter, r *http.Request) {
-	counts, err := h.s.PeopleCounts()
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	counts, err := h.s.PeopleCounts(r.Context(), scope)
 	if respondError(w, err) {
 		return
 	}
@@ -142,27 +170,26 @@ func (h *handler) peopleCounts(w http.ResponseWriter, r *http.Request) {
 // thumbnail with a third of its size around it, as a JPEG, so a page or a
 // model sees the face and a little of the head.
 func (h *handler) faceImage(w http.ResponseWriter, r *http.Request) {
-	face, err := h.s.FaceByID(r.PathValue("id"))
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	face, err := h.s.FaceByID(r.Context(), scope, r.PathValue("id"))
 	if respondError(w, err) {
 		return
 	}
-	photo, err := h.s.Get(face.PhotoID, true)
+	file, err := h.s.OpenThumbnail(r.Context(), scope, face.PhotoID)
+	if errors.Is(err, ErrGone) {
+		writeErr(w, http.StatusGone, fmt.Sprintf("photo %s was purged: its faces are gone for good", face.PhotoID))
+		return
+	}
 	if respondError(w, err) {
-		return
-	}
-	if photo.PurgedAt != 0 {
-		writeErr(w, http.StatusGone, fmt.Sprintf("photo %s was purged: its faces are gone for good", photo.ID))
-		return
-	}
-	file, err := os.Open(h.s.ThumbnailPath(photo.Sha256))
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, fmt.Sprintf("photo %s has no thumbnail on disk: %v", photo.ID, err))
 		return
 	}
 	defer file.Close()
 	picture, err := jpegcodec.Decode(file)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, fmt.Sprintf("thumbnail of %s: %v", photo.ID, err))
+		writeErr(w, http.StatusInternalServerError, fmt.Sprintf("thumbnail of %s: %v", face.PhotoID, err))
 		return
 	}
 	crop := FaceCrop(picture.Bounds(), face.Box)

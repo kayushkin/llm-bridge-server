@@ -1,6 +1,7 @@
--- photo-store schema. Create-only and idempotent: Open() runs this whole file
--- on every boot. A new column goes in an additive migration in store.go, never
--- in an edit to a CREATE TABLE below.
+-- The live schema of the standalone photo-store: its schema.sql, with the
+-- columns its migrate functions in store.go add (faces.retired_at and
+-- faces.retired_reason; photos.purged_at is already in schema.sql). The
+-- importer test builds a made-up standalone file from it.
 
 PRAGMA foreign_keys = ON;
 
@@ -84,7 +85,9 @@ CREATE TABLE IF NOT EXISTS faces (
     box_bottom      REAL NOT NULL,
     detection_score REAL NOT NULL,
     embedding       BLOB NOT NULL,
-    created_at      INTEGER NOT NULL
+    created_at      INTEGER NOT NULL,
+    retired_at      INTEGER NOT NULL DEFAULT 0,
+    retired_reason  TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_faces_photo ON faces(photo_id, model);
 

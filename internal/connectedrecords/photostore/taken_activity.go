@@ -1,37 +1,39 @@
 package photostore
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 )
 
 const maximumTakenActivitySamples = 24
 
-// TakenActivity answers GET /taken-activity: the photos the filter keeps,
+// TakenActivity answers GET /taken-activity: the photos in scope the filter keeps,
 // counted per span of time in the zone given, earliest first, with up to
 // `samples` ids from each span spread evenly through it. Photos with no
 // taken_at are left out. Paging in the filter is ignored.
-func (s *Store) TakenActivity(filter Filter, interval string, location *time.Location, samples int) ([]TakenActivityBucket, error) {
+func (s *Store) TakenActivity(ctx context.Context, scope ownership.Scope, filter Filter, interval string, location *time.Location, samples int) ([]TakenActivityBucket, error) {
+	if err := checkScope(scope); err != nil {
+		return nil, err
+	}
 	if !slices.Contains(TakenActivityIntervals, interval) {
 		return nil, fmt.Errorf("%w: interval %q is not one of %v", ErrInvalid, interval, TakenActivityIntervals)
 	}
 	if samples < 0 || samples > maximumTakenActivitySamples {
 		return nil, fmt.Errorf("%w: samples must be 0 to %d, got %d", ErrInvalid, maximumTakenActivitySamples, samples)
 	}
-	whereSQL, args, err := filter.whereClause()
+	args := &arguments{}
+	where, err := filter.whereClause(scope, args)
 	if err != nil {
 		return nil, err
 	}
-	if whereSQL == "" {
-		whereSQL = " WHERE taken_at > 0"
-	} else {
-		whereSQL += " AND taken_at > 0"
-	}
-	rows, err := s.db.Query(`SELECT id, taken_at FROM photos`+whereSQL+` ORDER BY taken_at, seq`, args...)
+	rows, err := s.db.QueryContext(ctx, `SELECT seq, taken_at FROM photos WHERE `+where+` AND taken_at > 0 ORDER BY taken_at, seq`, args.values...)
 	if err != nil {
 		return nil, err
 	}
@@ -39,11 +41,11 @@ func (s *Store) TakenActivity(filter Filter, interval string, location *time.Loc
 	buckets := []TakenActivityBucket{}
 	idsInBucket := [][]string{}
 	for rows.Next() {
-		var id string
-		var takenAt int64
-		if err := rows.Scan(&id, &takenAt); err != nil {
+		var seq, takenAt int64
+		if err := rows.Scan(&seq, &takenAt); err != nil {
 			return nil, err
 		}
+		id := photoID(seq)
 		start := takenSpanStart(time.Unix(takenAt, 0).In(location), interval)
 		if len(buckets) == 0 || buckets[len(buckets)-1].Start != start {
 			buckets = append(buckets, TakenActivityBucket{Start: start, SamplePhotoIDs: []string{}})
@@ -98,6 +100,10 @@ func evenlySpaced(ids []string, count int) []string {
 }
 
 func (h *handler) takenActivity(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	query := r.URL.Query()
 	timeZone := query.Get("time_zone")
 	location, err := time.LoadLocation(timeZone)
@@ -107,7 +113,6 @@ func (h *handler) takenActivity(w http.ResponseWriter, r *http.Request) {
 	}
 	filter := Filter{Folder: query.Get("folder"), Query: query.Get("q"), Tag: query.Get("tag"), Person: query.Get("person"), Described: query.Get("described"),
 		HasGPS: query.Get("has_gps") == "true", ExcludeTags: query["exclude_tag"]}
-	var ok bool
 	if filter.From, ok = integerParameter(w, r, "from"); !ok {
 		return
 	}
@@ -121,7 +126,7 @@ func (h *handler) takenActivity(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	buckets, err := h.s.TakenActivity(filter, query.Get("interval"), location, samples)
+	buckets, err := h.s.TakenActivity(r.Context(), scope, filter, query.Get("interval"), location, samples)
 	if respondError(w, err) {
 		return
 	}

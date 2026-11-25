@@ -10,31 +10,12 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-
-	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
-func TestTheRegistryReadsDefaultsAndRefusesAnUndeclaredVariable(t *testing.T) {
-	registry, err := NewSettingsRegistry(servicesettings.MapEnvironment(nil))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := registry.String(SettingListenAddress); got != "127.0.0.1:8329" {
-		t.Errorf("listen address = %q, want loopback 127.0.0.1:8329", got)
-	}
-	if got := registry.String(SettingDataDirectory); got != DefaultDataDir() {
-		t.Errorf("data directory = %q, want %q", got, DefaultDataDir())
-	}
-	_, err = NewSettingsRegistry(servicesettings.MapEnvironment(map[string]string{"PHOTO_STORE_ADDRESS": ":1"}))
-	if err == nil || !strings.Contains(err.Error(), "PHOTO_STORE_ADDRESS") {
-		t.Fatalf("an undeclared PHOTO_STORE_ variable = %v, want a refusal naming it", err)
-	}
-}
-
-// Every environment variable the service's own code reads by name is declared.
+// Every environment variable the package and its commands read by name is declared.
 func TestEveryEnvironmentVariableTheServiceReadsIsDeclared(t *testing.T) {
 	declared := map[string]bool{}
-	for _, definition := range append(append(append(SettingDefinitions(), ImportMessagesSettingDefinitions()...), ImportFacebookSettingDefinitions()...), PeopleOnPhotosSettingDefinitions()...) {
+	for _, definition := range append(append(ImportMessagesSettingDefinitions(), ImportFacebookSettingDefinitions()...), PeopleOnPhotosSettingDefinitions()...) {
 		declared[definition.EnvironmentVariable] = true
 	}
 	filesRead := 0
@@ -66,7 +47,7 @@ func TestEveryEnvironmentVariableTheServiceReadsIsDeclared(t *testing.T) {
 				return true
 			}
 			if name, _ := strconv.Unquote(literal.Value); !declared[name] {
-				t.Errorf("%s reads %s, which SettingDefinitions does not declare", path, name)
+				t.Errorf("%s reads %s, which no settings definition here declares", path, name)
 			}
 			return true
 		})
@@ -75,7 +56,7 @@ func TestEveryEnvironmentVariableTheServiceReadsIsDeclared(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join("cmd", "photo-store", "main.go")); err != nil {
+	if _, err := os.Stat(filepath.Join("cmd", "photo-import", "main.go")); err != nil {
 		t.Fatalf("the scan starts somewhere that is not the repository root: %v", err)
 	}
 	if filesRead < 5 {

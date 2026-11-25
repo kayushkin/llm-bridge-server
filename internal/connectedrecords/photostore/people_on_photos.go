@@ -36,7 +36,9 @@ type FaceScan struct {
 // GET /faces is asked for it with include_embeddings=true.
 type Face struct {
 	// ID is face_000001.
-	ID                     string  `json:"id"`
+	ID string `json:"id"`
+	// OwnerPrincipalID is principal-store's id of the person who keeps it.
+	OwnerPrincipalID       string  `json:"owner_principal_id"`
 	PhotoID                string  `json:"photo_id"`
 	Model                  string  `json:"model"`
 	Box                    FaceBox `json:"box"`
@@ -48,8 +50,10 @@ type Face struct {
 // PhotoPerson says a person in people-store is in a photo.
 type PhotoPerson struct {
 	// ID is photo_person_000001.
-	ID      string `json:"id"`
-	PhotoID string `json:"photo_id"`
+	ID string `json:"id"`
+	// OwnerPrincipalID is principal-store's id of the person who keeps it.
+	OwnerPrincipalID string `json:"owner_principal_id"`
+	PhotoID          string `json:"photo_id"`
 	// PersonID is people-store's id, person_000001.
 	PersonID string `json:"person_id"`
 	// FaceID is the face that is the person, "" when not known.

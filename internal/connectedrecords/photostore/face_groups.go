@@ -23,6 +23,8 @@ var FaceGroupStatuses = []string{FaceGroupOpen, FaceGroupNamed, FaceGroupNotKnow
 type FaceGroup struct {
 	// ID is face_group_000001.
 	ID string `json:"id"`
+	// OwnerPrincipalID is principal-store's id of the person who keeps it.
+	OwnerPrincipalID string `json:"owner_principal_id"`
 	// Model is the face model whose faces it groups.
 	Model string `json:"model"`
 	// Status is one of GET /face-group-statuses.
@@ -64,8 +66,10 @@ type FaceGroupMember struct {
 // FaceGroupGuess is one guess of who a group is.
 type FaceGroupGuess struct {
 	// ID is face_group_guess_000001.
-	ID      string `json:"id"`
-	GroupID string `json:"group_id"`
+	ID string `json:"id"`
+	// OwnerPrincipalID is principal-store's id of the person who keeps it.
+	OwnerPrincipalID string `json:"owner_principal_id"`
+	GroupID          string `json:"group_id"`
 	// PersonID is people-store's person_ id; "" means the guesser thinks it
 	// is nobody in people-store.
 	PersonID   string  `json:"person_id"`

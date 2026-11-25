@@ -2,7 +2,9 @@ package photostore
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -11,26 +13,95 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
+	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 )
 
-type testService struct {
-	t      *testing.T
-	store  *Store
-	server *httptest.Server
+// The made-up people the tests act as.
+const (
+	alicePrincipalID = "principal_000001"
+	bobPrincipalID   = "principal_000002"
+)
+
+var (
+	alice         = ownership.Caller{PrincipalID: alicePrincipalID}
+	bob           = ownership.Caller{PrincipalID: bobPrincipalID}
+	administrator = ownership.Caller{PrincipalID: "principal_000009", SeesEveryOwner: true}
+	testContext   = context.Background()
+	aliceScope    = ownership.OwnedBy(alicePrincipalID)
+)
+
+// The test server reads who the request acts as from these headers, as the
+// real server reads it from the credential it verified. A request with
+// noCallerHeader carries no caller at all.
+const (
+	callerPrincipalHeader     = "X-Test-Caller-Principal"
+	callerAdministratorHeader = "X-Test-Caller-Administrator"
+	noCallerHeader            = "X-Test-No-Caller"
+)
+
+func withTestCaller(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(noCallerHeader) == "" {
+			caller := ownership.Caller{PrincipalID: r.Header.Get(callerPrincipalHeader), SeesEveryOwner: r.Header.Get(callerAdministratorHeader) != ""}
+			r = r.WithContext(ownership.ContextWithCaller(r.Context(), caller))
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
+type testService struct {
+	t          *testing.T
+	store      *Store
+	db         *sql.DB
+	server     *httptest.Server
+	thumbnails *fakeThumbnailFiles
+	people     *fakePeople
+	// caller is who call acts as; nil sends no caller.
+	caller *ownership.Caller
+}
+
+// as is the same service called as caller.
+func (s *testService) as(caller ownership.Caller) *testService {
+	copied := *s
+	copied.caller = &caller
+	return &copied
+}
+
+// withoutCaller is the same service called with no caller on the request.
+func (s *testService) withoutCaller() *testService {
+	copied := *s
+	copied.caller = nil
+	return &copied
+}
+
+// newTestDatabase gives the test a Postgres database of its own holding the
+// module, migrated (postgresstorage/postgrestest), and the module's pool on it.
+func newTestDatabase(t *testing.T) *sql.DB {
+	t.Helper()
+	module, err := Module()
+	if err != nil {
+		t.Fatalf("module: %v", err)
+	}
+	database := postgrestest.NewDatabase(t, module)
+	return database.Open(module)
+}
+
+// newTestService serves a store on a database of its own, called as Alice,
+// who keeps person_000001 to person_000003 in people-store.
 func newTestService(t *testing.T) *testService {
 	t.Helper()
-	store, err := Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { store.Close() })
+	db := newTestDatabase(t)
+	thumbnails := newFakeThumbnailFiles()
+	people := &fakePeople{persons: map[string]map[string]bool{}}
+	people.keep(alicePrincipalID, "person_000001", "person_000002", "person_000003")
+	store := New(db, thumbnails, people)
 	mux := http.NewServeMux()
 	RegisterHandlers(mux, store)
-	server := httptest.NewServer(mux)
+	server := httptest.NewServer(withTestCaller(mux))
 	t.Cleanup(server.Close)
-	return &testService{t: t, store: store, server: server}
+	return &testService{t: t, store: store, db: db, server: server, thumbnails: thumbnails, people: people, caller: &alice}
 }
 
 func (s *testService) call(method, path string, body any, out any) (int, []byte) {
@@ -46,6 +117,14 @@ func (s *testService) call(method, path string, body any, out any) (int, []byte)
 	}
 	request, _ := http.NewRequest(method, s.server.URL+path, reader)
 	request.Header.Set("Content-Type", "application/json")
+	if s.caller == nil {
+		request.Header.Set(noCallerHeader, "true")
+	} else {
+		request.Header.Set(callerPrincipalHeader, s.caller.PrincipalID)
+		if s.caller.SeesEveryOwner {
+			request.Header.Set(callerAdministratorHeader, "true")
+		}
+	}
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		s.t.Fatal(err)
@@ -172,16 +251,16 @@ func TestTagsAreCountedOverLivePhotosMostUsedFirst(t *testing.T) {
 		t.Fatalf("an empty store's tags = %#v, want an empty list, not null", none)
 	}
 	service.call(http.MethodPost, "/imports", ImportRequest{Photos: []ImportPhoto{photoOf("k", 100), photoOf("l", 200), photoOf("m", 300)}}, nil)
-	service.call(http.MethodPatch, "/photos/photo_000001", map[string]any{"tags": []string{"slava", "beach"}}, nil)
-	service.call(http.MethodPatch, "/photos/photo_000002", map[string]any{"tags": []string{"slava"}}, nil)
-	service.call(http.MethodPatch, "/photos/photo_000003", map[string]any{"tags": []string{"slava", "snow"}}, nil)
+	service.call(http.MethodPatch, "/photos/photo_000001", map[string]any{"tags": []string{"dog", "beach"}}, nil)
+	service.call(http.MethodPatch, "/photos/photo_000002", map[string]any{"tags": []string{"dog"}}, nil)
+	service.call(http.MethodPatch, "/photos/photo_000003", map[string]any{"tags": []string{"dog", "snow"}}, nil)
 	service.call(http.MethodDelete, "/photos/photo_000003", nil, nil)
 
 	var counts []TagCount
 	if status, body := service.call(http.MethodGet, "/tags", nil, &counts); status != http.StatusOK {
 		t.Fatalf("GET /tags = %d %s", status, body)
 	}
-	want := []TagCount{{Tag: "slava", Photos: 2}, {Tag: "beach", Photos: 1}}
+	want := []TagCount{{Tag: "dog", Photos: 2}, {Tag: "beach", Photos: 1}}
 	if fmt.Sprint(counts) != fmt.Sprint(want) {
 		t.Errorf("tags = %v, want %v: a deleted photo's tags do not count", counts, want)
 	}
@@ -305,40 +384,5 @@ func TestAPhotoKeepsEveryPlaceItWasFound(t *testing.T) {
 	service.call(http.MethodGet, "/sightings?source_machine=laptop", nil, &none)
 	if len(none) != 0 {
 		t.Fatalf("another machine's sightings = %+v", none)
-	}
-}
-
-func TestOpeningAnOlderStoreFillsSightingsFromItsRevisions(t *testing.T) {
-	dir := t.TempDir()
-	store, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	first := photoOf("a", 1300000000)
-	first.SourceMachine, first.SourcePath = "multichat", "message_000001"
-	if _, err := store.Import(ImportRequest{Photos: []ImportPhoto{first}}); err != nil {
-		t.Fatal(err)
-	}
-	moved := first
-	moved.SourcePath = "message_000009"
-	if _, err := store.Import(ImportRequest{Photos: []ImportPhoto{moved}}); err != nil {
-		t.Fatal(err)
-	}
-	// An older store had no sightings: empty the table, then open again.
-	if _, err := store.db.Exec(`DELETE FROM photo_sightings`); err != nil {
-		t.Fatal(err)
-	}
-	store.Close()
-	store, err = Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	sightings, err := store.Sightings("multichat", 0, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(sightings) != 2 {
-		t.Fatalf("sightings = %+v, want the current place and the one in the revisions", sightings)
 	}
 }

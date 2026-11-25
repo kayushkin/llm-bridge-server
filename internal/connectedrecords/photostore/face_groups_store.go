@@ -1,75 +1,121 @@
 package photostore
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"slices"
 	"strings"
+
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
+	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 )
 
-func formatFaceGroupID(seq int64) string { return fmt.Sprintf("face_group_%06d", seq) }
+func faceGroupID(seq int64) string { return postgresstorage.FormatRecordID(FaceGroupIDPrefix, seq) }
 
-func formatFaceGroupGuessID(seq int64) string { return fmt.Sprintf("face_group_guess_%06d", seq) }
+func faceGroupGuessID(seq int64) string {
+	return postgresstorage.FormatRecordID(FaceGroupGuessIDPrefix, seq)
+}
 
 // faceGroupSampleSize is how many faces GET /face-groups shows of each group.
 const faceGroupSampleSize = 12
 
-// checkFaceGroupMembers refuses a face that is missing, retired, on a deleted
-// photo, found by another model, already in a group, or named twice.
-func checkFaceGroupMembers(tx *sql.Tx, model string, members []NewFaceGroupMember) error {
+// checkFaceGroupMembers refuses a face that is missing or out of scope,
+// retired, on a deleted photo, found by another model, already in a group,
+// named twice, or of another owner than the rest. ownerPrincipalID is the
+// group's owner, or "" for a new group, which takes its faces' owner; the
+// owner is answered.
+func checkFaceGroupMembers(ctx context.Context, tx *sql.Tx, scope ownership.Scope, ownerPrincipalID, model string, members []NewFaceGroupMember) (string, error) {
 	seen := map[string]bool{}
 	for index, member := range members {
 		if seen[member.FaceID] {
-			return fmt.Errorf("%w: member %d: %s is named twice", ErrInvalid, index, member.FaceID)
+			return "", fmt.Errorf("%w: member %d: %s is named twice", ErrInvalid, index, member.FaceID)
 		}
 		seen[member.FaceID] = true
 		if member.Similarity < -1 || member.Similarity > 1 {
-			return fmt.Errorf("%w: member %d: similarity is between -1 and 1", ErrInvalid, index)
+			return "", fmt.Errorf("%w: member %d: similarity is between -1 and 1", ErrInvalid, index)
 		}
-		var faceModel string
+		faceSeq, err := postgresstorage.ParseRecordID(FaceIDPrefix, member.FaceID)
+		if err != nil {
+			return "", fmt.Errorf("%w: member %d: no face %s", ErrInvalid, index, member.FaceID)
+		}
+		args := &arguments{}
+		var faceOwner, faceModel string
 		var retiredAt, deletedAt int64
-		err := tx.QueryRow(`SELECT faces.model, faces.retired_at, photos.deleted_at FROM faces JOIN photos ON photos.id = faces.photo_id
-			WHERE faces.id = ?`, member.FaceID).Scan(&faceModel, &retiredAt, &deletedAt)
+		err = tx.QueryRowContext(ctx, `SELECT faces.owner_principal_id, faces.model, faces.retired_at, photos.deleted_at
+			FROM faces JOIN photos ON photos.seq = faces.photo_seq
+			WHERE faces.seq = `+args.add(faceSeq)+` AND `+args.scope(scope, "faces.owner_principal_id")+` FOR UPDATE OF faces`, args.values...).
+			Scan(&faceOwner, &faceModel, &retiredAt, &deletedAt)
 		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("%w: member %d: no face %s", ErrInvalid, index, member.FaceID)
+			return "", fmt.Errorf("%w: member %d: no face %s", ErrInvalid, index, member.FaceID)
 		} else if err != nil {
-			return err
+			return "", err
+		}
+		if ownerPrincipalID == "" {
+			ownerPrincipalID = faceOwner
 		}
 		switch {
+		case faceOwner != ownerPrincipalID:
+			return "", fmt.Errorf("%w: member %d: %s belongs to %s, and the group's faces to %s; a group holds one owner's faces",
+				ErrInvalid, index, member.FaceID, faceOwner, ownerPrincipalID)
 		case faceModel != model:
-			return fmt.Errorf("%w: member %d: %s was found by %s, not %s", ErrInvalid, index, member.FaceID, faceModel, model)
+			return "", fmt.Errorf("%w: member %d: %s was found by %s, not %s", ErrInvalid, index, member.FaceID, faceModel, model)
 		case retiredAt != 0:
-			return fmt.Errorf("%w: member %d: %s was retired", ErrInvalid, index, member.FaceID)
+			return "", fmt.Errorf("%w: member %d: %s was retired", ErrInvalid, index, member.FaceID)
 		case deletedAt != 0:
-			return fmt.Errorf("%w: member %d: %s is on a deleted photo", ErrInvalid, index, member.FaceID)
+			return "", fmt.Errorf("%w: member %d: %s is on a deleted photo", ErrInvalid, index, member.FaceID)
 		}
-		var inGroup string
-		err = tx.QueryRow(`SELECT group_id FROM face_group_members WHERE face_id = ? AND released_at = 0`, member.FaceID).Scan(&inGroup)
+		var inGroup int64
+		err = tx.QueryRowContext(ctx, `SELECT group_seq FROM face_group_members WHERE face_seq = $1 AND released_at = 0`, faceSeq).Scan(&inGroup)
 		if err == nil {
-			return fmt.Errorf("%w: member %d: %s is already in %s", ErrConflict, index, member.FaceID, inGroup)
+			return "", fmt.Errorf("%w: member %d: %s is already in %s", ErrConflict, index, member.FaceID, faceGroupID(inGroup))
 		} else if !errors.Is(err, sql.ErrNoRows) {
-			return err
+			return "", err
 		}
 	}
-	return nil
+	return ownerPrincipalID, nil
 }
 
-func insertFaceGroupMembers(tx *sql.Tx, groupID string, members []NewFaceGroupMember, at int64) error {
+func insertFaceGroupMembers(ctx context.Context, tx *sql.Tx, ownerPrincipalID string, groupSeq int64, members []NewFaceGroupMember, at int64) error {
 	for _, member := range members {
 		// A face taken out of this group before and found to belong again
 		// replaces its released row.
-		if _, err := tx.Exec(`INSERT INTO face_group_members (group_id, face_id, similarity, added_at) VALUES (?, ?, ?, ?)
-			ON CONFLICT (group_id, face_id) DO UPDATE SET similarity = excluded.similarity, added_at = excluded.added_at, released_at = 0, released_by = ''`,
-			groupID, member.FaceID, member.Similarity, at); err != nil {
-			return err
+		if _, err := tx.ExecContext(ctx, `INSERT INTO face_group_members (owner_principal_id, group_seq, face_seq, similarity, added_at)
+			VALUES ($1, $2, $3, $4, $5)
+			ON CONFLICT (group_seq, face_seq) DO UPDATE SET similarity = excluded.similarity, added_at = excluded.added_at, released_at = 0, released_by = ''`,
+			ownerPrincipalID, groupSeq, mustRecordNumber(FaceIDPrefix, member.FaceID), member.Similarity, at); err != nil {
+			return conflictOf(err)
 		}
 	}
 	return nil
 }
 
-// CreateFaceGroup answers POST /face-groups.
-func (s *Store) CreateFaceGroup(group NewFaceGroup) (FaceGroup, error) {
+// faceGroupOwner reads a group in scope: its owner, model, status and the
+// person it was named as. forUpdate locks it for the transaction.
+func faceGroupOwner(ctx context.Context, q queryer, scope ownership.Scope, groupSeq int64, id string, forUpdate bool) (owner, model, status, personID string, err error) {
+	if err := checkScope(scope); err != nil {
+		return "", "", "", "", err
+	}
+	args := &arguments{}
+	query := `SELECT owner_principal_id, model, status, person_id FROM face_groups WHERE seq = ` + args.add(groupSeq) + ` AND ` +
+		args.scope(scope, "owner_principal_id")
+	if forUpdate {
+		query += ` FOR UPDATE`
+	}
+	err = q.QueryRowContext(ctx, query, args.values...).Scan(&owner, &model, &status, &personID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", "", "", fmt.Errorf("%w: no face group %s", ErrNotFound, id)
+	}
+	return owner, model, status, personID, err
+}
+
+// CreateFaceGroup answers POST /face-groups: a new open group of faces in
+// scope, all of one owner, which the group takes.
+func (s *Store) CreateFaceGroup(ctx context.Context, scope ownership.Scope, group NewFaceGroup) (FaceGroup, error) {
+	if err := checkScope(scope); err != nil {
+		return FaceGroup{}, err
+	}
 	if strings.TrimSpace(group.Model) == "" {
 		return FaceGroup{}, fmt.Errorf("%w: model is required: the face model whose faces these are", ErrInvalid)
 	}
@@ -79,74 +125,65 @@ func (s *Store) CreateFaceGroup(group NewFaceGroup) (FaceGroup, error) {
 	if len(group.Members) == 0 {
 		return FaceGroup{}, fmt.Errorf("%w: a group needs at least one face", ErrInvalid)
 	}
-	s.writeMutex.Lock()
-	defer s.writeMutex.Unlock()
-	tx, err := s.db.Begin()
+	var id string
+	err := s.inTransaction(ctx, func(tx *sql.Tx) error {
+		owner, err := checkFaceGroupMembers(ctx, tx, scope, "", group.Model, group.Members)
+		if err != nil {
+			return err
+		}
+		at := now()
+		var seq int64
+		if err := tx.QueryRowContext(ctx, `INSERT INTO face_groups (owner_principal_id, model, status, made_by, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $5) RETURNING seq`, owner, group.Model, FaceGroupOpen, group.MadeBy, at).Scan(&seq); err != nil {
+			return err
+		}
+		id = faceGroupID(seq)
+		return insertFaceGroupMembers(ctx, tx, owner, seq, group.Members, at)
+	})
 	if err != nil {
 		return FaceGroup{}, err
 	}
-	defer tx.Rollback()
-	if err := checkFaceGroupMembers(tx, group.Model, group.Members); err != nil {
-		return FaceGroup{}, err
-	}
-	var seq int64
-	if err := tx.QueryRow(`SELECT COALESCE(MAX(seq), 0) + 1 FROM face_groups`).Scan(&seq); err != nil {
-		return FaceGroup{}, err
-	}
-	id, at := formatFaceGroupID(seq), now()
-	if _, err := tx.Exec(`INSERT INTO face_groups (id, seq, model, status, made_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		id, seq, group.Model, FaceGroupOpen, group.MadeBy, at, at); err != nil {
-		return FaceGroup{}, err
-	}
-	if err := insertFaceGroupMembers(tx, id, group.Members, at); err != nil {
-		return FaceGroup{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return FaceGroup{}, err
-	}
-	return s.FaceGroupByID(id, false)
+	return s.FaceGroupByID(ctx, scope, id, false)
 }
 
-// AddFaceGroupMembers answers POST /face-groups/{id}/members: faces a grouper
-// found to belong to a group still open.
-func (s *Store) AddFaceGroupMembers(id string, addition FaceGroupMembersAddition) (FaceGroup, error) {
+// AddFaceGroupMembers answers POST /face-groups/{id}/members: faces of the
+// group's owner a grouper found to belong to a group in scope still open.
+func (s *Store) AddFaceGroupMembers(ctx context.Context, scope ownership.Scope, id string, addition FaceGroupMembersAddition) (FaceGroup, error) {
 	if len(addition.Members) == 0 {
 		return FaceGroup{}, fmt.Errorf("%w: members is empty", ErrInvalid)
 	}
-	s.writeMutex.Lock()
-	defer s.writeMutex.Unlock()
-	tx, err := s.db.Begin()
+	groupSeq, err := recordNumberOf(FaceGroupIDPrefix, "face group", id)
 	if err != nil {
 		return FaceGroup{}, err
 	}
-	defer tx.Rollback()
-	var model, status string
-	if err := tx.QueryRow(`SELECT model, status FROM face_groups WHERE id = ?`, id).Scan(&model, &status); errors.Is(err, sql.ErrNoRows) {
-		return FaceGroup{}, fmt.Errorf("%w: no face group %s", ErrNotFound, id)
-	} else if err != nil {
+	err = s.inTransaction(ctx, func(tx *sql.Tx) error {
+		owner, model, status, _, err := faceGroupOwner(ctx, tx, scope, groupSeq, id, true)
+		if err != nil {
+			return err
+		}
+		if status != FaceGroupOpen {
+			return fmt.Errorf("%w: %s is %s; only an open group takes faces", ErrConflict, id, status)
+		}
+		if _, err := checkFaceGroupMembers(ctx, tx, scope, owner, model, addition.Members); err != nil {
+			return err
+		}
+		at := now()
+		if err := insertFaceGroupMembers(ctx, tx, owner, groupSeq, addition.Members, at); err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE face_groups SET updated_at = $1 WHERE seq = $2`, at, groupSeq)
+		return err
+	})
+	if err != nil {
 		return FaceGroup{}, err
 	}
-	if status != FaceGroupOpen {
-		return FaceGroup{}, fmt.Errorf("%w: %s is %s; only an open group takes faces", ErrConflict, id, status)
-	}
-	if err := checkFaceGroupMembers(tx, model, addition.Members); err != nil {
-		return FaceGroup{}, err
-	}
-	at := now()
-	if err := insertFaceGroupMembers(tx, id, addition.Members, at); err != nil {
-		return FaceGroup{}, err
-	}
-	if _, err := tx.Exec(`UPDATE face_groups SET updated_at = ? WHERE id = ?`, at, id); err != nil {
-		return FaceGroup{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return FaceGroup{}, err
-	}
-	return s.FaceGroupByID(id, false)
+	return s.FaceGroupByID(ctx, scope, id, false)
 }
 
-// AddFaceGroupGuess answers POST /face-groups/{id}/guesses.
-func (s *Store) AddFaceGroupGuess(id string, proposal FaceGroupGuessProposal) (FaceGroupGuess, error) {
+// AddFaceGroupGuess answers POST /face-groups/{id}/guesses: a guess on a
+// group in scope, owned by the group's owner. A person it names must be one
+// that owner keeps in people-store.
+func (s *Store) AddFaceGroupGuess(ctx context.Context, scope ownership.Scope, id string, proposal FaceGroupGuessProposal) (FaceGroupGuess, error) {
 	if proposal.PersonID != "" && !personIDPattern.MatchString(proposal.PersonID) {
 		return FaceGroupGuess{}, fmt.Errorf("%w: person_id must be people-store's id (person_000001) or \"\" for nobody in it, got %q", ErrInvalid, proposal.PersonID)
 	}
@@ -156,31 +193,29 @@ func (s *Store) AddFaceGroupGuess(id string, proposal FaceGroupGuessProposal) (F
 	if proposal.Confidence < 0 || proposal.Confidence > 1 {
 		return FaceGroupGuess{}, fmt.Errorf("%w: confidence is between 0 and 1", ErrInvalid)
 	}
-	s.writeMutex.Lock()
-	defer s.writeMutex.Unlock()
-	tx, err := s.db.Begin()
+	groupSeq, err := recordNumberOf(FaceGroupIDPrefix, "face group", id)
 	if err != nil {
 		return FaceGroupGuess{}, err
 	}
-	defer tx.Rollback()
-	var exists int
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM face_groups WHERE id = ?`, id).Scan(&exists); err != nil {
+	owner, _, _, _, err := faceGroupOwner(ctx, s.db, scope, groupSeq, id, false)
+	if err != nil {
 		return FaceGroupGuess{}, err
 	}
-	if exists == 0 {
-		return FaceGroupGuess{}, fmt.Errorf("%w: no face group %s", ErrNotFound, id)
+	if proposal.PersonID != "" {
+		if err := s.personKeptByOwner(ctx, owner, proposal.PersonID); err != nil {
+			return FaceGroupGuess{}, err
+		}
 	}
-	var seq int64
-	if err := tx.QueryRow(`SELECT COALESCE(MAX(seq), 0) + 1 FROM face_group_guesses`).Scan(&seq); err != nil {
-		return FaceGroupGuess{}, err
-	}
-	guess := FaceGroupGuess{ID: formatFaceGroupGuessID(seq), GroupID: id, PersonID: proposal.PersonID, Confidence: proposal.Confidence,
+	guess := FaceGroupGuess{OwnerPrincipalID: owner, GroupID: id, PersonID: proposal.PersonID, Confidence: proposal.Confidence,
 		Evidence: proposal.Evidence, ProposedBy: proposal.ProposedBy, CreatedAt: now()}
-	if _, err := tx.Exec(`INSERT INTO face_group_guesses (id, seq, group_id, person_id, confidence, evidence, proposed_by, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, guess.ID, seq, id, guess.PersonID, guess.Confidence, guess.Evidence, guess.ProposedBy, guess.CreatedAt); err != nil {
+	var seq int64
+	if err := s.db.QueryRowContext(ctx, `INSERT INTO face_group_guesses (owner_principal_id, group_seq, person_id, confidence, evidence, proposed_by, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING seq`, owner, groupSeq, guess.PersonID, guess.Confidence, guess.Evidence, guess.ProposedBy,
+		guess.CreatedAt).Scan(&seq); err != nil {
 		return FaceGroupGuess{}, err
 	}
-	return guess, tx.Commit()
+	guess.ID = faceGroupGuessID(seq)
+	return guess, nil
 }
 
 // FaceGroupFilter selects groups for GET /face-groups.
@@ -191,41 +226,45 @@ type FaceGroupFilter struct {
 	Offset   int
 }
 
-// FaceGroups answers GET /face-groups: groups with their counts, samples and
-// guesses, the most photos first.
-func (s *Store) FaceGroups(filter FaceGroupFilter) ([]FaceGroup, error) {
-	where, args := []string{"1 = 1"}, []any{}
+// FaceGroups answers GET /face-groups: groups in scope with their counts,
+// samples and guesses, the most photos first.
+func (s *Store) FaceGroups(ctx context.Context, scope ownership.Scope, filter FaceGroupFilter) ([]FaceGroup, error) {
+	if err := checkScope(scope); err != nil {
+		return nil, err
+	}
+	args := &arguments{}
+	where := []string{args.scope(scope, "face_groups.owner_principal_id")}
 	if filter.Status != "" {
 		if !slices.Contains(FaceGroupStatuses, filter.Status) {
 			return nil, fmt.Errorf("%w: status is one of %s", ErrInvalid, strings.Join(FaceGroupStatuses, ", "))
 		}
-		where, args = append(where, "face_groups.status = ?"), append(args, filter.Status)
+		where = append(where, "face_groups.status = "+args.add(filter.Status))
 	}
 	if filter.PersonID != "" {
-		where, args = append(where, "face_groups.person_id = ?"), append(args, filter.PersonID)
+		where = append(where, "face_groups.person_id = "+args.add(filter.PersonID))
 	}
 	limit := filter.Limit
 	if limit <= 0 || limit > maximumLimit {
 		limit = 100
 	}
-	args = append(args, limit, max(filter.Offset, 0))
-	rows, err := s.db.Query(`SELECT face_groups.id FROM face_groups
-		LEFT JOIN (SELECT face_group_members.group_id, COUNT(DISTINCT faces.photo_id) AS photo_count
-			FROM face_group_members JOIN faces ON faces.id = face_group_members.face_id JOIN photos ON photos.id = faces.photo_id
+	rows, err := s.db.QueryContext(ctx, `SELECT face_groups.seq FROM face_groups
+		LEFT JOIN (SELECT face_group_members.group_seq, COUNT(DISTINCT faces.photo_seq) AS photo_count
+			FROM face_group_members JOIN faces ON faces.seq = face_group_members.face_seq JOIN photos ON photos.seq = faces.photo_seq
 			WHERE face_group_members.released_at = 0 AND faces.retired_at = 0 AND photos.deleted_at = 0
-			GROUP BY face_group_members.group_id) counted ON counted.group_id = face_groups.id
-		WHERE `+strings.Join(where, " AND ")+` ORDER BY COALESCE(counted.photo_count, 0) DESC, face_groups.seq LIMIT ? OFFSET ?`, args...)
+			GROUP BY face_group_members.group_seq) counted ON counted.group_seq = face_groups.seq
+		WHERE `+strings.Join(where, " AND ")+` ORDER BY COALESCE(counted.photo_count, 0) DESC, face_groups.seq
+		LIMIT `+args.add(limit)+` OFFSET `+args.add(max(filter.Offset, 0)), args.values...)
 	if err != nil {
 		return nil, err
 	}
 	ids := []string{}
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var seq int64
+		if err := rows.Scan(&seq); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		ids = append(ids, id)
+		ids = append(ids, faceGroupID(seq))
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -233,7 +272,7 @@ func (s *Store) FaceGroups(filter FaceGroupFilter) ([]FaceGroup, error) {
 	}
 	groups := make([]FaceGroup, 0, len(ids))
 	for _, id := range ids {
-		group, err := s.FaceGroupByID(id, false)
+		group, err := s.FaceGroupByID(ctx, scope, id, false)
 		if err != nil {
 			return nil, err
 		}
@@ -242,17 +281,28 @@ func (s *Store) FaceGroups(filter FaceGroupFilter) ([]FaceGroup, error) {
 	return groups, nil
 }
 
-// FaceGroupByID answers GET /face-groups/{id}; withMembers fills Members.
-func (s *Store) FaceGroupByID(id string, withMembers bool) (FaceGroup, error) {
-	var group FaceGroup
-	err := s.db.QueryRow(`SELECT id, model, status, person_id, made_by, decided_by, decided_at, created_at, updated_at FROM face_groups WHERE id = ?`, id).
-		Scan(&group.ID, &group.Model, &group.Status, &group.PersonID, &group.MadeBy, &group.DecidedBy, &group.DecidedAt, &group.CreatedAt, &group.UpdatedAt)
+// FaceGroupByID answers GET /face-groups/{id} for a group in scope;
+// withMembers fills Members.
+func (s *Store) FaceGroupByID(ctx context.Context, scope ownership.Scope, id string, withMembers bool) (FaceGroup, error) {
+	if err := checkScope(scope); err != nil {
+		return FaceGroup{}, err
+	}
+	groupSeq, err := recordNumberOf(FaceGroupIDPrefix, "face group", id)
+	if err != nil {
+		return FaceGroup{}, err
+	}
+	args := &arguments{}
+	group := FaceGroup{ID: id}
+	err = s.db.QueryRowContext(ctx, `SELECT owner_principal_id, model, status, person_id, made_by, decided_by, decided_at, created_at, updated_at
+		FROM face_groups WHERE seq = `+args.add(groupSeq)+` AND `+args.scope(scope, "owner_principal_id"), args.values...).
+		Scan(&group.OwnerPrincipalID, &group.Model, &group.Status, &group.PersonID, &group.MadeBy, &group.DecidedBy, &group.DecidedAt,
+			&group.CreatedAt, &group.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return FaceGroup{}, fmt.Errorf("%w: no face group %s", ErrNotFound, id)
 	} else if err != nil {
 		return FaceGroup{}, err
 	}
-	members, err := s.faceGroupMembers(id)
+	members, err := s.faceGroupMembers(ctx, groupSeq)
 	if err != nil {
 		return FaceGroup{}, err
 	}
@@ -275,7 +325,7 @@ func (s *Store) FaceGroupByID(id string, withMembers bool) (FaceGroup, error) {
 	if withMembers {
 		group.Members = members
 	}
-	group.Guesses, err = s.faceGroupGuesses(id)
+	group.Guesses, err = s.faceGroupGuesses(ctx, groupSeq, id)
 	return group, err
 }
 
@@ -293,11 +343,11 @@ func evenlyFrom(items []string, count int) []string {
 }
 
 // faceGroupMembers reads a group's live faces, the most typical first.
-func (s *Store) faceGroupMembers(id string) ([]FaceGroupMember, error) {
-	rows, err := s.db.Query(`SELECT faces.id, faces.photo_id, face_group_members.similarity, photos.taken_at, photos.folder
-		FROM face_group_members JOIN faces ON faces.id = face_group_members.face_id JOIN photos ON photos.id = faces.photo_id
-		WHERE face_group_members.group_id = ? AND face_group_members.released_at = 0 AND faces.retired_at = 0 AND photos.deleted_at = 0
-		ORDER BY face_group_members.similarity DESC, faces.seq`, id)
+func (s *Store) faceGroupMembers(ctx context.Context, groupSeq int64) ([]FaceGroupMember, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT faces.seq, faces.photo_seq, face_group_members.similarity, photos.taken_at, photos.folder
+		FROM face_group_members JOIN faces ON faces.seq = face_group_members.face_seq JOIN photos ON photos.seq = faces.photo_seq
+		WHERE face_group_members.group_seq = $1 AND face_group_members.released_at = 0 AND faces.retired_at = 0 AND photos.deleted_at = 0
+		ORDER BY face_group_members.similarity DESC, faces.seq`, groupSeq)
 	if err != nil {
 		return nil, err
 	}
@@ -305,34 +355,39 @@ func (s *Store) faceGroupMembers(id string) ([]FaceGroupMember, error) {
 	members := []FaceGroupMember{}
 	for rows.Next() {
 		var member FaceGroupMember
-		if err := rows.Scan(&member.FaceID, &member.PhotoID, &member.Similarity, &member.TakenAt, &member.Folder); err != nil {
+		var faceSeq, photoSeq int64
+		if err := rows.Scan(&faceSeq, &photoSeq, &member.Similarity, &member.TakenAt, &member.Folder); err != nil {
 			return nil, err
 		}
+		member.FaceID, member.PhotoID = faceID(faceSeq), photoID(photoSeq)
 		members = append(members, member)
 	}
 	return members, rows.Err()
 }
 
-func (s *Store) faceGroupGuesses(id string) ([]FaceGroupGuess, error) {
-	rows, err := s.db.Query(`SELECT id, group_id, person_id, confidence, evidence, proposed_by, created_at FROM face_group_guesses
-		WHERE group_id = ? ORDER BY seq DESC`, id)
+func (s *Store) faceGroupGuesses(ctx context.Context, groupSeq int64, groupID string) ([]FaceGroupGuess, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT seq, owner_principal_id, person_id, confidence, evidence, proposed_by, created_at FROM face_group_guesses
+		WHERE group_seq = $1 ORDER BY seq DESC`, groupSeq)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	guesses := []FaceGroupGuess{}
 	for rows.Next() {
-		var guess FaceGroupGuess
-		if err := rows.Scan(&guess.ID, &guess.GroupID, &guess.PersonID, &guess.Confidence, &guess.Evidence, &guess.ProposedBy, &guess.CreatedAt); err != nil {
+		guess := FaceGroupGuess{GroupID: groupID}
+		var seq int64
+		if err := rows.Scan(&seq, &guess.OwnerPrincipalID, &guess.PersonID, &guess.Confidence, &guess.Evidence, &guess.ProposedBy, &guess.CreatedAt); err != nil {
 			return nil, err
 		}
+		guess.ID = faceGroupGuessID(seq)
 		guesses = append(guesses, guess)
 	}
 	return guesses, rows.Err()
 }
 
-// DecideFaceGroup answers POST /face-groups/{id}/decision. It takes the
-// excluded faces out of the group, then sets its status. Naming it confirms
+// DecideFaceGroup answers POST /face-groups/{id}/decision for a group in
+// scope. It takes the excluded faces out of the group, then sets its status.
+// Naming it, as a person the group's owner keeps in people-store, confirms
 // each remaining face as the person, through the same rules as POST
 // /photo-people: a person's rejection holds, and a confirmed link stays. A
 // suggestion of anyone else on those faces is rejected, since a face is one
@@ -340,7 +395,7 @@ func (s *Store) faceGroupGuesses(id string) ([]FaceGroupGuess, error) {
 // still be named; a named group can only be named as someone else, which
 // rejects the first person's links on its faces and confirms the new one's.
 // A single wrong face on it is fixed with PATCH /photo-people.
-func (s *Store) DecideFaceGroup(id string, decision FaceGroupDecision) (FaceGroupDecisionResult, error) {
+func (s *Store) DecideFaceGroup(ctx context.Context, scope ownership.Scope, id string, decision FaceGroupDecision) (FaceGroupDecisionResult, error) {
 	if !slices.Contains([]string{FaceGroupNamed, FaceGroupNotKnown, FaceGroupMixed}, decision.Status) {
 		return FaceGroupDecisionResult{}, fmt.Errorf("%w: a decision's status is named, not_known or mixed, got %q", ErrInvalid, decision.Status)
 	}
@@ -353,139 +408,152 @@ func (s *Store) DecideFaceGroup(id string, decision FaceGroupDecision) (FaceGrou
 	if decision.Status != FaceGroupNamed && decision.PersonID != "" {
 		return FaceGroupDecisionResult{}, fmt.Errorf("%w: person_id goes only with status named", ErrInvalid)
 	}
-	s.writeMutex.Lock()
-	defer s.writeMutex.Unlock()
-	tx, err := s.db.Begin()
+	groupSeq, err := recordNumberOf(FaceGroupIDPrefix, "face group", id)
 	if err != nil {
 		return FaceGroupDecisionResult{}, err
 	}
-	defer tx.Rollback()
-	var status, previousPerson string
-	if err := tx.QueryRow(`SELECT status, person_id FROM face_groups WHERE id = ?`, id).Scan(&status, &previousPerson); errors.Is(err, sql.ErrNoRows) {
-		return FaceGroupDecisionResult{}, fmt.Errorf("%w: no face group %s", ErrNotFound, id)
-	} else if err != nil {
+	// A group's owner never changes, so it is read once, before people-store
+	// is asked.
+	owner, _, _, _, err := faceGroupOwner(ctx, s.db, scope, groupSeq, id, false)
+	if err != nil {
 		return FaceGroupDecisionResult{}, err
-	}
-	renaming := status == FaceGroupNamed
-	if renaming && (decision.Status != FaceGroupNamed || decision.PersonID == previousPerson || len(decision.ExcludedFaceIDs) > 0) {
-		return FaceGroupDecisionResult{}, fmt.Errorf("%w: %s is named as %s; it can only be named as someone else, with no faces left out", ErrConflict, id, previousPerson)
-	}
-	if status != FaceGroupOpen && decision.Status != FaceGroupNamed {
-		return FaceGroupDecisionResult{}, fmt.Errorf("%w: %s is %s; it can still be named, not decided again", ErrConflict, id, status)
-	}
-	at := now()
-	result := FaceGroupDecisionResult{}
-	for _, faceID := range decision.ExcludedFaceIDs {
-		released, err := tx.Exec(`UPDATE face_group_members SET released_at = ?, released_by = ? WHERE group_id = ? AND face_id = ? AND released_at = 0`,
-			at, decision.DecidedBy, id, faceID)
-		if err != nil {
-			return FaceGroupDecisionResult{}, err
-		}
-		if count, _ := released.RowsAffected(); count == 0 {
-			return FaceGroupDecisionResult{}, fmt.Errorf("%w: %s is not in %s", ErrInvalid, faceID, id)
-		}
-		result.Excluded++
 	}
 	if decision.Status == FaceGroupNamed {
-		rows, err := tx.Query(`SELECT faces.id, faces.photo_id FROM face_group_members JOIN faces ON faces.id = face_group_members.face_id
-			JOIN photos ON photos.id = faces.photo_id
-			WHERE face_group_members.group_id = ? AND face_group_members.released_at = 0 AND faces.retired_at = 0 AND photos.deleted_at = 0
-			ORDER BY faces.seq`, id)
+		if err := s.personKeptByOwner(ctx, owner, decision.PersonID); err != nil {
+			return FaceGroupDecisionResult{}, err
+		}
+	}
+	result := FaceGroupDecisionResult{}
+	err = s.inTransaction(ctx, func(tx *sql.Tx) error {
+		_, _, status, previousPerson, err := faceGroupOwner(ctx, tx, ownership.OwnedBy(owner), groupSeq, id, true)
 		if err != nil {
-			return FaceGroupDecisionResult{}, err
+			return err
 		}
-		type member struct{ faceID, photoID string }
-		members := []member{}
-		for rows.Next() {
-			var each member
-			if err := rows.Scan(&each.faceID, &each.photoID); err != nil {
-				rows.Close()
-				return FaceGroupDecisionResult{}, err
-			}
-			members = append(members, each)
+		renaming := status == FaceGroupNamed
+		if renaming && (decision.Status != FaceGroupNamed || decision.PersonID == previousPerson || len(decision.ExcludedFaceIDs) > 0) {
+			return fmt.Errorf("%w: %s is named as %s; it can only be named as someone else, with no faces left out", ErrConflict, id, previousPerson)
 		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return FaceGroupDecisionResult{}, err
+		if status != FaceGroupOpen && decision.Status != FaceGroupNamed {
+			return fmt.Errorf("%w: %s is %s; it can still be named, not decided again", ErrConflict, id, status)
 		}
-		evidence := fmt.Sprintf("Named with [a face group](ref:%s).", id)
-		if renaming {
-			// The group was named as someone else: those links on its faces
-			// were this group's word, and its word changed.
-			faceIDs := make([]string, 0, len(members))
-			for _, each := range members {
-				faceIDs = append(faceIDs, each.faceID)
-			}
-			withdrawn, err := rejectPersonOnFaces(tx, faceIDs, previousPerson, decision.DecidedBy,
-				fmt.Sprintf("[The face group](ref:%s) these faces are in was named as [someone else](ref:%s) instead.", id, decision.PersonID), at)
+		at := now()
+		for _, excluded := range decision.ExcludedFaceIDs {
+			faceSeq, err := postgresstorage.ParseRecordID(FaceIDPrefix, excluded)
 			if err != nil {
-				return FaceGroupDecisionResult{}, err
+				return fmt.Errorf("%w: %s is not in %s", ErrInvalid, excluded, id)
 			}
-			result.PreviousPersonRejected = withdrawn
-			evidence = fmt.Sprintf("Named with [a face group](ref:%s), which was first named as [someone else](ref:%s).", id, previousPerson)
-		}
-		for _, each := range members {
-			link, created, err := proposePhotoPersonInTransaction(tx, PhotoPersonProposal{PhotoID: each.photoID, PersonID: decision.PersonID,
-				FaceID: each.faceID, Status: PhotoPersonConfirmed, Confidence: 1, Evidence: evidence, ProposedBy: decision.DecidedBy,
-				DecidedBy: decision.DecidedBy}, at)
+			released, err := tx.ExecContext(ctx, `UPDATE face_group_members SET released_at = $1, released_by = $2
+				WHERE group_seq = $3 AND face_seq = $4 AND released_at = 0`, at, decision.DecidedBy, groupSeq, faceSeq)
 			if err != nil {
-				return FaceGroupDecisionResult{}, err
+				return err
 			}
-			switch {
-			case link.Status == PhotoPersonRejected:
-				result.KeptRejected++
-				continue
-			case created || link.DecidedBy == decision.DecidedBy && link.UpdatedAt == at:
-				result.Confirmed++
-			default:
-				result.AlreadyConfirmed++
+			if count, err := released.RowsAffected(); err != nil {
+				return err
+			} else if count == 0 {
+				return fmt.Errorf("%w: %s is not in %s", ErrInvalid, excluded, id)
 			}
-			others, err := rejectOtherSuggestionsOnFace(tx, each.faceID, decision.PersonID, decision.DecidedBy, id, at)
-			if err != nil {
-				return FaceGroupDecisionResult{}, err
-			}
-			result.OthersRejected += others
+			result.Excluded++
 		}
+		if decision.Status == FaceGroupNamed {
+			if err := s.nameFaceGroup(ctx, tx, owner, groupSeq, id, previousPerson, renaming, decision, at, &result); err != nil {
+				return err
+			}
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE face_groups SET status = $1, person_id = $2, decided_by = $3, decided_at = $4, updated_at = $4 WHERE seq = $5`,
+			decision.Status, decision.PersonID, decision.DecidedBy, at, groupSeq)
+		return err
+	})
+	if err != nil {
+		return FaceGroupDecisionResult{}, conflictOf(err)
 	}
-	if _, err := tx.Exec(`UPDATE face_groups SET status = ?, person_id = ?, decided_by = ?, decided_at = ?, updated_at = ? WHERE id = ?`,
-		decision.Status, decision.PersonID, decision.DecidedBy, at, at, id); err != nil {
-		return FaceGroupDecisionResult{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return FaceGroupDecisionResult{}, err
-	}
-	result.Group, err = s.FaceGroupByID(id, false)
+	result.Group, err = s.FaceGroupByID(ctx, scope, id, false)
 	return result, err
+}
+
+// nameFaceGroup does what naming a group does to the links of its faces,
+// inside DecideFaceGroup's transaction.
+func (s *Store) nameFaceGroup(ctx context.Context, tx *sql.Tx, owner string, groupSeq int64, id, previousPerson string, renaming bool,
+	decision FaceGroupDecision, at int64, result *FaceGroupDecisionResult) error {
+	rows, err := tx.QueryContext(ctx, `SELECT faces.seq, faces.photo_seq FROM face_group_members JOIN faces ON faces.seq = face_group_members.face_seq
+		JOIN photos ON photos.seq = faces.photo_seq
+		WHERE face_group_members.group_seq = $1 AND face_group_members.released_at = 0 AND faces.retired_at = 0 AND photos.deleted_at = 0
+		ORDER BY faces.seq`, groupSeq)
+	if err != nil {
+		return err
+	}
+	type member struct{ faceSeq, photoSeq int64 }
+	members := []member{}
+	for rows.Next() {
+		var each member
+		if err := rows.Scan(&each.faceSeq, &each.photoSeq); err != nil {
+			rows.Close()
+			return err
+		}
+		members = append(members, each)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	evidence := fmt.Sprintf("Named with [a face group](ref:%s).", id)
+	if renaming {
+		// The group was named as someone else: those links on its faces
+		// were this group's word, and its word changed.
+		faceSeqs := make([]int64, 0, len(members))
+		for _, each := range members {
+			faceSeqs = append(faceSeqs, each.faceSeq)
+		}
+		withdrawn, err := rejectPersonOnFaces(ctx, tx, faceSeqs, previousPerson, decision.DecidedBy,
+			fmt.Sprintf("[The face group](ref:%s) these faces are in was named as [someone else](ref:%s) instead.", id, decision.PersonID), at)
+		if err != nil {
+			return err
+		}
+		result.PreviousPersonRejected = withdrawn
+		evidence = fmt.Sprintf("Named with [a face group](ref:%s), which was first named as [someone else](ref:%s).", id, previousPerson)
+	}
+	for _, each := range members {
+		link, created, err := proposePhotoPersonInTransaction(ctx, tx, owner, each.photoSeq, PhotoPersonProposal{PhotoID: photoID(each.photoSeq),
+			PersonID: decision.PersonID, FaceID: faceID(each.faceSeq), Status: PhotoPersonConfirmed, Confidence: 1, Evidence: evidence,
+			ProposedBy: decision.DecidedBy, DecidedBy: decision.DecidedBy}, at)
+		if err != nil {
+			return err
+		}
+		switch {
+		case link.Status == PhotoPersonRejected:
+			result.KeptRejected++
+			continue
+		case created || link.DecidedBy == decision.DecidedBy && link.UpdatedAt == at:
+			result.Confirmed++
+		default:
+			result.AlreadyConfirmed++
+		}
+		others, err := rejectOtherSuggestionsOnFace(ctx, tx, each.faceSeq, decision.PersonID, decision.DecidedBy, id, at)
+		if err != nil {
+			return err
+		}
+		result.OthersRejected += others
+	}
+	return nil
 }
 
 // rejectPersonOnFaces rejects a person's links that name any of the faces,
 // whatever their status, keeping each old row as a revision.
-func rejectPersonOnFaces(tx *sql.Tx, faceIDs []string, personID, decidedBy, note string, at int64) (int, error) {
+func rejectPersonOnFaces(ctx context.Context, tx *sql.Tx, faceSeqs []int64, personID, decidedBy, note string, at int64) (int, error) {
 	links := []PhotoPerson{}
-	for _, faceID := range faceIDs {
-		rows, err := tx.Query(`SELECT `+photoPersonColumns+` FROM photo_people WHERE face_id = ? AND person_id = ? AND status != ?`, faceID, personID, PhotoPersonRejected)
+	for _, faceSeq := range faceSeqs {
+		found, err := queryPhotoPeople(ctx, tx, `SELECT `+photoPersonColumns+` FROM photo_people WHERE face_seq = $1 AND person_id = $2 AND status <> $3 FOR UPDATE`,
+			faceSeq, personID, PhotoPersonRejected)
 		if err != nil {
 			return 0, err
 		}
-		for rows.Next() {
-			link, err := scanPhotoPerson(rows)
-			if err != nil {
-				rows.Close()
-				return 0, err
-			}
-			links = append(links, link)
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return 0, err
-		}
+		links = append(links, found...)
 	}
 	for _, link := range links {
-		if err := keepPhotoPersonRevision(tx, link, at); err != nil {
+		if err := keepPhotoPersonRevision(ctx, tx, link, at); err != nil {
 			return 0, err
 		}
-		if _, err := tx.Exec(`UPDATE photo_people SET status = ?, decided_by = ?, evidence = ?, updated_at = ? WHERE id = ?`,
-			PhotoPersonRejected, decidedBy, strings.TrimSpace(link.Evidence+"\n\n"+note), at, link.ID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE photo_people SET status = $1, decided_by = $2, evidence = $3, updated_at = $4 WHERE seq = $5`,
+			PhotoPersonRejected, decidedBy, strings.TrimSpace(link.Evidence+"\n\n"+note), at, mustRecordNumber(PhotoPersonIDPrefix, link.ID)); err != nil {
 			return 0, err
 		}
 	}
@@ -494,32 +562,19 @@ func rejectPersonOnFaces(tx *sql.Tx, faceIDs []string, personID, decidedBy, note
 
 // rejectOtherSuggestionsOnFace rejects suggestions that a face is someone
 // other than personID, keeping each old row as a revision.
-func rejectOtherSuggestionsOnFace(tx *sql.Tx, faceID, personID, decidedBy, groupID string, at int64) (int, error) {
-	rows, err := tx.Query(`SELECT `+photoPersonColumns+` FROM photo_people WHERE face_id = ? AND person_id != ? AND status = ?`,
-		faceID, personID, PhotoPersonSuggested)
+func rejectOtherSuggestionsOnFace(ctx context.Context, tx *sql.Tx, faceSeq int64, personID, decidedBy, groupID string, at int64) (int, error) {
+	links, err := queryPhotoPeople(ctx, tx, `SELECT `+photoPersonColumns+` FROM photo_people WHERE face_seq = $1 AND person_id <> $2 AND status = $3 FOR UPDATE`,
+		faceSeq, personID, PhotoPersonSuggested)
 	if err != nil {
 		return 0, err
 	}
-	links := []PhotoPerson{}
-	for rows.Next() {
-		link, err := scanPhotoPerson(rows)
-		if err != nil {
-			rows.Close()
-			return 0, err
-		}
-		links = append(links, link)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return 0, err
-	}
 	for _, link := range links {
-		if err := keepPhotoPersonRevision(tx, link, at); err != nil {
+		if err := keepPhotoPersonRevision(ctx, tx, link, at); err != nil {
 			return 0, err
 		}
 		evidence := strings.TrimSpace(link.Evidence + fmt.Sprintf("\n\nThis face was named as [someone else](ref:%s) with [a face group](ref:%s).", personID, groupID))
-		if _, err := tx.Exec(`UPDATE photo_people SET status = ?, decided_by = ?, evidence = ?, updated_at = ? WHERE id = ?`,
-			PhotoPersonRejected, decidedBy, evidence, at, link.ID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE photo_people SET status = $1, decided_by = $2, evidence = $3, updated_at = $4 WHERE seq = $5`,
+			PhotoPersonRejected, decidedBy, evidence, at, mustRecordNumber(PhotoPersonIDPrefix, link.ID)); err != nil {
 			return 0, err
 		}
 	}

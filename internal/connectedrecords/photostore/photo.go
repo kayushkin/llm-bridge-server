@@ -3,11 +3,13 @@ package photostore
 // Wire types: what the routes take and answer. ./generate-ts.sh renders this
 // file and vocabulary.go to ts/model.ts.
 
-// Photo is one photo or video from the user's own files. Timestamps are epoch
+// Photo is one photo or video from its owner's own files. Timestamps are epoch
 // seconds; 0 means unset.
 type Photo struct {
 	// ID is photo_000001: what anything else joins on.
 	ID string `json:"id"`
+	// OwnerPrincipalID is principal-store's id of the person who keeps it.
+	OwnerPrincipalID string `json:"owner_principal_id"`
 	// Sha256 is the original file's hash; an import finds the photo by it.
 	Sha256 string `json:"sha256"`
 	// SourceMachine and SourcePath say where the original is.
