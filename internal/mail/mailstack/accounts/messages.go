@@ -92,6 +92,10 @@ func (s *Store) UpsertMessages(msgs []IndexedMessage) error {
 
 	now := time.Now().UnixMilli()
 	for _, m := range msgs {
+		for _, field := range []*string{&m.AccountID, &m.FolderScope, &m.ProviderID, &m.MessageID, &m.ThreadID,
+			&m.RootID, &m.InReplyTo, &m.Subject, &m.FromName, &m.FromEmail, &m.FolderID} {
+			*field = heldText(*field)
+		}
 		refs, _ := json.Marshal(m.References)
 		if m.References == nil {
 			refs = []byte("[]")

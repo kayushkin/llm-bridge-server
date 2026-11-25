@@ -5,7 +5,15 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/mailmodule"
 )
+
+// heldText is text as Postgres can hold it; see mailmodule.TextPostgresCanHold.
+func heldText(text string) string {
+	held, _ := mailmodule.TextPostgresCanHold(text)
+	return held
+}
 
 // ============================ message payload record ============================
 //
@@ -65,6 +73,13 @@ func (s *Store) UpsertMessageBody(b MessageBody) error {
 	defer s.mu.Unlock()
 	if b.FetchedMs == 0 {
 		b.FetchedMs = time.Now().UnixMilli()
+	}
+	// A provider can hand back a body in a charset nobody declared; Postgres
+	// holds only UTF-8, and the JSON served has always shown such bytes as
+	// U+FFFD.
+	for _, field := range []*string{&b.AccountID, &b.FolderScope, &b.ProviderID, &b.MessageID, &b.Subject,
+		&b.FromName, &b.FromEmail, &b.BodyText, &b.BodyHTML, &b.SearchText} {
+		*field = heldText(*field)
 	}
 	_, err := s.db.Exec(`
 		INSERT INTO message_bodies (
@@ -166,61 +181,7 @@ func (s *Store) runRankedSearch(terms []string, operator, accountID, excludeAcco
 		args = append(args, excludeAccountID, excludeProviderID)
 	}
 	args = append(args, limit, query)
-	rows, err := s.db.Query(`
-		WITH query_terms AS (
-			SELECT term.word, tsvector_to_array(to_tsvector('mail_search', term.word)) AS lexemes
-			FROM unnest(?::text[]) WITH ORDINALITY AS term(word, position)
-		),
-		corpus AS (
-			SELECT count(*)::double precision AS documents,
-			       coalesce(avg(search_token_count), 0)::double precision AS average_tokens
-			FROM message_bodies
-		),
-		term_rarity AS (
-			SELECT query_terms.lexemes,
-			       greatest(ln((corpus.documents - holding.documents + 0.5) / (holding.documents + 0.5)), 1e-6) AS rarity
-			FROM query_terms CROSS JOIN corpus
-			CROSS JOIN LATERAL (
-				SELECT count(*)::double precision AS documents FROM message_bodies
-				WHERE search_document @@ phraseto_tsquery('mail_search', query_terms.word)
-			) AS holding
-			WHERE cardinality(query_terms.lexemes) > 0
-		),
-		candidates AS (
-			SELECT b.id, b.search_document, b.search_token_count FROM message_bodies b
-			WHERE b.search_document @@ to_tsquery('mail_search', ?)`+filters+`
-		),
-		term_hits AS (
-			SELECT candidates.id, entry.lexeme, sum(`+fieldWeightOfHit+`)::double precision AS weighted_hits
-			FROM candidates
-			CROSS JOIN LATERAL unnest(candidates.search_document) AS entry
-			CROSS JOIN LATERAL unnest(entry.weights) AS hit_weight
-			WHERE entry.lexeme IN (SELECT unnest(lexemes) FROM query_terms)
-			GROUP BY candidates.id, entry.lexeme
-		),
-		scores AS (
-			SELECT candidates.id,
-			       sum(term_rarity.rarity * (frequency.weighted_hits * 2.2)
-			           / (frequency.weighted_hits + 1.2 * (0.25 + 0.75 * candidates.search_token_count / corpus.average_tokens))) AS goodness
-			FROM candidates CROSS JOIN corpus CROSS JOIN term_rarity
-			CROSS JOIN LATERAL (
-				SELECT coalesce(min(coalesce(term_hits.weighted_hits, 0)), 0) AS weighted_hits
-				FROM unnest(term_rarity.lexemes) AS term_lexeme
-				LEFT JOIN term_hits ON term_hits.id = candidates.id AND term_hits.lexeme = term_lexeme
-			) AS frequency
-			GROUP BY candidates.id
-		),
-		best AS (
-			SELECT id, goodness FROM scores ORDER BY goodness DESC, id LIMIT ?
-		)
-		SELECT b.account_id, b.folder_scope, b.provider_id, b.message_id,
-		       b.subject, b.from_name, b.from_email, b.date_ms,
-		       -best.goodness,
-		       ts_headline('mail_search', b.search_text, to_tsquery('mail_search', ?),
-		           'StartSel="", StopSel="", MaxWords=12, MinWords=6, ShortWord=0, MaxFragments=1, FragmentDelimiter="…"')
-		FROM best JOIN message_bodies b ON b.id = best.id
-		ORDER BY best.goodness DESC, best.id
-	`, args...)
+	rows, err := s.db.Query(rankedSearchStatement(filters), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -235,6 +196,75 @@ func (s *Store) runRankedSearch(terms []string, operator, accountID, excludeAcco
 		out = append(out, h)
 	}
 	return out, rows.Err()
+}
+
+// rankedSearchStatement is the ranking query, with filters (each " AND …",
+// its values after the query text in the arguments) narrowing the rows.
+func rankedSearchStatement(filters string) string {
+	return `
+		WITH query_terms AS (
+			SELECT term.position, term.word,
+			       tsvector_to_array(to_tsvector('mail_search', term.word)) AS lexemes
+			FROM unnest(?::text[]) WITH ORDINALITY AS term(word, position)
+		),
+		query_lexemes AS (
+			SELECT DISTINCT query_terms.position, cardinality(query_terms.lexemes) AS lexeme_count, lexeme
+			FROM query_terms CROSS JOIN LATERAL unnest(query_terms.lexemes) AS lexeme
+		),
+		corpus AS (
+			SELECT count(*)::double precision AS documents,
+			       coalesce(avg(search_token_count), 0)::double precision AS average_tokens
+			FROM message_bodies
+		),
+		term_rarity AS (
+			SELECT query_terms.position,
+			       greatest(ln((corpus.documents - holding.documents + 0.5) / (holding.documents + 0.5)), 1e-6) AS rarity
+			FROM query_terms CROSS JOIN corpus
+			CROSS JOIN LATERAL (
+				SELECT count(*)::double precision AS documents FROM message_bodies
+				WHERE search_document @@ phraseto_tsquery('mail_search', query_terms.word)
+			) AS holding
+			WHERE cardinality(query_terms.lexemes) > 0
+		),
+		candidates AS (
+			SELECT b.id, b.search_document, b.search_token_count FROM message_bodies b
+			WHERE b.search_document @@ to_tsquery('mail_search', ?)` + filters + `
+		),
+		lexeme_hits AS (
+			SELECT candidates.id, entry.lexeme, sum(` + fieldWeightOfHit + `)::double precision AS weighted_hits
+			FROM candidates
+			CROSS JOIN LATERAL unnest(candidates.search_document) AS entry
+			CROSS JOIN LATERAL unnest(entry.weights) AS hit_weight
+			WHERE entry.lexeme IN (SELECT lexeme FROM query_lexemes)
+			GROUP BY candidates.id, entry.lexeme
+		),
+		term_frequencies AS (
+			SELECT lexeme_hits.id, query_lexemes.position,
+			       CASE WHEN count(*) = max(query_lexemes.lexeme_count) THEN min(lexeme_hits.weighted_hits) ELSE 0 END AS weighted_hits
+			FROM lexeme_hits JOIN query_lexemes ON query_lexemes.lexeme = lexeme_hits.lexeme
+			GROUP BY lexeme_hits.id, query_lexemes.position
+		),
+		scores AS (
+			SELECT candidates.id,
+			       sum(term_rarity.rarity * (term_frequencies.weighted_hits * 2.2)
+			           / (term_frequencies.weighted_hits + 1.2 * (0.25 + 0.75 * candidates.search_token_count / corpus.average_tokens))) AS goodness
+			FROM candidates
+			JOIN term_frequencies ON term_frequencies.id = candidates.id
+			JOIN term_rarity ON term_rarity.position = term_frequencies.position
+			CROSS JOIN corpus
+			GROUP BY candidates.id
+		),
+		best AS (
+			SELECT id, goodness FROM scores ORDER BY goodness DESC, id LIMIT ?
+		)
+		SELECT b.account_id, b.folder_scope, b.provider_id, b.message_id,
+		       b.subject, b.from_name, b.from_email, b.date_ms,
+		       -best.goodness,
+		       ts_headline('mail_search', b.search_text, to_tsquery('mail_search', ?),
+		           'StartSel="", StopSel="", MaxWords=12, MinWords=6, ShortWord=0, MaxFragments=1, FragmentDelimiter="…"')
+		FROM best JOIN message_bodies b ON b.id = best.id
+		ORDER BY best.goodness DESC, best.id
+	`
 }
 
 // maxSimilarityTerms caps how many distinct terms a similarity query carries.

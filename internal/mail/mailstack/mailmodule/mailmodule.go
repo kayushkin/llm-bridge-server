@@ -20,6 +20,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgconn"
 
@@ -67,6 +68,19 @@ func NumberPlaceholders(query string) string {
 		panic("mailmodule: a statement has an unclosed quoted literal: " + query)
 	}
 	return numbered.String()
+}
+
+// TextPostgresCanHold is text as a Postgres text column can hold it: every
+// byte sequence that is not UTF-8 becomes U+FFFD, and so does a NUL, which
+// Postgres refuses in text. It reports whether anything changed. SQLite held
+// whatever bytes it was given, and mail decoded by a provider backend can
+// carry a body in a charset nobody declared; the JSON the store has always
+// served already showed those bytes as U+FFFD.
+func TextPostgresCanHold(text string) (string, bool) {
+	if utf8.ValidString(text) && !strings.ContainsRune(text, 0) {
+		return text, false
+	}
+	return strings.ReplaceAll(strings.ToValidUTF8(text, "\uFFFD"), "\x00", "\uFFFD"), true
 }
 
 // IsUniqueViolation reports whether err is Postgres refusing a row that
