@@ -190,3 +190,21 @@ func OwnerOfNewRecord(r *http.Request) (string, *RequestError) {
 	}
 	return caller.PrincipalID, nil
 }
+
+// OwnerActedFor is the one owner a request that works through a whole
+// owner's records acts for: a pass that groups, matches, segments or fills in
+// what is already there. A caller that sees every owner acts for the owner the
+// request names in owner_principal_id, or for itself when it names none; any
+// other caller acts for itself and may name only itself. Like OwnerOfNewRecord,
+// it refuses a request that acts as no principal and names no owner, because
+// such a pass must never run over every owner's records at once.
+func OwnerActedFor(r *http.Request) (string, *RequestError) {
+	scope, refusal := ReadScope(r)
+	if refusal != nil {
+		return "", refusal
+	}
+	if !scope.IsEveryOwner() {
+		return scope.OwnerPrincipalID(), nil
+	}
+	return OwnerOfNewRecord(r)
+}
