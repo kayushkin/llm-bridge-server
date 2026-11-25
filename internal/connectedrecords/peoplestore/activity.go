@@ -1,15 +1,19 @@
 package peoplestore
 
 import (
+	"context"
 	"fmt"
 	"strings"
 )
 
-// ReportHandleActivity replaces the activity rows of every handle in the
+// ReportHandleActivity replaces owner's activity rows of every handle in the
 // report, in one transaction: all of them or none. Each handle is normalized
 // as an identity is; a handle named twice in one report is a 400, since one
 // of the two would silently win.
-func (s *Store) ReportHandleActivity(report HandleActivityReport) (*HandleActivityResult, error) {
+func (s *Store) ReportHandleActivity(ctx context.Context, owner string, report HandleActivityReport) (*HandleActivityResult, error) {
+	if err := checkOwner(owner); err != nil {
+		return nil, err
+	}
 	source := strings.TrimSpace(report.Source)
 	if !contains(SuggestionSources, source) {
 		return nil, fmt.Errorf("%w: unknown source %q: use one of %s", ErrInvalid, report.Source, strings.Join(SuggestionSources, ", "))
@@ -36,14 +40,14 @@ func (s *Store) ReportHandleActivity(report HandleActivityReport) (*HandleActivi
 		normalized = append(normalized, activity)
 	}
 
-	tx, err := s.db.Begin()
+	tx, err := s.lockedTransaction(ctx, owner)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-	statement, err := tx.Prepare(`INSERT INTO handle_activity (kind, value, source, last_activity_at, message_count, direct_chat, observed_at)
-		VALUES (?,?,?,?,?,?,?)
-		ON CONFLICT (kind, value) DO UPDATE SET source = excluded.source, last_activity_at = excluded.last_activity_at,
+	statement, err := tx.PrepareContext(ctx, `INSERT INTO handle_activity (owner_principal_id, kind, value, source, last_activity_at, message_count, direct_chat, observed_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (owner_principal_id, kind, value) DO UPDATE SET source = excluded.source, last_activity_at = excluded.last_activity_at,
 			message_count = excluded.message_count, direct_chat = excluded.direct_chat, observed_at = excluded.observed_at`)
 	if err != nil {
 		return nil, err
@@ -51,7 +55,7 @@ func (s *Store) ReportHandleActivity(report HandleActivityReport) (*HandleActivi
 	defer statement.Close()
 	observedAt := now()
 	for _, activity := range normalized {
-		if _, err := statement.Exec(activity.Kind, activity.Value, source, activity.LastActivityAt, activity.MessageCount, activity.DirectChat, observedAt); err != nil {
+		if _, err := statement.ExecContext(ctx, owner, activity.Kind, activity.Value, source, activity.LastActivityAt, activity.MessageCount, activity.DirectChat, observedAt); err != nil {
 			return nil, err
 		}
 	}

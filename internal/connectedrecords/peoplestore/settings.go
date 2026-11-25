@@ -1,63 +1,13 @@
 package peoplestore
 
 import (
-	"net/http"
-
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
-// ServiceName is this service's name in its own settings description, as
-// healthcheck and the repo know it.
-const ServiceName = "people-store"
-
-// OwnedEnvironmentVariablePrefix is the prefix of the variables that are this
-// service's alone. A set variable carrying it that SettingDefinitions does not
-// declare stops the service from starting: it is a misspelling or a leftover,
-// and either way someone believes it does something.
-const OwnedEnvironmentVariablePrefix = "PEOPLE_STORE_"
-
-// Keys of the settings, as GET /settings names them.
-const (
-	SettingListenAddress     = "listen_address"
-	SettingDataDirectory     = "data_directory"
-	SettingPrincipalStoreURL = "principal_store_url"
-)
-
-// DefaultListenAddress is where the service listens with nothing set.
-// Loopback, deliberately: this service has no auth of its own, so a wildcard
-// bind would put the operator's address book on the network.
-const DefaultListenAddress = "127.0.0.1:8321"
-
-// SettingDefinitions declares every environment variable the service reads,
-// once. The command reads its configuration from it; GET /settings describes
-// the service from it; and a test holds every os.Getenv in the repo to it.
-//
-// Nothing here is Editable, and nothing may become so while the service has no
-// operator gate: GET /settings is as open as every other route.
-func SettingDefinitions() []servicesettings.Definition {
-	return []servicesettings.Definition{
-		{Key: SettingListenAddress, EnvironmentVariable: "PEOPLE_STORE_ADDR", Kind: msg.ServiceSettingKindWiring, ValueType: msg.ServiceSettingValueTypeString, Default: DefaultListenAddress,
-			Description: "The address the HTTP server listens on. Changing it moves the service, so everything that calls it must be told the new address."},
-		{Key: SettingDataDirectory, EnvironmentVariable: "PEOPLE_STORE_DATA_DIR", Kind: msg.ServiceSettingKindPath, ValueType: msg.ServiceSettingValueTypeString, Default: DefaultDataDir(),
-			Description: "The directory that holds people-store.db. Changing it starts the service on whatever database is there, or an empty one; the old people stay where they were."},
-		{Key: SettingPrincipalStoreURL, EnvironmentVariable: "PEOPLE_STORE_PRINCIPAL_STORE_URL", Kind: msg.ServiceSettingKindWiring, ValueType: msg.ServiceSettingValueTypeString, Required: true,
-			Description: "Where principal-store answers. Every principal_id written to a person is checked there with GET /principals/{id}; when it cannot answer, the write is refused with a 502."},
-	}
-}
-
-// NewSettingsRegistry reads this service's settings from environment. It fails
-// on a value that does not parse and on a set PEOPLE_STORE_ variable nobody
-// declared.
-func NewSettingsRegistry(environment servicesettings.Environment) (*servicesettings.Registry, error) {
-	return servicesettings.New(ServiceName, []string{OwnedEnvironmentVariablePrefix}, SettingDefinitions(), environment)
-}
-
-// RegisterSettingsHandler serves the registry at GET /settings. PUT
-// /settings/{key} is not mounted: no setting is Editable.
-func RegisterSettingsHandler(mux *http.ServeMux, registry *servicesettings.Registry) {
-	mux.Handle("GET /settings", servicesettings.Handler(registry, "/settings"))
-}
+// people-store runs inside llm-bridge-server, whose settings it shares, so it
+// declares none of its own. What is declared here is the settings of its two
+// importers, which are HTTP clients of its routes and run on their own.
 
 // The multichat importer, cmd/people-import-multichat, runs from a shell or a
 // scheduler job whose environment carries many other services' variables, so

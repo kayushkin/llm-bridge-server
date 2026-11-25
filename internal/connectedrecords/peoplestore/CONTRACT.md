@@ -1,34 +1,74 @@
 # people-store — API contract
 
-`127.0.0.1:8321`. The registry of the people in the operator's own life —
-friends, family, coworkers — for a journal and for messages. This store hands
-out the id everything else joins on: `person_000001`.
+The registry of the people in one person's own life — friends, family,
+coworkers — for a journal and for messages. This store hands out the id
+everything else joins on: `person_000001`.
 
-principal-store (`:8314`) stays the registry of who may log in, hold a grant or
-be assigned a card. A person may point at a principal with `principal_id`; this
+principal-store stays the registry of who may log in, hold a grant or be
+assigned a card. A person may point at a principal with `principal_id`; this
 store never copies a principal's name or email.
 
-Module `github.com/kayushkin/people-store`, root package `peoplestore`, server
-in `cmd/people-store`, importers in `cmd/people-import-multichat` and
-`cmd/people-import-contacts`, all installed to `~/bin`. SQLite at `<data dir>/people-store.db`, WAL, foreign keys on. Build
-and test with `-tags sqlite_fts5`.
+## Where it runs
 
-**No auth, so the bind is `127.0.0.1` and that is part of this contract.**
-`deploy.sh` fails if the port listens anywhere else. All bodies are JSON; all
-timestamps are epoch seconds (0 = unset). Errors are `{"error": "…"}`.
+Inside llm-bridge-server, as package
+`internal/connectedrecords/peoplestore`, mounted at `/people-store/` with the
+same paths as the standalone service had (so `GET /people-store/persons`).
+The records are in Postgres, schema `people`, role `people_module`, through
+`postgresstorage`; the migrations are in `migrations/`. The server provisions,
+migrates and opens the module and checks every `principal_id` against
+principal-store in its own process. The standalone server (`cmd/people-store`,
+its unit, `deploy.sh`, its settings and `GET /settings`) is gone; the two
+importers in `cmd/` are unchanged HTTP clients of these routes.
+`ImportStandaloneDatabase` copies a standalone SQLite file into the module
+once, keeping every id, for one owner.
+
+The server verifies who is calling and puts that caller on the request; a
+request with none is **401**. All bodies are JSON; all timestamps are epoch
+seconds (0 = unset). Errors are `{"error": "…"}`.
+
+## Owners
+
+Every record carries `owner_principal_id`: principal-store's id of the person
+who keeps it. That is not a person's `principal_id`, which is the login of the
+person a record describes.
+
+- **Reads** reach the caller's own records. A record of another owner answers
+  **404**, as a missing one does; lists and `/health` counts hold only the
+  caller's. An administrator (or the server's own service) reaches every
+  owner's, or one owner's with `?owner_principal_id=`; anyone else naming an
+  owner but themselves is **403**.
+- **New records** (`POST /persons`, `POST /suggestions`, `PUT /handle-activity`,
+  `POST /reviews/claim`, `POST /reviews`) are the caller's own; a request that
+  acts as no principal cannot create (**403**).
+- **Writes to an existing record** need it in reach, and what they create
+  under it (an identity, a refusal, a revision, the person an accept creates)
+  takes that record's owner.
+- **A write that joins two records needs one owner**: a relationship's two
+  persons, the person a suggestion is accepted into, a handle's move. The
+  second person outside the caller's reach answers as a missing one does
+  (**400** naming the field); an administrator naming another owner's person
+  is told so (**400**).
+- **Every uniqueness rule is per owner**: one handle belongs to at most one of
+  an owner's persons, and two owners may each hold it; refusals, suggested
+  handles ("an importer never proposes a handle twice"), handle activity,
+  reviews and claims are each owner's own.
+- The vocabulary routes answer any caller.
 
 | Status | Means |
 |---|---|
 | 400 | the body or a parameter is wrong, including an unknown JSON key on any write |
-| 404 | no such record |
-| 409 | the write contradicts a row: a handle owned by someone else, a deleted person, a decided suggestion, a relationship already recorded |
+| 401 | the request carries no verified caller |
+| 403 | `owner_principal_id` names another owner and the caller is not an administrator, or a create acts as no principal |
+| 404 | no such record, a record of another owner, or a malformed id in the path |
+| 409 | the write contradicts a row: a handle owned by someone else, a deleted person, a decided suggestion, a relationship already recorded; or a resolve across every owner that more than one owner's records answer |
 | 502 | principal-store could not say whether a `principal_id` exists, so the write was refused |
 
 ## Ids
 
 `person_000001`, `identity_000001`, `relationship_000001`,
-`suggestion_000001`, `revision_000001`, `refusal_000001`: a prefix and a
-zero-padded sequence.
+`suggestion_000001`, `revision_000001`, `refusal_000001`: a prefix and the
+record's number, at least six digits. Every record with an id also carries
+`owner_principal_id`, as does each entry of the review queue.
 The prefix lets kanban-store's entity-type registry claim `person_\d{6,}`
 without colliding with noteboard's bare uuids.
 
@@ -53,8 +93,8 @@ fields above plus `identities` and `relationships`, each `[]` when empty.
 ### Identity
 
 A handle that reaches a person. `{id, person_id, kind, value, label, linked_by, reason, linked_at, created_at, updated_at}`.
-**One handle belongs to at most one person**: `UNIQUE(kind, value)` on the
-normalized value. **Every link says who made it and why**: `linked_by` is one
+**One handle belongs to at most one of an owner's persons**:
+`UNIQUE(owner_principal_id, kind, value)` on the normalized value. **Every link says who made it and why**: `linked_by` is one
 of `GET /link-sources`, `reason` is the linker's words, `linked_at` when the
 link was made (an import may give an earlier time than `created_at`). Handles
 attached before 2026-10-01 carry `linked_by: import` and a reason that says so.
@@ -86,7 +126,7 @@ removing a handle are the operator's acts.
 ### Refusal
 
 "This handle is not this person": `{id, kind, value, person_id, refused_by, reason, created_at}`,
-`UNIQUE(kind, value, person_id)`. Written when the operator removes a handle
+one per owner, handle and person. Written when the operator removes a handle
 from a person (`DELETE /identities/{id}`), moves it away from them, or rejects
 a suggestion whose `matched_person_ids` name them (one row per handle and
 matched person). The operator linking the pair again deletes it. A refusal is
@@ -174,12 +214,11 @@ their identities **as they were just before** `action` changed them. Actions:
 
 | Method | Path | Body / query | Answer |
 |---|---|---|---|
-| GET | `/health` | | `{"status":"ok","counts":{persons, deleted_persons, identities, relationships, proposed_suggestions, refusals}}` |
-| GET | `/settings` | | llm-bridge `servicesettings` description; nothing is editable |
+| GET | `/health` | | `{"status":"ok","counts":{persons, deleted_persons, identities, relationships, proposed_suggestions, refusals}}`, counted in the caller's reach |
 | GET | `/identity-kinds` | | `[{kind, description}]` |
 | GET | `/relationship-kinds` | | `[{kind, inverse, description}]` |
 | GET | `/link-sources` | | `[{source, overrides_refusals, reason_required, description}]` |
-| GET | `/persons` | `q` (full-text, prefix per word, over name, how_met, tags and identity values and labels), `tag`, `principal_id` (the person pointing at that principal; not of the form `principal_000001` is 400), `include_deleted=true`, `limit` (default 100, max 1000), `offset` | `[Person]` by name |
+| GET | `/persons` | `q` (full-text over name, how_met, tags and identity values and labels: every word a prefix, all ANDed; "quoted words" in that order; punctuation splits words, so `telegram_1` matches the parts in order; `OR`, `NOT`, `NEAR`, an unclosed quote or no word at all is 400), `tag`, `principal_id` (the person pointing at that principal; not of the form `principal_000001` is 400), `include_deleted=true`, `limit` (default 100, max 1000), `offset` | `[Person]` by name |
 | POST | `/persons` | `{display_name, birthday?, how_met?, tags?, principal_id?, identities?: [{kind, value, label?, linked_by, reason?, linked_at?}]}` | 201 PersonDetail. The identities attach in the same transaction: a handle owned by someone else, or one named twice, refuses the whole write |
 | GET | `/persons/{id}` | | PersonDetail. **A deleted person answers 200 with `deleted_at` set**, so whatever points at them still resolves; unknown is 404 |
 | PATCH | `/persons/{id}` | any of `display_name`, `birthday`, `how_met`, `tags`, `principal_id`; `null` clears all but `display_name` | PersonDetail. Unknown key 400 (naming the accepted ones); `id`, `deleted_at`, `identities`, `relationships` refused naming the route that changes them; a deleted person 409 |
@@ -189,8 +228,8 @@ their identities **as they were just before** `action` changed them. Actions:
 | POST | `/persons/{id}/identities` | `{kind, value, label?, linked_by, reason?, linked_at?, move?}` | 201 Identity; 200 when this person already had it (its provenance unchanged); 409 naming the owner when someone else has it, unless `move: true` from the operator, which takes it and refuses it for the person it left; 409 for a refused pair from a source that does not override refusals; 409 on a deleted person. No `linked_by`, a missing required `reason`, a future `linked_at`, or `move` from another source is 400 |
 | GET | `/identities` | `kind`, `limit` (default and max 1000), `offset` | `[Identity]` in the order attached, for a caller that maps every handle of a kind to its person |
 | DELETE | `/identities/{id}` | | 204. The operator's act: the row goes, the revision keeps it, and a refusal of the handle for that person is written |
-| GET | `/refusals` | `person_id`, `kind`, `value` (needs `kind`; normalized) | `[Refusal]` oldest first |
-| GET | `/identities/resolve` | `kind`, `value` (normalized as on write) | `{identity, person}`; 404 when nobody has it |
+| GET | `/refusals` | `person_id` (not a person id is 400), `kind`, `value` (needs `kind`; normalized) | `[Refusal]` oldest first |
+| GET | `/identities/resolve` | `kind`, `value` (normalized as on write), `owner_principal_id` | `{identity, person}`; 404 when no record in reach has it; 409 for an administrator when more than one owner's records hold it, saying to name `owner_principal_id` |
 | POST | `/persons/{id}/relationships` | `{person_id, kind, note?}` — "person_id is this person's kind" | 201 Relationship. Self 400; either side deleted 409; the same fact from either side again 409 |
 | DELETE | `/relationships/{id}` | | 204 |
 | GET | `/suggestions` | `status`, `q` (substring of `display_name`, ASCII case ignored), `sort` (`created`, the default: oldest first; `activity`: people the operator talks to first — any handle with `direct_chat` first, then newest `last_activity_at`, then most messages, then oldest; anything else 400 naming both), `limit` (default 100, max 1000), `offset` | `[Suggestion]` |
@@ -257,3 +296,18 @@ name_matches: [{person_id, display_name}]}`. Before writing it reads
 `skipped_other_contact`, `skipped_no_name`) and by suggestion kind
 (`extends_person`, `name_match`, `new_person`), with examples. Environment:
 `PEOPLE_STORE_URL`. Exits 1 when any proposal fails.
+
+## What changed in the move to Postgres
+
+- Every record has an owner, and the owner rules above narrow every route.
+- Search is a Postgres `tsvector` (simple configuration, ASCII punctuation as
+  word breaks) instead of SQLite FTS5. Every word is still a prefix and the
+  words are ANDed, but FTS5's own query syntax (`OR`, `NOT`, `NEAR`, column
+  filters, parentheses) is no longer read: `OR`, `NOT` and `NEAR` are a 400,
+  a bare `AND` is dropped, and other punctuation only splits words.
+- `GET /persons` orders by `lower(display_name)`, which folds every case
+  Postgres knows rather than only ASCII.
+- A malformed id in a path is a 404, as a missing one was.
+- `GET /settings` is gone; the server has its own.
+- Revisions copied from the standalone store gain `owner_principal_id` in
+  their snapshot.

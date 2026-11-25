@@ -1,29 +1,34 @@
 package peoplestore
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 )
 
-const identityColumns = `id, person_id, kind, value, label, linked_by, reason, linked_at, created_at, updated_at`
+const identityColumns = `seq, owner_principal_id, person_seq, kind, value, label, linked_by, reason, linked_at, created_at, updated_at`
 
 func scanIdentity(scan func(...any) error) (Identity, error) {
 	var identity Identity
-	err := scan(&identity.ID, &identity.PersonID, &identity.Kind, &identity.Value, &identity.Label,
+	var seq, personSeq int64
+	err := scan(&seq, &identity.OwnerPrincipalID, &personSeq, &identity.Kind, &identity.Value, &identity.Label,
 		&identity.LinkedBy, &identity.Reason, &identity.LinkedAt, &identity.CreatedAt, &identity.UpdatedAt)
+	identity.ID, identity.PersonID = formatID(identityIDPrefix, seq), formatID(personIDPrefix, personSeq)
 	return identity, err
 }
 
-func listIdentities(q queryer, personID string) ([]Identity, error) {
-	return queryIdentities(q, `SELECT `+identityColumns+` FROM identities WHERE person_id = ? ORDER BY seq`, personID)
+func listIdentities(ctx context.Context, q queryer, personSeq int64) ([]Identity, error) {
+	return queryIdentities(ctx, q, `SELECT `+identityColumns+` FROM identities WHERE person_seq = $1 ORDER BY seq`, personSeq)
 }
 
-func queryIdentities(q queryer, query string, args ...any) ([]Identity, error) {
-	rows, err := q.Query(query, args...)
+func queryIdentities(ctx context.Context, q queryer, query string, args ...any) ([]Identity, error) {
+	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -47,9 +52,12 @@ type IdentityFilter struct {
 	Offset int
 }
 
-// ListIdentities lists identities in the order they were attached, so a
-// caller can page through every handle of one kind.
-func (s *Store) ListIdentities(filter IdentityFilter) ([]Identity, error) {
+// ListIdentities lists the identities in scope in the order they were
+// attached, so a caller can page through every handle of one kind.
+func (s *Store) ListIdentities(ctx context.Context, scope ownership.Scope, filter IdentityFilter) ([]Identity, error) {
+	if err := checkScope(scope); err != nil {
+		return nil, err
+	}
 	if filter.Limit < 0 || filter.Offset < 0 {
 		return nil, fmt.Errorf("%w: limit and offset must not be negative", ErrInvalid)
 	}
@@ -60,23 +68,22 @@ func (s *Store) ListIdentities(filter IdentityFilter) ([]Identity, error) {
 	if limit > 1000 {
 		return nil, fmt.Errorf("%w: limit %d is over 1000", ErrInvalid, limit)
 	}
-	query := `SELECT ` + identityColumns + ` FROM identities`
-	var args []any
+	var args arguments
+	query := `SELECT ` + identityColumns + ` FROM identities WHERE ` + args.within(scope, "owner_principal_id")
 	if filter.Kind != "" {
 		if !contains(identityKindNames(), filter.Kind) {
 			return nil, fmt.Errorf("%w: unknown identity kind %q: use one of %s", ErrInvalid, filter.Kind, strings.Join(identityKindNames(), ", "))
 		}
-		query += ` WHERE kind = ?`
-		args = append(args, filter.Kind)
+		query += ` AND kind = ` + args.add(filter.Kind)
 	}
 	query += fmt.Sprintf(` ORDER BY seq LIMIT %d OFFSET %d`, limit, filter.Offset)
-	return queryIdentities(s.db, query, args...)
+	return queryIdentities(ctx, s.db, query, args.values...)
 }
 
-// identityOwner returns the identity with this normalized kind and value, or
-// nil when no person holds it.
-func identityOwner(q queryer, kind, value string) (*Identity, error) {
-	identity, err := scanIdentity(q.QueryRow(`SELECT `+identityColumns+` FROM identities WHERE kind = ? AND value = ?`, kind, value).Scan)
+// identityHolder returns owner's identity with this normalized kind and value,
+// or nil when none of owner's persons holds it.
+func identityHolder(ctx context.Context, q queryer, owner, kind, value string) (*Identity, error) {
+	identity, err := scanIdentity(q.QueryRowContext(ctx, `SELECT `+identityColumns+` FROM identities WHERE owner_principal_id = $1 AND kind = $2 AND value = $3`, owner, kind, value).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -86,13 +93,13 @@ func identityOwner(q queryer, kind, value string) (*Identity, error) {
 	return &identity, nil
 }
 
-// conflictingOwner is the 409 for a handle that already belongs to someone.
-func conflictingOwner(q queryer, owner *Identity) error {
-	person, err := getPerson(q, owner.PersonID)
+// conflictingHolder is the 409 for a handle that already belongs to someone.
+func conflictingHolder(ctx context.Context, q queryer, holder *Identity, holderSeq int64) error {
+	person, err := getPerson(ctx, q, ownership.OwnedBy(holder.OwnerPrincipalID), holderSeq)
 	if err != nil {
-		return fmt.Errorf("%s %s belongs to %s, which cannot be read: %w", owner.Kind, owner.Value, owner.PersonID, err)
+		return fmt.Errorf("%s %s belongs to %s, which cannot be read: %w", holder.Kind, holder.Value, holder.PersonID, err)
 	}
-	return fmt.Errorf("%w: %s %s already belongs to %s (%s) as %s", ErrConflict, owner.Kind, owner.Value, owner.PersonID, person.DisplayName, owner.ID)
+	return fmt.Errorf("%w: %s %s already belongs to %s (%s) as %s", ErrConflict, holder.Kind, holder.Value, holder.PersonID, person.DisplayName, holder.ID)
 }
 
 // normalizeLinkInput checks a link and puts its handle in stored form. A
@@ -124,11 +131,20 @@ func normalizeLinkInput(input IdentityLinkInput) (IdentityLinkInput, LinkSource,
 	return IdentityLinkInput{Kind: handle.Kind, Value: handle.Value, Label: handle.Label, LinkedBy: source.Source, Reason: reason, LinkedAt: linkedAt, Move: input.Move}, source, nil
 }
 
-// refusalOf returns the refusal of this handle for this person, or nil.
-func refusalOf(q queryer, kind, value, personID string) (*Refusal, error) {
+const refusalColumns = `seq, owner_principal_id, kind, value, person_seq, refused_by, reason, created_at`
+
+func scanRefusal(scan func(...any) error) (Refusal, error) {
 	var refusal Refusal
-	err := q.QueryRow(`SELECT id, kind, value, person_id, refused_by, reason, created_at FROM identity_refusals WHERE kind = ? AND value = ? AND person_id = ?`, kind, value, personID).
-		Scan(&refusal.ID, &refusal.Kind, &refusal.Value, &refusal.PersonID, &refusal.RefusedBy, &refusal.Reason, &refusal.CreatedAt)
+	var seq, personSeq int64
+	err := scan(&seq, &refusal.OwnerPrincipalID, &refusal.Kind, &refusal.Value, &personSeq, &refusal.RefusedBy, &refusal.Reason, &refusal.CreatedAt)
+	refusal.ID, refusal.PersonID = formatID(refusalIDPrefix, seq), formatID(personIDPrefix, personSeq)
+	return refusal, err
+}
+
+// refusalOf returns the refusal of this handle for this person, or nil. A
+// person has one owner, so the refusal is that owner's.
+func refusalOf(ctx context.Context, q queryer, kind, value string, personSeq int64) (*Refusal, error) {
+	refusal, err := scanRefusal(q.QueryRowContext(ctx, `SELECT `+refusalColumns+` FROM identity_refusals WHERE kind = $1 AND value = $2 AND person_seq = $3`, kind, value, personSeq).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -138,19 +154,12 @@ func refusalOf(q queryer, kind, value, personID string) (*Refusal, error) {
 	return &refusal, nil
 }
 
-// insertRefusal records that a handle is not a person. A pair already refused
-// keeps its first row.
-func insertRefusal(tx *sql.Tx, kind, value, personID, refusedBy, reason string) error {
-	existing, err := refusalOf(tx, kind, value, personID)
-	if err != nil || existing != nil {
-		return err
-	}
-	seq, err := nextSeq(tx, "identity_refusals")
-	if err != nil {
-		return err
-	}
-	_, err = tx.Exec(`INSERT INTO identity_refusals (id, seq, kind, value, person_id, refused_by, reason, created_at) VALUES (?,?,?,?,?,?,?,?)`,
-		formatID(refusalIDPrefix, seq), seq, kind, value, personID, refusedBy, reason, now())
+// insertRefusal records that a handle is not owner's person. A pair already
+// refused keeps its first row.
+func insertRefusal(ctx context.Context, tx *sql.Tx, owner, kind, value string, personSeq int64, refusedBy, reason string) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO identity_refusals (owner_principal_id, kind, value, person_seq, refused_by, reason, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (owner_principal_id, kind, value, person_seq) DO NOTHING`,
+		owner, kind, value, personSeq, refusedBy, reason, now())
 	return err
 }
 
@@ -161,14 +170,20 @@ type RefusalFilter struct {
 	Value    string
 }
 
-// ListRefusals lists refusals oldest first. Kind and Value are normalized as
-// on write; Value needs Kind.
-func (s *Store) ListRefusals(filter RefusalFilter) ([]Refusal, error) {
-	var where []string
-	var args []any
+// ListRefusals lists the refusals in scope oldest first. Kind and Value are
+// normalized as on write; Value needs Kind.
+func (s *Store) ListRefusals(ctx context.Context, scope ownership.Scope, filter RefusalFilter) ([]Refusal, error) {
+	if err := checkScope(scope); err != nil {
+		return nil, err
+	}
+	var args arguments
+	where := []string{args.within(scope, "owner_principal_id")}
 	if filter.PersonID != "" {
-		where = append(where, `person_id = ?`)
-		args = append(args, filter.PersonID)
+		personSeq, err := numberOf(personIDPrefix, filter.PersonID)
+		if err != nil {
+			return nil, fmt.Errorf("%w: person_id %q is not a person id (person_000001)", ErrInvalid, filter.PersonID)
+		}
+		where = append(where, `person_seq = `+args.add(personSeq))
 	}
 	if filter.Value != "" && filter.Kind == "" {
 		return nil, fmt.Errorf("%w: value needs kind", ErrInvalid)
@@ -179,26 +194,20 @@ func (s *Store) ListRefusals(filter RefusalFilter) ([]Refusal, error) {
 			if err != nil {
 				return nil, err
 			}
-			where = append(where, `kind = ? AND value = ?`)
-			args = append(args, handle.Kind, handle.Value)
+			where = append(where, `kind = `+args.add(handle.Kind)+` AND value = `+args.add(handle.Value))
 		} else {
-			where = append(where, `kind = ?`)
-			args = append(args, filter.Kind)
+			where = append(where, `kind = `+args.add(filter.Kind))
 		}
 	}
-	query := `SELECT id, kind, value, person_id, refused_by, reason, created_at FROM identity_refusals`
-	if len(where) > 0 {
-		query += ` WHERE ` + strings.Join(where, ` AND `)
-	}
-	rows, err := s.db.Query(query+` ORDER BY seq`, args...)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+refusalColumns+` FROM identity_refusals WHERE `+strings.Join(where, ` AND `)+` ORDER BY seq`, args.values...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	refusals := []Refusal{}
 	for rows.Next() {
-		var refusal Refusal
-		if err := rows.Scan(&refusal.ID, &refusal.Kind, &refusal.Value, &refusal.PersonID, &refusal.RefusedBy, &refusal.Reason, &refusal.CreatedAt); err != nil {
+		refusal, err := scanRefusal(rows.Scan)
+		if err != nil {
 			return nil, err
 		}
 		refusals = append(refusals, refusal)
@@ -206,25 +215,34 @@ func (s *Store) ListRefusals(filter RefusalFilter) ([]Refusal, error) {
 	return refusals, rows.Err()
 }
 
-// addIdentity attaches one normalized handle to a person inside tx, after
-// recording the person's revision. A handle already on this same person is
-// returned as it is (added=false). One on another person is a 409, unless the
-// link moves it (operator only), which records a refusal against the person it
-// leaves. A pair the operator refused is a 409 for every source but the
-// operator, whose link deletes the refusal. Every waiting suggestion that
-// holds the handle, except exceptSuggestionID, loses it (closeCoveredHandle).
-func addIdentity(tx *sql.Tx, personID string, input IdentityLinkInput, source LinkSource, exceptSuggestionID string) (identity Identity, added bool, err error) {
-	owner, err := identityOwner(tx, input.Kind, input.Value)
+// addIdentity attaches one normalized handle to owner's person inside tx,
+// after recording the person's revision. A handle already on this same person
+// is returned as it is (added=false). One on another of owner's persons is a
+// 409, unless the link moves it (operator only), which records a refusal
+// against the person it leaves; a handle moves only between one owner's
+// persons, since another owner's records never enter the lookup. A pair the
+// operator refused is a 409 for every source but the operator, whose link
+// deletes the refusal. Every waiting suggestion of owner's that holds the
+// handle, except exceptSuggestionSeq, loses it (closeCoveredHandle).
+func addIdentity(ctx context.Context, tx *sql.Tx, owner string, personSeq int64, input IdentityLinkInput, source LinkSource, exceptSuggestionSeq int64) (identity Identity, added bool, err error) {
+	holder, err := identityHolder(ctx, tx, owner, input.Kind, input.Value)
 	if err != nil {
 		return Identity{}, false, err
 	}
-	if owner != nil && owner.PersonID == personID {
-		return *owner, false, nil
+	personID := formatID(personIDPrefix, personSeq)
+	var holderSeq int64
+	if holder != nil {
+		if holderSeq, err = numberOf(personIDPrefix, holder.PersonID); err != nil {
+			return Identity{}, false, err
+		}
 	}
-	if owner != nil && !input.Move {
-		return Identity{}, false, conflictingOwner(tx, owner)
+	if holder != nil && holderSeq == personSeq {
+		return *holder, false, nil
 	}
-	refusal, err := refusalOf(tx, input.Kind, input.Value, personID)
+	if holder != nil && !input.Move {
+		return Identity{}, false, conflictingHolder(ctx, tx, holder, holderSeq)
+	}
+	refusal, err := refusalOf(ctx, tx, input.Kind, input.Value, personSeq)
 	if err != nil {
 		return Identity{}, false, err
 	}
@@ -232,75 +250,86 @@ func addIdentity(tx *sql.Tx, personID string, input IdentityLinkInput, source Li
 		if !source.OverridesRefusals {
 			return Identity{}, false, fmt.Errorf("%w: %s %s was refused for %s by %s (%s, %s); only the operator can link them", ErrConflict, input.Kind, input.Value, personID, refusal.RefusedBy, refusal.ID, refusal.Reason)
 		}
-		if _, err := tx.Exec(`DELETE FROM identity_refusals WHERE id = ?`, refusal.ID); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM identity_refusals WHERE seq = $1`, mustNumber(refusalIDPrefix, refusal.ID)); err != nil {
 			return Identity{}, false, err
 		}
 	}
-	if err := recordRevision(tx, personID, RevisionActionIdentityAdd); err != nil {
+	if err := recordRevision(ctx, tx, personSeq, RevisionActionIdentityAdd); err != nil {
 		return Identity{}, false, err
 	}
 	timestamp := now()
-	var id string
-	if owner != nil {
+	var seq int64
+	if holder != nil {
 		// A move: the row keeps its id and changes person.
-		if err := recordRevision(tx, owner.PersonID, RevisionActionIdentityRemove); err != nil {
+		if err := recordRevision(ctx, tx, holderSeq, RevisionActionIdentityRemove); err != nil {
 			return Identity{}, false, err
 		}
-		if err := insertRefusal(tx, input.Kind, input.Value, owner.PersonID, source.Source, "moved to "+personID+": "+input.Reason); err != nil {
+		if err := insertRefusal(ctx, tx, owner, input.Kind, input.Value, holderSeq, source.Source, "moved to "+personID+": "+input.Reason); err != nil {
 			return Identity{}, false, err
 		}
-		id = owner.ID
-		if _, err := tx.Exec(`UPDATE identities SET person_id = ?, label = ?, linked_by = ?, reason = ?, linked_at = ?, updated_at = ? WHERE id = ?`,
-			personID, input.Label, input.LinkedBy, input.Reason, input.LinkedAt, timestamp, id); err != nil {
+		seq = mustNumber(identityIDPrefix, holder.ID)
+		if _, err := tx.ExecContext(ctx, `UPDATE identities SET person_seq = $1, label = $2, linked_by = $3, reason = $4, linked_at = $5, updated_at = $6 WHERE seq = $7`,
+			personSeq, input.Label, input.LinkedBy, input.Reason, input.LinkedAt, timestamp, seq); err != nil {
 			return Identity{}, false, err
 		}
-		if _, err := tx.Exec(`UPDATE persons SET updated_at = ? WHERE id = ?`, timestamp, owner.PersonID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE persons SET updated_at = $1 WHERE seq = $2`, timestamp, holderSeq); err != nil {
 			return Identity{}, false, err
 		}
-		if err := reindexPerson(tx, owner.PersonID); err != nil {
+		if err := reindexPerson(ctx, tx, holderSeq); err != nil {
 			return Identity{}, false, err
 		}
 	} else {
-		seq, err := nextSeq(tx, "identities")
+		err := tx.QueryRowContext(ctx, `INSERT INTO identities (owner_principal_id, person_seq, kind, value, label, linked_by, reason, linked_at, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING seq`,
+			owner, personSeq, input.Kind, input.Value, input.Label, input.LinkedBy, input.Reason, input.LinkedAt, timestamp, timestamp).Scan(&seq)
 		if err != nil {
 			return Identity{}, false, err
 		}
-		id = formatID(identityIDPrefix, seq)
-		if _, err := tx.Exec(`INSERT INTO identities (id, seq, person_id, kind, value, label, linked_by, reason, linked_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-			id, seq, personID, input.Kind, input.Value, input.Label, input.LinkedBy, input.Reason, input.LinkedAt, timestamp, timestamp); err != nil {
-			return Identity{}, false, err
-		}
 	}
-	if _, err := tx.Exec(`UPDATE persons SET updated_at = ? WHERE id = ?`, timestamp, personID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE persons SET updated_at = $1 WHERE seq = $2`, timestamp, personSeq); err != nil {
 		return Identity{}, false, err
 	}
-	if err := reindexPerson(tx, personID); err != nil {
+	if err := reindexPerson(ctx, tx, personSeq); err != nil {
 		return Identity{}, false, err
 	}
-	if err := closeCoveredHandle(tx, input.Kind, input.Value, personID, exceptSuggestionID); err != nil {
+	if err := closeCoveredHandle(ctx, tx, owner, input.Kind, input.Value, personID, exceptSuggestionSeq); err != nil {
 		return Identity{}, false, err
 	}
-	identity, err = scanIdentity(tx.QueryRow(`SELECT `+identityColumns+` FROM identities WHERE id = ?`, id).Scan)
+	identity, err = scanIdentity(tx.QueryRowContext(ctx, `SELECT `+identityColumns+` FROM identities WHERE seq = $1`, seq).Scan)
 	return identity, true, err
 }
 
+// mustNumber reads the number of an id this store formatted itself.
+func mustNumber(prefix, id string) int64 {
+	seq, err := numberOf(prefix, id)
+	if err != nil {
+		panic(fmt.Sprintf("peoplestore formatted %q, which does not parse as a %s id", id, prefix))
+	}
+	return seq
+}
+
 // closeCoveredHandle takes a handle that was just attached to personID out of
-// every waiting suggestion that holds it, but exceptSuggestionID: the handle
-// moves from payload.identities to payload.covered, and personID joins
-// payload.matched_person_ids. A suggestion left with no handle is superseded,
-// with person_id set when every covered handle went to one person. Its rows
-// in suggestion_handles stay, so no importer proposes the handle again.
-func closeCoveredHandle(tx *sql.Tx, kind, value, personID, exceptSuggestionID string) error {
-	rows, err := tx.Query(`SELECT s.id, s.payload FROM suggestions s JOIN suggestion_handles h ON h.suggestion_id = s.id
-		WHERE h.kind = ? AND h.value = ? AND s.status = ? AND s.id <> ? ORDER BY s.seq`, kind, value, SuggestionStatusProposed, exceptSuggestionID)
+// every waiting suggestion of owner's that holds it, but exceptSuggestionSeq:
+// the handle moves from payload.identities to payload.covered, and personID
+// joins payload.matched_person_ids. A suggestion left with no handle is
+// superseded, with person_id set when every covered handle went to one person.
+// Its rows in suggestion_handles stay, so no importer proposes the handle
+// again.
+func closeCoveredHandle(ctx context.Context, tx *sql.Tx, owner, kind, value, personID string, exceptSuggestionSeq int64) error {
+	rows, err := tx.QueryContext(ctx, `SELECT s.seq, s.payload FROM suggestions s JOIN suggestion_handles h ON h.suggestion_seq = s.seq
+		WHERE s.owner_principal_id = $1 AND h.kind = $2 AND h.value = $3 AND s.status = $4 AND s.seq <> $5 ORDER BY s.seq`,
+		owner, kind, value, SuggestionStatusProposed, exceptSuggestionSeq)
 	if err != nil {
 		return err
 	}
-	type waiting struct{ id, payload string }
+	type waiting struct {
+		seq     int64
+		payload string
+	}
 	var suggestions []waiting
 	for rows.Next() {
 		var item waiting
-		if err := rows.Scan(&item.id, &item.payload); err != nil {
+		if err := rows.Scan(&item.seq, &item.payload); err != nil {
 			rows.Close()
 			return err
 		}
@@ -314,7 +343,7 @@ func closeCoveredHandle(tx *sql.Tx, kind, value, personID, exceptSuggestionID st
 	for _, item := range suggestions {
 		var payload SuggestionPayload
 		if err := json.Unmarshal([]byte(item.payload), &payload); err != nil {
-			return fmt.Errorf("suggestion %s: payload: %w", item.id, err)
+			return fmt.Errorf("suggestion %s: payload: %w", formatID(suggestionIDPrefix, item.seq), err)
 		}
 		kept := []IdentityInput{}
 		for _, identity := range payload.Identities {
@@ -337,42 +366,46 @@ func closeCoveredHandle(tx *sql.Tx, kind, value, personID, exceptSuggestionID st
 			return err
 		}
 		if len(kept) > 0 {
-			if _, err := tx.Exec(`UPDATE suggestions SET payload = ? WHERE id = ?`, string(encoded), item.id); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE suggestions SET payload = $1 WHERE seq = $2`, string(encoded), item.seq); err != nil {
 				return err
 			}
 			continue
 		}
-		onePerson := payload.Covered[0].PersonID
+		var onePerson sql.NullInt64
+		if first, err := numberOf(personIDPrefix, payload.Covered[0].PersonID); err == nil {
+			onePerson = sql.NullInt64{Int64: first, Valid: true}
+		}
 		for _, covered := range payload.Covered {
-			if covered.PersonID != onePerson {
-				onePerson = ""
+			if covered.PersonID != payload.Covered[0].PersonID {
+				onePerson = sql.NullInt64{}
 				break
 			}
 		}
-		if _, err := tx.Exec(`UPDATE suggestions SET payload = ?, status = ?, person_id = ?, decided_at = ? WHERE id = ?`,
-			string(encoded), SuggestionStatusSuperseded, onePerson, timestamp, item.id); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE suggestions SET payload = $1, status = $2, person_seq = $3, decided_at = $4 WHERE seq = $5`,
+			string(encoded), SuggestionStatusSuperseded, onePerson, timestamp, item.seq); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// AddIdentity attaches a handle to a live person. It answers created=false
-// when the person already had exactly this handle.
-func (s *Store) AddIdentity(personID string, input IdentityLinkInput) (Identity, bool, error) {
+// AddIdentity attaches a handle to a live person in scope; the identity takes
+// the person's owner. It answers created=false when the person already had
+// exactly this handle.
+func (s *Store) AddIdentity(ctx context.Context, scope ownership.Scope, personID string, input IdentityLinkInput) (Identity, bool, error) {
 	normalized, source, err := normalizeLinkInput(input)
 	if err != nil {
 		return Identity{}, false, err
 	}
-	tx, err := s.db.Begin()
+	tx, seq, owner, err := s.beginForPerson(ctx, scope, personID)
 	if err != nil {
 		return Identity{}, false, err
 	}
 	defer tx.Rollback()
-	if _, err := getLivePerson(tx, personID); err != nil {
+	if _, err := getLivePerson(ctx, tx, scope, seq); err != nil {
 		return Identity{}, false, err
 	}
-	identity, added, err := addIdentity(tx, personID, normalized, source, "")
+	identity, added, err := addIdentity(ctx, tx, owner, seq, normalized, source, 0)
 	if err != nil {
 		return Identity{}, false, err
 	}
@@ -385,54 +418,133 @@ const identityRemovalReason = "the operator removed this handle from this person
 // RemoveIdentity detaches a handle and records that it is not this person, so
 // no automatic source attaches it to them again. Removing is the operator's
 // act. The row goes; the person's revision keeps it.
-func (s *Store) RemoveIdentity(id string) error {
-	tx, err := s.db.Begin()
+func (s *Store) RemoveIdentity(ctx context.Context, scope ownership.Scope, id string) error {
+	if err := checkScope(scope); err != nil {
+		return err
+	}
+	seq, err := numberOf(identityIDPrefix, id)
+	if err != nil {
+		return err
+	}
+	owner, err := ownerOfRow(ctx, s.db, scope, "identities", seq, identityIDPrefix)
+	if err != nil {
+		return err
+	}
+	tx, err := s.lockedTransaction(ctx, owner)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	identity, err := scanIdentity(tx.QueryRow(`SELECT `+identityColumns+` FROM identities WHERE id = ?`, id).Scan)
+	identity, err := scanIdentity(tx.QueryRowContext(ctx, `SELECT `+identityColumns+` FROM identities WHERE seq = $1`, seq).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("%w: identity %s", ErrNotFound, id)
 	}
 	if err != nil {
 		return err
 	}
-	if err := recordRevision(tx, identity.PersonID, RevisionActionIdentityRemove); err != nil {
+	personSeq := mustNumber(personIDPrefix, identity.PersonID)
+	if err := recordRevision(ctx, tx, personSeq, RevisionActionIdentityRemove); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DELETE FROM identities WHERE id = ?`, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM identities WHERE seq = $1`, seq); err != nil {
 		return err
 	}
-	if err := insertRefusal(tx, identity.Kind, identity.Value, identity.PersonID, LinkSourceOperator, identityRemovalReason); err != nil {
+	if err := insertRefusal(ctx, tx, owner, identity.Kind, identity.Value, personSeq, LinkSourceOperator, identityRemovalReason); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`UPDATE persons SET updated_at = ? WHERE id = ?`, now(), identity.PersonID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE persons SET updated_at = $1 WHERE seq = $2`, now(), personSeq); err != nil {
 		return err
 	}
-	if err := reindexPerson(tx, identity.PersonID); err != nil {
+	if err := reindexPerson(ctx, tx, personSeq); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-// ResolveIdentity finds who owns a handle, after normalizing it the way it
-// was stored. A deleted owner is returned with deleted_at set.
-func (s *Store) ResolveIdentity(kind, value string) (*IdentityResolution, error) {
+// resolutions finds every record in scope holding a normalized handle, with
+// its person, oldest person first.
+func (s *Store) resolutions(ctx context.Context, scope ownership.Scope, kind, value string) ([]IdentityResolution, error) {
+	var args arguments
+	query := `SELECT ` + qualified("i", identityColumns) + `, ` + qualified("p", personColumns) + `
+		FROM identities i JOIN persons p ON p.owner_principal_id = i.owner_principal_id AND p.seq = i.person_seq
+		WHERE i.kind = ` + args.add(kind) + ` AND i.value = ` + args.add(value) + ` AND ` + args.within(scope, "i.owner_principal_id") + `
+		ORDER BY p.created_at, p.seq`
+	rows, err := s.db.QueryContext(ctx, query, args.values...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	found := []IdentityResolution{}
+	for rows.Next() {
+		var resolution IdentityResolution
+		var identitySeq, identityPersonSeq, personSeq int64
+		var tags string
+		person := &resolution.Person
+		identity := &resolution.Identity
+		if err := rows.Scan(&identitySeq, &identity.OwnerPrincipalID, &identityPersonSeq, &identity.Kind, &identity.Value, &identity.Label,
+			&identity.LinkedBy, &identity.Reason, &identity.LinkedAt, &identity.CreatedAt, &identity.UpdatedAt,
+			&personSeq, &person.OwnerPrincipalID, &person.DisplayName, &person.Birthday, &person.HowMet, &tags, &person.PrincipalID,
+			&person.CreatedAt, &person.UpdatedAt, &person.DeletedAt); err != nil {
+			return nil, err
+		}
+		identity.ID, identity.PersonID = formatID(identityIDPrefix, identitySeq), formatID(personIDPrefix, identityPersonSeq)
+		person.ID = formatID(personIDPrefix, personSeq)
+		if err := json.Unmarshal([]byte(tags), &person.Tags); err != nil {
+			return nil, fmt.Errorf("person %s: tags: %w", person.ID, err)
+		}
+		found = append(found, resolution)
+	}
+	return found, rows.Err()
+}
+
+// qualified puts alias in front of each column of a column list.
+func qualified(alias, columns string) string {
+	parts := strings.Split(columns, ",")
+	for index, part := range parts {
+		parts[index] = alias + "." + strings.TrimSpace(part)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// ResolveIdentity finds who holds a handle within scope, after normalizing it
+// the way it was stored. A deleted holder is returned with deleted_at set.
+// No record in scope holding it is ErrNotFound. A scope that reaches every
+// owner, where more than one owner's records hold it, is ErrConflict: the
+// caller must name owner_principal_id.
+func (s *Store) ResolveIdentity(ctx context.Context, scope ownership.Scope, kind, value string) (*IdentityResolution, error) {
+	if err := checkScope(scope); err != nil {
+		return nil, err
+	}
 	normalized, err := NormalizeIdentity(IdentityInput{Kind: kind, Value: value})
 	if err != nil {
 		return nil, err
 	}
-	owner, err := identityOwner(s.db, normalized.Kind, normalized.Value)
+	found, err := s.resolutions(ctx, scope, normalized.Kind, normalized.Value)
 	if err != nil {
 		return nil, err
 	}
-	if owner == nil {
+	switch len(found) {
+	case 0:
 		return nil, fmt.Errorf("%w: no person has %s %s", ErrNotFound, normalized.Kind, strings.TrimSpace(normalized.Value))
+	case 1:
+		return &found[0], nil
 	}
-	person, err := getPerson(s.db, owner.PersonID)
+	owners := make([]string, 0, len(found))
+	for _, resolution := range found {
+		owners = append(owners, resolution.Identity.OwnerPrincipalID)
+	}
+	return nil, fmt.Errorf("%w: %s %s is held by the records of %d owners (%s); name the one to read with %s", ErrConflict,
+		normalized.Kind, normalized.Value, len(found), strings.Join(owners, ", "), ownership.OwnerParameter)
+}
+
+// ResolveIdentityInEveryOwner finds every owner's record holding a handle,
+// normalized as on write, oldest person first; empty when none does. It is
+// for the server's own use, such as telling who sent a message to a bot, and
+// reaches every owner.
+func (s *Store) ResolveIdentityInEveryOwner(ctx context.Context, kind, value string) ([]IdentityResolution, error) {
+	normalized, err := NormalizeIdentity(IdentityInput{Kind: kind, Value: value})
 	if err != nil {
 		return nil, err
 	}
-	return &IdentityResolution{Identity: *owner, Person: *person}, nil
+	return s.resolutions(ctx, ownership.EveryOwner(), normalized.Kind, normalized.Value)
 }

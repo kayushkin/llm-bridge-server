@@ -1,14 +1,19 @@
 package peoplestore
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
+	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 )
 
-// PersonFilter selects persons. The zero value lists every live person.
+// PersonFilter selects persons. The zero value lists every live person in
+// scope.
 type PersonFilter struct {
 	Query string
 	Tag   string
@@ -19,44 +24,73 @@ type PersonFilter struct {
 	Offset         int
 }
 
-const personColumns = `id, display_name, birthday, how_met, tags, principal_id, created_at, updated_at, deleted_at`
+const personColumns = `seq, owner_principal_id, display_name, birthday, how_met, tags::text, principal_id, created_at, updated_at, deleted_at`
 
 func scanPerson(scan func(...any) error) (*Person, error) {
 	var person Person
+	var seq int64
 	var tags string
-	if err := scan(&person.ID, &person.DisplayName, &person.Birthday, &person.HowMet, &tags, &person.PrincipalID,
+	if err := scan(&seq, &person.OwnerPrincipalID, &person.DisplayName, &person.Birthday, &person.HowMet, &tags, &person.PrincipalID,
 		&person.CreatedAt, &person.UpdatedAt, &person.DeletedAt); err != nil {
 		return nil, err
 	}
+	person.ID = formatID(personIDPrefix, seq)
 	if err := json.Unmarshal([]byte(tags), &person.Tags); err != nil {
 		return nil, fmt.Errorf("person %s: tags: %w", person.ID, err)
 	}
 	return &person, nil
 }
 
-func getPerson(q queryer, id string) (*Person, error) {
-	person, err := scanPerson(q.QueryRow(`SELECT `+personColumns+` FROM persons WHERE id = ?`, id).Scan)
+func getPerson(ctx context.Context, q queryer, scope ownership.Scope, seq int64) (*Person, error) {
+	var args arguments
+	query := `SELECT ` + personColumns + ` FROM persons WHERE seq = ` + args.add(seq) + ` AND ` + args.within(scope, "owner_principal_id")
+	person, err := scanPerson(q.QueryRowContext(ctx, query, args.values...).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("%w: person %s", ErrNotFound, id)
+		return nil, fmt.Errorf("%w: person %s", ErrNotFound, formatID(personIDPrefix, seq))
 	}
 	return person, err
 }
 
 // getLivePerson is getPerson that refuses a deleted person with a 409, for
 // writes that would hang something new on them.
-func getLivePerson(q queryer, id string) (*Person, error) {
-	person, err := getPerson(q, id)
+func getLivePerson(ctx context.Context, q queryer, scope ownership.Scope, seq int64) (*Person, error) {
+	person, err := getPerson(ctx, q, scope, seq)
 	if err != nil {
 		return nil, err
 	}
 	if person.DeletedAt != 0 {
-		return nil, fmt.Errorf("%w: person %s is deleted; POST /persons/%s/restore first", ErrConflict, id, id)
+		return nil, fmt.Errorf("%w: person %s is deleted; POST /persons/%s/restore first", ErrConflict, person.ID, person.ID)
 	}
 	return person, nil
 }
 
-// CreatePerson records a new person and hands back its id.
-func (s *Store) CreatePerson(input PersonInput) (*PersonDetail, error) {
+// otherLivePerson finds the second person of a write that joins two records:
+// the person named in a body, who must belong to owner. One outside owner
+// answers as a missing one does (a 400 naming the field), unless the caller
+// sees every owner and named another owner's person, which is a 400 saying so.
+func otherLivePerson(ctx context.Context, tx *sql.Tx, scope ownership.Scope, owner, field, id string) (*Person, error) {
+	// A body naming a malformed id is the caller's 400, as a missing one is.
+	seq, err := postgresstorage.ParseRecordID(personIDPrefix, strings.TrimSpace(id))
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s: person %s not found", ErrInvalid, field, id)
+	}
+	person, err := getLivePerson(ctx, tx, ownership.OwnedBy(owner), seq)
+	if errors.Is(err, ErrNotFound) {
+		if scope.IsEveryOwner() {
+			if elsewhere, lookErr := getPerson(ctx, tx, ownership.EveryOwner(), seq); lookErr == nil {
+				return nil, fmt.Errorf("%w: %s: %s is kept by %s, and this record by %s; a write joins only one owner's records", ErrInvalid, field, id, elsewhere.OwnerPrincipalID, owner)
+			}
+		}
+		return nil, fmt.Errorf("%w: %s: %v", ErrInvalid, field, err)
+	}
+	return person, err
+}
+
+// CreatePerson records a new person owned by owner and hands back its id.
+func (s *Store) CreatePerson(ctx context.Context, owner string, input PersonInput) (*PersonDetail, error) {
+	if err := checkOwner(owner); err != nil {
+		return nil, err
+	}
 	displayName := strings.TrimSpace(input.DisplayName)
 	if displayName == "" {
 		return nil, fmt.Errorf("%w: display_name is required", ErrInvalid)
@@ -90,94 +124,99 @@ func (s *Store) CreatePerson(input PersonInput) (*PersonDetail, error) {
 		seen[key] = true
 		links = append(links, link{normalized, source})
 	}
-	principalID, err := s.checkPrincipalID(input.PrincipalID)
+	principalID, err := s.checkPrincipalID(ctx, input.PrincipalID)
 	if err != nil {
 		return nil, err
 	}
-	tx, err := s.db.Begin()
+	tx, err := s.lockedTransaction(ctx, owner)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-	id, err := insertPerson(tx, displayName, birthday, strings.TrimSpace(input.HowMet), tags, principalID)
+	seq, err := insertPerson(ctx, tx, owner, displayName, birthday, strings.TrimSpace(input.HowMet), tags, principalID)
 	if err != nil {
 		return nil, err
 	}
 	for _, link := range links {
-		if _, _, err := addIdentity(tx, id, link.input, link.source, ""); err != nil {
+		if _, _, err := addIdentity(ctx, tx, owner, seq, link.input, link.source, 0); err != nil {
 			return nil, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return s.GetPerson(id)
+	return s.GetPerson(ctx, ownership.OwnedBy(owner), formatID(personIDPrefix, seq))
 }
 
-func insertPerson(tx *sql.Tx, displayName, birthday, howMet string, tags []string, principalID string) (string, error) {
+func insertPerson(ctx context.Context, tx *sql.Tx, owner, displayName, birthday, howMet string, tags []string, principalID string) (int64, error) {
 	encodedTags, err := json.Marshal(tags)
 	if err != nil {
-		return "", err
+		return 0, err
 	}
-	seq, err := nextSeq(tx, "persons")
-	if err != nil {
-		return "", err
-	}
-	id := formatID(personIDPrefix, seq)
 	timestamp := now()
-	if _, err := tx.Exec(`INSERT INTO persons (id, seq, display_name, birthday, how_met, tags, principal_id, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?)`, id, seq, displayName, birthday, howMet, string(encodedTags), principalID, timestamp, timestamp); err != nil {
-		return "", err
-	}
-	return id, reindexPerson(tx, id)
+	var seq int64
+	err = tx.QueryRowContext(ctx, `INSERT INTO persons (owner_principal_id, display_name, birthday, how_met, tags, principal_id, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8) RETURNING seq`, owner, displayName, birthday, howMet, string(encodedTags), principalID, timestamp, timestamp).Scan(&seq)
+	return seq, err
 }
 
-// GetPerson returns one person with identities and relationships. A deleted
-// person is returned like any other, deleted_at set, so that whatever points
-// at them still renders a name.
-func (s *Store) GetPerson(id string) (*PersonDetail, error) {
-	person, err := getPerson(s.db, id)
+// GetPerson returns one person in scope with identities and relationships. A
+// deleted person is returned like any other, deleted_at set, so that whatever
+// points at them still renders a name. A person outside scope is ErrNotFound,
+// as a missing one.
+func (s *Store) GetPerson(ctx context.Context, scope ownership.Scope, id string) (*PersonDetail, error) {
+	if err := checkScope(scope); err != nil {
+		return nil, err
+	}
+	seq, err := numberOf(personIDPrefix, id)
+	if err != nil {
+		return nil, err
+	}
+	return personDetail(ctx, s.db, scope, seq)
+}
+
+func personDetail(ctx context.Context, q queryer, scope ownership.Scope, seq int64) (*PersonDetail, error) {
+	person, err := getPerson(ctx, q, scope, seq)
 	if err != nil {
 		return nil, err
 	}
 	detail := &PersonDetail{Person: *person}
-	if detail.Identities, err = listIdentities(s.db, id); err != nil {
+	if detail.Identities, err = listIdentities(ctx, q, seq); err != nil {
 		return nil, err
 	}
-	if detail.Relationships, err = listRelationshipViews(s.db, id); err != nil {
+	if detail.Relationships, err = listRelationshipViews(ctx, q, seq); err != nil {
 		return nil, err
 	}
 	return detail, nil
 }
 
-// ListPersons returns persons in display-name order, without identities or
-// relationships.
-func (s *Store) ListPersons(filter PersonFilter) ([]Person, error) {
-	query := `SELECT ` + personColumns + ` FROM persons WHERE 1=1`
-	var args []any
+// ListPersons returns the persons in scope in display-name order, without
+// identities or relationships.
+func (s *Store) ListPersons(ctx context.Context, scope ownership.Scope, filter PersonFilter) ([]Person, error) {
+	if err := checkScope(scope); err != nil {
+		return nil, err
+	}
+	var args arguments
+	query := `SELECT ` + personColumns + ` FROM persons WHERE ` + args.within(scope, "owner_principal_id")
 	if !filter.IncludeDeleted {
 		query += ` AND deleted_at = 0`
 	}
 	if tag := strings.TrimSpace(filter.Tag); tag != "" {
-		query += ` AND EXISTS (SELECT 1 FROM json_each(persons.tags) WHERE json_each.value = ?)`
-		args = append(args, tag)
+		query += ` AND tags @> jsonb_build_array(` + args.add(tag) + `::text)`
 	}
 	if filter.PrincipalID != "" {
 		if !principalIDPattern.MatchString(filter.PrincipalID) {
 			return nil, fmt.Errorf("%w: principal_id %q is not a principal-store id (principal_000001)", ErrInvalid, filter.PrincipalID)
 		}
-		query += ` AND principal_id = ?`
-		args = append(args, filter.PrincipalID)
+		query += ` AND principal_id = ` + args.add(filter.PrincipalID)
 	}
 	if strings.TrimSpace(filter.Query) != "" {
-		expression := searchExpression(filter.Query)
-		if err := s.validateSearchExpression(expression); err != nil {
+		expression, err := searchQueryOf(filter.Query)
+		if err != nil {
 			return nil, err
 		}
-		query += ` AND seq IN (SELECT rowid FROM persons_fts WHERE persons_fts MATCH ?)`
-		args = append(args, expression)
+		query += ` AND search_document @@ to_tsquery('simple', ` + args.add(expression) + `)`
 	}
-	query += ` ORDER BY display_name COLLATE NOCASE, seq`
 	if filter.Limit < 0 || filter.Offset < 0 {
 		return nil, fmt.Errorf("%w: limit and offset must not be negative", ErrInvalid)
 	}
@@ -188,8 +227,8 @@ func (s *Store) ListPersons(filter PersonFilter) ([]Person, error) {
 	if limit > 1000 {
 		return nil, fmt.Errorf("%w: limit %d is over 1000", ErrInvalid, limit)
 	}
-	query += fmt.Sprintf(` LIMIT %d OFFSET %d`, limit, filter.Offset)
-	rows, err := s.db.Query(query, args...)
+	query += fmt.Sprintf(` ORDER BY lower(display_name), seq LIMIT %d OFFSET %d`, limit, filter.Offset)
+	rows, err := s.db.QueryContext(ctx, query, args.values...)
 	if err != nil {
 		return nil, err
 	}
@@ -205,59 +244,27 @@ func (s *Store) ListPersons(filter PersonFilter) ([]Person, error) {
 	return persons, rows.Err()
 }
 
-// searchExpression turns typed words into prefix terms, so "ali" finds Alice.
-// Anything already carrying FTS5 syntax is passed through as it is.
-func searchExpression(q string) string {
-	q = strings.TrimSpace(q)
-	if strings.ContainsAny(q, `"*:()`) {
-		return q
-	}
-	words := strings.Fields(q)
-	for _, word := range words {
-		switch word {
-		case "AND", "OR", "NOT", "NEAR":
-			return q
-		}
-	}
-	terms := make([]string, 0, len(words))
-	for _, word := range words {
-		terms = append(terms, `"`+strings.ReplaceAll(word, `"`, `""`)+`"*`)
-	}
-	return strings.Join(terms, " ")
-}
-
-// validateSearchExpression probes the index so a malformed query is the
-// caller's 400, not a 500 from inside the list.
-func (s *Store) validateSearchExpression(expression string) error {
-	var discard int
-	err := s.db.QueryRow(`SELECT 1 FROM persons_fts WHERE persons_fts MATCH ? LIMIT 1`, expression).Scan(&discard)
-	if err == nil || errors.Is(err, sql.ErrNoRows) {
-		return nil
-	}
-	return fmt.Errorf("%w: bad search query %q: %v", ErrInvalid, expression, err)
-}
-
 // PatchPerson changes the fields the patch carries and records the person as
 // it was before. A deleted person cannot be patched.
-func (s *Store) PatchPerson(id string, patch PersonPatch) (*PersonDetail, error) {
+func (s *Store) PatchPerson(ctx context.Context, scope ownership.Scope, id string, patch PersonPatch) (*PersonDetail, error) {
 	var sets []string
-	var args []any
+	var args arguments
 	if patch.DisplayName != nil {
 		displayName := strings.TrimSpace(*patch.DisplayName)
 		if displayName == "" {
 			return nil, fmt.Errorf("%w: display_name cannot be empty", ErrInvalid)
 		}
-		sets, args = append(sets, "display_name = ?"), append(args, displayName)
+		sets = append(sets, "display_name = "+args.add(displayName))
 	}
 	if patch.Birthday != nil {
 		birthday, err := normalizeBirthday(*patch.Birthday)
 		if err != nil {
 			return nil, err
 		}
-		sets, args = append(sets, "birthday = ?"), append(args, birthday)
+		sets = append(sets, "birthday = "+args.add(birthday))
 	}
 	if patch.HowMet != nil {
-		sets, args = append(sets, "how_met = ?"), append(args, strings.TrimSpace(*patch.HowMet))
+		sets = append(sets, "how_met = "+args.add(strings.TrimSpace(*patch.HowMet)))
 	}
 	if patch.Tags != nil {
 		tags, err := normalizeTags(*patch.Tags)
@@ -268,81 +275,78 @@ func (s *Store) PatchPerson(id string, patch PersonPatch) (*PersonDetail, error)
 		if err != nil {
 			return nil, err
 		}
-		sets, args = append(sets, "tags = ?"), append(args, string(encoded))
+		sets = append(sets, "tags = "+args.add(string(encoded))+"::jsonb")
 	}
 	if patch.PrincipalID != nil {
-		principalID, err := s.checkPrincipalID(*patch.PrincipalID)
+		principalID, err := s.checkPrincipalID(ctx, *patch.PrincipalID)
 		if err != nil {
 			return nil, err
 		}
-		sets, args = append(sets, "principal_id = ?"), append(args, principalID)
+		sets = append(sets, "principal_id = "+args.add(principalID))
 	}
 	if len(sets) == 0 {
 		return nil, fmt.Errorf("%w: the patch changes nothing", ErrInvalid)
 	}
-	tx, err := s.db.Begin()
+	tx, seq, owner, err := s.beginForPerson(ctx, scope, id)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-	if _, err := getLivePerson(tx, id); err != nil {
+	if _, err := getLivePerson(ctx, tx, scope, seq); err != nil {
 		return nil, err
 	}
-	if err := recordRevision(tx, id, RevisionActionUpdate); err != nil {
+	if err := recordRevision(ctx, tx, seq, RevisionActionUpdate); err != nil {
 		return nil, err
 	}
-	sets, args = append(sets, "updated_at = ?"), append(args, now(), id)
-	if _, err := tx.Exec(`UPDATE persons SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...); err != nil {
-		return nil, err
-	}
-	if err := reindexPerson(tx, id); err != nil {
+	sets = append(sets, "updated_at = "+args.add(now()))
+	if _, err := tx.ExecContext(ctx, `UPDATE persons SET `+strings.Join(sets, ", ")+` WHERE seq = `+args.add(seq), args.values...); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return s.GetPerson(id)
+	return personDetail(ctx, s.db, ownership.OwnedBy(owner), seq)
 }
 
 // DeletePerson stamps deleted_at. Nothing is removed: identities stay attached
 // (so a deleted person's handles are still theirs), and restore undoes it.
-func (s *Store) DeletePerson(id string) (*PersonDetail, error) {
-	return s.setDeleted(id, true)
+func (s *Store) DeletePerson(ctx context.Context, scope ownership.Scope, id string) (*PersonDetail, error) {
+	return s.setDeleted(ctx, scope, id, true)
 }
 
 // RestorePerson clears deleted_at.
-func (s *Store) RestorePerson(id string) (*PersonDetail, error) {
-	return s.setDeleted(id, false)
+func (s *Store) RestorePerson(ctx context.Context, scope ownership.Scope, id string) (*PersonDetail, error) {
+	return s.setDeleted(ctx, scope, id, false)
 }
 
-func (s *Store) setDeleted(id string, deleted bool) (*PersonDetail, error) {
-	tx, err := s.db.Begin()
+func (s *Store) setDeleted(ctx context.Context, scope ownership.Scope, id string, deleted bool) (*PersonDetail, error) {
+	tx, seq, owner, err := s.beginForPerson(ctx, scope, id)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-	person, err := getPerson(tx, id)
+	person, err := getPerson(ctx, tx, scope, seq)
 	if err != nil {
 		return nil, err
 	}
 	if deleted && person.DeletedAt != 0 {
-		return nil, fmt.Errorf("%w: person %s is already deleted", ErrConflict, id)
+		return nil, fmt.Errorf("%w: person %s is already deleted", ErrConflict, person.ID)
 	}
 	if !deleted && person.DeletedAt == 0 {
-		return nil, fmt.Errorf("%w: person %s is not deleted", ErrConflict, id)
+		return nil, fmt.Errorf("%w: person %s is not deleted", ErrConflict, person.ID)
 	}
 	action, deletedAt := RevisionActionRestore, int64(0)
 	if deleted {
 		action, deletedAt = RevisionActionDelete, now()
 	}
-	if err := recordRevision(tx, id, action); err != nil {
+	if err := recordRevision(ctx, tx, seq, action); err != nil {
 		return nil, err
 	}
-	if _, err := tx.Exec(`UPDATE persons SET deleted_at = ?, updated_at = ? WHERE id = ?`, deletedAt, now(), id); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE persons SET deleted_at = $1, updated_at = $2 WHERE seq = $3`, deletedAt, now(), seq); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return s.GetPerson(id)
+	return personDetail(ctx, s.db, ownership.OwnedBy(owner), seq)
 }

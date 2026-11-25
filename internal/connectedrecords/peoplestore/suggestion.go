@@ -1,12 +1,15 @@
 package peoplestore
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 )
 
 // SuggestionFilter selects suggestions. An empty Status lists every status;
@@ -22,11 +25,14 @@ type SuggestionFilter struct {
 
 func scanSuggestion(scan func(...any) error) (*Suggestion, error) {
 	var suggestion Suggestion
+	var seq int64
+	var personSeq sql.NullInt64
 	var payload string
-	if err := scan(&suggestion.ID, &suggestion.Source, &payload, &suggestion.Status, &suggestion.PersonID, &suggestion.CreatedAt, &suggestion.DecidedAt,
+	if err := scan(&seq, &suggestion.OwnerPrincipalID, &suggestion.Source, &payload, &suggestion.Status, &personSeq, &suggestion.CreatedAt, &suggestion.DecidedAt,
 		&suggestion.Activity.LastActivityAt, &suggestion.Activity.MessageCount, &suggestion.Activity.DirectChat); err != nil {
 		return nil, err
 	}
+	suggestion.ID, suggestion.PersonID = formatID(suggestionIDPrefix, seq), formatOptionalPersonID(personSeq)
 	if err := json.Unmarshal([]byte(payload), &suggestion.Payload); err != nil {
 		return nil, fmt.Errorf("suggestion %s: payload: %w", suggestion.ID, err)
 	}
@@ -34,50 +40,65 @@ func scanSuggestion(scan func(...any) error) (*Suggestion, error) {
 }
 
 // suggestionSelect reads suggestions with their activity summed over their
-// handles: the newest activity, the total messages, and whether any handle has
-// a one-to-one chat. A handle no source reported adds nothing.
-const suggestionSelect = `SELECT s.id, s.source, s.payload, s.status, s.person_id, s.created_at, s.decided_at,
-	COALESCE(MAX(a.last_activity_at), 0), COALESCE(SUM(a.message_count), 0), COALESCE(MAX(a.direct_chat), 0)
+// handles, as their owner's sources reported it: the newest activity, the
+// total messages, and whether any handle has a one-to-one chat. A handle no
+// source reported adds nothing.
+const suggestionSelect = `SELECT s.seq, s.owner_principal_id, s.source, s.payload, s.status, s.person_seq, s.created_at, s.decided_at,
+	COALESCE(MAX(a.last_activity_at), 0), COALESCE(SUM(a.message_count), 0)::bigint, COALESCE(bool_or(a.direct_chat), false)
 	FROM suggestions s
-	LEFT JOIN suggestion_handles si ON si.suggestion_id = s.id
-	LEFT JOIN handle_activity a ON a.kind = si.kind AND a.value = si.value`
+	LEFT JOIN suggestion_handles si ON si.suggestion_seq = s.seq
+	LEFT JOIN handle_activity a ON a.owner_principal_id = s.owner_principal_id AND a.kind = si.kind AND a.value = si.value`
 
 // suggestionOrders is the ORDER BY for each of SuggestionSorts.
 var suggestionOrders = map[string]string{
 	SuggestionSortCreated:  `s.seq`,
-	SuggestionSortActivity: `COALESCE(MAX(a.direct_chat), 0) DESC, COALESCE(MAX(a.last_activity_at), 0) DESC, COALESCE(SUM(a.message_count), 0) DESC, s.seq`,
+	SuggestionSortActivity: `COALESCE(bool_or(a.direct_chat), false) DESC, COALESCE(MAX(a.last_activity_at), 0) DESC, COALESCE(SUM(a.message_count), 0) DESC, s.seq`,
 }
 
-func getSuggestion(q queryer, id string) (*Suggestion, error) {
-	suggestion, err := scanSuggestion(q.QueryRow(suggestionSelect+` WHERE s.id = ? GROUP BY s.id`, id).Scan)
+func getSuggestion(ctx context.Context, q queryer, scope ownership.Scope, seq int64) (*Suggestion, error) {
+	var args arguments
+	query := suggestionSelect + ` WHERE s.seq = ` + args.add(seq) + ` AND ` + args.within(scope, "s.owner_principal_id") + ` GROUP BY s.seq`
+	suggestion, err := scanSuggestion(q.QueryRowContext(ctx, query, args.values...).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("%w: suggestion %s", ErrNotFound, id)
+		return nil, fmt.Errorf("%w: suggestion %s", ErrNotFound, formatID(suggestionIDPrefix, seq))
 	}
 	return suggestion, err
 }
 
-// GetSuggestion returns one suggestion.
-func (s *Store) GetSuggestion(id string) (*Suggestion, error) { return getSuggestion(s.db, id) }
+// GetSuggestion returns one suggestion in scope.
+func (s *Store) GetSuggestion(ctx context.Context, scope ownership.Scope, id string) (*Suggestion, error) {
+	if err := checkScope(scope); err != nil {
+		return nil, err
+	}
+	seq, err := numberOf(suggestionIDPrefix, id)
+	if err != nil {
+		return nil, err
+	}
+	return getSuggestion(ctx, s.db, scope, seq)
+}
 
-// ListSuggestions returns suggestions in filter.Sort order, oldest first by
-// default.
-func (s *Store) ListSuggestions(filter SuggestionFilter) ([]Suggestion, error) {
-	query := suggestionSelect
-	var where []string
-	var args []any
+// asciiLower lowers only A to Z, as SQLite's lower() did, so q ignores ASCII
+// case and nothing else.
+func asciiLower(expression string) string {
+	return `translate(` + expression + `, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')`
+}
+
+// ListSuggestions returns the suggestions in scope in filter.Sort order,
+// oldest first by default.
+func (s *Store) ListSuggestions(ctx context.Context, scope ownership.Scope, filter SuggestionFilter) ([]Suggestion, error) {
+	if err := checkScope(scope); err != nil {
+		return nil, err
+	}
+	var args arguments
+	where := []string{args.within(scope, "s.owner_principal_id")}
 	if filter.Status != "" {
 		if !contains(SuggestionStatuses, filter.Status) {
 			return nil, fmt.Errorf("%w: unknown status %q: use one of %s", ErrInvalid, filter.Status, strings.Join(SuggestionStatuses, ", "))
 		}
-		where = append(where, `s.status = ?`)
-		args = append(args, filter.Status)
+		where = append(where, `s.status = `+args.add(filter.Status))
 	}
 	if text := strings.TrimSpace(filter.Query); text != "" {
-		where = append(where, `instr(lower(json_extract(s.payload, '$.display_name')), lower(?)) > 0`)
-		args = append(args, text)
-	}
-	if len(where) > 0 {
-		query += ` WHERE ` + strings.Join(where, ` AND `)
+		where = append(where, `strpos(`+asciiLower(`COALESCE(s.payload::jsonb ->> 'display_name', '')`)+`, `+asciiLower(args.add(text)+`::text`)+`) > 0`)
 	}
 	sortName := filter.Sort
 	if sortName == "" {
@@ -97,8 +118,8 @@ func (s *Store) ListSuggestions(filter SuggestionFilter) ([]Suggestion, error) {
 	if limit > 1000 {
 		return nil, fmt.Errorf("%w: limit %d is over 1000", ErrInvalid, limit)
 	}
-	query += fmt.Sprintf(` GROUP BY s.id ORDER BY %s LIMIT %d OFFSET %d`, order, limit, filter.Offset)
-	rows, err := s.db.Query(query, args...)
+	query := suggestionSelect + ` WHERE ` + strings.Join(where, ` AND `) + fmt.Sprintf(` GROUP BY s.seq ORDER BY %s LIMIT %d OFFSET %d`, order, limit, filter.Offset)
+	rows, err := s.db.QueryContext(ctx, query, args.values...)
 	if err != nil {
 		return nil, err
 	}
@@ -114,16 +135,19 @@ func (s *Store) ListSuggestions(filter SuggestionFilter) ([]Suggestion, error) {
 	return suggestions, rows.Err()
 }
 
-// ProposeSuggestion records a source's guess that some handles are one
-// person. Handles already attached to a person are left out, listed in
-// Skipped, and their owners become matched_person_ids: the person accepting
-// would extend. An importer source also leaves out every handle already in any
-// suggestion whatever its status, so it never proposes a handle twice and a
-// rejected guess is not proposed again. A reviewer source (agent) leaves out
-// only handles in its own suggestions that still wait, must give a reason, and
-// gets a 409 for a handle the operator refused for a matched person. When no
-// handle is left, nothing is created.
-func (s *Store) ProposeSuggestion(input SuggestionInput) (*SuggestionProposal, error) {
+// ProposeSuggestion records a source's guess, kept by owner, that some handles
+// are one person. Handles already attached to one of owner's persons are left
+// out, listed in Skipped, and their persons become matched_person_ids: the
+// person accepting would extend. An importer source also leaves out every
+// handle already in any of owner's suggestions whatever its status, so it
+// never proposes a handle twice and a rejected guess is not proposed again. A
+// reviewer source (agent) leaves out only handles in its own suggestions that
+// still wait, must give a reason, and gets a 409 for a handle the operator
+// refused for a matched person. When no handle is left, nothing is created.
+func (s *Store) ProposeSuggestion(ctx context.Context, owner string, input SuggestionInput) (*SuggestionProposal, error) {
+	if err := checkOwner(owner); err != nil {
+		return nil, err
+	}
 	source := strings.TrimSpace(input.Source)
 	if !contains(SuggestionSources, source) {
 		return nil, fmt.Errorf("%w: unknown source %q: use one of %s", ErrInvalid, input.Source, strings.Join(SuggestionSources, ", "))
@@ -154,7 +178,7 @@ func (s *Store) ProposeSuggestion(input SuggestionInput) (*SuggestionProposal, e
 		}
 	}
 
-	tx, err := s.db.Begin()
+	tx, err := s.lockedTransaction(ctx, owner)
 	if err != nil {
 		return nil, err
 	}
@@ -163,21 +187,23 @@ func (s *Store) ProposeSuggestion(input SuggestionInput) (*SuggestionProposal, e
 	var kept []IdentityInput
 	matched := map[string]bool{}
 	for _, identity := range identities {
-		owner, err := identityOwner(tx, identity.Kind, identity.Value)
+		holder, err := identityHolder(ctx, tx, owner, identity.Kind, identity.Value)
 		if err != nil {
 			return nil, err
 		}
-		if owner != nil {
-			matched[owner.PersonID] = true
+		if holder != nil {
+			matched[holder.PersonID] = true
 			proposal.Skipped = append(proposal.Skipped, identity)
 			continue
 		}
-		var suggestedIn string
+		var suggestedIn int64
 		if importer {
-			err = tx.QueryRow(`SELECT suggestion_id FROM suggestion_handles WHERE kind = ? AND value = ? LIMIT 1`, identity.Kind, identity.Value).Scan(&suggestedIn)
+			err = tx.QueryRowContext(ctx, `SELECT suggestion_seq FROM suggestion_handles WHERE owner_principal_id = $1 AND kind = $2 AND value = $3 LIMIT 1`,
+				owner, identity.Kind, identity.Value).Scan(&suggestedIn)
 		} else {
-			err = tx.QueryRow(`SELECT s.id FROM suggestion_handles h JOIN suggestions s ON s.id = h.suggestion_id
-				WHERE h.kind = ? AND h.value = ? AND s.source = ? AND s.status = ? LIMIT 1`, identity.Kind, identity.Value, source, SuggestionStatusProposed).Scan(&suggestedIn)
+			err = tx.QueryRowContext(ctx, `SELECT s.seq FROM suggestion_handles h JOIN suggestions s ON s.seq = h.suggestion_seq
+				WHERE h.owner_principal_id = $1 AND h.kind = $2 AND h.value = $3 AND s.source = $4 AND s.status = $5 LIMIT 1`,
+				owner, identity.Kind, identity.Value, source, SuggestionStatusProposed).Scan(&suggestedIn)
 		}
 		if err == nil {
 			proposal.Skipped = append(proposal.Skipped, identity)
@@ -199,7 +225,7 @@ func (s *Store) ProposeSuggestion(input SuggestionInput) (*SuggestionProposal, e
 	if !importer {
 		for _, identity := range kept {
 			for _, personID := range matchedPersonIDs {
-				refusal, err := refusalOf(tx, identity.Kind, identity.Value, personID)
+				refusal, err := refusalOf(ctx, tx, identity.Kind, identity.Value, mustNumber(personIDPrefix, personID))
 				if err != nil {
 					return nil, err
 				}
@@ -213,83 +239,105 @@ func (s *Store) ProposeSuggestion(input SuggestionInput) (*SuggestionProposal, e
 	if err != nil {
 		return nil, err
 	}
-	seq, err := nextSeq(tx, "suggestions")
-	if err != nil {
-		return nil, err
-	}
-	id := formatID(suggestionIDPrefix, seq)
-	if _, err := tx.Exec(`INSERT INTO suggestions (id, seq, source, payload, status, created_at) VALUES (?,?,?,?,?,?)`,
-		id, seq, source, string(payload), SuggestionStatusProposed, now()); err != nil {
+	var seq int64
+	if err := tx.QueryRowContext(ctx, `INSERT INTO suggestions (owner_principal_id, source, payload, status, created_at) VALUES ($1, $2, $3, $4, $5) RETURNING seq`,
+		owner, source, string(payload), SuggestionStatusProposed, now()).Scan(&seq); err != nil {
 		return nil, err
 	}
 	for _, identity := range kept {
-		if _, err := tx.Exec(`INSERT INTO suggestion_handles (suggestion_id, kind, value) VALUES (?,?,?)`, id, identity.Kind, identity.Value); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO suggestion_handles (owner_principal_id, suggestion_seq, kind, value) VALUES ($1, $2, $3, $4)`,
+			owner, seq, identity.Kind, identity.Value); err != nil {
 			return nil, err
 		}
 	}
-	if proposal.Suggestion, err = getSuggestion(tx, id); err != nil {
+	if proposal.Suggestion, err = getSuggestion(ctx, tx, ownership.OwnedBy(owner), seq); err != nil {
 		return nil, err
 	}
 	proposal.Created = true
 	return proposal, tx.Commit()
 }
 
-// AcceptSuggestion attaches the suggestion's handles to personID, or to a new
-// person named after the suggestion when personID is empty. Accepting is the
+// beginForSuggestion starts a write on an existing suggestion in scope, holding
+// its owner's lock.
+func (s *Store) beginForSuggestion(ctx context.Context, scope ownership.Scope, id string) (*sql.Tx, int64, string, error) {
+	if err := checkScope(scope); err != nil {
+		return nil, 0, "", err
+	}
+	seq, err := numberOf(suggestionIDPrefix, id)
+	if err != nil {
+		return nil, 0, "", err
+	}
+	owner, err := ownerOfRow(ctx, s.db, scope, "suggestions", seq, suggestionIDPrefix)
+	if err != nil {
+		return nil, 0, "", err
+	}
+	tx, err := s.lockedTransaction(ctx, owner)
+	if err != nil {
+		return nil, 0, "", err
+	}
+	return tx, seq, owner, nil
+}
+
+// AcceptSuggestion attaches the suggestion's handles to personID, which must
+// be a person of the suggestion's owner, or to a new person of that owner
+// named after the suggestion when personID is empty. Accepting is the
 // operator's act, so each handle is linked by the operator, which overrides a
 // refusal. It is all or nothing: a handle that has since gone to another
 // person is a 409 and nothing is written.
-func (s *Store) AcceptSuggestion(id, personID string) (*AcceptedSuggestion, error) {
+func (s *Store) AcceptSuggestion(ctx context.Context, scope ownership.Scope, id, personID string) (*AcceptedSuggestion, error) {
 	personID = strings.TrimSpace(personID)
-	tx, err := s.db.Begin()
+	tx, seq, owner, err := s.beginForSuggestion(ctx, scope, id)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-	suggestion, err := getSuggestion(tx, id)
+	suggestion, err := getSuggestion(ctx, tx, scope, seq)
 	if err != nil {
 		return nil, err
 	}
 	if suggestion.Status != SuggestionStatusProposed {
 		return nil, fmt.Errorf("%w: suggestion %s is already %s", ErrConflict, id, suggestion.Status)
 	}
+	var personSeq int64
 	if personID == "" {
-		if personID, err = insertPerson(tx, suggestion.Payload.DisplayName, "", "", []string{}, ""); err != nil {
+		if personSeq, err = insertPerson(ctx, tx, owner, suggestion.Payload.DisplayName, "", "", []string{}, ""); err != nil {
 			return nil, err
 		}
-	} else if _, err := getLivePerson(tx, personID); err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return nil, fmt.Errorf("%w: person_id: %v", ErrInvalid, err)
+	} else {
+		person, err := otherLivePerson(ctx, tx, scope, owner, "person_id", personID)
+		if err != nil {
+			return nil, err
 		}
-		return nil, err
+		personSeq = mustNumber(personIDPrefix, person.ID)
 	}
 	operator, err := linkSourceFor(LinkSourceOperator, "linked_by")
 	if err != nil {
 		return nil, err
 	}
-	reason := "accepted " + id
+	reason := "accepted " + suggestion.ID
 	if suggestion.Payload.Reason != "" {
 		reason += ": " + suggestion.Payload.Reason
 	}
 	linkedAt := now()
 	for _, identity := range suggestion.Payload.Identities {
 		link := IdentityLinkInput{Kind: identity.Kind, Value: identity.Value, Label: identity.Label, LinkedBy: operator.Source, Reason: reason, LinkedAt: linkedAt}
-		if _, _, err := addIdentity(tx, personID, link, operator, id); err != nil {
+		if _, _, err := addIdentity(ctx, tx, owner, personSeq, link, operator, seq); err != nil {
 			return nil, err
 		}
 	}
-	if _, err := tx.Exec(`UPDATE suggestions SET status = ?, person_id = ?, decided_at = ? WHERE id = ?`,
-		SuggestionStatusAccepted, personID, now(), id); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE suggestions SET status = $1, person_seq = $2, decided_at = $3 WHERE seq = $4`,
+		SuggestionStatusAccepted, personSeq, now(), seq); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	accepted, err := s.GetSuggestion(id)
+	ownerScope := ownership.OwnedBy(owner)
+	accepted, err := getSuggestion(ctx, s.db, ownerScope, seq)
 	if err != nil {
 		return nil, err
 	}
-	person, err := s.GetPerson(personID)
+	person, err := personDetail(ctx, s.db, ownerScope, personSeq)
 	if err != nil {
 		return nil, err
 	}
@@ -300,25 +348,29 @@ func (s *Store) AcceptSuggestion(id, personID string) (*AcceptedSuggestion, erro
 // operator's act. Its handles stay in suggestion_handles, so no importer
 // proposes them again, and each is refused for every matched person, so no
 // automatic source attaches it to them.
-func (s *Store) RejectSuggestion(id string) (*Suggestion, error) {
-	tx, err := s.db.Begin()
+func (s *Store) RejectSuggestion(ctx context.Context, scope ownership.Scope, id string) (*Suggestion, error) {
+	tx, seq, owner, err := s.beginForSuggestion(ctx, scope, id)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-	suggestion, err := getSuggestion(tx, id)
+	suggestion, err := getSuggestion(ctx, tx, scope, seq)
 	if err != nil {
 		return nil, err
 	}
 	if suggestion.Status != SuggestionStatusProposed {
 		return nil, fmt.Errorf("%w: suggestion %s is already %s", ErrConflict, id, suggestion.Status)
 	}
-	if _, err := tx.Exec(`UPDATE suggestions SET status = ?, decided_at = ? WHERE id = ?`, SuggestionStatusRejected, now(), id); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE suggestions SET status = $1, decided_at = $2 WHERE seq = $3`, SuggestionStatusRejected, now(), seq); err != nil {
 		return nil, err
 	}
 	for _, identity := range suggestion.Payload.Identities {
 		for _, personID := range suggestion.Payload.MatchedPersonIDs {
-			if err := insertRefusal(tx, identity.Kind, identity.Value, personID, LinkSourceOperator, "rejected "+id); err != nil {
+			personSeq, err := numberOf(personIDPrefix, personID)
+			if err != nil {
+				return nil, fmt.Errorf("suggestion %s matches %q, which is not a person id: %w", suggestion.ID, personID, err)
+			}
+			if err := insertRefusal(ctx, tx, owner, identity.Kind, identity.Value, personSeq, LinkSourceOperator, "rejected "+suggestion.ID); err != nil {
 				return nil, err
 			}
 		}
@@ -326,5 +378,5 @@ func (s *Store) RejectSuggestion(id string) (*Suggestion, error) {
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return s.GetSuggestion(id)
+	return getSuggestion(ctx, s.db, ownership.OwnedBy(owner), seq)
 }

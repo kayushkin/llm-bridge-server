@@ -1,6 +1,7 @@
 package peoplestore
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,22 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
+	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
+)
+
+// The made-up owners of the tests' records.
+const (
+	testOwner  = "principal_000101"
+	otherOwner = "principal_000102"
+)
+
+var (
+	// testContext is the context every store call in these tests runs under.
+	testContext = context.Background()
+	// testScope reaches testOwner's records.
+	testScope = ownership.OwnedBy(testOwner)
 )
 
 // fakePrincipals answers CheckPrincipal from a set, or with an outage.
@@ -18,7 +35,7 @@ type fakePrincipals struct {
 	down  bool
 }
 
-func (fake *fakePrincipals) CheckPrincipal(id string) error {
+func (fake *fakePrincipals) CheckPrincipal(ctx context.Context, id string) error {
 	if fake.down {
 		return fmt.Errorf("%w: connection refused", ErrPrincipalStoreUnavailable)
 	}
@@ -28,20 +45,22 @@ func (fake *fakePrincipals) CheckPrincipal(id string) error {
 	return nil
 }
 
+// openTestStore gives the test a store on a Postgres database of its own,
+// made from a template with the module migrated (postgresstorage/postgrestest).
 func openTestStore(t *testing.T) (*Store, *fakePrincipals) {
 	t.Helper()
-	principals := &fakePrincipals{known: map[string]bool{"principal_000001": true}}
-	store, err := Open(t.TempDir(), principals)
+	module, err := Module()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("module: %v", err)
 	}
-	t.Cleanup(func() { store.Close() })
-	return store, principals
+	database := postgrestest.NewDatabase(t, module)
+	principals := &fakePrincipals{known: map[string]bool{"principal_000001": true}}
+	return New(database.Open(module), principals), principals
 }
 
 func mustCreate(t *testing.T, store *Store, name string) *PersonDetail {
 	t.Helper()
-	person, err := store.CreatePerson(PersonInput{DisplayName: name})
+	person, err := store.CreatePerson(testContext, testOwner, PersonInput{DisplayName: name})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,15 +74,15 @@ func TestIdsAreZeroPaddedSequencesWithTheirPrefix(t *testing.T) {
 	if first.ID != "person_000001" || second.ID != "person_000002" {
 		t.Errorf("ids = %s, %s", first.ID, second.ID)
 	}
-	identity, _, err := store.AddIdentity(first.ID, IdentityLinkInput{LinkedBy: "operator", Kind: "email", Value: "alice@example.com"})
+	identity, _, err := store.AddIdentity(testContext, testScope, first.ID, IdentityLinkInput{LinkedBy: "operator", Kind: "email", Value: "alice@example.com"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	relationship, err := store.AddRelationship(first.ID, RelationshipInput{PersonID: second.ID, Kind: "friend"})
+	relationship, err := store.AddRelationship(testContext, testScope, first.ID, RelationshipInput{PersonID: second.ID, Kind: "friend"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	revisions, err := store.Revisions(first.ID)
+	revisions, err := store.Revisions(testContext, testScope, first.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,47 +100,47 @@ func TestIdentitiesAreNormalizedAndBelongToOnePerson(t *testing.T) {
 	alice := mustCreate(t, store, "Alice")
 	bob := mustCreate(t, store, "Bob")
 
-	email, created, err := store.AddIdentity(alice.ID, IdentityLinkInput{LinkedBy: "operator", Kind: " Email ", Value: "  Alice@Example.COM ", Label: " work "})
+	email, created, err := store.AddIdentity(testContext, testScope, alice.ID, IdentityLinkInput{LinkedBy: "operator", Kind: " Email ", Value: "  Alice@Example.COM ", Label: " work "})
 	if err != nil || !created {
 		t.Fatalf("add = %v created=%v", err, created)
 	}
 	if email.Kind != "email" || email.Value != "alice@example.com" || email.Label != "work" {
 		t.Errorf("stored %+v", email)
 	}
-	phone, _, err := store.AddIdentity(alice.ID, IdentityLinkInput{LinkedBy: "operator", Kind: "phone", Value: "+1 (202) 555-0100"})
+	phone, _, err := store.AddIdentity(testContext, testScope, alice.ID, IdentityLinkInput{LinkedBy: "operator", Kind: "phone", Value: "+1 (202) 555-0100"})
 	if err != nil || phone.Value != "+12025550100" {
 		t.Fatalf("phone = %+v, %v", phone, err)
 	}
-	if _, _, err := store.AddIdentity(alice.ID, IdentityLinkInput{LinkedBy: "operator", Kind: "phone", Value: "202-555-0100"}); !errors.Is(err, ErrInvalid) {
+	if _, _, err := store.AddIdentity(testContext, testScope, alice.ID, IdentityLinkInput{LinkedBy: "operator", Kind: "phone", Value: "202-555-0100"}); !errors.Is(err, ErrInvalid) {
 		t.Errorf("a phone with no country code = %v, want a 400", err)
 	}
-	if _, _, err := store.AddIdentity(alice.ID, IdentityLinkInput{LinkedBy: "operator", Kind: "fax", Value: "1"}); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "matrix_user") {
+	if _, _, err := store.AddIdentity(testContext, testScope, alice.ID, IdentityLinkInput{LinkedBy: "operator", Kind: "fax", Value: "1"}); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "matrix_user") {
 		t.Errorf("an unknown kind = %v, want a 400 naming the kinds", err)
 	}
 
 	// The same handle again on the same person is not a second row.
-	again, created, err := store.AddIdentity(alice.ID, IdentityLinkInput{LinkedBy: "operator", Kind: "email", Value: "ALICE@example.com"})
+	again, created, err := store.AddIdentity(testContext, testScope, alice.ID, IdentityLinkInput{LinkedBy: "operator", Kind: "email", Value: "ALICE@example.com"})
 	if err != nil || created || again.ID != email.ID {
 		t.Errorf("re-adding = %+v created=%v err=%v", again, created, err)
 	}
 	// Another spelling of the handle on another person is a conflict naming the owner.
-	_, _, err = store.AddIdentity(bob.ID, IdentityLinkInput{LinkedBy: "operator", Kind: "email", Value: "alice@EXAMPLE.com"})
+	_, _, err = store.AddIdentity(testContext, testScope, bob.ID, IdentityLinkInput{LinkedBy: "operator", Kind: "email", Value: "alice@EXAMPLE.com"})
 	if !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), alice.ID) || !strings.Contains(err.Error(), "Alice") {
 		t.Errorf("conflicting add = %v, want a 409 naming %s", err, alice.ID)
 	}
 
-	resolved, err := store.ResolveIdentity("email", " ALICE@example.com")
+	resolved, err := store.ResolveIdentity(testContext, testScope, "email", " ALICE@example.com")
 	if err != nil || resolved.Person.ID != alice.ID || resolved.Identity.ID != email.ID {
 		t.Errorf("resolve = %+v, %v", resolved, err)
 	}
-	if _, err := store.ResolveIdentity("email", "nobody@example.com"); !errors.Is(err, ErrNotFound) {
+	if _, err := store.ResolveIdentity(testContext, testScope, "email", "nobody@example.com"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("resolving an unknown handle = %v, want a 404", err)
 	}
 
-	if err := store.RemoveIdentity(email.ID); err != nil {
+	if err := store.RemoveIdentity(testContext, testScope, email.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.AddIdentity(bob.ID, IdentityLinkInput{LinkedBy: "operator", Kind: "email", Value: "alice@example.com"}); err != nil {
+	if _, _, err := store.AddIdentity(testContext, testScope, bob.ID, IdentityLinkInput{LinkedBy: "operator", Kind: "email", Value: "alice@example.com"}); err != nil {
 		t.Errorf("a removed handle could not move to another person: %v", err)
 	}
 }
@@ -129,39 +148,39 @@ func TestIdentitiesAreNormalizedAndBelongToOnePerson(t *testing.T) {
 func TestDeleteIsSoftAndRestoreUndoesItWithRevisions(t *testing.T) {
 	store, _ := openTestStore(t)
 	alice := mustCreate(t, store, "Alice")
-	if _, _, err := store.AddIdentity(alice.ID, IdentityLinkInput{LinkedBy: "operator", Kind: "email", Value: "alice@example.com"}); err != nil {
+	if _, _, err := store.AddIdentity(testContext, testScope, alice.ID, IdentityLinkInput{LinkedBy: "operator", Kind: "email", Value: "alice@example.com"}); err != nil {
 		t.Fatal(err)
 	}
 	newName := "Alice S."
-	if _, err := store.PatchPerson(alice.ID, PersonPatch{DisplayName: &newName}); err != nil {
+	if _, err := store.PatchPerson(testContext, testScope, alice.ID, PersonPatch{DisplayName: &newName}); err != nil {
 		t.Fatal(err)
 	}
-	deleted, err := store.DeletePerson(alice.ID)
+	deleted, err := store.DeletePerson(testContext, testScope, alice.ID)
 	if err != nil || deleted.DeletedAt == 0 {
 		t.Fatalf("delete = %+v, %v", deleted, err)
 	}
 	// Still readable by id, gone from the list.
-	if got, err := store.GetPerson(alice.ID); err != nil || got.DeletedAt == 0 || len(got.Identities) != 1 {
+	if got, err := store.GetPerson(testContext, testScope, alice.ID); err != nil || got.DeletedAt == 0 || len(got.Identities) != 1 {
 		t.Errorf("get after delete = %+v, %v", got, err)
 	}
-	if listed, _ := store.ListPersons(PersonFilter{}); len(listed) != 0 {
+	if listed, _ := store.ListPersons(testContext, testScope, PersonFilter{}); len(listed) != 0 {
 		t.Errorf("a deleted person is listed: %+v", listed)
 	}
-	if listed, _ := store.ListPersons(PersonFilter{IncludeDeleted: true}); len(listed) != 1 {
+	if listed, _ := store.ListPersons(testContext, testScope, PersonFilter{IncludeDeleted: true}); len(listed) != 1 {
 		t.Errorf("include_deleted listed %d", len(listed))
 	}
-	if _, err := store.PatchPerson(alice.ID, PersonPatch{DisplayName: &newName}); !errors.Is(err, ErrConflict) {
+	if _, err := store.PatchPerson(testContext, testScope, alice.ID, PersonPatch{DisplayName: &newName}); !errors.Is(err, ErrConflict) {
 		t.Errorf("patching a deleted person = %v, want a 409", err)
 	}
-	if _, err := store.DeletePerson(alice.ID); !errors.Is(err, ErrConflict) {
+	if _, err := store.DeletePerson(testContext, testScope, alice.ID); !errors.Is(err, ErrConflict) {
 		t.Errorf("deleting twice = %v, want a 409", err)
 	}
-	restored, err := store.RestorePerson(alice.ID)
+	restored, err := store.RestorePerson(testContext, testScope, alice.ID)
 	if err != nil || restored.DeletedAt != 0 || restored.DisplayName != "Alice S." {
 		t.Fatalf("restore = %+v, %v", restored, err)
 	}
 
-	revisions, err := store.Revisions(alice.ID)
+	revisions, err := store.Revisions(testContext, testScope, alice.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,15 +211,15 @@ func TestRelationshipsListFromBothSidesWithTheInverseKind(t *testing.T) {
 	mother := mustCreate(t, store, "Mother")
 	son := mustCreate(t, store, "Son")
 	// "Mother is Son's parent", stated on Son.
-	relationship, err := store.AddRelationship(son.ID, RelationshipInput{PersonID: mother.ID, Kind: "parent", Note: " since birth "})
+	relationship, err := store.AddRelationship(testContext, testScope, son.ID, RelationshipInput{PersonID: mother.ID, Kind: "parent", Note: " since birth "})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if relationship.FromPersonID != mother.ID || relationship.ToPersonID != son.ID || relationship.Kind != "parent" || relationship.Note != "since birth" {
 		t.Errorf("stored %+v", relationship)
 	}
-	sonView, _ := store.GetPerson(son.ID)
-	motherView, _ := store.GetPerson(mother.ID)
+	sonView, _ := store.GetPerson(testContext, testScope, son.ID)
+	motherView, _ := store.GetPerson(testContext, testScope, mother.ID)
 	if len(sonView.Relationships) != 1 || sonView.Relationships[0].PersonID != mother.ID || sonView.Relationships[0].Kind != "parent" || sonView.Relationships[0].PersonDisplayName != "Mother" {
 		t.Errorf("son sees %+v", sonView.Relationships)
 	}
@@ -208,19 +227,19 @@ func TestRelationshipsListFromBothSidesWithTheInverseKind(t *testing.T) {
 		t.Errorf("mother sees %+v", motherView.Relationships)
 	}
 	// The same fact stated from the other side is not a second row.
-	if _, err := store.AddRelationship(mother.ID, RelationshipInput{PersonID: son.ID, Kind: "child"}); !errors.Is(err, ErrConflict) {
+	if _, err := store.AddRelationship(testContext, testScope, mother.ID, RelationshipInput{PersonID: son.ID, Kind: "child"}); !errors.Is(err, ErrConflict) {
 		t.Errorf("the mirror = %v, want a 409", err)
 	}
-	if _, err := store.AddRelationship(son.ID, RelationshipInput{PersonID: son.ID, Kind: "friend"}); !errors.Is(err, ErrInvalid) {
+	if _, err := store.AddRelationship(testContext, testScope, son.ID, RelationshipInput{PersonID: son.ID, Kind: "friend"}); !errors.Is(err, ErrInvalid) {
 		t.Errorf("a relationship with oneself = %v, want a 400", err)
 	}
-	if _, err := store.AddRelationship(son.ID, RelationshipInput{PersonID: mother.ID, Kind: "nemesis"}); !errors.Is(err, ErrInvalid) {
+	if _, err := store.AddRelationship(testContext, testScope, son.ID, RelationshipInput{PersonID: mother.ID, Kind: "nemesis"}); !errors.Is(err, ErrInvalid) {
 		t.Errorf("an unknown kind = %v, want a 400", err)
 	}
-	if err := store.RemoveRelationship(relationship.ID); err != nil {
+	if err := store.RemoveRelationship(testContext, testScope, relationship.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RemoveRelationship(relationship.ID); !errors.Is(err, ErrNotFound) {
+	if err := store.RemoveRelationship(testContext, testScope, relationship.ID); !errors.Is(err, ErrNotFound) {
 		t.Errorf("removing twice = %v", err)
 	}
 }
@@ -239,68 +258,68 @@ func TestSuggestionsProposeOnlyNewHandlesAndAttachOnlyOnAccept(t *testing.T) {
 	telegram := IdentityInput{Kind: "matrix_user", Value: "@telegram_1:chat.example.com", Label: "telegram"}
 	whatsapp := IdentityInput{Kind: "matrix_user", Value: "@whatsapp_2:chat.example.com", Label: "whatsapp"}
 
-	proposal, err := store.ProposeSuggestion(SuggestionInput{Source: "multichat", DisplayName: "Carol", Identities: []IdentityInput{telegram, whatsapp}})
+	proposal, err := store.ProposeSuggestion(testContext, testOwner, SuggestionInput{Source: "multichat", DisplayName: "Carol", Identities: []IdentityInput{telegram, whatsapp}})
 	if err != nil || !proposal.Created || proposal.Suggestion.ID != "suggestion_000001" || proposal.Suggestion.Status != "proposed" {
 		t.Fatalf("propose = %+v, %v", proposal, err)
 	}
 	// Nothing is attached until accepted.
-	if _, err := store.ResolveIdentity("matrix_user", telegram.Value); !errors.Is(err, ErrNotFound) {
+	if _, err := store.ResolveIdentity(testContext, testScope, "matrix_user", telegram.Value); !errors.Is(err, ErrNotFound) {
 		t.Errorf("a proposed handle resolves before accept: %v", err)
 	}
 	// A second run proposes nothing.
-	again, err := store.ProposeSuggestion(SuggestionInput{Source: "multichat", DisplayName: "Carol", Identities: []IdentityInput{telegram, whatsapp}})
+	again, err := store.ProposeSuggestion(testContext, testOwner, SuggestionInput{Source: "multichat", DisplayName: "Carol", Identities: []IdentityInput{telegram, whatsapp}})
 	if err != nil || again.Created || len(again.Skipped) != 2 {
 		t.Errorf("second propose = %+v, %v", again, err)
 	}
-	if _, err := store.ProposeSuggestion(SuggestionInput{Source: "gmail", DisplayName: "Carol", Identities: []IdentityInput{telegram}}); !errors.Is(err, ErrInvalid) {
+	if _, err := store.ProposeSuggestion(testContext, testOwner, SuggestionInput{Source: "gmail", DisplayName: "Carol", Identities: []IdentityInput{telegram}}); !errors.Is(err, ErrInvalid) {
 		t.Errorf("unknown source = %v", err)
 	}
 
-	accepted, err := store.AcceptSuggestion(proposal.Suggestion.ID, "")
+	accepted, err := store.AcceptSuggestion(testContext, testScope, proposal.Suggestion.ID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if accepted.Suggestion.Status != "accepted" || accepted.Suggestion.PersonID != accepted.Person.ID || accepted.Person.DisplayName != "Carol" || len(accepted.Person.Identities) != 2 {
 		t.Errorf("accepted = %+v", accepted)
 	}
-	if _, err := store.AcceptSuggestion(proposal.Suggestion.ID, ""); !errors.Is(err, ErrConflict) {
+	if _, err := store.AcceptSuggestion(testContext, testScope, proposal.Suggestion.ID, ""); !errors.Is(err, ErrConflict) {
 		t.Errorf("accepting twice = %v, want a 409", err)
 	}
 
 	// A group holding one attached handle and one new one proposes the new one
 	// and points at the person who owns the other.
 	signal := IdentityInput{Kind: "matrix_user", Value: "@signal_3:chat.example.com", Label: "signal"}
-	extension, err := store.ProposeSuggestion(SuggestionInput{Source: "multichat", DisplayName: "carol", Identities: []IdentityInput{telegram, signal}})
+	extension, err := store.ProposeSuggestion(testContext, testOwner, SuggestionInput{Source: "multichat", DisplayName: "carol", Identities: []IdentityInput{telegram, signal}})
 	if err != nil || !extension.Created || len(extension.Suggestion.Payload.Identities) != 1 || len(extension.Suggestion.Payload.MatchedPersonIDs) != 1 || extension.Suggestion.Payload.MatchedPersonIDs[0] != accepted.Person.ID {
 		t.Fatalf("extension = %+v, %v", extension, err)
 	}
-	extended, err := store.AcceptSuggestion(extension.Suggestion.ID, accepted.Person.ID)
+	extended, err := store.AcceptSuggestion(testContext, testScope, extension.Suggestion.ID, accepted.Person.ID)
 	if err != nil || len(extended.Person.Identities) != 3 {
 		t.Fatalf("accept onto an existing person = %+v, %v", extended, err)
 	}
 
 	// Rejected stays rejected, and its handles are not proposed again.
 	discord := IdentityInput{Kind: "matrix_user", Value: "@discord_4:chat.example.com", Label: "discord"}
-	guess, err := store.ProposeSuggestion(SuggestionInput{Source: "multichat", DisplayName: "Dave", Identities: []IdentityInput{discord}})
+	guess, err := store.ProposeSuggestion(testContext, testOwner, SuggestionInput{Source: "multichat", DisplayName: "Dave", Identities: []IdentityInput{discord}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	rejected, err := store.RejectSuggestion(guess.Suggestion.ID)
+	rejected, err := store.RejectSuggestion(testContext, testScope, guess.Suggestion.ID)
 	if err != nil || rejected.Status != "rejected" || rejected.DecidedAt == 0 {
 		t.Fatalf("reject = %+v, %v", rejected, err)
 	}
-	if _, err := store.AcceptSuggestion(guess.Suggestion.ID, ""); !errors.Is(err, ErrConflict) {
+	if _, err := store.AcceptSuggestion(testContext, testScope, guess.Suggestion.ID, ""); !errors.Is(err, ErrConflict) {
 		t.Errorf("accepting a rejected suggestion = %v", err)
 	}
-	if retry, _ := store.ProposeSuggestion(SuggestionInput{Source: "multichat", DisplayName: "Dave", Identities: []IdentityInput{discord}}); retry.Created {
+	if retry, _ := store.ProposeSuggestion(testContext, testOwner, SuggestionInput{Source: "multichat", DisplayName: "Dave", Identities: []IdentityInput{discord}}); retry.Created {
 		t.Errorf("a rejected handle was proposed again")
 	}
-	if _, err := store.ResolveIdentity("matrix_user", discord.Value); !errors.Is(err, ErrNotFound) {
+	if _, err := store.ResolveIdentity(testContext, testScope, "matrix_user", discord.Value); !errors.Is(err, ErrNotFound) {
 		t.Errorf("a rejected handle was attached: %v", err)
 	}
 
-	proposed, _ := store.ListSuggestions(SuggestionFilter{Status: "proposed"})
-	all, _ := store.ListSuggestions(SuggestionFilter{})
+	proposed, _ := store.ListSuggestions(testContext, testScope, SuggestionFilter{Status: "proposed"})
+	all, _ := store.ListSuggestions(testContext, testScope, SuggestionFilter{})
 	if len(proposed) != 0 || len(all) != 3 {
 		t.Errorf("proposed=%d all=%d", len(proposed), len(all))
 	}
@@ -310,20 +329,20 @@ func TestAHandleAttachedElsewhereLeavesAWaitingSuggestion(t *testing.T) {
 	store, _ := openTestStore(t)
 	first := IdentityInput{Kind: "email", Value: "a@example.com"}
 	second := IdentityInput{Kind: "email", Value: "b@example.com"}
-	proposal, err := store.ProposeSuggestion(SuggestionInput{Source: "multichat", DisplayName: "AB", Identities: []IdentityInput{first, second}})
+	proposal, err := store.ProposeSuggestion(testContext, testOwner, SuggestionInput{Source: "multichat", DisplayName: "AB", Identities: []IdentityInput{first, second}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	other := mustCreate(t, store, "Other")
-	if _, _, err := store.AddIdentity(other.ID, operatorLink(second)); err != nil {
+	if _, _, err := store.AddIdentity(testContext, testScope, other.ID, operatorLink(second)); err != nil {
 		t.Fatal(err)
 	}
-	waiting, _ := store.GetSuggestion(proposal.Suggestion.ID)
+	waiting, _ := store.GetSuggestion(testContext, testScope, proposal.Suggestion.ID)
 	if waiting.Status != "proposed" || len(waiting.Payload.Identities) != 1 || waiting.Payload.Identities[0].Value != first.Value ||
 		len(waiting.Payload.Covered) != 1 || waiting.Payload.Covered[0].PersonID != other.ID || waiting.Payload.MatchedPersonIDs[0] != other.ID {
 		t.Fatalf("after b went to Other = %+v", waiting.Payload)
 	}
-	accepted, err := store.AcceptSuggestion(proposal.Suggestion.ID, "")
+	accepted, err := store.AcceptSuggestion(testContext, testScope, proposal.Suggestion.ID, "")
 	if err != nil || len(accepted.Person.Identities) != 1 || accepted.Person.Identities[0].Value != first.Value {
 		t.Fatalf("accept = %+v, %v", accepted, err)
 	}
@@ -334,16 +353,16 @@ func TestAHandleAttachedElsewhereLeavesAWaitingSuggestion(t *testing.T) {
 	// A suggestion every handle of which went elsewhere is superseded, with
 	// the person when they all went to one.
 	third := IdentityInput{Kind: "email", Value: "c@example.com"}
-	lone, _ := store.ProposeSuggestion(SuggestionInput{Source: "multichat", DisplayName: "C", Identities: []IdentityInput{third}})
-	if _, _, err := store.AddIdentity(other.ID, IdentityLinkInput{Kind: "email", Value: "c@example.com", LinkedBy: "phone_number", Reason: "same number"}); err != nil {
+	lone, _ := store.ProposeSuggestion(testContext, testOwner, SuggestionInput{Source: "multichat", DisplayName: "C", Identities: []IdentityInput{third}})
+	if _, _, err := store.AddIdentity(testContext, testScope, other.ID, IdentityLinkInput{Kind: "email", Value: "c@example.com", LinkedBy: "phone_number", Reason: "same number"}); err != nil {
 		t.Fatal(err)
 	}
-	superseded, _ := store.GetSuggestion(lone.Suggestion.ID)
+	superseded, _ := store.GetSuggestion(testContext, testScope, lone.Suggestion.ID)
 	if superseded.Status != "superseded" || superseded.PersonID != other.ID || superseded.DecidedAt == 0 {
 		t.Errorf("fully covered suggestion = %+v", superseded)
 	}
 	// And an importer still never proposes its handle again.
-	if again, _ := store.ProposeSuggestion(SuggestionInput{Source: "multichat", DisplayName: "C", Identities: []IdentityInput{third}}); again.Created {
+	if again, _ := store.ProposeSuggestion(testContext, testOwner, SuggestionInput{Source: "multichat", DisplayName: "C", Identities: []IdentityInput{third}}); again.Created {
 		t.Errorf("a covered handle was proposed again")
 	}
 }
@@ -351,16 +370,16 @@ func TestAHandleAttachedElsewhereLeavesAWaitingSuggestion(t *testing.T) {
 func TestEveryLinkRecordsWhoLinkedItAndWhy(t *testing.T) {
 	store, _ := openTestStore(t)
 	alice := mustCreate(t, store, "Alice")
-	if _, _, err := store.AddIdentity(alice.ID, IdentityLinkInput{Kind: "email", Value: "a@x.com"}); !errors.Is(err, ErrInvalid) {
+	if _, _, err := store.AddIdentity(testContext, testScope, alice.ID, IdentityLinkInput{Kind: "email", Value: "a@x.com"}); !errors.Is(err, ErrInvalid) {
 		t.Errorf("no linked_by = %v, want a 400", err)
 	}
-	if _, _, err := store.AddIdentity(alice.ID, IdentityLinkInput{Kind: "email", Value: "a@x.com", LinkedBy: "phone_number"}); !errors.Is(err, ErrInvalid) {
+	if _, _, err := store.AddIdentity(testContext, testScope, alice.ID, IdentityLinkInput{Kind: "email", Value: "a@x.com", LinkedBy: "phone_number"}); !errors.Is(err, ErrInvalid) {
 		t.Errorf("an automatic link with no reason = %v, want a 400", err)
 	}
-	if _, _, err := store.AddIdentity(alice.ID, IdentityLinkInput{Kind: "email", Value: "a@x.com", LinkedBy: "operator", LinkedAt: now() + 3600}); !errors.Is(err, ErrInvalid) {
+	if _, _, err := store.AddIdentity(testContext, testScope, alice.ID, IdentityLinkInput{Kind: "email", Value: "a@x.com", LinkedBy: "operator", LinkedAt: now() + 3600}); !errors.Is(err, ErrInvalid) {
 		t.Errorf("linked_at in the future = %v, want a 400", err)
 	}
-	identity, _, err := store.AddIdentity(alice.ID, IdentityLinkInput{Kind: "matrix_user", Value: "@whatsapp_1:x.com", Label: "whatsapp", LinkedBy: "phone_number", Reason: "same phone number +1", LinkedAt: 1790000000})
+	identity, _, err := store.AddIdentity(testContext, testScope, alice.ID, IdentityLinkInput{Kind: "matrix_user", Value: "@whatsapp_1:x.com", Label: "whatsapp", LinkedBy: "phone_number", Reason: "same phone number +1", LinkedAt: 1790000000})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -373,42 +392,42 @@ func TestRefusalsKeepAutomaticSourcesOffAndTheOperatorOverrides(t *testing.T) {
 	store, _ := openTestStore(t)
 	alice := mustCreate(t, store, "Alice")
 	handle := IdentityLinkInput{Kind: "matrix_user", Value: "@discord_1:x.com", LinkedBy: "agent", Reason: "they say so"}
-	identity, _, err := store.AddIdentity(alice.ID, handle)
+	identity, _, err := store.AddIdentity(testContext, testScope, alice.ID, handle)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RemoveIdentity(identity.ID); err != nil {
+	if err := store.RemoveIdentity(testContext, testScope, identity.ID); err != nil {
 		t.Fatal(err)
 	}
-	refusals, _ := store.ListRefusals(RefusalFilter{PersonID: alice.ID})
+	refusals, _ := store.ListRefusals(testContext, testScope, RefusalFilter{PersonID: alice.ID})
 	if len(refusals) != 1 || refusals[0].RefusedBy != "operator" || refusals[0].Value != handle.Value || refusals[0].ID != "refusal_000001" {
 		t.Fatalf("refusals after removal = %+v", refusals)
 	}
 	for _, source := range []string{"agent", "phone_number", "import"} {
 		retry := handle
 		retry.LinkedBy = source
-		if _, _, err := store.AddIdentity(alice.ID, retry); !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "refused") {
+		if _, _, err := store.AddIdentity(testContext, testScope, alice.ID, retry); !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "refused") {
 			t.Errorf("%s relinking a refused pair = %v, want a 409", source, err)
 		}
 	}
-	if _, err := store.CreatePerson(PersonInput{DisplayName: "Elsewhere", Identities: []IdentityLinkInput{handle}}); err != nil {
+	if _, err := store.CreatePerson(testContext, testOwner, PersonInput{DisplayName: "Elsewhere", Identities: []IdentityLinkInput{handle}}); err != nil {
 		t.Errorf("a refusal is for one person only, but a new person with the handle failed: %v", err)
 	}
 	moved := IdentityLinkInput{Kind: handle.Kind, Value: handle.Value, LinkedBy: "operator", Move: true}
-	back, _, err := store.AddIdentity(alice.ID, moved)
+	back, _, err := store.AddIdentity(testContext, testScope, alice.ID, moved)
 	if err != nil || back.PersonID != alice.ID || back.LinkedBy != "operator" {
 		t.Fatalf("operator move back = %+v, %v", back, err)
 	}
-	if refusals, _ := store.ListRefusals(RefusalFilter{PersonID: alice.ID}); len(refusals) != 0 {
+	if refusals, _ := store.ListRefusals(testContext, testScope, RefusalFilter{PersonID: alice.ID}); len(refusals) != 0 {
 		t.Errorf("the operator's link left its refusal: %+v", refusals)
 	}
 	// The move refused the handle for the person it left.
-	if refusals, _ := store.ListRefusals(RefusalFilter{Kind: handle.Kind, Value: handle.Value}); len(refusals) != 1 || refusals[0].PersonID == alice.ID {
+	if refusals, _ := store.ListRefusals(testContext, testScope, RefusalFilter{Kind: handle.Kind, Value: handle.Value}); len(refusals) != 1 || refusals[0].PersonID == alice.ID {
 		t.Errorf("refusals after a move = %+v", refusals)
 	}
 	other := mustCreate(t, store, "Bob")
 	automaticMove := IdentityLinkInput{Kind: handle.Kind, Value: handle.Value, LinkedBy: "agent", Reason: "r", Move: true}
-	if _, _, err := store.AddIdentity(other.ID, automaticMove); !errors.Is(err, ErrInvalid) {
+	if _, _, err := store.AddIdentity(testContext, testScope, other.ID, automaticMove); !errors.Is(err, ErrInvalid) {
 		t.Errorf("an automatic move = %v, want a 400", err)
 	}
 }
@@ -416,20 +435,20 @@ func TestRefusalsKeepAutomaticSourcesOffAndTheOperatorOverrides(t *testing.T) {
 func TestANewPersonTakesItsHandlesAllOrNothing(t *testing.T) {
 	store, _ := openTestStore(t)
 	owner := mustCreate(t, store, "Owner")
-	if _, _, err := store.AddIdentity(owner.ID, IdentityLinkInput{Kind: "email", Value: "taken@x.com", LinkedBy: "operator"}); err != nil {
+	if _, _, err := store.AddIdentity(testContext, testScope, owner.ID, IdentityLinkInput{Kind: "email", Value: "taken@x.com", LinkedBy: "operator"}); err != nil {
 		t.Fatal(err)
 	}
-	_, err := store.CreatePerson(PersonInput{DisplayName: "New", Identities: []IdentityLinkInput{
+	_, err := store.CreatePerson(testContext, testOwner, PersonInput{DisplayName: "New", Identities: []IdentityLinkInput{
 		{Kind: "email", Value: "free@x.com", LinkedBy: "phone_number", Reason: "r"},
 		{Kind: "email", Value: "taken@x.com", LinkedBy: "phone_number", Reason: "r"},
 	}})
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("create with a taken handle = %v, want a 409", err)
 	}
-	if listed, _ := store.ListPersons(PersonFilter{}); len(listed) != 1 {
+	if listed, _ := store.ListPersons(testContext, testScope, PersonFilter{}); len(listed) != 1 {
 		t.Errorf("a failed create left a person: %+v", listed)
 	}
-	created, err := store.CreatePerson(PersonInput{DisplayName: "New", Identities: []IdentityLinkInput{{Kind: "email", Value: "free@x.com", LinkedBy: "phone_number", Reason: "r"}}})
+	created, err := store.CreatePerson(testContext, testOwner, PersonInput{DisplayName: "New", Identities: []IdentityLinkInput{{Kind: "email", Value: "free@x.com", LinkedBy: "phone_number", Reason: "r"}}})
 	if err != nil || len(created.Identities) != 1 || created.Identities[0].LinkedBy != "phone_number" {
 		t.Fatalf("create = %+v, %v", created, err)
 	}
@@ -439,123 +458,84 @@ func TestAgentSuggestionsSitBesideImporterOnesAndHonorRefusals(t *testing.T) {
 	store, _ := openTestStore(t)
 	telegram := IdentityInput{Kind: "matrix_user", Value: "@telegram_1:x.com", Label: "telegram"}
 	discord := IdentityInput{Kind: "matrix_user", Value: "@discord_2:x.com", Label: "discord"}
-	if _, err := store.ProposeSuggestion(SuggestionInput{Source: "multichat", DisplayName: "T", Identities: []IdentityInput{telegram}}); err != nil {
+	if _, err := store.ProposeSuggestion(testContext, testOwner, SuggestionInput{Source: "multichat", DisplayName: "T", Identities: []IdentityInput{telegram}}); err != nil {
 		t.Fatal(err)
 	}
-	erin, err := store.CreatePerson(PersonInput{DisplayName: "Erin", Identities: []IdentityLinkInput{operatorLink(discord)}})
+	erin, err := store.CreatePerson(testContext, testOwner, PersonInput{DisplayName: "Erin", Identities: []IdentityLinkInput{operatorLink(discord)}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.ProposeSuggestion(SuggestionInput{Source: "agent", DisplayName: "T", Identities: []IdentityInput{telegram, discord}}); !errors.Is(err, ErrInvalid) {
+	if _, err := store.ProposeSuggestion(testContext, testOwner, SuggestionInput{Source: "agent", DisplayName: "T", Identities: []IdentityInput{telegram, discord}}); !errors.Is(err, ErrInvalid) {
 		t.Errorf("agent with no reason = %v, want a 400", err)
 	}
-	guess, err := store.ProposeSuggestion(SuggestionInput{Source: "agent", DisplayName: "Erin", Reason: "same friends", Identities: []IdentityInput{telegram, discord}})
+	guess, err := store.ProposeSuggestion(testContext, testOwner, SuggestionInput{Source: "agent", DisplayName: "Erin", Reason: "same friends", Identities: []IdentityInput{telegram, discord}})
 	if err != nil || !guess.Created || guess.Suggestion.Payload.MatchedPersonIDs[0] != erin.ID || guess.Suggestion.Payload.Reason != "same friends" {
 		t.Fatalf("agent suggestion over an importer's handle = %+v, %v", guess, err)
 	}
-	if again, _ := store.ProposeSuggestion(SuggestionInput{Source: "agent", DisplayName: "Erin", Reason: "again", Identities: []IdentityInput{telegram, discord}}); again.Created {
+	if again, _ := store.ProposeSuggestion(testContext, testOwner, SuggestionInput{Source: "agent", DisplayName: "Erin", Reason: "again", Identities: []IdentityInput{telegram, discord}}); again.Created {
 		t.Errorf("the agent proposed a waiting handle twice")
 	}
-	if _, err := store.RejectSuggestion(guess.Suggestion.ID); err != nil {
+	if _, err := store.RejectSuggestion(testContext, testScope, guess.Suggestion.ID); err != nil {
 		t.Fatal(err)
 	}
-	if refusals, _ := store.ListRefusals(RefusalFilter{PersonID: erin.ID}); len(refusals) != 1 || refusals[0].Value != telegram.Value {
+	if refusals, _ := store.ListRefusals(testContext, testScope, RefusalFilter{PersonID: erin.ID}); len(refusals) != 1 || refusals[0].Value != telegram.Value {
 		t.Errorf("reject wrote refusals %+v", refusals)
 	}
-	if _, err := store.ProposeSuggestion(SuggestionInput{Source: "agent", DisplayName: "Erin", Reason: "new evidence", Identities: []IdentityInput{telegram, discord}}); !errors.Is(err, ErrConflict) {
+	if _, err := store.ProposeSuggestion(testContext, testOwner, SuggestionInput{Source: "agent", DisplayName: "Erin", Reason: "new evidence", Identities: []IdentityInput{telegram, discord}}); !errors.Is(err, ErrConflict) {
 		t.Errorf("agent suggesting a refused pair = %v, want a 409", err)
 	}
 }
 
 func TestTheReviewQueueClaimsAndReviewsHandles(t *testing.T) {
 	store, _ := openTestStore(t)
-	if _, err := store.ReportHandleActivity(HandleActivityReport{Source: "multichat", Activities: []HandleActivity{
+	if _, err := store.ReportHandleActivity(testContext, testOwner, HandleActivityReport{Source: "multichat", Activities: []HandleActivity{
 		{Kind: "matrix_user", Value: "@a_1:x.com", MessageCount: 3, LastActivityAt: 100},
 		{Kind: "matrix_user", Value: "@b_2:x.com", DirectChat: true, LastActivityAt: 50},
 		{Kind: "matrix_user", Value: "@c_3:x.com"},
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	queue, err := store.PendingReviews(0)
+	queue, err := store.PendingReviews(testContext, testScope, 0)
 	if err != nil || queue.Total != 2 || queue.Pending[0].Value != "@b_2:x.com" {
 		t.Fatalf("queue = %+v, %v (a handle nobody talks with must not wait; a direct chat goes first)", queue, err)
 	}
-	claim, err := store.ClaimReviews(ReviewClaimInput{Limit: 1, ClaimedBy: "agent"})
+	claim, err := store.ClaimReviews(testContext, testOwner, ReviewClaimInput{Limit: 1, ClaimedBy: "agent"})
 	if err != nil || len(claim.Claimed) != 1 || claim.Remaining != 1 {
 		t.Fatalf("claim = %+v, %v", claim, err)
 	}
-	if queue, _ := store.PendingReviews(0); queue.Total != 1 || queue.ActiveClaims != 1 {
+	if queue, _ := store.PendingReviews(testContext, testScope, 0); queue.Total != 1 || queue.ActiveClaims != 1 {
 		t.Errorf("queue after a claim = %+v", queue)
 	}
-	if _, err := store.ClaimReviews(ReviewClaimInput{Limit: 1, ClaimedBy: "robot"}); !errors.Is(err, ErrInvalid) {
+	if _, err := store.ClaimReviews(testContext, testOwner, ReviewClaimInput{Limit: 1, ClaimedBy: "robot"}); !errors.Is(err, ErrInvalid) {
 		t.Errorf("unknown claimant = %v", err)
 	}
-	if _, err := store.MarkReviewed(ReviewInput{Handles: []Handle{{Kind: "matrix_user", Value: "@b_2:x.com"}, {Kind: "matrix_user", Value: "@a_1:x.com"}}, ReviewedBy: "agent"}); err != nil {
+	if _, err := store.MarkReviewed(testContext, testOwner, ReviewInput{Handles: []Handle{{Kind: "matrix_user", Value: "@b_2:x.com"}, {Kind: "matrix_user", Value: "@a_1:x.com"}}, ReviewedBy: "agent"}); err != nil {
 		t.Fatal(err)
 	}
-	if queue, _ := store.PendingReviews(0); queue.Total != 0 || queue.ActiveClaims != 0 {
+	if queue, _ := store.PendingReviews(testContext, testScope, 0); queue.Total != 0 || queue.ActiveClaims != 0 {
 		t.Errorf("queue after review = %+v", queue)
-	}
-}
-
-func TestAnOldDatabaseGainsProvenanceAndKeepsItsSuggestedHandles(t *testing.T) {
-	dir := t.TempDir()
-	store, err := Open(dir, &fakePrincipals{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	alice := mustCreate(t, store, "Alice")
-	if _, err := store.ProposeSuggestion(SuggestionInput{Source: "multichat", DisplayName: "S", Identities: []IdentityInput{{Kind: "email", Value: "s@x.com"}}}); err != nil {
-		t.Fatal(err)
-	}
-	// Make it look like a database from before 2026-10-01: an identity with no
-	// provenance columns and suggested handles only in suggestion_identities.
-	for _, statement := range []string{
-		`INSERT INTO suggestion_identities (suggestion_id, kind, value) SELECT suggestion_id, kind, value FROM suggestion_handles`,
-		`DELETE FROM suggestion_handles`,
-		`ALTER TABLE identities DROP COLUMN linked_by`,
-		`ALTER TABLE identities DROP COLUMN reason`,
-		`ALTER TABLE identities DROP COLUMN linked_at`,
-		`INSERT INTO identities (id, seq, person_id, kind, value, label, created_at, updated_at) VALUES ('identity_000001', 1, '` + alice.ID + `', 'email', 'alice@x.com', '', 5, 5)`,
-	} {
-		if _, err := store.db.Exec(statement); err != nil {
-			t.Fatalf("%s: %v", statement, err)
-		}
-	}
-	store.Close()
-	store, err = Open(dir, &fakePrincipals{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	resolved, err := store.ResolveIdentity("email", "alice@x.com")
-	if err != nil || resolved.Identity.LinkedBy != "import" || resolved.Identity.LinkedAt != 5 || resolved.Identity.Reason == "" {
-		t.Errorf("backfilled identity = %+v, %v", resolved, err)
-	}
-	if again, _ := store.ProposeSuggestion(SuggestionInput{Source: "multichat", DisplayName: "S", Identities: []IdentityInput{{Kind: "email", Value: "s@x.com"}}}); again.Created {
-		t.Errorf("a handle suggested before the migration was proposed again")
 	}
 }
 
 func TestPrincipalIDIsCheckedAndAnOutageRefusesTheWrite(t *testing.T) {
 	store, principals := openTestStore(t)
-	if _, err := store.CreatePerson(PersonInput{DisplayName: "A", PrincipalID: "alice"}); !errors.Is(err, ErrInvalid) {
+	if _, err := store.CreatePerson(testContext, testOwner, PersonInput{DisplayName: "A", PrincipalID: "alice"}); !errors.Is(err, ErrInvalid) {
 		t.Errorf("a name as principal_id = %v, want a 400", err)
 	}
-	if _, err := store.CreatePerson(PersonInput{DisplayName: "A", PrincipalID: "principal_000999"}); !errors.Is(err, ErrInvalid) {
+	if _, err := store.CreatePerson(testContext, testOwner, PersonInput{DisplayName: "A", PrincipalID: "principal_000999"}); !errors.Is(err, ErrInvalid) {
 		t.Errorf("an unknown principal = %v, want a 400", err)
 	}
-	person, err := store.CreatePerson(PersonInput{DisplayName: "A", PrincipalID: "principal_000001"})
+	person, err := store.CreatePerson(testContext, testOwner, PersonInput{DisplayName: "A", PrincipalID: "principal_000001"})
 	if err != nil || person.PrincipalID != "principal_000001" {
 		t.Fatalf("create = %+v, %v", person, err)
 	}
 	principals.down = true
 	id := "principal_000001"
-	if _, err := store.PatchPerson(person.ID, PersonPatch{PrincipalID: &id}); !errors.Is(err, ErrPrincipalStoreUnavailable) {
+	if _, err := store.PatchPerson(testContext, testScope, person.ID, PersonPatch{PrincipalID: &id}); !errors.Is(err, ErrPrincipalStoreUnavailable) {
 		t.Errorf("with principal-store down = %v, want a refusal", err)
 	}
 	empty := ""
-	if patched, err := store.PatchPerson(person.ID, PersonPatch{PrincipalID: &empty}); err != nil || patched.PrincipalID != "" {
+	if patched, err := store.PatchPerson(testContext, testScope, person.ID, PersonPatch{PrincipalID: &empty}); err != nil || patched.PrincipalID != "" {
 		t.Errorf("clearing needs no check: %+v, %v", patched, err)
 	}
 }
@@ -575,44 +555,71 @@ func TestBirthdaysTakeAYearOrNone(t *testing.T) {
 
 func TestSearchFindsNamesTagsHowMetAndHandles(t *testing.T) {
 	store, _ := openTestStore(t)
-	alice, err := store.CreatePerson(PersonInput{DisplayName: "Alice Smith", HowMet: "climbing gym in Springfield", Tags: []string{"family", "springfield"}})
+	alice, err := store.CreatePerson(testContext, testOwner, PersonInput{DisplayName: "Alice Smith", HowMet: "climbing gym in Springfield", Tags: []string{"family", "springfield"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	mustCreate(t, store, "Bob")
-	if _, _, err := store.AddIdentity(alice.ID, IdentityLinkInput{LinkedBy: "operator", Kind: "matrix_user", Value: "@telegram_123456789:chat.example.com"}); err != nil {
+	if _, _, err := store.AddIdentity(testContext, testScope, alice.ID, IdentityLinkInput{LinkedBy: "operator", Kind: "matrix_user", Value: "@telegram_123456789:chat.example.com"}); err != nil {
 		t.Fatal(err)
 	}
 	for _, query := range []string{"ali", "smith", "climbing", "family", "telegram_123456789"} {
-		found, err := store.ListPersons(PersonFilter{Query: query})
+		found, err := store.ListPersons(testContext, testScope, PersonFilter{Query: query})
 		if err != nil || len(found) != 1 || found[0].ID != alice.ID {
 			t.Errorf("q=%q found %+v, %v", query, found, err)
 		}
 	}
-	tagged, err := store.ListPersons(PersonFilter{Tag: "springfield"})
+	tagged, err := store.ListPersons(testContext, testScope, PersonFilter{Tag: "springfield"})
 	if err != nil || len(tagged) != 1 {
 		t.Errorf("tag=springfield found %+v, %v", tagged, err)
 	}
-	if _, err := store.ListPersons(PersonFilter{Query: `"unclosed`}); !errors.Is(err, ErrInvalid) {
+	if _, err := store.ListPersons(testContext, testScope, PersonFilter{Query: `"unclosed`}); !errors.Is(err, ErrInvalid) {
 		t.Errorf("a malformed query = %v, want a 400", err)
 	}
 }
+
+// The test server's stand-in for the credential check the real server makes:
+// these headers name the Caller it puts in the request's context. A request
+// with neither carries no Caller.
+const (
+	testCallerHeader        = "X-Test-Caller"
+	testAdministratorHeader = "X-Test-Administrator"
+)
 
 func newTestServer(t *testing.T) (*httptest.Server, *Store) {
 	t.Helper()
 	store, _ := openTestStore(t)
 	mux := http.NewServeMux()
 	RegisterHandlers(mux, store)
-	server := httptest.NewServer(mux)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		principal, administrator := r.Header.Get(testCallerHeader), r.Header.Get(testAdministratorHeader) == "true"
+		if principal != "" || administrator {
+			r = r.WithContext(ownership.ContextWithCaller(r.Context(), ownership.Caller{PrincipalID: principal, SeesEveryOwner: administrator}))
+		}
+		mux.ServeHTTP(w, r)
+	}))
 	t.Cleanup(server.Close)
 	return server, store
 }
 
+// call sends a request as testOwner.
 func call(t *testing.T, server *httptest.Server, method, path, body string) (int, string) {
+	t.Helper()
+	return callAs(t, server, ownership.Caller{PrincipalID: testOwner}, method, path, body)
+}
+
+// callAs sends a request as caller; the zero Caller sends none.
+func callAs(t *testing.T, server *httptest.Server, caller ownership.Caller, method, path, body string) (int, string) {
 	t.Helper()
 	request, err := http.NewRequest(method, server.URL+path, strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if caller.PrincipalID != "" {
+		request.Header.Set(testCallerHeader, caller.PrincipalID)
+	}
+	if caller.SeesEveryOwner {
+		request.Header.Set(testAdministratorHeader, "true")
 	}
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
@@ -722,34 +729,6 @@ func TestTheRoutesAnswerWithTheirStatusCodes(t *testing.T) {
 	}
 }
 
-func TestTheHTTPPrincipalCheckerTellsAMissFromAnOutage(t *testing.T) {
-	principalStore := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/principals/principal_000001":
-			w.Write([]byte(`{"id":"principal_000001"}`))
-		case "/principals/principal_000002":
-			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
-		default:
-			http.Error(w, "boom", http.StatusInternalServerError)
-		}
-	}))
-	defer principalStore.Close()
-	checker := NewHTTPPrincipalChecker(principalStore.URL + "/")
-	if err := checker.CheckPrincipal("principal_000001"); err != nil {
-		t.Errorf("known = %v", err)
-	}
-	if err := checker.CheckPrincipal("principal_000002"); !errors.Is(err, ErrInvalid) {
-		t.Errorf("unknown = %v", err)
-	}
-	if err := checker.CheckPrincipal("principal_000003"); !errors.Is(err, ErrPrincipalStoreUnavailable) {
-		t.Errorf("a 500 = %v", err)
-	}
-	principalStore.Close()
-	if err := checker.CheckPrincipal("principal_000001"); !errors.Is(err, ErrPrincipalStoreUnavailable) {
-		t.Errorf("a closed port = %v", err)
-	}
-}
-
 func TestHandleActivityIsSummedOverASuggestionsHandlesAndSortsIt(t *testing.T) {
 	store, _ := openTestStore(t)
 	propose := func(name string, values ...string) string {
@@ -758,7 +737,7 @@ func TestHandleActivityIsSummedOverASuggestionsHandlesAndSortsIt(t *testing.T) {
 		for _, value := range values {
 			input.Identities = append(input.Identities, IdentityInput{Kind: "matrix_user", Value: value})
 		}
-		proposal, err := store.ProposeSuggestion(input)
+		proposal, err := store.ProposeSuggestion(testContext, testOwner, input)
 		if err != nil || !proposal.Created {
 			t.Fatalf("propose %s: %v %+v", name, err, proposal)
 		}
@@ -769,7 +748,7 @@ func TestHandleActivityIsSummedOverASuggestionsHandlesAndSortsIt(t *testing.T) {
 	recent := propose("Recent", "@signal_3:chat.example.com")
 	tied := propose("Tied", "@signal_4:chat.example.com")
 
-	result, err := store.ReportHandleActivity(HandleActivityReport{Source: "multichat", Activities: []HandleActivity{
+	result, err := store.ReportHandleActivity(testContext, testOwner, HandleActivityReport{Source: "multichat", Activities: []HandleActivity{
 		{Kind: "matrix_user", Value: " @telegram_2:chat.example.com ", LastActivityAt: 100, MessageCount: 5},
 		{Kind: "matrix_user", Value: "@whatsapp_2:chat.example.com", LastActivityAt: 300, MessageCount: 7, DirectChat: true},
 		{Kind: "matrix_user", Value: "@signal_3:chat.example.com", LastActivityAt: 500, MessageCount: 1},
@@ -779,30 +758,30 @@ func TestHandleActivityIsSummedOverASuggestionsHandlesAndSortsIt(t *testing.T) {
 	if err != nil || result.Updated != 5 {
 		t.Fatalf("report = %+v, %v", result, err)
 	}
-	got, err := store.GetSuggestion(busy)
+	got, err := store.GetSuggestion(testContext, testScope, busy)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.Activity != (SuggestionActivity{LastActivityAt: 300, MessageCount: 12, DirectChat: true}) {
 		t.Errorf("busy activity = %+v, want max 300, sum 12, direct", got.Activity)
 	}
-	if got, _ := store.GetSuggestion(quiet); got.Activity != (SuggestionActivity{}) {
+	if got, _ := store.GetSuggestion(testContext, testScope, quiet); got.Activity != (SuggestionActivity{}) {
 		t.Errorf("quiet activity = %+v, want zero", got.Activity)
 	}
 
 	// A second report replaces the row whole.
-	if _, err := store.ReportHandleActivity(HandleActivityReport{Source: "multichat", Activities: []HandleActivity{
+	if _, err := store.ReportHandleActivity(testContext, testOwner, HandleActivityReport{Source: "multichat", Activities: []HandleActivity{
 		{Kind: "matrix_user", Value: "@whatsapp_2:chat.example.com", LastActivityAt: 200, MessageCount: 1},
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := store.GetSuggestion(busy); got.Activity != (SuggestionActivity{LastActivityAt: 200, MessageCount: 6}) {
+	if got, _ := store.GetSuggestion(testContext, testScope, busy); got.Activity != (SuggestionActivity{LastActivityAt: 200, MessageCount: 6}) {
 		t.Errorf("busy after replace = %+v, want max 200, sum 6, not direct", got.Activity)
 	}
 
 	ids := func(sort string) []string {
 		t.Helper()
-		suggestions, err := store.ListSuggestions(SuggestionFilter{Status: "proposed", Sort: sort})
+		suggestions, err := store.ListSuggestions(testContext, testScope, SuggestionFilter{Status: "proposed", Sort: sort})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -823,7 +802,7 @@ func TestHandleActivityIsSummedOverASuggestionsHandlesAndSortsIt(t *testing.T) {
 		t.Errorf("activity order = %s, want %s", got, want)
 	}
 	// Equal last activity falls to the message count, then to age.
-	if _, err := store.ReportHandleActivity(HandleActivityReport{Source: "multichat", Activities: []HandleActivity{
+	if _, err := store.ReportHandleActivity(testContext, testOwner, HandleActivityReport{Source: "multichat", Activities: []HandleActivity{
 		{Kind: "matrix_user", Value: "@telegram_2:chat.example.com", LastActivityAt: 300, MessageCount: 5},
 		{Kind: "matrix_user", Value: "@telegram_1:chat.example.com", LastActivityAt: 300, MessageCount: 20},
 	}}); err != nil {
@@ -833,7 +812,7 @@ func TestHandleActivityIsSummedOverASuggestionsHandlesAndSortsIt(t *testing.T) {
 		t.Errorf("activity order with ties = %s, want %s", got, want)
 	}
 	// A one-to-one chat outranks any recency or message count.
-	if _, err := store.ReportHandleActivity(HandleActivityReport{Source: "multichat", Activities: []HandleActivity{
+	if _, err := store.ReportHandleActivity(testContext, testOwner, HandleActivityReport{Source: "multichat", Activities: []HandleActivity{
 		{Kind: "matrix_user", Value: "@signal_4:chat.example.com", LastActivityAt: 10, MessageCount: 1, DirectChat: true},
 	}}); err != nil {
 		t.Fatal(err)
@@ -842,10 +821,10 @@ func TestHandleActivityIsSummedOverASuggestionsHandlesAndSortsIt(t *testing.T) {
 		t.Errorf("activity order with a direct chat = %s, want %s", got, want)
 	}
 
-	if named, err := store.ListSuggestions(SuggestionFilter{Query: "bee"}); err != nil || len(named) != 1 || named[0].ID != busy {
+	if named, err := store.ListSuggestions(testContext, testScope, SuggestionFilter{Query: "bee"}); err != nil || len(named) != 1 || named[0].ID != busy {
 		t.Errorf("q=bee = %+v, %v", named, err)
 	}
-	if _, err := store.ListSuggestions(SuggestionFilter{Sort: "loudest"}); !errors.Is(err, ErrInvalid) {
+	if _, err := store.ListSuggestions(testContext, testScope, SuggestionFilter{Sort: "loudest"}); !errors.Is(err, ErrInvalid) {
 		t.Errorf("unknown sort: %v", err)
 	}
 	for _, bad := range []HandleActivityReport{
@@ -855,7 +834,7 @@ func TestHandleActivityIsSummedOverASuggestionsHandlesAndSortsIt(t *testing.T) {
 		{Source: "multichat", Activities: []HandleActivity{{Kind: "matrix_user", Value: "@a_1:x", MessageCount: -1}}},
 		{Source: "multichat", Activities: []HandleActivity{{Kind: "matrix_user", Value: "@a_1:x"}, {Kind: "matrix_user", Value: " @a_1:x"}}},
 	} {
-		if _, err := store.ReportHandleActivity(bad); !errors.Is(err, ErrInvalid) {
+		if _, err := store.ReportHandleActivity(testContext, testOwner, bad); !errors.Is(err, ErrInvalid) {
 			t.Errorf("report %+v: %v, want ErrInvalid", bad, err)
 		}
 	}
@@ -863,7 +842,7 @@ func TestHandleActivityIsSummedOverASuggestionsHandlesAndSortsIt(t *testing.T) {
 
 func TestHandleActivityAndSuggestionSortRoutes(t *testing.T) {
 	server, store := newTestServer(t)
-	proposal, err := store.ProposeSuggestion(SuggestionInput{Source: "multichat", DisplayName: "Carol", Identities: []IdentityInput{{Kind: "matrix_user", Value: "@telegram_1:chat.example.com"}}})
+	proposal, err := store.ProposeSuggestion(testContext, testOwner, SuggestionInput{Source: "multichat", DisplayName: "Carol", Identities: []IdentityInput{{Kind: "matrix_user", Value: "@telegram_1:chat.example.com"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -943,10 +922,10 @@ func TestTheLinkRefusalAndReviewRoutes(t *testing.T) {
 func TestGoogleContactsIsAnImporterThatNeverProposesAHandleTwice(t *testing.T) {
 	store, _ := openTestStore(t)
 	alice := mustCreate(t, store, "Alice")
-	if _, _, err := store.AddIdentity(alice.ID, IdentityLinkInput{LinkedBy: "operator", Kind: "email", Value: "alice@example.com"}); err != nil {
+	if _, _, err := store.AddIdentity(testContext, testScope, alice.ID, IdentityLinkInput{LinkedBy: "operator", Kind: "email", Value: "alice@example.com"}); err != nil {
 		t.Fatal(err)
 	}
-	first, err := store.ProposeSuggestion(SuggestionInput{Source: SuggestionSourceGoogleContacts, DisplayName: "Alice A.",
+	first, err := store.ProposeSuggestion(testContext, testOwner, SuggestionInput{Source: SuggestionSourceGoogleContacts, DisplayName: "Alice A.",
 		Identities: []IdentityInput{{Kind: "email", Value: "Alice@Example.com"}, {Kind: "phone", Value: "+1 202 555 0100", Label: "cell"}}})
 	if err != nil || !first.Created {
 		t.Fatalf("first proposal = %+v, %v", first, err)
@@ -955,16 +934,16 @@ func TestGoogleContactsIsAnImporterThatNeverProposesAHandleTwice(t *testing.T) {
 	if len(payload.Identities) != 1 || payload.Identities[0].Value != "+12025550100" || len(payload.MatchedPersonIDs) != 1 || payload.MatchedPersonIDs[0] != alice.ID {
 		t.Errorf("payload = %+v, want only the phone, matched to %s", payload, alice.ID)
 	}
-	if _, err := store.RejectSuggestion(first.Suggestion.ID); err != nil {
+	if _, err := store.RejectSuggestion(testContext, testScope, first.Suggestion.ID); err != nil {
 		t.Fatal(err)
 	}
-	again, err := store.ProposeSuggestion(SuggestionInput{Source: SuggestionSourceGoogleContacts, DisplayName: "Alice A.",
+	again, err := store.ProposeSuggestion(testContext, testOwner, SuggestionInput{Source: SuggestionSourceGoogleContacts, DisplayName: "Alice A.",
 		Identities: []IdentityInput{{Kind: "phone", Value: "+12025550100"}}})
 	if err != nil || again.Created {
 		t.Errorf("a rejected handle proposed again = %+v, %v", again, err)
 	}
 	// Another importer is held to the same rule.
-	other, err := store.ProposeSuggestion(SuggestionInput{Source: SuggestionSourceMultichat, DisplayName: "Alice",
+	other, err := store.ProposeSuggestion(testContext, testOwner, SuggestionInput{Source: SuggestionSourceMultichat, DisplayName: "Alice",
 		Identities: []IdentityInput{{Kind: "phone", Value: "+12025550100"}}})
 	if err != nil || other.Created {
 		t.Errorf("multichat proposing a google_contacts handle = %+v, %v", other, err)
@@ -973,12 +952,12 @@ func TestGoogleContactsIsAnImporterThatNeverProposesAHandleTwice(t *testing.T) {
 
 func TestPhoneMessagesIsAnImporterThatNeverProposesAHandleTwice(t *testing.T) {
 	store, _ := openTestStore(t)
-	first, err := store.ProposeSuggestion(SuggestionInput{Source: SuggestionSourcePhoneMessages, DisplayName: "Carol",
+	first, err := store.ProposeSuggestion(testContext, testOwner, SuggestionInput{Source: SuggestionSourcePhoneMessages, DisplayName: "Carol",
 		Identities: []IdentityInput{{Kind: "phone", Value: "+12025550111"}}})
 	if err != nil || !first.Created {
 		t.Fatalf("first proposal = %+v, %v", first, err)
 	}
-	again, err := store.ProposeSuggestion(SuggestionInput{Source: SuggestionSourcePhoneMessages, DisplayName: "Carol",
+	again, err := store.ProposeSuggestion(testContext, testOwner, SuggestionInput{Source: SuggestionSourcePhoneMessages, DisplayName: "Carol",
 		Identities: []IdentityInput{{Kind: "phone", Value: "+12025550111"}}})
 	if err != nil || again.Created {
 		t.Errorf("the same handle proposed again = %+v, %v", again, err)
@@ -987,20 +966,20 @@ func TestPhoneMessagesIsAnImporterThatNeverProposesAHandleTwice(t *testing.T) {
 
 func TestListPersonsByPrincipalFindsThePersonPointingAtIt(t *testing.T) {
 	store, _ := openTestStore(t)
-	member, err := store.CreatePerson(PersonInput{DisplayName: "Member", PrincipalID: "principal_000001"})
+	member, err := store.CreatePerson(testContext, testOwner, PersonInput{DisplayName: "Member", PrincipalID: "principal_000001"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	mustCreate(t, store, "Someone else")
-	found, err := store.ListPersons(PersonFilter{PrincipalID: "principal_000001"})
+	found, err := store.ListPersons(testContext, testScope, PersonFilter{PrincipalID: "principal_000001"})
 	if err != nil || len(found) != 1 || found[0].ID != member.ID {
 		t.Errorf("principal_id=principal_000001 found %+v, %v", found, err)
 	}
-	none, err := store.ListPersons(PersonFilter{PrincipalID: "principal_000002"})
+	none, err := store.ListPersons(testContext, testScope, PersonFilter{PrincipalID: "principal_000002"})
 	if err != nil || len(none) != 0 {
 		t.Errorf("a principal nobody points at found %+v, %v", none, err)
 	}
-	if _, err := store.ListPersons(PersonFilter{PrincipalID: "alice"}); !errors.Is(err, ErrInvalid) {
+	if _, err := store.ListPersons(testContext, testScope, PersonFilter{PrincipalID: "alice"}); !errors.Is(err, ErrInvalid) {
 		t.Errorf("a name as principal_id = %v, want a 400", err)
 	}
 }

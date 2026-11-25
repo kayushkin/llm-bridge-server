@@ -5,10 +5,13 @@ import "encoding/json"
 // The wire types. They live outside store.go so that tygo (tygo.yaml) renders
 // them to ts/model.ts; store.go is excluded there.
 
-// Person is someone in the operator's own life.
+// Person is someone in the life of the person who keeps the record.
 type Person struct {
-	ID          string `json:"id"`
-	DisplayName string `json:"display_name"`
+	ID string `json:"id"`
+	// OwnerPrincipalID is principal-store's id of the person who keeps this
+	// record, set by the store.
+	OwnerPrincipalID string `json:"owner_principal_id"`
+	DisplayName      string `json:"display_name"`
 	// Birthday is "" (unknown), "YYYY-MM-DD", or "--MM-DD" when the year is
 	// unknown — the vCard 4 form for a date without a year.
 	Birthday string   `json:"birthday"`
@@ -63,11 +66,14 @@ type PersonPatch struct {
 
 // Identity is one handle that reaches a person. Value is stored normalized.
 type Identity struct {
-	ID       string `json:"id"`
-	PersonID string `json:"person_id"`
-	Kind     string `json:"kind"`
-	Value    string `json:"value"`
-	Label    string `json:"label"`
+	ID string `json:"id"`
+	// OwnerPrincipalID is principal-store's id of the person who keeps this
+	// record, set by the store.
+	OwnerPrincipalID string `json:"owner_principal_id"`
+	PersonID         string `json:"person_id"`
+	Kind             string `json:"kind"`
+	Value            string `json:"value"`
+	Label            string `json:"label"`
 	// LinkedBy is one of LinkSources: who attached the handle to this person.
 	LinkedBy string `json:"linked_by"`
 	// Reason is why, in the linker's words.
@@ -119,13 +125,16 @@ type LinkSource struct {
 // Refusal says a handle is not a person, so no source but the operator may
 // attach it to them.
 type Refusal struct {
-	ID        string `json:"id"`
-	Kind      string `json:"kind"`
-	Value     string `json:"value"`
-	PersonID  string `json:"person_id"`
-	RefusedBy string `json:"refused_by"`
-	Reason    string `json:"reason"`
-	CreatedAt int64  `json:"created_at"`
+	ID string `json:"id"`
+	// OwnerPrincipalID is principal-store's id of the person who keeps this
+	// record, set by the store.
+	OwnerPrincipalID string `json:"owner_principal_id"`
+	Kind             string `json:"kind"`
+	Value            string `json:"value"`
+	PersonID         string `json:"person_id"`
+	RefusedBy        string `json:"refused_by"`
+	Reason           string `json:"reason"`
+	CreatedAt        int64  `json:"created_at"`
 }
 
 // IdentityResolution answers GET /identities/resolve: the identity and the
@@ -151,12 +160,15 @@ type RelationshipKind struct {
 
 // Relationship is one stored row: FromPersonID is the Kind of ToPersonID.
 type Relationship struct {
-	ID           string `json:"id"`
-	FromPersonID string `json:"from_person_id"`
-	ToPersonID   string `json:"to_person_id"`
-	Kind         string `json:"kind"`
-	Note         string `json:"note"`
-	CreatedAt    int64  `json:"created_at"`
+	ID string `json:"id"`
+	// OwnerPrincipalID is principal-store's id of the person who keeps this
+	// record, set by the store.
+	OwnerPrincipalID string `json:"owner_principal_id"`
+	FromPersonID     string `json:"from_person_id"`
+	ToPersonID       string `json:"to_person_id"`
+	Kind             string `json:"kind"`
+	Note             string `json:"note"`
+	CreatedAt        int64  `json:"created_at"`
 }
 
 // RelationshipView is a relationship seen from one person: PersonID is the
@@ -164,7 +176,10 @@ type Relationship struct {
 // shows on B as {person_id: A, kind: parent} and on A as {person_id: B, kind:
 // child}. PersonDisplayName is the other person's name, for display only.
 type RelationshipView struct {
-	ID                string `json:"id"`
+	ID string `json:"id"`
+	// OwnerPrincipalID is principal-store's id of the person who keeps this
+	// record, set by the store.
+	OwnerPrincipalID  string `json:"owner_principal_id"`
 	PersonID          string `json:"person_id"`
 	PersonDisplayName string `json:"person_display_name"`
 	PersonDeletedAt   int64  `json:"person_deleted_at"`
@@ -213,13 +228,16 @@ type CoveredHandle struct {
 
 // Suggestion is a proposed merge of handles into one person.
 type Suggestion struct {
-	ID        string            `json:"id"`
-	Source    string            `json:"source"`
-	Payload   SuggestionPayload `json:"payload"`
-	Status    string            `json:"status"`
-	PersonID  string            `json:"person_id"`
-	CreatedAt int64             `json:"created_at"`
-	DecidedAt int64             `json:"decided_at"`
+	ID string `json:"id"`
+	// OwnerPrincipalID is principal-store's id of the person who keeps this
+	// record, set by the store.
+	OwnerPrincipalID string            `json:"owner_principal_id"`
+	Source           string            `json:"source"`
+	Payload          SuggestionPayload `json:"payload"`
+	Status           string            `json:"status"`
+	PersonID         string            `json:"person_id"`
+	CreatedAt        int64             `json:"created_at"`
+	DecidedAt        int64             `json:"decided_at"`
 	// Activity is summed at read time over the suggestion's handles from
 	// handle_activity; all zero when no source reported any.
 	Activity SuggestionActivity `json:"activity"`
@@ -287,11 +305,14 @@ type AcceptSuggestionInput struct {
 // Revision is a person, identities included, as it was just before Action
 // changed it.
 type Revision struct {
-	ID        string         `json:"id"`
-	PersonID  string         `json:"person_id"`
-	Action    string         `json:"action"`
-	Snapshot  PersonSnapshot `json:"snapshot"`
-	CreatedAt int64          `json:"created_at"`
+	ID string `json:"id"`
+	// OwnerPrincipalID is principal-store's id of the person who keeps this
+	// record, set by the store.
+	OwnerPrincipalID string         `json:"owner_principal_id"`
+	PersonID         string         `json:"person_id"`
+	Action           string         `json:"action"`
+	Snapshot         PersonSnapshot `json:"snapshot"`
+	CreatedAt        int64          `json:"created_at"`
 }
 
 // Counts answers the counts half of GET /health.
@@ -313,12 +334,14 @@ type Handle struct {
 // PendingReview is a handle the operator talks with that nobody has reviewed
 // or claimed: its activity, and the person it is attached to ("" for none).
 type PendingReview struct {
-	Kind           string `json:"kind"`
-	Value          string `json:"value"`
-	PersonID       string `json:"person_id"`
-	LastActivityAt int64  `json:"last_activity_at"`
-	MessageCount   int64  `json:"message_count"`
-	DirectChat     bool   `json:"direct_chat"`
+	// OwnerPrincipalID is whose queue the handle waits in.
+	OwnerPrincipalID string `json:"owner_principal_id"`
+	Kind             string `json:"kind"`
+	Value            string `json:"value"`
+	PersonID         string `json:"person_id"`
+	LastActivityAt   int64  `json:"last_activity_at"`
+	MessageCount     int64  `json:"message_count"`
+	DirectChat       bool   `json:"direct_chat"`
 }
 
 // ReviewQueue answers GET /reviews/pending.

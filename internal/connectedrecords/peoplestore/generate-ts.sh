@@ -6,7 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 export PATH="$HOME/.local/share/mise/shims:$(go env GOBIN 2>/dev/null || echo "$HOME/go/bin"):$PATH"
 
-MODULE=$(awk '/^module /{print $2}' go.mod)
+MODULE=$(go list .)
 COMMIT=$(git rev-parse HEAD)
 SHORT=$(git rev-parse --short HEAD)
 DIRTY=""

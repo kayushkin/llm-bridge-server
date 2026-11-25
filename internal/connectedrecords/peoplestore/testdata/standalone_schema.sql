@@ -1,7 +1,6 @@
--- people-store schema. Create-only and idempotent: Open() executes this whole
--- file on every boot. A new column goes in an additive migration in store.go,
--- never in an edit to a CREATE TABLE below: an edited CREATE TABLE does nothing
--- to a database that already exists.
+-- The schema of the standalone people-store's SQLite database as it ran live:
+-- its schema.sql, then the columns its migrate() added to identities on
+-- 2026-10-01. The import test builds a made-up standalone file from this.
 
 PRAGMA foreign_keys = ON;
 
@@ -171,3 +170,8 @@ CREATE INDEX IF NOT EXISTS idx_revisions_person ON revisions(person_id, seq);
 CREATE VIRTUAL TABLE IF NOT EXISTS persons_fts USING fts5(
     display_name, how_met, tags, identities
 );
+
+-- Added by the standalone store's migrate().
+ALTER TABLE identities ADD COLUMN linked_by TEXT NOT NULL DEFAULT '';
+ALTER TABLE identities ADD COLUMN reason TEXT NOT NULL DEFAULT '';
+ALTER TABLE identities ADD COLUMN linked_at INTEGER NOT NULL DEFAULT 0;

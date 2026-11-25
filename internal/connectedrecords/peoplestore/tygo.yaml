@@ -2,7 +2,7 @@
 # are the source of truth; ts/ is a render of them. Regenerate with
 # ./generate-ts.sh after changing a wire type.
 packages:
-  - path: "github.com/kayushkin/people-store"
+  - path: "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/peoplestore"
     output_path: "ts/model.ts"
     type_mappings:
       "json.RawMessage": "unknown"
@@ -16,4 +16,5 @@ packages:
       - "server.go"
       - "settings.go"
       - "principal_check.go"
-      - "schema_embed.go"
+      - "search_query.go"
+      - "import_standalone_database.go"

@@ -10,17 +10,19 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 )
 
-// RegisterHandlers mounts the API on mux. Routes are rooted at /; a front door
-// such as dash adds its own prefix and the auth this service has none of,
-// which is why it binds 127.0.0.1 only.
+// RegisterHandlers mounts the API on mux. Routes are rooted at /; the server
+// mounts them under its own prefix. Every request must carry the Caller the
+// server verified (ownership.ContextWithCaller); one with none is 401.
 func RegisterHandlers(mux *http.ServeMux, s *Store) {
 	h := &handler{s: s}
 	mux.HandleFunc("GET /health", h.health)
-	mux.HandleFunc("GET /identity-kinds", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, IdentityKinds) })
-	mux.HandleFunc("GET /relationship-kinds", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, RelationshipKinds) })
-	mux.HandleFunc("GET /link-sources", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, LinkSources) })
+	mux.HandleFunc("GET /identity-kinds", vocabulary(IdentityKinds))
+	mux.HandleFunc("GET /relationship-kinds", vocabulary(RelationshipKinds))
+	mux.HandleFunc("GET /link-sources", vocabulary(LinkSources))
 
 	mux.HandleFunc("GET /persons", h.listPersons)
 	mux.HandleFunc("POST /persons", h.createPerson)
@@ -52,6 +54,10 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 }
 
 func (h *handler) listIdentities(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	limit, ok := intParameter(w, r, "limit")
 	if !ok {
 		return
@@ -60,7 +66,7 @@ func (h *handler) listIdentities(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	identities, err := h.s.ListIdentities(IdentityFilter{Kind: r.URL.Query().Get("kind"), Limit: limit, Offset: offset})
+	identities, err := h.s.ListIdentities(r.Context(), scope, IdentityFilter{Kind: r.URL.Query().Get("kind"), Limit: limit, Offset: offset})
 	if respondStoreError(w, err) {
 		return
 	}
@@ -68,8 +74,12 @@ func (h *handler) listIdentities(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) listRefusals(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	query := r.URL.Query()
-	refusals, err := h.s.ListRefusals(RefusalFilter{PersonID: query.Get("person_id"), Kind: query.Get("kind"), Value: query.Get("value")})
+	refusals, err := h.s.ListRefusals(r.Context(), scope, RefusalFilter{PersonID: query.Get("person_id"), Kind: query.Get("kind"), Value: query.Get("value")})
 	if respondStoreError(w, err) {
 		return
 	}
@@ -77,11 +87,15 @@ func (h *handler) listRefusals(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) pendingReviews(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	limit, ok := intParameter(w, r, "limit")
 	if !ok {
 		return
 	}
-	queue, err := h.s.PendingReviews(limit)
+	queue, err := h.s.PendingReviews(r.Context(), scope, limit)
 	if respondStoreError(w, err) {
 		return
 	}
@@ -89,11 +103,15 @@ func (h *handler) pendingReviews(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) claimReviews(w http.ResponseWriter, r *http.Request) {
+	owner, ok := newRecordOwner(w, r)
+	if !ok {
+		return
+	}
 	var input ReviewClaimInput
 	if !decode(w, r, &input) {
 		return
 	}
-	claim, err := h.s.ClaimReviews(input)
+	claim, err := h.s.ClaimReviews(r.Context(), owner, input)
 	if respondStoreError(w, err) {
 		return
 	}
@@ -101,11 +119,15 @@ func (h *handler) claimReviews(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) markReviewed(w http.ResponseWriter, r *http.Request) {
+	owner, ok := newRecordOwner(w, r)
+	if !ok {
+		return
+	}
 	var input ReviewInput
 	if !decode(w, r, &input) {
 		return
 	}
-	result, err := h.s.MarkReviewed(input)
+	result, err := h.s.MarkReviewed(r.Context(), owner, input)
 	if respondStoreError(w, err) {
 		return
 	}
@@ -116,8 +138,44 @@ type handler struct {
 	s *Store
 }
 
+// vocabulary serves a fixed list to any caller the server verified.
+func vocabulary(list any) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, refusal := ownership.CallerOfRequest(r); refusal != nil {
+			writeErr(w, refusal.Status, refusal.Message)
+			return
+		}
+		writeJSON(w, http.StatusOK, list)
+	}
+}
+
+// readScope is whose records the request reaches, or the refusal written.
+func readScope(w http.ResponseWriter, r *http.Request) (ownership.Scope, bool) {
+	scope, refusal := ownership.ReadScope(r)
+	if refusal != nil {
+		writeErr(w, refusal.Status, refusal.Message)
+		return ownership.Scope{}, false
+	}
+	return scope, true
+}
+
+// newRecordOwner is who owns what the request creates, or the refusal
+// written.
+func newRecordOwner(w http.ResponseWriter, r *http.Request) (string, bool) {
+	owner, refusal := ownership.OwnerOfNewRecord(r)
+	if refusal != nil {
+		writeErr(w, refusal.Status, refusal.Message)
+		return "", false
+	}
+	return owner, true
+}
+
 func (h *handler) health(w http.ResponseWriter, r *http.Request) {
-	counts, err := h.s.Counts()
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	counts, err := h.s.Counts(r.Context(), scope)
 	if respondStoreError(w, err) {
 		return
 	}
@@ -125,6 +183,10 @@ func (h *handler) health(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) listPersons(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	query := r.URL.Query()
 	limit, ok := intParameter(w, r, "limit")
 	if !ok {
@@ -138,7 +200,7 @@ func (h *handler) listPersons(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	persons, err := h.s.ListPersons(PersonFilter{Query: query.Get("q"), Tag: query.Get("tag"), PrincipalID: query.Get("principal_id"), IncludeDeleted: includeDeleted, Limit: limit, Offset: offset})
+	persons, err := h.s.ListPersons(r.Context(), scope, PersonFilter{Query: query.Get("q"), Tag: query.Get("tag"), PrincipalID: query.Get("principal_id"), IncludeDeleted: includeDeleted, Limit: limit, Offset: offset})
 	if respondStoreError(w, err) {
 		return
 	}
@@ -146,11 +208,15 @@ func (h *handler) listPersons(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) createPerson(w http.ResponseWriter, r *http.Request) {
+	owner, ok := newRecordOwner(w, r)
+	if !ok {
+		return
+	}
 	var input PersonInput
 	if !decode(w, r, &input) {
 		return
 	}
-	person, err := h.s.CreatePerson(input)
+	person, err := h.s.CreatePerson(r.Context(), owner, input)
 	if respondStoreError(w, err) {
 		return
 	}
@@ -158,7 +224,11 @@ func (h *handler) createPerson(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) getPerson(w http.ResponseWriter, r *http.Request) {
-	person, err := h.s.GetPerson(r.PathValue("id"))
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	person, err := h.s.GetPerson(r.Context(), scope, r.PathValue("id"))
 	if respondStoreError(w, err) {
 		return
 	}
@@ -180,6 +250,10 @@ var unpatchableFields = map[string]string{
 }
 
 func (h *handler) patchPerson(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	var raw map[string]json.RawMessage
 	if !decode(w, r, &raw) {
 		return
@@ -219,7 +293,7 @@ func (h *handler) patchPerson(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	person, err := h.s.PatchPerson(r.PathValue("id"), patch)
+	person, err := h.s.PatchPerson(r.Context(), scope, r.PathValue("id"), patch)
 	if respondStoreError(w, err) {
 		return
 	}
@@ -244,7 +318,11 @@ func stringField(field string, value json.RawMessage, isNull, nullClears bool) (
 }
 
 func (h *handler) deletePerson(w http.ResponseWriter, r *http.Request) {
-	person, err := h.s.DeletePerson(r.PathValue("id"))
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	person, err := h.s.DeletePerson(r.Context(), scope, r.PathValue("id"))
 	if respondStoreError(w, err) {
 		return
 	}
@@ -252,7 +330,11 @@ func (h *handler) deletePerson(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) restorePerson(w http.ResponseWriter, r *http.Request) {
-	person, err := h.s.RestorePerson(r.PathValue("id"))
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	person, err := h.s.RestorePerson(r.Context(), scope, r.PathValue("id"))
 	if respondStoreError(w, err) {
 		return
 	}
@@ -260,7 +342,11 @@ func (h *handler) restorePerson(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) listRevisions(w http.ResponseWriter, r *http.Request) {
-	revisions, err := h.s.Revisions(r.PathValue("id"))
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	revisions, err := h.s.Revisions(r.Context(), scope, r.PathValue("id"))
 	if respondStoreError(w, err) {
 		return
 	}
@@ -268,11 +354,15 @@ func (h *handler) listRevisions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) addIdentity(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	var input IdentityLinkInput
 	if !decode(w, r, &input) {
 		return
 	}
-	identity, added, err := h.s.AddIdentity(r.PathValue("id"), input)
+	identity, added, err := h.s.AddIdentity(r.Context(), scope, r.PathValue("id"), input)
 	if respondStoreError(w, err) {
 		return
 	}
@@ -284,15 +374,23 @@ func (h *handler) addIdentity(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) removeIdentity(w http.ResponseWriter, r *http.Request) {
-	if respondStoreError(w, h.s.RemoveIdentity(r.PathValue("id"))) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	if respondStoreError(w, h.s.RemoveIdentity(r.Context(), scope, r.PathValue("id"))) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *handler) resolveIdentity(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	query := r.URL.Query()
-	resolution, err := h.s.ResolveIdentity(query.Get("kind"), query.Get("value"))
+	resolution, err := h.s.ResolveIdentity(r.Context(), scope, query.Get("kind"), query.Get("value"))
 	if respondStoreError(w, err) {
 		return
 	}
@@ -300,11 +398,15 @@ func (h *handler) resolveIdentity(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) addRelationship(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	var input RelationshipInput
 	if !decode(w, r, &input) {
 		return
 	}
-	relationship, err := h.s.AddRelationship(r.PathValue("id"), input)
+	relationship, err := h.s.AddRelationship(r.Context(), scope, r.PathValue("id"), input)
 	if respondStoreError(w, err) {
 		return
 	}
@@ -312,13 +414,21 @@ func (h *handler) addRelationship(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) removeRelationship(w http.ResponseWriter, r *http.Request) {
-	if respondStoreError(w, h.s.RemoveRelationship(r.PathValue("id"))) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	if respondStoreError(w, h.s.RemoveRelationship(r.Context(), scope, r.PathValue("id"))) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *handler) listSuggestions(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	limit, ok := intParameter(w, r, "limit")
 	if !ok {
 		return
@@ -328,7 +438,7 @@ func (h *handler) listSuggestions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query := r.URL.Query()
-	suggestions, err := h.s.ListSuggestions(SuggestionFilter{Status: query.Get("status"), Query: query.Get("q"), Sort: query.Get("sort"), Limit: limit, Offset: offset})
+	suggestions, err := h.s.ListSuggestions(r.Context(), scope, SuggestionFilter{Status: query.Get("status"), Query: query.Get("q"), Sort: query.Get("sort"), Limit: limit, Offset: offset})
 	if respondStoreError(w, err) {
 		return
 	}
@@ -336,7 +446,11 @@ func (h *handler) listSuggestions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) getSuggestion(w http.ResponseWriter, r *http.Request) {
-	suggestion, err := h.s.GetSuggestion(r.PathValue("id"))
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	suggestion, err := h.s.GetSuggestion(r.Context(), scope, r.PathValue("id"))
 	if respondStoreError(w, err) {
 		return
 	}
@@ -344,11 +458,15 @@ func (h *handler) getSuggestion(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) proposeSuggestion(w http.ResponseWriter, r *http.Request) {
+	owner, ok := newRecordOwner(w, r)
+	if !ok {
+		return
+	}
 	var input SuggestionInput
 	if !decode(w, r, &input) {
 		return
 	}
-	proposal, err := h.s.ProposeSuggestion(input)
+	proposal, err := h.s.ProposeSuggestion(r.Context(), owner, input)
 	if respondStoreError(w, err) {
 		return
 	}
@@ -360,11 +478,15 @@ func (h *handler) proposeSuggestion(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) acceptSuggestion(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	var input AcceptSuggestionInput
 	if !decodeOptional(w, r, &input) {
 		return
 	}
-	accepted, err := h.s.AcceptSuggestion(r.PathValue("id"), input.PersonID)
+	accepted, err := h.s.AcceptSuggestion(r.Context(), scope, r.PathValue("id"), input.PersonID)
 	if respondStoreError(w, err) {
 		return
 	}
@@ -372,7 +494,11 @@ func (h *handler) acceptSuggestion(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) rejectSuggestion(w http.ResponseWriter, r *http.Request) {
-	suggestion, err := h.s.RejectSuggestion(r.PathValue("id"))
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	suggestion, err := h.s.RejectSuggestion(r.Context(), scope, r.PathValue("id"))
 	if respondStoreError(w, err) {
 		return
 	}
@@ -380,11 +506,15 @@ func (h *handler) rejectSuggestion(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) reportHandleActivity(w http.ResponseWriter, r *http.Request) {
+	owner, ok := newRecordOwner(w, r)
+	if !ok {
+		return
+	}
 	var report HandleActivityReport
 	if !decode(w, r, &report) {
 		return
 	}
-	result, err := h.s.ReportHandleActivity(report)
+	result, err := h.s.ReportHandleActivity(r.Context(), owner, report)
 	if respondStoreError(w, err) {
 		return
 	}
@@ -470,6 +600,9 @@ func respondStoreError(w http.ResponseWriter, err error) bool {
 	case errors.Is(err, ErrInvalid):
 		writeErr(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, ErrConflict):
+		writeErr(w, http.StatusConflict, err.Error())
+	case isUniqueViolation(err):
+		// A concurrent write took the same handle or pair first.
 		writeErr(w, http.StatusConflict, err.Error())
 	case errors.Is(err, ErrPrincipalStoreUnavailable):
 		writeErr(w, http.StatusBadGateway, err.Error())
