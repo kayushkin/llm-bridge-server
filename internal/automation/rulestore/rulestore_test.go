@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 )
 
 const (
@@ -21,12 +23,11 @@ const (
 
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
-	s, err := Open(t.TempDir())
+	module, err := Module()
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
-	return s
+	return New(postgrestest.NewDatabase(t, module).Open(module))
 }
 
 // curatorDone is the curator's "completed, not an autoworker session" rule.

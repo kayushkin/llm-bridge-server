@@ -103,7 +103,7 @@ func (s *Store) CreateRule(name, description, source, createdBy string) (*Rule, 
 	at := now()
 	r := &Rule{ID: formatID("rule", seq), Name: name, Description: strings.TrimSpace(description), Source: source,
 		State: RuleStateDraft, CreatedBy: createdBy, CreatedAt: at, UpdatedAt: at}
-	if _, err := tx.Exec(`INSERT INTO rules (id, seq, name, description, source, state, created_by, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)`,
+	if _, err := tx.Exec(`INSERT INTO rules (id, seq, name, description, source, state, created_by, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
 		r.ID, seq, r.Name, r.Description, r.Source, r.State, r.CreatedBy, r.CreatedAt, r.UpdatedAt); err != nil {
 		return nil, err
 	}
@@ -112,7 +112,7 @@ func (s *Store) CreateRule(name, description, source, createdBy string) (*Rule, 
 
 // GetRule returns a rule with its revisions and activations.
 func (s *Store) GetRule(id string) (*Rule, error) {
-	r, err := scanRule(s.db.QueryRow(`SELECT `+ruleColumns+` FROM rules WHERE id = ?`, id).Scan)
+	r, err := scanRule(s.db.QueryRow(`SELECT `+ruleColumns+` FROM rules WHERE id = $1`, id).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("%w: rule %s", ErrNotFound, id)
 	}
@@ -136,7 +136,7 @@ func (s *Store) ListRules(state string) ([]*Rule, error) {
 		if err := oneOf(state, RuleStates, "rule state"); err != nil {
 			return nil, err
 		}
-		query += ` WHERE state = ?`
+		query += ` WHERE state = $1`
 		args = append(args, state)
 	}
 	rows, err := s.db.Query(query+` ORDER BY seq`, args...)
@@ -161,7 +161,7 @@ func (s *Store) AddRevision(ruleID string, raw json.RawMessage, note, createdBy 
 	if err := requirePrincipal(createdBy, "created_by"); err != nil {
 		return nil, err
 	}
-	rule, err := scanRule(s.db.QueryRow(`SELECT `+ruleColumns+` FROM rules WHERE id = ?`, ruleID).Scan)
+	rule, err := scanRule(s.db.QueryRow(`SELECT `+ruleColumns+` FROM rules WHERE id = $1`, ruleID).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("%w: rule %s", ErrNotFound, ruleID)
 	}
@@ -188,13 +188,17 @@ func (s *Store) AddRevision(ruleID string, raw json.RawMessage, note, createdBy 
 	if err != nil {
 		return nil, err
 	}
+	// Two revisions of one rule take turns for the next number.
+	if _, err := tx.Exec(`SELECT 1 FROM rules WHERE id = $1 FOR UPDATE`, ruleID); err != nil {
+		return nil, err
+	}
 	var latest sql.NullInt64
-	if err := tx.QueryRow(`SELECT MAX(revision) FROM rule_revisions WHERE rule_id = ?`, ruleID).Scan(&latest); err != nil {
+	if err := tx.QueryRow(`SELECT MAX(revision) FROM rule_revisions WHERE rule_id = $1`, ruleID).Scan(&latest); err != nil {
 		return nil, err
 	}
 	rev := &RuleRevision{ID: formatID("rule_revision", seq), RuleID: ruleID, Revision: int(latest.Int64) + 1,
 		Definition: definition, Note: strings.TrimSpace(note), CreatedBy: createdBy, CreatedAt: now()}
-	if _, err := tx.Exec(`INSERT INTO rule_revisions (id, seq, rule_id, revision, definition, note, created_by, created_at) VALUES (?,?,?,?,?,?,?,?)`,
+	if _, err := tx.Exec(`INSERT INTO rule_revisions (id, seq, rule_id, revision, definition, note, created_by, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
 		rev.ID, seq, rev.RuleID, rev.Revision, string(canonical), rev.Note, rev.CreatedBy, rev.CreatedAt); err != nil {
 		return nil, err
 	}
@@ -203,7 +207,7 @@ func (s *Store) AddRevision(ruleID string, raw json.RawMessage, note, createdBy 
 
 // GetRevision returns one revision.
 func (s *Store) GetRevision(id string) (*RuleRevision, error) {
-	rev, err := scanRevision(s.db.QueryRow(`SELECT id, rule_id, revision, definition, note, created_by, created_at FROM rule_revisions WHERE id = ?`, id).Scan)
+	rev, err := scanRevision(s.db.QueryRow(`SELECT id, rule_id, revision, definition, note, created_by, created_at FROM rule_revisions WHERE id = $1`, id).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("%w: rule revision %s", ErrNotFound, id)
 	}
@@ -223,7 +227,7 @@ func scanRevision(scan func(...any) error) (*RuleRevision, error) {
 }
 
 func (s *Store) revisionsOf(ruleID string) ([]RuleRevision, error) {
-	rows, err := s.db.Query(`SELECT id, rule_id, revision, definition, note, created_by, created_at FROM rule_revisions WHERE rule_id = ? ORDER BY revision`, ruleID)
+	rows, err := s.db.Query(`SELECT id, rule_id, revision, definition, note, created_by, created_at FROM rule_revisions WHERE rule_id = $1 ORDER BY revision`, ruleID)
 	if err != nil {
 		return nil, err
 	}
@@ -240,7 +244,7 @@ func (s *Store) revisionsOf(ruleID string) ([]RuleRevision, error) {
 }
 
 func (s *Store) activationsOf(ruleID string) ([]RuleActivation, error) {
-	rows, err := s.db.Query(`SELECT id, rule_id, action, revision_id, mode, acted_by, reason, acted_at FROM rule_activations WHERE rule_id = ? ORDER BY seq`, ruleID)
+	rows, err := s.db.Query(`SELECT id, rule_id, action, revision_id, mode, acted_by, reason, acted_at FROM rule_activations WHERE rule_id = $1 ORDER BY seq`, ruleID)
 	if err != nil {
 		return nil, err
 	}
@@ -264,7 +268,7 @@ func (s *Store) Activate(ruleID string, revisionNumber int, mode, actedBy, reaso
 		return nil, err
 	}
 	var revisionID string
-	err := s.db.QueryRow(`SELECT id FROM rule_revisions WHERE rule_id = ? AND revision = ?`, ruleID, revisionNumber).Scan(&revisionID)
+	err := s.db.QueryRow(`SELECT id FROM rule_revisions WHERE rule_id = $1 AND revision = $2`, ruleID, revisionNumber).Scan(&revisionID)
 	if errors.Is(err, sql.ErrNoRows) {
 		if _, getErr := s.GetRule(ruleID); getErr != nil {
 			return nil, getErr
@@ -302,7 +306,8 @@ func (s *Store) act(ruleID, action, toState, revisionID, mode, actedBy, reason s
 		return nil, err
 	}
 	defer tx.Rollback()
-	rule, err := scanRule(tx.QueryRow(`SELECT `+ruleColumns+` FROM rules WHERE id = ?`, ruleID).Scan)
+	// FOR UPDATE: two changes of one rule's state take turns.
+	rule, err := scanRule(tx.QueryRow(`SELECT `+ruleColumns+` FROM rules WHERE id = $1 FOR UPDATE`, ruleID).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("%w: rule %s", ErrNotFound, ruleID)
 	}
@@ -324,11 +329,11 @@ func (s *Store) act(ruleID, action, toState, revisionID, mode, actedBy, reason s
 		return nil, err
 	}
 	at := now()
-	if _, err := tx.Exec(`INSERT INTO rule_activations (id, seq, rule_id, action, revision_id, mode, acted_by, reason, acted_at) VALUES (?,?,?,?,?,?,?,?,?)`,
+	if _, err := tx.Exec(`INSERT INTO rule_activations (id, seq, rule_id, action, revision_id, mode, acted_by, reason, acted_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
 		formatID("rule_activation", seq), seq, ruleID, action, revisionID, mode, actedBy, reason, at); err != nil {
 		return nil, err
 	}
-	if _, err := tx.Exec(`UPDATE rules SET state = ?, active_revision_id = ?, mode = ?, updated_at = ? WHERE id = ?`,
+	if _, err := tx.Exec(`UPDATE rules SET state = $1, active_revision_id = $2, mode = $3, updated_at = $4 WHERE id = $5`,
 		toState, revisionID, mode, at, ruleID); err != nil {
 		return nil, err
 	}

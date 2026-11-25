@@ -65,12 +65,32 @@ type ReactorStatus struct {
 	// UnknownFrames counts feed frames of a type this reader does not
 	// handle, by type, so a new frame type upstream is seen, not acted on.
 	UnknownFrames map[string]int `json:"unknown_frames"`
+	// SwitchedOffBecause, when set, says why this process decides nothing:
+	// the reactor does not run, and an activation is not checked.
+	SwitchedOffBecause string `json:"switched_off_because,omitempty"`
 }
 
 // NewReactor builds a reactor. Run starts it.
 func NewReactor(store *Store, bridge *LLMBridge, facts SessionFacts, caller EffectCaller, sweepInterval time.Duration) *Reactor {
 	return &Reactor{store: store, bridge: bridge, facts: facts, caller: caller, sweepInterval: sweepInterval, clock: time.Now,
 		changed: map[string]bool{}, wake: make(chan struct{}, 1), status: ReactorStatus{UnknownFrames: map[string]int{}}}
+}
+
+// SwitchOff makes the reactor decide nothing, for reason: Run must then not
+// be called, and CheckRuleInBackground checks nothing. Rules, revisions,
+// activations and runs are still read and written. A process that holds a
+// copy of the rules while another process still decides them must not decide
+// them too.
+func (r *Reactor) SwitchOff(reason string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.status.SwitchedOffBecause = reason
+}
+
+func (r *Reactor) switchedOff() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.status.SwitchedOffBecause != ""
 }
 
 // Activity returns the reactor's recent activity after seq, newest first.
@@ -105,6 +125,9 @@ func (r *Reactor) fail(err error) {
 
 // Run follows the feed, works the changed sessions and sweeps until ctx ends.
 func (r *Reactor) Run(ctx context.Context) {
+	if r.switchedOff() {
+		panic("rulestore: Run on a reactor that is switched off")
+	}
 	go r.follow(ctx)
 	go r.work(ctx)
 	ticker := time.NewTicker(r.sweepInterval)
@@ -328,6 +351,10 @@ func (r *Reactor) Sweep(ctx context.Context, onlyTimeRules bool) error {
 // decides about sessions that are already in its state. Called after an
 // activation; waits for any sweep in progress.
 func (r *Reactor) CheckRuleInBackground(ctx context.Context, ruleID string) {
+	if r.switchedOff() {
+		log.Printf("not checking newly activated rule %s: the reactor is switched off", ruleID)
+		return
+	}
 	go func() {
 		r.sweeping.Lock()
 		defer r.sweeping.Unlock()

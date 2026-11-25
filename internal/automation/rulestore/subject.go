@@ -102,7 +102,7 @@ func (s *Store) ObserveSubjects(observations []SubjectObservation) ([]Subject, e
 	for _, o := range observations {
 		var state string
 		var episode, stateObservedAt int64
-		err := tx.QueryRow(`SELECT state, state_episode, state_observed_at FROM subjects WHERE subject_type = ? AND subject_id = ?`,
+		err := tx.QueryRow(`SELECT state, state_episode, state_observed_at FROM subjects WHERE subject_type = $1 AND subject_id = $2 FOR UPDATE`,
 			o.Type, o.ID).Scan(&state, &episode, &stateObservedAt)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
@@ -113,7 +113,7 @@ func (s *Store) ObserveSubjects(observations []SubjectObservation) ([]Subject, e
 			episode, stateObservedAt = episode+1, at
 		}
 		if _, err := tx.Exec(`INSERT INTO subjects (subject_type, subject_id, state, state_episode, state_observed_at, snapshot, observed_at)
-			VALUES (?,?,?,?,?,?,?)
+			VALUES ($1,$2,$3,$4,$5,$6,$7)
 			ON CONFLICT (subject_type, subject_id) DO UPDATE SET state = excluded.state, state_episode = excluded.state_episode,
 				state_observed_at = excluded.state_observed_at, snapshot = excluded.snapshot, observed_at = excluded.observed_at`,
 			o.Type, o.ID, o.State, episode, stateObservedAt, string(o.Snapshot), at); err != nil {
@@ -128,13 +128,13 @@ func (s *Store) ObserveSubjects(observations []SubjectObservation) ([]Subject, e
 // ForgetSubject drops the copy of a subject its source deleted. Runs about it
 // stay.
 func (s *Store) ForgetSubject(subjectType, subjectID string) error {
-	_, err := s.db.Exec(`DELETE FROM subjects WHERE subject_type = ? AND subject_id = ?`, subjectType, subjectID)
+	_, err := s.db.Exec(`DELETE FROM subjects WHERE subject_type = $1 AND subject_id = $2`, subjectType, subjectID)
 	return err
 }
 
 // GetSubject returns rule-store's copy of one subject.
 func (s *Store) GetSubject(subjectType, subjectID string) (*Subject, error) {
-	subjects, err := s.querySubjects(`WHERE subject_type = ? AND subject_id = ?`, subjectType, subjectID)
+	subjects, err := s.querySubjects(`WHERE subject_type = $1 AND subject_id = $2`, subjectType, subjectID)
 	if err != nil {
 		return nil, err
 	}
@@ -148,14 +148,15 @@ func (s *Store) GetSubject(subjectType, subjectID string) (*Subject, error) {
 // any state when states is empty.
 func (s *Store) SubjectsInStates(subjectType string, states []string) ([]Subject, error) {
 	if len(states) == 0 {
-		return s.querySubjects(`WHERE subject_type = ?`, subjectType)
+		return s.querySubjects(`WHERE subject_type = $1`, subjectType)
 	}
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(states)), ",")
 	args := []any{subjectType}
+	placeholders := make([]string, 0, len(states))
 	for _, state := range states {
 		args = append(args, state)
+		placeholders = append(placeholders, fmt.Sprintf("$%d", len(args)))
 	}
-	return s.querySubjects(`WHERE subject_type = ? AND state IN (`+placeholders+`)`, args...)
+	return s.querySubjects(`WHERE subject_type = $1 AND state IN (`+strings.Join(placeholders, ",")+`)`, args...)
 }
 
 func (s *Store) querySubjects(where string, args ...any) ([]Subject, error) {

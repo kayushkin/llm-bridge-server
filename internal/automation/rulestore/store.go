@@ -15,13 +15,12 @@ package rulestore
 
 import (
 	"database/sql"
+	"embed"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 )
 
 var (
@@ -30,54 +29,46 @@ var (
 	ErrConflict = errors.New("conflict")
 )
 
-// Store owns the database.
-type Store struct {
-	db      *sql.DB
-	dataDir string
-}
+//go:embed migrations/*.sql
+var migrationFiles embed.FS
 
-// Open creates the data directory if needed, opens the database and applies
-// the schema, which is create-only, so this is safe on every boot.
-func Open(dataDir string) (*Store, error) {
-	if dataDir == "" {
-		return nil, errors.New("open: no data directory")
-	}
-	if err := os.MkdirAll(dataDir, 0o700); err != nil {
-		return nil, fmt.Errorf("create data dir: %w", err)
-	}
-	db, err := sql.Open("sqlite3", filepath.Join(dataDir, "rule-store.db")+"?_foreign_keys=on&_busy_timeout=5000")
+// Module is the Postgres schema and role rule-store keeps its records in,
+// with the migrations that build them.
+func Module() (postgresstorage.Module, error) {
+	migrations, err := postgresstorage.MigrationsFromFiles(migrationFiles, "migrations")
 	if err != nil {
-		return nil, fmt.Errorf("open db: %w", err)
+		return postgresstorage.Module{}, err
 	}
-	// One writer at a time; SQLite serializes writes anyway, and a single
-	// connection makes "read the max seq, insert seq+1" safe without retries.
-	db.SetMaxOpenConns(1)
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("set WAL: %w", err)
-	}
-	if _, err := db.Exec(schemaSQL); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("migrate: %w", err)
-	}
-	return &Store{db: db, dataDir: dataDir}, nil
+	return postgresstorage.Module{Schema: "rules", Role: "rules_module", Migrations: migrations}, nil
 }
 
-// Close releases the database handle.
+// Store owns the module's records.
+type Store struct {
+	db *sql.DB
+}
+
+// New keeps rule-store's records in pool, the module's own connection pool:
+// provisioned, migrated and opened by the caller.
+func New(pool *sql.DB) *Store {
+	return &Store{db: pool}
+}
+
+// Close releases the pool.
 func (s *Store) Close() error { return s.db.Close() }
 
 func now() int64 { return time.Now().Unix() }
 
-// nextSeq returns the next sequence number of a table, inside tx.
+// nextSeq takes the next number of a table's seq identity column, inside tx.
+// A number taken by a transaction that rolls back is never used again.
 func nextSeq(tx *sql.Tx, table string) (int64, error) {
-	var maxSeq sql.NullInt64
-	if err := tx.QueryRow(`SELECT MAX(seq) FROM ` + table).Scan(&maxSeq); err != nil {
-		return 0, err
+	var seq int64
+	if err := tx.QueryRow(`SELECT nextval(pg_get_serial_sequence($1, 'seq'))`, table).Scan(&seq); err != nil {
+		return 0, fmt.Errorf("numbering %s: %w", table, err)
 	}
-	return maxSeq.Int64 + 1, nil
+	return seq, nil
 }
 
-func formatID(prefix string, seq int64) string { return fmt.Sprintf("%s_%06d", prefix, seq) }
+func formatID(prefix string, seq int64) string { return postgresstorage.FormatRecordID(prefix, seq) }
 
 // Counts is what GET /health reports.
 type Counts struct {

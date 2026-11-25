@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/jackc/pgx/v5/pgconn"
 	"strings"
 )
 
@@ -41,7 +42,7 @@ func (s *Store) FinishRun(runID, outcome string, effects []PlannedEffect) error 
 	if err != nil {
 		return err
 	}
-	result, err := s.db.Exec(`UPDATE rule_runs SET outcome = ?, planned_effects = ? WHERE id = ? AND outcome = ?`,
+	result, err := s.db.Exec(`UPDATE rule_runs SET outcome = $1, planned_effects = $2 WHERE id = $3 AND outcome = $4`,
 		outcome, string(planned), runID, OutcomeApplying)
 	if err != nil {
 		return err
@@ -54,7 +55,7 @@ func (s *Store) FinishRun(runID, outcome string, effects []PlannedEffect) error 
 
 // MarkInterruptedRuns marks every run left applying by a stopped process.
 func (s *Store) MarkInterruptedRuns() (int64, error) {
-	result, err := s.db.Exec(`UPDATE rule_runs SET outcome = ? WHERE outcome = ?`, OutcomeInterrupted, OutcomeApplying)
+	result, err := s.db.Exec(`UPDATE rule_runs SET outcome = $1 WHERE outcome = $2`, OutcomeInterrupted, OutcomeApplying)
 	if err != nil {
 		return 0, err
 	}
@@ -81,7 +82,7 @@ type Run struct {
 // state episode, so the reactor can skip the kanban-store reads.
 func (s *Store) HasRun(revisionID, subjectType, subjectID, triggerKey string) (bool, error) {
 	var one int
-	err := s.db.QueryRow(`SELECT 1 FROM rule_runs WHERE rule_revision_id = ? AND subject_type = ? AND subject_id = ? AND trigger_key = ?`,
+	err := s.db.QueryRow(`SELECT 1 FROM rule_runs WHERE rule_revision_id = $1 AND subject_type = $2 AND subject_id = $3 AND trigger_key = $4`,
 		revisionID, subjectType, subjectID, triggerKey).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
@@ -108,11 +109,12 @@ func (s *Store) RecordRun(run *Run) error {
 	}
 	run.ID = formatID("rule_run", seq)
 	_, err = tx.Exec(`INSERT INTO rule_runs (id, seq, rule_id, rule_revision_id, subject_type, subject_id, trigger_key, mode, cause, facts, planned_effects, outcome, decided_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
 		run.ID, seq, run.RuleID, run.RuleRevisionID, run.SubjectType, run.SubjectID, run.TriggerKey, run.Mode, run.Cause,
 		string(run.Facts), string(planned), run.Outcome, run.DecidedAt)
 	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint failed: rule_runs.rule_revision_id") {
+		var postgresError *pgconn.PgError
+		if errors.As(err, &postgresError) && postgresError.Code == "23505" && postgresError.ConstraintName == "rule_runs_one_decision_per_state_entry" {
 			return fmt.Errorf("%w: %s already decided about %s %s at %s", ErrConflict, run.RuleRevisionID, run.SubjectType, run.SubjectID, run.TriggerKey)
 		}
 		return err
@@ -133,13 +135,16 @@ func (s *Store) ListRuns(f RunFilter) ([]Run, error) {
 	var where []string
 	var args []any
 	if f.RuleID != "" {
-		where, args = append(where, "rule_id = ?"), append(args, f.RuleID)
+		args = append(args, f.RuleID)
+		where = append(where, fmt.Sprintf("rule_id = $%d", len(args)))
 	}
 	if f.SubjectID != "" {
-		where, args = append(where, "subject_id = ?"), append(args, f.SubjectID)
+		args = append(args, f.SubjectID)
+		where = append(where, fmt.Sprintf("subject_id = $%d", len(args)))
 	}
 	if f.Since > 0 {
-		where, args = append(where, "decided_at >= ?"), append(args, f.Since)
+		args = append(args, f.Since)
+		where = append(where, fmt.Sprintf("decided_at >= $%d", len(args)))
 	}
 	query := `SELECT id, rule_id, rule_revision_id, subject_type, subject_id, trigger_key, mode, cause, facts, planned_effects, outcome, decided_at FROM rule_runs`
 	if len(where) > 0 {
@@ -181,7 +186,7 @@ type RuleRunCounts struct {
 
 // RunCountsByRule counts runs per rule in one query.
 func (s *Store) RunCountsByRule(recentSince int64) (map[string]RuleRunCounts, error) {
-	rows, err := s.db.Query(`SELECT rule_id, COUNT(*), SUM(CASE WHEN decided_at >= ? THEN 1 ELSE 0 END), MAX(decided_at) FROM rule_runs GROUP BY rule_id`, recentSince)
+	rows, err := s.db.Query(`SELECT rule_id, COUNT(*), SUM(CASE WHEN decided_at >= $1 THEN 1 ELSE 0 END), MAX(decided_at) FROM rule_runs GROUP BY rule_id`, recentSince)
 	if err != nil {
 		return nil, err
 	}
