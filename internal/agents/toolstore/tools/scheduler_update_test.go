@@ -167,7 +167,7 @@ func TestUpdateReportsEveryFieldAppliedWhenTheServerAppliesThemAll(t *testing.T)
 	everyField := []string{"name", "description", "schedule", "command", "prompt", "timeout_seconds", "enabled"}
 	baseURL, _ := fakeScheduler(t, jobBeforeUpdate(), everyField)
 
-	report, err := handleUpdate(context.Background(), baseURL, "", 50, schedulerInput{
+	report, err := handleUpdate(context.Background(), baseURL, http.DefaultClient, 50, schedulerInput{
 		Schedule: stringPointer("0 6 * * *"),
 		Command:  stringPointer("echo CHANGED"),
 	})
@@ -188,7 +188,7 @@ func TestUpdateReportsEveryFieldAppliedWhenTheServerAppliesThemAll(t *testing.T)
 func TestUpdateDoesNotReportAFieldTheServerSilentlyDropped(t *testing.T) {
 	baseURL, _ := fakeScheduler(t, jobBeforeUpdate(), fieldsTheOlderSchedulerHonors)
 
-	report, err := handleUpdate(context.Background(), baseURL, "", 50, schedulerInput{
+	report, err := handleUpdate(context.Background(), baseURL, http.DefaultClient, 50, schedulerInput{
 		Schedule: stringPointer("0 6 * * *"),
 		Command:  stringPointer("echo CHANGED"),
 	})
@@ -215,7 +215,7 @@ func TestUpdateDoesNotReportAFieldTheServerSilentlyDropped(t *testing.T) {
 func TestUpdateSeparatesTheAppliedFieldsFromTheDroppedOnes(t *testing.T) {
 	baseURL, _ := fakeScheduler(t, jobBeforeUpdate(), fieldsTheOlderSchedulerHonors)
 
-	report, err := handleUpdate(context.Background(), baseURL, "", 50, schedulerInput{
+	report, err := handleUpdate(context.Background(), baseURL, http.DefaultClient, 50, schedulerInput{
 		Enabled:  boolPointer(false),
 		Schedule: stringPointer("0 6 * * *"),
 	})
@@ -250,7 +250,7 @@ func TestUpdateSeparatesTheAppliedFieldsFromTheDroppedOnes(t *testing.T) {
 func TestUpdateForwardsEveryFieldTheCallerNamed(t *testing.T) {
 	baseURL, lastRequest := fakeScheduler(t, jobBeforeUpdate(), fieldsTheOlderSchedulerHonors)
 
-	if _, err := handleUpdate(context.Background(), baseURL, "", 50, schedulerInput{
+	if _, err := handleUpdate(context.Background(), baseURL, http.DefaultClient, 50, schedulerInput{
 		Schedule: stringPointer("0 6 * * *"),
 		Prompt:   stringPointer("summarize yesterday"),
 	}); err != nil {
@@ -282,7 +282,7 @@ func TestUpdateComparesANumericFieldByValueAndNotByItsJSONType(t *testing.T) {
 	timeout := 1800
 	baseURL, _ := fakeScheduler(t, jobBeforeUpdate(), fieldsTheOlderSchedulerHonors)
 
-	report, err := handleUpdate(context.Background(), baseURL, "", 50, schedulerInput{
+	report, err := handleUpdate(context.Background(), baseURL, http.DefaultClient, 50, schedulerInput{
 		TimeoutSecs: &timeout,
 	})
 	if err != nil {
@@ -300,7 +300,7 @@ func TestUpdateComparesANumericFieldByValueAndNotByItsJSONType(t *testing.T) {
 func TestUpdateCountsAFieldSetToItsCurrentValueAsApplied(t *testing.T) {
 	baseURL, _ := fakeScheduler(t, jobBeforeUpdate(), fieldsTheOlderSchedulerHonors)
 
-	report, err := handleUpdate(context.Background(), baseURL, "", 50, schedulerInput{
+	report, err := handleUpdate(context.Background(), baseURL, http.DefaultClient, 50, schedulerInput{
 		Schedule: stringPointer("0 0 31 2 *"),
 	})
 	if err != nil {

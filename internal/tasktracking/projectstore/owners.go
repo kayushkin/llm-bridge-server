@@ -33,6 +33,10 @@ type Owners struct {
 	// call with its handler as the internal service, with no socket between.
 	Kanban         *http.Client
 	KanbanStoreURL string
+	// Scheduler carries the calls to the scheduler at SchedulerURL. In this
+	// server the scheduler runs in the same process, and Scheduler serves
+	// each call with its handler.
+	Scheduler      *http.Client
 	SchedulerURL   string
 	HealthcheckURL string
 	// Principals is principal-store, in this process: what a principal link
@@ -77,6 +81,14 @@ func (owners *Owners) getKanbanJSON(ctx context.Context, path string, target any
 		return fmt.Errorf("%w: this server has no kanban-store to answer %s", ErrOwnerUnavailable, path)
 	}
 	return fetchJSON(ctx, owners.Kanban, owners.KanbanStoreURL+path, nil, target)
+}
+
+// getSchedulerJSON is getJSON for a scheduler path, through Scheduler.
+func (owners *Owners) getSchedulerJSON(ctx context.Context, path string, target any) error {
+	if owners.Scheduler == nil {
+		return fmt.Errorf("%w: this server has no scheduler to answer %s", ErrOwnerUnavailable, path)
+	}
+	return fetchJSON(ctx, owners.Scheduler, owners.SchedulerURL+path, nil, target)
 }
 
 // fetchJSON is one GET through client into target.
@@ -146,7 +158,7 @@ func (owners *Owners) Label(ctx context.Context, entityType, entityRef string) (
 		var job struct {
 			Name string `json:"name"`
 		}
-		err = owners.getJSON(ctx, owners.SchedulerURL+"/api/jobs/"+escaped, nil, &job)
+		err = owners.getSchedulerJSON(ctx, "/api/jobs/"+escaped, &job)
 		label = job.Name
 	case EntityService:
 		var status struct {

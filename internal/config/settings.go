@@ -206,8 +206,6 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "The auth-store credential holding that application's OAuth2 client secret, read each time a code is traded."},
 		{Key: "sign_in.discord_redirect_url", EnvironmentVariable: "LLMBRIDGE_SIGN_IN_DISCORD_REDIRECT_URL", Kind: wiring, ValueType: text,
 			Description: "Where Discord sends the browser back: GET /sign-in-store/discord/callback as the browser reaches it. It must be on the application's OAuth2 redirect list on Discord's developer portal, or Discord refuses every sign-in."},
-		{Key: "scheduler.url", EnvironmentVariable: "LLMBRIDGE_SCHEDULER_URL", Kind: wiring, ValueType: text,
-			Description: "the scheduler, which runs the job a scheduler job action names. It has no default; empty refuses those actions."},
 		{Key: "local_tools.pinchtab_url", EnvironmentVariable: "LLMBRIDGE_LOCAL_TOOLS_PINCHTAB_URL", Kind: wiring, ValueType: text, Default: productiondefaults.PinchtabURL,
 			Description: "Where PinchTab answers. tool-store's in-process browser tool sends every action there; a wrong address makes each browser call report a connection error."},
 		{Key: "healthcheck.url", EnvironmentVariable: "LLMBRIDGE_HEALTHCHECK_URL", Kind: wiring, ValueType: text, Default: productiondefaults.HealthcheckURL,
@@ -272,8 +270,6 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "The bearer token tool-store's in-process browser tool presents to PinchTab. Unset, it sends no Authorization header."},
 		{Key: "local_tools.brave_api_key", EnvironmentVariable: LocalToolsBraveAPIKeyEnvironmentVariable, Kind: secret, ValueType: text,
 			Description: "The Brave Search API key tool-store's in-process web_search tool sends. Unset, every web_search call answers that the key is not set. It is not the key an MCP brave-search server gets: that one is resolved from auth-store when the tool is provisioned."},
-		{Key: "local_tools.scheduler_token", EnvironmentVariable: LocalToolsSchedulerTokenEnvironmentVariable, Kind: secret, ValueType: text,
-			Description: "The bearer token tool-store's in-process scheduler tool presents to the scheduler at scheduler.url. Unset, it sends no Authorization header."},
 		{Key: "auth_store.token", EnvironmentVariable: "AUTH_STORE_TOKEN", Kind: secret, ValueType: text,
 			Description: "auth-store's bearer token. sign-in-store presents it to read multichat's token and Discord's client secret."},
 		{Key: "reference_store.service_token", EnvironmentVariable: ReferenceStoreServiceTokenEnvironmentVariable, Kind: secret, ValueType: text,
@@ -286,6 +282,7 @@ func SettingDefinitions() []servicesettings.Definition {
 	definitions = append(definitions, kanbanStoreSettingDefinitions()...)
 	definitions = append(definitions, usageAndEvalSettingDefinitions()...)
 	definitions = append(definitions, mailSettingDefinitions()...)
+	definitions = append(definitions, automationSettingDefinitions()...)
 
 	// One proxy backend per known harness. The variable is per harness, so the
 	// declarations are read off the harness registry rather than listed.

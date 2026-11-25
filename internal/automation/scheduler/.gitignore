@@ -1,0 +1,48 @@
+# Where deploy.sh puts every command it builds. One entry, so adding a command
+# under cmd/ never again needs an edit here — the list below drifted from cmd/
+# and left reminder-coordinator untracked by both this file and deploy.sh.
+/build/
+
+# Compiled binaries, from hand builds in the repo root or in a command's own
+# directory. deploy.sh no longer writes these paths.
+/scheduler
+/autoworker
+/kanban-curator
+/kanban-classifier
+/kanban-scoper
+/kanban-dispatcher
+/autoworker-reviewer
+/ask
+/spend-ceiling-guard
+/reminder-coordinator
+/email-classifier
+/cmd/scheduler/scheduler
+/cmd/autoworker/autoworker
+/cmd/kanban-curator/kanban-curator
+/cmd/kanban-classifier/kanban-classifier
+/cmd/kanban-scoper/kanban-scoper
+/cmd/kanban-dispatcher/kanban-dispatcher
+/cmd/autoworker-reviewer/autoworker-reviewer
+/cmd/ask/ask
+/cmd/spend-ceiling-guard/spend-ceiling-guard
+/cmd/reminder-coordinator/reminder-coordinator
+/cmd/email-classifier/email-classifier
+
+# DB files
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Python bytecode. The sabotage scripts import scripts/sabotage.py, so running
+# one writes scripts/__pycache__/ into the tree. Untracked build noise, and it
+# blocks `git worktree remove` if left behind.
+__pycache__/
+*.pyc
+/demo-mail-generator
+/demo-worker

@@ -117,3 +117,9 @@ func (answer *streamingAnswer) Write(data []byte) (int, error) {
 	answer.start(http.StatusOK)
 	return answer.body.Write(data)
 }
+
+// Flush sends the status and headers if nothing was written yet. Every write
+// already reaches the reader unbuffered, so a stream such as server-sent
+// events is read as it is written, and a handler that streams only through an
+// http.Flusher can be served in process.
+func (answer *streamingAnswer) Flush() { answer.start(http.StatusOK) }

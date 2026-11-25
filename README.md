@@ -176,6 +176,8 @@ curl -s -c jar -X POST localhost:8160/auth/demo-login -H 'Content-Type: applicat
 
 `/kanban/<rest>` is kanban-store's `/api/<rest>` and `/kanban-store/<rest>` its `/<rest>`. kanban-store runs in this process on its Postgres module (`internal/tasktracking/kanbanstore`), and reads its caller from the request context: the verified principal, narrowed by its board grants, or the internal service (this server's service token naming nobody), unrestricted. No header names the caller, so a forged `X-Principal-Id` or kanban-store service token names nobody. `llm-bridge-server import-kanban-store -sqlite <file>` copies a standalone kanban-store's database into the module. `/grant-store/<rest>` is grant-store's `/<rest>`, in this process the same way. `/mailstack/<rest>` is mailstack's `/<rest>`, in this process on its Postgres module (`internal/mail/mailstack`, module `mail`) the same way: the internal service unrestricted, a principal narrowed to its `can_read_mail` and `can_import_mail` grants and the messages its viewable cards link, and `POST /mailstack/api/ingress/deliveries` open to a sender with an ingress credential. Gmail, Outlook and IMAP accounts reach their providers only while `mailstack.provider_connections.enabled` is on. `llm-bridge-server import-mailstack -accounts-sqlite <file> [-local-mail-sqlite <file>]` copies a standalone mailstack in. `/reference-store/<rest>` runs in this process too.
 
+`/scheduler/<rest>` is the scheduler's `/<rest>` and `/rule-store/<rest>` rule-store's `/<rest>`, both in this process on their Postgres modules (`internal/automation/scheduler`, module `scheduler`; `internal/automation/rulestore`, module `rules`), operator only. Neither acts on its own unless a setting says so: `scheduler.runs.enabled` (off) starts the cron ticker, run now, the bus commands and event triggers, and `rule_store.reactor.enabled` (off) starts the reactor; off, their records are read and written and run now answers 503. `llm-bridge-server import-scheduler -sqlite <file> [-newest-runs-per-job <n>]` and `import-rule-store -sqlite <file>` copy the standalone files in.
+
 `/people-store/`, `/calendar-store/` and `/journal-store/` are the connected records stores, on their Postgres modules (`internal/connectedrecords/`), with their own paths behind the prefix. Every record carries `owner_principal_id`, the principal-store id of the person who keeps it, and each store narrows every read and write to the caller's own records: another person's record is 404, as a missing one is, and a list holds only the caller's. An administrator sees every owner's records and may narrow to one with `?owner_principal_id=`. The service token acting as nobody sees every owner's in people-store and calendar-store and cannot make a record; journal-store refuses it outright (403 `journal_store_requires_a_principal`), so it answers only its owner's or an administrator's principal. `llm-bridge-server import-people-store|import-calendar-store|import-journal-store -sqlite <file> -owner <principal id>` copies a standalone store into its module, every record owned by `-owner`, which is required and must be a person principal-store holds.
 
 `/message-store/`, `/activity-store/` and `/time-ledger-store/` are connected records stores too (`internal/connectedrecords/messagestore`, `activitystore`, `timeledgerstore`; modules `messages`, `activity`, `time_ledger`), under the same owner rule. The service token acting as nobody sees every owner's records in all three and cannot make one; an importer sends it beside the `X-Principal-Id` of the person it files for. activity-store keeps its attachments' bytes in file-store, as files owned by `activity-store` and the activity. None runs a loop of its own: the importers (`message-import-*`, `activity-import-google`, `time-ledger-import` and the rest) are separate commands that call these routes. `llm-bridge-server import-message-store|import-time-ledger-store -sqlite <file> -owner <principal id>` and `import-activity-store -sqlite <file> -attachments <directory> -owner <principal id>` copy a standalone store into its module; the activity import carries each attachment into file-store after checking its SHA-256.
@@ -791,6 +793,47 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `POST` | `/model-store/api/roles` | Set a role's first model (`model`) or its whole list (`models`) | operator |
 | `GET` | `/model-store/api/roles/{role}` | A role's first model, resolved | operator |
 | `GET` | `/model-store/api/roles/{role}/models` | Every model in a role's list, in the order to try them | operator |
+
+### scheduler, mounted in this process
+
+| Method | Route | What it does | Who may call |
+|---|---|---|---|
+| `GET` | `/scheduler/api/calendar/events` | Every enabled job's cron occurrences between `from` and `to` (RFC3339) | operator |
+| `GET` | `/scheduler/api/event-trigger-subjects` | The bus subjects a job's event trigger may name, with each one's fields | operator |
+| `GET` | `/scheduler/api/job-references/{reference}` | A job by its reference id (`scheduler_job_000076`), with `reference_id` and `last_run` | operator |
+| `GET` | `/scheduler/api/jobs` | Every job, by id | operator |
+| `POST` | `/scheduler/api/jobs` | Create a shell or agent job; `"enabled":false` creates it switched off. 201 | operator |
+| `DELETE` | `/scheduler/api/jobs/{id}` | Delete a job; its runs stay. 204 | operator |
+| `GET` | `/scheduler/api/jobs/{id}` | One job | operator |
+| `PATCH` | `/scheduler/api/jobs/{id}` | Change any field; an unknown field, a bad cron expression or an unrunnable job is 400 | operator |
+| `DELETE` | `/scheduler/api/jobs/{id}/hold` | Clear a job's hold | operator |
+| `POST` | `/scheduler/api/jobs/{id}/hold` | Hold a job: `{"days"}` or `{"until"}` (RFC3339) | operator |
+| `POST` | `/scheduler/api/jobs/{id}/run` | Run a job now; 503 while `scheduler.runs.enabled` is off, 409 for a triggered job | operator |
+| `GET` | `/scheduler/api/jobs/{id}/runs` | A job's newest runs with output, newest first: `limit` (1 to 100) | operator |
+| `GET` | `/scheduler/api/runs/latest` | Every job's newest run, without output | operator |
+| `GET` | `/scheduler/health` | `{"status","uptime_s","started_at"}` | operator |
+| `GET` | `/scheduler/settings` | The model role each job binary and agent job asks for, stored here | operator |
+| `PUT` | `/scheduler/settings/{key}` | Store a model role, checked with model-store: `{"value"}` | operator |
+
+### rule-store, mounted in this process
+
+| Method | Route | What it does | Who may call |
+|---|---|---|---|
+| `GET` | `/rule-store/activity` | The reactor's recent activity, newest first: `after`, `kind`, `limit` | operator |
+| `GET` | `/rule-store/health` | Counts of each record, and the reactor's state | operator |
+| `GET` | `/rule-store/rules` | Every rule, oldest first: `state` | operator |
+| `POST` | `/rule-store/rules` | Create a draft rule: `{name, description?, source, created_by}`. 201 | operator |
+| `GET` | `/rule-store/rules/{id}` | A rule with its revisions and activations | operator |
+| `POST` | `/rule-store/rules/{id}/activate` | Activate a revision in `shadow` or `live` mode | operator |
+| `GET` | `/rule-store/rules/{id}/comparison` | Whether each run's planned effects are visible at their owners now | operator |
+| `POST` | `/rule-store/rules/{id}/pause` | Pause an active rule | operator |
+| `POST` | `/rule-store/rules/{id}/preview` | What a revision or definition would decide about every session held now; records nothing | operator |
+| `POST` | `/rule-store/rules/{id}/retire` | Retire a rule, for good | operator |
+| `POST` | `/rule-store/rules/{id}/revisions` | Add a validated, immutable revision. 201 | operator |
+| `GET` | `/rule-store/runs` | Decisions, newest first: `rule_id`, `subject_id`, `since`, `limit` | operator |
+| `GET` | `/rule-store/subjects/{type}/{id}` | rule-store's copy of a subject and its state episode | operator |
+| `GET` | `/rule-store/summary` | Counts, the reactor's state and every rule with its run counts | operator |
+| `GET` | `/rule-store/vocabulary` | Sources, condition kinds, session fields, effect kinds, modes and rule states | operator |
 
 ### people-store, mounted in this process
 

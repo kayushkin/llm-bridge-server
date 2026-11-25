@@ -515,7 +515,7 @@ func TestSchedulerRunOutputBudgetIsPinnedToItsExactValue(t *testing.T) {
 				mustJSONString(t, output))
 		}))
 		defer server.Close()
-		out, err := handleRuns(context.Background(), server.URL, "", 1)
+		out, err := handleRuns(context.Background(), server.URL, http.DefaultClient, 1)
 		if err != nil {
 			t.Fatalf("runs failed: %v", err)
 		}

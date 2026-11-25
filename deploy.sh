@@ -60,10 +60,10 @@ BACKUP_DROPIN=""
 # puts back the one it backed up, which the older binary needs.
 FILE_STORE_DROPIN="$DROPIN_DIR/file-store.conf"
 BACKUP_FILE_STORE_DROPIN=""
-# session-actions.conf gives the server the scheduler's address, read from its
-# own unit, for the scheduler job actions; repo-store runs in this server. Rolled
-# back the same way: an older binary needs LLMBRIDGE_REPO_STORE_URL, which this
-# one refuses.
+# session-actions.conf gave an older server the scheduler's address for the
+# scheduler job actions. The scheduler now runs in this server, and this binary
+# refuses to start on LLMBRIDGE_SCHEDULER_URL, so the deploy removes the
+# drop-in; a rollback puts back the one it backed up.
 SESSION_ACTIONS_DROPIN="$DROPIN_DIR/session-actions.conf"
 BACKUP_SESSION_ACTIONS_DROPIN=""
 # reference-store.conf gave an older server reference-store's address for the
@@ -432,19 +432,9 @@ sudo rm -f "$DROPIN_DIR/path.conf"
 # older binary its address and token goes.
 sudo rm -f "$FILE_STORE_DROPIN"
 
-# The scheduler job actions need the scheduler's address, read from its own
-# unit, never written here. The deploy actions read repo-store in this server.
-SCHEDULER_PORT="$(grep -oP '^Environment=SCHEDULER_PORT=\K.*' "$HOME/.config/systemd/user/scheduler.service" 2>/dev/null || true)"
-TMP_SESSION_ACTIONS_DROPIN=$(mktemp)
-printf '[Service]\n' > "$TMP_SESSION_ACTIONS_DROPIN"
-if [ -n "$SCHEDULER_PORT" ]; then
-  printf 'Environment=LLMBRIDGE_SCHEDULER_URL=http://localhost:%s\n' "$SCHEDULER_PORT" >> "$TMP_SESSION_ACTIONS_DROPIN"
-  echo "    session-actions drop-in: LLMBRIDGE_SCHEDULER_URL=http://localhost:$SCHEDULER_PORT"
-else
-  echo "WARNING: no SCHEDULER_PORT in the scheduler's unit; scheduler job actions are refused"
-fi
-sudo cp "$TMP_SESSION_ACTIONS_DROPIN" "$SESSION_ACTIONS_DROPIN"
-rm -f "$TMP_SESSION_ACTIONS_DROPIN"
+# The scheduler runs in this server, so the drop-in that gave an older binary
+# its address goes.
+sudo rm -f "$SESSION_ACTIONS_DROPIN"
 
 # reference-store runs in this server, so the drop-in that gave an older
 # binary its address goes.

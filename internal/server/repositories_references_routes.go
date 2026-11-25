@@ -152,6 +152,7 @@ var InProcessReferenceServices = map[string]string{
 	"message-store":     messageStoreMountPrefix,
 	"activity-store":    activityStoreMountPrefix,
 	"time-ledger-store": timeLedgerStoreMountPrefix,
+	"scheduler":         schedulerMountPrefix,
 }
 
 // EnableReferenceStore serves reference-store from resolver, and makes the

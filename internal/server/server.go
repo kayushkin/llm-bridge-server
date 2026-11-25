@@ -134,6 +134,9 @@ type Server struct {
 	// usageAndEvalStores answers /usage-store/ and /eval-store/ once their
 	// Postgres modules are open (usage_and_eval_store_routes.go).
 	usageAndEvalStores usageAndEvalStores
+	// automationStores answers /scheduler/ and /rule-store/ once their
+	// Postgres modules are open (automation_routes.go).
+	automationStores automationStores
 	// kanbanClient answers "which noteboard todo is this session linked
 	// to?" when a signal is minted, and every other read this server makes of
 	// kanban-store. EnableKanbanStore sets it; nil until then, which leaves
@@ -369,6 +372,7 @@ func (s *Server) routes() {
 	s.registerUsageAndEvalStoreRoutes()
 	s.registerConnectedRecordsRoutes()
 	s.registerMessageActivityAndTimeLedgerRoutes()
+	s.registerAutomationRoutes()
 	// This server's own settings, served the way every service serves them.
 	serviceSettingsHandler := servicesettings.Handler(s.settings, "/settings")
 	s.mux.Handle("GET /settings", serviceSettingsHandler)
