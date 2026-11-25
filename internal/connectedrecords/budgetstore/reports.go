@@ -218,7 +218,7 @@ func (s *Ledger) SpendingByCategory(month string) ([]CategoryTotal, error) {
 	rows, err := s.db.Query(`SELECT c.id, COALESCE(c.parent_id,''), c.name, c.kind, SUM(p.amount_cents), COUNT(DISTINCT t.id)
 		FROM postings p JOIN transactions t ON t.id = p.transaction_id JOIN categories c ON c.id = p.category_id
 		WHERE t.status != 'void' AND substr(t.occurred_on,1,7) = $1
-		GROUP BY c.id ORDER BY c.kind, SUM(p.amount_cents) DESC`, month)
+		GROUP BY c.id ORDER BY c.kind, SUM(p.amount_cents) DESC, c.seq`, month)
 	if err != nil {
 		return nil, err
 	}
