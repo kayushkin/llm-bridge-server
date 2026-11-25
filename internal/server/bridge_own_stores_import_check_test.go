@@ -101,10 +101,12 @@ func TestTheImportedBridgeOwnStoresAnswerAsTheLiveServer(t *testing.T) {
 	database := postgrestest.NewDatabase(t, harnessModule, hookModule, snapshotModule, operationModule)
 	harnessDB, hookDB, snapshotDB, operationDB := database.Open(harnessModule), database.Open(hookModule), database.Open(snapshotModule), database.Open(operationModule)
 	for name, run := range map[string]func() (any, error){
-		"harness-store":  func() (any, error) { return harnessstore.ImportStandaloneDatabase(ctx, harnessDB, *harnessStoreCopy) },
-		"hook-store":     func() (any, error) { return hookstore.ImportStandaloneDatabase(ctx, hookDB, *hookStoreCopy) },
-		"snapshot-store": func() (any, error) { return snapshotstore.ImportStandaloneDatabase(ctx, snapshotDB, *snapshotStoreCopy) },
-		"operations":     func() (any, error) { return operationstore.ImportStandaloneDatabase(ctx, operationDB, *operationsCopy) },
+		"harness-store": func() (any, error) { return harnessstore.ImportStandaloneDatabase(ctx, harnessDB, *harnessStoreCopy) },
+		"hook-store":    func() (any, error) { return hookstore.ImportStandaloneDatabase(ctx, hookDB, *hookStoreCopy) },
+		"snapshot-store": func() (any, error) {
+			return snapshotstore.ImportStandaloneDatabase(ctx, snapshotDB, *snapshotStoreCopy)
+		},
+		"operations": func() (any, error) { return operationstore.ImportStandaloneDatabase(ctx, operationDB, *operationsCopy) },
 	} {
 		started := time.Now()
 		counts, err := run()
