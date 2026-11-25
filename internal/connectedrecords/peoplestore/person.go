@@ -227,7 +227,10 @@ func (s *Store) ListPersons(ctx context.Context, scope ownership.Scope, filter P
 	if limit > 1000 {
 		return nil, fmt.Errorf("%w: limit %d is over 1000", ErrInvalid, limit)
 	}
-	query += fmt.Sprintf(` ORDER BY lower(display_name), seq LIMIT %d OFFSET %d`, limit, filter.Offset)
+	// The standalone store sorted by SQLite's NOCASE collation: byte order
+	// with only ASCII letters folded. translate folds exactly those, and the
+	// "C" collation compares bytes, so the order is the same.
+	query += fmt.Sprintf(` ORDER BY translate(display_name, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz') COLLATE "C", seq LIMIT %d OFFSET %d`, limit, filter.Offset)
 	rows, err := s.db.QueryContext(ctx, query, args.values...)
 	if err != nil {
 		return nil, err

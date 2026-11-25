@@ -305,8 +305,8 @@ name_matches: [{person_id, display_name}]}`. Before writing it reads
   words are ANDed, but FTS5's own query syntax (`OR`, `NOT`, `NEAR`, column
   filters, parentheses) is no longer read: `OR`, `NOT` and `NEAR` are a 400,
   a bare `AND` is dropped, and other punctuation only splits words.
-- `GET /persons` orders by `lower(display_name)`, which folds every case
-  Postgres knows rather than only ASCII.
+- `GET /persons` keeps the standalone store's order: byte order with only
+  ASCII letters folded, as SQLite's NOCASE collation sorted.
 - A malformed id in a path is a 404, as a missing one was.
 - `GET /settings` is gone; the server has its own.
 - Revisions copied from the standalone store gain `owner_principal_id` in
