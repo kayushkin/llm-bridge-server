@@ -3,13 +3,10 @@ package accounts
 import (
 	"database/sql"
 	"errors"
-	"fmt"
-	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/mailmodule"
 )
 
 type Provider string
@@ -41,44 +38,21 @@ type Account struct {
 	UpdatedAt       int64    `json:"updated_at"`
 }
 
+// Store is the accounts side of the mail module: accounts, IMAP logins,
+// folder maps, the message index and the recorded bodies behind search. The
+// mutex keeps the store's statements one at a time, as they were on SQLite.
 type Store struct {
 	mu sync.Mutex
-	db *sql.DB
+	db *mailmodule.DB
 }
 
-func DefaultDBPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "mailstack", "accounts.db")
+// New is the store over the mail module's connection.
+func New(db *mailmodule.DB) *Store {
+	if db == nil {
+		panic("accounts: New needs the mail module's connection")
+	}
+	return &Store{db: db}
 }
-
-func Open(path string) (*Store, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return nil, fmt.Errorf("create db dir: %w", err)
-	}
-	// WAL plus a busy timeout. The index is written on every message list, so
-	// readers and that writer now overlap routinely; the previous bare-path DSN
-	// left the default rollback journal and NO busy timeout, which turns any
-	// overlap straight into SQLITE_BUSY instead of a short wait.
-	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
-	if err != nil {
-		return nil, fmt.Errorf("open db: %w", err)
-	}
-	if _, err := db.Exec(schema); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("init schema: %w", err)
-	}
-	// Everything added after the original three tables goes through migrate, so
-	// that a later column change has somewhere to live. CREATE TABLE IF NOT
-	// EXISTS cannot alter a table that already exists.
-	if err := migrate(db); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("migrate: %w", err)
-	}
-	_ = os.Chmod(path, 0600)
-	return &Store{db: db}, nil
-}
-
-func (s *Store) Close() error { return s.db.Close() }
 
 var ErrNotFound = errors.New("account not found")
 

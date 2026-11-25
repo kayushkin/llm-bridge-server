@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -22,12 +21,13 @@ import (
 )
 
 // The latency check behind the ticket desk's targets. It is off by default
-// because it writes a few hundred megabytes and takes a minute or two:
+// because it writes a few hundred megabytes into the test Postgres and takes a
+// minute or two; the shared test container is small, so give it one of its own:
 //
 //	go test -run TestSplitReadLatency -split-read-latency -v .
 //
 // It fixes one ticket — 25 linked messages, one with a 250 KB HTML body — and
-// reads it through real loopback HTTP, with the bearer check on, while the
+// reads it through real loopback HTTP, as the internal service, while the
 // mailbox around it grows. Reading a ticket's messages has to cost the same
 // whatever the size of the mailbox, so the test fails if the largest mailbox is
 // more than twice as slow as the smallest, as well as if a p95 misses the
@@ -47,21 +47,10 @@ func TestSplitReadLatency(t *testing.T) {
 	if !*splitReadLatency {
 		t.Skip("pass -split-read-latency to run")
 	}
-	const token = "latency-token"
-	dir := t.TempDir()
-	accountsStore, err := accounts.Open(filepath.Join(dir, "accounts.db"))
-	if err != nil {
-		t.Fatalf("open accounts: %v", err)
-	}
-	defer accountsStore.Close()
+	accountsStore, store := newTestStores(t)
 	if err := accountsStore.Save(&accounts.Account{ID: "desk", Label: "Desk", Provider: accounts.ProviderLocal,
 		Address: "support@desk.example", Enabled: true}); err != nil {
 		t.Fatalf("save account: %v", err)
-	}
-	localPath := filepath.Join(dir, "local-mail.db")
-	store, err := localmail.Open(localPath)
-	if err != nil {
-		t.Fatalf("open local mail: %v", err)
 	}
 
 	// The ticket's own messages go in first, so every later mailbox size reads
@@ -107,14 +96,12 @@ func TestSplitReadLatency(t *testing.T) {
 		}
 		importRate := float64(added) / time.Since(started).Seconds()
 
-		// A fresh server on the same files: the first request after a restart
-		// pays for opening the database, and later ones should not.
-		server := NewServer(accountsStore, nil, testSettings(t, token), WithLocalMailDB(localPath))
-		listener := httptest.NewServer(server.Handler())
+		// A fresh server on the same module, as after a restart.
+		server := newTestServer(t, accountsStore, store, ServerParts{})
+		listener := httptest.NewServer(testCallerHandler(server))
 		client := listener.Client()
 		call := func(method, path string, body []byte) time.Duration {
 			req, _ := http.NewRequest(method, listener.URL+path, bytes.NewReader(body))
-			req.Header.Set("Authorization", "Bearer "+token)
 			began := time.Now()
 			resp, err := client.Do(req)
 			if err != nil {
@@ -168,7 +155,6 @@ func TestSplitReadLatency(t *testing.T) {
 			concurrentP95: percentile(concurrent, 95),
 		})
 	}
-	store.Close()
 
 	t.Logf("%9s %12s %12s %12s %12s %12s %16s %14s", "mailbox", "import msg/s", "resolve p50", "resolve p95",
 		"250KB p50", "250KB p95", "8-way res+body", "first request")

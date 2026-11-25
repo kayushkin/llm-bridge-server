@@ -1,19 +1,15 @@
 package accounts
 
 import (
-	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/mailmodule/mailmoduletest"
 )
 
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
-	s, err := Open(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	t.Cleanup(func() { s.Close() })
-	return s
+	return New(mailmoduletest.NewDB(t))
 }
 
 func mustUpsertBody(t *testing.T, s *Store, b MessageBody) {

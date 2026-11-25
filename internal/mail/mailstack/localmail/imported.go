@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/backend"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/mailmodule"
 )
 
 // ============================ imported mail ============================
@@ -445,7 +446,7 @@ type storedMessage struct {
 // message (keeping the revision it replaces), records the attachments, and
 // queues a message.revision_available event in the outbox, so a committed
 // change and its notification can never come apart.
-func storeImportedMessage(ctx context.Context, tx *sql.Tx, accountID string, m ImportedMessage, origin string, now int64) (storedMessage, error) {
+func storeImportedMessage(ctx context.Context, tx *mailmodule.Tx, accountID string, m ImportedMessage, origin string, now int64) (storedMessage, error) {
 	if err := refusePurged(ctx, tx, accountID, m.ProviderMessageID); err != nil {
 		return storedMessage{}, err
 	}
@@ -505,7 +506,7 @@ func storeImportedMessage(ctx context.Context, tx *sql.Tx, accountID string, m I
 
 // keepRevision copies the current revision of a message into
 // local_message_revisions before an update overwrites it.
-func keepRevision(ctx context.Context, tx *sql.Tx, accountID, id string, now int64) error {
+func keepRevision(ctx context.Context, tx *mailmodule.Tx, accountID, id string, now int64) error {
 	var bodyText, bodyHTML sql.NullString
 	current, err := scanStored(tx.QueryRowContext(ctx, `
 		SELECT `+storedColumns+`, body_text, body_html
@@ -532,7 +533,7 @@ func keepRevision(ctx context.Context, tx *sql.Tx, accountID, id string, now int
 
 // insertAttachments records a revision's attachments, whose bytes the caller
 // has already put in file-store.
-func insertAttachments(ctx context.Context, tx *sql.Tx, accountID, id string, revision int64, m ImportedMessage) error {
+func insertAttachments(ctx context.Context, tx *mailmodule.Tx, accountID, id string, revision int64, m ImportedMessage) error {
 	for position, a := range m.Attachments {
 		if a.FileID == "" {
 			return fmt.Errorf("%w: attachment %d (%s) of %s", ErrAttachmentsNotUploaded, position, a.Filename, m.ProviderMessageID)
@@ -627,7 +628,7 @@ func presentBody(body *string) any {
 	return *body
 }
 
-func insertImported(ctx context.Context, tx *sql.Tx, accountID, id string, m ImportedMessage, hash string, now int64) error {
+func insertImported(ctx context.Context, tx *mailmodule.Tx, accountID, id string, m ImportedMessage, hash string, now int64) error {
 	values, err := importedValues(m, hash)
 	if err != nil {
 		return err
@@ -659,7 +660,7 @@ func insertImported(ctx context.Context, tx *sql.Tx, accountID, id string, m Imp
 	return nil
 }
 
-func updateImported(ctx context.Context, tx *sql.Tx, accountID, id string, m ImportedMessage, hash string, revision, now int64) error {
+func updateImported(ctx context.Context, tx *mailmodule.Tx, accountID, id string, m ImportedMessage, hash string, revision, now int64) error {
 	values, err := importedValues(m, hash)
 	if err != nil {
 		return err
@@ -684,8 +685,9 @@ func updateImported(ctx context.Context, tx *sql.Tx, accountID, id string, m Imp
 }
 
 // providerIDIndexed repeats the WHERE of the partial unique index on
-// provider_message_id. SQLite uses a partial index only when the query's own
-// WHERE implies the index's, and a bound parameter proves nothing, so without
+// provider_message_id. Postgres, like SQLite before it, uses a partial index
+// only when the query's own WHERE implies the index's, and a bound parameter
+// proves nothing, so without
 // this term every lookup by provider id walks the whole account and an import
 // grows with the square of the mailbox.
 const providerIDIndexed = `provider_message_id <> ''`

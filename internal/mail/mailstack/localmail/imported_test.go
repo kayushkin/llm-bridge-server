@@ -2,9 +2,7 @@ package localmail
 
 import (
 	"context"
-	"database/sql"
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -264,79 +262,38 @@ func TestPermDeleteRemovesTheBody(t *testing.T) {
 	}
 }
 
-// A database written before migrations existed sits at user_version 0 with the
-// bodies inline. Opening it must move them out without losing one.
-func TestTheOldInlineBodySchemaMigrates(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "local-mail.db")
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	if _, err := db.Exec(localMessagesSchema); err != nil {
-		t.Fatalf("old schema: %v", err)
-	}
-	if _, err := db.Exec(`INSERT INTO local_messages (account_id, id, message_id, subject, from_email,
-		date_ms, body_text, body_html, created_at) VALUES
-		('demo','lm1','m1@x','Text only','a@x',1000,'héllo','',1000),
-		('demo','lm2','m2@x','HTML only','a@x',2000,'','<p>hi</p>',2000)`); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	db.Close()
-
-	store, err := Open(path)
-	if err != nil {
-		t.Fatalf("Open old database: %v", err)
-	}
-	defer store.Close()
-	ctx := context.Background()
-	var version int
-	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != len(migrations) {
-		t.Fatalf("user_version %d err %v, want %d", version, err, len(migrations))
-	}
-
-	text, meta, err := store.Body(ctx, "demo", "lm1", BodyFormatText)
-	if err != nil || text != "héllo" {
-		t.Fatalf("lm1 text %q err %v", text, err)
-	}
-	if meta.Bodies.Text == nil || meta.Bodies.Text.Bytes != int64(len("héllo")) || meta.Bodies.HTML != nil {
-		t.Fatalf("lm1 bodies %+v, want text of %d bytes and no html", meta.Bodies, len("héllo"))
-	}
-	if _, _, err := store.Body(ctx, "demo", "lm1", BodyFormatHTML); !errors.Is(err, ErrBodyAbsent) {
-		t.Fatalf("lm1 html err %v, want ErrBodyAbsent: a blank inline body was never given", err)
-	}
-	full, err := store.Get(ctx, "demo", "lm2")
-	if err != nil || full.BodyHTML != "<p>hi</p>" || full.BodyText != "" {
-		t.Fatalf("lm2 %+v err %v", full, err)
-	}
-	if meta.Revision != 1 || meta.UpdatedAt.UnixMilli() != 1000 {
-		t.Fatalf("revision %d updated_at %v, want 1 and the created time", meta.Revision, meta.UpdatedAt)
-	}
-}
-
-// A lookup by provider id must use the partial unique index. Without it an
-// import of n messages into a mailbox of m costs n×m row reads, which went
-// unnoticed until a 50,000-message mailbox took over ten minutes to fill.
 func TestLookupsByProviderIDUseTheIndex(t *testing.T) {
 	store := testStore(t)
 	for _, query := range []string{
 		`SELECT revision, content_sha256 FROM local_messages WHERE account_id = ? AND provider_message_id = ? AND ` + providerIDIndexed,
 		`SELECT ` + storedColumns + ` FROM local_messages WHERE account_id = ? AND provider_message_id = ? AND ` + providerIDIndexed,
 	} {
-		rows, err := store.db.Query(`EXPLAIN QUERY PLAN `+query, "desk", "AAMk")
+		// An empty table is cheaper to scan than to look up, so the planner is
+		// told to avoid a scan: what is checked is that the index can answer
+		// the query at all, which it cannot when the query's WHERE does not
+		// imply the partial index's.
+		tx, err := store.db.BeginTx(context.Background(), nil)
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		if _, err := tx.ExecContext(context.Background(), `SET LOCAL enable_seqscan = off`); err != nil {
+			t.Fatalf("set enable_seqscan: %v", err)
+		}
+		rows, err := tx.QueryContext(context.Background(), `EXPLAIN `+query, "desk", "AAMk")
 		if err != nil {
 			t.Fatalf("explain: %v", err)
 		}
 		var plan []string
 		for rows.Next() {
-			var id, parent, unused int
-			var detail string
-			if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			var line string
+			if err := rows.Scan(&line); err != nil {
 				t.Fatalf("scan plan: %v", err)
 			}
-			plan = append(plan, detail)
+			plan = append(plan, line)
 		}
 		rows.Close()
-		if len(plan) != 1 || !strings.Contains(plan[0], "idx_local_messages_provider_message_id") {
+		tx.Rollback()
+		if !strings.Contains(strings.Join(plan, "\n"), "local_messages_provider_message_id_index") {
 			t.Fatalf("plan %q does not use the provider id index", plan)
 		}
 	}

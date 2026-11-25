@@ -45,7 +45,7 @@ func (s *Server) uploadChangedAttachments(ctx context.Context, store *localmail.
 		}
 		if s.files == nil {
 			return fail(http.StatusServiceUnavailable, fmt.Errorf(
-				"message %d (%s) has attachments and no file-store is configured (FILE_STORE_URL); nothing was imported", i, m.ProviderMessageID))
+				"message %d (%s) has attachments and no file-store is configured; nothing was imported", i, m.ProviderMessageID))
 		}
 		locator := accountID + ":" + localmail.ImportedID(accountID, m.ProviderMessageID)
 		for j := range m.Attachments {
@@ -74,7 +74,7 @@ func (s *Server) purgeAttachmentFiles(ctx context.Context, fileIDs []string) err
 		return nil
 	}
 	if s.files == nil {
-		return fmt.Errorf("%d attachment file(s) to purge and no file-store is configured (FILE_STORE_URL)", len(fileIDs))
+		return fmt.Errorf("%d attachment file(s) to purge and no file-store is configured", len(fileIDs))
 	}
 	var errs []error
 	for _, id := range fileIDs {
@@ -121,7 +121,7 @@ func (s *Server) serveLocalAttachment(w http.ResponseWriter, r *http.Request, ac
 		return
 	}
 	if s.files == nil {
-		writeError(w, http.StatusServiceUnavailable, errors.New("no file-store is configured (FILE_STORE_URL), so no attachment can be read"))
+		writeError(w, http.StatusServiceUnavailable, errors.New("no file-store is configured, so no attachment can be read"))
 		return
 	}
 	response, err := s.files.Content(fileID, r.URL.Query().Get("inline") == "true", r.Header)

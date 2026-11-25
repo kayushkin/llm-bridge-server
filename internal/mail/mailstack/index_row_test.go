@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -254,15 +253,11 @@ func TestIndexRowLeavesAnUnknownDateAtZeroInsteadOfStampingTheEpoch(t *testing.T
 // re-assert what the fake was written to do.
 func newIndexedServer(t *testing.T, provider accounts.Provider) *Server {
 	t.Helper()
-	store, err := accounts.Open(filepath.Join(t.TempDir(), "accounts.db"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	t.Cleanup(func() { store.Close() })
+	store, local := newTestStores(t)
 	if err := store.Save(&accounts.Account{ID: "acct-1", Label: "test", Provider: provider, Address: "me@x.com"}); err != nil {
 		t.Fatalf("save account: %v", err)
 	}
-	return NewServer(store, nil, testSettings(t, ""))
+	return newTestServer(t, store, local, ServerParts{})
 }
 
 func TestRecordFullMessageCarriesTheHeadersThatAreTheGetPathsWholeAdvantage(t *testing.T) {
@@ -352,7 +347,7 @@ func TestLookupByMessageIDNormalizesTheBracketedFormCallersActuallySend(t *testi
 	for _, spelling := range []string{"stored@x.com", "<stored@x.com>"} {
 		req := httptest.NewRequest("GET", "/api/lookup/message-id/"+url.PathEscape(spelling), nil)
 		rec := httptest.NewRecorder()
-		s.Handler().ServeHTTP(rec, req)
+		testCallerHandler(s).ServeHTTP(rec, req)
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("%s: status %d, want 200 — body %s", spelling, rec.Code, rec.Body.String())

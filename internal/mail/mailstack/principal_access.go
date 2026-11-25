@@ -1,26 +1,25 @@
 package mailstack
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"net/http"
-	"net/url"
 	"regexp"
-	"time"
 )
 
 // ─── Per-person access ──────────────────────────────────────────────────
 //
-// mailstack has two kinds of caller. A service presents the bearer token and
-// nothing else, and is unrestricted, as every caller was before. A person
-// reaches mailstack through llm-bridge-server's /mailstack/ proxy, which
-// verifies their login, presents the bearer for them and names them in
-// X-Principal-Id. Such a request is checked on every call, live, against the
-// stores that own the answer, so a revoked grant stops the next read:
+// mailstack runs inside llm-bridge-server, which verifies every request's
+// credential and says who the request is from in its context
+// (ContextWithCaller). Nothing a client sends — no header, no body field —
+// names the caller. There are two kinds:
 //
+//   - The internal service: the server itself, or a caller that presented its
+//     service token. It is unrestricted, as a holder of the standalone
+//     service's bearer token was.
+//   - A principal, checked on every call, live, against the stores that own
+//     the answer, so a revoked grant stops the next read:
 //   - principal-store says whether the principal is an active human, and
 //     whether it is an administrator, which passes every check;
 //   - grant-store holds can_read_mail and can_import_mail on mail_account
@@ -28,6 +27,8 @@ import (
 //   - kanban-store says which messages the person sees through a ticket: a
 //     card they may view that links the message as an email entity whose ref
 //     is the message's locator, "<account_id>:<id>".
+//
+// A request with neither is 401.
 //
 // A person may read a message with can_read_mail on its account or through a
 // ticket. Everything wider than one message — a folder, a thread, a search —
@@ -39,13 +40,59 @@ import (
 // show them. That differs from grant-store's lenient default on purpose —
 // mail is the one store here where "not restricted" would mean "reads
 // everyone's mail".
-//
-// X-Principal-Id is trusted only beside the bearer token, which only services
-// hold; a token holder can already read everything, so naming a principal can
-// only narrow what it reads.
 
-// PrincipalIDHeader names the person a gateway forwards a request for.
-const PrincipalIDHeader = "X-Principal-Id"
+// Caller is who a request comes from, as the mounting server verified it.
+type Caller struct {
+	// InternalService is the server itself, or a caller holding its service
+	// token: past every check.
+	InternalService bool
+	// PrincipalID is the principal a request acts as; empty for the internal
+	// service.
+	PrincipalID string
+}
+
+type callerContextKey struct{}
+
+// ContextWithCaller returns ctx carrying caller, for routeFor to read.
+func ContextWithCaller(ctx context.Context, caller Caller) context.Context {
+	return context.WithValue(ctx, callerContextKey{}, caller)
+}
+
+// callerOf is the request's caller; false when the mounting server named none.
+func callerOf(r *http.Request) (Caller, bool) {
+	caller, named := r.Context().Value(callerContextKey{}).(Caller)
+	return caller, named
+}
+
+// PrincipalFacts is what principal-store says about one principal.
+type PrincipalFacts struct {
+	Kind            string
+	Disabled        bool
+	IsAdministrator bool
+}
+
+// MailGrant is one grant-store grant on a mail account.
+type MailGrant struct {
+	Relation  string
+	AccountID string
+}
+
+// ErrPrincipalUnknown is a principal the directory has no record of.
+var ErrPrincipalUnknown = errors.New("no such principal")
+
+// PeopleDirectory is what a person's access is read from: principal-store,
+// grant-store and kanban-store, in the server mailstack runs in. Every method
+// answers ErrPrincipalUnknown for a principal that does not exist, and any
+// other error when it could not answer; an error is never "holds nothing".
+type PeopleDirectory interface {
+	Principal(ctx context.Context, principalID string) (PrincipalFacts, error)
+	// MailGrants is every live grant the principal holds on mail_account
+	// resources, directly or through a group.
+	MailGrants(ctx context.Context, principalID string) ([]MailGrant, error)
+	// MessagesVisibleThroughTickets answers, for each locator in order,
+	// whether the principal may view a card that links it as an email entity.
+	MessagesVisibleThroughTickets(ctx context.Context, principalID string, locators []string) ([]bool, error)
+}
 
 // Relations mailstack enforces, as grant-store serves them.
 const (
@@ -61,6 +108,7 @@ const (
 	errorCodeMailAccountNotGranted   = "mail_account_not_granted"
 	errorCodeRouteNotOpenToPrincipal = "route_not_open_to_principal"
 	errorCodePrincipalAccessDown     = "principal_access_unavailable"
+	errorCodeNoCaller                = "no_caller"
 )
 
 var principalIDPattern = regexp.MustCompile(`^principal_[0-9]{6,}$`)
@@ -131,56 +179,25 @@ func refusal(status int, code string, format string, args ...any) *accessRefusal
 	return &accessRefusal{status: status, code: code, err: fmt.Errorf(format, args...)}
 }
 
-// PrincipalAccessStores says where the three stores answer and with what
-// token mailstack calls them.
-type PrincipalAccessStores struct {
-	PrincipalStoreURL       string
-	GrantStoreURL           string
-	GrantStoreServiceToken  string
-	KanbanStoreURL          string
-	KanbanStoreServiceToken string
-	HTTP                    *http.Client
-}
-
-// WithPrincipalAccess lets mailstack serve people. Without it, a request that
-// names a principal is refused with 503: it cannot be checked, and serving it
-// unchecked would serve everything.
-func WithPrincipalAccess(stores PrincipalAccessStores) ServerOption {
-	return func(s *Server) {
-		if stores.HTTP == nil {
-			stores.HTTP = &http.Client{Timeout: 5 * time.Second}
-		}
-		s.principalStores = &stores
-	}
-}
-
 // accessOfPrincipal reads what principalID may do, live.
 func (s *Server) accessOfPrincipal(ctx context.Context, principalID string) (*principalAccess, *accessRefusal) {
 	if !principalIDPattern.MatchString(principalID) {
-		return nil, refusal(http.StatusForbidden, errorCodePrincipalRefused, "%s %q is not a principal id", PrincipalIDHeader, principalID)
+		return nil, refusal(http.StatusForbidden, errorCodePrincipalRefused, "the caller %q is not a principal id", principalID)
 	}
-	stores := s.principalStores
-	if stores == nil {
+	people := s.people
+	if people == nil {
 		return nil, refusal(http.StatusServiceUnavailable, errorCodePrincipalAccessDown,
-			"this mailstack is not configured to check people (principal-store, grant-store and kanban-store settings), so it serves only services")
+			"this mailstack was given no directory of people (principal-store, grant-store and kanban-store), so it serves only the internal service")
 	}
-
-	var principal struct {
-		Kind            string `json:"kind"`
-		DisabledAt      int64  `json:"disabled_at"`
-		IsAdministrator bool   `json:"is_administrator"`
-	}
-	status, err := stores.getJSON(ctx, stores.PrincipalStoreURL+"/principals/"+url.PathEscape(principalID), nil, &principal)
+	principal, err := people.Principal(ctx, principalID)
 	switch {
+	case errors.Is(err, ErrPrincipalUnknown):
+		return nil, refusal(http.StatusForbidden, errorCodePrincipalRefused, "principal-store has no principal %s", principalID)
 	case err != nil:
 		return nil, refusal(http.StatusBadGateway, errorCodePrincipalAccessDown, "principal-store: %v", err)
-	case status == http.StatusNotFound:
-		return nil, refusal(http.StatusForbidden, errorCodePrincipalRefused, "principal-store has no principal %s", principalID)
-	case status != http.StatusOK:
-		return nil, refusal(http.StatusBadGateway, errorCodePrincipalAccessDown, "principal-store answered %d for %s", status, principalID)
 	case principal.Kind != "human":
 		return nil, refusal(http.StatusForbidden, errorCodePrincipalRefused, "principal %s is a %s, and only a person reads mail", principalID, principal.Kind)
-	case principal.DisabledAt != 0:
+	case principal.Disabled:
 		return nil, refusal(http.StatusForbidden, errorCodePrincipalRefused, "principal %s is disabled", principalID)
 	}
 	access := &principalAccess{principalID: principalID, administrator: principal.IsAdministrator,
@@ -188,34 +205,20 @@ func (s *Server) accessOfPrincipal(ctx context.Context, principalID string) (*pr
 	if access.administrator {
 		return access, nil
 	}
-
-	var grants []struct {
-		Relation     string `json:"relation"`
-		ResourceType string `json:"resource_type"`
-		ResourceID   string `json:"resource_id"`
-	}
-	status, err = stores.getJSON(ctx,
-		stores.GrantStoreURL+"/principals/"+url.PathEscape(principalID)+"/effective?resource_type="+resourceTypeMail,
-		map[string]string{"X-Grant-Store-Service-Token": stores.GrantStoreServiceToken}, &grants)
+	grants, err := people.MailGrants(ctx, principalID)
 	switch {
-	case err != nil:
-		return nil, refusal(http.StatusBadGateway, errorCodePrincipalAccessDown, "grant-store: %v", err)
-	case status == http.StatusNotFound:
+	case errors.Is(err, ErrPrincipalUnknown):
 		return nil, refusal(http.StatusForbidden, errorCodePrincipalRefused, "grant-store does not know principal %s", principalID)
-	case status != http.StatusOK:
-		// Never read a failure as "holds nothing": grant-store's contract
-		// answers 502 rather than [] for exactly this reason.
-		return nil, refusal(http.StatusBadGateway, errorCodePrincipalAccessDown, "grant-store answered %d for %s", status, principalID)
+	case err != nil:
+		// Never read a failure as "holds nothing".
+		return nil, refusal(http.StatusBadGateway, errorCodePrincipalAccessDown, "grant-store: %v", err)
 	}
 	for _, g := range grants {
-		if g.ResourceType != resourceTypeMail {
-			continue
-		}
 		switch g.Relation {
 		case relationCanReadMail:
-			access.readAccounts[g.ResourceID] = true
+			access.readAccounts[g.AccountID] = true
 		case relationCanImportMail:
-			access.importAccount[g.ResourceID] = true
+			access.importAccount[g.AccountID] = true
 		}
 	}
 	return access, nil
@@ -228,89 +231,20 @@ func (s *Server) visibleThroughTickets(ctx context.Context, access *principalAcc
 	if len(locators) == 0 {
 		return visible, nil
 	}
-	stores := s.principalStores
-	type entity struct {
-		EntityType string `json:"entity_type"`
-		EntityRef  string `json:"entity_ref"`
-	}
-	request := struct {
-		PrincipalID string   `json:"principal_id"`
-		Entities    []entity `json:"entities"`
-	}{PrincipalID: access.principalID}
-	for _, locator := range locators {
-		request.Entities = append(request.Entities, entity{EntityType: entityTypeEmail, EntityRef: locator})
-	}
-	var answer struct {
-		Results []struct {
-			EntityRef string `json:"entity_ref"`
-			Visible   bool   `json:"visible"`
-		} `json:"results"`
-	}
-	status, err := stores.postJSON(ctx, stores.KanbanStoreURL+"/api/entities/visible-to-principal",
-		map[string]string{"X-Kanban-Store-Service-Token": stores.KanbanStoreServiceToken}, request, &answer)
+	answers, err := s.people.MessagesVisibleThroughTickets(ctx, access.principalID, locators)
 	switch {
 	case err != nil:
 		return nil, refusal(http.StatusBadGateway, errorCodePrincipalAccessDown, "kanban-store: %v", err)
-	case status != http.StatusOK:
-		return nil, refusal(http.StatusBadGateway, errorCodePrincipalAccessDown, "kanban-store answered %d asking which messages %s sees through tickets", status, access.principalID)
-	case len(answer.Results) != len(locators):
-		return nil, refusal(http.StatusBadGateway, errorCodePrincipalAccessDown, "kanban-store answered %d results for %d messages", len(answer.Results), len(locators))
+	case len(answers) != len(locators):
+		return nil, refusal(http.StatusBadGateway, errorCodePrincipalAccessDown, "kanban-store answered %d results for %d messages", len(answers), len(locators))
 	}
-	for i, result := range answer.Results {
-		if result.EntityRef != locators[i] {
-			return nil, refusal(http.StatusBadGateway, errorCodePrincipalAccessDown, "kanban-store answered result %d for %q, asked %q", i, result.EntityRef, locators[i])
-		}
-		visible[locators[i]] = result.Visible
+	for i, locator := range locators {
+		visible[locator] = answers[i]
 	}
 	return visible, nil
 }
 
-func (stores *PrincipalAccessStores) getJSON(ctx context.Context, target string, headers map[string]string, out any) (int, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
-	if err != nil {
-		return 0, err
-	}
-	return stores.do(request, headers, out)
-}
-
-func (stores *PrincipalAccessStores) postJSON(ctx context.Context, target string, headers map[string]string, body, out any) (int, error) {
-	raw, err := json.Marshal(body)
-	if err != nil {
-		return 0, err
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(raw))
-	if err != nil {
-		return 0, err
-	}
-	request.Header.Set("Content-Type", "application/json")
-	return stores.do(request, headers, out)
-}
-
-// do sends one request and decodes a 200's body into out. Any other status
-// is returned for the caller to judge, with the body dropped.
-func (stores *PrincipalAccessStores) do(request *http.Request, headers map[string]string, out any) (int, error) {
-	for name, value := range headers {
-		request.Header.Set(name, value)
-	}
-	response, err := stores.HTTP.Do(request)
-	if err != nil {
-		return 0, err
-	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, 8<<20))
-	if err != nil {
-		return 0, fmt.Errorf("read answer: %w", err)
-	}
-	if response.StatusCode != http.StatusOK {
-		return response.StatusCode, nil
-	}
-	if err := json.Unmarshal(body, out); err != nil {
-		return 0, fmt.Errorf("answer does not parse: %w", err)
-	}
-	return response.StatusCode, nil
-}
-
-// routeFor wraps a handler in the bearer check and the person check its rule
+// routeFor wraps a handler in the caller check and the person check its rule
 // names.
 func (s *Server) routeFor(rule accessRule, account accountOfRoute, next http.HandlerFunc) http.Handler {
 	if rule == 0 {
@@ -319,12 +253,21 @@ func (s *Server) routeFor(rule accessRule, account accountOfRoute, next http.Han
 	if (rule == ruleReadAccount || rule == ruleImportAccount || rule == ruleReadMessage) && account == 0 {
 		panic("mailstack: a route checked against an account must say where it names the account")
 	}
-	return s.auth(func(w http.ResponseWriter, r *http.Request) {
-		principalID := r.Header.Get(PrincipalIDHeader)
-		if principalID == "" {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		caller, named := callerOf(r)
+		if !named || (!caller.InternalService && caller.PrincipalID == "") {
+			// The mounting server lets nothing through without verifying who
+			// it is from, so this is a wiring mistake; serving it would serve
+			// everything.
+			writeCodedError(w, http.StatusUnauthorized, errorCodeNoCaller,
+				errors.New("no caller: mailstack answers a principal or the internal service, as the server it runs in verified them"))
+			return
+		}
+		if caller.InternalService {
 			next(w, r)
 			return
 		}
+		principalID := caller.PrincipalID
 		access, refused := s.accessOfPrincipal(r.Context(), principalID)
 		if refused != nil {
 			writeCodedError(w, refused.status, refused.code, refused)

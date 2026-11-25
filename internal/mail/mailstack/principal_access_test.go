@@ -1,11 +1,11 @@
 package mailstack
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -13,91 +13,76 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/accounts"
 )
 
-// fakeAccessStores answers as principal-store, grant-store and kanban-store
-// at once, from maps a test edits between calls.
-type fakeAccessStores struct {
+// fakePeopleDirectory answers as principal-store, grant-store and
+// kanban-store at once, from maps a test edits between calls.
+type fakePeopleDirectory struct {
 	mu            sync.Mutex
-	principals    map[string]map[string]any // id → record
-	grants        map[string][][3]string    // principal → [relation, resource_type, resource_id]
+	principals    map[string]PrincipalFacts
+	grants        map[string][][3]string // principal → [relation, resource_type, resource_id]
 	ticketVisible map[string]map[string]bool
-	down          map[string]bool // "grant-store" / "kanban-store" answer 500
+	down          map[string]bool // "grant-store" / "kanban-store" cannot answer
 	kanbanCalls   int
 }
 
-func newFakeAccessStores(t *testing.T) (*fakeAccessStores, PrincipalAccessStores) {
-	fake := &fakeAccessStores{
-		principals: map[string]map[string]any{
-			"principal_000001": {"kind": "human", "disabled_at": 0, "is_administrator": false},
-			"principal_000002": {"kind": "human", "disabled_at": 0, "is_administrator": false},
-			"principal_000003": {"kind": "human", "disabled_at": 0, "is_administrator": true},
-			"principal_000004": {"kind": "human", "disabled_at": 1790000000, "is_administrator": false},
-			"principal_000005": {"kind": "contact", "disabled_at": 0, "is_administrator": false},
-			"principal_000006": {"kind": "human", "disabled_at": 0, "is_administrator": false},
+func newFakePeopleDirectory() *fakePeopleDirectory {
+	return &fakePeopleDirectory{
+		principals: map[string]PrincipalFacts{
+			"principal_000001": {Kind: "human"},
+			"principal_000002": {Kind: "human"},
+			"principal_000003": {Kind: "human", IsAdministrator: true},
+			"principal_000004": {Kind: "human", Disabled: true},
+			"principal_000005": {Kind: "contact"},
+			"principal_000006": {Kind: "human"},
 		},
 		grants:        map[string][][3]string{},
 		ticketVisible: map[string]map[string]bool{},
 		down:          map[string]bool{},
 	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fake.mu.Lock()
-		defer fake.mu.Unlock()
-		switch {
-		case strings.HasPrefix(r.URL.Path, "/principals/") && strings.HasSuffix(r.URL.Path, "/effective"):
-			if r.Header.Get("X-Grant-Store-Service-Token") != "grant-token" {
-				http.Error(w, "no token", http.StatusUnauthorized)
-				return
-			}
-			if fake.down["grant-store"] {
-				http.Error(w, "down", http.StatusBadGateway)
-				return
-			}
-			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/principals/"), "/effective")
-			out := []map[string]string{}
-			for _, g := range fake.grants[id] {
-				out = append(out, map[string]string{"relation": g[0], "resource_type": g[1], "resource_id": g[2]})
-			}
-			json.NewEncoder(w).Encode(out)
-		case strings.HasPrefix(r.URL.Path, "/principals/"):
-			record, ok := fake.principals[strings.TrimPrefix(r.URL.Path, "/principals/")]
-			if !ok {
-				http.Error(w, "{}", http.StatusNotFound)
-				return
-			}
-			json.NewEncoder(w).Encode(record)
-		case r.URL.Path == "/api/entities/visible-to-principal":
-			fake.kanbanCalls++
-			if r.Header.Get("X-Kanban-Store-Service-Token") != "kanban-token" {
-				http.Error(w, "no token", http.StatusUnauthorized)
-				return
-			}
-			if fake.down["kanban-store"] {
-				http.Error(w, "down", http.StatusBadGateway)
-				return
-			}
-			var request struct {
-				PrincipalID string `json:"principal_id"`
-				Entities    []struct {
-					EntityType string `json:"entity_type"`
-					EntityRef  string `json:"entity_ref"`
-				} `json:"entities"`
-			}
-			json.NewDecoder(r.Body).Decode(&request)
-			var results []map[string]any
-			for _, e := range request.Entities {
-				results = append(results, map[string]any{"entity_type": e.EntityType, "entity_ref": e.EntityRef,
-					"visible": e.EntityType == "email" && fake.ticketVisible[request.PrincipalID][e.EntityRef], "card_ids": []string{}})
-			}
-			json.NewEncoder(w).Encode(map[string]any{"results": results})
-		default:
-			http.Error(w, "unexpected "+r.URL.Path, http.StatusTeapot)
-		}
-	}))
-	t.Cleanup(server.Close)
-	return fake, PrincipalAccessStores{PrincipalStoreURL: server.URL, GrantStoreURL: server.URL, GrantStoreServiceToken: "grant-token",
-		KanbanStoreURL: server.URL, KanbanStoreServiceToken: "kanban-token"}
 }
 
-func (f *fakeAccessStores) set(change func()) {
+func (f *fakePeopleDirectory) Principal(ctx context.Context, principalID string) (PrincipalFacts, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	facts, known := f.principals[principalID]
+	if !known {
+		return PrincipalFacts{}, ErrPrincipalUnknown
+	}
+	return facts, nil
+}
+
+func (f *fakePeopleDirectory) MailGrants(ctx context.Context, principalID string) ([]MailGrant, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.down["grant-store"] {
+		return nil, errors.New("grant-store is down")
+	}
+	if _, known := f.principals[principalID]; !known {
+		return nil, ErrPrincipalUnknown
+	}
+	var out []MailGrant
+	for _, g := range f.grants[principalID] {
+		if g[1] == resourceTypeMail {
+			out = append(out, MailGrant{Relation: g[0], AccountID: g[2]})
+		}
+	}
+	return out, nil
+}
+
+func (f *fakePeopleDirectory) MessagesVisibleThroughTickets(ctx context.Context, principalID string, locators []string) ([]bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.kanbanCalls++
+	if f.down["kanban-store"] {
+		return nil, errors.New("kanban-store is down")
+	}
+	out := make([]bool, len(locators))
+	for i, locator := range locators {
+		out[i] = f.ticketVisible[principalID][locator]
+	}
+	return out, nil
+}
+
+func (f *fakePeopleDirectory) set(change func()) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	change()
@@ -105,26 +90,20 @@ func (f *fakeAccessStores) set(change func()) {
 
 // accessTestServer has two local accounts, each with the two exported
 // messages, and the fake stores behind it.
-func accessTestServer(t *testing.T, withStores bool) (*Server, *fakeAccessStores, map[string]string) {
+func accessTestServer(t *testing.T, withStores bool) (*Server, *fakePeopleDirectory, map[string]string) {
 	t.Helper()
-	dir := t.TempDir()
-	store, err := accounts.Open(filepath.Join(dir, "accounts.db"))
-	if err != nil {
-		t.Fatalf("open accounts: %v", err)
-	}
-	t.Cleanup(func() { store.Close() })
+	store, local := newTestStores(t)
 	for _, id := range []string{"desk-a", "desk-b"} {
 		if err := store.Save(&accounts.Account{ID: id, Label: id, Provider: accounts.ProviderLocal, Address: id + "@demo.invalid", Enabled: true}); err != nil {
 			t.Fatalf("save %s: %v", id, err)
 		}
 	}
-	fake, stores := newFakeAccessStores(t)
-	options := []ServerOption{WithLocalMailDB(filepath.Join(dir, "local-mail.db"))}
+	fake := newFakePeopleDirectory()
+	parts := ServerParts{}
 	if withStores {
-		options = append(options, WithPrincipalAccess(stores))
+		parts.People = fake
 	}
-	s := NewServer(store, nil, testSettings(t, ""), options...)
-	t.Cleanup(func() { s.Shutdown(nil) })
+	s := newTestServer(t, store, local, parts)
 	ids := map[string]string{}
 	for _, account := range []string{"desk-a", "desk-b"} {
 		got := importInto(t, s, account, twoExportedMessages)
@@ -133,7 +112,7 @@ func accessTestServer(t *testing.T, withStores bool) (*Server, *fakeAccessStores
 	return s, fake, ids
 }
 
-func as(principal string) map[string]string { return map[string]string{PrincipalIDHeader: principal} }
+func as(principal string) map[string]string { return map[string]string{testPrincipalHeader: principal} }
 
 func TestAMailGrantOpensItsAccountAndNothingElse(t *testing.T) {
 	s, fake, ids := accessTestServer(t, true)
@@ -149,7 +128,7 @@ func TestAMailGrantOpensItsAccountAndNothingElse(t *testing.T) {
 		"/api/messages?account=desk-b":                                          403,
 		"/api/accounts/desk-a/import-sources":                                   403,
 		"/api/search?q=pr%C3%BCfen":                                             403,
-		"/settings":                                                             403,
+		"/api/ingress/receipts":                                                 403,
 	} {
 		if w := serve(t, s, http.MethodGet, path, "", who); w.Code != want {
 			t.Errorf("GET %s: %d, want %d: %s", path, w.Code, want, w.Body)
@@ -235,7 +214,7 @@ func TestAccessIsReadLiveSoARevokedGrantStopsTheNextRead(t *testing.T) {
 	fake.set(func() { delete(fake.grants, "principal_000001") })
 	// A conditional read is still a read: it must not answer 304 to a person
 	// who has lost access.
-	if w := serve(t, s, http.MethodGet, path, "", map[string]string{PrincipalIDHeader: "principal_000001", "If-None-Match": etag}); w.Code != http.StatusNotFound {
+	if w := serve(t, s, http.MethodGet, path, "", map[string]string{testPrincipalHeader: "principal_000001", "If-None-Match": etag}); w.Code != http.StatusNotFound {
 		t.Fatalf("after revoking: %d, want 404", w.Code)
 	}
 }

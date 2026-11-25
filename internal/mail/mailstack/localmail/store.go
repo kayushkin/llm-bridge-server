@@ -1,7 +1,7 @@
 // Package localmail stores synthetic mail that mailstack itself owns.
 //
 // ⚠️ This package holds message BODIES, which is a deliberate exception to the
-// rule stated on the message index in accounts/schema.go: "It stores METADATA
+// rule stated on the message index in accounts: "It stores METADATA
 // ONLY and never bodies. mailstack stays a live proxy for content, so an
 // indexed subject going slightly stale is cosmetic, while a cached body would
 // be both a correctness problem and a storage one."
@@ -12,9 +12,9 @@
 // held by Gmail. Refusing to store it would leave the account with no content
 // at all.
 //
-// It lives in its own database file rather than in accounts.db, so that
-// synthetic mail can never be confused with the real accounts' metadata and can
-// be deleted by removing one file.
+// Its tables (local_…, ingress, receipts, purges and the outbox) are apart
+// from the accounts' tables in the mail module, so local mail can never be
+// confused with the real accounts' metadata.
 package localmail
 
 import (
@@ -23,8 +23,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,7 +30,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/backend"
-	_ "modernc.org/sqlite"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/mailmodule"
 )
 
 // Folders a local account presents. Fixed rather than user-defined: a synthetic
@@ -64,39 +62,21 @@ const maxListLimit = 500
 // ErrNotFound is returned for an unknown message id.
 var ErrNotFound = fmt.Errorf("localmail: message not found")
 
-// Store is the synthetic mailbox.
+// Store is the local mailbox. The mutex keeps its writes one at a time, as
+// they were on SQLite: an import plans, then writes, and nothing may land
+// between.
 type Store struct {
 	mu sync.Mutex
-	db *sql.DB
+	db *mailmodule.DB
 }
 
-// DefaultDBPath is where synthetic mail lives when nothing overrides it.
-func DefaultDBPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "mailstack", "local-mail.db")
+// New is the local mailbox over the mail module's connection.
+func New(db *mailmodule.DB) *Store {
+	if db == nil {
+		panic("localmail: New needs the mail module's connection")
+	}
+	return &Store{db: db}
 }
-
-// Open creates or opens the synthetic mailbox.
-func Open(path string) (*Store, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, fmt.Errorf("create local mail dir: %w", err)
-	}
-	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
-	if err != nil {
-		return nil, fmt.Errorf("open local mail db: %w", err)
-	}
-	if err := migrate(db); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("migrate local mail schema: %w", err)
-	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("chmod local mail db: %w", err)
-	}
-	return &Store{db: db}, nil
-}
-
-func (s *Store) Close() error { return s.db.Close() }
 
 // ============================ writing ============================
 
@@ -183,7 +163,7 @@ func (s *Store) Append(ctx context.Context, accountID string, m backend.Message)
 		byteCountOrNull(m.BodyText), byteCountOrNull(m.BodyHTML),
 		boolToInt(meta.Unread), boolToInt(meta.Flagged), now, now)
 	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+		if mailmodule.IsUniqueViolation(err) {
 			return backend.MessageMeta{}, fmt.Errorf("localmail: message %q already exists in %s", meta.ID, accountID)
 		}
 		return backend.MessageMeta{}, fmt.Errorf("localmail: insert message: %w", err)

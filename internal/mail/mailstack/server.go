@@ -9,77 +9,80 @@ import (
 	"log"
 	"net/http"
 	"strconv"
-	"strings"
 	"sync"
 
-	"github.com/kayushkin/llm-bridge/servicesettings"
 	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/accounts"
-	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/apiauth"
 	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/backend"
 	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/filestore"
 	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/localmail"
 )
 
+// Server is mailstack's HTTP surface, mounted by llm-bridge-server, which
+// says who each request is from in its context (ContextWithCaller).
 type Server struct {
 	accounts *accounts.Store
-	apiauth  *apiauth.Client
-	token    string
-	settings *servicesettings.Registry
-	mux      *http.ServeMux
+	// tokens fetches Gmail and Outlook access tokens from auth-store.
+	tokens backend.TokenSource
+	mux    *http.ServeMux
+
+	// providerConnectionsEnabled is whether Gmail, Outlook and IMAP accounts
+	// are reached at all. Off, every read or change on one answers 503 and
+	// no connection to a mail provider is made; local accounts work either
+	// way.
+	providerConnectionsEnabled bool
 
 	imapMu       sync.Mutex
 	imapBackends map[string]*backend.Imap
 
-	// Synthetic mail lives in its own database, opened on first use. A host with
-	// no local account never creates the file — which matters because the e2e
-	// smoke asserts that running the server touches nothing under the real
-	// config directory.
-	localMu     sync.Mutex
-	localDBPath string
-	localStore  *localmail.Store
+	// localStore holds the mail of local accounts.
+	localStore *localmail.Store
 
-	// files holds imported attachments' bytes. Nil when FILE_STORE_URL is
-	// unset, and then attachments on local accounts are refused with 503.
+	// files holds imported attachments' bytes. Nil refuses attachments on
+	// local accounts with 503.
 	files *filestore.Client
 
-	// principalStores are where a person's access is read. Nil refuses every
-	// request that names a principal; see principal_access.go.
-	principalStores *PrincipalAccessStores
+	// people is where a person's access is read. Nil refuses every request
+	// that names a principal; see principal_access.go.
+	people PeopleDirectory
 }
 
-// ServerOption adjusts a Server at construction. Variadic so that adding one
-// never breaks an existing NewServer call.
-type ServerOption func(*Server)
-
-// WithLocalMailDB sets where synthetic mail is stored. Empty means the default
-// path, which is only ever created if a local account is actually used.
-func WithLocalMailDB(path string) ServerOption {
-	return func(s *Server) { s.localDBPath = path }
+// ServerParts is what a Server is built from.
+type ServerParts struct {
+	// Accounts and LocalMail are the two halves of the mail module. Both
+	// are required.
+	Accounts  *accounts.Store
+	LocalMail *localmail.Store
+	// Tokens fetches provider access tokens. Required when provider
+	// connections are on.
+	Tokens backend.TokenSource
+	// ProviderConnectionsEnabled lets Gmail, Outlook and IMAP accounts reach
+	// their providers.
+	ProviderConnectionsEnabled bool
+	// Files keeps imported attachments' bytes; nil refuses attachments.
+	Files *filestore.Client
+	// People answers who a principal is and what it was granted; nil refuses
+	// every request that names a person.
+	People PeopleDirectory
 }
 
-// WithFileStore sets where imported attachments' bytes are kept.
-func WithFileStore(files *filestore.Client) ServerOption {
-	return func(s *Server) { s.files = files }
-}
-
-// NewServer builds the server. settings is what GET /settings describes and
-// where the bearer token comes from; it is required, so a second command cannot
-// forget the route, and NewServer panics without it, at boot, rather than at
-// the first read.
-func NewServer(store *accounts.Store, auth *apiauth.Client, settings *servicesettings.Registry, opts ...ServerOption) *Server {
-	if settings == nil {
-		panic("mailstack: NewServer needs the settings registry that GET /settings serves")
+// NewServer builds the server. It panics on a part that is required and
+// missing, at boot, rather than at the first request that needs it.
+func NewServer(parts ServerParts) *Server {
+	if parts.Accounts == nil || parts.LocalMail == nil {
+		panic("mailstack: NewServer needs both halves of the mail module")
+	}
+	if parts.ProviderConnectionsEnabled && parts.Tokens == nil {
+		panic("mailstack: provider connections are on, and there is no token source to reach Gmail and Outlook with")
 	}
 	s := &Server{
-		accounts:     store,
-		apiauth:      auth,
-		token:        settings.String(SettingBearerToken),
-		settings:     settings,
-		mux:          http.NewServeMux(),
-		imapBackends: map[string]*backend.Imap{},
-	}
-	for _, opt := range opts {
-		opt(s)
+		accounts:                   parts.Accounts,
+		tokens:                     parts.Tokens,
+		providerConnectionsEnabled: parts.ProviderConnectionsEnabled,
+		localStore:                 parts.LocalMail,
+		files:                      parts.Files,
+		people:                     parts.People,
+		mux:                        http.NewServeMux(),
+		imapBackends:               map[string]*backend.Imap{},
 	}
 	s.mux.HandleFunc("GET /health", s.handleHealth)
 	s.mux.Handle("GET /api/accounts", s.routeFor(ruleHandlerFilters, 0, s.handleListAccounts))
@@ -134,9 +137,10 @@ func NewServer(store *accounts.Store, auth *apiauth.Client, settings *serviceset
 	s.mux.Handle("DELETE /api/messages/{id}", s.routeFor(ruleImportAccount, accountInQuery, s.handleDelete))
 	s.mux.Handle("POST /api/messages/{id}/perm-delete", s.routeFor(ruleServicesOnly, 0, s.handlePermDelete))
 	s.mux.Handle("POST /api/messages/bulk", s.routeFor(ruleImportAccount, accountInQuery, s.handleBulk))
-	// Pushed delivery authenticates with an ingress credential, not the
-	// service bearer, so it is the one /api/ route outside routeFor: an
-	// ingress token can deliver into its accounts and do nothing else.
+	// Pushed delivery authenticates with an ingress credential, not a caller
+	// the mounting server verified, so it is the one /api/ route outside
+	// routeFor: an ingress token can deliver into its accounts and do nothing
+	// else.
 	s.mux.HandleFunc("POST /api/ingress/deliveries", s.handleDeliver)
 	s.mux.Handle("POST /api/ingress/credentials", s.routeFor(ruleServicesOnly, 0, s.handleCreateIngressCredential))
 	s.mux.Handle("GET /api/ingress/credentials", s.routeFor(ruleServicesOnly, 0, s.handleListIngressCredentials))
@@ -144,29 +148,10 @@ func NewServer(store *accounts.Store, auth *apiauth.Client, settings *serviceset
 	s.mux.Handle("GET /api/ingress/receipts", s.routeFor(ruleServicesOnly, 0, s.handleListReceipts))
 	s.mux.Handle("GET /api/events", s.routeFor(ruleServicesOnly, 0, s.handleListEvents))
 	s.mux.Handle("POST /api/messages/{id}/purge", s.routeFor(ruleServicesOnly, 0, s.handlePurgeMessage))
-	// Settings: every environment variable the service reads, behind the same
-	// bearer as /api/*. A token is served as set or unset, never its value.
-	// PUT /settings/{key} is not mounted: no setting is Editable.
-	s.mux.Handle("GET /settings", s.routeFor(ruleServicesOnly, 0, servicesettings.Handler(settings, "/settings").ServeHTTP))
 	return s
 }
 
 func (s *Server) Handler() http.Handler { return s.mux }
-
-func (s *Server) auth(next http.HandlerFunc) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.token == "" {
-			next.ServeHTTP(w, r)
-			return
-		}
-		h := r.Header.Get("Authorization")
-		if !strings.HasPrefix(h, "Bearer ") || h[7:] != s.token {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -390,6 +375,9 @@ func (s *Server) backendFor(accountID string) (backend.Backend, *accounts.Accoun
 	if err != nil {
 		return nil, nil, err
 	}
+	if a.Provider != accounts.ProviderLocal && !s.providerConnectionsEnabled {
+		return nil, a, fmt.Errorf("%w: account %s is %s", ErrProviderConnectionsOff, a.ID, a.Provider)
+	}
 	switch a.Provider {
 	case accounts.ProviderGoogle:
 		apiauthProvider := a.ApiauthProvider
@@ -400,7 +388,7 @@ func (s *Server) backendFor(accountID string) (backend.Backend, *accounts.Accoun
 		if apiauthAccount == "" {
 			apiauthAccount = "default"
 		}
-		return backend.NewGmail(a.ID, apiauthProvider, apiauthAccount, s.apiauth), a, nil
+		return backend.NewGmail(a.ID, apiauthProvider, apiauthAccount, s.tokens), a, nil
 	case accounts.ProviderMicrosoft:
 		apiauthProvider := a.ApiauthProvider
 		if apiauthProvider == "" {
@@ -410,7 +398,7 @@ func (s *Server) backendFor(accountID string) (backend.Backend, *accounts.Accoun
 		if apiauthAccount == "" {
 			apiauthAccount = "default"
 		}
-		return backend.NewGraph(a.ID, apiauthProvider, apiauthAccount, s.apiauth), a, nil
+		return backend.NewGraph(a.ID, apiauthProvider, apiauthAccount, s.tokens), a, nil
 	case accounts.ProviderIMAP:
 		b, err := s.imapBackendFor(a)
 		if err != nil {
@@ -426,6 +414,24 @@ func (s *Server) backendFor(accountID string) (backend.Backend, *accounts.Accoun
 	default:
 		return nil, a, fmt.Errorf("unknown provider %q", a.Provider)
 	}
+}
+
+// ErrProviderConnectionsOff is a read or change on a Gmail, Outlook or IMAP
+// account while this server makes no connection to mail providers.
+var ErrProviderConnectionsOff = errors.New("this server makes no connection to mail providers (mailstack.provider_connections.enabled is off), so only local accounts answer")
+
+// errorCodeProviderConnectionsOff is the 503 code of ErrProviderConnectionsOff.
+const errorCodeProviderConnectionsOff = "mail_provider_connections_off"
+
+// writeBackendError answers a backendFor that failed: 503 for an account whose
+// provider this server does not connect to, 400 for an unknown or misconfigured
+// account, as before.
+func writeBackendError(w http.ResponseWriter, err error) {
+	if errors.Is(err, ErrProviderConnectionsOff) {
+		writeCodedError(w, http.StatusServiceUnavailable, errorCodeProviderConnectionsOff, err)
+		return
+	}
+	writeError(w, http.StatusBadRequest, err)
 }
 
 func (s *Server) imapBackendFor(a *accounts.Account) (*backend.Imap, error) {
@@ -462,7 +468,7 @@ func (s *Server) handleFolders(w http.ResponseWriter, r *http.Request) {
 	}
 	b, _, err := s.backendFor(acct)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeBackendError(w, err)
 		return
 	}
 	folders, err := b.Folders(r.Context())
@@ -489,7 +495,7 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	b, _, err := s.backendFor(acct)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeBackendError(w, err)
 		return
 	}
 	var msgs []backend.MessageMeta
@@ -525,7 +531,7 @@ func (s *Server) handleGetMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	b, _, err := s.backendFor(acct)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeBackendError(w, err)
 		return
 	}
 	msg, err := b.Get(r.Context(), r.URL.Query().Get("folder"), id)
@@ -553,7 +559,7 @@ func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {
 	}
 	b, a, err := s.backendFor(acct)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeBackendError(w, err)
 		return
 	}
 	if a.Provider == accounts.ProviderLocal {
@@ -586,7 +592,7 @@ func (s *Server) backendForReq(w http.ResponseWriter, r *http.Request) (backend.
 	}
 	b, _, err := s.backendFor(acct)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeBackendError(w, err)
 		return nil, "", false
 	}
 	return b, acct, true
@@ -772,8 +778,6 @@ func writeError(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, map[string]string{"error": err.Error()})
 }
 
-var _ backend.TokenSource = (*apiauth.Client)(nil)
-
 // Shutdown closes all persistent IMAP connections.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.imapMu.Lock()
@@ -783,16 +787,6 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	s.imapMu.Unlock()
 
-	s.localMu.Lock()
-	defer s.localMu.Unlock()
-	if s.localStore != nil {
-		// Closing matters here in a way it does not for a read-only handle: the
-		// synthetic mailbox runs in WAL mode, and leaving it open on shutdown
-		// leaves the -wal file to be recovered on next open.
-		err := s.localStore.Close()
-		s.localStore = nil
-		return err
-	}
 	return nil
 }
 

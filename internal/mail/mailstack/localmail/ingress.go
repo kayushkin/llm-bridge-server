@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/backend"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/mailmodule"
 )
 
 // ============================ outbox ============================
@@ -49,7 +50,7 @@ type Event struct {
 	CreatedAt         time.Time `json:"created_at"`
 }
 
-func queueEvent(ctx context.Context, tx *sql.Tx, e Event, now int64) error {
+func queueEvent(ctx context.Context, tx *mailmodule.Tx, e Event, now int64) error {
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO message_events (kind, origin, account_id, id, provider_message_id, revision, created_at)
 		VALUES (?,?,?,?,?,?,?)`, e.Kind, e.Origin, e.AccountID, e.ID, e.ProviderMessageID, e.Revision, now); err != nil {
@@ -106,7 +107,7 @@ func (e *PurgedError) Error() string {
 		e.ProviderMessageID, e.AccountID, e.PurgedAt.Format(time.RFC3339), e.Reason)
 }
 
-func refusePurged(ctx context.Context, tx *sql.Tx, accountID, providerMessageID string) error {
+func refusePurged(ctx context.Context, tx *mailmodule.Tx, accountID, providerMessageID string) error {
 	var reason string
 	var purgedAt int64
 	err := tx.QueryRowContext(ctx, `SELECT reason, purged_at FROM message_purges WHERE account_id = ? AND provider_message_id = ?`,
@@ -498,15 +499,12 @@ func (s *Store) Deliver(ctx context.Context, credential IngressCredential, d Del
 		result.ID, result.Locator = id, d.AccountID+":"+id
 	}
 
-	res, err := tx.ExecContext(ctx, `INSERT INTO delivery_receipts (credential_id, source, delivery_id, account_id,
+	if err := tx.QueryRowContext(ctx, `INSERT INTO delivery_receipts (credential_id, source, delivery_id, account_id,
 		provider_message_id, source_revision, content_sha256, status, message_id, revision, detail, received_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, credential.ID, credential.Source, d.DeliveryID, d.AccountID,
-		m.ProviderMessageID, m.SourceRevision, hash, result.Status, result.ID, result.Revision, result.Detail, now)
-	if err != nil {
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?) RETURNING receipt_id`, credential.ID, credential.Source, d.DeliveryID, d.AccountID,
+		m.ProviderMessageID, m.SourceRevision, hash, result.Status, result.ID, result.Revision, result.Detail, now).
+		Scan(&result.ReceiptID); err != nil {
 		return DeliveryResult{}, fmt.Errorf("localmail: record receipt for %s: %w", d.DeliveryID, err)
-	}
-	if result.ReceiptID, err = res.LastInsertId(); err != nil {
-		return DeliveryResult{}, fmt.Errorf("localmail: receipt id for %s: %w", d.DeliveryID, err)
 	}
 	if err := tx.Commit(); err != nil {
 		return DeliveryResult{}, fmt.Errorf("localmail: commit delivery %s: %w", d.DeliveryID, err)
@@ -517,14 +515,14 @@ func (s *Store) Deliver(ctx context.Context, credential IngressCredential, d Del
 // sameSourceRevision checks whether this source revision of the message is
 // already here, current or replaced. It answers replay for the same content,
 // conflict for different content, and "" when the revision is new.
-func sameSourceRevision(ctx context.Context, tx *sql.Tx, accountID, id, sourceRevision, hash string) (string, int64, string, error) {
+func sameSourceRevision(ctx context.Context, tx *mailmodule.Tx, accountID, id, sourceRevision, hash string) (string, int64, string, error) {
 	var revision int64
 	var storedHash string
 	err := tx.QueryRowContext(ctx, `SELECT revision, content_sha256 FROM local_messages
 		WHERE account_id = ? AND id = ? AND source_revision = ?`, accountID, id, sourceRevision).Scan(&revision, &storedHash)
 	if err == sql.ErrNoRows {
-		err = tx.QueryRowContext(ctx, `SELECT revision, json_extract(metadata_json, '$.content_sha256') FROM local_message_revisions
-			WHERE account_id = ? AND id = ? AND json_extract(metadata_json, '$.source_revision') = ?
+		err = tx.QueryRowContext(ctx, `SELECT revision, metadata_json::jsonb ->> 'content_sha256' FROM local_message_revisions
+			WHERE account_id = ? AND id = ? AND metadata_json::jsonb ->> 'source_revision' = ?
 			ORDER BY revision DESC LIMIT 1`, accountID, id, sourceRevision).Scan(&revision, &storedHash)
 	}
 	switch {

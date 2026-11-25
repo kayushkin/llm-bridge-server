@@ -26,7 +26,7 @@ import (
 // decides, and records its own decision.
 
 // IngressTokenHeader carries an ingress credential's token. It is not the
-// service bearer: an ingress credential can deliver into its accounts and do
+// caller the server verified: an ingress credential can deliver into its accounts and do
 // nothing else.
 const IngressTokenHeader = "X-Mailstack-Ingress-Token"
 

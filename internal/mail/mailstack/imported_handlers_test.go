@@ -19,7 +19,7 @@ func serve(t *testing.T, s *Server, method, path, body string, header map[string
 		r.Header.Set(k, v)
 	}
 	w := httptest.NewRecorder()
-	s.mux.ServeHTTP(w, r)
+	testCallerHandler(s).ServeHTTP(w, r)
 	return w
 }
 

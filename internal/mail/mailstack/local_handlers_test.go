@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -17,12 +16,7 @@ import (
 // accepted and the refused path are reachable with no network and no credential.
 func localTestServer(t *testing.T) *Server {
 	t.Helper()
-	dir := t.TempDir()
-	store, err := accounts.Open(filepath.Join(dir, "accounts.db"))
-	if err != nil {
-		t.Fatalf("open accounts store: %v", err)
-	}
-	t.Cleanup(func() { store.Close() })
+	store, local := newTestStores(t)
 	for _, a := range []*accounts.Account{
 		{ID: "demo-local", Label: "Demo", Provider: accounts.ProviderLocal, Address: "work@demo.invalid", Enabled: true},
 		{ID: "acct-ms", Label: "Real", Provider: accounts.ProviderMicrosoft, Address: "user@example.com", Enabled: true},
@@ -31,16 +25,14 @@ func localTestServer(t *testing.T) *Server {
 			t.Fatalf("save account %s: %v", a.ID, err)
 		}
 	}
-	s := NewServer(store, nil, testSettings(t, ""), WithLocalMailDB(filepath.Join(dir, "local-mail.db")))
-	t.Cleanup(func() { s.Shutdown(nil) })
-	return s
+	return newTestServer(t, store, local, ServerParts{})
 }
 
 func appendTo(t *testing.T, s *Server, accountID, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	r := httptest.NewRequest(http.MethodPost, "/api/accounts/"+accountID+"/messages", strings.NewReader(body))
 	w := httptest.NewRecorder()
-	s.mux.ServeHTTP(w, r)
+	testCallerHandler(s).ServeHTTP(w, r)
 	return w
 }
 
@@ -122,7 +114,7 @@ func TestAnAppendedMessageIsReadableThroughTheOrdinaryRoutes(t *testing.T) {
 	get := func(target string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(http.MethodGet, target, nil)
 		rec := httptest.NewRecorder()
-		s.mux.ServeHTTP(rec, r)
+		testCallerHandler(s).ServeHTTP(rec, r)
 		return rec
 	}
 
@@ -181,7 +173,7 @@ func TestAnAppendedMessageIsIndexedForThreadingImmediately(t *testing.T) {
 
 	r := httptest.NewRequest(http.MethodGet, "/api/lookup/message-id/root@demo.invalid", nil)
 	rec := httptest.NewRecorder()
-	s.mux.ServeHTTP(rec, r)
+	testCallerHandler(s).ServeHTTP(rec, r)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("lookup: %d %s", rec.Code, rec.Body)
 	}

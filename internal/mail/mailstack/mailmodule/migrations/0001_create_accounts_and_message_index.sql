@@ -1,0 +1,141 @@
+-- The accounts side of mailstack, which the standalone store kept in
+-- accounts.db: the mail accounts, IMAP logins, each IMAP account's folder map,
+-- the message index and the recorded bodies behind search.
+--
+-- Times are Unix milliseconds and flags are 0 or 1, as the store always wrote
+-- them. Text that is ordered or compared by range is COLLATE "C", so rows sort
+-- byte by byte as SQLite sorted them.
+
+CREATE TABLE accounts (
+    id               text PRIMARY KEY,
+    label            text COLLATE "C" NOT NULL,
+    provider         text NOT NULL,
+    address          text NOT NULL,
+    apiauth_provider text NOT NULL DEFAULT '',
+    apiauth_account  text NOT NULL DEFAULT '',
+    imap_cred_name   text NOT NULL DEFAULT '',
+    color            text NOT NULL DEFAULT '#888',
+    signature        text NOT NULL DEFAULT '',
+    enabled          integer NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    sort_order       integer NOT NULL DEFAULT 0,
+    created_at       bigint NOT NULL,
+    updated_at       bigint NOT NULL
+);
+
+-- One IMAP and SMTP login. The password is kept here, as the standalone store
+-- kept it; it is never served back.
+CREATE TABLE imap_creds (
+    name       text COLLATE "C" PRIMARY KEY,
+    address    text NOT NULL,
+    imap_host  text NOT NULL,
+    imap_port  integer NOT NULL,
+    smtp_host  text NOT NULL,
+    smtp_port  integer NOT NULL,
+    username   text NOT NULL,
+    password   text NOT NULL,
+    tls_mode   text NOT NULL,
+    created_at bigint NOT NULL,
+    updated_at bigint NOT NULL
+);
+
+CREATE TABLE imap_folder_map (
+    account_id text NOT NULL,
+    canonical  text NOT NULL,
+    folder_id  text NOT NULL,
+    PRIMARY KEY (account_id, canonical)
+);
+
+-- The message index: what mailstack has seen of each message, filled as reads
+-- happen. folder_scope is the folder for an IMAP UID, which is unique only
+-- within one mailbox, and empty for Gmail and Graph ids, which are unique in
+-- the account. message_id is the RFC 5322 Message-ID, optional, so it is
+-- indexed and never the key.
+CREATE TABLE messages (
+    account_id      text COLLATE "C" NOT NULL,
+    folder_scope    text NOT NULL DEFAULT '',
+    provider_id     text NOT NULL,
+
+    message_id      text NOT NULL DEFAULT '',
+    thread_id       text NOT NULL DEFAULT '',
+    root_message_id text NOT NULL DEFAULT '',
+    in_reply_to     text NOT NULL DEFAULT '',
+    references_ids  text NOT NULL DEFAULT '[]',
+
+    subject         text NOT NULL DEFAULT '',
+    from_name       text NOT NULL DEFAULT '',
+    from_email      text NOT NULL DEFAULT '',
+    date_ms         bigint NOT NULL DEFAULT 0,
+    folder_id       text NOT NULL DEFAULT '',
+    uid_validity    bigint NOT NULL DEFAULT 0,
+
+    first_seen_ms   bigint NOT NULL,
+    last_seen_ms    bigint NOT NULL,
+
+    PRIMARY KEY (account_id, folder_scope, provider_id)
+);
+CREATE INDEX messages_message_id_index ON messages (message_id) WHERE message_id <> '';
+CREATE INDEX messages_thread_index     ON messages (account_id, thread_id) WHERE thread_id <> '';
+CREATE INDEX messages_root_index       ON messages (root_message_id) WHERE root_message_id <> '';
+CREATE INDEX messages_date_index       ON messages (account_id, date_ms DESC);
+
+-- Search reads words as the SQLite store's FTS5 table did, with its porter
+-- unicode61 tokenizer: every run of letters and digits is a word, stemmed, and
+-- no word is dropped as too common. The dictionary is the English snowball
+-- stemmer with no stop word list, and the configuration is English with that
+-- dictionary in place of the one that drops stop words.
+CREATE TEXT SEARCH DICTIONARY mail_english_stem_keeping_every_word (TEMPLATE = snowball, LANGUAGE = english);
+CREATE TEXT SEARCH CONFIGURATION mail_search (COPY = english);
+ALTER TEXT SEARCH CONFIGURATION mail_search
+    ALTER MAPPING REPLACE english_stem WITH mail_english_stem_keeping_every_word;
+
+-- mail_search_words is text as search reads it: every ASCII punctuation mark
+-- becomes a space, so an address such as alerts@notify.example.com is the
+-- words alerts, notify, example and com, as it was to FTS5. Without it the
+-- Postgres parser keeps an address or a host name as one word.
+CREATE FUNCTION mail_search_words(source text) RETURNS text
+    LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
+    RETURN translate(source, '!"#$%&''()*+,-./:;<=>?@[\]^_`{|}~', '                                ');
+
+-- The bodies of messages fetched in full, recorded only so search can read
+-- them; no read serves a body from here. search_document holds the four
+-- searched fields, weighted A (subject), B (sender address), C (sender name)
+-- and D (body text), which the ranking turns into the FTS5 column weights 8,
+-- 6, 2 and 1. search_token_count is how many words the four fields hold, the
+-- row length BM25 compares with the average. A trigger keeps both true.
+CREATE TABLE message_bodies (
+    id                 bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    account_id         text NOT NULL,
+    folder_scope       text NOT NULL DEFAULT '',
+    provider_id        text NOT NULL,
+    message_id         text NOT NULL DEFAULT '',
+    subject            text NOT NULL DEFAULT '',
+    from_name          text NOT NULL DEFAULT '',
+    from_email         text NOT NULL DEFAULT '',
+    date_ms            bigint NOT NULL DEFAULT 0,
+    body_text          text NOT NULL DEFAULT '',
+    body_html          text NOT NULL DEFAULT '',
+    search_text        text NOT NULL DEFAULT '',
+    fetched_ms         bigint NOT NULL,
+    search_document    tsvector NOT NULL,
+    search_token_count integer NOT NULL,
+    UNIQUE (account_id, folder_scope, provider_id)
+);
+CREATE INDEX message_bodies_search_index ON message_bodies USING gin (search_document);
+
+CREATE FUNCTION message_bodies_fill_search_columns() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+BEGIN
+    NEW.search_document :=
+        setweight(to_tsvector('mail_search', mail_search_words(NEW.subject)), 'A') ||
+        setweight(to_tsvector('mail_search', mail_search_words(NEW.from_email)), 'B') ||
+        setweight(to_tsvector('mail_search', mail_search_words(NEW.from_name)), 'C') ||
+        setweight(to_tsvector('mail_search', mail_search_words(NEW.search_text)), 'D');
+    NEW.search_token_count := (
+        SELECT coalesce(sum(cardinality(entry.positions)), 0)
+        FROM unnest(NEW.search_document) AS entry);
+    RETURN NEW;
+END
+$$;
+CREATE TRIGGER message_bodies_fill_search_columns
+    BEFORE INSERT OR UPDATE OF subject, from_name, from_email, search_text ON message_bodies
+    FOR EACH ROW EXECUTE FUNCTION message_bodies_fill_search_columns();

@@ -12,28 +12,11 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/localmail"
 )
 
-// localMailStore opens the synthetic mailbox on first use.
-//
-// Lazy rather than opened at start-up so that a host with no local account
-// never creates the file. The e2e smoke asserts that a run touches nothing
-// under the real config directory, and an eagerly-created database would fail
-// it on every host whether or not the feature is used.
+// localMailStore is the mailbox of local accounts. It keeps the error its
+// callers were written against, from when the store was a SQLite file opened
+// on first use.
 func (s *Server) localMailStore() (*localmail.Store, error) {
-	s.localMu.Lock()
-	defer s.localMu.Unlock()
-	if s.localStore != nil {
-		return s.localStore, nil
-	}
-	path := s.localDBPath
-	if path == "" {
-		path = localmail.DefaultDBPath()
-	}
-	store, err := localmail.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	s.localStore = store
-	return store, nil
+	return s.localStore, nil
 }
 
 // appendMessageRequest is one message being put into a local account, as a

@@ -49,9 +49,10 @@ type SearchHit struct {
 	FromName    string `json:"from_name,omitempty"`
 	FromEmail   string `json:"from_email,omitempty"`
 	DateMs      int64  `json:"date_ms"`
-	// Score is the raw bm25() value: negative, and LOWER means a better match.
-	// Passed through unchanged so callers can apply their own recency decay
-	// rather than having a freshness policy baked in here.
+	// Score is the BM25 score, negated as FTS5's bm25() was: negative, and
+	// LOWER means a better match. Passed through unchanged so callers can
+	// apply their own recency decay rather than having a freshness policy
+	// baked in here.
 	Score   float64 `json:"score"`
 	Snippet string  `json:"snippet,omitempty"`
 }
@@ -89,29 +90,45 @@ func (s *Store) UpsertMessageBody(b MessageBody) error {
 	return err
 }
 
-// bm25Weights ranks subject and sender matches above body matches. The column
-// order matches the FTS table: subject, from_name, from_email, search_text. A
+// Search ranks with BM25 as SQLite's FTS5 bm25() did, computed in SQL over
+// the weighted tsvector the module keeps on each row (see the migration that
+// makes message_bodies).
+//
+// For each query term: its rarity is ln((N - n + 0.5) / (n + 0.5)), at least
+// 1e-6, where N is every recorded body and n those holding the term; its
+// frequency in a row is the row's hits of it, each weighted by the field it is
+// in; and it adds rarity × f × (k1 + 1) / (f + k1 × (1 - b + b × D / avgD)),
+// where D is the row's word count and avgD the average. k1 is 1.2 and b 0.75,
+// FTS5's own. The score handed back is the sum negated, so it is negative and
+// lower is better, as bm25() was, and callers that turn it into a goodness by
+// negating it keep working. A term that the parser splits into several words
+// counts the least frequent of them.
+//
+// The field weights rank subject and sender matches above body matches. A
 // shared subject term is a far stronger signal of "same kind of mail" than the
 // same term buried in a footer, and the sender address is the single most
 // predictive field for how mail gets filed — measured on this host's own email
 // board, sender alone predicted the filed card for 93% of 846 linked messages.
-const bm25Weights = "bm25(message_bodies_fts, 8.0, 2.0, 6.0, 1.0)"
+// They are the FTS5 column weights: subject 8 (weight A), sender address 6
+// (B), sender name 2 (C), body text 1 (D).
+const fieldWeightOfHit = `CASE hit_weight WHEN 'A' THEN 8 WHEN 'B' THEN 6 WHEN 'C' THEN 2 ELSE 1 END`
 
 // SearchMessages runs a full-text search over recorded payloads. The query is
-// plain text: it is tokenized here and every term is quoted, so FTS5 operator
-// syntax in the input cannot change the query's meaning. All terms must match
-// (implicit AND). accountID narrows to one account when non-empty.
+// plain text: it is cut into words here, and only runs of letters and digits
+// reach the database, so no operator syntax in the input can change the
+// query's meaning. All terms must match (implicit AND). accountID narrows to
+// one account when non-empty.
 func (s *Store) SearchMessages(query, accountID string, limit int) ([]SearchHit, error) {
-	match := ftsQuery(tokenizeForSearch(query), " ")
-	if match == "" {
+	terms := tokenizeForSearch(query)
+	if len(terms) == 0 {
 		return nil, fmt.Errorf("query %q contains no searchable terms", query)
 	}
-	return s.runFTSQuery(match, accountID, "", "", limit)
+	return s.runRankedSearch(terms, " & ", accountID, "", "", limit)
 }
 
 // SimilarMessages finds recorded messages that read like the given text — a
 // subject and body, typically of a message that is not stored yet. The text is
-// reduced to its distinct terms joined with OR, and bm25 ranking does the
+// reduced to its distinct terms joined with OR, and BM25 ranking does the
 // discrimination: terms common across the corpus contribute almost nothing,
 // distinctive shared terms dominate. The message identified by
 // excludeAccountID/excludeProviderID is left out of the results, so a stored
@@ -121,40 +138,88 @@ func (s *Store) SimilarMessages(text string, excludeAccountID, excludeProviderID
 	if len(terms) > maxSimilarityTerms {
 		terms = terms[:maxSimilarityTerms]
 	}
-	match := ftsQuery(terms, " OR ")
-	if match == "" {
+	if len(terms) == 0 {
 		return nil, fmt.Errorf("text contains no searchable terms")
 	}
-	return s.runFTSQuery(match, "", excludeAccountID, excludeProviderID, limit)
+	return s.runRankedSearch(terms, " | ", "", excludeAccountID, excludeProviderID, limit)
 }
 
-func (s *Store) runFTSQuery(match, accountID, excludeAccountID, excludeProviderID string, limit int) ([]SearchHit, error) {
+// runRankedSearch finds the rows matching terms joined by operator (" & " or
+// " | "), ranks them by BM25 and answers the best limit of them. Every term is
+// a run of letters and digits (tokenizeForSearch), so the joined text is a
+// valid tsquery with no operator the caller wrote.
+func (s *Store) runRankedSearch(terms []string, operator, accountID, excludeAccountID, excludeProviderID string, limit int) ([]SearchHit, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if limit <= 0 || limit > 200 {
 		limit = 20
 	}
-	where := "message_bodies_fts MATCH ?"
-	args := []any{match}
+	query := strings.Join(terms, operator)
+	args := []any{terms, query}
+	filters := ""
 	if accountID != "" {
-		where += " AND b.account_id = ?"
+		filters += " AND b.account_id = ?"
 		args = append(args, accountID)
 	}
 	if excludeAccountID != "" || excludeProviderID != "" {
-		where += " AND NOT (b.account_id = ? AND b.provider_id = ?)"
+		filters += " AND NOT (b.account_id = ? AND b.provider_id = ?)"
 		args = append(args, excludeAccountID, excludeProviderID)
 	}
-	args = append(args, limit)
+	args = append(args, limit, query)
 	rows, err := s.db.Query(`
+		WITH query_terms AS (
+			SELECT term.word, tsvector_to_array(to_tsvector('mail_search', term.word)) AS lexemes
+			FROM unnest(?::text[]) WITH ORDINALITY AS term(word, position)
+		),
+		corpus AS (
+			SELECT count(*)::double precision AS documents,
+			       coalesce(avg(search_token_count), 0)::double precision AS average_tokens
+			FROM message_bodies
+		),
+		term_rarity AS (
+			SELECT query_terms.lexemes,
+			       greatest(ln((corpus.documents - holding.documents + 0.5) / (holding.documents + 0.5)), 1e-6) AS rarity
+			FROM query_terms CROSS JOIN corpus
+			CROSS JOIN LATERAL (
+				SELECT count(*)::double precision AS documents FROM message_bodies
+				WHERE search_document @@ phraseto_tsquery('mail_search', query_terms.word)
+			) AS holding
+			WHERE cardinality(query_terms.lexemes) > 0
+		),
+		candidates AS (
+			SELECT b.id, b.search_document, b.search_token_count FROM message_bodies b
+			WHERE b.search_document @@ to_tsquery('mail_search', ?)`+filters+`
+		),
+		term_hits AS (
+			SELECT candidates.id, entry.lexeme, sum(`+fieldWeightOfHit+`)::double precision AS weighted_hits
+			FROM candidates
+			CROSS JOIN LATERAL unnest(candidates.search_document) AS entry
+			CROSS JOIN LATERAL unnest(entry.weights) AS hit_weight
+			WHERE entry.lexeme IN (SELECT unnest(lexemes) FROM query_terms)
+			GROUP BY candidates.id, entry.lexeme
+		),
+		scores AS (
+			SELECT candidates.id,
+			       sum(term_rarity.rarity * (frequency.weighted_hits * 2.2)
+			           / (frequency.weighted_hits + 1.2 * (0.25 + 0.75 * candidates.search_token_count / corpus.average_tokens))) AS goodness
+			FROM candidates CROSS JOIN corpus CROSS JOIN term_rarity
+			CROSS JOIN LATERAL (
+				SELECT coalesce(min(coalesce(term_hits.weighted_hits, 0)), 0) AS weighted_hits
+				FROM unnest(term_rarity.lexemes) AS term_lexeme
+				LEFT JOIN term_hits ON term_hits.id = candidates.id AND term_hits.lexeme = term_lexeme
+			) AS frequency
+			GROUP BY candidates.id
+		),
+		best AS (
+			SELECT id, goodness FROM scores ORDER BY goodness DESC, id LIMIT ?
+		)
 		SELECT b.account_id, b.folder_scope, b.provider_id, b.message_id,
 		       b.subject, b.from_name, b.from_email, b.date_ms,
-		       `+bm25Weights+`,
-		       snippet(message_bodies_fts, 3, '', '', '…', 12)
-		FROM message_bodies_fts
-		JOIN message_bodies b ON b.id = message_bodies_fts.rowid
-		WHERE `+where+`
-		ORDER BY `+bm25Weights+`
-		LIMIT ?
+		       -best.goodness,
+		       ts_headline('mail_search', b.search_text, to_tsquery('mail_search', ?),
+		           'StartSel="", StopSel="", MaxWords=12, MinWords=6, ShortWord=0, MaxFragments=1, FragmentDelimiter="…"')
+		FROM best JOIN message_bodies b ON b.id = best.id
+		ORDER BY best.goodness DESC, best.id
 	`, args...)
 	if err != nil {
 		return nil, err
@@ -218,17 +283,4 @@ func tokenizeForSearch(text string) []string {
 	}
 	flush()
 	return terms
-}
-
-// ftsQuery joins terms into an FTS5 MATCH expression, each term quoted so no
-// input can be read as FTS5 operator syntax.
-func ftsQuery(terms []string, separator string) string {
-	if len(terms) == 0 {
-		return ""
-	}
-	quoted := make([]string, len(terms))
-	for i, t := range terms {
-		quoted[i] = `"` + t + `"`
-	}
-	return strings.Join(quoted, separator)
 }

@@ -14,7 +14,7 @@ const (
 )
 
 // ImapCred stores credentials for a single IMAP/SMTP mailbox.
-// Password is plaintext; protection is filesystem perms (0600 on accounts.db).
+// Password is plaintext; only the mail module's role can read the table.
 type ImapCred struct {
 	Name      string  `json:"name"`
 	Address   string  `json:"address"`

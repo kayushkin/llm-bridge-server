@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -22,13 +21,9 @@ import (
 // every write op, which makes the "backend refused" path deterministic and
 // reachable with no network and no credential.
 
-func testServer(t *testing.T, token string) (*Server, *accounts.Store) {
+func testServer(t *testing.T) (*Server, *accounts.Store) {
 	t.Helper()
-	store, err := accounts.Open(filepath.Join(t.TempDir(), "accounts.db"))
-	if err != nil {
-		t.Fatalf("open accounts store: %v", err)
-	}
-	t.Cleanup(func() { store.Close() })
+	store, local := newTestStores(t)
 	if err := store.Save(&accounts.Account{
 		ID:       "acct-ms",
 		Label:    "Stub",
@@ -38,7 +33,7 @@ func testServer(t *testing.T, token string) (*Server, *accounts.Store) {
 	}); err != nil {
 		t.Fatalf("save account: %v", err)
 	}
-	return NewServer(store, nil, testSettings(t, token)), store
+	return newTestServer(t, store, local, ServerParts{}), store
 }
 
 // do routes a request through the real mux, exactly as a client would reach it.
@@ -51,7 +46,7 @@ func do(t *testing.T, s *Server, method, target, body string) *httptest.Response
 		r = httptest.NewRequest(method, target, strings.NewReader(body))
 	}
 	w := httptest.NewRecorder()
-	s.mux.ServeHTTP(w, r)
+	testCallerHandler(s).ServeHTTP(w, r)
 	return w
 }
 
@@ -60,7 +55,7 @@ func do(t *testing.T, s *Server, method, target, body string) *httptest.Response
 // Every write op requires ?account=. The check lives in one shared helper, so
 // each handler is a separate chance for it not to be called.
 func TestEveryWriteOpRequiresAnAccount(t *testing.T) {
-	s, _ := testServer(t, "")
+	s, _ := testServer(t)
 	cases := []struct {
 		name, method, target, body string
 	}{
@@ -90,7 +85,7 @@ func TestEveryWriteOpRequiresAnAccount(t *testing.T) {
 
 // An unknown account is the caller's mistake, not the upstream's — 400, not 502.
 func TestAnUnknownAccountIsARequestErrorNotAGatewayError(t *testing.T) {
-	s, _ := testServer(t, "")
+	s, _ := testServer(t)
 	w := do(t, s, http.MethodPost, "/api/messages/m1/read?account=nope", `{"read":true}`)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("an unknown account must be 400, not %d (%s)", w.Code, w.Body.String())
@@ -103,7 +98,7 @@ func TestAnUnknownAccountIsARequestErrorNotAGatewayError(t *testing.T) {
 // bool is false, so a swallowed decode error on the read route turns a
 // malformed request into "mark unread" rather than into an error.
 func TestAMalformedBodyIsRejectedBeforeTheBackendIsCalled(t *testing.T) {
-	s, _ := testServer(t, "")
+	s, _ := testServer(t)
 	for _, route := range []string{"read", "flag"} {
 		t.Run(route, func(t *testing.T) {
 			w := do(t, s, http.MethodPost, "/api/messages/m1/"+route+"?account=acct-ms", `{not json`)
@@ -121,7 +116,7 @@ func TestAMalformedBodyIsRejectedBeforeTheBackendIsCalled(t *testing.T) {
 // Move has a second guard the other routes do not: an empty folder is rejected
 // at the handler, so the backend never sees a move to nowhere.
 func TestMoveRejectsAnEmptyFolderAtTheHandler(t *testing.T) {
-	s, _ := testServer(t, "")
+	s, _ := testServer(t)
 	w := do(t, s, http.MethodPost, "/api/messages/m1/move?account=acct-ms", `{"folder":""}`)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("an empty folder must be 400; got %d (%s)", w.Code, w.Body.String())
@@ -134,7 +129,7 @@ func TestMoveRejectsAnEmptyFolderAtTheHandler(t *testing.T) {
 // The guard is on the missing FIELD as much as on the empty string — an absent
 // "folder" key decodes to "" and must fail the same way.
 func TestMoveRejectsAnAbsentFolderField(t *testing.T) {
-	s, _ := testServer(t, "")
+	s, _ := testServer(t)
 	w := do(t, s, http.MethodPost, "/api/messages/m1/move?account=acct-ms", `{}`)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("an absent folder field must be 400; got %d (%s)", w.Code, w.Body.String())
@@ -144,7 +139,7 @@ func TestMoveRejectsAnAbsentFolderField(t *testing.T) {
 // ─── Backend failure maps to 502, not 500 and not 200 ──────────────────
 
 func TestABackendRefusalIsAGatewayError(t *testing.T) {
-	s, _ := testServer(t, "")
+	s, _ := testServer(t)
 	cases := []struct {
 		name, method, target, body string
 	}{
@@ -177,7 +172,7 @@ func TestDeleteAnswersNoContentWhileTheOthersAnswerAnOkBody(t *testing.T) {
 	// providers never do. What is assertable without a network is the pairing
 	// of code and body the handlers write, read off the source of truth for
 	// each: only handleDelete calls WriteHeader(204), and it writes no body.
-	s, _ := testServer(t, "")
+	s, _ := testServer(t)
 	w := do(t, s, http.MethodDelete, "/api/messages/m1?account=acct-ms", "")
 	if w.Code == http.StatusNoContent {
 		t.Fatal("the stub backend must fail; a 204 here means the write path was skipped entirely")
@@ -187,12 +182,14 @@ func TestDeleteAnswersNoContentWhileTheOthersAnswerAnOkBody(t *testing.T) {
 	}
 }
 
-// ─── The auth middleware wraps every write op ──────────────────────────
+// ─── Every write op needs a caller ─────────────────────────────────────
 
-// Each write route is registered through s.auth individually, so a route
-// registered without it is a hole that only a per-route check finds.
-func TestEveryWriteRouteIsBehindTheBearerToken(t *testing.T) {
-	s, _ := testServer(t, "secret")
+// Each write route is registered through routeFor individually, so a route
+// registered without it is a hole that only a per-route check finds. The
+// mounting server never sends a request with no caller; one that arrives
+// anyway is refused rather than served as if it were the internal service.
+func TestEveryWriteRouteRefusesARequestWithNoCaller(t *testing.T) {
+	s, _ := testServer(t)
 	cases := []struct {
 		name, method, target, body string
 	}{
@@ -204,37 +201,66 @@ func TestEveryWriteRouteIsBehindTheBearerToken(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			w := do(t, s, c.method, c.target, c.body)
-			if w.Code != http.StatusUnauthorized {
-				t.Errorf("an unauthenticated write must be 401; got %d (%s)", w.Code, w.Body.String())
+			r := httptest.NewRequest(c.method, c.target, strings.NewReader(c.body))
+			r.Header.Set(testNoCallerHeader, "1")
+			w := httptest.NewRecorder()
+			testCallerHandler(s).ServeHTTP(w, r)
+			if w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), errorCodeNoCaller) {
+				t.Errorf("a write with no caller must be 401 %s; got %d (%s)", errorCodeNoCaller, w.Code, w.Body.String())
 			}
 		})
 	}
 }
 
-// A wrong token must be refused as firmly as no token — the check is an
-// equality on the part after "Bearer ", and a prefix test would pass here.
-func TestAWrongBearerTokenIsRefused(t *testing.T) {
-	s, _ := testServer(t, "secret")
+func TestTheInternalServiceReachesTheHandler(t *testing.T) {
+	s, _ := testServer(t)
 	r := httptest.NewRequest(http.MethodPost, "/api/messages/m1/read?account=acct-ms", strings.NewReader(`{"read":true}`))
-	r.Header.Set("Authorization", "Bearer secretly-wrong")
 	w := httptest.NewRecorder()
-	s.mux.ServeHTTP(w, r)
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("a token that merely starts with the right value must be refused; got %d", w.Code)
+	testCallerHandler(s).ServeHTTP(w, r)
+	// 502 is the stub backend refusing, which means the request got all the way
+	// through the caller check, the account lookup and the decode.
+	if w.Code != http.StatusBadGateway {
+		t.Errorf("a write by the internal service must reach the backend (502 from the stub); got %d (%s)", w.Code, w.Body.String())
 	}
 }
 
-func TestTheRightBearerTokenReachesTheHandler(t *testing.T) {
-	s, _ := testServer(t, "secret")
-	r := httptest.NewRequest(http.MethodPost, "/api/messages/m1/read?account=acct-ms", strings.NewReader(`{"read":true}`))
-	r.Header.Set("Authorization", "Bearer secret")
-	w := httptest.NewRecorder()
-	s.mux.ServeHTTP(w, r)
-	// 502 is the stub backend refusing, which means the request got all the way
-	// through auth, the account lookup and the decode.
-	if w.Code != http.StatusBadGateway {
-		t.Errorf("an authenticated write must reach the backend (502 from the stub); got %d (%s)", w.Code, w.Body.String())
+// With provider connections off, an account on a mail provider answers 503
+// and no token is ever asked for, so nothing can reach a real mailbox; a
+// local account still answers.
+func TestProviderConnectionsOffReachNoProvider(t *testing.T) {
+	store, local := newTestStores(t)
+	for _, a := range []*accounts.Account{
+		{ID: "acct-google", Label: "G", Provider: accounts.ProviderGoogle, Address: "user@example.com", Enabled: true},
+		{ID: "acct-ms", Label: "M", Provider: accounts.ProviderMicrosoft, Address: "user@example.com", Enabled: true},
+		{ID: "acct-imap", Label: "I", Provider: accounts.ProviderIMAP, Address: "user@example.com", ImapCredName: "nowhere", Enabled: true},
+		{ID: "demo-local", Label: "L", Provider: accounts.ProviderLocal, Address: "work@demo.invalid", Enabled: true},
+	} {
+		if err := store.Save(a); err != nil {
+			t.Fatalf("save %s: %v", a.ID, err)
+		}
+	}
+	tokens := &refusingTokenSource{}
+	s := newTestServer(t, store, local, ServerParts{Tokens: tokens, ProviderConnectionsEnabled: false})
+	for _, account := range []string{"acct-google", "acct-ms", "acct-imap"} {
+		for _, c := range []struct{ method, target, body string }{
+			{http.MethodGet, "/api/folders?account=" + account, ""},
+			{http.MethodGet, "/api/messages?account=" + account, ""},
+			{http.MethodGet, "/api/messages/m1?account=" + account, ""},
+			{http.MethodGet, "/api/messages/m1/attachments/a1?account=" + account, ""},
+			{http.MethodPost, "/api/messages/m1/read?account=" + account, `{"read":true}`},
+			{http.MethodPost, "/api/messages/bulk?account=" + account, `{"ids":["m1"],"op":"read"}`},
+		} {
+			w := do(t, s, c.method, c.target, c.body)
+			if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), errorCodeProviderConnectionsOff) {
+				t.Errorf("%s %s: want 503 %s, got %d (%s)", c.method, c.target, errorCodeProviderConnectionsOff, w.Code, w.Body.String())
+			}
+		}
+	}
+	if tokens.asked != 0 {
+		t.Errorf("the token source was asked %d times with provider connections off", tokens.asked)
+	}
+	if w := do(t, s, http.MethodGet, "/api/folders?account=demo-local", ""); w.Code != http.StatusOK {
+		t.Errorf("a local account must answer with provider connections off; got %d (%s)", w.Code, w.Body.String())
 	}
 }
 
@@ -244,7 +270,7 @@ func TestTheRightBearerTokenReachesTheHandler(t *testing.T) {
 // are POSTs on sub-paths. Getting the method wrong on any of them silently
 // selects a different handler or none.
 func TestTheWriteRoutesAreBoundToTheirOwnMethods(t *testing.T) {
-	s, _ := testServer(t, "")
+	s, _ := testServer(t)
 	// A POST to the bare message path is not the delete route.
 	w := do(t, s, http.MethodPost, "/api/messages/m1?account=acct-ms", "")
 	if w.Code == http.StatusNoContent {
@@ -260,7 +286,7 @@ func TestTheWriteRoutesAreBoundToTheirOwnMethods(t *testing.T) {
 // The id is taken from the path, so an id that needs escaping must still arrive
 // as one value rather than as a truncated one.
 func TestTheMessageIdIsReadFromThePath(t *testing.T) {
-	s, _ := testServer(t, "")
+	s, _ := testServer(t)
 	w := do(t, s, http.MethodPost, "/api/messages/abc%2Fdef/read?account=acct-ms", `{"read":true}`)
 	// It reaches the backend (502) rather than 404ing on a split path.
 	if w.Code != http.StatusBadGateway {
@@ -271,7 +297,7 @@ func TestTheMessageIdIsReadFromThePath(t *testing.T) {
 // ─── The error body is JSON ────────────────────────────────────────────
 
 func TestAWriteOpErrorIsAJsonBody(t *testing.T) {
-	s, _ := testServer(t, "")
+	s, _ := testServer(t)
 	w := do(t, s, http.MethodPost, "/api/messages/m1/read?account=acct-ms", `{"read":true}`)
 	var payload map[string]any
 	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {

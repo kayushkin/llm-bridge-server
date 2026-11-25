@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -81,22 +80,11 @@ func newFakeFileStore(t *testing.T) (*fakeFileStore, *filestore.Client) {
 
 func localTestServerWithFiles(t *testing.T, files *filestore.Client) *Server {
 	t.Helper()
-	dir := t.TempDir()
-	store, err := accounts.Open(filepath.Join(dir, "accounts.db"))
-	if err != nil {
-		t.Fatalf("open accounts store: %v", err)
-	}
-	t.Cleanup(func() { store.Close() })
+	store, local := newTestStores(t)
 	if err := store.Save(&accounts.Account{ID: "demo-local", Label: "Demo", Provider: accounts.ProviderLocal, Address: "work@demo.invalid", Enabled: true}); err != nil {
 		t.Fatalf("save account: %v", err)
 	}
-	options := []ServerOption{WithLocalMailDB(filepath.Join(dir, "local-mail.db"))}
-	if files != nil {
-		options = append(options, WithFileStore(files))
-	}
-	s := NewServer(store, nil, testSettings(t, ""), options...)
-	t.Cleanup(func() { s.Shutdown(nil) })
-	return s
+	return newTestServer(t, store, local, ServerParts{Files: files})
 }
 
 func messageWithAttachments(subject string, attachments ...string) string {

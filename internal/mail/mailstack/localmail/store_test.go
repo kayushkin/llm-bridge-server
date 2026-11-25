@@ -3,21 +3,16 @@ package localmail
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/backend"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/mailmodule/mailmoduletest"
 )
 
 func testStore(t *testing.T) *Store {
 	t.Helper()
-	store, err := Open(filepath.Join(t.TempDir(), "local-mail.db"))
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { store.Close() })
-	return store
+	return New(mailmoduletest.NewDB(t))
 }
 
 func msg(subject, from string, sentAt time.Time) backend.Message {
