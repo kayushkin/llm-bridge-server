@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,12 +24,10 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/principalstore"
 )
 
-const fakeFileStoreToken = "file-store-token-for-the-tests-0123456789abcdef"
-
-// fakeFileStore stands in for file-store, written from its CONTRACT.md and
-// server.go (2026-09-19): the token on every route, raw-body upload with the
-// record's fields in the query, 413 over the limit, a list by owner, content
-// served as an attachment with nosniff, a reversible DELETE and ?hard=true.
+// fakeFileStore stands in for file-store as kanban-store calls it, written
+// from its CONTRACT.md and server.go: the record's fields named by the
+// caller, 413 over the limit, a list by owner, content served as an attachment
+// with nosniff, a reversible delete and a purge.
 type fakeFileStore struct {
 	mu      sync.Mutex
 	seq     int
@@ -44,89 +43,110 @@ func newFakeFileStore() *fakeFileStore {
 	return &fakeFileStore{files: map[string]map[string]any{}, bytes: map[string][]byte{}, deleted: map[string]bool{}, limit: 1 << 20}
 }
 
-func (f *fakeFileStore) handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /files", func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		query := r.URL.Query()
-		switch {
-		case query.Get("filename") == "":
-			writeJSON(w, 400, map[string]string{"error": "filename is required"})
-			return
-		case len(body) > f.limit:
-			writeJSON(w, 413, map[string]string{"error": fmt.Sprintf("file is larger than this store accepts: the limit is %d bytes (GET /limits)", f.limit)})
-			return
-		}
-		f.mu.Lock()
-		f.seq++
-		id := fmt.Sprintf("file_%06d", f.seq)
-		hash := sha256.Sum256(body)
-		record := map[string]any{
-			"id": id, "sha256": hex.EncodeToString(hash[:]), "size_bytes": len(body), "content_type": r.Header.Get("Content-Type"),
-			"detected_content_type": http.DetectContentType(body), "filename": query.Get("filename"),
-			"owner_service": query.Get("owner_service"), "owner_ref": query.Get("owner_ref"),
-			"uploaded_by_principal_id": query.Get("uploaded_by_principal_id"), "created_at": 1789770000,
-		}
-		f.files[id], f.bytes[id] = record, body
-		f.mu.Unlock()
-		writeJSON(w, 201, record)
-	})
-	mux.HandleFunc("GET /files", func(w http.ResponseWriter, r *http.Request) {
-		f.mu.Lock()
-		defer f.mu.Unlock()
-		out := []map[string]any{}
-		for i := 1; i <= f.seq; i++ {
-			id := fmt.Sprintf("file_%06d", i)
-			record, held := f.files[id]
-			if held && (!f.deleted[id] || r.URL.Query().Get("include_deleted") == "true") && record["owner_service"] == r.URL.Query().Get("owner_service") && record["owner_ref"] == r.URL.Query().Get("owner_ref") {
-				out = append(out, record)
+var errFakeFileStoreDown = errors.New("disk is gone")
+
+func fakeFileRefusal(status int, message string) error {
+	body, _ := json.Marshal(map[string]string{"error": message})
+	return &filestore.RefusalError{Status: status, Body: body}
+}
+
+func (f *fakeFileStore) Upload(content io.Reader, _ int64, contentType, filename, cardID, uploadedByPrincipalID string) (*filestore.File, error) {
+	body, _ := io.ReadAll(content)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	switch {
+	case f.down:
+		return nil, errFakeFileStoreDown
+	case filename == "":
+		return nil, fakeFileRefusal(400, "filename is required")
+	case len(body) > f.limit:
+		return nil, fakeFileRefusal(413, fmt.Sprintf("file is larger than this store accepts: the limit is %d bytes (GET /limits)", f.limit))
+	}
+	f.seq++
+	id := fmt.Sprintf("file_%06d", f.seq)
+	hash := sha256.Sum256(body)
+	record := map[string]any{
+		"id": id, "sha256": hex.EncodeToString(hash[:]), "size_bytes": len(body), "content_type": contentType,
+		"detected_content_type": http.DetectContentType(body), "filename": filename,
+		"owner_service": filestore.OwnerService, "owner_ref": cardID,
+		"uploaded_by_principal_id": uploadedByPrincipalID, "created_at": 1789770000,
+	}
+	f.files[id], f.bytes[id] = record, body
+	return fakeFileRecord(record)
+}
+
+func fakeFileRecord(record map[string]any) (*filestore.File, error) {
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		return nil, err
+	}
+	return filestore.FileOfRecord(encoded)
+}
+
+func (f *fakeFileStore) FilesOfCard(cardID string) (map[string]*filestore.File, error) {
+	return f.filesOfCard(cardID, false)
+}
+
+func (f *fakeFileStore) EveryFileOfCard(cardID string) (map[string]*filestore.File, error) {
+	return f.filesOfCard(cardID, true)
+}
+
+func (f *fakeFileStore) filesOfCard(cardID string, includeDeleted bool) (map[string]*filestore.File, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.down {
+		return nil, errFakeFileStoreDown
+	}
+	out := map[string]*filestore.File{}
+	for id, record := range f.files {
+		if (!f.deleted[id] || includeDeleted) && record["owner_ref"] == cardID {
+			file, err := fakeFileRecord(record)
+			if err != nil {
+				return nil, err
 			}
+			out[id] = file
 		}
-		writeJSON(w, 200, out)
-	})
-	mux.HandleFunc("GET /files/{id}/content", func(w http.ResponseWriter, r *http.Request) {
-		f.mu.Lock()
-		body, held := f.bytes[r.PathValue("id")]
-		gone := f.deleted[r.PathValue("id")]
-		f.mu.Unlock()
-		if !held || gone {
-			writeJSON(w, 404, map[string]string{"error": "not found"})
-			return
-		}
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'")
-		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''served-by-file-store")
-		w.Write(body)
-	})
-	mux.HandleFunc("DELETE /files/{id}", func(w http.ResponseWriter, r *http.Request) {
-		id := r.PathValue("id")
-		f.mu.Lock()
-		defer f.mu.Unlock()
-		if _, held := f.files[id]; !held {
-			writeJSON(w, 404, map[string]string{"error": "not found"})
-			return
-		}
-		if r.URL.Query().Get("hard") == "true" {
-			delete(f.files, id)
-			delete(f.bytes, id)
-			f.purged = append(f.purged, id)
-		} else {
-			f.deleted[id] = true
-		}
-		w.WriteHeader(204)
-	})
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if f.down {
-			writeJSON(w, 500, map[string]string{"error": "disk is gone"})
-			return
-		}
-		if r.Header.Get(filestore.ServiceTokenHeader) != fakeFileStoreToken {
-			writeJSON(w, 401, map[string]string{"error": "send the token"})
-			return
-		}
-		mux.ServeHTTP(w, r)
-	})
+	}
+	return out, nil
+}
+
+func (f *fakeFileStore) ServeContent(w http.ResponseWriter, _ *http.Request, fileID string, _ bool) error {
+	f.mu.Lock()
+	body, held := f.bytes[fileID]
+	gone := f.deleted[fileID]
+	down := f.down
+	f.mu.Unlock()
+	if down {
+		return errFakeFileStoreDown
+	}
+	if !held || gone {
+		return filestore.ErrNotFound
+	}
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'")
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''served-by-file-store")
+	w.Write(body)
+	return nil
+}
+
+func (f *fakeFileStore) Delete(fileID string, purge bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.down {
+		return errFakeFileStoreDown
+	}
+	if _, held := f.files[fileID]; !held {
+		return filestore.ErrNotFound
+	}
+	if purge {
+		delete(f.files, fileID)
+		delete(f.bytes, fileID)
+		f.purged = append(f.purged, fileID)
+	} else {
+		f.deleted[fileID] = true
+	}
+	return nil
 }
 
 func setupWithAttachments(t *testing.T) (http.Handler, *fakeGrantStore, *fakeFileStore) {
@@ -137,7 +157,6 @@ func setupWithAttachments(t *testing.T) (http.Handler, *fakeGrantStore, *fakeFil
 		"bundles": newFakeBundleStore().handler(), "notes": newFakeNoteboard().handler(),
 	}
 	files := newFakeFileStore()
-	servers["files"] = files.handler()
 	urls := map[string]string{}
 	for name, handler := range servers {
 		server := httptest.NewServer(handler)
@@ -151,7 +170,7 @@ func setupWithAttachments(t *testing.T) (http.Handler, *fakeGrantStore, *fakeFil
 	// dispatches before the store above is closed.
 	t.Cleanup(a.WaitForMessageTriggers)
 	a.SetPrincipalEnforcement(api.PrincipalEnforcement{Grants: grantstore.New(urls["grants"], "grant-store-token")})
-	a.SetFileStore(filestore.New(urls["files"], fakeFileStoreToken))
+	a.SetFileStore(files)
 	return callerFromTestHeaders(a.Handler()), grants, files
 }
 

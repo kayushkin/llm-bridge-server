@@ -1,8 +1,7 @@
 package api_test
 
 import (
-	"net/http"
-	"net/http/httptest"
+	"encoding/json"
 	"testing"
 
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/referencestore"
@@ -16,17 +15,18 @@ const fakeReferenceStoreTypes = `{"types":[
 	{"type":"email","service":"mailstack","access":"grant"}
 ]}`
 
-// fakeReferenceStore answers GET /types, and counts the asks.
-func fakeReferenceStore(t *testing.T) *referencestore.Client {
+// fakeReferenceStore is reference-store's list as kanban-store is given it.
+func fakeReferenceStore(t *testing.T) referencestore.Types {
 	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/types" {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(fakeReferenceStoreTypes))
-	}))
-	t.Cleanup(server.Close)
-	return referencestore.New(server.URL)
+	var answer struct {
+		Types []json.RawMessage `json:"types"`
+	}
+	if err := json.Unmarshal([]byte(fakeReferenceStoreTypes), &answer); err != nil {
+		t.Fatal(err)
+	}
+	list, err := referencestore.NewList(answer.Types)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return list
 }

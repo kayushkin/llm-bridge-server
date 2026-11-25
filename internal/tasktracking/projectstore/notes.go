@@ -1,11 +1,9 @@
 package projectstore
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -145,42 +143,6 @@ func linkedNotesOf(links []Link, items map[string]NoteboardItem) ([]LinkedNote, 
 }
 
 func (note LinkedNote) isOpenTodo() bool { return note.Type == "todo" && note.Status == "open" }
-
-// sendJSON sends body as JSON and decodes the answer into target, which may be
-// nil. A status other than wantStatus is ErrOwnerUnavailable, with the body.
-func (owners *Owners) sendJSON(ctx context.Context, method, rawURL string, headers map[string]string, body any, wantStatus int, target any) error {
-	encoded, err := json.Marshal(body)
-	if err != nil {
-		return err
-	}
-	if err := ownerAddressIsSet(rawURL); err != nil {
-		return err
-	}
-	request, err := http.NewRequestWithContext(ctx, method, rawURL, bytes.NewReader(encoded))
-	if err != nil {
-		return err
-	}
-	request.Header.Set("Content-Type", "application/json")
-	for name, value := range headers {
-		request.Header.Set(name, value)
-	}
-	response, err := owners.HTTP.Do(request)
-	if err != nil {
-		return fmt.Errorf("%w: %s %s: %v", ErrOwnerUnavailable, method, rawURL, err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode != wantStatus {
-		answer, _ := io.ReadAll(io.LimitReader(response.Body, 500))
-		return fmt.Errorf("%w: %s %s: %s: %s", ErrOwnerUnavailable, method, rawURL, response.Status, answer)
-	}
-	if target == nil {
-		return nil
-	}
-	if err := json.NewDecoder(response.Body).Decode(target); err != nil {
-		return fmt.Errorf("%w: %s %s: %v", ErrOwnerUnavailable, method, rawURL, err)
-	}
-	return nil
-}
 
 // NextStepTag is the tag a todo made as a project's next step carries, so it
 // reads as one on noteboard too. The project link, not the tag, says whose

@@ -169,11 +169,7 @@ func (s *Server) handleGenerateImagesIntoSession(w http.ResponseWriter, r *http.
 	if caller, ok := callerOfRequest(r); ok && caller.postingAgentOfSessionID != "" {
 		sharedBy = msg.SessionFileSharedByAgent
 	}
-	limits, err := s.fileStore.Limits()
-	if err != nil {
-		writeFileStoreError(w, err)
-		return
-	}
+	limits := s.fileStore.CurrentLimits()
 	for _, image := range response.Images {
 		generation := &msg.SessionFileGeneration{
 			Prompt:              request.Prompt,

@@ -17,6 +17,32 @@ type SessionFacts interface {
 	SessionTags(ctx context.Context, sessionID string) ([]string, error)
 }
 
+// KanbanFacts is kanban-store as rule-store reads it, as the internal
+// service: a session's facts for a condition, and the cards and columns a
+// comparison reads. KanbanStore reads it over HTTP; in llm-bridge-server it is
+// kanban-store's Go methods.
+type KanbanFacts interface {
+	SessionFacts
+	// Card is one card's placements and links; a card on no board is an
+	// error wrapping ErrKanbanNotFound.
+	Card(ctx context.Context, cardID string) (CardDetail, error)
+	// ColumnCards is every card in one column of a board.
+	ColumnCards(ctx context.Context, boardID, columnID string) ([]ColumnArrival, error)
+}
+
+// Sessions is llm-bridge-server's sessions as rule-store reads them, as its
+// internal service. LLMBridge reads them over HTTP.
+type Sessions interface {
+	// ListSessions is every session, each as GET /sessions answers it.
+	ListSessions(ctx context.Context) ([]json.RawMessage, error)
+	// GetSession is one session; found is false for one the bridge does not
+	// have.
+	GetSession(ctx context.Context, sessionID string) (SessionSnapshot, bool, error)
+	// FollowSessions reads the session feed until it ends or a handler
+	// fails, and returns the id of the last frame handled.
+	FollowSessions(ctx context.Context, lastEventID string, handler FeedHandler) (string, error)
+}
+
 // CardPlacement is one card linked to a session, on one board, in one column.
 type CardPlacement struct {
 	CardID   string `json:"card_id"`

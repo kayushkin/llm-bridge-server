@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	schedulerapi "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/api"
+	schedulerdb "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/db"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/executors"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
@@ -24,37 +26,38 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// fakeSessionActionStores is repo-store's registry and the scheduler's job
-// routes, as session actions use them.
+// fakeSessionActionStores is repo-store's registry and the scheduler's jobs,
+// as session actions use them.
 type fakeSessionActionStores struct {
 	mu               sync.Mutex
 	repoPaths        map[int64]string
 	schedulerJobName string
-	schedulerRuns    []string
+	schedulerRuns    []int64
 }
 
-func newFakeSessionActionStores(t *testing.T) (*fakeSessionActionStores, *httptest.Server) {
-	fake := &fakeSessionActionStores{repoPaths: map[int64]string{}, schedulerJobName: "nightly-digest"}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fake.mu.Lock()
-		defer fake.mu.Unlock()
-		var id int64
-		switch {
-		case r.Method == http.MethodGet && sscanPath(r.URL.Path, "/api/jobs/%d", &id) && !strings.HasSuffix(r.URL.Path, "/run"):
-			if id != 76 {
-				http.Error(w, `{"error":"job not found"}`, http.StatusNotFound)
-				return
-			}
-			json.NewEncoder(w).Encode(map[string]any{"id": id, "name": fake.schedulerJobName, "type": "shell", "command": "/bin/true"})
-		case r.Method == http.MethodPost && r.URL.Path == "/api/jobs/76/run":
-			fake.schedulerRuns = append(fake.schedulerRuns, r.URL.Path)
-			json.NewEncoder(w).Encode(map[string]any{"success": true, "data": map[string]any{"id": 9001, "status": "running"}})
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	t.Cleanup(server.Close)
-	return fake, server
+func newFakeSessionActionStores() *fakeSessionActionStores {
+	return &fakeSessionActionStores{repoPaths: map[int64]string{}, schedulerJobName: "nightly-digest"}
+}
+
+// Job is the scheduler's job 76, the only one it has.
+func (fake *fakeSessionActionStores) Job(id int64) (*schedulerdb.Job, error) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if id != 76 {
+		return nil, schedulerapi.ErrJobNotFound
+	}
+	return &schedulerdb.Job{ID: id, Name: fake.schedulerJobName, Type: "shell", Command: "/bin/true"}, nil
+}
+
+// RunJobNow starts job 76 and answers its run.
+func (fake *fakeSessionActionStores) RunJobNow(id int64) (*schedulerdb.Run, error) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if id != 76 {
+		return nil, schedulerapi.ErrJobNotFound
+	}
+	fake.schedulerRuns = append(fake.schedulerRuns, id)
+	return &schedulerdb.Run{ID: 9001, JobID: id, Status: "running"}, nil
 }
 
 // GetRepo is repo-store's registry as a deploy action reads it.
@@ -68,11 +71,6 @@ func (fake *fakeSessionActionStores) GetRepo(id int64) (*repostore.Repo, error) 
 	return &repostore.Repo{ID: id, Name: filepath.Base(path), Path: path}, nil
 }
 
-func sscanPath(path, format string, id *int64) bool {
-	_, err := fmt.Sscanf(path, format, id)
-	return err == nil
-}
-
 func testServerForSessionActions(t *testing.T) (*Server, *store.Store, *fakeSessionActionStores) {
 	t.Helper()
 	dir := t.TempDir()
@@ -81,7 +79,7 @@ func testServerForSessionActions(t *testing.T) (*Server, *store.Store, *fakeSess
 		t.Fatalf("new store: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	fake, storesServer := newFakeSessionActionStores(t)
+	fake := newFakeSessionActionStores()
 	cfg := &config.Config{
 		ImagesDir:       filepath.Join(dir, "images"),
 		BridgePrefsPath: filepath.Join(dir, "prefs.json"),
@@ -91,8 +89,8 @@ func testServerForSessionActions(t *testing.T) (*Server, *store.Store, *fakeSess
 	srv := New(st, nil, nil, nil, nil, testModelStore(t), nil, cfg)
 	enableLogStoreAt(t, srv, fakeLogStore(t).URL)
 	srv.repoRegistryForDeploys = fake
-	// The scheduler runs in this process; the fake stands in for its routes.
-	srv.EnableScheduler(storesServer.Config.Handler)
+	// The scheduler runs in this process; the fake stands in for its jobs.
+	srv.enableSchedulerParts(http.NotFoundHandler(), fake)
 	return srv, st, fake
 }
 

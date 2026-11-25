@@ -159,17 +159,31 @@ func ReadScope(r *http.Request) (Scope, *RequestError) {
 			return Scope{}, &RequestError{http.StatusBadRequest, err.Error()}
 		}
 	}
+	if owner == "" {
+		return ReadScopeOf(caller)
+	}
 	if caller.SeesEveryOwner {
-		if owner != "" {
-			return OwnedBy(owner), nil
-		}
-		return EveryOwner(), nil
+		return OwnedBy(owner), nil
 	}
 	if caller.PrincipalID == "" {
 		return Scope{}, &RequestError{http.StatusUnauthorized, "this store answers a principal, and the request names none"}
 	}
-	if owner != "" && owner != caller.PrincipalID {
+	if owner != caller.PrincipalID {
 		return Scope{}, &RequestError{http.StatusForbidden, fmt.Sprintf("%s names %s, and a caller who is not an administrator reaches only its own records", OwnerParameter, owner)}
+	}
+	return OwnedBy(caller.PrincipalID), nil
+}
+
+// ReadScopeOf is the records a read by caller reaches when it names no
+// owner: every owner's for a caller who sees every owner, else the caller's
+// own. A caller who names no principal and does not see every owner reaches
+// nothing.
+func ReadScopeOf(caller Caller) (Scope, *RequestError) {
+	if caller.SeesEveryOwner {
+		return EveryOwner(), nil
+	}
+	if caller.PrincipalID == "" {
+		return Scope{}, &RequestError{http.StatusUnauthorized, "this store answers a principal, and the request names none"}
 	}
 	return OwnedBy(caller.PrincipalID), nil
 }

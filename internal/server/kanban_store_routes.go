@@ -32,13 +32,10 @@ import (
 	kanbanapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/api"
 	kanbanbundles "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/bundlestore"
 	kanbandb "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/db"
-	kanbanfiles "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/filestore"
 	kanbangrants "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/grantstore"
 	kanbanbridge "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/llmbridge"
 	kanbanmultichat "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/multichat"
-	kanbannoteboard "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/noteboard"
 	kanbanprincipals "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/principalstore"
-	kanbanreferences "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/referencestore"
 	noteboardapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/api"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/items"
 )
@@ -72,24 +69,18 @@ type KanbanStoreOwners struct {
 // until then, and in a test that never calls it, /kanban/ and /kanban-store/
 // answer 503 and this server's own kanban reads are off.
 func (s *Server) EnableKanbanStore(store *kanbandb.Store, owners KanbanStoreOwners) {
-	notes := &kanbannoteboard.Client{
-		BaseURL: "http://noteboard.in-process",
-		HTTP:    &http.Client{Transport: inprocesshttp.Transport{Handler: noteboardapi.New(owners.Noteboard).Handler()}},
-	}
+	// noteboard runs in this process, and kanban-store calls its API in Go.
+	notes := kanbanNoteboard{notes: noteboardapi.New(owners.Noteboard)}
 	directory := access.GrantsPrincipalDirectory(owners.Access.Principals)
 	api := kanbanapi.New(store, notes,
 		kanbanPrincipalDirectory{principals: owners.Access.Principals},
 		kanbanAgentsAndInstances{server: s},
 		kanbanBundles{server: s})
-	// reference-store and file-store run in this process too; kanban-store's
-	// clients of them reach their handlers through inprocesshttp, with no
-	// socket and no token. Each answers 503 until its module is enabled.
-	references := kanbanreferences.New(inprocesshttp.BaseURL)
-	references.HTTP = inprocesshttp.Client(s.ReferenceStoreModuleHandler())
-	api.SetReferenceStore(references)
-	files := kanbanfiles.New(inprocesshttp.BaseURL, "")
-	files.HTTP = inprocesshttp.Client(s.FileStoreModuleHandler())
-	api.SetFileStore(files)
+	// reference-store and file-store run in this process too, and
+	// kanban-store calls them in Go. Each call fails until its module is
+	// enabled.
+	api.SetReferenceStore(kanbanReferenceTypes{server: s})
+	api.SetFileStore(kanbanFileStore{server: s})
 	if owners.MessageTriggersEnabled {
 		api.SetMessageSender(kanbanmultichat.New(s.cfg.MultichatURL, kanbanmultichat.AuthStoreTokenSource(s.cfg.AuthStoreURL, s.cfg.AuthStoreToken)))
 	}
@@ -99,7 +90,7 @@ func (s *Server) EnableKanbanStore(store *kanbandb.Store, owners KanbanStoreOwne
 		checker:   s.grantResourceChecker(owners.Access.Principals),
 	}})
 	handler := api.Handler()
-	s.kanbanClient = kanbanclient.New(handler)
+	s.kanbanClient = kanbanclient.New(api)
 	s.kanbanStore.Store(&kanbanStoreHandlers{handler: handler, store: store, api: api, messageTriggersEnabled: owners.MessageTriggersEnabled})
 }
 
@@ -342,8 +333,9 @@ func (owner kanbanBundles) CheckBundleExists(id string) error {
 
 // KanbanStoreHTTPClientAsInternalService is an HTTP client whose every
 // request kanban-store's handler serves in this process as the internal
-// service, for a store beside it that was written against kanban-store's
-// routes (project-store). Its requests go to KanbanStoreInProcessBaseURL.
+// service. Only rule-store's live rules use it: a rule's effect names a
+// method, a path and a body, and its run records the answer's status, so it
+// is a request by design. Its requests go to KanbanStoreInProcessBaseURL.
 func (s *Server) KanbanStoreHTTPClientAsInternalService() (*http.Client, error) {
 	handlers := s.kanbanStore.Load()
 	if handlers == nil {

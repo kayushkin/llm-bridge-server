@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -85,15 +84,6 @@ func (s *Server) purgeAttachmentFiles(ctx context.Context, fileIDs []string) err
 	return errors.Join(errs...)
 }
 
-// relayedFileHeaders are file-store's answer headers a download passes on
-// unchanged. The safety ones — nosniff, the sandboxing CSP, and the
-// Content-Disposition that makes a browser save rather than render — matter
-// most: file-store's contract asks every relay to keep them.
-var relayedFileHeaders = []string{
-	"Content-Type", "Content-Length", "Content-Disposition", "Content-Range", "Accept-Ranges",
-	"ETag", "Last-Modified", "Cache-Control", "X-Content-Type-Options", "Content-Security-Policy",
-}
-
 // serveLocalAttachment answers one attachment of one revision — 0 for the
 // current — of a local account's message, after this service has found that
 // the attachment belongs to that message.
@@ -124,27 +114,16 @@ func (s *Server) serveLocalAttachment(w http.ResponseWriter, r *http.Request, ac
 		writeError(w, http.StatusServiceUnavailable, errors.New("no file-store is configured, so no attachment can be read"))
 		return
 	}
-	response, err := s.files.Content(fileID, r.URL.Query().Get("inline") == "true", r.Header)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, fmt.Errorf("read attachment %s from file-store: %w", attachment.ID, err))
-		return
-	}
-	defer response.Body.Close()
-	if response.StatusCode == http.StatusNotFound {
+	err = s.files.ServeContent(w, r, fileID, r.URL.Query().Get("inline") == "true")
+	if errors.Is(err, filestore.ErrNotFound) {
 		// mailstack names this file and file-store does not have it: data was
 		// lost, which no caller should mistake for "no such attachment".
 		log.Printf("mailstack: attachment %s of %s:%s names file-store file %s, which file-store does not have", attachment.ID, accountID, id, fileID)
 		writeError(w, http.StatusBadGateway, fmt.Errorf("file-store has lost the bytes of attachment %s", attachment.ID))
 		return
 	}
-	for _, name := range relayedFileHeaders {
-		if value := response.Header.Get(name); value != "" {
-			w.Header().Set(name, value)
-		}
-	}
-	w.WriteHeader(response.StatusCode)
-	if _, err := io.Copy(w, response.Body); err != nil {
-		log.Printf("mailstack: writing attachment %s of %s:%s: %v", attachment.ID, accountID, id, err)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, fmt.Errorf("read attachment %s from file-store: %w", attachment.ID, err))
 	}
 }
 

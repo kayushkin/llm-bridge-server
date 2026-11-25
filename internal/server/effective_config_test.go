@@ -10,7 +10,10 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient/kanbanclienttest"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
+	kanbanapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/api"
+	kanbanmodel "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/model"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -100,19 +103,17 @@ func TestEffectiveConfigAttributesAPinnedModel(t *testing.T) {
 // none, and attributes each to the board or to the tag rule that set it.
 func TestDryRunEffectiveConfigTakesTheBoardsDefaults(t *testing.T) {
 	srv, _, instanceID := testServerWithInstance(t, msg.HarnessClaudeCode)
-	kanban := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/boards/board-1/effective-defaults" || r.URL.Query().Get("tag") != "urgent" {
-			t.Errorf("unexpected kanban-store request %s", r.URL.String())
-			w.WriteHeader(404)
-			return
+	srv.kanbanClient = kanbanclient.New(&kanbanclienttest.Store{BoardEffectiveDefaultsAnswer: func(boardID string, tags []string) (*kanbanmodel.EffectiveDefaults, error) {
+		if boardID != "board-1" || len(tags) != 1 || tags[0] != "urgent" {
+			t.Errorf("unexpected kanban-store read of board %s with tags %v", boardID, tags)
+			return nil, &kanbanapi.Refusal{Status: http.StatusNotFound, Message: "not found"}
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"board_id":"board-1","tags":["urgent"],"matched_rule_ids":["tr_3"],"defaults":{
-			"default_instance_id":{"value":"` + instanceID + `","source":{"kind":"board"}},
-			"default_principal_id":{"value":"principal_000007","source":{"kind":"tag_rule","rule_id":"tr_3","rule_tags":["urgent"]}},
-			"default_bundle_id":{"value":"6","source":{"kind":"board"}}}}`))
-	})
-	srv.kanbanClient = kanbanclient.New(kanban)
+		return &kanbanmodel.EffectiveDefaults{BoardID: "board-1", Tags: []string{"urgent"}, MatchedRuleIDs: []string{"tr_3"}, Defaults: map[kanbanmodel.DefaultField]kanbanmodel.EffectiveDefault{
+			kanbanmodel.DefaultFieldInstance:  {Value: instanceID, Source: kanbanmodel.DefaultSource{Kind: "board"}},
+			kanbanmodel.DefaultFieldPrincipal: {Value: "principal_000007", Source: kanbanmodel.DefaultSource{Kind: "tag_rule", RuleID: "tr_3", RuleTags: []string{"urgent"}}},
+			kanbanmodel.DefaultFieldBundle:    {Value: "6", Source: kanbanmodel.DefaultSource{Kind: "board"}},
+		}}, nil
+	}})
 
 	req := httptest.NewRequest("GET", "/effective-config?harness=claude_code&board_id=board-1&tag=urgent", nil)
 	w := httptest.NewRecorder()

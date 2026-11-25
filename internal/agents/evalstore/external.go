@@ -2,11 +2,7 @@ package evalstore
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,8 +19,9 @@ type UsageReader interface {
 	Limits(ctx context.Context) (UsageLimits, error)
 }
 
-// UsageLimits is usage-store's GET /api/usage/limits: per subscription, its
-// windows and when the reading goes stale.
+// UsageLimits is usage-store's latest limits, the answer of its
+// GET /api/usage/limits: per subscription, its windows and when the reading
+// goes stale.
 type UsageLimits map[string]UsageSubscription
 
 // UsageSubscription is one subscription's reading.
@@ -38,57 +35,6 @@ type UsageSubscription struct {
 type UsageWindow struct {
 	UsedPercent float64 `json:"used_percent"`
 	ResetsAt    int64   `json:"resets_at"`
-}
-
-// ModelStoreClient reads GET /api/models.
-type ModelStoreClient struct {
-	BaseURL string
-	HTTP    *http.Client
-}
-
-// Models reads every model's provider and list price. A model whose price
-// fields are missing gets Known false; nothing is guessed.
-func (m *ModelStoreClient) Models(ctx context.Context) (map[string]ModelPrice, error) {
-	if m.BaseURL == "" {
-		return nil, errors.New("this eval-store was given no model-store, so model prices cannot be read")
-	}
-	var rows []struct {
-		ID         string   `json:"id"`
-		Name       string   `json:"name"`
-		Provider   string   `json:"provider"`
-		InputCost  *float64 `json:"input_cost"`
-		OutputCost *float64 `json:"output_cost"`
-	}
-	if err := getJSON(ctx, m.HTTP, strings.TrimRight(m.BaseURL, "/")+"/api/models", &rows); err != nil {
-		return nil, fmt.Errorf("model-store: %w", err)
-	}
-	models := make(map[string]ModelPrice, len(rows))
-	for _, row := range rows {
-		price := ModelPrice{Name: row.Name, Provider: row.Provider}
-		if row.InputCost != nil && row.OutputCost != nil {
-			price.InputCostPerMillion, price.OutputCostPerMillion, price.Known = *row.InputCost, *row.OutputCost, true
-		}
-		models[row.ID] = price
-	}
-	return models, nil
-}
-
-// UsageStoreClient reads GET /api/usage/limits.
-type UsageStoreClient struct {
-	BaseURL string
-	HTTP    *http.Client
-}
-
-// Limits reads the current usage of every subscription.
-func (u *UsageStoreClient) Limits(ctx context.Context) (UsageLimits, error) {
-	if u.BaseURL == "" {
-		return nil, errors.New("this eval-store was given no usage-store, so the budget cannot be checked")
-	}
-	var limits UsageLimits
-	if err := getJSON(ctx, u.HTTP, strings.TrimRight(u.BaseURL, "/")+"/api/usage/limits", &limits); err != nil {
-		return nil, fmt.Errorf("usage-store: %w", err)
-	}
-	return limits, nil
 }
 
 // budgetVerdict checks a reading against a run's limits. It returns the
@@ -118,32 +64,6 @@ func budgetVerdict(limits UsageLimits, budget []BudgetLimit, now time.Time) stri
 		}
 	}
 	return strings.Join(reasons, "; ")
-}
-
-func getJSON(ctx context.Context, client *http.Client, endpoint string, target any) error {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return err
-	}
-	if client == nil {
-		client = http.DefaultClient
-	}
-	response, err := client.Do(request)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, 16<<20))
-	if err != nil {
-		return err
-	}
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("GET %s answered %d: %s", endpoint, response.StatusCode, strings.TrimSpace(string(body)))
-	}
-	if err := json.Unmarshal(body, target); err != nil {
-		return fmt.Errorf("GET %s: %w", endpoint, err)
-	}
-	return nil
 }
 
 // ParseBudgetLimits reads the eval_store.default_budget_limits setting's

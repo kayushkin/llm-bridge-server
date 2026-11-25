@@ -22,7 +22,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/kayushkin/llm-bridge-server/internal/filestoreclient"
+	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -86,11 +86,7 @@ func (s *Server) handleShareSessionFile(w http.ResponseWriter, r *http.Request) 
 
 	// Refused before the bytes are spooled, not after: file-store would refuse
 	// an oversized file anyway, but only once it had been written to disk here.
-	limits, err := s.fileStore.Limits()
-	if err != nil {
-		writeFileStoreError(w, err)
-		return
-	}
+	limits := s.fileStore.CurrentLimits()
 
 	record, failure := s.shareFileIntoSession(session, http.MaxBytesReader(w, r.Body, limits.MaximumFileBytes), limits.MaximumFileBytes, mediaType, filename, sharedBy, sender, origin)
 	if failure != nil {
@@ -200,7 +196,7 @@ func (s *Server) shareFileIntoSession(session *store.Session, content io.Reader,
 	if _, err := spool.Seek(0, io.SeekStart); err != nil {
 		return failed(http.StatusInternalServerError, "session_files_directory", err.Error())
 	}
-	stored, err := s.fileStore.Upload(spool, sizeBytes, mediaType, filename, session.SessionID)
+	stored, err := s.fileStore.Accept(spool, sizeBytes, mediaType, filestore.NewFile{Filename: filename, OwnerService: sessionFileOwnerService, OwnerRef: session.SessionID})
 	if err != nil {
 		return store.SessionFile{}, &sessionFileShareFailure{fileStoreError: err}
 	}
@@ -288,19 +284,19 @@ func (s *Server) handleSessionFileContent(w http.ResponseWriter, r *http.Request
 		writeJSONError(w, http.StatusInternalServerError, "read_session_file", err.Error())
 		return
 	}
-	response, err := s.fileStore.Content(file.FileID, r.URL.Query().Get("inline") == "true", r.Header.Get("Range"))
-	if err != nil {
-		writeFileStoreError(w, err)
-		return
+	// file-store sees the client's Range and nothing else of its request, as
+	// when it answered over HTTP: no other header the client sent changes
+	// its answer.
+	served := r.Clone(r.Context())
+	served.Header = http.Header{}
+	if rangeHeader := r.Header.Get("Range"); rangeHeader != "" {
+		served.Header.Set("Range", rangeHeader)
 	}
-	defer response.Body.Close()
-	for name, values := range response.Header {
-		w.Header()[name] = values
+	inline := "false"
+	if r.URL.Query().Get("inline") == "true" {
+		inline = "true"
 	}
-	w.WriteHeader(response.StatusCode)
-	if _, err := io.Copy(w, response.Body); err != nil {
-		log.Printf("[session-files] relay %s of %s: %v", file.FileID, session.SessionID, err)
-	}
+	s.fileStore.ServeContentOf(w, served, file.FileID, inline)
 }
 
 // sessionFilesDirectoryOf is where one session's files are copied. A session
@@ -333,15 +329,30 @@ func plainFilenameProblem(filename string) string {
 	return ""
 }
 
-// writeFileStoreError relays file-store's own refusal, or says it could not be
-// reached.
+// writeFileStoreError answers as file-store's route would: its refusal with
+// its status, and a failure of the store as 500, each as {"error": …}.
 func writeFileStoreError(w http.ResponseWriter, err error) {
-	var refusal *filestoreclient.RefusalError
-	if errors.As(err, &refusal) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(refusal.Status)
-		w.Write(refusal.Body)
-		return
+	var refusal *filestore.Refusal
+	if !errors.As(err, &refusal) {
+		refusal = &filestore.Refusal{Status: http.StatusInternalServerError, Message: err.Error()}
 	}
-	writeJSONError(w, http.StatusBadGateway, "file_store_unavailable", err.Error())
+	refusal.Write(w)
+}
+
+// sessionFileOwnerService is how this server names itself as the owner of a
+// session's file in file-store.
+const sessionFileOwnerService = "llm-bridge-server"
+
+// sessionFileStore is file-store as session files use it: the module in this
+// process (*filestore.Server), or a fake in a test. file-store owns the bytes;
+// this server owns which session a file belongs to and who may reach it.
+type sessionFileStore interface {
+	// CurrentLimits is the largest file file-store takes, so an upload is
+	// refused before its bytes are spooled to disk rather than after.
+	CurrentLimits() filestore.Limits
+	// Accept keeps a file, or refuses it with a *filestore.Refusal.
+	Accept(content io.Reader, declaredLength int64, contentType string, file filestore.NewFile) (*filestore.File, error)
+	// ServeContentOf answers r with a file's bytes and file-store's headers,
+	// or its refusal.
+	ServeContentOf(w http.ResponseWriter, r *http.Request, id, inline string)
 }

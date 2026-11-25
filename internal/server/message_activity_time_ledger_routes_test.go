@@ -147,7 +147,7 @@ func TestAMessageIsReachedOnlyByItsOwnerAndAnAdministrator(t *testing.T) {
 func TestAnActivityAttachmentIsKeptInFileStore(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
 	enableMessageActivityAndTimeLedgerOnTestDatabase(t, gated)
-	files := ActivityAttachmentFilesIn(gated.server.FileStoreModuleHandler())
+	files := ActivityAttachmentFilesIn(gated.server.fileStoreCalls.Load())
 	fileID, err := files.Put(t.Context(), strings.NewReader("made-up recording"), activitystore.AttachmentFile{ActivityID: "activity_000001", FileName: "clip.mp3", ContentType: "audio/mpeg"})
 	if err != nil {
 		t.Fatal(err)

@@ -1,9 +1,7 @@
 package executor
 
 import (
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -71,31 +69,42 @@ func TestAWorkingOrParkedSessionIsWaitedFor(t *testing.T) {
 	}
 }
 
-// fakeBridge answers GET /sessions/{id} with each of answers in turn, repeating
-// the last one.
-func fakeBridge(t *testing.T, answers ...func(w http.ResponseWriter)) (*AgentExecutor, *int32) {
+// sessionAnswers is llm-bridge-server answering a run's reads of its session
+// with each of answers in turn, repeating the last one.
+type sessionAnswers struct {
+	t       *testing.T
+	answers []func() (*msg.ManagedSession, error)
+	calls   int32
+}
+
+func (bridge *sessionAnswers) Instances() ([]msg.Instance, error) {
+	bridge.t.Error("an outcome wait read the instances")
+	return nil, nil
+}
+
+func (bridge *sessionAnswers) Session(sessionID string) (*msg.ManagedSession, error) {
+	if sessionID != "scheduler-claude-code-1" {
+		bridge.t.Errorf("unexpected session %s", sessionID)
+	}
+	call := int(atomic.AddInt32(&bridge.calls, 1)) - 1
+	if call >= len(bridge.answers) {
+		call = len(bridge.answers) - 1
+	}
+	return bridge.answers[call]()
+}
+
+func fakeBridge(t *testing.T, answers ...func() (*msg.ManagedSession, error)) (*AgentExecutor, *int32) {
 	t.Helper()
-	var calls int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/sessions/scheduler-claude-code-1" {
-			t.Errorf("unexpected path %s", r.URL.Path)
-		}
-		call := int(atomic.AddInt32(&calls, 1)) - 1
-		if call >= len(answers) {
-			call = len(answers) - 1
-		}
-		answers[call](w)
-	}))
-	t.Cleanup(server.Close)
-	return &AgentExecutor{bridgeURL: server.URL, httpClient: server.Client(), sessionPollInterval: time.Millisecond}, &calls
+	bridge := &sessionAnswers{t: t, answers: answers}
+	return &AgentExecutor{bridge: bridge, sessionPollInterval: time.Millisecond}, &bridge.calls
 }
 
-func answerSession(session *msg.ManagedSession) func(w http.ResponseWriter) {
-	return func(w http.ResponseWriter) { _ = json.NewEncoder(w).Encode(session) }
+func answerSession(session *msg.ManagedSession) func() (*msg.ManagedSession, error) {
+	return func() (*msg.ManagedSession, error) { return session, nil }
 }
 
-func answerStatus(code int) func(w http.ResponseWriter) {
-	return func(w http.ResponseWriter) { http.Error(w, http.StatusText(code), code) }
+func answerNoSuchSession() (*msg.ManagedSession, error) {
+	return nil, fmt.Errorf("session scheduler-claude-code-1: %w", ErrSessionNotFound)
 }
 
 // The adapter creates the session a moment after the publish, so a 404 and a
@@ -103,7 +112,7 @@ func answerStatus(code int) func(w http.ResponseWriter) {
 func TestTheRunFollowsTheSessionToTheEndOfItsTurn(t *testing.T) {
 	publishedAt := time.Now()
 	executor, _ := fakeBridge(t,
-		answerStatus(http.StatusNotFound),
+		answerNoSuchSession,
 		answerSession(sessionIn(msg.SessionModelGenerating, msg.ReasonTurnStarted, publishedAt.Add(time.Millisecond))),
 		answerSession(sessionIn(msg.SessionError, msg.ReasonHarnessError, publishedAt.Add(2*time.Millisecond))),
 	)
@@ -123,22 +132,10 @@ func TestASessionThatNeverSettlesTimesOut(t *testing.T) {
 		t.Fatalf("got %q %q, want a timeout naming tool_running", result.Status, result.Output)
 	}
 
-	executor, _ = fakeBridge(t, answerStatus(http.StatusNotFound))
+	executor, _ = fakeBridge(t, answerNoSuchSession)
 	result = executor.waitForSessionOutcome("scheduler-claude-code-1", time.Now(), 20*time.Millisecond)
 	if result.Status != runstatus.Timeout || !strings.Contains(result.Output, "never appeared") {
 		t.Fatalf("got %q %q, want a timeout saying the session never appeared", result.Status, result.Output)
-	}
-}
-
-// A refused credential will not fix itself, so the run stops on the first one.
-func TestARefusedCredentialStopsTheRunAtOnce(t *testing.T) {
-	executor, calls := fakeBridge(t, answerStatus(http.StatusUnauthorized))
-	result := executor.waitForSessionOutcome("scheduler-claude-code-1", time.Now(), time.Minute)
-	if result.Status != runstatus.Error || !strings.Contains(result.Output, "401") {
-		t.Fatalf("got %q %q, want an error naming the 401", result.Status, result.Output)
-	}
-	if got := atomic.LoadInt32(calls); got != 1 {
-		t.Fatalf("read the session %d times after a 401, want 1", got)
 	}
 }
 

@@ -3,15 +3,11 @@ package possessionstore
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"image"
 	_ "image/gif"
 	"image/jpeg"
 	_ "image/png"
-	"io"
-	"net/http"
-	"net/url"
 	"strings"
 
 	"golang.org/x/image/draw"
@@ -47,67 +43,63 @@ type OriginalReader interface {
 	OriginalBytes(ctx context.Context, ownerPrincipalID, sha256 string) ([]byte, bool, error)
 }
 
-// PhotoStoreSource is the PhotoSource over photo-store and the kept
-// originals. HTTPClient's transport answers photo-store's in-process host as
-// the caller on the request's context.
-type PhotoStoreSource struct {
-	PhotoStoreURL string
-	Originals     OriginalReader
-	LongestSide   int
-	HTTPClient    *http.Client
+// PhotoStoreReads is what possession-store reads from photo-store, as the
+// owner the context's ownership.Caller names. A photo outside that owner's
+// records is not found, as a missing one.
+type PhotoStoreReads interface {
+	// Photo is the photo's record.
+	Photo(ctx context.Context, photoID string) (PhotoFacts, error)
+	// Thumbnail is the photo's thumbnail JPEG.
+	Thumbnail(ctx context.Context, photoID string) ([]byte, error)
+	// ConfirmedFacesOfPerson is the face ids photo-store confirmed as the
+	// person's on the photo, in photo-store's order; a link to the person
+	// with no face gives no id.
+	ConfirmedFacesOfPerson(ctx context.Context, photoID, personID string) ([]string, error)
+	// Faces is every face found on the photo.
+	Faces(ctx context.Context, photoID string) ([]PhotoFace, error)
 }
 
-func (source PhotoStoreSource) get(ctx context.Context, path string) ([]byte, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, source.PhotoStoreURL+path, nil)
-	if err != nil {
-		return nil, err
-	}
-	response, err := source.HTTPClient.Do(request)
-	if err != nil {
-		return nil, fmt.Errorf("photo-store GET %s: %w", path, err)
-	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		return nil, err
-	}
-	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("photo-store GET %s: %d %s", path, response.StatusCode, bytes.TrimSpace(body))
-	}
-	return body, nil
+// PhotoFacts is the part of photo-store's photo possession-store reads.
+type PhotoFacts struct {
+	OwnerPrincipalID string   `json:"owner_principal_id"`
+	Sha256           string   `json:"sha256"`
+	TakenAt          int64    `json:"taken_at"`
+	SourcePath       string   `json:"source_path"`
+	Tags             []string `json:"tags"`
+}
+
+// PhotoFace is one face on a photo.
+type PhotoFace struct {
+	ID  string `json:"id"`
+	Box Box    `json:"box"`
+}
+
+// PhotoStoreSource is the PhotoSource over photo-store and the kept
+// originals.
+type PhotoStoreSource struct {
+	PhotoStore  PhotoStoreReads
+	Originals   OriginalReader
+	LongestSide int
 }
 
 // WearerFace finds the person's confirmed face on the photo.
 func (source PhotoStoreSource) WearerFace(ctx context.Context, photoID, personID string) (Box, error) {
-	body, err := source.get(ctx, "/photo-people?photo_id="+url.QueryEscape(photoID)+"&person_id="+url.QueryEscape(personID)+"&status=confirmed")
+	faceIDs, err := source.PhotoStore.ConfirmedFacesOfPerson(ctx, photoID, personID)
 	if err != nil {
 		return Box{}, err
 	}
-	var links []struct {
-		FaceID *string `json:"face_id"`
-	}
-	if err := json.Unmarshal(body, &links); err != nil {
-		return Box{}, fmt.Errorf("photo-store's photo-people is not a list: %w", err)
-	}
 	faceID := ""
-	for _, link := range links {
-		if link.FaceID != nil && *link.FaceID != "" {
-			faceID = *link.FaceID
+	for _, id := range faceIDs {
+		if id != "" {
+			faceID = id
 		}
 	}
 	if faceID == "" {
 		return Box{}, fmt.Errorf("%w: photo-store has no confirmed face of %s on %s", ErrInvalid, personID, photoID)
 	}
-	body, err = source.get(ctx, "/photos/"+url.PathEscape(photoID)+"/faces")
+	faces, err := source.PhotoStore.Faces(ctx, photoID)
 	if err != nil {
 		return Box{}, err
-	}
-	var faces []struct {
-		ID  string `json:"id"`
-		Box Box    `json:"box"`
-	}
-	if err := json.Unmarshal(body, &faces); err != nil {
-		return Box{}, fmt.Errorf("photo-store's faces are not a list: %w", err)
 	}
 	for _, face := range faces {
 		if face.ID == faceID {
@@ -119,15 +111,9 @@ func (source PhotoStoreSource) WearerFace(ctx context.Context, photoID, personID
 
 // TakenAt reads the photo's taken_at.
 func (source PhotoStoreSource) TakenAt(ctx context.Context, photoID string) (int64, error) {
-	body, err := source.get(ctx, "/photos/"+url.PathEscape(photoID))
+	photo, err := source.PhotoStore.Photo(ctx, photoID)
 	if err != nil {
 		return 0, err
-	}
-	var photo struct {
-		TakenAt int64 `json:"taken_at"`
-	}
-	if err := json.Unmarshal(body, &photo); err != nil {
-		return 0, fmt.Errorf("photo-store's %s is not a photo: %w", photoID, err)
 	}
 	return photo.TakenAt, nil
 }
@@ -135,16 +121,9 @@ func (source PhotoStoreSource) TakenAt(ctx context.Context, photoID string) (int
 // WhyACopy reads photo-store's source path and tags: a file whose name
 // begins "Screenshot", or a photo tagged screenshot, is a copy.
 func (source PhotoStoreSource) WhyACopy(ctx context.Context, photoID string) (string, error) {
-	body, err := source.get(ctx, "/photos/"+url.PathEscape(photoID))
+	photo, err := source.PhotoStore.Photo(ctx, photoID)
 	if err != nil {
 		return "", err
-	}
-	var photo struct {
-		SourcePath string   `json:"source_path"`
-		Tags       []string `json:"tags"`
-	}
-	if err := json.Unmarshal(body, &photo); err != nil {
-		return "", fmt.Errorf("photo-store's %s is not a photo: %w", photoID, err)
 	}
 	return whyACopy(photo.SourcePath, photo.Tags), nil
 }
@@ -164,7 +143,7 @@ func whyACopy(sourcePath string, tags []string) string {
 
 // Thumbnail answers photo-store's thumbnail.
 func (source PhotoStoreSource) Thumbnail(ctx context.Context, photoID string) ([]byte, error) {
-	return source.get(ctx, "/photos/"+url.PathEscape(photoID)+"/thumbnail")
+	return source.PhotoStore.Thumbnail(ctx, photoID)
 }
 
 // ReviewImage answers the photo the readers are shown: the original,
@@ -189,16 +168,9 @@ func (source PhotoStoreSource) ReviewImage(ctx context.Context, photoID string) 
 // DetailImage finds the original the photo's owner keeps by the photo's
 // sha256 and turns it to match photo-store's thumbnail (alignToThumbnail).
 func (source PhotoStoreSource) DetailImage(ctx context.Context, photoID string) (image.Image, string, error) {
-	body, err := source.get(ctx, "/photos/"+url.PathEscape(photoID))
+	photo, err := source.PhotoStore.Photo(ctx, photoID)
 	if err != nil {
 		return nil, "", err
-	}
-	var photo struct {
-		OwnerPrincipalID string `json:"owner_principal_id"`
-		Sha256           string `json:"sha256"`
-	}
-	if err := json.Unmarshal(body, &photo); err != nil {
-		return nil, "", fmt.Errorf("photo-store's %s is not a photo: %w", photoID, err)
 	}
 	thumbnailBytes, err := source.Thumbnail(ctx, photoID)
 	if err != nil {

@@ -1,15 +1,11 @@
 package evalstore
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
-	"strconv"
+	"log"
 	"strings"
 	"time"
 
@@ -44,7 +40,8 @@ type CompletionOutcome struct {
 	AnsweredBy       string
 }
 
-// ModelCaller makes model calls. BridgeClient is the real one; tests fake it.
+// ModelCaller makes model calls. BridgeOperations is the real one; tests fake
+// it.
 type ModelCaller interface {
 	Complete(ctx context.Context, request CompletionRequest) (CompletionOutcome, error)
 }
@@ -54,49 +51,55 @@ type ModelCaller interface {
 // A run stops on it rather than failing every remaining call the same way.
 var ErrBridgeBudgetRefused = errors.New("llm-bridge-server refused the call for budget")
 
-// BridgeClient speaks to llm-bridge-server's operations API as its internal
-// service, acting as no principal, as scheduler does. eval-store runs inside
-// llm-bridge-server, so HTTP serves each request with that server's own
-// routes in this process, as the internal service, and no credential is sent:
-// whoever builds the client decides what it reaches. Each call is billed to
-// the organization the intent names.
-type BridgeClient struct {
-	BaseURL      string
-	PollInterval time.Duration
-	HTTP         *http.Client
+// Operations is llm-bridge-server's operations coordinator as eval-store uses
+// it: as the server's internal service, acting as no principal, as scheduler
+// does. eval-store runs inside llm-bridge-server, which implements it with
+// the same checks and coordinator calls its operation routes make.
+type Operations interface {
+	// SubmitOperation submits an intent and answers its receipt; the same
+	// idempotency key answers the first operation's. A refusal for money
+	// wraps ErrBridgeBudgetRefused.
+	SubmitOperation(ctx context.Context, intent msg.OperationIntent) (msg.OperationReceipt, error)
+	ReadOperation(ctx context.Context, id string) (msg.OperationReceipt, error)
+	CancelOperation(ctx context.Context, id string) error
+	// ListSucceededOperations answers the succeeded operations the query
+	// matches, newest first, at most query.Limit of them.
+	ListSucceededOperations(ctx context.Context, query OperationQuery) ([]msg.OperationReceipt, error)
+	// ReadOperationIntent answers the intent an operation was submitted with,
+	// or ErrOperationIntentsNotServed.
+	ReadOperationIntent(ctx context.Context, id string) (msg.OperationIntent, error)
 }
 
-func (b *BridgeClient) configured() error {
-	if b.BaseURL == "" || b.HTTP == nil {
+// OperationQuery selects operations on llm-bridge-server. A zero time or an
+// empty field selects on nothing.
+type OperationQuery struct {
+	Type           msg.OperationType
+	OrganizationID string
+	PrincipalID    string
+	CreatedAfter   time.Time
+	CreatedBefore  time.Time
+	Limit          int
+}
+
+// BridgeOperations makes model calls and reads operations through
+// llm-bridge-server's operations coordinator. Each call is billed to the
+// organization the intent names.
+type BridgeOperations struct {
+	Operations   Operations
+	PollInterval time.Duration
+}
+
+func (b *BridgeOperations) configured() error {
+	if b.Operations == nil {
 		return errors.New("this eval-store was given no llm-bridge-server to call")
 	}
 	return nil
 }
 
-func (b *BridgeClient) base() string { return strings.TrimRight(b.BaseURL, "/") }
-
-func (b *BridgeClient) do(ctx context.Context, method, path string, body []byte) (int, []byte, error) {
-	request, err := http.NewRequestWithContext(ctx, method, b.base()+path, bytes.NewReader(body))
-	if err != nil {
-		return 0, nil, err
-	}
-	request.Header.Set("Content-Type", "application/json")
-	response, err := b.HTTP.Do(request)
-	if err != nil {
-		return 0, nil, fmt.Errorf("%s %s: %w", method, path, err)
-	}
-	defer response.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(response.Body, 64<<20))
-	if err != nil {
-		return 0, nil, fmt.Errorf("read %s %s: %w", method, path, err)
-	}
-	return response.StatusCode, data, nil
-}
-
 // Complete submits one llm.completion operation and waits for its receipt.
 // Sending the same idempotency key again returns the first operation, so a
 // resumed run does not pay twice for a call it already made.
-func (b *BridgeClient) Complete(ctx context.Context, request CompletionRequest) (CompletionOutcome, error) {
+func (b *BridgeOperations) Complete(ctx context.Context, request CompletionRequest) (CompletionOutcome, error) {
 	if err := b.configured(); err != nil {
 		return CompletionOutcome{}, err
 	}
@@ -109,27 +112,16 @@ func (b *BridgeClient) Complete(ctx context.Context, request CompletionRequest) 
 	if err != nil {
 		return CompletionOutcome{}, err
 	}
-	intent, err := json.Marshal(msg.OperationIntent{Type: msg.OperationTypeLLMCompletion, OrganizationID: request.OrganizationID,
-		IdempotencyKey: request.IdempotencyKey, CorrelationID: request.CorrelationID, Input: input})
-	if err != nil {
-		return CompletionOutcome{}, err
-	}
+	intent := msg.OperationIntent{Type: msg.OperationTypeLLMCompletion, OrganizationID: request.OrganizationID,
+		IdempotencyKey: request.IdempotencyKey, CorrelationID: request.CorrelationID, Input: input}
 	waitContext, cancel := context.WithTimeout(ctx, request.Timeout)
 	defer cancel()
-	status, body, err := b.do(waitContext, http.MethodPost, "/operations", intent)
+	receipt, err := b.Operations.SubmitOperation(waitContext, intent)
 	if err != nil {
-		return CompletionOutcome{}, err
+		return CompletionOutcome{}, fmt.Errorf("submitting the operation: %w", err)
 	}
-	switch status {
-	case http.StatusAccepted, http.StatusOK:
-	case http.StatusPaymentRequired:
-		return CompletionOutcome{}, fmt.Errorf("%w: POST /operations: %s", ErrBridgeBudgetRefused, strings.TrimSpace(string(body)))
-	default:
-		return CompletionOutcome{}, fmt.Errorf("POST /operations answered %d: %s", status, strings.TrimSpace(string(body)))
-	}
-	var receipt msg.OperationReceipt
-	if err := json.Unmarshal(body, &receipt); err != nil || receipt.ID == "" {
-		return CompletionOutcome{}, fmt.Errorf("POST /operations answered with something that is not a receipt: %s", strings.TrimSpace(string(body)))
+	if receipt.ID == "" {
+		return CompletionOutcome{}, errors.New("submitting the operation answered a receipt with no id")
 	}
 	pollInterval := b.PollInterval
 	if pollInterval <= 0 {
@@ -145,7 +137,9 @@ func (b *BridgeClient) Complete(ctx context.Context, request CompletionRequest) 
 			}
 			stopContext, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer stopCancel()
-			b.do(stopContext, http.MethodPost, "/operations/"+url.PathEscape(receipt.ID)+"/cancel", nil)
+			if cancelError := b.Operations.CancelOperation(stopContext, receipt.ID); cancelError != nil {
+				log.Printf("eval-store: asking operation %s to stop after its wait ended: %v", receipt.ID, cancelError)
+			}
 			return CompletionOutcome{OperationID: receipt.ID}, fmt.Errorf("operation %s still %s when the wait ended; asked it to stop: %w",
 				receipt.ID, receipt.State, waitContext.Err())
 		case <-time.After(pollInterval):
@@ -163,17 +157,10 @@ func (b *BridgeClient) Complete(ctx context.Context, request CompletionRequest) 
 }
 
 // ReadOperation reads one receipt.
-func (b *BridgeClient) ReadOperation(ctx context.Context, id string) (msg.OperationReceipt, error) {
-	status, body, err := b.do(ctx, http.MethodGet, "/operations/"+url.PathEscape(id), nil)
+func (b *BridgeOperations) ReadOperation(ctx context.Context, id string) (msg.OperationReceipt, error) {
+	receipt, err := b.Operations.ReadOperation(ctx, id)
 	if err != nil {
-		return msg.OperationReceipt{}, err
-	}
-	if status != http.StatusOK {
-		return msg.OperationReceipt{}, fmt.Errorf("GET /operations/%s answered %d: %s", id, status, strings.TrimSpace(string(body)))
-	}
-	var receipt msg.OperationReceipt
-	if err := json.Unmarshal(body, &receipt); err != nil {
-		return msg.OperationReceipt{}, fmt.Errorf("GET /operations/%s: not a receipt: %w", id, err)
+		return msg.OperationReceipt{}, fmt.Errorf("reading operation %s: %w", id, err)
 	}
 	return receipt, nil
 }
@@ -242,31 +229,30 @@ type OperationsFilter struct {
 const operationListPageSize = 500
 
 // ListOperations reads every succeeded operation the filter matches, newest
-// first, paging back through created_before.
-func (b *BridgeClient) ListOperations(ctx context.Context, filter OperationsFilter) ([]msg.OperationReceipt, error) {
+// first, paging back by creation time.
+func (b *BridgeOperations) ListOperations(ctx context.Context, filter OperationsFilter) ([]msg.OperationReceipt, error) {
 	if err := b.configured(); err != nil {
 		return nil, err
 	}
-	var matched []msg.OperationReceipt
-	before := filter.CreatedBefore
-	for {
-		query := url.Values{"state": {string(msg.OperationStateSucceeded)}, "limit": {strconv.Itoa(operationListPageSize)}}
-		for name, value := range map[string]string{"type": filter.Type, "organization_id": filter.OrganizationID, "principal_id": filter.PrincipalID,
-			"created_after": filter.CreatedAfter, "created_before": before} {
-			if value != "" {
-				query.Set(name, value)
-			}
+	query := OperationQuery{Type: msg.OperationType(filter.Type), OrganizationID: filter.OrganizationID, PrincipalID: filter.PrincipalID, Limit: operationListPageSize}
+	for name, field := range map[string]struct {
+		value  string
+		target *time.Time
+	}{"created_after": {filter.CreatedAfter, &query.CreatedAfter}, "created_before": {filter.CreatedBefore, &query.CreatedBefore}} {
+		if field.value == "" {
+			continue
 		}
-		status, body, err := b.do(ctx, http.MethodGet, "/operations?"+query.Encode(), nil)
+		parsed, err := time.Parse(time.RFC3339, field.value)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%s must be an RFC 3339 time: %w", name, err)
 		}
-		if status != http.StatusOK {
-			return nil, fmt.Errorf("GET /operations answered %d: %s", status, strings.TrimSpace(string(body)))
-		}
-		var page []msg.OperationReceipt
-		if err := json.Unmarshal(body, &page); err != nil {
-			return nil, fmt.Errorf("GET /operations: not a list of receipts: %w", err)
+		*field.target = parsed
+	}
+	var matched []msg.OperationReceipt
+	for {
+		page, err := b.Operations.ListSucceededOperations(ctx, query)
+		if err != nil {
+			return nil, fmt.Errorf("listing operations: %w", err)
 		}
 		for _, receipt := range page {
 			if strings.HasPrefix(receipt.CorrelationID, filter.CorrelationIDPrefix) {
@@ -276,49 +262,29 @@ func (b *BridgeClient) ListOperations(ctx context.Context, filter OperationsFilt
 		if len(page) < operationListPageSize {
 			return matched, nil
 		}
-		before = page[len(page)-1].CreatedAt.Format(time.RFC3339Nano)
+		query.CreatedBefore = page[len(page)-1].CreatedAt
 	}
 }
 
 // CountOperations counts the succeeded operations the filter matches.
-func (b *BridgeClient) CountOperations(ctx context.Context, filter OperationsFilter) (int, error) {
+func (b *BridgeOperations) CountOperations(ctx context.Context, filter OperationsFilter) (int, error) {
 	receipts, err := b.ListOperations(ctx, filter)
 	return len(receipts), err
 }
 
-// ErrIntentRouteMissing: llm-bridge-server serves receipts but not the
-// intents behind them, and a case needs the intent's prompts.
-var ErrIntentRouteMissing = errors.New("llm-bridge-server has no GET /operations/{id}/intent route; importing operations needs it to read the prompts")
+// ErrOperationIntentsNotServed: llm-bridge-server hands out receipts but not
+// the intents behind them, and a case needs the intent's prompts.
+var ErrOperationIntentsNotServed = errors.New("llm-bridge-server does not hand out the intents behind its operations; importing operations needs them to read the prompts")
 
 // ReadIntent reads the intent an operation was submitted with: the prompts
 // and schema a case is made from.
-func (b *BridgeClient) ReadIntent(ctx context.Context, id string) (msg.OperationIntent, error) {
+func (b *BridgeOperations) ReadIntent(ctx context.Context, id string) (msg.OperationIntent, error) {
 	if err := b.configured(); err != nil {
 		return msg.OperationIntent{}, err
 	}
-	status, body, err := b.do(ctx, http.MethodGet, "/operations/"+url.PathEscape(id)+"/intent", nil)
+	intent, err := b.Operations.ReadOperationIntent(ctx, id)
 	if err != nil {
-		return msg.OperationIntent{}, err
-	}
-	switch status {
-	case http.StatusOK:
-	case http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusForbidden:
-		var refusal struct {
-			Error struct {
-				Code string `json:"code"`
-			} `json:"error"`
-		}
-		json.Unmarshal(body, &refusal)
-		if status != http.StatusNotFound || refusal.Error.Code == "" {
-			return msg.OperationIntent{}, fmt.Errorf("%w (answered %d: %s)", ErrIntentRouteMissing, status, strings.TrimSpace(string(body)))
-		}
-		return msg.OperationIntent{}, fmt.Errorf("GET /operations/%s/intent answered %d: %s", id, status, strings.TrimSpace(string(body)))
-	default:
-		return msg.OperationIntent{}, fmt.Errorf("GET /operations/%s/intent answered %d: %s", id, status, strings.TrimSpace(string(body)))
-	}
-	var intent msg.OperationIntent
-	if err := json.Unmarshal(body, &intent); err != nil {
-		return msg.OperationIntent{}, fmt.Errorf("GET /operations/%s/intent: not an intent: %w", id, err)
+		return msg.OperationIntent{}, fmt.Errorf("reading the intent of operation %s: %w", id, err)
 	}
 	return intent, nil
 }

@@ -32,10 +32,6 @@ import (
 // schedulerNATSClientName is how the scheduler names itself on NATS.
 const schedulerNATSClientName = "llm-bridge-server scheduler"
 
-// schedulerCallTimeout bounds a call the scheduler makes to this server or
-// model-store in process, as the network calls were bounded.
-const schedulerCallTimeout = 15 * time.Second
-
 func openSchedulerModule(ctx context.Context, url string) (*sql.DB, error) {
 	module, err := schedulerdb.Module()
 	if err != nil {
@@ -97,10 +93,9 @@ func enableScheduler(ctx context.Context, cfg *config.Config, srv *server.Server
 		return nil, fmt.Errorf("scheduler: %w", err)
 	}
 
-	// Model roles are checked with model-store, and agent jobs read sessions
-	// and harnesses, in this process.
-	bridgeBaseURL, bridgeClient := srv.HTTPClientToThisServer(schedulerCallTimeout)
-	roles := modelstoreroles.Checker{ModelStoreURL: bridgeBaseURL + "/model-store", HTTPClient: bridgeClient}
+	// Model roles are checked with model-store, and agent jobs read sessions,
+	// instances and harnesses, by direct calls into this process.
+	roles := modelstoreroles.Checker{Roles: srv.SchedulerModelStoreRoles()}
 
 	storedSettings, err := schedulerconfig.NewStoredSettingsRegistry()
 	if err != nil {
@@ -138,10 +133,9 @@ func enableScheduler(ctx context.Context, cfg *config.Config, srv *server.Server
 		log.Printf("scheduler: runs are on; %d runs were going when the last process stopped, and are interrupted", len(interrupted))
 		scheduler.SetLogger(logger)
 		if natsClient != nil {
-			agents := executor.NewAgentExecutor(natsClient, bridgeBaseURL, noteboardURL,
+			agents := executor.NewAgentExecutor(natsClient, srv.SchedulerBridge(), noteboardURL,
 				func() string { return storedSettings.ModelRole(schedulerconfig.SettingAgentJobModelRole) },
-				sessionmodelrole.Checker{ModelStoreURL: bridgeBaseURL + "/model-store", BridgeURL: bridgeBaseURL, HTTPClient: bridgeClient})
-			agents.SetBridgeHTTPClient(bridgeClient)
+				sessionmodelrole.SourcesChecker{Sources: srv.SchedulerModelRoleSources()})
 			scheduler.SetAgentExecutor(agents)
 			busHandler, err := bus.NewHandler(natsURL, store, scheduler, logger, roles.CheckRole)
 			if err != nil {
@@ -167,7 +161,8 @@ func enableScheduler(ctx context.Context, cfg *config.Config, srv *server.Server
 
 	routes := api.New(store, scheduler, "", storedSettings, roles.CheckRole)
 	routes.SetLogger(logger)
-	srv.EnableScheduler(routes.Routes())
+	srv.EnableScheduler(routes)
+	srv.EnableSchedulerJobReferences(routes)
 	if runsEnabled {
 		log.Printf("postgres: scheduler open, served at /scheduler/; jobs run here")
 	} else {
@@ -207,10 +202,6 @@ func importSchedulerCmd(args []string) {
 	fmt.Printf("numbering goes on after: job %d, run %d\n", counts.LastJobNumber, counts.LastRunNumber)
 }
 
-// ruleStoreSessionReadTimeout bounds a read of every session, as the
-// standalone rule-store bounded it.
-const ruleStoreSessionReadTimeout = 2 * time.Minute
-
 // ruleStoreEffectCallTimeout bounds one call a live rule makes to an owner.
 const ruleStoreEffectCallTimeout = 30 * time.Second
 
@@ -244,17 +235,24 @@ func enableRuleStore(ctx context.Context, cfg *config.Config, srv *server.Server
 	}
 	store := rulestore.New(pool)
 
-	bridgeBaseURL, bridgeClient := srv.HTTPClientToThisServer(ruleStoreSessionReadTimeout)
+	// Sessions, cards and entity tags are read through the stores' Go
+	// methods. The session feed is this server's /session-events, a stream
+	// read through its own handler, and a live rule's calls are HTTP-shaped
+	// by design (each names a method, a path and a body, and its run records
+	// the answer's status), so both still go through this server's and
+	// kanban-store's handlers in this process, as the internal service.
+	bridgeBaseURL, _ := srv.HTTPClientToThisServer(0)
 	_, bridgeStream := srv.HTTPClientToThisServer(0)
-	bridge := &rulestore.LLMBridge{BaseURL: bridgeBaseURL, Client: bridgeClient, Stream: bridgeStream}
-	kanban := &rulestore.KanbanStore{BaseURL: server.KanbanStoreInProcessBaseURL, Client: &http.Client{Transport: kanbanClient.Transport, Timeout: 20 * time.Second}}
+	feed := &rulestore.LLMBridge{BaseURL: bridgeBaseURL, Stream: bridgeStream}
+	sessions := srv.RuleStoreSessions(feed)
+	kanban := srv.RuleStoreKanban()
 	_, effectsOnThisServer := srv.HTTPClientToThisServer(0)
-	owners := rulestore.NewOwnerCalls(bridge, kanban)
+	owners := rulestore.NewOwnerCalls(feed, &rulestore.KanbanStore{BaseURL: server.KanbanStoreInProcessBaseURL})
 	owners.Client = &http.Client{Timeout: ruleStoreEffectCallTimeout, Transport: transportByHost{
 		hostOf(bridgeBaseURL):                      effectsOnThisServer.Transport,
 		hostOf(server.KanbanStoreInProcessBaseURL): kanbanClient.Transport,
 	}}
-	reactor := rulestore.NewReactor(store, bridge, kanban, owners, sweepInterval)
+	reactor := rulestore.NewReactor(store, sessions, kanban, owners, sweepInterval)
 
 	lifetime, stop := context.WithCancel(ctx)
 	if reactorEnabled {

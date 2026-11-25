@@ -253,23 +253,13 @@ func (server *Server) RegisterHandlers(mux *http.ServeMux) []string {
 		})
 		handle("GET /"+kind.Route+"/{id}", func(server *Server) http.HandlerFunc {
 			return func(w http.ResponseWriter, r *http.Request) {
-				possessionID, err := server.Store.PossessionIDForKindRecord(kind, r.PathValue("id"))
-				if err != nil {
-					writeError(w, err)
-					return
-				}
-				possession, err := server.Store.GetPossession(possessionID, r.URL.Query().Get("include_deleted") == "true")
+				possession, err := server.kindRecord(kind, r.PathValue("id"), r.URL.Query().Get("include_deleted") == "true")
 				respond(w, http.StatusOK, possession, err)
 			}
 		})
 		handle("GET /"+kind.Route+"/{id}/image", func(server *Server) http.HandlerFunc {
 			return func(w http.ResponseWriter, r *http.Request) {
-				possessionID, err := server.Store.PossessionIDForKindRecord(kind, r.PathValue("id"))
-				if err != nil {
-					writeError(w, err)
-					return
-				}
-				server.writeImage(w, r.Context(), func(ctx context.Context) ([]byte, error) { return server.Reviewer.PossessionImage(ctx, possessionID) })
+				server.writeImage(w, r.Context(), func(ctx context.Context) ([]byte, error) { return server.kindImage(ctx, kind, r.PathValue("id")) })
 			}
 		})
 	}
@@ -365,10 +355,7 @@ func (server *Server) RegisterHandlers(mux *http.ServeMux) []string {
 	})
 	handle("GET /outfits/{id}", func(server *Server) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
-			outfit, err := server.Store.GetOutfit(r.PathValue("id"), r.URL.Query().Get("include_deleted") == "true")
-			if err == nil {
-				err = server.Reviewer.FillOutfitCoverBox(r.Context(), &outfit)
-			}
+			outfit, err := server.outfitWithCoverBox(r.Context(), r.PathValue("id"), r.URL.Query().Get("include_deleted") == "true")
 			respond(w, http.StatusOK, outfit, err)
 		}
 	})

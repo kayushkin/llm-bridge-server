@@ -4,9 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -15,8 +13,8 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/filestore"
 )
 
-// fakeFileStore answers the four file-store routes mailstack calls, with the
-// headers file-store's contract promises on a download.
+// fakeFileStore is file-store as mailstack calls it, with the headers
+// file-store's contract promises on a download.
 type fakeFileStore struct {
 	mu       sync.Mutex
 	next     int
@@ -26,59 +24,51 @@ type fakeFileStore struct {
 	uploads  int
 }
 
-func newFakeFileStore(t *testing.T) (*fakeFileStore, *filestore.Client) {
+func newFakeFileStore(t *testing.T) (*fakeFileStore, filestore.Files) {
 	fake := &fakeFileStore{files: map[string][]byte{}}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get(filestore.ServiceTokenHeader) != "file-token" {
-			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
-			return
-		}
-		fake.mu.Lock()
-		defer fake.mu.Unlock()
-		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/files":
-			fake.uploads++
-			if fake.uploads == fake.refuseAt {
-				http.Error(w, `{"error":"too large"}`, http.StatusRequestEntityTooLarge)
-				return
-			}
-			body, _ := io.ReadAll(r.Body)
-			fake.next++
-			id := fmt.Sprintf("file_%06d", fake.next)
-			fake.files[id] = body
-			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(map[string]any{"id": id, "size_bytes": len(body),
-				"filename": r.URL.Query().Get("filename"), "owner_ref": r.URL.Query().Get("owner_ref")})
-		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/content"):
-			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/files/"), "/content")
-			body, ok := fake.files[id]
-			if !ok {
-				http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
-				return
-			}
-			w.Header().Set("Content-Type", "application/octet-stream")
-			w.Header().Set("Content-Disposition", `attachment; filename="x"`)
-			w.Header().Set("X-Content-Type-Options", "nosniff")
-			w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'")
-			w.Write(body)
-		case r.Method == http.MethodDelete && r.URL.Query().Get("hard") == "true":
-			id := strings.TrimPrefix(r.URL.Path, "/files/")
-			if _, ok := fake.files[id]; !ok {
-				http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
-				return
-			}
-			delete(fake.files, id)
-			fake.purged = append(fake.purged, id)
-			w.WriteHeader(http.StatusNoContent)
-		default:
-			http.Error(w, "unexpected "+r.Method+" "+r.URL.String(), http.StatusTeapot)
-		}
-	}))
-	t.Cleanup(server.Close)
-	return fake, filestore.New(server.URL, "file-token")
+	return fake, fake
 }
 
-func localTestServerWithFiles(t *testing.T, files *filestore.Client) *Server {
+func (fake *fakeFileStore) Upload(content []byte, contentType, filename, ownerRef string) (*filestore.File, error) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	fake.uploads++
+	if fake.uploads == fake.refuseAt {
+		return nil, &filestore.RefusalError{Status: http.StatusRequestEntityTooLarge, Body: []byte(`{"error":"too large"}`)}
+	}
+	fake.next++
+	id := fmt.Sprintf("file_%06d", fake.next)
+	fake.files[id] = append([]byte(nil), content...)
+	return &filestore.File{ID: id, SizeBytes: int64(len(content)), Filename: filename, ContentType: contentType}, nil
+}
+
+func (fake *fakeFileStore) ServeContent(w http.ResponseWriter, _ *http.Request, fileID string, _ bool) error {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	body, ok := fake.files[fileID]
+	if !ok {
+		return filestore.ErrNotFound
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", `attachment; filename="x"`)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'")
+	w.Write(body)
+	return nil
+}
+
+func (fake *fakeFileStore) Purge(fileID string) error {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if _, ok := fake.files[fileID]; !ok {
+		return filestore.ErrNotFound
+	}
+	delete(fake.files, fileID)
+	fake.purged = append(fake.purged, fileID)
+	return nil
+}
+
+func localTestServerWithFiles(t *testing.T, files filestore.Files) *Server {
 	t.Helper()
 	store, local := newTestStores(t)
 	if err := store.Save(&accounts.Account{ID: "demo-local", Label: "Demo", Provider: accounts.ProviderLocal, Address: "work@demo.invalid", Enabled: true}); err != nil {

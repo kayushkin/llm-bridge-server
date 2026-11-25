@@ -126,10 +126,7 @@ func RegisterHandlers(mux *http.ServeMux, store *Store) {
 		out, err := s.CreateAccount(in)
 		respond(w, http.StatusCreated, out, err)
 	})
-	route("GET /accounts/{id}", accountOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
-		out, err := s.GetAccount(r.PathValue("id"))
-		respond(w, http.StatusOK, out, err)
-	})
+	mux.HandleFunc("GET /accounts/{id}", store.recordRoute(RecordKindAccount))
 	route("PATCH /accounts/{id}", accountOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		var patch AccountPatch
 		if err := decodeBody(r, &patch); err != nil {
@@ -224,14 +221,8 @@ func RegisterHandlers(mux *http.ServeMux, store *Store) {
 		respond(w, http.StatusCreated, out, err)
 	})
 
-	route("GET /categories/{id}", categoryOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
-		out, err := s.GetCategory(r.PathValue("id"))
-		respond(w, http.StatusOK, out, err)
-	})
-	route("GET /payees/{id}", payeeOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
-		out, err := s.GetPayee(r.PathValue("id"))
-		respond(w, http.StatusOK, out, err)
-	})
+	mux.HandleFunc("GET /categories/{id}", store.recordRoute(RecordKindCategory))
+	mux.HandleFunc("GET /payees/{id}", store.recordRoute(RecordKindPayee))
 	route("GET /payees", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		list, err := s.ListPayees()
 		respond(w, http.StatusOK, list, err)
@@ -286,10 +277,7 @@ func RegisterHandlers(mux *http.ServeMux, store *Store) {
 		out, err := s.CreateTransaction(in)
 		respond(w, http.StatusCreated, out, err)
 	})
-	route("GET /transactions/{id}", transactionOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
-		out, err := s.GetTransaction(r.PathValue("id"))
-		respond(w, http.StatusOK, out, err)
-	})
+	mux.HandleFunc("GET /transactions/{id}", store.recordRoute(RecordKindTransaction))
 	route("PATCH /transactions/{id}", transactionOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		var patch TransactionPatch
 		if err := decodeBody(r, &patch); err != nil {
@@ -345,10 +333,7 @@ func RegisterHandlers(mux *http.ServeMux, store *Store) {
 		}, http.MaxBytesReader(w, r.Body, maxImportBytes))
 		respond(w, http.StatusCreated, out, err)
 	})
-	route("GET /import-batches/{id}", importBatchOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
-		out, err := s.GetImportBatch(r.PathValue("id"))
-		respond(w, http.StatusOK, out, err)
-	})
+	mux.HandleFunc("GET /import-batches/{id}", store.recordRoute(RecordKindImportBatch))
 	route("POST /import-batches/{id}/undo", importBatchOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		out, err := s.UndoImportBatch(r.PathValue("id"))
 		respond(w, http.StatusOK, out, err)
@@ -533,14 +518,8 @@ func RegisterHandlers(mux *http.ServeMux, store *Store) {
 		counts, err := s.MatchMarketplaceOrders()
 		respond(w, http.StatusOK, counts, err)
 	})
-	route("GET /marketplace-orders/{id}", marketplaceOrderOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
-		order, err := s.GetMarketplaceOrder(r.PathValue("id"))
-		respond(w, http.StatusOK, order, err)
-	})
-	route("GET /marketplace-order-lines/{id}", marketplaceOrderLineOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
-		line, err := s.GetMarketplaceOrderLine(r.PathValue("id"))
-		respond(w, http.StatusOK, line, err)
-	})
+	mux.HandleFunc("GET /marketplace-orders/{id}", store.recordRoute(RecordKindMarketplaceOrder))
+	mux.HandleFunc("GET /marketplace-order-lines/{id}", store.recordRoute(RecordKindMarketplaceOrderLine))
 	route("PATCH /marketplace-order-lines/{id}", marketplaceOrderLineOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Disposition string `json:"disposition"`

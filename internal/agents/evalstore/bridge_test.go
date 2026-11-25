@@ -4,9 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
-	"net/http"
-	"net/http/httptest"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -15,11 +13,10 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// fakeBridge serves the operation routes: one operation per idempotency
+// fakeBridge is the operations coordinator: one operation per idempotency
 // key, running for one read, then finished as the handler says.
 type fakeBridge struct {
 	mutex      sync.Mutex
-	headers    []http.Header
 	intents    map[string]msg.OperationIntent
 	reads      map[string]int
 	finish     func(intent msg.OperationIntent, receipt *msg.OperationReceipt)
@@ -27,47 +24,45 @@ type fakeBridge struct {
 	canceled   []string
 }
 
-func newFakeBridge(finish func(msg.OperationIntent, *msg.OperationReceipt)) (*fakeBridge, *httptest.Server) {
-	bridge := &fakeBridge{intents: map[string]msg.OperationIntent{}, reads: map[string]int{}, finish: finish}
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /operations", func(w http.ResponseWriter, r *http.Request) {
-		bridge.mutex.Lock()
-		defer bridge.mutex.Unlock()
-		bridge.headers = append(bridge.headers, r.Header.Clone())
-		if bridge.refuseNext {
-			w.WriteHeader(http.StatusPaymentRequired)
-			io.WriteString(w, `{"error":{"code":"organization_budget_exhausted"}}`)
-			return
-		}
-		var intent msg.OperationIntent
-		json.NewDecoder(r.Body).Decode(&intent)
-		id := "operation_" + strings.ReplaceAll(intent.IdempotencyKey, ":", "_")
-		status := http.StatusAccepted
-		if _, seen := bridge.intents[id]; seen {
-			status = http.StatusOK
-		}
-		bridge.intents[id] = intent
-		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(msg.OperationReceipt{ID: id, State: msg.OperationStateQueued})
-	})
-	mux.HandleFunc("GET /operations/{id}", func(w http.ResponseWriter, r *http.Request) {
-		bridge.mutex.Lock()
-		defer bridge.mutex.Unlock()
-		id := r.PathValue("id")
-		bridge.reads[id]++
-		receipt := msg.OperationReceipt{ID: id, State: msg.OperationStateRunning}
-		if bridge.reads[id] > 1 {
-			bridge.finish(bridge.intents[id], &receipt)
-		}
-		json.NewEncoder(w).Encode(receipt)
-	})
-	mux.HandleFunc("POST /operations/{id}/cancel", func(w http.ResponseWriter, r *http.Request) {
-		bridge.mutex.Lock()
-		defer bridge.mutex.Unlock()
-		bridge.canceled = append(bridge.canceled, r.PathValue("id"))
-	})
-	server := httptest.NewServer(mux)
-	return bridge, server
+func newFakeBridge(finish func(msg.OperationIntent, *msg.OperationReceipt)) *fakeBridge {
+	return &fakeBridge{intents: map[string]msg.OperationIntent{}, reads: map[string]int{}, finish: finish}
+}
+
+func (bridge *fakeBridge) SubmitOperation(_ context.Context, intent msg.OperationIntent) (msg.OperationReceipt, error) {
+	bridge.mutex.Lock()
+	defer bridge.mutex.Unlock()
+	if bridge.refuseNext {
+		return msg.OperationReceipt{}, fmt.Errorf("%w: organization_budget_exhausted", ErrBridgeBudgetRefused)
+	}
+	id := "operation_" + strings.ReplaceAll(intent.IdempotencyKey, ":", "_")
+	bridge.intents[id] = intent
+	return msg.OperationReceipt{ID: id, State: msg.OperationStateQueued}, nil
+}
+
+func (bridge *fakeBridge) ReadOperation(_ context.Context, id string) (msg.OperationReceipt, error) {
+	bridge.mutex.Lock()
+	defer bridge.mutex.Unlock()
+	bridge.reads[id]++
+	receipt := msg.OperationReceipt{ID: id, State: msg.OperationStateRunning}
+	if bridge.reads[id] > 1 {
+		bridge.finish(bridge.intents[id], &receipt)
+	}
+	return receipt, nil
+}
+
+func (bridge *fakeBridge) CancelOperation(_ context.Context, id string) error {
+	bridge.mutex.Lock()
+	defer bridge.mutex.Unlock()
+	bridge.canceled = append(bridge.canceled, id)
+	return nil
+}
+
+func (bridge *fakeBridge) ListSucceededOperations(context.Context, OperationQuery) ([]msg.OperationReceipt, error) {
+	return nil, nil
+}
+
+func (bridge *fakeBridge) ReadOperationIntent(context.Context, string) (msg.OperationIntent, error) {
+	return msg.OperationIntent{}, ErrOperationIntentsNotServed
 }
 
 func succeedWithAnswer(intent msg.OperationIntent, receipt *msg.OperationReceipt) {
@@ -80,14 +75,13 @@ func succeedWithAnswer(intent msg.OperationIntent, receipt *msg.OperationReceipt
 	receipt.Evidence = []msg.OperationEvidence{{Kind: "model_call", Detail: detail}}
 }
 
-func testBridgeClient(url string) *BridgeClient {
-	return &BridgeClient{BaseURL: url, PollInterval: time.Millisecond, HTTP: http.DefaultClient}
+func testBridgeOperations(bridge *fakeBridge) *BridgeOperations {
+	return &BridgeOperations{Operations: bridge, PollInterval: time.Millisecond}
 }
 
-func TestTheBridgeClientCallsAsAnInternalServiceAndReadsTheReceipt(t *testing.T) {
-	bridge, server := newFakeBridge(succeedWithAnswer)
-	defer server.Close()
-	outcome, err := testBridgeClient(server.URL).Complete(context.Background(), CompletionRequest{OrganizationID: "principal_000900",
+func TestTheBridgeOperationsCallsAsAnInternalServiceAndReadsTheReceipt(t *testing.T) {
+	bridge := newFakeBridge(succeedWithAnswer)
+	outcome, err := testBridgeOperations(bridge).Complete(context.Background(), CompletionRequest{OrganizationID: "principal_000900",
 		IdempotencyKey: "eval-store:run:case:answer:model-small:1", CorrelationID: "eval_run_000001", Model: "model-small", Prompt: "p",
 		Schema: map[string]any{"type": "object"}, MaxTokens: 100, Timeout: 5 * time.Second})
 	if err != nil {
@@ -96,10 +90,6 @@ func TestTheBridgeClientCallsAsAnInternalServiceAndReadsTheReceipt(t *testing.T)
 	if string(outcome.Parsed) != `{"ok":true}` || outcome.InputTokens != 10 || outcome.CacheReadTokens != 100 || outcome.CacheWriteTokens != 7 ||
 		outcome.OutputTokens != 5 || !outcome.UsageKnown || outcome.AnsweredBy != "model-small" || *outcome.DurationMs != 1234 {
 		t.Errorf("outcome %+v", outcome)
-	}
-	header := bridge.headers[0]
-	if header.Get("X-LLM-Bridge-Service-Token") != "" || header.Get("X-Principal-Id") != "" || header.Get("Authorization") != "" {
-		t.Errorf("headers %v", header)
 	}
 	for _, intent := range bridge.intents {
 		var input msg.LLMCompletionInput
@@ -110,29 +100,26 @@ func TestTheBridgeClientCallsAsAnInternalServiceAndReadsTheReceipt(t *testing.T)
 	}
 }
 
-func TestTheBridgeClientNamesABudgetRefusal(t *testing.T) {
-	bridge, server := newFakeBridge(succeedWithAnswer)
-	defer server.Close()
+func TestTheBridgeOperationsNamesABudgetRefusal(t *testing.T) {
+	bridge := newFakeBridge(succeedWithAnswer)
 	bridge.refuseNext = true
-	_, err := testBridgeClient(server.URL).Complete(context.Background(), CompletionRequest{IdempotencyKey: "k", Model: "m", Timeout: time.Second})
+	_, err := testBridgeOperations(bridge).Complete(context.Background(), CompletionRequest{IdempotencyKey: "k", Model: "m", Timeout: time.Second})
 	if !errors.Is(err, ErrBridgeBudgetRefused) {
-		t.Errorf("402 = %v, want ErrBridgeBudgetRefused", err)
+		t.Errorf("a refusal for money = %v, want ErrBridgeBudgetRefused", err)
 	}
-	_, server2 := newFakeBridge(func(_ msg.OperationIntent, receipt *msg.OperationReceipt) {
+	failing := newFakeBridge(func(_ msg.OperationIntent, receipt *msg.OperationReceipt) {
 		receipt.State = msg.OperationStateFailed
 		receipt.Error = &msg.OperationError{Code: "budget_exhausted", Message: "no budget left"}
 	})
-	defer server2.Close()
-	outcome, err := testBridgeClient(server2.URL).Complete(context.Background(), CompletionRequest{IdempotencyKey: "k", Model: "m", Timeout: time.Second})
+	outcome, err := testBridgeOperations(failing).Complete(context.Background(), CompletionRequest{IdempotencyKey: "k", Model: "m", Timeout: time.Second})
 	if !errors.Is(err, ErrBridgeBudgetRefused) || outcome.OperationID == "" {
 		t.Errorf("budget_exhausted = %v (operation %q)", err, outcome.OperationID)
 	}
 }
 
-func TestTheBridgeClientCancelsATimedOutCallButNotOneItsCallerLeft(t *testing.T) {
-	bridge, server := newFakeBridge(func(_ msg.OperationIntent, receipt *msg.OperationReceipt) { receipt.State = msg.OperationStateRunning })
-	defer server.Close()
-	client := testBridgeClient(server.URL)
+func TestTheBridgeOperationsCancelsATimedOutCallButNotOneItsCallerLeft(t *testing.T) {
+	bridge := newFakeBridge(func(_ msg.OperationIntent, receipt *msg.OperationReceipt) { receipt.State = msg.OperationStateRunning })
+	client := testBridgeOperations(bridge)
 	if _, err := client.Complete(context.Background(), CompletionRequest{IdempotencyKey: "timed-out", Model: "m", Timeout: 50 * time.Millisecond}); err == nil {
 		t.Fatal("a call that never finished succeeded")
 	}
@@ -148,18 +135,16 @@ func TestTheBridgeClientCancelsATimedOutCallButNotOneItsCallerLeft(t *testing.T)
 	}
 }
 
-func TestTheBridgeClientRefusesToCallWithNoServerToCall(t *testing.T) {
-	client := &BridgeClient{BaseURL: "http://127.0.0.1:1"}
+func TestTheBridgeOperationsRefuseToCallWithNoServerToCall(t *testing.T) {
+	client := &BridgeOperations{}
 	if _, err := client.Complete(context.Background(), CompletionRequest{Timeout: time.Second}); err == nil || !strings.Contains(err.Error(), "no llm-bridge-server") {
 		t.Errorf("Complete = %v", err)
 	}
 }
 
-func TestReadIntentSaysTheRouteIsMissing(t *testing.T) {
-	server := httptest.NewServer(http.NotFoundHandler())
-	defer server.Close()
-	if _, err := testBridgeClient(server.URL).ReadIntent(context.Background(), "operation_1"); !errors.Is(err, ErrIntentRouteMissing) {
-		t.Errorf("ReadIntent against a bridge with no route = %v", err)
+func TestReadIntentSaysTheBridgeServesNoIntents(t *testing.T) {
+	if _, err := testBridgeOperations(newFakeBridge(succeedWithAnswer)).ReadIntent(context.Background(), "operation_1"); !errors.Is(err, ErrOperationIntentsNotServed) {
+		t.Errorf("ReadIntent from a bridge that serves no intents = %v", err)
 	}
 }
 

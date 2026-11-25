@@ -5,13 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"mime"
 	"net/http"
-	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 	"unicode"
 )
 
@@ -64,6 +61,12 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 
 func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"error": message})
+}
+
+// WriteStoreError answers err as the routes answer it: 404 for a file this
+// store does not hold, 500 for anything else.
+func WriteStoreError(w http.ResponseWriter, err error) {
+	writeStoreError(w, err)
 }
 
 func writeStoreError(w http.ResponseWriter, err error) {
@@ -126,49 +129,15 @@ func validateOwnerLabel(field, value string) error {
 // The body is the file's bytes and Content-Type is what they are declared to be.
 func (s *Server) Upload(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
-	file := NewFile{
+	stored, err := s.Accept(r.Body, r.ContentLength, r.Header.Get("Content-Type"), NewFile{
 		Filename: query.Get("filename"), OwnerService: query.Get("owner_service"), OwnerRef: query.Get("owner_ref"),
 		UploadedByPrincipalID: query.Get("uploaded_by_principal_id"),
-	}
-	if err := validateFilename(file.Filename); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	for field, value := range map[string]string{"owner_service": file.OwnerService, "owner_ref": file.OwnerRef} {
-		if err := validateOwnerLabel(field, value); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-	}
-	if file.UploadedByPrincipalID != "" && !principalIDShape.MatchString(file.UploadedByPrincipalID) {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("uploaded_by_principal_id %q is not a principal-store id (principal_000001)", file.UploadedByPrincipalID))
-		return
-	}
-	// The declared type is part of the record and decides how the file may be
-	// served, so it is not guessed when it is missing.
-	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	})
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "Content-Type must say what the file is (application/octet-stream when nothing better is known): "+err.Error())
+		writeAcceptError(w, err)
 		return
 	}
-	file.ContentType = mediaType
-
-	limits := s.limits()
-	if r.ContentLength > limits.MaximumFileBytes {
-		writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("the file is %d bytes and the limit is %d (GET /limits)", r.ContentLength, limits.MaximumFileBytes))
-		return
-	}
-	stored, err := s.store.Put(r.Body, limits.MaximumFileBytes, file)
-	switch {
-	case errors.Is(err, ErrFileTooLarge):
-		writeError(w, http.StatusRequestEntityTooLarge, err.Error()+" (GET /limits)")
-	case errors.Is(err, ErrEmptyFile):
-		writeError(w, http.StatusBadRequest, "the file is empty")
-	case err != nil:
-		writeError(w, http.StatusInternalServerError, err.Error())
-	default:
-		writeJSON(w, http.StatusCreated, stored)
-	}
+	writeJSON(w, http.StatusCreated, stored)
 }
 
 func (s *Server) List(w http.ResponseWriter, r *http.Request) {
@@ -213,51 +182,9 @@ func (s *Server) Metadata(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, file)
 }
 
-// Content serves a live file's bytes.
-//
-// Every answer is a download unless the caller asks ?inline=true AND the
-// file's declared type is one this store serves for display. Whatever the
-// answer, the browser is told not to sniff the type and to run nothing: a
-// person's upload shown from the dashboard's origin must never execute as it.
+// Content serves a live file's bytes: GET /files/{id}/content[?inline=true].
 func (s *Server) Content(w http.ResponseWriter, r *http.Request) {
-	file, err := s.store.Get(r.PathValue("id"), false)
-	if err != nil {
-		writeStoreError(w, err)
-		return
-	}
-	inline := false
-	switch raw := r.URL.Query().Get("inline"); raw {
-	case "", "false":
-	case "true":
-		for _, allowed := range s.limits().InlineContentTypes {
-			if allowed == file.ContentType {
-				inline = true
-			}
-		}
-	default:
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("inline must be true or false, got %q", raw))
-		return
-	}
-	blob, err := s.store.OpenContent(file)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	defer blob.Close()
-
-	header := w.Header()
-	header.Set("X-Content-Type-Options", "nosniff")
-	header.Set("Content-Security-Policy", "sandbox; default-src 'none'")
-	header.Set("Cache-Control", "private, no-store")
-	header.Set("ETag", `"`+file.SHA256+`"`)
-	disposition := "attachment"
-	header.Set("Content-Type", "application/octet-stream")
-	if inline {
-		disposition = "inline"
-		header.Set("Content-Type", file.ContentType)
-	}
-	header.Set("Content-Disposition", disposition+"; filename*=UTF-8''"+url.PathEscape(file.Filename))
-	http.ServeContent(w, r, "", time.Unix(file.CreatedAt, 0), blob)
+	s.ServeContentOf(w, r, r.PathValue("id"), r.URL.Query().Get("inline"))
 }
 
 // Delete is reversible unless ?hard=true, which destroys the row and, when no

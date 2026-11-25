@@ -3,8 +3,6 @@ package executor
 import (
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -32,16 +30,16 @@ func (s *stubModelRoles) Check(role string, harness msg.Harness) (sessionmodelro
 	return model, nil
 }
 
-func stubInstances(t *testing.T) *httptest.Server {
-	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/instances" {
-			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
-		}
-		json.NewEncoder(w).Encode([]msg.Instance{{ID: "inst-cc", HarnessType: msg.HarnessClaudeCode, Enabled: true}})
-	}))
-	t.Cleanup(server.Close)
-	return server
+// stubInstances is llm-bridge-server holding one enabled claude_code
+// instance.
+type stubInstances struct{}
+
+func (stubInstances) Instances() ([]msg.Instance, error) {
+	return []msg.Instance{{ID: "inst-cc", HarnessType: msg.HarnessClaudeCode, Enabled: true}}, nil
+}
+
+func (stubInstances) Session(sessionID string) (*msg.ManagedSession, error) {
+	return nil, fmt.Errorf("%s: %w", sessionID, ErrSessionNotFound)
 }
 
 func harnessConfigModel(t *testing.T, create *msg.CreateSessionRequest) string {
@@ -60,7 +58,7 @@ func harnessConfigModel(t *testing.T, create *msg.CreateSessionRequest) string {
 func TestNewSessionRequestNamesTheRole(t *testing.T) {
 	setting := "default"
 	roles := &stubModelRoles{}
-	executor := NewAgentExecutor(nil, stubInstances(t).URL, "http://noteboard.test", func() string { return setting }, roles)
+	executor := NewAgentExecutor(nil, stubInstances{}, "http://noteboard.test", func() string { return setting }, roles)
 
 	create, startsOn, err := executor.newSessionRequest("claude-code", "claude-code", "")
 	if err != nil {
@@ -93,17 +91,17 @@ func TestNewSessionRequestNamesTheRole(t *testing.T) {
 // A role whose first model the harness cannot run starts no session: the run
 // fails with the reason, before any instance is asked for.
 func TestNewSessionRequestRefusesAModelTheHarnessCannotRun(t *testing.T) {
-	executor := NewAgentExecutor(nil, "http://127.0.0.1:1", "http://noteboard.test", func() string { return "default" }, &stubModelRoles{})
+	executor := NewAgentExecutor(nil, nil, "http://noteboard.test", func() string { return "default" }, &stubModelRoles{})
 	_, _, err := executor.newSessionRequest("claude-code", "claude-code", "balanced")
 	if err == nil || !strings.Contains(err.Error(), "runs only anthropic") || !strings.Contains(err.Error(), "the job's model_role") {
 		t.Fatalf("err = %v, want the harness refusal naming the job's model_role", err)
 	}
 
-	empty := NewAgentExecutor(nil, "http://127.0.0.1:1", "http://noteboard.test", func() string { return "" }, &stubModelRoles{})
+	empty := NewAgentExecutor(nil, nil, "http://noteboard.test", func() string { return "" }, &stubModelRoles{})
 	if _, _, err := empty.newSessionRequest("claude-code", "claude-code", ""); err == nil {
 		t.Error("a session was built with no role at all")
 	}
-	unwired := NewAgentExecutor(nil, "http://127.0.0.1:1", "http://noteboard.test", nil, nil)
+	unwired := NewAgentExecutor(nil, nil, "http://noteboard.test", nil, nil)
 	if _, _, err := unwired.newSessionRequest("claude-code", "claude-code", "default"); err == nil {
 		t.Error("an executor with no role checker built a session")
 	}

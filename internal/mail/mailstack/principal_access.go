@@ -253,6 +253,47 @@ func (s *Server) visibleThroughTickets(ctx context.Context, access *principalAcc
 
 // routeFor wraps a handler in the caller check and the person check its rule
 // names.
+// admitPrincipal is what routeFor decides for a principal: what it may do,
+// or the refusal the route answers. messageID is the message a
+// ruleReadMessage route names; route names the route in a refusal.
+func (s *Server) admitPrincipal(ctx context.Context, principalID string, rule accessRule, accountID, messageID, route string) (*principalAccess, *accessRefusal) {
+	access, refused := s.accessOfPrincipal(ctx, principalID)
+	if refused != nil {
+		return nil, refused
+	}
+	if access.administrator || rule == ruleHandlerFilters {
+		return access, nil
+	}
+	switch rule {
+	case ruleServicesOnly:
+		return nil, refusal(http.StatusForbidden, errorCodeRouteNotOpenToPrincipal, "%s serves services and administrators, not %s", route, principalID)
+	case ruleReadAccount:
+		if !access.mayReadAccount(accountID) {
+			return nil, refusal(http.StatusForbidden, errorCodeMailAccountNotGranted, "%s holds no %s on mail account %q", principalID, relationCanReadMail, accountID)
+		}
+	case ruleImportAccount:
+		if !access.mayImportAccount(accountID) {
+			return nil, refusal(http.StatusForbidden, errorCodeMailAccountNotGranted, "%s holds no %s on mail account %q", principalID, relationCanImportMail, accountID)
+		}
+	case ruleReadMessage:
+		if !access.mayReadAccount(accountID) {
+			locator := accountID + ":" + messageID
+			visible, refused := s.visibleThroughTickets(ctx, access, []string{locator})
+			if refused != nil {
+				return nil, refused
+			}
+			if !visible[locator] {
+				// The same answer as a message that does not exist, so a
+				// person cannot learn which ids are real.
+				return nil, refusal(http.StatusNotFound, errorCodeMessageNotFound, "no message %s that %s may read", locator, principalID)
+			}
+		}
+	default:
+		panic(fmt.Sprintf("mailstack: unknown access rule %d", rule))
+	}
+	return access, nil
+}
+
 func (s *Server) routeFor(rule accessRule, account accountOfRoute, next http.HandlerFunc) http.Handler {
 	if rule == 0 {
 		panic("mailstack: a route must declare who may use it")
@@ -274,58 +315,16 @@ func (s *Server) routeFor(rule accessRule, account accountOfRoute, next http.Han
 			next(w, r)
 			return
 		}
-		principalID := caller.PrincipalID
-		access, refused := s.accessOfPrincipal(r.Context(), principalID)
+		accountID := r.URL.Query().Get("account")
+		if account == accountInPath {
+			accountID = r.PathValue("id")
+		}
+		access, refused := s.admitPrincipal(r.Context(), caller.PrincipalID, rule, accountID, r.PathValue("id"), r.Method+" "+r.Pattern)
 		if refused != nil {
 			writeCodedError(w, refused.status, refused.code, refused)
 			return
 		}
 		r = r.WithContext(context.WithValue(r.Context(), principalAccessKey{}, access))
-		if access.administrator || rule == ruleHandlerFilters {
-			next(w, r)
-			return
-		}
-
-		accountID := r.URL.Query().Get("account")
-		if account == accountInPath {
-			accountID = r.PathValue("id")
-		}
-		switch rule {
-		case ruleServicesOnly:
-			writeCodedError(w, http.StatusForbidden, errorCodeRouteNotOpenToPrincipal,
-				fmt.Errorf("%s %s serves services and administrators, not %s", r.Method, r.Pattern, principalID))
-			return
-		case ruleReadAccount:
-			if !access.mayReadAccount(accountID) {
-				writeCodedError(w, http.StatusForbidden, errorCodeMailAccountNotGranted,
-					fmt.Errorf("%s holds no %s on mail account %q", principalID, relationCanReadMail, accountID))
-				return
-			}
-		case ruleImportAccount:
-			if !access.mayImportAccount(accountID) {
-				writeCodedError(w, http.StatusForbidden, errorCodeMailAccountNotGranted,
-					fmt.Errorf("%s holds no %s on mail account %q", principalID, relationCanImportMail, accountID))
-				return
-			}
-		case ruleReadMessage:
-			if !access.mayReadAccount(accountID) {
-				locator := accountID + ":" + r.PathValue("id")
-				visible, refused := s.visibleThroughTickets(r.Context(), access, []string{locator})
-				if refused != nil {
-					writeCodedError(w, refused.status, refused.code, refused)
-					return
-				}
-				if !visible[locator] {
-					// The same answer as a message that does not exist, so a
-					// person cannot learn which ids are real.
-					writeCodedError(w, http.StatusNotFound, errorCodeMessageNotFound,
-						fmt.Errorf("no message %s that %s may read", locator, principalID))
-					return
-				}
-			}
-		default:
-			panic(fmt.Sprintf("mailstack: unknown access rule %d", rule))
-		}
 		next(w, r)
 	})
 }

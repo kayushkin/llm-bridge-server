@@ -5,9 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -78,14 +78,16 @@ func enableRepositoryModulesOnTestDatabase(t *testing.T, server *Server) testRep
 		t.Fatal(err)
 	}
 	modules.files = files
-	server.EnableReferenceStore(&referencestore.Resolver{
+	if err := server.EnableReferenceStore(&referencestore.Resolver{
 		Types:       referencestore.Types,
 		Credentials: &referencestore.Credentials{HTTPClient: http.DefaultClient},
 		Access:      &referencestore.AccessChecker{Directory: testReferenceAccess{}, TTL: time.Minute},
 		HTTPClient:  http.DefaultClient,
-		InProcess:   referencestore.InProcessServices{Handler: server.InProcessReferenceHandler(), PathPrefixes: InProcessReferenceServices},
+		InProcess:   server.InProcessReferenceReaders(),
 		RecordTTL:   time.Minute, MissTTL: time.Second, LookupTimeout: 5 * time.Second, Concurrency: 4,
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 	return modules
 }
 
@@ -130,26 +132,42 @@ func TestRepoStoreWorkGraphStoreAndFileStoreAreTheOperators(t *testing.T) {
 func TestSessionFilesGoToTheFileStoreModule(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
 	enableRepositoriesAndReferencesOnTestDatabase(t, gated.server)
-	stored, err := gated.server.fileStore.Upload(strings.NewReader("the bytes"), 9, "text/plain", "note.txt", "br_files")
+	stored, err := gated.server.fileStore.Accept(strings.NewReader("the bytes"), 9, "text/plain", filestore.NewFile{Filename: "note.txt", OwnerService: sessionFileOwnerService, OwnerRef: "br_files"})
 	if err != nil || stored.ID != "file_000001" || stored.SizeBytes != 9 {
 		t.Fatalf("upload: %v %+v", err, stored)
 	}
-	response, err := gated.server.fileStore.Content(stored.ID, true, "")
-	if err != nil {
-		t.Fatal(err)
+	response := httptest.NewRecorder()
+	gated.server.fileStore.ServeContentOf(response, httptest.NewRequest(http.MethodGet, "/", nil), stored.ID, "true")
+	if response.Code != http.StatusOK || response.Body.String() != "the bytes" || response.Header().Get("Content-Type") != "text/plain" ||
+		response.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("content = %d %q %v", response.Code, response.Body, response.Header())
 	}
-	body, _ := io.ReadAll(response.Body)
-	response.Body.Close()
-	if response.StatusCode != http.StatusOK || string(body) != "the bytes" || response.Header.Get("Content-Type") != "text/plain" ||
-		response.Header.Get("X-Content-Type-Options") != "nosniff" {
-		t.Fatalf("content = %d %q %v", response.StatusCode, body, response.Header)
+	// A part of the file, as a browser asks for a video.
+	partial := httptest.NewRecorder()
+	ranged := httptest.NewRequest(http.MethodGet, "/", nil)
+	ranged.Header.Set("Range", "bytes=4-6")
+	gated.server.fileStore.ServeContentOf(partial, ranged, stored.ID, "false")
+	if partial.Code != http.StatusPartialContent || partial.Body.String() != "byt" || partial.Header().Get("Content-Type") != "application/octet-stream" {
+		t.Fatalf("range = %d %q %v", partial.Code, partial.Body, partial.Header())
+	}
+	missing := httptest.NewRecorder()
+	gated.server.fileStore.ServeContentOf(missing, httptest.NewRequest(http.MethodGet, "/", nil), "file_000099", "true")
+	if missing.Code != http.StatusNotFound || !strings.Contains(missing.Body.String(), `"error":"not found"`) {
+		t.Fatalf("an unknown file = %d %s", missing.Code, missing.Body)
+	}
+	var refusal *filestore.Refusal
+	if _, err := gated.server.fileStore.Accept(strings.NewReader("x"), 1, "text/plain", filestore.NewFile{Filename: "../x", OwnerService: sessionFileOwnerService, OwnerRef: "br_files"}); !errors.As(err, &refusal) || refusal.Status != http.StatusBadRequest {
+		t.Fatalf("a name with a path separator: %v", err)
+	}
+	if _, err := gated.server.fileStore.Accept(strings.NewReader("x"), 26*1024*1024, "text/plain", filestore.NewFile{Filename: "big", OwnerService: sessionFileOwnerService, OwnerRef: "br_files"}); !errors.As(err, &refusal) || refusal.Status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("a file over the limit: %v", err)
 	}
 	listed := gated.requestAsService(t, "GET", "/file-store/files?owner_service=llm-bridge-server&owner_ref=br_files")
 	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), `"id":"file_000001"`) {
 		t.Fatalf("listed = %d %s", listed.Code, listed.Body)
 	}
-	if limits, err := gated.server.fileStore.Limits(); err != nil || limits.MaximumFileBytes != 25*1024*1024 {
-		t.Fatalf("limits = %+v %v", limits, err)
+	if limits := gated.server.fileStore.CurrentLimits(); limits.MaximumFileBytes != 25*1024*1024 {
+		t.Fatalf("limits = %+v", limits)
 	}
 }
 
@@ -218,29 +236,22 @@ func TestReferenceStoreResolvesInProcessAsTheCaller(t *testing.T) {
 	}
 }
 
-// Every route a reference type asks a service in this process for is a route
-// this server has, under the prefix InProcessReferenceServices names. A
-// search route is asked only for a type the @ picker offers (Mentionable).
-func TestEveryInProcessReferenceRouteIsMounted(t *testing.T) {
+// Every type of a service in this process has a reader for each thing a
+// row asks of it, and nothing is read over the network: the server's
+// readers pass the check EnableReferenceStore makes at start.
+func TestEveryInProcessReferenceTypeHasAReader(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
+	if err := referencestore.ValidateInProcessReaders(referencestore.Types, gated.server.InProcessReferenceReaders()); err != nil {
+		t.Fatal(err)
+	}
+	inProcessTypes := 0
 	for _, row := range referencestore.Types {
-		prefix, inProcess := InProcessReferenceServices[row.Service]
-		if !inProcess {
-			continue
+		if slices.Contains(InProcessReferenceServices, row.Service) && row.Get != "" {
+			inProcessTypes++
 		}
-		routes := []string{row.Get, row.Attachment}
-		if row.Mentionable() {
-			routes = append(routes, row.Search)
-		}
-		for _, route := range routes {
-			if route == "" {
-				continue
-			}
-			path := prefix + strings.NewReplacer("{id}", "x").Replace(route)
-			if _, pattern := gated.server.mux.Handler(httptest.NewRequest(http.MethodGet, path, nil)); pattern == "" {
-				t.Errorf("type %s asks %s for GET %s, which this server does not mount", row.Type, row.Service, path)
-			}
-		}
+	}
+	if inProcessTypes < 40 {
+		t.Errorf("only %d types with a record route are read in this process; the list of in-process services lost some", inProcessTypes)
 	}
 }
 
