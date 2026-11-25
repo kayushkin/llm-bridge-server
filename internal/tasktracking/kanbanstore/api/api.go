@@ -25,7 +25,7 @@ import (
 
 type API struct {
 	store     *db.Store
-	noteboard *noteboard.Client
+	noteboard noteboard.Notes
 	// principals is consulted on exactly one write: assigning a principal to a
 	// card. See internal/principalstore for why this otherwise-dumb store checks
 	// that one reference.
@@ -54,7 +54,7 @@ type API struct {
 // New builds the API over its store and the owners it asks. What the process
 // was started with is the mounting server's to describe, so the store has no
 // /settings of its own.
-func New(store *db.Store, nb *noteboard.Client, principals principalstore.Directory, bridge llmbridge.AgentsAndInstances, bundles bundlestore.Bundles) *API {
+func New(store *db.Store, nb noteboard.Notes, principals principalstore.Directory, bridge llmbridge.AgentsAndInstances, bundles bundlestore.Bundles) *API {
 	return &API{store: store, noteboard: nb, principals: principals, bridge: bridge, bundles: bundles, messages: messaging.NewDispatcher(store, nb)}
 }
 

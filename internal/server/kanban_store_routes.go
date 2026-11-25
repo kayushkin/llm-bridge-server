@@ -35,7 +35,6 @@ import (
 	kanbangrants "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/grantstore"
 	kanbanbridge "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/llmbridge"
 	kanbanmultichat "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/multichat"
-	kanbannoteboard "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/noteboard"
 	kanbanprincipals "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/principalstore"
 	noteboardapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/api"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/items"
@@ -70,10 +69,8 @@ type KanbanStoreOwners struct {
 // until then, and in a test that never calls it, /kanban/ and /kanban-store/
 // answer 503 and this server's own kanban reads are off.
 func (s *Server) EnableKanbanStore(store *kanbandb.Store, owners KanbanStoreOwners) {
-	notes := &kanbannoteboard.Client{
-		BaseURL: "http://noteboard.in-process",
-		HTTP:    &http.Client{Transport: inprocesshttp.Transport{Handler: noteboardapi.New(owners.Noteboard).Handler()}},
-	}
+	// noteboard runs in this process, and kanban-store calls its API in Go.
+	notes := kanbanNoteboard{notes: noteboardapi.New(owners.Noteboard)}
 	directory := access.GrantsPrincipalDirectory(owners.Access.Principals)
 	api := kanbanapi.New(store, notes,
 		kanbanPrincipalDirectory{principals: owners.Access.Principals},
