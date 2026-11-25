@@ -50,20 +50,20 @@ func TestPanicMessageListsEveryLeakedFieldInAStableOrder(t *testing.T) {
 			t.Fatal("did not panic on two production addresses")
 		}
 		message := recovered.(string)
-		pinchtab := strings.Index(message, "PinchtabURL")
+		listen := strings.Index(message, "ListenAddr")
 		healthcheck := strings.Index(message, "HealthcheckURL")
-		if pinchtab < 0 || healthcheck < 0 {
-			t.Fatalf("message names %d of 2 leaked fields:\n%s", 2-btoi(pinchtab < 0)-btoi(healthcheck < 0), message)
+		if listen < 0 || healthcheck < 0 {
+			t.Fatalf("message names %d of 2 leaked fields:\n%s", 2-btoi(listen < 0)-btoi(healthcheck < 0), message)
 		}
 		// Sorted by field name, so the same two leaks always read the same
 		// way and a diff of two failures is meaningful.
-		if healthcheck > pinchtab {
+		if healthcheck > listen {
 			t.Errorf("fields are not sorted by name:\n%s", message)
 		}
 	}()
 
 	PanicIfUsedUnderTest(map[string]string{
-		"PinchtabURL":    PinchtabURL,
+		"ListenAddr":     ListenAddr,
 		"HealthcheckURL": HealthcheckURL,
 	})
 }
