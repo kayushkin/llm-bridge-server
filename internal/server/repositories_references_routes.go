@@ -153,6 +153,7 @@ var InProcessReferenceServices = map[string]string{
 	"message-store":     messageStoreMountPrefix,
 	"activity-store":    activityStoreMountPrefix,
 	"time-ledger-store": timeLedgerStoreMountPrefix,
+	"budget-store":      budgetStoreMountPrefix,
 	"scheduler":         schedulerMountPrefix,
 	"photo-store":       photoStoreMountPrefix,
 	"location-store":    locationStoreMountPrefix,

@@ -835,6 +835,88 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `GET` | `/rule-store/summary` | Counts, the reactor's state and every rule with its run counts | operator |
 | `GET` | `/rule-store/vocabulary` | Sources, condition kinds, session fields, effect kinds, modes and rule states | operator |
 
+### budget-store, mounted in this process
+
+| Method | Route | What it does | Who may call |
+|---|---|---|---|
+| `GET` | `/budget-store/accounts` | The accounts in the books, each with its balance and details | principal or session agent |
+| `POST` | `/budget-store/accounts` | Add an account; 201 | principal or session agent |
+| `GET` | `/budget-store/accounts/{id}` | One account with its balance and details | principal or session agent |
+| `PATCH` | `/budget-store/accounts/{id}` | Change an account's fields; a detail block replaces the stored one | principal or session agent |
+| `POST` | `/budget-store/accounts/{id}/description-markers` | Add text that names this account in other accounts' rows | principal or session agent |
+| `DELETE` | `/budget-store/accounts/{id}/description-markers/{marker_id}` | Remove a description marker | principal or session agent |
+| `GET` | `/budget-store/accounts/{id}/loan-payment-facts` | What statements say about a loan's payments | principal or session agent |
+| `POST` | `/budget-store/accounts/{id}/loan-payment-facts` | Record what a statement says about payments, replacing one on the same date | principal or session agent |
+| `GET` | `/budget-store/accounts/{id}/loan-schedule` | A loan's payments split into interest and principal, and the projection to payoff | principal or session agent |
+| `POST` | `/budget-store/accounts/{id}/loan-schedule/apply` | Write the loan schedule onto the loan's payments | principal or session agent |
+| `POST` | `/budget-store/accounts/{id}/opening-balance` | Make the ledger agree with a reported balance with one opening-balance transaction | principal or session agent |
+| `GET` | `/budget-store/balance-assertions` | Reported balances, each with the ledger's balance and the difference | principal or session agent |
+| `POST` | `/budget-store/balance-assertions` | Record a reported balance; 201 | principal or session agent |
+| `GET` | `/budget-store/budget` | One `month`'s budget in the limit or envelope `view` | principal or session agent |
+| `PUT` | `/budget-store/budget-assignments` | Set one category's amount for one month | principal or session agent |
+| `GET` | `/budget-store/categories` | The categories in the books | principal or session agent |
+| `POST` | `/budget-store/categories` | Add a category; 201 | principal or session agent |
+| `GET` | `/budget-store/categories/{id}` | One category | principal or session agent |
+| `GET` | `/budget-store/category-paths` | Every category's path from the top of its tree | principal or session agent |
+| `GET` | `/budget-store/category-suggestions` | Category suggestions by `status`, with each transaction's facts | principal or session agent |
+| `POST` | `/budget-store/category-suggestions` | Record a model's category suggestions; it writes no category | principal or session agent |
+| `GET` | `/budget-store/category-suggestions/candidates` | Wholly Uncategorized transactions with no pending suggestion, for the categorizer | principal or session agent |
+| `POST` | `/budget-store/category-suggestions/decisions` | A person accepting, changing or rejecting suggestions, all or nothing | principal or session agent |
+| `GET` | `/budget-store/health` | `{"status":"ok"}` | principal or session agent |
+| `GET` | `/budget-store/import-batches` | Imported files, newest first, with what became of their rows | principal or session agent |
+| `POST` | `/budget-store/import-batches` | Import one bank file into an account, all or nothing; 201 | principal or session agent |
+| `GET` | `/budget-store/import-batches/{id}` | One imported file | principal or session agent |
+| `POST` | `/budget-store/import-batches/{id}/undo` | Delete what an imported file made, keeping its rows | principal or session agent |
+| `GET` | `/budget-store/institutions` | The banks and issuers in the books | principal or session agent |
+| `POST` | `/budget-store/institutions` | Add a bank or issuer; 201 | principal or session agent |
+| `GET` | `/budget-store/interests` | The interests followed in the books, each with its rules and total | principal or session agent |
+| `POST` | `/budget-store/interests` | Add an interest; 201 | principal or session agent |
+| `POST` | `/budget-store/interests/match` | Run every interest's rules again for new transactions | principal or session agent |
+| `GET` | `/budget-store/interests/{id}` | One interest with its rules, history sources and total | principal or session agent |
+| `POST` | `/budget-store/interests/{id}/history-sources` | Point an interest at another store's record of it | principal or session agent |
+| `POST` | `/budget-store/interests/{id}/rules` | Add a rule to an interest and confirm what it matches | principal or session agent |
+| `GET` | `/budget-store/interests/{id}/transactions` | An interest's transactions, removed ones included | principal or session agent |
+| `PUT` | `/budget-store/interests/{id}/transactions/{transaction_id}` | A person confirming or removing a transaction on an interest | principal or session agent |
+| `GET` | `/budget-store/links` | Links from one of the store's records (`from_id`) to other stores' records | principal or session agent |
+| `POST` | `/budget-store/links` | Link one of the store's records to another store's record by its id; 201 | principal or session agent |
+| `GET` | `/budget-store/marketplace-order-lines/{id}` | One line of a marketplace order | principal or session agent |
+| `PATCH` | `/budget-store/marketplace-order-lines/{id}` | Change what became of an order line | principal or session agent |
+| `GET` | `/budget-store/marketplace-orders` | Marketplace orders newest first, by `transaction_id` and `unmatched` | principal or session agent |
+| `POST` | `/budget-store/marketplace-orders` | Record a marketplace order and its lines, finding its charge; 201 | principal or session agent |
+| `POST` | `/budget-store/marketplace-orders/match-transactions` | Look again for the charge of every order without one | principal or session agent |
+| `GET` | `/budget-store/marketplace-orders/{id}` | One marketplace order with its lines | principal or session agent |
+| `GET` | `/budget-store/payees` | The payees in the books | principal or session agent |
+| `POST` | `/budget-store/payees` | Add a payee and the bank texts that name it; 201 | principal or session agent |
+| `POST` | `/budget-store/payees/apply-rules` | Name each transaction without a payee by the payee rules, and move a wholly Uncategorized one to its payee's category | principal or session agent |
+| `GET` | `/budget-store/payees/{id}` | One payee with its patterns | principal or session agent |
+| `PUT` | `/budget-store/plaid/accounts/{plaid_account_id}` | Match a Plaid account to one of the owner's accounts, or unmatch it | principal or session agent |
+| `GET` | `/budget-store/plaid/items` | Every bank linked through Plaid, with its accounts | principal or session agent |
+| `POST` | `/budget-store/plaid/items` | Link a bank from Plaid Link's public token, keeping its access token in auth-store; 201 | principal or session agent |
+| `POST` | `/budget-store/plaid/link-token` | A Plaid Link token for linking one more bank | principal or session agent |
+| `POST` | `/budget-store/plaid/sync` | Sync every linked bank's transactions from its stored cursor | principal or session agent |
+| `GET` | `/budget-store/recurring-bills` | Recurring bills by `status`, soonest due first | principal or session agent |
+| `POST` | `/budget-store/recurring-bills` | Name a bill from a transaction's payments, with the caller's cadence; 201 | principal or session agent |
+| `POST` | `/budget-store/recurring-bills/detect` | Find payments that come on a steady rhythm and refresh the known bills | principal or session agent |
+| `GET` | `/budget-store/recurring-bills/totals` | Confirmed bills: expected and actual per month, six months and year | principal or session agent |
+| `GET` | `/budget-store/recurring-bills/{id}` | One bill with every payment | principal or session agent |
+| `PATCH` | `/budget-store/recurring-bills/{id}` | A person confirming, rejecting or renaming a bill | principal or session agent |
+| `GET` | `/budget-store/reports/by-account` | The named categories and those under them, per month, category and account | principal or session agent |
+| `GET` | `/budget-store/reports/monthly` | Each category's total in each month from `from` to `to` | principal or session agent |
+| `GET` | `/budget-store/reports/spending` | Each category's total in one `month` | principal or session agent |
+| `GET` | `/budget-store/transactions` | Transactions newest first, by `account_id`, `category_id`, `month`, `q`, `uncategorized`, `limit` and `offset` | principal or session agent |
+| `POST` | `/budget-store/transactions` | Record a balanced transaction by hand; 201 | principal or session agent |
+| `GET` | `/budget-store/transactions/{id}` | One transaction with its postings, source rows, category decision, orders and links | principal or session agent |
+| `PATCH` | `/budget-store/transactions/{id}` | Change a transaction's status, payee or memo | principal or session agent |
+| `PUT` | `/budget-store/transactions/{id}/categories` | Replace a transaction's category postings with splits summing to the same | principal or session agent |
+| `POST` | `/budget-store/transactions/{id}/move-to-account` | Turn a transaction's one category posting into a posting on another of the owner's accounts | principal or session agent |
+| `POST` | `/budget-store/transactions/{id}/undo-transfer-without-partner` | Put a posting the transfer matcher moved without a partner back on Uncategorized | principal or session agent |
+| `POST` | `/budget-store/transfers/match` | Pair transfers between the owner's own accounts | principal or session agent |
+| `GET` | `/budget-store/trips/totals` | Confirmed and suggested spending per location-store trip | principal or session agent |
+| `POST` | `/budget-store/trips/{trip_ref}/suggest` | Suggest the spending dated during a trip | principal or session agent |
+| `GET` | `/budget-store/trips/{trip_ref}/transactions` | The transactions linked to one trip, removed ones included | principal or session agent |
+| `PUT` | `/budget-store/trips/{trip_ref}/transactions/{transaction_id}` | A person confirming, removing or adding a transaction on a trip | principal or session agent |
+| `GET` | `/budget-store/vocabulary` | Every closed set of values budget-store accepts | principal or session agent |
+
 ### people-store, mounted in this process
 
 | Method | Route | What it does | Who may call |
