@@ -279,8 +279,12 @@ func TestInjectHookSettings_NilHookStoreKeepsTheCodexPermissionGate(t *testing.T
 	if err != nil {
 		t.Fatalf("re-marshal codex_hooks: %v", err)
 	}
-	if !strings.Contains(string(encoded), "/permission/codex-prehook/b2") {
+	gateCommand, _ := json.Marshal(permissionGateCommandPostingToTheURLInTheEnvironment())
+	if !strings.Contains(string(encoded), string(gateCommand[1:len(gateCommand)-1])) {
 		t.Errorf("permission gate missing from codex_hooks with a nil hook-store: %s", encoded)
+	}
+	if environment := srv.permissionGateEnvironment(sess); len(environment) != 1 || !strings.HasSuffix(environment[0], "/permission/codex-prehook/b2") {
+		t.Errorf("gate address for the spawn = %q, want one variable ending /permission/codex-prehook/b2", environment)
 	}
 }
 
@@ -366,7 +370,9 @@ func TestInjectHookSettings_OnlyGatedHarnessesGetAPermissionGate(t *testing.T) {
 			srv.injectHookSettings(sess)
 
 			wantURL, wantGate := gatedHarnesses[harness]
-			config := string(sess.HarnessConfig)
+			// codex and devin find their gate's address in the spawn's
+			// environment, not in the hook command (permissionGateEnvironment).
+			config := string(sess.HarnessConfig) + strings.Join(srv.permissionGateEnvironment(sess), " ")
 
 			if !wantGate {
 				if len(sess.HarnessConfig) != 0 {
@@ -409,8 +415,9 @@ func TestSupportedPermissionModesForOutrunsTheGate(t *testing.T) {
 
 // TestInjectDevinHookSettingsPutsTheGateInDevinsHookTree pins the two keys
 // llm-bridge-devin needs: devin_hooks, whose first PreToolUse entry is the
-// curl to /permission/devin-prehook/<session> (the wrapper refuses to start
-// without one), and devin_permission_url, the same gate for a
+// gate's curl to "$LLM_BRIDGE_PERMISSION_GATE_URL", which the spawn sets to
+// /permission/devin-prehook/<session> (the wrapper refuses to start without
+// one), and devin_permission_url, the same gate for a
 // session/request_permission. An explicit devin_hooks is left alone.
 func TestInjectDevinHookSettingsPutsTheGateInDevinsHookTree(t *testing.T) {
 	srv := testServerWithoutHookStore(t)
@@ -438,7 +445,7 @@ func TestInjectDevinHookSettingsPutsTheGateInDevinsHookTree(t *testing.T) {
 	}
 	pre := cfg.DevinHooks["PreToolUse"]
 	if len(pre) == 0 || pre[0].Matcher != ".*" || len(pre[0].Hooks) != 1 || pre[0].Hooks[0].Type != "command" ||
-		!strings.Contains(pre[0].Hooks[0].Command, "/permission/devin-prehook/s1") || pre[0].Hooks[0].Timeout != 86400 {
+		pre[0].Hooks[0].Command != permissionGateCommandPostingToTheURLInTheEnvironment() || pre[0].Hooks[0].Timeout != 86400 {
 		t.Fatalf("PreToolUse gate entry = %+v", pre)
 	}
 	if !strings.HasSuffix(cfg.DevinPermissionURL, "/permission/devin-prehook/s1") {

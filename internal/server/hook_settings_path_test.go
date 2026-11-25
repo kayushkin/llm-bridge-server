@@ -146,7 +146,7 @@ func TestCCPermissionHookCommandRunsExactlyOneCurl(t *testing.T) {
 // runGeneratedCommand hands cmd to /bin/sh exactly as a harness would, with a
 // stub `curl` first on PATH that appends its argv to a log and exits 0. It
 // returns the recorded invocations, one []string per run.
-func runGeneratedCommand(t *testing.T, cmd string) [][]string {
+func runGeneratedCommand(t *testing.T, cmd string, extraEnvironment ...string) [][]string {
 	t.Helper()
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "argv.log")
@@ -164,7 +164,7 @@ func runGeneratedCommand(t *testing.T, cmd string) [][]string {
 	// with "not found" and the marker check below can never fire, so the
 	// control reads green because the harness disarmed the payload rather
 	// than because the code did.
-	sh.Env = append(os.Environ(), "PATH="+dir+":/usr/bin:/bin", "SENTINEL=EXPANDED")
+	sh.Env = append(append(os.Environ(), "PATH="+dir+":/usr/bin:/bin", "SENTINEL=EXPANDED"), extraEnvironment...)
 	sh.Stdin = strings.NewReader("{}")
 	if out, err := sh.CombinedOutput(); err != nil {
 		// A non-zero exit is information, not a failure: "the shell refused
@@ -194,7 +194,15 @@ func runGeneratedCommand(t *testing.T, cmd string) [][]string {
 // and the two user-hook tests.
 func assertOneCurlRun(t *testing.T, label, cmd, marker, id string, template ...string) {
 	t.Helper()
-	runs := runGeneratedCommand(t, cmd)
+	assertOneCurlRunWithEnvironment(t, label, cmd, nil, marker, id, template...)
+}
+
+// assertOneCurlRunWithEnvironment is assertOneCurlRun with extra variables in
+// the shell's environment, for the codex and devin gate, whose address is in
+// one.
+func assertOneCurlRunWithEnvironment(t *testing.T, label, cmd string, environment []string, marker, id string, template ...string) {
+	t.Helper()
+	runs := runGeneratedCommand(t, cmd, environment...)
 
 	// 1. The shell ran curl exactly once. Two runs means a separator inside
 	//    the id started a second command; zero means the shell never reached
@@ -229,6 +237,10 @@ func assertOneCurlRun(t *testing.T, label, cmd, marker, id string, template ...s
 	assertSegments(t, label, urls[0], id, template...)
 }
 
+// The codex gate's command carries no session id: the id reaches the shell
+// in the value of LLM_BRIDGE_PERMISSION_GATE_URL, which the command expands
+// inside double quotes. So the probes apply to that value: the shell must
+// hand it to curl as one word, run nothing of it, and expand nothing in it.
 func TestCodexPermissionHookCommandRunsExactlyOneCurl(t *testing.T) {
 	for _, probe := range pathProbes() {
 		t.Run(probe.name, func(t *testing.T) {
@@ -239,12 +251,16 @@ func TestCodexPermissionHookCommandRunsExactlyOneCurl(t *testing.T) {
 			}
 
 			srv, _ := testServerWithHookStore(t)
-			byEvent, err := srv.buildCodexHookConfig(&store.Session{SessionID: id, Harness: msg.HarnessCodex})
+			sess := &store.Session{SessionID: id, Harness: msg.HarnessCodex}
+			byEvent, err := srv.buildCodexHookConfig(sess)
 			if err != nil {
 				t.Fatalf("build: %v", err)
 			}
 			cmd := codexPermissionCommand(t, byEvent)
-			assertOneCurlRun(t, probe.name, cmd, marker, id, "permission", "codex-prehook", "")
+			if strings.Contains(cmd, "codex-prehook") {
+				t.Fatalf("the gate command names the gate itself, so it differs between sessions: %q", cmd)
+			}
+			assertOneCurlRunWithEnvironment(t, probe.name, cmd, srv.permissionGateEnvironment(sess), marker, id, "permission", "codex-prehook", "")
 		})
 	}
 }
@@ -268,7 +284,7 @@ func codexPermissionCommand(t *testing.T, byEvent map[string][]any) string {
 	}
 	for _, e := range entries {
 		for _, h := range e.Hooks {
-			if strings.Contains(h.Command, "/permission/codex-prehook/") {
+			if h.Command == permissionGateCommandPostingToTheURLInTheEnvironment() {
 				return h.Command
 			}
 		}
