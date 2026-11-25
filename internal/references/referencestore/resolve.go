@@ -140,7 +140,7 @@ func (r *Resolver) Resolve(ctx context.Context, caller Caller, ids []string) (ma
 
 // lookUp fetches one (type, id) and applies the caller's access to it.
 func (r *Resolver) lookUp(ctx context.Context, caller Caller, row *ReferenceType, id string) (Match, bool, error) {
-	ownerDecides := row.Access == AccessByOwner && !caller.Unchecked
+	ownerDecides := row.Access.ownerDecides() && !caller.Unchecked
 	cacheKey := row.Type + "\x00" + id
 	if ownerDecides {
 		cacheKey += "\x00" + caller.PrincipalID
@@ -158,7 +158,7 @@ func (r *Resolver) lookUp(ctx context.Context, caller Caller, row *ReferenceType
 		match.Refused = true
 		return match, true, nil
 	}
-	if !caller.Unchecked && row.Access == AccessByGrant {
+	if !caller.Unchecked && row.Access.grantDecides() {
 		allowed, err := r.Access.MaySee(ctx, caller.PrincipalID, row.Type, id)
 		if err != nil {
 			return Match{}, false, err

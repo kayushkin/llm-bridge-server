@@ -84,11 +84,24 @@ type PrincipalDirectory interface {
 // identity is bound to someone already.
 var ErrIdentityAlreadyBound = errors.New("identity already bound")
 
-// Directory reads principal-store through a PrincipalDirectory, and
-// people-store, auth-store and multichat over HTTP.
+// PeopleDirectory is people-store as sign-in reads it, answered in process
+// by the server that mounts the routes. Sign-in has no caller to narrow to,
+// so the server decides whose records it trusts. Each answers nil when
+// nobody is found, and an error when people-store cannot say.
+type PeopleDirectory interface {
+	// PersonOwningHandle is the person whose records hold the handle.
+	PersonOwningHandle(ctx context.Context, kind, value string) (*Person, error)
+	// PersonPointingAtPrincipal is the person whose principal_id is this
+	// principal, with their chat handles. Two such people is an error, not a
+	// pick.
+	PersonPointingAtPrincipal(ctx context.Context, principalID string) (*Person, error)
+}
+
+// Directory reads principal-store through a PrincipalDirectory, people-store
+// through a PeopleDirectory, and auth-store and multichat over HTTP.
 type Directory struct {
 	principals      PrincipalDirectory
-	peopleStoreURL  string
+	people          PeopleDirectory
 	multichatURL    string
 	authStoreURL    string
 	authStoreToken  string
@@ -107,7 +120,7 @@ type cachedPrincipal struct {
 
 // DirectoryConfig is where the services outside this process are.
 type DirectoryConfig struct {
-	PeopleStoreURL        string
+	People                PeopleDirectory
 	MultichatURL          string
 	AuthStoreURL          string
 	AuthStoreToken        string
@@ -118,7 +131,7 @@ type DirectoryConfig struct {
 func NewDirectory(principals PrincipalDirectory, config DirectoryConfig) *Directory {
 	trim := func(raw string) string { return strings.TrimRight(raw, "/") }
 	return &Directory{
-		principals: principals, peopleStoreURL: trim(config.PeopleStoreURL),
+		principals: principals, people: config.People,
 		multichatURL: trim(config.MultichatURL), authStoreURL: trim(config.AuthStoreURL),
 		authStoreToken: config.AuthStoreToken, multichatCredID: config.MultichatCredentialID,
 		client: &http.Client{Timeout: 15 * time.Second}, now: time.Now, cache: map[string]cachedPrincipal{},
@@ -178,58 +191,45 @@ func (d *Directory) Principal(ctx context.Context, principalID string) (Principa
 
 // Person is the part of people-store's person this service reads.
 type Person struct {
-	ID          string `json:"id"`
-	PrincipalID string `json:"principal_id"`
-	Identities  []struct {
-		Kind  string `json:"kind"`
-		Value string `json:"value"`
-	} `json:"identities"`
+	ID          string           `json:"id"`
+	PrincipalID string           `json:"principal_id"`
+	Identities  []PersonIdentity `json:"identities"`
 }
+
+// PersonIdentity is one handle of a Person.
+type PersonIdentity struct {
+	Kind  string `json:"kind"`
+	Value string `json:"value"`
+}
+
+// errPeopleDirectoryMissing is a Directory built with no people-store.
+var errPeopleDirectoryMissing = errors.New("people-store: this sign-in directory was built without people-store")
 
 // PersonOwningHandle resolves a handle through people-store, or nil when
 // nobody owns it.
 func (d *Directory) PersonOwningHandle(ctx context.Context, kind, value string) (*Person, error) {
-	var resolved struct {
-		Person struct {
-			ID string `json:"id"`
-		} `json:"person"`
+	if d.people == nil {
+		return nil, errPeopleDirectoryMissing
 	}
-	query := url.Values{"kind": {kind}, "value": {value}}
-	err := d.getJSON(ctx, d.peopleStoreURL+"/identities/resolve?"+query.Encode(), nil, &resolved)
-	if errors.Is(err, errNotFoundUpstream) {
-		return nil, nil
-	}
+	person, err := d.people.PersonOwningHandle(ctx, kind, value)
 	if err != nil {
 		return nil, fmt.Errorf("people-store: %w", err)
 	}
-	var person Person
-	if err := d.getJSON(ctx, d.peopleStoreURL+"/persons/"+url.PathEscape(resolved.Person.ID), nil, &person); err != nil {
-		return nil, fmt.Errorf("people-store: %w", err)
-	}
-	return &person, nil
+	return person, nil
 }
 
 // PersonPointingAtPrincipal finds, through people-store, the person whose
 // principal_id is this principal, with their chat handles; nil when nobody
 // points at it. Two people pointing at one principal is an error, not a pick.
 func (d *Directory) PersonPointingAtPrincipal(ctx context.Context, principalID string) (*Person, error) {
-	var listed []struct {
-		ID string `json:"id"`
+	if d.people == nil {
+		return nil, errPeopleDirectoryMissing
 	}
-	if err := d.getJSON(ctx, d.peopleStoreURL+"/persons?"+url.Values{"principal_id": {principalID}}.Encode(), nil, &listed); err != nil {
+	person, err := d.people.PersonPointingAtPrincipal(ctx, principalID)
+	if err != nil {
 		return nil, fmt.Errorf("people-store: %w", err)
 	}
-	if len(listed) == 0 {
-		return nil, nil
-	}
-	if len(listed) > 1 {
-		return nil, fmt.Errorf("people-store: %d people point at %s", len(listed), principalID)
-	}
-	var person Person
-	if err := d.getJSON(ctx, d.peopleStoreURL+"/persons/"+url.PathEscape(listed[0].ID), nil, &person); err != nil {
-		return nil, fmt.Errorf("people-store: %w", err)
-	}
-	return &person, nil
+	return person, nil
 }
 
 // resolveCredential reads a secret from auth-store at the time of use, so a

@@ -117,7 +117,7 @@ func (s *Server) signInConfiguration() (signinstore.DirectoryConfig, signinstore
 			"sign-in is off: %s and %s must both be set", config.SignInPageURLEnvironmentVariable, config.SignInCookieDomainEnvironmentVariable)
 	}
 	return signinstore.DirectoryConfig{
-			PeopleStoreURL:        s.cfg.PeopleStoreURL,
+			People:                signInPeople{server: s},
 			MultichatURL:          s.cfg.MultichatURL,
 			AuthStoreURL:          s.cfg.AuthStoreURL,
 			AuthStoreToken:        s.cfg.AuthStoreToken,

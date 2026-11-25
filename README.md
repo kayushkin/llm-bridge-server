@@ -176,6 +176,8 @@ curl -s -c jar -X POST localhost:8160/auth/demo-login -H 'Content-Type: applicat
 
 `/kanban/<rest>` is kanban-store's `/api/<rest>` and `/kanban-store/<rest>` its `/<rest>`. kanban-store runs in this process on its Postgres module (`internal/tasktracking/kanbanstore`), and reads its caller from the request context: the verified principal, narrowed by its board grants, or the internal service (this server's service token naming nobody), unrestricted. No header names the caller, so a forged `X-Principal-Id` or kanban-store service token names nobody. `llm-bridge-server import-kanban-store -sqlite <file>` copies a standalone kanban-store's database into the module. `/grant-store/<rest>` is grant-store's `/<rest>`, in this process the same way. `/mailstack/<rest>` and `/reference-store/<rest>` are still proxied: each deletes the caller's `X-Principal-Id`, store tokens, service token, `Authorization` header and cookie, then sets `X-Principal-Id` to the verified principal.
 
+`/people-store/`, `/calendar-store/` and `/journal-store/` are the connected records stores, on their Postgres modules (`internal/connectedrecords/`), with their own paths behind the prefix. Every record carries `owner_principal_id`, the principal-store id of the person who keeps it, and each store narrows every read and write to the caller's own records: another person's record is 404, as a missing one is, and a list holds only the caller's. An administrator sees every owner's records and may narrow to one with `?owner_principal_id=`. The service token acting as nobody sees every owner's in people-store and calendar-store and cannot make a record; journal-store refuses it outright (403 `journal_store_requires_a_principal`), so it answers only its owner's or an administrator's principal. `llm-bridge-server import-people-store|import-calendar-store|import-journal-store -sqlite <file> -owner <principal id>` copies a standalone store into its module, every record owned by `-owner`, which is required and must be a person principal-store holds.
+
 ### Session agent tokens
 
 A session started as a principal gives its harness process `LLM_BRIDGE_GATEWAY_URL` and `LLM_BRIDGE_PRINCIPAL_TOKEN`, so a tool call inside the session can reach the stores as that principal:
@@ -786,6 +788,84 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `POST` | `/model-store/api/roles` | Set a role's first model (`model`) or its whole list (`models`) | operator |
 | `GET` | `/model-store/api/roles/{role}` | A role's first model, resolved | operator |
 | `GET` | `/model-store/api/roles/{role}/models` | Every model in a role's list, in the order to try them | operator |
+
+### people-store, mounted in this process
+
+| Method | Route | What it does | Who may call |
+|---|---|---|---|
+| `PUT` | `/people-store/handle-activity` | Report how much the caller talks with each handle | principal or session agent |
+| `GET` | `/people-store/health` | `{"status":"ok","counts":…}`, counted over the caller's own people | principal or session agent |
+| `GET` | `/people-store/identities` | Every handle of a `kind`, in the order linked | principal or session agent |
+| `GET` | `/people-store/identities/resolve` | The person holding a `kind` and `value`; 404 when nobody does | principal or session agent |
+| `DELETE` | `/people-store/identities/{id}` | Remove a handle, refusing it for that person | principal or session agent |
+| `GET` | `/people-store/identity-kinds` | The handle kinds and how each is normalized | principal or session agent |
+| `GET` | `/people-store/link-sources` | Who may link a handle, and whether each overrides refusals | principal or session agent |
+| `GET` | `/people-store/persons` | The caller's people by `q`, `tag`, `principal_id`, `include_deleted`, `limit` and `offset`, by name | principal or session agent |
+| `POST` | `/people-store/persons` | Make a person owned by the caller, with handles; 201 | principal or session agent |
+| `DELETE` | `/people-store/persons/{id}` | Delete a person, reversibly | principal or session agent |
+| `GET` | `/people-store/persons/{id}` | One person with handles and relationships; a deleted one answers with `deleted_at` | principal or session agent |
+| `PATCH` | `/people-store/persons/{id}` | Change a person's name, birthday, how met, tags or principal | principal or session agent |
+| `POST` | `/people-store/persons/{id}/identities` | Link a handle to a person, saying who linked it and why; 201 | principal or session agent |
+| `POST` | `/people-store/persons/{id}/relationships` | Record how two of one owner's people are related; 201 | principal or session agent |
+| `POST` | `/people-store/persons/{id}/restore` | Undo a delete | principal or session agent |
+| `GET` | `/people-store/persons/{id}/revisions` | A person as they were before each change, oldest first | principal or session agent |
+| `GET` | `/people-store/refusals` | Handles refused for a person, by `person_id`, `kind` and `value` | principal or session agent |
+| `GET` | `/people-store/relationship-kinds` | The relationship kinds and their inverses | principal or session agent |
+| `DELETE` | `/people-store/relationships/{id}` | Remove a relationship | principal or session agent |
+| `POST` | `/people-store/reviews` | Mark handles reviewed | principal or session agent |
+| `POST` | `/people-store/reviews/claim` | Take handles off the review queue for 30 minutes | principal or session agent |
+| `GET` | `/people-store/reviews/pending` | Handles the caller talks with that nobody has reviewed | principal or session agent |
+| `GET` | `/people-store/suggestions` | Guesses about who is who, by `status`, `q`, `sort`, `limit` and `offset` | principal or session agent |
+| `POST` | `/people-store/suggestions` | Propose that some handles are one person; 201, or 200 when none is new | principal or session agent |
+| `GET` | `/people-store/suggestions/{id}` | One suggestion | principal or session agent |
+| `POST` | `/people-store/suggestions/{id}/accept` | Accept a suggestion into a new person or `person_id` | principal or session agent |
+| `POST` | `/people-store/suggestions/{id}/reject` | Reject a suggestion, refusing its handles for the people it named | principal or session agent |
+
+### calendar-store, mounted in this process
+
+| Method | Route | What it does | Who may call |
+|---|---|---|---|
+| `GET` | `/calendar-store/calendars` | The caller's calendars, in the order made | principal or session agent |
+| `POST` | `/calendar-store/calendars` | Make a calendar owned by the caller; 201, or 200 for the caller's one with that `source` and `source_ref` | principal or session agent |
+| `POST` | `/calendar-store/calendars/{id}/google-event-imports` | Import Google Calendar event resources into a calendar; 201 | principal or session agent |
+| `POST` | `/calendar-store/calendars/{id}/imports` | Import an .ics file into a calendar, in one transaction; 201 | principal or session agent |
+| `GET` | `/calendar-store/events` | Events by `calendar_id`, `from`, `to`, `q`, `person_id`, `limit` and `offset`, oldest first | principal or session agent |
+| `GET` | `/calendar-store/events/{id}` | One event, with its raw VEVENT | principal or session agent |
+| `POST` | `/calendar-store/events/{id}/people` | Link one of the event owner's people to an event; 201 | principal or session agent |
+| `DELETE` | `/calendar-store/events/{id}/people/{person_id}` | Unlink a person from an event | principal or session agent |
+| `GET` | `/calendar-store/events/{id}/revisions` | An event as it was before each import changed it, newest first | principal or session agent |
+| `GET` | `/calendar-store/health` | `{"status":"ok","counts":…}`, counted over the caller's own calendars | principal or session agent |
+| `GET` | `/calendar-store/imports` | The caller's imports, newest first | principal or session agent |
+| `GET` | `/calendar-store/vocabularies` | The link sources and revision reasons | principal or session agent |
+
+### journal-store, mounted in this process
+
+| Method | Route | What it does | Who may call |
+|---|---|---|---|
+| `GET` | `/journal-store/entries` | The caller's entries by `q`, `kind`, `tag`, `visibility`, `about_ref`, `source`, `from`, `to`, `limit` and `offset`, newest first | principal or session agent |
+| `POST` | `/journal-store/entries` | Write an entry owned by the caller; 201 | principal or session agent |
+| `DELETE` | `/journal-store/entries/{id}` | Delete an entry, reversibly; 204 | principal or session agent |
+| `GET` | `/journal-store/entries/{id}` | One entry with its mentions | principal or session agent |
+| `PATCH` | `/journal-store/entries/{id}` | Change an entry | principal or session agent |
+| `POST` | `/journal-store/entries/{id}/promote-todo` | Make a checklist `line` a noteboard todo; an administrator's own entries only | principal or session agent |
+| `POST` | `/journal-store/entries/{id}/restore` | Undo a delete | principal or session agent |
+| `GET` | `/journal-store/entries/{id}/revisions` | An entry as it was before each change, newest first | principal or session agent |
+| `GET` | `/journal-store/entry-kinds` | The entry kinds | principal or session agent |
+| `GET` | `/journal-store/health` | `{"status":…,"counts":…}`, counted over the caller's own entries | principal or session agent |
+| `POST` | `/journal-store/imports` | Upsert entries by `source` and `source_ref`, in one transaction; `dry_run=true` writes nothing | principal or session agent |
+| `GET` | `/journal-store/mentions` | The caller's entries that mention `ref` | principal or session agent |
+| `GET` | `/journal-store/published` | The caller's published entries, newest first | principal or session agent |
+| `GET` | `/journal-store/published/{slug}` | One of the caller's published entries by slug | principal or session agent |
+| `GET` | `/journal-store/time-precisions` | The precisions a timeline item's time takes | principal or session agent |
+| `GET` | `/journal-store/timeline-items` | Items of every `timeline` named, merged in time order | principal or session agent |
+| `DELETE` | `/journal-store/timeline-items/{id}` | Delete a timeline item, reversibly; 204 | principal or session agent |
+| `GET` | `/journal-store/timeline-items/{id}` | One timeline item | principal or session agent |
+| `PATCH` | `/journal-store/timeline-items/{id}` | Change a timeline item | principal or session agent |
+| `POST` | `/journal-store/timeline-items/{id}/restore` | Undo a delete | principal or session agent |
+| `GET` | `/journal-store/timeline-items/{id}/revisions` | A timeline item as it was before each change, newest first | principal or session agent |
+| `GET` | `/journal-store/timelines/{id}/items` | A timeline's items, oldest first | principal or session agent |
+| `POST` | `/journal-store/timelines/{id}/items` | Add items to a timeline, in one transaction; 201 | principal or session agent |
+| `GET` | `/journal-store/visibilities` | The visibilities | principal or session agent |
 
 ### repo-store, mounted in this process
 

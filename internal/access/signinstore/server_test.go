@@ -63,24 +63,6 @@ func newFakeWorld(t *testing.T) *fakeWorld {
 		user := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer access-for-")
 		fmt.Fprintf(w, `{"id":%q}`, user)
 	})
-	mux.HandleFunc("GET /identities/resolve", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("kind") == "discord" && r.URL.Query().Get("value") == "viewer" {
-			json.NewEncoder(w).Encode(map[string]any{"person": map[string]any{"id": "person_000002"}})
-			return
-		}
-		http.Error(w, `{"error":"no such identity"}`, http.StatusNotFound)
-	})
-	mux.HandleFunc("GET /persons", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("principal_id") == testPerson {
-			fmt.Fprint(w, `[{"id":"person_000002"}]`)
-			return
-		}
-		fmt.Fprint(w, `[]`)
-	})
-	mux.HandleFunc("GET /persons/{id}", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]any{"id": "person_000002", "principal_id": testPerson,
-			"identities": []any{map[string]any{"kind": "matrix_user", "value": testDiscordAccount}}})
-	})
 	mux.HandleFunc("GET /api/credentials/{id}/resolve", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer auth-store-token" || r.Header.Get("X-Auth-App") == "" {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -111,6 +93,29 @@ func newFakeWorld(t *testing.T) *fakeWorld {
 	world.server = httptest.NewServer(mux)
 	t.Cleanup(world.server.Close)
 	return world
+}
+
+// fakePeopleDirectory is people-store holding one person: the viewer, with
+// a Discord account and the chat account sign-in links go to.
+type fakePeopleDirectory struct{}
+
+func (fakePeopleDirectory) viewer() *Person {
+	return &Person{ID: "person_000002", PrincipalID: testPerson,
+		Identities: []PersonIdentity{{Kind: "matrix_user", Value: testDiscordAccount}}}
+}
+
+func (people fakePeopleDirectory) PersonOwningHandle(_ context.Context, kind, value string) (*Person, error) {
+	if kind == "discord" && value == "viewer" {
+		return people.viewer(), nil
+	}
+	return nil, nil
+}
+
+func (people fakePeopleDirectory) PersonPointingAtPrincipal(_ context.Context, principalID string) (*Person, error) {
+	if principalID == testPerson {
+		return people.viewer(), nil
+	}
+	return nil, nil
 }
 
 // disablePrincipal stamps a principal disabled, as principal-store would.
@@ -187,7 +192,7 @@ func newTestService(t *testing.T) *testService {
 	t.Helper()
 	world := newFakeWorld(t)
 	store := newTestStore(t)
-	directory := NewDirectory(fakePrincipalDirectory{world: world}, DirectoryConfig{PeopleStoreURL: world.server.URL, MultichatURL: world.server.URL,
+	directory := NewDirectory(fakePrincipalDirectory{world: world}, DirectoryConfig{People: fakePeopleDirectory{}, MultichatURL: world.server.URL,
 		AuthStoreURL: world.server.URL, AuthStoreToken: "auth-store-token", MultichatCredentialID: "cred_multichat"})
 	service := &testService{store: store, directory: directory, world: world, clock: time.Now()}
 	store.now = func() time.Time { return service.clock }
