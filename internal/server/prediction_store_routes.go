@@ -15,6 +15,7 @@ import (
 // server with no Postgres URL, the routes answer 503.
 func (s *Server) EnablePredictionStore(store *predictionstore.Store) {
 	s.predictionStore.Store(predictionstore.NewHandlers(store))
+	s.referenceReadable.predictions.Store(store)
 }
 
 // predictionStoreRoute answers one route with the store's handler for it.

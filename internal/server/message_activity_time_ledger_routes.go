@@ -67,12 +67,18 @@ func (s *Server) EnableMessageActivityAndTimeLedgerStores(modules MessageActivit
 	if files == nil {
 		return errors.New("activity-store: EnableFileStore must run first, since activity-store keeps its attachments' bytes in file-store")
 	}
+	messages := messagestore.New(modules.Messages)
+	activities := activitystore.New(modules.Activity, ActivityAttachmentFilesIn(files))
+	timeLedger := timeledgerstore.New(modules.TimeLedger)
 	messageMux := http.NewServeMux()
-	messagestore.RegisterHandlers(messageMux, messagestore.New(modules.Messages))
+	messagestore.RegisterHandlers(messageMux, messages)
 	activityMux := http.NewServeMux()
-	activitystore.RegisterHandlers(activityMux, activitystore.New(modules.Activity, ActivityAttachmentFilesIn(files)))
+	activitystore.RegisterHandlers(activityMux, activities)
 	timeLedgerMux := http.NewServeMux()
-	timeledgerstore.RegisterHandlers(timeLedgerMux, timeledgerstore.New(modules.TimeLedger))
+	timeledgerstore.RegisterHandlers(timeLedgerMux, timeLedger)
+	s.referenceReadable.messages.Store(messages)
+	s.referenceReadable.activities.Store(activities)
+	s.referenceReadable.timeLedger.Store(timeLedger)
 	s.messageActivityAndTimeLedger.Store(&messageActivityAndTimeLedgerStores{
 		messageHandler: messageMux, activityHandler: activityMux, timeLedgerHandler: timeLedgerMux,
 	})

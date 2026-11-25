@@ -134,7 +134,9 @@ func (s *Server) EnablePossessions(module PossessionsModule) error {
 		CoverImagesDirectory: module.CoverCacheDirectory,
 	}
 	mux := http.NewServeMux()
-	patterns := (&possessionstore.Server{Store: store, Reviewer: reviewer, LocalMachine: s.possessionLocalMachine}).RegisterHandlers(mux)
+	possessionServer := &possessionstore.Server{Store: store, Reviewer: reviewer, LocalMachine: s.possessionLocalMachine}
+	patterns := possessionServer.RegisterHandlers(mux)
+	s.referenceReadable.possessionsAt.Store(possessionServer)
 	s.possessions.Store(&possessionStores{store: store, reviewer: reviewer, handler: mux, patterns: patterns})
 	return nil
 }

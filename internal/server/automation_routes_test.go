@@ -34,7 +34,9 @@ func enableSchedulerOnTestDatabase(t *testing.T, server *Server) {
 	if err := scheduler.Start(); err != nil {
 		t.Fatal(err)
 	}
-	server.EnableScheduler(schedulerapi.New(store, scheduler, "", settings, func(string) error { return nil }).Routes())
+	routes := schedulerapi.New(store, scheduler, "", settings, func(string) error { return nil })
+	server.EnableScheduler(routes.Routes())
+	server.EnableSchedulerJobReferences(routes)
 }
 
 // The scheduler answers under /scheduler/ with its own paths, to the operator

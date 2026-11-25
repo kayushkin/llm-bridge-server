@@ -85,6 +85,7 @@ func (s *Server) EnableConnectedRecords(ctx context.Context, modules ConnectedRe
 	peoplestore.RegisterHandlers(peopleMux, people)
 
 	calendar := calendarstore.New(modules.Calendar, calendarPeople{people: people})
+	s.referenceReadable.calendar.Store(calendar)
 	calendarMux := http.NewServeMux()
 	calendarstore.RegisterHandlers(calendarMux, calendar)
 
