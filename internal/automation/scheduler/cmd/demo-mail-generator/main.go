@@ -34,7 +34,6 @@ import (
 )
 
 const (
-	defaultRepo    = "/home/kayushkincom/repos/northwind-api"
 	defaultAccount = "demo-work"
 
 	// Sized for a handful of full email bodies. Too small does not fail
@@ -79,7 +78,7 @@ func main() {
 
 func parseFlags(settings *servicesettings.Registry) config {
 	var c config
-	flag.StringVar(&c.Repo, "repo", defaultRepo, "Repository the mail is about.")
+	flag.StringVar(&c.Repo, "repo", "", "Repository the mail is about. Required: this machine's path is the caller's to give.")
 	flag.StringVar(&c.Account, "account", defaultAccount, "The LOCAL mailstack account to deliver to.")
 	flag.StringVar(&c.MailURL, "mail-url", settings.String(schedulerconfig.SettingMailstackURL), "mailstack base URL")
 	flag.StringVar(&c.MailToken, "mail-token", settings.String(schedulerconfig.SettingMailstackToken), "mailstack bearer token")
@@ -94,6 +93,9 @@ func parseFlags(settings *servicesettings.Registry) config {
 }
 
 func run(cfg config) error {
+	if cfg.Repo == "" {
+		return fmt.Errorf("give -repo, the repository the mail is about")
+	}
 	ctx := context.Background()
 	mail := demomail.New(cfg.MailURL, cfg.MailToken)
 
@@ -176,7 +178,7 @@ func run(cfg config) error {
 		locator, err := mail.Append(ctx, cfg.Account, demomail.Message{
 			Subject:  got.subject,
 			From:     demomail.Address{Name: want.From.Name, Email: want.From.Email},
-			To:       []demomail.Address{{Name: "Slava", Email: "slava@northwind-eng.example"}},
+			To:       []demomail.Address{{Name: "Sam", Email: "sam@northwind-eng.example"}},
 			BodyText: got.body,
 		})
 		if err != nil {

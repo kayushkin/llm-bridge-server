@@ -45,8 +45,6 @@ import (
 )
 
 const (
-	defaultRepoPath = "/home/kayushkincom/repos/northwind-api"
-
 	columnQueued     = kanbanvocab.ColumnQueued
 	columnInProgress = kanbanvocab.ColumnInProgress
 	columnActionNeed = "Action needed"
@@ -146,7 +144,7 @@ func parseFlags(settings *servicesettings.Registry) config {
 	flag.StringVar(&c.NoteboardURL, "noteboard-url", settings.String(schedulerconfig.SettingNoteboardURL), "noteboard base URL")
 	flag.StringVar(&c.BridgeURL, "bridge-url", settings.String(schedulerconfig.SettingBridgeURL),
 		"llm-bridge-server base URL. Sessions are created here directly rather than published to NATS, so a failure to start is an error rather than silence.")
-	flag.StringVar(&c.RepoPath, "repo", defaultRepoPath, "The repo agents work in.")
+	flag.StringVar(&c.RepoPath, "repo", "", "The repo agents work in. Required: this machine's path is the caller's to give.")
 	flag.StringVar(&c.BuilderSlug, "builder", "northwind-builder", "Identity that does the building.")
 	flag.StringVar(&c.ReviewerSlug, "reviewer", "northwind-reviewer", "Identity that does the reviewing.")
 	flag.StringVar(&c.RepoSlug, "repo-slug", "kayushkin/northwind-api", "owner/name of the repo, for pull request refs.")
@@ -173,6 +171,9 @@ func run(cfg config) error {
 	}
 	if (cfg.Dispatch || cfg.Review) && (cfg.ModelRole == "" || cfg.ModelRoles == nil) {
 		return fmt.Errorf("no model role to start sessions on: a session that names none runs on whatever the bridge's harness default is")
+	}
+	if (cfg.Dispatch || cfg.Review) && cfg.RepoPath == "" {
+		return fmt.Errorf("give -repo, the repo agents work in")
 	}
 	if cfg.DryRun {
 		fmt.Println("DRY RUN — nothing will be written or spawned")
