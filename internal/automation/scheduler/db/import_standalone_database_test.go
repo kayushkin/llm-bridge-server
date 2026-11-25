@@ -175,6 +175,31 @@ func TestImportStandaloneDatabaseRefusesAModuleThatHoldsRows(t *testing.T) {
 	}
 }
 
+// An older file still has session_target, which the scheduler stopped
+// reading; it is left behind when every row holds its default, and refused
+// otherwise.
+func TestImportStandaloneDatabaseLeavesSessionTargetBehindOnlyWhenEveryRowHoldsItsDefault(t *testing.T) {
+	path := writeStandaloneDatabase(t)
+	file, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Exec(`ALTER TABLE jobs ADD COLUMN session_target TEXT NOT NULL DEFAULT 'isolated'`); err != nil {
+		t.Fatal(err)
+	}
+	store := testStore(t)
+	if counts, err := ImportStandaloneDatabase(context.Background(), store.db, path, ImportOptions{}); err != nil || counts.Jobs != 2 {
+		t.Fatalf("import with session_target at its default = %+v, %v", counts, err)
+	}
+	if _, err := file.Exec(`UPDATE jobs SET session_target = 'shared' WHERE id = 3`); err != nil {
+		t.Fatal(err)
+	}
+	file.Close()
+	if _, err := ImportStandaloneDatabase(context.Background(), testStore(t).db, path, ImportOptions{}); err == nil || !strings.Contains(err.Error(), "session_target") {
+		t.Errorf("import with a session_target that is not its default = %v, want a refusal", err)
+	}
+}
+
 func TestImportStandaloneDatabaseRefusesAColumnItDoesNotKnow(t *testing.T) {
 	path := writeStandaloneDatabase(t)
 	file, err := sql.Open("sqlite", path)

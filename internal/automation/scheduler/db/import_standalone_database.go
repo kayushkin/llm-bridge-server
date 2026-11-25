@@ -36,6 +36,36 @@ type ImportOptions struct {
 var standaloneJobColumns = []string{"id", "name", "schedule", "command", "type", "agent", "prompt", "model_role", "orchestrator",
 	"session_id", "enabled", "created_at", "updated_at", "workspace_id", "hold_until", "description", "timeout_seconds", "event_trigger"}
 
+// legacySessionTargetColumn is a jobs column the scheduler stopped reading
+// when orchestrator and session_id replaced it, and never dropped. Every row
+// of a database that still has it must hold its default, legacySessionTarget:
+// then nothing is lost by leaving it behind.
+const (
+	legacySessionTargetColumn = "session_target"
+	legacySessionTarget       = "isolated"
+)
+
+// standaloneJobColumnsHeld answers the jobs columns the file holds: the ones
+// the import copies, and session_target when the file still has it and every
+// row holds its default.
+func standaloneJobColumnsHeld(ctx context.Context, source *sql.DB) ([]string, error) {
+	var hasLegacyColumn bool
+	if err := source.QueryRowContext(ctx, "SELECT COUNT(*) > 0 FROM pragma_table_info('jobs') WHERE name = ?", legacySessionTargetColumn).Scan(&hasLegacyColumn); err != nil {
+		return nil, fmt.Errorf("reading the columns of jobs: %w", err)
+	}
+	if !hasLegacyColumn {
+		return standaloneJobColumns, nil
+	}
+	var otherwise int64
+	if err := source.QueryRowContext(ctx, "SELECT COUNT(*) FROM jobs WHERE "+legacySessionTargetColumn+" IS NOT ?", legacySessionTarget).Scan(&otherwise); err != nil {
+		return nil, fmt.Errorf("reading jobs.%s: %w", legacySessionTargetColumn, err)
+	}
+	if otherwise > 0 {
+		return nil, fmt.Errorf("%d jobs hold a %s other than %q; the scheduler no longer reads it, and the import will not drop a value it cannot account for", otherwise, legacySessionTargetColumn, legacySessionTarget)
+	}
+	return append(append([]string{}, standaloneJobColumns...), legacySessionTargetColumn), nil
+}
+
 var standaloneRunColumns = []string{"id", "job_id", "status", "output", "started_at", "finished_at"}
 
 // ImportStandaloneDatabase copies a standalone scheduler's SQLite file (a copy
@@ -55,8 +85,12 @@ func ImportStandaloneDatabase(ctx context.Context, pool *sql.DB, path string, op
 		return counts, err
 	}
 	defer source.Close()
+	jobColumnsHeld, err := standaloneJobColumnsHeld(ctx, source)
+	if err != nil {
+		return counts, err
+	}
 	for table, columns := range map[string][]string{
-		"jobs":                     standaloneJobColumns,
+		"jobs":                     jobColumnsHeld,
 		"runs":                     standaloneRunColumns,
 		"service_settings":         {"key", "value", "updated_at"},
 		"event_trigger_deliveries": {"job_id", "idempotency_key", "run_id", "created_at"},
