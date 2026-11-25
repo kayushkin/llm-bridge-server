@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	messagestore "github.com/kayushkin/message-store"
+	messagestore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messagestore"
 )
 
 // Texts copied off the user's phones (message-import-android, source sms)

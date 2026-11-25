@@ -45,9 +45,9 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	messagestore "github.com/kayushkin/message-store"
-	"github.com/kayushkin/message-store/internal/importclient"
-	"github.com/kayushkin/message-store/internal/photolookup"
+	messagestore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messagestore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messagestore/internal/importclient"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messagestore/internal/photolookup"
 )
 
 const importerName = "message-import-multichat"

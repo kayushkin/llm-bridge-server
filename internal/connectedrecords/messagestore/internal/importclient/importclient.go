@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	messagestore "github.com/kayushkin/message-store"
+	messagestore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messagestore"
 )
 
 // BatchSize is how many records go in one POST.

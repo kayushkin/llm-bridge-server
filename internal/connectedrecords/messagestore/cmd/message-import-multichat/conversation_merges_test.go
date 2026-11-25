@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	messagestore "github.com/kayushkin/message-store"
+	messagestore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messagestore"
 )
 
 func member(userID string) struct {

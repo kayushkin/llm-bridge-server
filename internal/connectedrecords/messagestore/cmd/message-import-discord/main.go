@@ -28,11 +28,11 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	messagestore "github.com/kayushkin/message-store"
-	"github.com/kayushkin/message-store/internal/discordpackage"
-	"github.com/kayushkin/message-store/internal/importclient"
-	"github.com/kayushkin/message-store/internal/photolookup"
-	"github.com/kayushkin/message-store/internal/residencezones"
+	messagestore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messagestore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messagestore/internal/discordpackage"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messagestore/internal/importclient"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messagestore/internal/photolookup"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messagestore/internal/residencezones"
 )
 
 const importerName = "message-import-discord"

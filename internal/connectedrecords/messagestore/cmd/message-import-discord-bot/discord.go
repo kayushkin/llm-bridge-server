@@ -65,7 +65,7 @@ func (c *discordClient) call(method, path string, query url.Values, body []byte,
 			request.Header.Set("Content-Type", "application/json")
 		}
 		request.Header.Set("Authorization", "Bot "+c.token)
-		request.Header.Set("User-Agent", "DiscordBot (https://github.com/kayushkin/message-store, 1) message-import-discord-bot")
+		request.Header.Set("User-Agent", "DiscordBot (https://github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messagestore, 1) message-import-discord-bot")
 		response, err := c.http.Do(request)
 		if err != nil {
 			return fmt.Errorf("%s %s: %w", method, path, err)

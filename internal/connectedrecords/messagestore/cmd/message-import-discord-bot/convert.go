@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strconv"
 
-	messagestore "github.com/kayushkin/message-store"
-	"github.com/kayushkin/message-store/internal/importclient"
+	messagestore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messagestore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messagestore/internal/importclient"
 )
 
 // Discord message types that carry what someone wrote, a bot's answer to a

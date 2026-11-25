@@ -33,8 +33,8 @@ import (
 	"strings"
 	"time"
 
-	messagestore "github.com/kayushkin/message-store"
-	"github.com/kayushkin/message-store/internal/importclient"
+	messagestore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messagestore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messagestore/internal/importclient"
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )

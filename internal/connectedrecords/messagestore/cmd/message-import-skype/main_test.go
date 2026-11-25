@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	messagestore "github.com/kayushkin/message-store"
-	"github.com/kayushkin/message-store/internal/skypelog"
+	messagestore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messagestore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messagestore/internal/skypelog"
 )
 
 type recorder struct {

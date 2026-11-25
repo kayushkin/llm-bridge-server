@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	timeledgerstore "github.com/kayushkin/time-ledger-store"
+	timeledgerstore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/timeledgerstore"
 )
 
 func main() {

@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	activitystore "github.com/kayushkin/activity-store"
+	activitystore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/activitystore"
 	"golang.org/x/net/html"
 )
 

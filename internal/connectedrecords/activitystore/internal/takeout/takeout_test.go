@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	activitystore "github.com/kayushkin/activity-store"
+	activitystore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/activitystore"
 )
 
 func utc(year int, month time.Month, day, hour, minute, second int) int64 {

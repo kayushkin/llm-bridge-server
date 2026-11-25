@@ -32,7 +32,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kayushkin/message-store/internal/contentquery"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messagestore/internal/contentquery"
 )
 
 // Phone is one phone's exported folder.

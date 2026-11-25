@@ -23,8 +23,8 @@ import (
 	"sort"
 	"text/tabwriter"
 
-	timeledgerstore "github.com/kayushkin/time-ledger-store"
-	"github.com/kayushkin/time-ledger-store/internal/storeclient"
+	timeledgerstore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/timeledgerstore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/timeledgerstore/internal/storeclient"
 )
 
 const (

@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	messagestore "github.com/kayushkin/message-store"
-	"github.com/kayushkin/message-store/internal/androidmessages"
-	"github.com/kayushkin/message-store/internal/residencezones"
+	messagestore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messagestore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messagestore/internal/androidmessages"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messagestore/internal/residencezones"
 )
 
 type recorder struct {

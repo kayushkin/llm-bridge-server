@@ -19,7 +19,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kayushkin/message-store/internal/facebookexport"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messagestore/internal/facebookexport"
 )
 
 // MaximumParticipants is the most people, the user included, a thread may

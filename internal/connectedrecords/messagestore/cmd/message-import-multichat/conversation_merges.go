@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	messagestore "github.com/kayushkin/message-store"
+	messagestore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messagestore"
 )
 
 // Google Messages chats reach message-store as up to three conversations: the

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	timeledgerstore "github.com/kayushkin/time-ledger-store"
+	timeledgerstore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/timeledgerstore"
 )
 
 func entryWith(id, outcome string, kinds []string, links ...timeledgerstore.Link) timeledgerstore.TimeEntry {

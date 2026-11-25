@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	activitystore "github.com/kayushkin/activity-store"
+	activitystore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/activitystore"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 

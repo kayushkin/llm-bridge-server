@@ -25,9 +25,9 @@ import (
 	"strings"
 	"time"
 
-	timeledgerstore "github.com/kayushkin/time-ledger-store"
-	"github.com/kayushkin/time-ledger-store/internal/occurrences"
-	"github.com/kayushkin/time-ledger-store/internal/storeclient"
+	timeledgerstore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/timeledgerstore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/timeledgerstore/internal/occurrences"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/timeledgerstore/internal/storeclient"
 )
 
 const signer = "time-ledger-import"

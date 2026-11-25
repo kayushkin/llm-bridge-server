@@ -22,9 +22,9 @@ import (
 	"strings"
 	"time"
 
-	activitystore "github.com/kayushkin/activity-store"
-	"github.com/kayushkin/activity-store/internal/importclient"
-	"github.com/kayushkin/activity-store/internal/takeout"
+	activitystore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/activitystore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/activitystore/internal/importclient"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/activitystore/internal/takeout"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	messagestore "github.com/kayushkin/message-store"
-	"github.com/kayushkin/message-store/internal/importclient"
+	messagestore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messagestore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messagestore/internal/importclient"
 )
 
 // MaximumMembers is the largest conversation, the user included, imported

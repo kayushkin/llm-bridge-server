@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
-	messagestore "github.com/kayushkin/message-store"
+	messagestore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messagestore"
 )
 
 const importerName = "message-link-journal-transcripts"

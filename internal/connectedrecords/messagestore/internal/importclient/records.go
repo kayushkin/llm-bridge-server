@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"os"
 
-	messagestore "github.com/kayushkin/message-store"
+	messagestore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messagestore"
 )
 
 // MessageHash is a message's source_hash: the hash of everything the

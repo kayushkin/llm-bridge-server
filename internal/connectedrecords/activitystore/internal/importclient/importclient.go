@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	activitystore "github.com/kayushkin/activity-store"
+	activitystore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/activitystore"
 )
 
 // ErrAlreadyImported is Begin's answer when the store finished this same file

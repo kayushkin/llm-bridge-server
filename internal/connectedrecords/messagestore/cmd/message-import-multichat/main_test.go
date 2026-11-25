@@ -2,7 +2,7 @@ package main
 
 import (
 	"encoding/json"
-	messagestore "github.com/kayushkin/message-store"
+	messagestore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messagestore"
 	"net/http"
 	"net/http/httptest"
 	"sort"
