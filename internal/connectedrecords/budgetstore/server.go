@@ -87,17 +87,20 @@ func respond[T any](w http.ResponseWriter, status int, value T, err error) {
 }
 
 // RegisterHandlers mounts every route on mux. CONTRACT.md is the route table.
-func RegisterHandlers(mux *http.ServeMux, s *Store) {
+func RegisterHandlers(mux *http.ServeMux, store *Store) {
+	route := func(pattern string, ownerOf recordOwner, serve func(s *Ledger, w http.ResponseWriter, r *http.Request)) {
+		mux.HandleFunc(pattern, store.ledgerRoute(ownerOf, serve))
+	}
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	mux.HandleFunc("GET /vocabulary", handleVocabulary)
 
-	mux.HandleFunc("GET /institutions", func(w http.ResponseWriter, _ *http.Request) {
+	route("GET /institutions", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		list, err := s.ListInstitutions()
 		respond(w, http.StatusOK, list, err)
 	})
-	mux.HandleFunc("POST /institutions", func(w http.ResponseWriter, r *http.Request) {
+	route("POST /institutions", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Name    string `json:"name"`
 			Website string `json:"website"`
@@ -110,11 +113,11 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		respond(w, http.StatusCreated, out, err)
 	})
 
-	mux.HandleFunc("GET /accounts", func(w http.ResponseWriter, _ *http.Request) {
+	route("GET /accounts", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		list, err := s.ListAccounts()
 		respond(w, http.StatusOK, list, err)
 	})
-	mux.HandleFunc("POST /accounts", func(w http.ResponseWriter, r *http.Request) {
+	route("POST /accounts", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		var in AccountInput
 		if err := decodeBody(r, &in); err != nil {
 			writeError(w, err)
@@ -123,11 +126,11 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		out, err := s.CreateAccount(in)
 		respond(w, http.StatusCreated, out, err)
 	})
-	mux.HandleFunc("GET /accounts/{id}", func(w http.ResponseWriter, r *http.Request) {
+	route("GET /accounts/{id}", accountOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		out, err := s.GetAccount(r.PathValue("id"))
 		respond(w, http.StatusOK, out, err)
 	})
-	mux.HandleFunc("PATCH /accounts/{id}", func(w http.ResponseWriter, r *http.Request) {
+	route("PATCH /accounts/{id}", accountOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		var patch AccountPatch
 		if err := decodeBody(r, &patch); err != nil {
 			writeError(w, err)
@@ -136,7 +139,7 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		out, err := s.PatchAccount(r.PathValue("id"), patch)
 		respond(w, http.StatusOK, out, err)
 	})
-	mux.HandleFunc("POST /accounts/{id}/description-markers", func(w http.ResponseWriter, r *http.Request) {
+	route("POST /accounts/{id}/description-markers", accountOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Marker string `json:"marker"`
 			Note   string `json:"note"`
@@ -148,23 +151,23 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		out, err := s.AddDescriptionMarker(r.PathValue("id"), in.Marker, in.Note)
 		respond(w, http.StatusOK, out, err)
 	})
-	mux.HandleFunc("DELETE /accounts/{id}/description-markers/{marker_id}", func(w http.ResponseWriter, r *http.Request) {
+	route("DELETE /accounts/{id}/description-markers/{marker_id}", accountOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		out, err := s.DeleteDescriptionMarker(r.PathValue("id"), r.PathValue("marker_id"))
 		respond(w, http.StatusOK, out, err)
 	})
-	mux.HandleFunc("GET /accounts/{id}/loan-schedule", func(w http.ResponseWriter, r *http.Request) {
+	route("GET /accounts/{id}/loan-schedule", accountOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		out, err := s.GetLoanSchedule(r.PathValue("id"))
 		respond(w, http.StatusOK, out, err)
 	})
-	mux.HandleFunc("POST /accounts/{id}/loan-schedule/apply", func(w http.ResponseWriter, r *http.Request) {
+	route("POST /accounts/{id}/loan-schedule/apply", accountOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		out, err := s.ApplyLoanSchedule(r.PathValue("id"))
 		respond(w, http.StatusOK, out, err)
 	})
-	mux.HandleFunc("GET /accounts/{id}/loan-payment-facts", func(w http.ResponseWriter, r *http.Request) {
+	route("GET /accounts/{id}/loan-payment-facts", accountOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		out, err := s.ListLoanPaymentFacts(r.PathValue("id"))
 		respond(w, http.StatusOK, out, err)
 	})
-	mux.HandleFunc("POST /accounts/{id}/loan-payment-facts", func(w http.ResponseWriter, r *http.Request) {
+	route("POST /accounts/{id}/loan-payment-facts", accountOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Facts []LoanPaymentFact `json:"facts"`
 		}
@@ -175,7 +178,7 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		out, err := s.RecordLoanPaymentFacts(r.PathValue("id"), in.Facts)
 		respond(w, http.StatusOK, out, err)
 	})
-	mux.HandleFunc("POST /accounts/{id}/opening-balance", func(w http.ResponseWriter, r *http.Request) {
+	route("POST /accounts/{id}/opening-balance", accountOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			AsOf         string `json:"as_of"`
 			BalanceCents int64  `json:"balance_cents"`
@@ -189,11 +192,11 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		respond(w, http.StatusOK, out, err)
 	})
 
-	mux.HandleFunc("GET /balance-assertions", func(w http.ResponseWriter, r *http.Request) {
+	route("GET /balance-assertions", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		list, err := s.ListBalanceAssertions(r.URL.Query().Get("account_id"))
 		respond(w, http.StatusOK, list, err)
 	})
-	mux.HandleFunc("POST /balance-assertions", func(w http.ResponseWriter, r *http.Request) {
+	route("POST /balance-assertions", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		var in BalanceAssertionInput
 		if err := decodeBody(r, &in); err != nil {
 			writeError(w, err)
@@ -203,11 +206,11 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		respond(w, http.StatusCreated, out, err)
 	})
 
-	mux.HandleFunc("GET /categories", func(w http.ResponseWriter, _ *http.Request) {
+	route("GET /categories", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		list, err := s.ListCategories()
 		respond(w, http.StatusOK, list, err)
 	})
-	mux.HandleFunc("POST /categories", func(w http.ResponseWriter, r *http.Request) {
+	route("POST /categories", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			ParentID string `json:"parent_id"`
 			Name     string `json:"name"`
@@ -221,19 +224,19 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		respond(w, http.StatusCreated, out, err)
 	})
 
-	mux.HandleFunc("GET /categories/{id}", func(w http.ResponseWriter, r *http.Request) {
+	route("GET /categories/{id}", categoryOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		out, err := s.GetCategory(r.PathValue("id"))
 		respond(w, http.StatusOK, out, err)
 	})
-	mux.HandleFunc("GET /payees/{id}", func(w http.ResponseWriter, r *http.Request) {
+	route("GET /payees/{id}", payeeOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		out, err := s.GetPayee(r.PathValue("id"))
 		respond(w, http.StatusOK, out, err)
 	})
-	mux.HandleFunc("GET /payees", func(w http.ResponseWriter, _ *http.Request) {
+	route("GET /payees", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		list, err := s.ListPayees()
 		respond(w, http.StatusOK, list, err)
 	})
-	mux.HandleFunc("POST /payees", func(w http.ResponseWriter, r *http.Request) {
+	route("POST /payees", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Name              string   `json:"name"`
 			DefaultCategoryID string   `json:"default_category_id"`
@@ -246,12 +249,12 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		out, err := s.CreatePayee(Payee{Name: in.Name, DefaultCategoryID: in.DefaultCategoryID, Patterns: in.Patterns})
 		respond(w, http.StatusCreated, out, err)
 	})
-	mux.HandleFunc("POST /payees/apply-rules", func(w http.ResponseWriter, _ *http.Request) {
+	route("POST /payees/apply-rules", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		out, err := s.ApplyPayeeRules()
 		respond(w, http.StatusOK, out, err)
 	})
 
-	mux.HandleFunc("GET /transactions", func(w http.ResponseWriter, r *http.Request) {
+	route("GET /transactions", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		query := r.URL.Query()
 		filter := TransactionFilter{
 			AccountID:            query.Get("account_id"),
@@ -274,7 +277,7 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		list, err := s.ListTransactions(filter)
 		respond(w, http.StatusOK, list, err)
 	})
-	mux.HandleFunc("POST /transactions", func(w http.ResponseWriter, r *http.Request) {
+	route("POST /transactions", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		var in TransactionInput
 		if err := decodeBody(r, &in); err != nil {
 			writeError(w, err)
@@ -283,11 +286,11 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		out, err := s.CreateTransaction(in)
 		respond(w, http.StatusCreated, out, err)
 	})
-	mux.HandleFunc("GET /transactions/{id}", func(w http.ResponseWriter, r *http.Request) {
+	route("GET /transactions/{id}", transactionOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		out, err := s.GetTransaction(r.PathValue("id"))
 		respond(w, http.StatusOK, out, err)
 	})
-	mux.HandleFunc("PATCH /transactions/{id}", func(w http.ResponseWriter, r *http.Request) {
+	route("PATCH /transactions/{id}", transactionOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		var patch TransactionPatch
 		if err := decodeBody(r, &patch); err != nil {
 			writeError(w, err)
@@ -296,7 +299,7 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		out, err := s.PatchTransaction(r.PathValue("id"), patch)
 		respond(w, http.StatusOK, out, err)
 	})
-	mux.HandleFunc("PUT /transactions/{id}/categories", func(w http.ResponseWriter, r *http.Request) {
+	route("PUT /transactions/{id}/categories", transactionOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Splits []CategorySplit `json:"splits"`
 		}
@@ -307,11 +310,11 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		out, err := s.SetTransactionCategories(r.PathValue("id"), in.Splits)
 		respond(w, http.StatusOK, out, err)
 	})
-	mux.HandleFunc("POST /transactions/{id}/undo-transfer-without-partner", func(w http.ResponseWriter, r *http.Request) {
+	route("POST /transactions/{id}/undo-transfer-without-partner", transactionOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		out, err := s.UndoTransferWithoutPartner(r.PathValue("id"))
 		respond(w, http.StatusOK, out, err)
 	})
-	mux.HandleFunc("POST /transactions/{id}/move-to-account", func(w http.ResponseWriter, r *http.Request) {
+	route("POST /transactions/{id}/move-to-account", transactionOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			AccountID string `json:"account_id"`
 			Reason    string `json:"reason"`
@@ -323,16 +326,16 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		out, err := s.MoveCategoryPostingToAccount(r.PathValue("id"), in.AccountID, in.Reason)
 		respond(w, http.StatusOK, out, err)
 	})
-	mux.HandleFunc("POST /transfers/match", func(w http.ResponseWriter, _ *http.Request) {
+	route("POST /transfers/match", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		out, err := s.MatchTransfers()
 		respond(w, http.StatusOK, out, err)
 	})
 
-	mux.HandleFunc("GET /import-batches", func(w http.ResponseWriter, _ *http.Request) {
+	route("GET /import-batches", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		list, err := s.ListImportBatches()
 		respond(w, http.StatusOK, list, err)
 	})
-	mux.HandleFunc("POST /import-batches", func(w http.ResponseWriter, r *http.Request) {
+	route("POST /import-batches", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		query := r.URL.Query()
 		out, err := s.Import(ImportRequest{
 			Source:    query.Get("source"),
@@ -342,33 +345,33 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		}, http.MaxBytesReader(w, r.Body, maxImportBytes))
 		respond(w, http.StatusCreated, out, err)
 	})
-	mux.HandleFunc("GET /import-batches/{id}", func(w http.ResponseWriter, r *http.Request) {
+	route("GET /import-batches/{id}", importBatchOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		out, err := s.GetImportBatch(r.PathValue("id"))
 		respond(w, http.StatusOK, out, err)
 	})
-	mux.HandleFunc("POST /import-batches/{id}/undo", func(w http.ResponseWriter, r *http.Request) {
+	route("POST /import-batches/{id}/undo", importBatchOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		out, err := s.UndoImportBatch(r.PathValue("id"))
 		respond(w, http.StatusOK, out, err)
 	})
 
-	mux.HandleFunc("GET /reports/spending", func(w http.ResponseWriter, r *http.Request) {
+	route("GET /reports/spending", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		list, err := s.SpendingByCategory(r.URL.Query().Get("month"))
 		respond(w, http.StatusOK, list, err)
 	})
-	mux.HandleFunc("GET /reports/monthly", func(w http.ResponseWriter, r *http.Request) {
+	route("GET /reports/monthly", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		list, err := s.SpendingByMonth(r.URL.Query().Get("from"), r.URL.Query().Get("to"))
 		respond(w, http.StatusOK, list, err)
 	})
-	mux.HandleFunc("GET /reports/by-account", func(w http.ResponseWriter, r *http.Request) {
+	route("GET /reports/by-account", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		query := r.URL.Query()
 		list, err := s.SpendingByAccountAndMonth(query["category_id"], query.Get("from"), query.Get("to"))
 		respond(w, http.StatusOK, list, err)
 	})
-	mux.HandleFunc("GET /budget", func(w http.ResponseWriter, r *http.Request) {
+	route("GET /budget", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		out, err := s.GetBudget(r.URL.Query().Get("month"), r.URL.Query().Get("view"))
 		respond(w, http.StatusOK, out, err)
 	})
-	mux.HandleFunc("PUT /budget-assignments", func(w http.ResponseWriter, r *http.Request) {
+	route("PUT /budget-assignments", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			CategoryID  string `json:"category_id"`
 			Month       string `json:"month"`
@@ -382,11 +385,11 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		respond(w, http.StatusOK, out, err)
 	})
 
-	mux.HandleFunc("GET /category-paths", func(w http.ResponseWriter, _ *http.Request) {
+	route("GET /category-paths", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		out, err := s.CategoryPaths()
 		respond(w, http.StatusOK, out, err)
 	})
-	mux.HandleFunc("GET /category-suggestions/candidates", func(w http.ResponseWriter, r *http.Request) {
+	route("GET /category-suggestions/candidates", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		limit, err := optionalWholeNumber(r, "limit")
 		if err != nil {
 			writeError(w, err)
@@ -395,7 +398,7 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		out, err := s.ListSuggestionCandidates(limit, r.URL.Query().Get("before"))
 		respond(w, http.StatusOK, out, err)
 	})
-	mux.HandleFunc("GET /category-suggestions", func(w http.ResponseWriter, r *http.Request) {
+	route("GET /category-suggestions", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		limit, err := optionalWholeNumber(r, "limit")
 		if err != nil {
 			writeError(w, err)
@@ -404,7 +407,7 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		out, err := s.ListSuggestions(r.URL.Query().Get("status"), limit)
 		respond(w, http.StatusOK, out, err)
 	})
-	mux.HandleFunc("POST /category-suggestions", func(w http.ResponseWriter, r *http.Request) {
+	route("POST /category-suggestions", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		var in SuggestionBatch
 		if err := decodeLargeBody(r, &in); err != nil {
 			writeError(w, err)
@@ -413,7 +416,7 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		count, err := s.CreateSuggestions(in)
 		respond(w, http.StatusCreated, map[string]int{"created": count}, err)
 	})
-	mux.HandleFunc("POST /category-suggestions/decisions", func(w http.ResponseWriter, r *http.Request) {
+	route("POST /category-suggestions/decisions", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			DecidedBy string               `json:"decided_by"`
 			Decisions []SuggestionDecision `json:"decisions"`
@@ -426,15 +429,15 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		respond(w, http.StatusOK, out, err)
 	})
 
-	mux.HandleFunc("POST /recurring-bills/detect", func(w http.ResponseWriter, _ *http.Request) {
+	route("POST /recurring-bills/detect", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		out, err := s.DetectRecurringBills()
 		respond(w, http.StatusOK, out, err)
 	})
-	mux.HandleFunc("GET /recurring-bills", func(w http.ResponseWriter, r *http.Request) {
+	route("GET /recurring-bills", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		out, err := s.ListRecurringBills(r.URL.Query().Get("status"))
 		respond(w, http.StatusOK, out, err)
 	})
-	mux.HandleFunc("POST /recurring-bills", func(w http.ResponseWriter, r *http.Request) {
+	route("POST /recurring-bills", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			TransactionID string `json:"transaction_id"`
 			Cadence       string `json:"cadence"`
@@ -449,15 +452,15 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		out, err := s.AddRecurringBill(in.TransactionID, in.Cadence, in.Status, in.Name, in.DecidedBy)
 		respond(w, http.StatusCreated, out, err)
 	})
-	mux.HandleFunc("GET /recurring-bills/totals", func(w http.ResponseWriter, _ *http.Request) {
+	route("GET /recurring-bills/totals", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		out, err := s.GetRecurringTotals()
 		respond(w, http.StatusOK, out, err)
 	})
-	mux.HandleFunc("GET /recurring-bills/{id}", func(w http.ResponseWriter, r *http.Request) {
+	route("GET /recurring-bills/{id}", recurringBillOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		out, err := s.GetRecurringBill(r.PathValue("id"))
 		respond(w, http.StatusOK, out, err)
 	})
-	mux.HandleFunc("PATCH /recurring-bills/{id}", func(w http.ResponseWriter, r *http.Request) {
+	route("PATCH /recurring-bills/{id}", recurringBillOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		var patch RecurringBillPatch
 		if err := decodeBody(r, &patch); err != nil {
 			writeError(w, err)
@@ -467,15 +470,15 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		respond(w, http.StatusOK, out, err)
 	})
 
-	mux.HandleFunc("GET /trips/totals", func(w http.ResponseWriter, _ *http.Request) {
+	route("GET /trips/totals", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		out, err := s.ListTripTotals()
 		respond(w, http.StatusOK, out, err)
 	})
-	mux.HandleFunc("GET /trips/{trip_ref}/transactions", func(w http.ResponseWriter, r *http.Request) {
+	route("GET /trips/{trip_ref}/transactions", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		out, err := s.ListTripTransactions(r.PathValue("trip_ref"))
 		respond(w, http.StatusOK, out, err)
 	})
-	mux.HandleFunc("POST /trips/{trip_ref}/suggest", func(w http.ResponseWriter, r *http.Request) {
+	route("POST /trips/{trip_ref}/suggest", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		var in TripSuggestRequest
 		if err := decodeBody(r, &in); err != nil {
 			writeError(w, err)
@@ -484,7 +487,7 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		count, err := s.SuggestTripTransactions(r.PathValue("trip_ref"), in)
 		respond(w, http.StatusOK, map[string]int{"suggested": count}, err)
 	})
-	mux.HandleFunc("PUT /trips/{trip_ref}/transactions/{transaction_id}", func(w http.ResponseWriter, r *http.Request) {
+	route("PUT /trips/{trip_ref}/transactions/{transaction_id}", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Status    string `json:"status"`
 			DecidedBy string `json:"decided_by"`
@@ -498,7 +501,7 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		respond(w, http.StatusOK, out, err)
 	})
 
-	mux.HandleFunc("POST /marketplace-orders", func(w http.ResponseWriter, r *http.Request) {
+	route("POST /marketplace-orders", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		var in MarketplaceOrder
 		if err := decodeBody(r, &in); err != nil {
 			writeError(w, err)
@@ -511,7 +514,7 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		}
 		writeJSON(w, http.StatusCreated, order)
 	})
-	mux.HandleFunc("GET /marketplace-orders", func(w http.ResponseWriter, r *http.Request) {
+	route("GET /marketplace-orders", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		limit, err := optionalWholeNumber(r, "limit")
 		if err != nil {
 			writeError(w, err)
@@ -526,19 +529,19 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 			Unmatched: r.URL.Query().Get("unmatched") == "true", Limit: limit, Offset: offset})
 		respond(w, http.StatusOK, orders, err)
 	})
-	mux.HandleFunc("POST /marketplace-orders/match-transactions", func(w http.ResponseWriter, _ *http.Request) {
+	route("POST /marketplace-orders/match-transactions", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		counts, err := s.MatchMarketplaceOrders()
 		respond(w, http.StatusOK, counts, err)
 	})
-	mux.HandleFunc("GET /marketplace-orders/{id}", func(w http.ResponseWriter, r *http.Request) {
+	route("GET /marketplace-orders/{id}", marketplaceOrderOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		order, err := s.GetMarketplaceOrder(r.PathValue("id"))
 		respond(w, http.StatusOK, order, err)
 	})
-	mux.HandleFunc("GET /marketplace-order-lines/{id}", func(w http.ResponseWriter, r *http.Request) {
+	route("GET /marketplace-order-lines/{id}", marketplaceOrderLineOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		line, err := s.GetMarketplaceOrderLine(r.PathValue("id"))
 		respond(w, http.StatusOK, line, err)
 	})
-	mux.HandleFunc("PATCH /marketplace-order-lines/{id}", func(w http.ResponseWriter, r *http.Request) {
+	route("PATCH /marketplace-order-lines/{id}", marketplaceOrderLineOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Disposition string `json:"disposition"`
 		}
@@ -549,11 +552,11 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		line, err := s.SetOrderLineDisposition(r.PathValue("id"), in.Disposition)
 		respond(w, http.StatusOK, line, err)
 	})
-	mux.HandleFunc("GET /interests", func(w http.ResponseWriter, _ *http.Request) {
+	route("GET /interests", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		out, err := s.ListInterests()
 		respond(w, http.StatusOK, out, err)
 	})
-	mux.HandleFunc("POST /interests", func(w http.ResponseWriter, r *http.Request) {
+	route("POST /interests", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Name        string `json:"name"`
 			Description string `json:"description"`
@@ -565,15 +568,15 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		out, err := s.CreateInterest(in.Name, in.Description)
 		respond(w, http.StatusCreated, out, err)
 	})
-	mux.HandleFunc("POST /interests/match", func(w http.ResponseWriter, _ *http.Request) {
+	route("POST /interests/match", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		count, err := s.MatchInterests()
 		respond(w, http.StatusOK, map[string]int{"added": count}, err)
 	})
-	mux.HandleFunc("GET /interests/{id}", func(w http.ResponseWriter, r *http.Request) {
+	route("GET /interests/{id}", interestOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		out, err := s.GetInterest(r.PathValue("id"))
 		respond(w, http.StatusOK, out, err)
 	})
-	mux.HandleFunc("POST /interests/{id}/rules", func(w http.ResponseWriter, r *http.Request) {
+	route("POST /interests/{id}/rules", interestOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Kind  string `json:"kind"`
 			Value string `json:"value"`
@@ -585,7 +588,7 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		out, err := s.AddInterestRule(r.PathValue("id"), in.Kind, in.Value)
 		respond(w, http.StatusOK, out, err)
 	})
-	mux.HandleFunc("POST /interests/{id}/history-sources", func(w http.ResponseWriter, r *http.Request) {
+	route("POST /interests/{id}/history-sources", interestOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Kind string `json:"kind"`
 			Ref  string `json:"ref"`
@@ -598,11 +601,11 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		out, err := s.AddInterestHistorySource(r.PathValue("id"), in.Kind, in.Ref, in.Note)
 		respond(w, http.StatusOK, out, err)
 	})
-	mux.HandleFunc("GET /interests/{id}/transactions", func(w http.ResponseWriter, r *http.Request) {
+	route("GET /interests/{id}/transactions", interestOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		out, err := s.ListInterestTransactions(r.PathValue("id"))
 		respond(w, http.StatusOK, out, err)
 	})
-	mux.HandleFunc("PUT /interests/{id}/transactions/{transaction_id}", func(w http.ResponseWriter, r *http.Request) {
+	route("PUT /interests/{id}/transactions/{transaction_id}", interestOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Status    string `json:"status"`
 			DecidedBy string `json:"decided_by"`
@@ -615,7 +618,7 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		respond(w, http.StatusOK, out, err)
 	})
 
-	mux.HandleFunc("POST /plaid/link-token", func(w http.ResponseWriter, r *http.Request) {
+	route("POST /plaid/link-token", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			RedirectURI string `json:"redirect_uri"`
 		}
@@ -626,11 +629,11 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		token, err := s.CreatePlaidLinkToken(r.Context(), in.RedirectURI)
 		respond(w, http.StatusOK, map[string]string{"link_token": token}, err)
 	})
-	mux.HandleFunc("GET /plaid/items", func(w http.ResponseWriter, _ *http.Request) {
+	route("GET /plaid/items", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		out, err := s.ListPlaidItems()
 		respond(w, http.StatusOK, out, err)
 	})
-	mux.HandleFunc("POST /plaid/items", func(w http.ResponseWriter, r *http.Request) {
+	route("POST /plaid/items", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			PublicToken     string `json:"public_token"`
 			InstitutionID   string `json:"institution_id"`
@@ -643,7 +646,7 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		out, err := s.LinkPlaidItem(r.Context(), in.PublicToken, in.InstitutionID, in.InstitutionName)
 		respond(w, http.StatusCreated, out, err)
 	})
-	mux.HandleFunc("PUT /plaid/accounts/{plaid_account_id}", func(w http.ResponseWriter, r *http.Request) {
+	route("PUT /plaid/accounts/{plaid_account_id}", plaidAccountOwner, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			AccountID  string `json:"account_id"`
 			SyncFromOn string `json:"sync_from_on"`
@@ -655,16 +658,16 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 		out, err := s.MatchPlaidAccount(r.PathValue("plaid_account_id"), in.AccountID, in.SyncFromOn)
 		respond(w, http.StatusOK, out, err)
 	})
-	mux.HandleFunc("POST /plaid/sync", func(w http.ResponseWriter, r *http.Request) {
+	route("POST /plaid/sync", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		out, err := s.SyncPlaid(r.Context())
 		respond(w, http.StatusOK, out, err)
 	})
 
-	mux.HandleFunc("GET /links", func(w http.ResponseWriter, r *http.Request) {
+	route("GET /links", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		list, err := s.ListLinks(r.URL.Query().Get("from_id"))
 		respond(w, http.StatusOK, list, err)
 	})
-	mux.HandleFunc("POST /links", func(w http.ResponseWriter, r *http.Request) {
+	route("POST /links", actedFor, func(s *Ledger, w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			FromID     string `json:"from_id"`
 			EntityType string `json:"entity_type"`

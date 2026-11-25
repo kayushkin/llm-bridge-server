@@ -213,7 +213,7 @@ func boolInt(b bool) int {
 
 func exists(q queryer, table, id string) (bool, error) {
 	var count int
-	if err := q.QueryRow(`SELECT COUNT(*) FROM `+table+` WHERE id = ?`, id).Scan(&count); err != nil {
+	if err := q.QueryRow(`SELECT COUNT(*) FROM `+table+` WHERE id = $1`, id).Scan(&count); err != nil {
 		return false, err
 	}
 	return count > 0, nil
@@ -233,7 +233,7 @@ func requireExists(q queryer, table, field, id string) error {
 // ---- institutions ----
 
 // CreateInstitution adds a bank or issuer.
-func (s *Store) CreateInstitution(in Institution) (Institution, error) {
+func (s *Ledger) CreateInstitution(in Institution) (Institution, error) {
 	in.Name = strings.TrimSpace(in.Name)
 	if in.Name == "" {
 		return Institution{}, fmt.Errorf("%w: name is required", ErrInvalid)
@@ -248,7 +248,7 @@ func (s *Store) CreateInstitution(in Institution) (Institution, error) {
 		return Institution{}, err
 	}
 	now := s.unixNow()
-	if _, err := tx.Exec(`INSERT INTO institutions (seq, id, name, website, created_at, updated_at) VALUES (?,?,?,?,?,?)`,
+	if _, err := tx.Exec(`INSERT INTO institutions (seq, id, name, website, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6)`,
 		seq, id, in.Name, strings.TrimSpace(in.Website), now, now); err != nil {
 		return Institution{}, err
 	}
@@ -259,7 +259,7 @@ func (s *Store) CreateInstitution(in Institution) (Institution, error) {
 }
 
 // ListInstitutions returns every institution.
-func (s *Store) ListInstitutions() ([]Institution, error) {
+func (s *Ledger) ListInstitutions() ([]Institution, error) {
 	rows, err := s.db.Query(`SELECT id, name, website, created_at, updated_at FROM institutions ORDER BY seq`)
 	if err != nil {
 		return nil, err
@@ -319,7 +319,7 @@ func validLastFour(value string) error {
 
 // CreateAccount adds an account. on_budget defaults to true for checking,
 // savings, cash and credit cards; has_own_feed defaults to true.
-func (s *Store) CreateAccount(in AccountInput) (Account, error) {
+func (s *Ledger) CreateAccount(in AccountInput) (Account, error) {
 	in.Name = strings.TrimSpace(in.Name)
 	if in.Name == "" {
 		return Account{}, fmt.Errorf("%w: name is required", ErrInvalid)
@@ -368,7 +368,7 @@ func (s *Store) CreateAccount(in AccountInput) (Account, error) {
 	}
 	now := s.unixNow()
 	if _, err := tx.Exec(`INSERT INTO accounts (seq, id, institution_id, name, kind, last_four, opened_on, closed_on, on_budget, has_own_feed, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
 		seq, id, institutionID, in.Name, in.Kind, in.LastFour, in.OpenedOn, in.ClosedOn, boolInt(onBudget), boolInt(hasOwnFeed), now, now); err != nil {
 		return Account{}, err
 	}
@@ -395,13 +395,13 @@ func writeAccountDetails(tx queryer, accountID string, card *CreditCardDetails, 
 				continue
 			}
 			var kind string
-			if err := tx.QueryRow(`SELECT kind FROM categories WHERE id = ?`, id).Scan(&kind); err != nil || kind != "expense" {
+			if err := tx.QueryRow(`SELECT kind FROM categories WHERE id = $1`, id).Scan(&kind); err != nil || kind != "expense" {
 				return fmt.Errorf("%w: %s %q is not an expense category", ErrInvalid, field, id)
 			}
 			categories[field] = id
 		}
 		if _, err := tx.Exec(`INSERT INTO credit_card_details (account_id, network, credit_limit_cents, statement_day, due_day, purchase_apr_basis_points, annual_fee_cents, rewards, interest_category_id, fee_category_id)
-			VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(account_id) DO UPDATE SET network=excluded.network, credit_limit_cents=excluded.credit_limit_cents,
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(account_id) DO UPDATE SET network=excluded.network, credit_limit_cents=excluded.credit_limit_cents,
 			statement_day=excluded.statement_day, due_day=excluded.due_day, purchase_apr_basis_points=excluded.purchase_apr_basis_points,
 			annual_fee_cents=excluded.annual_fee_cents, rewards=excluded.rewards, interest_category_id=excluded.interest_category_id, fee_category_id=excluded.fee_category_id`,
 			accountID, card.Network, card.CreditLimitCents, card.StatementDay, card.DueDay, card.PurchaseAPRBasisPoints, card.AnnualFeeCents, card.Rewards,
@@ -413,13 +413,13 @@ func writeAccountDetails(tx queryer, accountID string, card *CreditCardDetails, 
 		var interestCategory any
 		if loan.InterestCategoryID != "" {
 			var kind string
-			if err := tx.QueryRow(`SELECT kind FROM categories WHERE id = ?`, loan.InterestCategoryID).Scan(&kind); err != nil || kind != "expense" {
+			if err := tx.QueryRow(`SELECT kind FROM categories WHERE id = $1`, loan.InterestCategoryID).Scan(&kind); err != nil || kind != "expense" {
 				return fmt.Errorf("%w: loan.interest_category_id %q is not an expense category", ErrInvalid, loan.InterestCategoryID)
 			}
 			interestCategory = loan.InterestCategoryID
 		}
 		if _, err := tx.Exec(`INSERT INTO loan_details (account_id, original_principal_cents, apr_basis_points, term_months, first_payment_on, maturity_on, scheduled_payment_cents, secured_by, interest_category_id)
-			VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(account_id) DO UPDATE SET original_principal_cents=excluded.original_principal_cents,
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(account_id) DO UPDATE SET original_principal_cents=excluded.original_principal_cents,
 			apr_basis_points=excluded.apr_basis_points, term_months=excluded.term_months, first_payment_on=excluded.first_payment_on,
 			maturity_on=excluded.maturity_on, scheduled_payment_cents=excluded.scheduled_payment_cents, secured_by=excluded.secured_by,
 			interest_category_id=excluded.interest_category_id`,
@@ -428,7 +428,7 @@ func writeAccountDetails(tx queryer, accountID string, card *CreditCardDetails, 
 		}
 	}
 	if retirement != nil {
-		if _, err := tx.Exec(`INSERT INTO retirement_details (account_id, plan_kind, tax_treatment, employer) VALUES (?,?,?,?)
+		if _, err := tx.Exec(`INSERT INTO retirement_details (account_id, plan_kind, tax_treatment, employer) VALUES ($1,$2,$3,$4)
 			ON CONFLICT(account_id) DO UPDATE SET plan_kind=excluded.plan_kind, tax_treatment=excluded.tax_treatment, employer=excluded.employer`,
 			accountID, retirement.PlanKind, retirement.TaxTreatment, retirement.Employer); err != nil {
 			return err
@@ -446,14 +446,14 @@ func insertMarker(tx queryer, accountID, marker, note string, now int64) error {
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(`INSERT INTO account_description_markers (seq, id, account_id, marker, note, created_at) VALUES (?,?,?,?,?,?)
+	_, err = tx.Exec(`INSERT INTO account_description_markers (seq, id, account_id, marker, note, created_at) VALUES ($1,$2,$3,$4,$5,$6)
 		ON CONFLICT(account_id, marker) DO NOTHING`, seq, id, accountID, marker, note, now)
 	return err
 }
 
 // AddDescriptionMarker records text that names accountID in other accounts'
 // rows: an old card number, a loan reference.
-func (s *Store) AddDescriptionMarker(accountID, marker, note string) (Account, error) {
+func (s *Ledger) AddDescriptionMarker(accountID, marker, note string) (Account, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return Account{}, err
@@ -477,8 +477,8 @@ func (s *Store) AddDescriptionMarker(accountID, marker, note string) (Account, e
 
 // DeleteDescriptionMarker removes one marker from an account. Transfers
 // already paired or moved by it stay as they are.
-func (s *Store) DeleteDescriptionMarker(accountID, markerID string) (Account, error) {
-	result, err := s.db.Exec(`DELETE FROM account_description_markers WHERE id = ? AND account_id = ?`, markerID, accountID)
+func (s *Ledger) DeleteDescriptionMarker(accountID, markerID string) (Account, error) {
+	result, err := s.db.Exec(`DELETE FROM account_description_markers WHERE id = $1 AND account_id = $2`, markerID, accountID)
 	if err != nil {
 		return Account{}, err
 	}
@@ -489,7 +489,7 @@ func (s *Store) DeleteDescriptionMarker(accountID, markerID string) (Account, er
 }
 
 // PatchAccount changes the fields given.
-func (s *Store) PatchAccount(id string, patch AccountPatch) (Account, error) {
+func (s *Ledger) PatchAccount(id string, patch AccountPatch) (Account, error) {
 	current, err := s.GetAccount(id)
 	if err != nil {
 		return Account{}, err
@@ -503,7 +503,7 @@ func (s *Store) PatchAccount(id string, patch AccountPatch) (Account, error) {
 	}
 	defer tx.Rollback()
 	set := func(column string, value any) error {
-		_, err := tx.Exec(`UPDATE accounts SET `+column+` = ? WHERE id = ?`, value, id)
+		_, err := tx.Exec(`UPDATE accounts SET `+column+` = $1 WHERE id = $2`, value, id)
 		return err
 	}
 	if patch.InstitutionID != nil {
@@ -588,10 +588,10 @@ func scanAccount(row interface{ Scan(...any) error }) (Account, error) {
 	return a, nil
 }
 
-func (s *Store) loadAccountExtras(a *Account) error {
+func (s *Ledger) loadAccountExtras(a *Account) error {
 	var card CreditCardDetails
 	err := s.db.QueryRow(`SELECT network, credit_limit_cents, statement_day, due_day, purchase_apr_basis_points, annual_fee_cents, rewards,
-		COALESCE(interest_category_id,''), COALESCE(fee_category_id,'') FROM credit_card_details WHERE account_id = ?`, a.ID).
+		COALESCE(interest_category_id,''), COALESCE(fee_category_id,'') FROM credit_card_details WHERE account_id = $1`, a.ID).
 		Scan(&card.Network, &card.CreditLimitCents, &card.StatementDay, &card.DueDay, &card.PurchaseAPRBasisPoints, &card.AnnualFeeCents, &card.Rewards, &card.InterestCategoryID, &card.FeeCategoryID)
 	if err == nil {
 		a.CreditCard = &card
@@ -599,7 +599,7 @@ func (s *Store) loadAccountExtras(a *Account) error {
 		return err
 	}
 	var loan LoanDetails
-	err = s.db.QueryRow(`SELECT original_principal_cents, apr_basis_points, term_months, first_payment_on, maturity_on, scheduled_payment_cents, secured_by, COALESCE(interest_category_id,'') FROM loan_details WHERE account_id = ?`, a.ID).
+	err = s.db.QueryRow(`SELECT original_principal_cents, apr_basis_points, term_months, first_payment_on, maturity_on, scheduled_payment_cents, secured_by, COALESCE(interest_category_id,'') FROM loan_details WHERE account_id = $1`, a.ID).
 		Scan(&loan.OriginalPrincipalCents, &loan.APRBasisPoints, &loan.TermMonths, &loan.FirstPaymentOn, &loan.MaturityOn, &loan.ScheduledPaymentCents, &loan.SecuredBy, &loan.InterestCategoryID)
 	if err == nil {
 		a.Loan = &loan
@@ -607,14 +607,14 @@ func (s *Store) loadAccountExtras(a *Account) error {
 		return err
 	}
 	var retirement RetirementDetails
-	err = s.db.QueryRow(`SELECT plan_kind, tax_treatment, employer FROM retirement_details WHERE account_id = ?`, a.ID).
+	err = s.db.QueryRow(`SELECT plan_kind, tax_treatment, employer FROM retirement_details WHERE account_id = $1`, a.ID).
 		Scan(&retirement.PlanKind, &retirement.TaxTreatment, &retirement.Employer)
 	if err == nil {
 		a.Retirement = &retirement
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	rows, err := s.db.Query(`SELECT id, marker, note FROM account_description_markers WHERE account_id = ? ORDER BY seq`, a.ID)
+	rows, err := s.db.Query(`SELECT id, marker, note FROM account_description_markers WHERE account_id = $1 ORDER BY seq`, a.ID)
 	if err != nil {
 		return err
 	}
@@ -631,8 +631,8 @@ func (s *Store) loadAccountExtras(a *Account) error {
 }
 
 // GetAccount returns one account with its balance and details.
-func (s *Store) GetAccount(id string) (Account, error) {
-	a, err := scanAccount(s.db.QueryRow(`SELECT `+accountColumns+` FROM accounts a WHERE a.id = ?`, id))
+func (s *Ledger) GetAccount(id string) (Account, error) {
+	a, err := scanAccount(s.db.QueryRow(`SELECT `+accountColumns+` FROM accounts a WHERE a.id = $1`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Account{}, ErrNotFound
 	}
@@ -646,7 +646,7 @@ func (s *Store) GetAccount(id string) (Account, error) {
 }
 
 // ListAccounts returns every account with its balance and details.
-func (s *Store) ListAccounts() ([]Account, error) {
+func (s *Ledger) ListAccounts() ([]Account, error) {
 	rows, err := s.db.Query(`SELECT ` + accountColumns + ` FROM accounts a ORDER BY a.seq`)
 	if err != nil {
 		return nil, err
@@ -675,7 +675,7 @@ func (s *Store) ListAccounts() ([]Account, error) {
 // ---- categories ----
 
 // CreateCategory adds a category. Roles are the store's; a caller cannot set one.
-func (s *Store) CreateCategory(in Category) (Category, error) {
+func (s *Ledger) CreateCategory(in Category) (Category, error) {
 	in.Name = strings.TrimSpace(in.Name)
 	if in.Name == "" {
 		return Category{}, fmt.Errorf("%w: name is required", ErrInvalid)
@@ -694,7 +694,7 @@ func (s *Store) CreateCategory(in Category) (Category, error) {
 	var parentID any
 	if in.ParentID != "" {
 		var parentKind string
-		if err := tx.QueryRow(`SELECT kind FROM categories WHERE id = ?`, in.ParentID).Scan(&parentKind); err != nil {
+		if err := tx.QueryRow(`SELECT kind FROM categories WHERE id = $1`, in.ParentID).Scan(&parentKind); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return Category{}, fmt.Errorf("%w: parent_id %q does not exist", ErrInvalid, in.ParentID)
 			}
@@ -710,7 +710,7 @@ func (s *Store) CreateCategory(in Category) (Category, error) {
 		return Category{}, err
 	}
 	now := s.unixNow()
-	if _, err := tx.Exec(`INSERT INTO categories (seq, id, parent_id, name, kind, created_at, updated_at) VALUES (?,?,?,?,?,?,?)`,
+	if _, err := tx.Exec(`INSERT INTO categories (seq, id, parent_id, name, kind, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
 		seq, id, parentID, in.Name, in.Kind, now, now); err != nil {
 		return Category{}, err
 	}
@@ -729,8 +729,8 @@ func scanCategory(row interface{ Scan(...any) error }) (Category, error) {
 const categoryColumns = `id, COALESCE(parent_id,''), name, kind, COALESCE(role,''), archived_at, created_at, updated_at`
 
 // GetCategory returns one category.
-func (s *Store) GetCategory(id string) (Category, error) {
-	c, err := scanCategory(s.db.QueryRow(`SELECT `+categoryColumns+` FROM categories WHERE id = ?`, id))
+func (s *Ledger) GetCategory(id string) (Category, error) {
+	c, err := scanCategory(s.db.QueryRow(`SELECT `+categoryColumns+` FROM categories WHERE id = $1`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Category{}, ErrNotFound
 	}
@@ -738,7 +738,7 @@ func (s *Store) GetCategory(id string) (Category, error) {
 }
 
 // ListCategories returns every category.
-func (s *Store) ListCategories() ([]Category, error) {
+func (s *Ledger) ListCategories() ([]Category, error) {
 	rows, err := s.db.Query(`SELECT ` + categoryColumns + ` FROM categories ORDER BY seq`)
 	if err != nil {
 		return nil, err
@@ -758,7 +758,7 @@ func (s *Store) ListCategories() ([]Category, error) {
 // ---- payees ----
 
 // CreatePayee adds a payee and the bank texts that name it.
-func (s *Store) CreatePayee(in Payee) (Payee, error) {
+func (s *Ledger) CreatePayee(in Payee) (Payee, error) {
 	in.Name = strings.TrimSpace(in.Name)
 	if in.Name == "" {
 		return Payee{}, fmt.Errorf("%w: name is required", ErrInvalid)
@@ -780,7 +780,7 @@ func (s *Store) CreatePayee(in Payee) (Payee, error) {
 		return Payee{}, err
 	}
 	now := s.unixNow()
-	if _, err := tx.Exec(`INSERT INTO payees (seq, id, name, default_category_id, created_at, updated_at) VALUES (?,?,?,?,?,?)`,
+	if _, err := tx.Exec(`INSERT INTO payees (seq, id, name, default_category_id, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6)`,
 		seq, id, in.Name, defaultCategory, now, now); err != nil {
 		return Payee{}, err
 	}
@@ -801,7 +801,7 @@ func insertPayeePattern(tx queryer, payeeID, pattern string, now int64) error {
 		return fmt.Errorf("%w: a payee pattern needs at least 3 characters", ErrInvalid)
 	}
 	var owner string
-	err := tx.QueryRow(`SELECT payee_id FROM payee_match_rules WHERE pattern = ?`, pattern).Scan(&owner)
+	err := tx.QueryRow(`SELECT payee_id FROM payee_match_rules WHERE pattern = $1`, pattern).Scan(&owner)
 	if err == nil {
 		if owner == payeeID {
 			return nil
@@ -815,14 +815,14 @@ func insertPayeePattern(tx queryer, payeeID, pattern string, now int64) error {
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(`INSERT INTO payee_match_rules (seq, id, payee_id, pattern, created_at) VALUES (?,?,?,?,?)`, seq, id, payeeID, pattern, now)
+	_, err = tx.Exec(`INSERT INTO payee_match_rules (seq, id, payee_id, pattern, created_at) VALUES ($1,$2,$3,$4,$5)`, seq, id, payeeID, pattern, now)
 	return err
 }
 
 // GetPayee returns one payee with its patterns.
-func (s *Store) GetPayee(id string) (Payee, error) {
+func (s *Ledger) GetPayee(id string) (Payee, error) {
 	var p Payee
-	err := s.db.QueryRow(`SELECT id, name, COALESCE(default_category_id,''), created_at, updated_at FROM payees WHERE id = ?`, id).
+	err := s.db.QueryRow(`SELECT id, name, COALESCE(default_category_id,''), created_at, updated_at FROM payees WHERE id = $1`, id).
 		Scan(&p.ID, &p.Name, &p.DefaultCategoryID, &p.CreatedAt, &p.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Payee{}, ErrNotFound
@@ -830,7 +830,7 @@ func (s *Store) GetPayee(id string) (Payee, error) {
 	if err != nil {
 		return Payee{}, err
 	}
-	rows, err := s.db.Query(`SELECT pattern FROM payee_match_rules WHERE payee_id = ? ORDER BY seq`, id)
+	rows, err := s.db.Query(`SELECT pattern FROM payee_match_rules WHERE payee_id = $1 ORDER BY seq`, id)
 	if err != nil {
 		return Payee{}, err
 	}
@@ -847,7 +847,7 @@ func (s *Store) GetPayee(id string) (Payee, error) {
 }
 
 // ListPayees returns every payee.
-func (s *Store) ListPayees() ([]Payee, error) {
+func (s *Ledger) ListPayees() ([]Payee, error) {
 	rows, err := s.db.Query(`SELECT id FROM payees ORDER BY seq`)
 	if err != nil {
 		return nil, err
@@ -918,7 +918,7 @@ type ApplyPayeeRulesResult struct {
 // description matches, and moves a transaction whose only category posting is
 // Uncategorized to that payee's default category. A category the operator
 // chose is never overwritten.
-func (s *Store) ApplyPayeeRules() (ApplyPayeeRulesResult, error) {
+func (s *Ledger) ApplyPayeeRules() (ApplyPayeeRulesResult, error) {
 	var result ApplyPayeeRulesResult
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -955,7 +955,7 @@ func (s *Store) ApplyPayeeRules() (ApplyPayeeRulesResult, error) {
 			continue
 		}
 		if c.payeeID == "" {
-			if _, err := tx.Exec(`UPDATE transactions SET payee_id = ?, updated_at = ? WHERE id = ?`, rule.payeeID, now, c.id); err != nil {
+			if _, err := tx.Exec(`UPDATE transactions SET payee_id = $1, updated_at = $2 WHERE id = $3`, rule.payeeID, now, c.id); err != nil {
 				return result, err
 			}
 			result.PayeesSet++
@@ -965,8 +965,8 @@ func (s *Store) ApplyPayeeRules() (ApplyPayeeRulesResult, error) {
 		if rule.defaultCategoryID == "" {
 			continue
 		}
-		changed, err := tx.Exec(`UPDATE postings SET category_id = ? WHERE transaction_id = ? AND category_id = ?
-			AND (SELECT COUNT(*) FROM postings WHERE transaction_id = ? AND category_id IS NOT NULL) = 1`,
+		changed, err := tx.Exec(`UPDATE postings SET category_id = $1 WHERE transaction_id = $2 AND category_id = $3
+			AND (SELECT COUNT(*) FROM postings WHERE transaction_id = $4 AND category_id IS NOT NULL) = 1`,
 			rule.defaultCategoryID, c.id, uncategorized, c.id)
 		if err != nil {
 			return result, err
@@ -981,7 +981,7 @@ func (s *Store) ApplyPayeeRules() (ApplyPayeeRulesResult, error) {
 // ---- transactions ----
 
 // insertTransaction validates and writes a transaction and its postings.
-func (s *Store) insertTransaction(tx queryer, in TransactionInput) (string, error) {
+func (s *Ledger) insertTransaction(tx queryer, in TransactionInput) (string, error) {
 	if err := validDate("occurred_on", in.OccurredOn, true); err != nil {
 		return "", err
 	}
@@ -1006,7 +1006,7 @@ func (s *Store) insertTransaction(tx queryer, in TransactionInput) (string, erro
 		return "", err
 	}
 	now := s.unixNow()
-	if _, err := tx.Exec(`INSERT INTO transactions (seq, id, occurred_on, status, payee_id, description, memo, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)`,
+	if _, err := tx.Exec(`INSERT INTO transactions (seq, id, occurred_on, status, payee_id, description, memo, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
 		seq, id, in.OccurredOn, in.Status, payeeID, in.Description, in.Memo, now, now); err != nil {
 		return "", err
 	}
@@ -1054,13 +1054,13 @@ func insertPosting(tx queryer, transactionID string, p Posting) error {
 	if p.CategoryID != "" {
 		categoryID = p.CategoryID
 	}
-	_, err = tx.Exec(`INSERT INTO postings (seq, id, transaction_id, account_id, category_id, amount_cents, memo, tax_year) VALUES (?,?,?,?,?,?,?,?)`,
+	_, err = tx.Exec(`INSERT INTO postings (seq, id, transaction_id, account_id, category_id, amount_cents, memo, tax_year) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
 		seq, id, transactionID, accountID, categoryID, p.AmountCents, p.Memo, p.TaxYear)
 	return err
 }
 
 // CreateTransaction records a transaction by hand.
-func (s *Store) CreateTransaction(in TransactionInput) (Transaction, error) {
+func (s *Ledger) CreateTransaction(in TransactionInput) (Transaction, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return Transaction{}, err
@@ -1079,16 +1079,16 @@ func (s *Store) CreateTransaction(in TransactionInput) (Transaction, error) {
 // GetTransaction returns one transaction with its postings and source rows.
 // The id of a transaction folded into another by the transfer matcher
 // answers with the one it was folded into.
-func (s *Store) GetTransaction(id string) (Transaction, error) {
+func (s *Ledger) GetTransaction(id string) (Transaction, error) {
 	var into string
-	err := s.db.QueryRow(`SELECT into_transaction_id FROM transaction_merges WHERE merged_transaction_id = ?`, id).Scan(&into)
+	err := s.db.QueryRow(`SELECT into_transaction_id FROM transaction_merges WHERE merged_transaction_id = $1`, id).Scan(&into)
 	if err == nil {
 		id = into
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return Transaction{}, err
 	}
 	var t Transaction
-	err = s.db.QueryRow(`SELECT id, occurred_on, status, COALESCE(payee_id,''), description, memo, created_at, updated_at FROM transactions WHERE id = ?`, id).
+	err = s.db.QueryRow(`SELECT id, occurred_on, status, COALESCE(payee_id,''), description, memo, created_at, updated_at FROM transactions WHERE id = $1`, id).
 		Scan(&t.ID, &t.OccurredOn, &t.Status, &t.PayeeID, &t.Description, &t.Memo, &t.CreatedAt, &t.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Transaction{}, ErrNotFound
@@ -1102,8 +1102,8 @@ func (s *Store) GetTransaction(id string) (Transaction, error) {
 	return t, nil
 }
 
-func (s *Store) loadTransactionParts(t *Transaction) error {
-	rows, err := s.db.Query(`SELECT id, COALESCE(account_id,''), COALESCE(category_id,''), amount_cents, memo, tax_year FROM postings WHERE transaction_id = ? ORDER BY seq`, t.ID)
+func (s *Ledger) loadTransactionParts(t *Transaction) error {
+	rows, err := s.db.Query(`SELECT id, COALESCE(account_id,''), COALESCE(category_id,''), amount_cents, memo, tax_year FROM postings WHERE transaction_id = $1 ORDER BY seq`, t.ID)
 	if err != nil {
 		return err
 	}
@@ -1122,7 +1122,7 @@ func (s *Store) loadTransactionParts(t *Transaction) error {
 	}
 	var decision CategoryDecision
 	err = s.db.QueryRow(`SELECT id, status, decided_by, confidence, model FROM category_suggestions
-		WHERE transaction_id = ? AND status IN ('accepted','edited') ORDER BY decided_at DESC, seq DESC LIMIT 1`, t.ID).
+		WHERE transaction_id = $1 AND status IN ('accepted','edited') ORDER BY decided_at DESC, seq DESC LIMIT 1`, t.ID).
 		Scan(&decision.SuggestionID, &decision.Status, &decision.DecidedBy, &decision.Confidence, &decision.Model)
 	switch {
 	case err == nil:
@@ -1130,13 +1130,13 @@ func (s *Store) loadTransactionParts(t *Transaction) error {
 	case !errors.Is(err, sql.ErrNoRows):
 		return err
 	}
-	if t.MarketplaceOrders, err = s.marketplaceOrders(`WHERE transaction_id = ? ORDER BY seq`, t.ID); err != nil {
+	if t.MarketplaceOrders, err = s.marketplaceOrders(`WHERE transaction_id = $1 ORDER BY seq`, t.ID); err != nil {
 		return err
 	}
 	if t.Links, err = s.ListLinks(t.ID); err != nil {
 		return err
 	}
-	rows, err = s.db.Query(`SELECT import_row_id FROM transaction_sources WHERE transaction_id = ? ORDER BY import_row_id`, t.ID)
+	rows, err = s.db.Query(`SELECT import_row_id FROM transaction_sources WHERE transaction_id = $1 ORDER BY import_row_id`, t.ID)
 	if err != nil {
 		return err
 	}
@@ -1166,20 +1166,17 @@ type TransactionFilter struct {
 }
 
 // ListTransactions returns transactions newest first.
-func (s *Store) ListTransactions(filter TransactionFilter) ([]Transaction, error) {
+func (s *Ledger) ListTransactions(filter TransactionFilter) ([]Transaction, error) {
 	where := []string{"1=1"}
-	var args []any
+	var args arguments
 	if filter.AccountID != "" {
-		where = append(where, `t.id IN (SELECT transaction_id FROM postings WHERE account_id = ?)`)
-		args = append(args, filter.AccountID)
+		where = append(where, `t.id IN (SELECT transaction_id FROM postings WHERE account_id = `+args.add(filter.AccountID)+`)`)
 	}
 	if filter.CategoryID != "" && filter.IncludeSubcategories {
 		where = append(where, `t.id IN (SELECT transaction_id FROM postings WHERE category_id IN (
-			WITH RECURSIVE tree(id) AS (SELECT ? UNION ALL SELECT c.id FROM categories c JOIN tree ON c.parent_id = tree.id) SELECT id FROM tree))`)
-		args = append(args, filter.CategoryID)
+			WITH RECURSIVE tree(id) AS (SELECT `+args.add(filter.CategoryID)+`::text COLLATE "C" UNION ALL SELECT c.id FROM categories c JOIN tree ON c.parent_id = tree.id) SELECT id FROM tree))`)
 	} else if filter.CategoryID != "" {
-		where = append(where, `t.id IN (SELECT transaction_id FROM postings WHERE category_id = ?)`)
-		args = append(args, filter.CategoryID)
+		where = append(where, `t.id IN (SELECT transaction_id FROM postings WHERE category_id = `+args.add(filter.CategoryID)+`)`)
 	}
 	if filter.Uncategorized {
 		where = append(where, `t.id IN (SELECT p.transaction_id FROM postings p JOIN categories c ON c.id = p.category_id WHERE c.role = 'uncategorized')`)
@@ -1188,21 +1185,19 @@ func (s *Store) ListTransactions(filter TransactionFilter) ([]Transaction, error
 		if _, err := time.Parse("2006-01", filter.Month); err != nil {
 			return nil, fmt.Errorf("%w: month %q is not YYYY-MM", ErrInvalid, filter.Month)
 		}
-		where = append(where, `substr(t.occurred_on, 1, 7) = ?`)
-		args = append(args, filter.Month)
+		where = append(where, `substr(t.occurred_on, 1, 7) = `+args.add(filter.Month))
 	}
 	if filter.Query != "" {
-		where = append(where, `(t.description LIKE ? OR t.memo LIKE ?)`)
+		// SQLite's LIKE ignored ASCII case; ILIKE keeps that.
 		like := "%" + filter.Query + "%"
-		args = append(args, like, like)
+		where = append(where, `(t.description ILIKE `+args.add(like)+` OR t.memo ILIKE `+args.add(like)+`)`)
 	}
 	limit := filter.Limit
 	if limit <= 0 || limit > 1000 {
 		limit = 200
 	}
-	args = append(args, limit, filter.Offset)
 	rows, err := s.db.Query(`SELECT t.id, t.occurred_on, t.status, COALESCE(t.payee_id,''), t.description, t.memo, t.created_at, t.updated_at
-		FROM transactions t WHERE `+strings.Join(where, " AND ")+` ORDER BY t.occurred_on DESC, t.seq DESC LIMIT ? OFFSET ?`, args...)
+		FROM transactions t WHERE `+strings.Join(where, " AND ")+` ORDER BY t.occurred_on DESC, t.seq DESC LIMIT `+args.add(limit)+` OFFSET `+args.add(filter.Offset), args.values...)
 	if err != nil {
 		return nil, err
 	}
@@ -1238,7 +1233,7 @@ type CategorySplit struct {
 // SetTransactionCategories replaces every category posting of a transaction.
 // The splits must sum to what the category side summed to before, so the
 // accounts' side never changes.
-func (s *Store) SetTransactionCategories(id string, splits []CategorySplit) (Transaction, error) {
+func (s *Ledger) SetTransactionCategories(id string, splits []CategorySplit) (Transaction, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return Transaction{}, err
@@ -1255,7 +1250,7 @@ func (s *Store) SetTransactionCategories(id string, splits []CategorySplit) (Tra
 		return Transaction{}, fmt.Errorf("%w: give at least one category", ErrInvalid)
 	}
 	var categorySideSum int64
-	if err := tx.QueryRow(`SELECT COALESCE(SUM(amount_cents),0) FROM postings WHERE transaction_id = ? AND category_id IS NOT NULL`, id).Scan(&categorySideSum); err != nil {
+	if err := tx.QueryRow(`SELECT COALESCE(SUM(amount_cents),0) FROM postings WHERE transaction_id = $1 AND category_id IS NOT NULL`, id).Scan(&categorySideSum); err != nil {
 		return Transaction{}, err
 	}
 	var newSum int64
@@ -1268,7 +1263,7 @@ func (s *Store) SetTransactionCategories(id string, splits []CategorySplit) (Tra
 	if newSum != categorySideSum {
 		return Transaction{}, fmt.Errorf("%w: the splits sum to %d cents; the category side must stay %d", ErrInvalid, newSum, categorySideSum)
 	}
-	if _, err := tx.Exec(`DELETE FROM postings WHERE transaction_id = ? AND category_id IS NOT NULL`, id); err != nil {
+	if _, err := tx.Exec(`DELETE FROM postings WHERE transaction_id = $1 AND category_id IS NOT NULL`, id); err != nil {
 		return Transaction{}, err
 	}
 	for _, split := range splits {
@@ -1276,7 +1271,7 @@ func (s *Store) SetTransactionCategories(id string, splits []CategorySplit) (Tra
 			return Transaction{}, err
 		}
 	}
-	if _, err := tx.Exec(`UPDATE transactions SET updated_at = ? WHERE id = ?`, s.unixNow(), id); err != nil {
+	if _, err := tx.Exec(`UPDATE transactions SET updated_at = $1 WHERE id = $2`, s.unixNow(), id); err != nil {
 		return Transaction{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -1293,7 +1288,7 @@ type TransactionPatch struct {
 }
 
 // PatchTransaction changes status, payee or memo.
-func (s *Store) PatchTransaction(id string, patch TransactionPatch) (Transaction, error) {
+func (s *Ledger) PatchTransaction(id string, patch TransactionPatch) (Transaction, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return Transaction{}, err
@@ -1310,7 +1305,7 @@ func (s *Store) PatchTransaction(id string, patch TransactionPatch) (Transaction
 		if err := requireOneOf("status", *patch.Status, transactionStatuses); err != nil {
 			return Transaction{}, err
 		}
-		if _, err := tx.Exec(`UPDATE transactions SET status = ? WHERE id = ?`, *patch.Status, id); err != nil {
+		if _, err := tx.Exec(`UPDATE transactions SET status = $1 WHERE id = $2`, *patch.Status, id); err != nil {
 			return Transaction{}, err
 		}
 	}
@@ -1322,16 +1317,16 @@ func (s *Store) PatchTransaction(id string, patch TransactionPatch) (Transaction
 			}
 			value = *patch.PayeeID
 		}
-		if _, err := tx.Exec(`UPDATE transactions SET payee_id = ? WHERE id = ?`, value, id); err != nil {
+		if _, err := tx.Exec(`UPDATE transactions SET payee_id = $1 WHERE id = $2`, value, id); err != nil {
 			return Transaction{}, err
 		}
 	}
 	if patch.Memo != nil {
-		if _, err := tx.Exec(`UPDATE transactions SET memo = ? WHERE id = ?`, *patch.Memo, id); err != nil {
+		if _, err := tx.Exec(`UPDATE transactions SET memo = $1 WHERE id = $2`, *patch.Memo, id); err != nil {
 			return Transaction{}, err
 		}
 	}
-	if _, err := tx.Exec(`UPDATE transactions SET updated_at = ? WHERE id = ?`, s.unixNow(), id); err != nil {
+	if _, err := tx.Exec(`UPDATE transactions SET updated_at = $1 WHERE id = $2`, s.unixNow(), id); err != nil {
 		return Transaction{}, err
 	}
 	if err := tx.Commit(); err != nil {

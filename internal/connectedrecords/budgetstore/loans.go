@@ -75,14 +75,14 @@ type LoanSchedule struct {
 
 // RecordLoanPaymentFacts stores statement splits for a loan, replacing any
 // already recorded for the same effective date.
-func (s *Store) RecordLoanPaymentFacts(accountID string, facts []LoanPaymentFact) ([]LoanPaymentFact, error) {
+func (s *Ledger) RecordLoanPaymentFacts(accountID string, facts []LoanPaymentFact) ([]LoanPaymentFact, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
 	var kind string
-	if err := tx.QueryRow(`SELECT kind FROM accounts WHERE id = ?`, accountID).Scan(&kind); err != nil {
+	if err := tx.QueryRow(`SELECT kind FROM accounts WHERE id = $1`, accountID).Scan(&kind); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -105,7 +105,7 @@ func (s *Store) RecordLoanPaymentFacts(accountID string, facts []LoanPaymentFact
 		if strings.TrimSpace(f.Source) == "" {
 			return nil, fmt.Errorf("%w: fact %d needs a source: which statement says it", ErrInvalid, i)
 		}
-		if _, err := tx.Exec(`DELETE FROM loan_payment_facts WHERE account_id = ? AND effective_on = ?`, accountID, f.EffectiveOn); err != nil {
+		if _, err := tx.Exec(`DELETE FROM loan_payment_facts WHERE account_id = $1 AND effective_on = $2`, accountID, f.EffectiveOn); err != nil {
 			return nil, err
 		}
 		seq, id, err := mintID(tx, "loan_payment_facts", "loan_payment_fact")
@@ -113,7 +113,7 @@ func (s *Store) RecordLoanPaymentFacts(accountID string, facts []LoanPaymentFact
 			return nil, err
 		}
 		if _, err := tx.Exec(`INSERT INTO loan_payment_facts (seq, id, account_id, effective_on, interest_cents, principal_cents, principal_balance_after_cents, source, created_at)
-			VALUES (?,?,?,?,?,?,?,?,?)`, seq, id, accountID, f.EffectiveOn, f.InterestCents, f.PrincipalCents, f.PrincipalBalanceAfterCents, strings.TrimSpace(f.Source), now); err != nil {
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, seq, id, accountID, f.EffectiveOn, f.InterestCents, f.PrincipalCents, f.PrincipalBalanceAfterCents, strings.TrimSpace(f.Source), now); err != nil {
 			return nil, err
 		}
 	}
@@ -124,9 +124,9 @@ func (s *Store) RecordLoanPaymentFacts(accountID string, facts []LoanPaymentFact
 }
 
 // ListLoanPaymentFacts returns a loan's statement splits, oldest first.
-func (s *Store) ListLoanPaymentFacts(accountID string) ([]LoanPaymentFact, error) {
+func (s *Ledger) ListLoanPaymentFacts(accountID string) ([]LoanPaymentFact, error) {
 	rows, err := s.db.Query(`SELECT id, effective_on, interest_cents, principal_cents, principal_balance_after_cents, source, created_at
-		FROM loan_payment_facts WHERE account_id = ? ORDER BY effective_on`, accountID)
+		FROM loan_payment_facts WHERE account_id = $1 ORDER BY effective_on`, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -197,10 +197,10 @@ type loanMovement struct {
 // that move money between the loan and another of the operator's accounts.
 func loanMovements(q queryer, accountID string) (payout loanMovement, payments []loanMovement, err error) {
 	rows, err := q.Query(`SELECT t.id, t.occurred_on,
-			(SELECT COALESCE(SUM(p.amount_cents),0) FROM postings p WHERE p.transaction_id = t.id AND p.account_id IS NOT NULL AND p.account_id != ?)
+			(SELECT COALESCE(SUM(p.amount_cents),0) FROM postings p WHERE p.transaction_id = t.id AND p.account_id IS NOT NULL AND p.account_id != $1)
 		FROM transactions t
-		WHERE t.status != 'void' AND t.id IN (SELECT transaction_id FROM postings WHERE account_id = ?)
-		AND EXISTS (SELECT 1 FROM postings p WHERE p.transaction_id = t.id AND p.account_id IS NOT NULL AND p.account_id != ?)
+		WHERE t.status != 'void' AND t.id IN (SELECT transaction_id FROM postings WHERE account_id = $2)
+		AND EXISTS (SELECT 1 FROM postings p WHERE p.transaction_id = t.id AND p.account_id IS NOT NULL AND p.account_id != $3)
 		ORDER BY t.occurred_on, t.seq`, accountID, accountID, accountID)
 	if err != nil {
 		return payout, nil, err
@@ -239,11 +239,11 @@ func loanMovements(q queryer, accountID string) (payout loanMovement, payments [
 
 // GetLoanSchedule works out a loan's schedule from its rate, its payout, its
 // payments and its statement facts. It changes nothing.
-func (s *Store) GetLoanSchedule(accountID string) (LoanSchedule, error) {
+func (s *Ledger) GetLoanSchedule(accountID string) (LoanSchedule, error) {
 	return s.loanSchedule(s.db, accountID)
 }
 
-func (s *Store) loanSchedule(q queryer, accountID string) (LoanSchedule, error) {
+func (s *Ledger) loanSchedule(q queryer, accountID string) (LoanSchedule, error) {
 	account, err := s.GetAccount(accountID)
 	if err != nil {
 		return LoanSchedule{}, err
@@ -373,8 +373,8 @@ func (s *Store) loanSchedule(q queryer, accountID string) (LoanSchedule, error) 
 	schedule.ScheduleAppliedToAll = len(schedule.Payments) > 0
 	for _, row := range schedule.Payments {
 		var onLoan, onInterest int64
-		if err := q.QueryRow(`SELECT COALESCE(SUM(CASE WHEN account_id = ? THEN amount_cents END),0),
-			COALESCE(SUM(CASE WHEN category_id = ? THEN amount_cents END),0) FROM postings WHERE transaction_id = ?`,
+		if err := q.QueryRow(`SELECT COALESCE(SUM(CASE WHEN account_id = $1 THEN amount_cents END),0),
+			COALESCE(SUM(CASE WHEN category_id = $2 THEN amount_cents END),0) FROM postings WHERE transaction_id = $3`,
 			accountID, account.Loan.InterestCategoryID, row.TransactionID).Scan(&onLoan, &onInterest); err != nil {
 			return LoanSchedule{}, err
 		}
@@ -390,7 +390,7 @@ func (s *Store) loanSchedule(q queryer, accountID string) (LoanSchedule, error) 
 // gets the principal, and the loan's interest category the interest. Run it
 // again after a new statement fact or payment; it replaces its own earlier
 // split. The account needs loan.interest_category_id.
-func (s *Store) ApplyLoanSchedule(accountID string) (LoanSchedule, error) {
+func (s *Ledger) ApplyLoanSchedule(accountID string) (LoanSchedule, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return LoanSchedule{}, err
@@ -408,11 +408,11 @@ func (s *Store) ApplyLoanSchedule(accountID string) (LoanSchedule, error) {
 		if row.InterestCents < 0 || row.PrincipalCents < 0 {
 			return LoanSchedule{}, fmt.Errorf("%w: the %s payment splits as %d interest and %d principal; check the rate and the statement facts", ErrConflict, row.EffectiveOn, row.InterestCents, row.PrincipalCents)
 		}
-		if _, err := tx.Exec(`UPDATE postings SET amount_cents = ? WHERE transaction_id = ? AND account_id = ?`, row.PrincipalCents, row.TransactionID, accountID); err != nil {
+		if _, err := tx.Exec(`UPDATE postings SET amount_cents = $1 WHERE transaction_id = $2 AND account_id = $3`, row.PrincipalCents, row.TransactionID, accountID); err != nil {
 			return LoanSchedule{}, err
 		}
 		var interestPostingID string
-		err := tx.QueryRow(`SELECT id FROM postings WHERE transaction_id = ? AND category_id = ?`, row.TransactionID, schedule.InterestCategoryID).Scan(&interestPostingID)
+		err := tx.QueryRow(`SELECT id FROM postings WHERE transaction_id = $1 AND category_id = $2`, row.TransactionID, schedule.InterestCategoryID).Scan(&interestPostingID)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			if row.InterestCents > 0 {
@@ -423,18 +423,18 @@ func (s *Store) ApplyLoanSchedule(accountID string) (LoanSchedule, error) {
 		case err != nil:
 			return LoanSchedule{}, err
 		default:
-			if _, err := tx.Exec(`UPDATE postings SET amount_cents = ? WHERE id = ?`, row.InterestCents, interestPostingID); err != nil {
+			if _, err := tx.Exec(`UPDATE postings SET amount_cents = $1 WHERE id = $2`, row.InterestCents, interestPostingID); err != nil {
 				return LoanSchedule{}, err
 			}
 		}
 		var sum int64
-		if err := tx.QueryRow(`SELECT SUM(amount_cents) FROM postings WHERE transaction_id = ?`, row.TransactionID).Scan(&sum); err != nil {
+		if err := tx.QueryRow(`SELECT SUM(amount_cents) FROM postings WHERE transaction_id = $1`, row.TransactionID).Scan(&sum); err != nil {
 			return LoanSchedule{}, err
 		}
 		if sum != 0 {
 			return LoanSchedule{}, fmt.Errorf("%w: %s would sum to %d after the split", ErrConflict, row.TransactionID, sum)
 		}
-		if _, err := tx.Exec(`UPDATE transactions SET updated_at = ? WHERE id = ?`, now, row.TransactionID); err != nil {
+		if _, err := tx.Exec(`UPDATE transactions SET updated_at = $1 WHERE id = $2`, now, row.TransactionID); err != nil {
 			return LoanSchedule{}, err
 		}
 	}
@@ -458,7 +458,7 @@ type CategoryAccountMonthTotal struct {
 // every category under them, per month, per category and per account of the
 // same transaction. Card interest by card and month is this with the card
 // interest category.
-func (s *Store) SpendingByAccountAndMonth(categoryIDs []string, fromMonth, toMonth string) ([]CategoryAccountMonthTotal, error) {
+func (s *Ledger) SpendingByAccountAndMonth(categoryIDs []string, fromMonth, toMonth string) ([]CategoryAccountMonthTotal, error) {
 	if len(categoryIDs) == 0 {
 		return nil, fmt.Errorf("%w: name at least one category_id", ErrInvalid)
 	}
@@ -469,21 +469,16 @@ func (s *Store) SpendingByAccountAndMonth(categoryIDs []string, fromMonth, toMon
 			}
 		}
 	}
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(categoryIDs)), ",")
-	args := []any{}
-	for _, id := range categoryIDs {
-		args = append(args, id)
-	}
-	args = append(args, fromMonth, fromMonth, toMonth, toMonth)
-	rows, err := s.db.Query(`WITH RECURSIVE tree(id) AS (SELECT id FROM categories WHERE id IN (`+placeholders+`)
+	var args arguments
+	rows, err := s.db.Query(`WITH RECURSIVE tree(id) AS (SELECT id FROM categories WHERE id = ANY(`+args.add(categoryIDs)+`::text[])
 			UNION ALL SELECT c.id FROM categories c JOIN tree ON c.parent_id = tree.id)
 		SELECT substr(t.occurred_on,1,7) AS month, pa.account_id, pc.category_id, SUM(pc.amount_cents), COUNT(DISTINCT t.id)
 		FROM postings pc JOIN transactions t ON t.id = pc.transaction_id
 		JOIN postings pa ON pa.transaction_id = t.id AND pa.account_id IS NOT NULL
 		WHERE pc.category_id IN (SELECT id FROM tree) AND t.status != 'void'
-		AND (? = '' OR substr(t.occurred_on,1,7) >= ?) AND (? = '' OR substr(t.occurred_on,1,7) <= ?)
+		AND (`+args.add(fromMonth)+` = '' OR substr(t.occurred_on,1,7) >= `+args.add(fromMonth)+`) AND (`+args.add(toMonth)+` = '' OR substr(t.occurred_on,1,7) <= `+args.add(toMonth)+`)
 		AND pa.id = (SELECT MIN(p2.id) FROM postings p2 WHERE p2.transaction_id = t.id AND p2.account_id IS NOT NULL)
-		GROUP BY month, pa.account_id, pc.category_id ORDER BY month, pa.account_id`, args...)
+		GROUP BY month, pa.account_id, pc.category_id ORDER BY month, pa.account_id`, args.values...)
 	if err != nil {
 		return nil, err
 	}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // tripRefPattern is location-store's trip id. This store checks the shape
@@ -51,7 +52,7 @@ func validTripRef(ref string) error {
 type TripSuggestRequest struct {
 	FirstDay string `json:"first_day"` // the operator's local date the trip began
 	LastDay  string `json:"last_day"`  // and ended
-	// HomeMarkers is text that marks a charge as made at home ("RENO NV");
+	// HomeMarkers is text that marks a charge as made at home ("SPRINGFIELD ST");
 	// the caller supplies it, since it is the operator's data.
 	HomeMarkers []string `json:"home_markers"`
 }
@@ -61,7 +62,7 @@ type TripSuggestRequest struct {
 // payments of confirmed or suggested recurring bills, charges whose text
 // carries a home marker, and transactions already linked to this trip or
 // confirmed for another. Answers how many it suggested.
-func (s *Store) SuggestTripTransactions(tripRef string, request TripSuggestRequest) (int, error) {
+func (s *Ledger) SuggestTripTransactions(tripRef string, request TripSuggestRequest) (int, error) {
 	if err := validTripRef(tripRef); err != nil {
 		return 0, err
 	}
@@ -82,11 +83,11 @@ func (s *Store) SuggestTripTransactions(tripRef string, request TripSuggestReque
 	}
 	defer tx.Rollback()
 	rows, err := tx.Query(`SELECT t.id, t.description FROM transactions t
-		WHERE t.status != 'void' AND t.occurred_on BETWEEN ? AND ?
+		WHERE t.status != 'void' AND t.occurred_on BETWEEN $1 AND $2
 		AND (SELECT COALESCE(SUM(p.amount_cents),0) FROM postings p JOIN categories c ON c.id = p.category_id
 			WHERE p.transaction_id = t.id AND c.kind IN ('expense','uncategorized')) > 0
 		AND t.id NOT IN (SELECT rp.transaction_id FROM recurring_bill_payments rp JOIN recurring_bills b ON b.id = rp.recurring_bill_id WHERE b.status IN ('confirmed','suggested'))
-		AND t.id NOT IN (SELECT transaction_id FROM trip_transactions WHERE trip_ref = ?)
+		AND t.id NOT IN (SELECT transaction_id FROM trip_transactions WHERE trip_ref = $3)
 		AND t.id NOT IN (SELECT transaction_id FROM trip_transactions WHERE status = 'confirmed')`,
 		request.FirstDay, until, tripRef)
 	if err != nil {
@@ -116,7 +117,7 @@ func (s *Store) SuggestTripTransactions(tripRef string, request TripSuggestReque
 		if atHome {
 			continue
 		}
-		if _, err := tx.Exec(`INSERT INTO trip_transactions (trip_ref, transaction_id, status, reason, created_at, updated_at) VALUES (?,?,'suggested',?,?,?)`,
+		if _, err := tx.Exec(`INSERT INTO trip_transactions (trip_ref, transaction_id, status, reason, created_at, updated_at) VALUES ($1,$2,'suggested',$3,$4,$5)`,
 			tripRef, c.id, fmt.Sprintf("dated %s to %s (the trip plus %d days for posting)", request.FirstDay, until, tripPostingLagDays), now, now); err != nil {
 			return 0, err
 		}
@@ -128,7 +129,7 @@ func (s *Store) SuggestTripTransactions(tripRef string, request TripSuggestReque
 // SetTripTransaction confirms, removes or adds a transaction on a trip.
 // Confirming drops the same transaction's suggestions on other trips.
 // Adding one not yet linked needs status confirmed; decided_by is required.
-func (s *Store) SetTripTransaction(tripRef, transactionID, status, decidedBy, reason string) (TripTransaction, error) {
+func (s *Ledger) SetTripTransaction(tripRef, transactionID, status, decidedBy, reason string) (TripTransaction, error) {
 	if err := validTripRef(tripRef); err != nil {
 		return TripTransaction{}, err
 	}
@@ -149,7 +150,7 @@ func (s *Store) SetTripTransaction(tripRef, transactionID, status, decidedBy, re
 	}
 	if status == "confirmed" {
 		var other string
-		err := tx.QueryRow(`SELECT trip_ref FROM trip_transactions WHERE transaction_id = ? AND status = 'confirmed' AND trip_ref != ?`, transactionID, tripRef).Scan(&other)
+		err := tx.QueryRow(`SELECT trip_ref FROM trip_transactions WHERE transaction_id = $1 AND status = 'confirmed' AND trip_ref != $2`, transactionID, tripRef).Scan(&other)
 		switch {
 		case err == nil:
 			return TripTransaction{}, fmt.Errorf("%w: %s is already confirmed on %s; remove it there first", ErrConflict, transactionID, other)
@@ -164,11 +165,11 @@ func (s *Store) SetTripTransaction(tripRef, transactionID, status, decidedBy, re
 	if status == "confirmed" {
 		// Trips a day apart suggest the same late-posting charge for both;
 		// once it is confirmed on one, the other's suggestion is moot.
-		if _, err := tx.Exec(`DELETE FROM trip_transactions WHERE transaction_id = ? AND trip_ref != ? AND status = 'suggested'`, transactionID, tripRef); err != nil {
+		if _, err := tx.Exec(`DELETE FROM trip_transactions WHERE transaction_id = $1 AND trip_ref != $2 AND status = 'suggested'`, transactionID, tripRef); err != nil {
 			return TripTransaction{}, err
 		}
 	}
-	if _, err := tx.Exec(`INSERT INTO trip_transactions (trip_ref, transaction_id, status, reason, decided_by, created_at, updated_at) VALUES (?,?,?,?,?,?,?)
+	if _, err := tx.Exec(`INSERT INTO trip_transactions (trip_ref, transaction_id, status, reason, decided_by, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7)
 		ON CONFLICT(trip_ref, transaction_id) DO UPDATE SET status = excluded.status, decided_by = excluded.decided_by, updated_at = excluded.updated_at`,
 		tripRef, transactionID, status, strings.TrimSpace(reason), decidedBy, now, now); err != nil {
 		return TripTransaction{}, err
@@ -190,7 +191,7 @@ func (s *Store) SetTripTransaction(tripRef, transactionID, status, decidedBy, re
 
 // ListTripTransactions returns a trip's linked transactions, oldest first,
 // removed ones included so the page can show what was taken out.
-func (s *Store) ListTripTransactions(tripRef string) ([]TripTransaction, error) {
+func (s *Ledger) ListTripTransactions(tripRef string) ([]TripTransaction, error) {
 	if err := validTripRef(tripRef); err != nil {
 		return nil, err
 	}
@@ -199,7 +200,7 @@ func (s *Store) ListTripTransactions(tripRef string) ([]TripTransaction, error) 
 			COALESCE((SELECT MIN(p.category_id) FROM postings p WHERE p.transaction_id = t.id AND p.category_id IS NOT NULL HAVING COUNT(*) = 1), ''),
 			COALESCE((SELECT MIN(p.account_id) FROM postings p WHERE p.transaction_id = t.id AND p.account_id IS NOT NULL), '')
 		FROM trip_transactions tt JOIN transactions t ON t.id = tt.transaction_id
-		WHERE tt.trip_ref = ? ORDER BY t.occurred_on, t.seq`, tripRef)
+		WHERE tt.trip_ref = $1 ORDER BY t.occurred_on, t.seq`, tripRef)
 	if err != nil {
 		return nil, err
 	}
@@ -216,10 +217,10 @@ func (s *Store) ListTripTransactions(tripRef string) ([]TripTransaction, error) 
 }
 
 // ListTripTotals returns what each trip with linked spending cost.
-func (s *Store) ListTripTotals() ([]TripTotal, error) {
+func (s *Ledger) ListTripTotals() ([]TripTotal, error) {
 	rows, err := s.db.Query(`SELECT tt.trip_ref,
 			COALESCE(SUM(CASE WHEN tt.status = 'confirmed' THEN amount END),0), COALESCE(SUM(CASE WHEN tt.status = 'suggested' THEN amount END),0),
-			SUM(tt.status = 'confirmed'), SUM(tt.status = 'suggested')
+			COUNT(*) FILTER (WHERE tt.status = 'confirmed'), COUNT(*) FILTER (WHERE tt.status = 'suggested')
 		FROM (SELECT tt.*, (SELECT COALESCE(SUM(p.amount_cents),0) FROM postings p JOIN categories c ON c.id = p.category_id
 				WHERE p.transaction_id = tt.transaction_id AND c.kind IN ('expense','uncategorized')) AS amount FROM trip_transactions tt) tt
 		GROUP BY tt.trip_ref ORDER BY tt.trip_ref`)
@@ -236,4 +237,47 @@ func (s *Store) ListTripTotals() ([]TripTotal, error) {
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+// TripJourney is one location-store journey as trip matching reads it: its
+// id and when it began and ended, in epoch seconds.
+type TripJourney struct {
+	ID        string
+	StartedAt int64
+	EndedAt   int64
+}
+
+// SuggestForJourneys suggests, for each journey that ended on or after
+// endedOnOrAfter (YYYY-MM-DD; empty for all), the spending dated during it,
+// as budget-match-trips does: a journey's times become the days the bank
+// dates charges by in location, and a charge carrying one of homeMarkers is
+// never suggested. A journey with no start or end is skipped. Answers how
+// many links it suggested.
+func (s *Ledger) SuggestForJourneys(journeys []TripJourney, location *time.Location, homeMarkers []string, endedOnOrAfter string) (int, error) {
+	if location == nil {
+		return 0, fmt.Errorf("%w: trip matching needs a time zone", ErrInvalid)
+	}
+	if len(homeMarkers) == 0 {
+		return 0, fmt.Errorf("%w: trip matching needs at least one home marker", ErrInvalid)
+	}
+	if err := validDate("ended_on_or_after", endedOnOrAfter, false); err != nil {
+		return 0, err
+	}
+	total := 0
+	for _, journey := range journeys {
+		if journey.StartedAt == 0 || journey.EndedAt == 0 {
+			continue
+		}
+		first := time.Unix(journey.StartedAt, 0).In(location).Format("2006-01-02")
+		last := time.Unix(journey.EndedAt, 0).In(location).Format("2006-01-02")
+		if endedOnOrAfter != "" && last < endedOnOrAfter {
+			continue
+		}
+		suggested, err := s.SuggestTripTransactions(journey.ID, TripSuggestRequest{FirstDay: first, LastDay: last, HomeMarkers: homeMarkers})
+		if err != nil {
+			return total, fmt.Errorf("suggesting for %s: %w", journey.ID, err)
+		}
+		total += suggested
+	}
+	return total, nil
 }

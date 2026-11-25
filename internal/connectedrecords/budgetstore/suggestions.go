@@ -52,7 +52,7 @@ type SuggestionCandidate struct {
 
 // CategoryPaths names every category by its path, "Food > Groceries", for
 // showing to a person or a model. Keyed by id.
-func (s *Store) CategoryPaths() (map[string]string, error) {
+func (s *Ledger) CategoryPaths() (map[string]string, error) {
 	categories, err := s.ListCategories()
 	if err != nil {
 		return nil, err
@@ -76,7 +76,7 @@ func (s *Store) CategoryPaths() (map[string]string, error) {
 // whose only category posting it is, or "" when the transaction is split or
 // already sorted.
 func wholeUncategorizedPosting(q queryer, transactionID, uncategorized string) (string, error) {
-	rows, err := q.Query(`SELECT id, category_id FROM postings WHERE transaction_id = ? AND category_id IS NOT NULL`, transactionID)
+	rows, err := q.Query(`SELECT id, category_id FROM postings WHERE transaction_id = $1 AND category_id IS NOT NULL`, transactionID)
 	if err != nil {
 		return "", err
 	}
@@ -101,7 +101,7 @@ func wholeUncategorizedPosting(q queryer, transactionID, uncategorized string) (
 // ListSuggestionCandidates returns up to limit transactions, newest first,
 // that are wholly Uncategorized and have no pending suggestion; with before
 // set ('YYYY-MM-DD'), only those dated earlier.
-func (s *Store) ListSuggestionCandidates(limit int, before string) ([]SuggestionCandidate, error) {
+func (s *Ledger) ListSuggestionCandidates(limit int, before string) ([]SuggestionCandidate, error) {
 	if limit <= 0 || limit > 2000 {
 		limit = 200
 	}
@@ -112,17 +112,21 @@ func (s *Store) ListSuggestionCandidates(limit int, before string) ([]Suggestion
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.Query(`SELECT t.id, t.occurred_on, t.description, pc.amount_cents, a.name, a.kind, COALESCE(py.name,'')
+	// One row per transaction: its one category posting, and its first
+	// account posting by number (SQLite's GROUP BY took whichever it met).
+	rows, err := s.db.Query(`SELECT id, occurred_on, description, amount_cents, account_name, account_kind, payee_name FROM (
+		SELECT DISTINCT ON (t.id) t.id, t.occurred_on, t.seq, t.description, pc.amount_cents, a.name AS account_name, a.kind AS account_kind, COALESCE(py.name,'') AS payee_name
 		FROM transactions t
-		JOIN postings pc ON pc.transaction_id = t.id AND pc.category_id = ?
+		JOIN postings pc ON pc.transaction_id = t.id AND pc.category_id = $1
 		JOIN postings pa ON pa.transaction_id = t.id AND pa.account_id IS NOT NULL
 		JOIN accounts a ON a.id = pa.account_id
 		LEFT JOIN payees py ON py.id = t.payee_id
 		WHERE t.status != 'void'
 		AND (SELECT COUNT(*) FROM postings p WHERE p.transaction_id = t.id AND p.category_id IS NOT NULL) = 1
 		AND NOT EXISTS (SELECT 1 FROM category_suggestions cs WHERE cs.transaction_id = t.id AND cs.status = 'pending')
-		AND (? = '' OR t.occurred_on < ?)
-		GROUP BY t.id ORDER BY t.occurred_on DESC, t.seq DESC LIMIT ?`, uncategorized, before, before, limit)
+		AND ($2 = '' OR t.occurred_on < $3)
+		ORDER BY t.id, pa.seq) candidates
+		ORDER BY occurred_on DESC, seq DESC LIMIT $4`, uncategorized, before, before, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -157,7 +161,7 @@ type SuggestionBatch struct {
 // CreateSuggestions records a run's suggestions. A category must be an
 // expense or income category; an empty one means a person must decide. Each
 // supersedes any pending suggestion for the same transaction. All or nothing.
-func (s *Store) CreateSuggestions(batch SuggestionBatch) (int, error) {
+func (s *Ledger) CreateSuggestions(batch SuggestionBatch) (int, error) {
 	if strings.TrimSpace(batch.OperationID) == "" || strings.TrimSpace(batch.Model) == "" {
 		return 0, fmt.Errorf("%w: operation_id and model are required: say what produced the suggestions", ErrInvalid)
 	}
@@ -177,7 +181,7 @@ func (s *Store) CreateSuggestions(batch SuggestionBatch) (int, error) {
 		var categoryID any
 		if in.CategoryID != "" {
 			var kind string
-			if err := tx.QueryRow(`SELECT kind FROM categories WHERE id = ?`, in.CategoryID).Scan(&kind); err != nil {
+			if err := tx.QueryRow(`SELECT kind FROM categories WHERE id = $1`, in.CategoryID).Scan(&kind); err != nil {
 				if errors.Is(err, sql.ErrNoRows) {
 					return 0, fmt.Errorf("%w: suggestion %d category_id %q does not exist", ErrInvalid, i, in.CategoryID)
 				}
@@ -188,7 +192,7 @@ func (s *Store) CreateSuggestions(batch SuggestionBatch) (int, error) {
 			}
 			categoryID = in.CategoryID
 		}
-		if _, err := tx.Exec(`UPDATE category_suggestions SET status = 'superseded', decided_at = ?, decided_by = 'budget-store: a newer suggestion replaced it' WHERE transaction_id = ? AND status = 'pending'`, now, in.TransactionID); err != nil {
+		if _, err := tx.Exec(`UPDATE category_suggestions SET status = 'superseded', decided_at = $1, decided_by = 'budget-store: a newer suggestion replaced it' WHERE transaction_id = $2 AND status = 'pending'`, now, in.TransactionID); err != nil {
 			return 0, err
 		}
 		seq, id, err := mintID(tx, "category_suggestions", "category_suggestion")
@@ -196,7 +200,7 @@ func (s *Store) CreateSuggestions(batch SuggestionBatch) (int, error) {
 			return 0, err
 		}
 		if _, err := tx.Exec(`INSERT INTO category_suggestions (seq, id, transaction_id, category_id, confidence, rationale, needs_review, model, operation_id, status, created_at)
-			VALUES (?,?,?,?,?,?,?,?,?,'pending',?)`,
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',$10)`,
 			seq, id, in.TransactionID, categoryID, in.Confidence, in.Rationale, boolInt(in.NeedsReview), batch.Model, batch.OperationID, now); err != nil {
 			return 0, err
 		}
@@ -207,7 +211,7 @@ func (s *Store) CreateSuggestions(batch SuggestionBatch) (int, error) {
 // ListSuggestions returns suggestions with the given status (all when
 // empty), with each transaction's date, text, amount and account, ordered by
 // suggested category and then date, so a reviewer reads like with like.
-func (s *Store) ListSuggestions(status string, limit int) ([]CategorySuggestion, error) {
+func (s *Ledger) ListSuggestions(status string, limit int) ([]CategorySuggestion, error) {
 	if status != "" {
 		if err := requireOneOf("status", status, suggestionStatuses); err != nil {
 			return nil, err
@@ -226,7 +230,7 @@ func (s *Store) ListSuggestions(status string, limit int) ([]CategorySuggestion,
 		COALESCE((SELECT a.id FROM postings p JOIN accounts a ON a.id = p.account_id WHERE p.transaction_id = t.id ORDER BY p.seq LIMIT 1), ''),
 		COALESCE((SELECT a.name FROM postings p JOIN accounts a ON a.id = p.account_id WHERE p.transaction_id = t.id ORDER BY p.seq LIMIT 1), '')
 		FROM category_suggestions cs JOIN transactions t ON t.id = cs.transaction_id
-		WHERE (? = '' OR cs.status = ?) ORDER BY cs.seq LIMIT ?`, status, status, limit)
+		WHERE ($1 = '' OR cs.status = $2) ORDER BY cs.seq LIMIT $3`, status, status, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -272,7 +276,7 @@ type DecisionResult struct {
 // who decided, in their words, and is kept on every suggestion decided, so a
 // category the operator chose can be told from one they let a model guess.
 // All or nothing.
-func (s *Store) DecideSuggestions(decidedBy string, decisions []SuggestionDecision) (DecisionResult, error) {
+func (s *Ledger) DecideSuggestions(decidedBy string, decisions []SuggestionDecision) (DecisionResult, error) {
 	result := DecisionResult{Stale: []string{}}
 	decidedBy = strings.TrimSpace(decidedBy)
 	if decidedBy == "" {
@@ -293,7 +297,7 @@ func (s *Store) DecideSuggestions(decidedBy string, decisions []SuggestionDecisi
 	now := s.unixNow()
 	for i, d := range decisions {
 		var transactionID, suggested, status string
-		err := tx.QueryRow(`SELECT transaction_id, COALESCE(category_id,''), status FROM category_suggestions WHERE id = ?`, d.SuggestionID).Scan(&transactionID, &suggested, &status)
+		err := tx.QueryRow(`SELECT transaction_id, COALESCE(category_id,''), status FROM category_suggestions WHERE id = $1`, d.SuggestionID).Scan(&transactionID, &suggested, &status)
 		if errors.Is(err, sql.ErrNoRows) {
 			return result, fmt.Errorf("%w: decision %d: suggestion %q does not exist", ErrInvalid, i, d.SuggestionID)
 		}
@@ -305,7 +309,7 @@ func (s *Store) DecideSuggestions(decidedBy string, decisions []SuggestionDecisi
 		}
 		switch d.Action {
 		case "reject":
-			if _, err := tx.Exec(`UPDATE category_suggestions SET status = 'rejected', decided_at = ?, decided_by = ? WHERE id = ?`, now, decidedBy, d.SuggestionID); err != nil {
+			if _, err := tx.Exec(`UPDATE category_suggestions SET status = 'rejected', decided_at = $1, decided_by = $2 WHERE id = $3`, now, decidedBy, d.SuggestionID); err != nil {
 				return result, err
 			}
 			result.Rejected++
@@ -322,7 +326,7 @@ func (s *Store) DecideSuggestions(decidedBy string, decisions []SuggestionDecisi
 			return result, fmt.Errorf("%w: %s has no suggested category; give category_id to accept it", ErrInvalid, d.SuggestionID)
 		}
 		var kind string
-		if err := tx.QueryRow(`SELECT kind FROM categories WHERE id = ?`, chosen).Scan(&kind); err != nil {
+		if err := tx.QueryRow(`SELECT kind FROM categories WHERE id = $1`, chosen).Scan(&kind); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return result, fmt.Errorf("%w: decision %d category_id %q does not exist", ErrInvalid, i, chosen)
 			}
@@ -336,16 +340,16 @@ func (s *Store) DecideSuggestions(decidedBy string, decisions []SuggestionDecisi
 			return result, err
 		}
 		if postingID == "" {
-			if _, err := tx.Exec(`UPDATE category_suggestions SET status = 'stale', decided_at = ?, decided_by = ? WHERE id = ?`, now, decidedBy, d.SuggestionID); err != nil {
+			if _, err := tx.Exec(`UPDATE category_suggestions SET status = 'stale', decided_at = $1, decided_by = $2 WHERE id = $3`, now, decidedBy, d.SuggestionID); err != nil {
 				return result, err
 			}
 			result.Stale = append(result.Stale, d.SuggestionID)
 			continue
 		}
-		if _, err := tx.Exec(`UPDATE postings SET category_id = ? WHERE id = ?`, chosen, postingID); err != nil {
+		if _, err := tx.Exec(`UPDATE postings SET category_id = $1 WHERE id = $2`, chosen, postingID); err != nil {
 			return result, err
 		}
-		if _, err := tx.Exec(`UPDATE transactions SET updated_at = ? WHERE id = ?`, now, transactionID); err != nil {
+		if _, err := tx.Exec(`UPDATE transactions SET updated_at = $1 WHERE id = $2`, now, transactionID); err != nil {
 			return result, err
 		}
 		newStatus := "accepted"
@@ -356,7 +360,7 @@ func (s *Store) DecideSuggestions(decidedBy string, decisions []SuggestionDecisi
 		} else {
 			result.Accepted++
 		}
-		if _, err := tx.Exec(`UPDATE category_suggestions SET status = ?, decided_category_id = ?, decided_at = ?, decided_by = ? WHERE id = ?`, newStatus, decided, now, decidedBy, d.SuggestionID); err != nil {
+		if _, err := tx.Exec(`UPDATE category_suggestions SET status = $1, decided_category_id = $2, decided_at = $3, decided_by = $4 WHERE id = $5`, newStatus, decided, now, decidedBy, d.SuggestionID); err != nil {
 			return result, err
 		}
 	}

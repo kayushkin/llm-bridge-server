@@ -228,7 +228,7 @@ CREATE TABLE IF NOT EXISTS balance_assertions (
   account_id     TEXT NOT NULL REFERENCES accounts(id),
   as_of          TEXT NOT NULL,
   balance_cents  INTEGER NOT NULL,
-  source         TEXT NOT NULL,                -- free text: "statement_000004", "Rocket Money 2026-11-06"
+  source         TEXT NOT NULL,                -- free text: "statement_000004", "a budgeting site, 2026-11-06"
   created_at     INTEGER NOT NULL
 );
 
@@ -319,7 +319,7 @@ CREATE TABLE IF NOT EXISTS loan_payment_facts (
 CREATE TABLE IF NOT EXISTS recurring_bills (
   seq                 INTEGER PRIMARY KEY,
   id                  TEXT NOT NULL UNIQUE,   -- recurring_bill_000001
-  match_key           TEXT NOT NULL UNIQUE,   -- what groups its payments: "payee:payee_000001" or "text:NV ENERGY NORTH"
+  match_key           TEXT NOT NULL UNIQUE,   -- what groups its payments: "payee:payee_000001" or "text:CITY POWER NORTH"
   name                TEXT NOT NULL,          -- display only
   payee_id            TEXT REFERENCES payees(id),
   cadence             TEXT NOT NULL,          -- vocabulary.go: billCadences

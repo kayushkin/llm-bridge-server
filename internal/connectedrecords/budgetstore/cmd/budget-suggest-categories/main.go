@@ -22,7 +22,7 @@ import (
 	"strings"
 	"time"
 
-	budgetstore "github.com/kayushkin/budget-store"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/budgetstore"
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )

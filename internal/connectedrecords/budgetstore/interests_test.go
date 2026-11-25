@@ -60,7 +60,7 @@ func TestAnInterestGathersSpendingAcrossCategoriesByItsRules(t *testing.T) {
 	if _, err := s.AddInterestHistorySource(interest.ID, "location_place", "place_000002", "the rink"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.AddInterestHistorySource(interest.ID, "location_place", "Reno Ice", ""); !errors.Is(err, ErrInvalid) {
+	if _, err := s.AddInterestHistorySource(interest.ID, "location_place", "Example Rink", ""); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("a place given by name = %v, want invalid", err)
 	}
 	if _, err := s.SetInterestTransaction(interest.ID, byText["GROCERY"], "confirmed", ""); !errors.Is(err, ErrInvalid) {

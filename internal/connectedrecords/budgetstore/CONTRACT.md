@@ -1,16 +1,44 @@
 # budget-store: API contract
 
-`127.0.0.1:8340`. The operator's finance ledger: accounts, cards, loans,
-retirement accounts, every transaction, categories and budgets.
+A personal finance ledger: accounts, cards, loans, retirement accounts, every
+transaction, categories and budgets.
 
-Module `github.com/kayushkin/budget-store`, root package `budgetstore`, server
-in `cmd/budget-store`. SQLite at `<data dir>/budget-store.db` (mode 600, its
-directory 700), WAL, foreign keys on.
+It runs inside llm-bridge-server, at `/budget-store/`, with the same paths
+the standalone service served on `:8340` behind that prefix. Package
+`internal/connectedrecords/budgetstore`; the books are in Postgres, in the
+schema `budget`, which the role `budget_module` owns (`Module()`); the server
+provisions and migrates it and hands the pool to `New(db)`.
+`llm-bridge-server import-budget-store -sqlite <file> -owner <principal id>`
+copies a standalone store's SQLite file in, keeping every id. Bodies are
+JSON, except an import, whose body is the file. Timestamps are epoch seconds;
+dates are `YYYY-MM-DD`; months are `YYYY-MM`. Errors are `{"error": "…"}`.
 
-**No auth, so the bind is `127.0.0.1` and that is part of this contract.**
-`deploy.sh` fails if the port listens anywhere else. Bodies are JSON, except
-an import, whose body is the file. Timestamps are epoch seconds; dates are
-`YYYY-MM-DD`; months are `YYYY-MM`. Errors are `{"error": "…"}`.
+## Owners
+
+Every row has an owner, `owner_principal_id`, principal-store's id of the
+person whose books it is in, and each person keeps a ledger of their own:
+their own accounts, categories (with their own Uncategorized and Opening
+balances, made the first time their books are opened), payees and rules.
+Every route works in one owner's books, because a balance, a budget, a
+report or a matching pass only means something inside one ledger:
+
+- A route that names one of the store's records in its path (an account, a
+  transaction, a category, a payee, an import batch, a bill, an order or a
+  line, an interest, a Plaid account) works in the books of whoever keeps
+  it. Another owner's record answers 404, as a missing one does. An
+  administrator, and this server's own service acting as itself, reach any
+  owner's record by its id.
+- Every other route (lists, reports, budgets, new records, the passes) works
+  in the caller's own books. An administrator, or the service, works in the
+  books `?owner_principal_id=` names; the service acting as nobody must name
+  one (403). A caller who is not an administrator may name only themselves.
+
+Records of two owners are never joined: a posting cannot land on another
+owner's account or category, nor a transaction name another owner's payee.
+Postgres holds this as well as the store: every foreign key runs over
+(owner, id), row level security narrows every statement on a ledger's
+connection to its owner, and a deferred trigger refuses at commit a
+transaction whose postings do not sum to zero or are fewer than two.
 
 | Status | Means |
 |---|---|
@@ -50,7 +78,7 @@ entity-type registry match each kind for chips: `budget_account`,
 
 | Route | Does |
 |---|---|
-| `GET /health`, `GET /settings`, `GET /vocabulary` | liveness; declared settings; every closed set of values the store accepts |
+| `GET /health`, `GET /vocabulary` | liveness; every closed set of values the store accepts |
 | `GET/POST /institutions` | banks and issuers: `{name, website}` |
 | `GET/POST /accounts`, `GET/PATCH /accounts/{id}` | accounts with `balance_cents` and their detail block (`credit_card`, `loan`, `retirement`). A card's `interest_category_id` and `fee_category_id`, and a loan's `interest_category_id`, name by id the expense categories its interest and fees are filed under, so a report finds them without matching names. `last_four` must be four digits: a full number is refused. Setting it also adds it as a description marker |
 | `POST /accounts/{id}/description-markers`, `DELETE /accounts/{id}/description-markers/{marker_id}` | `{marker, note}`: text that names this account in another account's rows (an old card number, a loan reference). At least 4 characters. Deleting one leaves what it already matched |
@@ -61,7 +89,7 @@ entity-type registry match each kind for chips: `budget_account`,
 | `GET/POST /balance-assertions` | `{account_id, as_of, balance_cents, source}`: a reported balance; each answer carries `ledger_balance_cents` and `difference_cents` (ledger minus reported) as the ledger stands now |
 | `GET/POST /categories`, `GET /categories/{id}` | `{parent_id, name, kind}`; kind `expense`, `income` or `equity`. Two categories carry a `role` the store posts to: `uncategorized` and `opening_balances`. Find them by role, never by name |
 | `GET/POST /payees`, `GET /payees/{id}`, `POST /payees/apply-rules` | `{name, default_category_id, patterns}`: a pattern is upper-cased text matched as a substring of a description; the longest match wins. `apply-rules` names every transaction without a payee and moves one still wholly Uncategorized to the payee's default category. A category someone chose is never overwritten |
-| `GET /transactions` | newest first; `account_id`, `category_id` (with `include_subcategories=true`, every category under it too), `month`, `q`, `uncategorized=true`, `limit` (≤1000, default 200), `offset` |
+| `GET /transactions` | newest first; `account_id`, `category_id` (with `include_subcategories=true`, every category under it too), `month`, `q` (a substring of the description or memo, ignoring ASCII case), `uncategorized=true`, `limit` (≤1000, default 200), `offset` |
 | `POST /transactions` | `{occurred_on, status, payee_id, description, memo, postings}` by hand |
 | `GET/PATCH /transactions/{id}` | Every transaction read carries `category_decision`: the newest accepted or edited suggestion (`suggestion_id`, `status`, `decided_by`, `confidence`, `model`), or null when its category came another way. PATCH `{status, payee_id, memo}`. The id of a transaction the transfer matcher folded away answers with the one it was folded into |
 | `PUT /transactions/{id}/categories` | `{splits: [{category_id, amount_cents, memo, tax_year}]}` replaces every category posting; the splits must sum to what the category side summed to, so accounts never change |
@@ -273,10 +301,10 @@ transaction by `budget_transaction_id`. `PATCH /marketplace-order-lines/{id}
 
 ## Plaid: banks that stay current
 
-Off unless `BUDGET_STORE_PLAID_ENVIRONMENT` names an environment (`sandbox`,
-`production`) and auth-store is configured (`BUDGET_STORE_AUTH_STORE_URL`,
-`BUDGET_STORE_AUTH_STORE_TOKEN`, the token in a host-local drop-in); every
-route here answers 503 while off. The team's keys are auth-store's credential
+Off unless the server's `budget_store.plaid_environment` names an environment
+(`sandbox`, `production`); the server then reaches auth-store with its own
+`auth_store.url` and `auth_store.token`, and refuses to start without the
+token. Every route here answers 503 while off. The team's keys are auth-store's credential
 of provider `plaid` whose `account` is the environment, with `client_id`, the
 secret as `api_key`, and `base_url` (where that Plaid answers). Each linked
 bank's access token is its own auth-store credential (provider `plaid-item`,

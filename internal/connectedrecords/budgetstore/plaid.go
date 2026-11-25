@@ -43,9 +43,6 @@ type PlaidVault interface {
 	Environment() string
 }
 
-// SetPlaidVault turns Plaid on. Without one every Plaid route is ErrPlaidOff.
-func (s *Store) SetPlaidVault(vault PlaidVault) { s.plaid = vault }
-
 // plaidCall posts one Plaid API request with the team's keys added.
 func plaidCall(ctx context.Context, keys PlaidKeys, path string, body map[string]any, into any) error {
 	body["client_id"] = keys.ClientID
@@ -96,7 +93,7 @@ func (e *PlaidError) Error() string {
 // CreatePlaidLinkToken starts Plaid Link for one more bank. redirectURI is
 // the page Plaid sends the browser back to after a bank's own sign-in page;
 // it must be registered in Plaid's dashboard.
-func (s *Store) CreatePlaidLinkToken(ctx context.Context, redirectURI string) (string, error) {
+func (s *Ledger) CreatePlaidLinkToken(ctx context.Context, redirectURI string) (string, error) {
 	if s.plaid == nil {
 		return "", ErrPlaidOff
 	}
@@ -163,7 +160,7 @@ type plaidAccountAnswer struct {
 // exactly one has them. A matched account syncs from the day after its last
 // row from a downloaded file, so nothing a file already brought is counted
 // twice. It then syncs the new bank once.
-func (s *Store) LinkPlaidItem(ctx context.Context, publicToken, institutionID, institutionName string) (PlaidItem, error) {
+func (s *Ledger) LinkPlaidItem(ctx context.Context, publicToken, institutionID, institutionName string) (PlaidItem, error) {
 	if s.plaid == nil {
 		return PlaidItem{}, ErrPlaidOff
 	}
@@ -202,14 +199,14 @@ func (s *Store) LinkPlaidItem(ctx context.Context, publicToken, institutionID, i
 	}
 	now := s.unixNow()
 	if _, err := tx.Exec(`INSERT INTO plaid_items (seq, id, plaid_item_id, institution_id, institution_name, access_credential_id, environment, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?)`, seq, id, exchanged.ItemID, institutionID, institutionName, credentialID, s.plaid.Environment(), now, now); err != nil {
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, seq, id, exchanged.ItemID, institutionID, institutionName, credentialID, s.plaid.Environment(), now, now); err != nil {
 		return PlaidItem{}, err
 	}
 	for _, a := range accounts.Accounts {
 		var matched any
 		syncFrom := ""
 		if a.Mask != "" {
-			rows, err := tx.Query(`SELECT id FROM accounts WHERE last_four = ? AND closed_on = ''`, a.Mask)
+			rows, err := tx.Query(`SELECT id FROM accounts WHERE last_four = $1 AND closed_on = ''`, a.Mask)
 			if err != nil {
 				return PlaidItem{}, err
 			}
@@ -235,7 +232,7 @@ func (s *Store) LinkPlaidItem(ctx context.Context, publicToken, institutionID, i
 			name = a.OfficialName
 		}
 		if _, err := tx.Exec(`INSERT INTO plaid_accounts (plaid_account_id, plaid_item_id, account_id, name, mask, type, subtype, sync_from_on, created_at, updated_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?)`, a.AccountID, id, matched, name, a.Mask, a.Type, a.Subtype, syncFrom, now, now); err != nil {
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, a.AccountID, id, matched, name, a.Mask, a.Type, a.Subtype, syncFrom, now, now); err != nil {
 			return PlaidItem{}, err
 		}
 	}
@@ -247,7 +244,7 @@ func (s *Store) LinkPlaidItem(ctx context.Context, publicToken, institutionID, i
 	// the bank as last_error and the next scheduled sync tries again.
 	var first PlaidSyncResult
 	if err := s.syncPlaidItem(ctx, keys, id, &first); err != nil {
-		if _, dbErr := s.db.Exec(`UPDATE plaid_items SET last_error = ?, updated_at = ? WHERE id = ?`, err.Error(), s.unixNow(), id); dbErr != nil {
+		if _, dbErr := s.db.Exec(`UPDATE plaid_items SET last_error = $1, updated_at = $2 WHERE id = $3`, err.Error(), s.unixNow(), id); dbErr != nil {
 			return PlaidItem{}, dbErr
 		}
 	}
@@ -258,7 +255,7 @@ func (s *Store) LinkPlaidItem(ctx context.Context, publicToken, institutionID, i
 // downloaded file, or "" when no file was imported (sync everything Plaid has).
 func syncStartAfterFiles(q queryer, accountID string) (string, error) {
 	var last string
-	if err := q.QueryRow(`SELECT COALESCE(MAX(last_row_on),'') FROM import_batches WHERE account_id = ? AND undone_at = 0 AND source != 'plaid'`, accountID).Scan(&last); err != nil {
+	if err := q.QueryRow(`SELECT COALESCE(MAX(last_row_on),'') FROM import_batches WHERE account_id = $1 AND undone_at = 0 AND source != 'plaid'`, accountID).Scan(&last); err != nil {
 		return "", err
 	}
 	if last == "" {
@@ -274,14 +271,14 @@ func syncStartAfterFiles(q queryer, accountID string) (string, error) {
 // MatchPlaidAccount points a Plaid account at a budget-store account (or at
 // none, with an empty id). syncFromOn empty means the day after that
 // account's last downloaded file row.
-func (s *Store) MatchPlaidAccount(plaidAccountID, accountID, syncFromOn string) (PlaidAccount, error) {
+func (s *Ledger) MatchPlaidAccount(plaidAccountID, accountID, syncFromOn string) (PlaidAccount, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return PlaidAccount{}, err
 	}
 	defer tx.Rollback()
 	var itemID string
-	if err := tx.QueryRow(`SELECT plaid_item_id FROM plaid_accounts WHERE plaid_account_id = ?`, plaidAccountID).Scan(&itemID); err != nil {
+	if err := tx.QueryRow(`SELECT plaid_item_id FROM plaid_accounts WHERE plaid_account_id = $1`, plaidAccountID).Scan(&itemID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return PlaidAccount{}, ErrNotFound
 		}
@@ -302,7 +299,7 @@ func (s *Store) MatchPlaidAccount(plaidAccountID, accountID, syncFromOn string) 
 	if err := validDate("sync_from_on", syncFromOn, false); err != nil {
 		return PlaidAccount{}, err
 	}
-	if _, err := tx.Exec(`UPDATE plaid_accounts SET account_id = ?, sync_from_on = ?, updated_at = ? WHERE plaid_account_id = ?`, target, syncFromOn, s.unixNow(), plaidAccountID); err != nil {
+	if _, err := tx.Exec(`UPDATE plaid_accounts SET account_id = $1, sync_from_on = $2, updated_at = $3 WHERE plaid_account_id = $4`, target, syncFromOn, s.unixNow(), plaidAccountID); err != nil {
 		return PlaidAccount{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -321,9 +318,9 @@ func (s *Store) MatchPlaidAccount(plaidAccountID, accountID, syncFromOn string) 
 }
 
 // GetPlaidItem returns one linked bank with its accounts.
-func (s *Store) GetPlaidItem(id string) (PlaidItem, error) {
+func (s *Ledger) GetPlaidItem(id string) (PlaidItem, error) {
 	var item PlaidItem
-	err := s.db.QueryRow(`SELECT id, plaid_item_id, institution_id, institution_name, environment, last_synced_at, last_error, created_at FROM plaid_items WHERE id = ?`, id).
+	err := s.db.QueryRow(`SELECT id, plaid_item_id, institution_id, institution_name, environment, last_synced_at, last_error, created_at FROM plaid_items WHERE id = $1`, id).
 		Scan(&item.ID, &item.PlaidItemID, &item.InstitutionID, &item.InstitutionName, &item.Environment, &item.LastSyncedAt, &item.LastError, &item.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PlaidItem{}, ErrNotFound
@@ -331,7 +328,7 @@ func (s *Store) GetPlaidItem(id string) (PlaidItem, error) {
 	if err != nil {
 		return PlaidItem{}, err
 	}
-	rows, err := s.db.Query(`SELECT plaid_account_id, COALESCE(account_id,''), name, mask, type, subtype, sync_from_on FROM plaid_accounts WHERE plaid_item_id = ? ORDER BY name`, id)
+	rows, err := s.db.Query(`SELECT plaid_account_id, COALESCE(account_id,''), name, mask, type, subtype, sync_from_on FROM plaid_accounts WHERE plaid_item_id = $1 ORDER BY name`, id)
 	if err != nil {
 		return PlaidItem{}, err
 	}
@@ -348,7 +345,7 @@ func (s *Store) GetPlaidItem(id string) (PlaidItem, error) {
 }
 
 // ListPlaidItems returns every linked bank.
-func (s *Store) ListPlaidItems() ([]PlaidItem, error) {
+func (s *Ledger) ListPlaidItems() ([]PlaidItem, error) {
 	rows, err := s.db.Query(`SELECT id FROM plaid_items ORDER BY seq`)
 	if err != nil {
 		return nil, err
@@ -399,7 +396,7 @@ type PlaidSyncResult struct {
 
 // SyncPlaid asks every linked bank what changed and applies it. One bank's
 // failure is recorded on it and reported, and the others still sync.
-func (s *Store) SyncPlaid(ctx context.Context) (PlaidSyncResult, error) {
+func (s *Ledger) SyncPlaid(ctx context.Context) (PlaidSyncResult, error) {
 	result := PlaidSyncResult{Errors: []string{}}
 	if s.plaid == nil {
 		return result, ErrPlaidOff
@@ -415,7 +412,7 @@ func (s *Store) SyncPlaid(ctx context.Context) (PlaidSyncResult, error) {
 	for _, item := range items {
 		if err := s.syncPlaidItem(ctx, keys, item.ID, &result); err != nil {
 			result.Errors = append(result.Errors, fmt.Sprintf("%s (%s): %v", item.ID, item.InstitutionName, err))
-			if _, dbErr := s.db.Exec(`UPDATE plaid_items SET last_error = ?, updated_at = ? WHERE id = ?`, err.Error(), s.unixNow(), item.ID); dbErr != nil {
+			if _, dbErr := s.db.Exec(`UPDATE plaid_items SET last_error = $1, updated_at = $2 WHERE id = $3`, err.Error(), s.unixNow(), item.ID); dbErr != nil {
 				return result, dbErr
 			}
 		}
@@ -423,9 +420,9 @@ func (s *Store) SyncPlaid(ctx context.Context) (PlaidSyncResult, error) {
 	return result, nil
 }
 
-func (s *Store) syncPlaidItem(ctx context.Context, keys PlaidKeys, itemID string, result *PlaidSyncResult) error {
+func (s *Ledger) syncPlaidItem(ctx context.Context, keys PlaidKeys, itemID string, result *PlaidSyncResult) error {
 	var credentialID, cursor string
-	if err := s.db.QueryRow(`SELECT access_credential_id, sync_cursor FROM plaid_items WHERE id = ?`, itemID).Scan(&credentialID, &cursor); err != nil {
+	if err := s.db.QueryRow(`SELECT access_credential_id, sync_cursor FROM plaid_items WHERE id = $1`, itemID).Scan(&credentialID, &cursor); err != nil {
 		return err
 	}
 	accessToken, err := s.plaid.AccessToken(ctx, credentialID)
@@ -474,7 +471,7 @@ func (s *Store) syncPlaidItem(ctx context.Context, keys PlaidKeys, itemID string
 	}
 	defer tx.Rollback()
 	accounts := map[string]PlaidAccount{}
-	rows, err := tx.Query(`SELECT plaid_account_id, COALESCE(account_id,''), sync_from_on FROM plaid_accounts WHERE plaid_item_id = ?`, itemID)
+	rows, err := tx.Query(`SELECT plaid_account_id, COALESCE(account_id,''), sync_from_on FROM plaid_accounts WHERE plaid_item_id = $1`, itemID)
 	if err != nil {
 		return err
 	}
@@ -514,8 +511,8 @@ func (s *Store) syncPlaidItem(ctx context.Context, keys PlaidKeys, itemID string
 		}
 	}
 	for _, transactionID := range removed {
-		changed, err := tx.Exec(`UPDATE transactions SET status = 'void', updated_at = ? WHERE id IN (
-			SELECT ts.transaction_id FROM transaction_sources ts JOIN import_rows r ON r.id = ts.import_row_id WHERE r.dedupe_key = ?) AND status != 'void'`,
+		changed, err := tx.Exec(`UPDATE transactions SET status = 'void', updated_at = $1 WHERE id IN (
+			SELECT ts.transaction_id FROM transaction_sources ts JOIN import_rows r ON r.id = ts.import_row_id WHERE r.dedupe_key = $2) AND status != 'void'`,
 			s.unixNow(), "plaid:"+transactionID)
 		if err != nil {
 			return err
@@ -524,7 +521,7 @@ func (s *Store) syncPlaidItem(ctx context.Context, keys PlaidKeys, itemID string
 			result.Voided += int(n)
 		}
 	}
-	if _, err := tx.Exec(`UPDATE plaid_items SET sync_cursor = ?, last_synced_at = ?, last_error = '', updated_at = ? WHERE id = ?`, next, s.unixNow(), s.unixNow(), itemID); err != nil {
+	if _, err := tx.Exec(`UPDATE plaid_items SET sync_cursor = $1, last_synced_at = $2, last_error = '', updated_at = $3 WHERE id = $4`, next, s.unixNow(), s.unixNow(), itemID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -543,7 +540,7 @@ func plaidCents(amount float64) int64 {
 // applyPlaidTransaction adds a Plaid transaction, or updates the one it
 // already made (the same transaction_id, or the pending one a posted charge
 // replaces). Answers "added" or "updated".
-func (s *Store) applyPlaidTransaction(tx queryer, batches map[string]string, accountID string, t plaidTransaction, raw json.RawMessage) (string, error) {
+func (s *Ledger) applyPlaidTransaction(tx queryer, batches map[string]string, accountID string, t plaidTransaction, raw json.RawMessage) (string, error) {
 	if err := validDate("date", t.Date, true); err != nil {
 		return "", err
 	}
@@ -562,7 +559,7 @@ func (s *Store) applyPlaidTransaction(tx queryer, batches map[string]string, acc
 		return "", err
 	}
 	var rowNumber int
-	if err := tx.QueryRow(`SELECT COALESCE(MAX(row_number),0) + 1 FROM import_rows WHERE import_batch_id = ?`, batchID).Scan(&rowNumber); err != nil {
+	if err := tx.QueryRow(`SELECT COALESCE(MAX(row_number),0) + 1 FROM import_rows WHERE import_batch_id = $1`, batchID).Scan(&rowNumber); err != nil {
 		return "", err
 	}
 	key := "plaid:" + t.TransactionID
@@ -574,7 +571,7 @@ func (s *Store) applyPlaidTransaction(tx queryer, batches map[string]string, acc
 			continue
 		}
 		err := tx.QueryRow(`SELECT ts.transaction_id FROM transaction_sources ts JOIN import_rows r ON r.id = ts.import_row_id
-			JOIN transactions t ON t.id = ts.transaction_id WHERE r.dedupe_key = ? ORDER BY r.seq DESC LIMIT 1`, earlierKey).Scan(&existing)
+			JOIN transactions t ON t.id = ts.transaction_id WHERE r.dedupe_key = $1 ORDER BY r.seq DESC LIMIT 1`, earlierKey).Scan(&existing)
 		if err == nil {
 			break
 		}
@@ -586,7 +583,7 @@ func (s *Store) applyPlaidTransaction(tx queryer, batches map[string]string, acc
 	if existing != "" {
 		outcome = "updated"
 	}
-	if _, err := tx.Exec(`INSERT INTO import_rows (seq, id, import_batch_id, row_number, dedupe_key, outcome, raw_json) VALUES (?,?,?,?,?,?,?)`,
+	if _, err := tx.Exec(`INSERT INTO import_rows (seq, id, import_batch_id, row_number, dedupe_key, outcome, raw_json) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
 		rowSeq, rowID, batchID, rowNumber, key, outcome, string(raw)); err != nil {
 		return "", err
 	}
@@ -596,18 +593,18 @@ func (s *Store) applyPlaidTransaction(tx queryer, batches map[string]string, acc
 		// transaction is still a plain two-posting row; a split or a paired
 		// transfer keeps its postings and only takes the new status and date.
 		var postings int
-		if err := tx.QueryRow(`SELECT COUNT(*) FROM postings WHERE transaction_id = ?`, existing).Scan(&postings); err != nil {
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM postings WHERE transaction_id = $1`, existing).Scan(&postings); err != nil {
 			return "", err
 		}
 		if postings == 2 {
-			if _, err := tx.Exec(`UPDATE postings SET amount_cents = CASE WHEN account_id IS NOT NULL THEN ? ELSE ? END WHERE transaction_id = ?`, amount, -amount, existing); err != nil {
+			if _, err := tx.Exec(`UPDATE postings SET amount_cents = CASE WHEN account_id IS NOT NULL THEN $1::bigint ELSE $2::bigint END WHERE transaction_id = $3`, amount, -amount, existing); err != nil {
 				return "", err
 			}
 		}
-		if _, err := tx.Exec(`UPDATE transactions SET status = ?, occurred_on = ?, description = ?, updated_at = ? WHERE id = ?`, status, t.Date, description, now, existing); err != nil {
+		if _, err := tx.Exec(`UPDATE transactions SET status = $1, occurred_on = $2, description = $3, updated_at = $4 WHERE id = $5`, status, t.Date, description, now, existing); err != nil {
 			return "", err
 		}
-		if _, err := tx.Exec(`INSERT INTO transaction_sources (transaction_id, import_row_id) VALUES (?,?)`, existing, rowID); err != nil {
+		if _, err := tx.Exec(`INSERT INTO transaction_sources (transaction_id, import_row_id) VALUES ($1,$2)`, existing, rowID); err != nil {
 			return "", err
 		}
 		return "updated", nil
@@ -634,11 +631,11 @@ func (s *Store) applyPlaidTransaction(tx queryer, batches map[string]string, acc
 	if err != nil {
 		return "", err
 	}
-	if _, err := tx.Exec(`INSERT INTO transaction_sources (transaction_id, import_row_id) VALUES (?,?)`, transactionID, rowID); err != nil {
+	if _, err := tx.Exec(`INSERT INTO transaction_sources (transaction_id, import_row_id) VALUES ($1,$2)`, transactionID, rowID); err != nil {
 		return "", err
 	}
-	if _, err := tx.Exec(`UPDATE import_batches SET first_row_on = CASE WHEN first_row_on = '' OR first_row_on > ? THEN ? ELSE first_row_on END,
-		last_row_on = CASE WHEN last_row_on < ? THEN ? ELSE last_row_on END WHERE id = ?`, t.Date, t.Date, t.Date, t.Date, batchID); err != nil {
+	if _, err := tx.Exec(`UPDATE import_batches SET first_row_on = CASE WHEN first_row_on = '' OR first_row_on > $1 THEN $2 ELSE first_row_on END,
+		last_row_on = CASE WHEN last_row_on < $3 THEN $4 ELSE last_row_on END WHERE id = $5`, t.Date, t.Date, t.Date, t.Date, batchID); err != nil {
 		return "", err
 	}
 	return "added", nil
@@ -646,7 +643,7 @@ func (s *Store) applyPlaidTransaction(tx queryer, batches map[string]string, acc
 
 // plaidBatch is the import batch this sync's rows for one account go into,
 // made on first use.
-func (s *Store) plaidBatch(tx queryer, batches map[string]string, accountID string) (string, error) {
+func (s *Ledger) plaidBatch(tx queryer, batches map[string]string, accountID string) (string, error) {
 	if id, found := batches[accountID]; found {
 		return id, nil
 	}
@@ -656,7 +653,7 @@ func (s *Store) plaidBatch(tx queryer, batches map[string]string, accountID stri
 	}
 	now := s.unixNow()
 	stamp := sha256.Sum256([]byte(fmt.Sprintf("plaid sync %s %d %s", accountID, s.now().UnixNano(), id)))
-	if _, err := tx.Exec(`INSERT INTO import_batches (seq, id, source, account_id, file_name, file_id, file_sha256, imported_at) VALUES (?,?,'plaid',?,?,'',?,?)`,
+	if _, err := tx.Exec(`INSERT INTO import_batches (seq, id, source, account_id, file_name, file_id, file_sha256, imported_at) VALUES ($1,$2,'plaid',$3,$4,'',$5,$6)`,
 		seq, id, accountID, "plaid sync "+time.Unix(now, 0).UTC().Format(time.RFC3339), hex.EncodeToString(stamp[:]), now); err != nil {
 		return "", err
 	}

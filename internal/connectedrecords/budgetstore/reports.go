@@ -14,7 +14,7 @@ var budgetViews = []string{"limit", "envelope"}
 func balanceAsOf(q queryer, accountID, asOf string) (int64, error) {
 	var balance int64
 	err := q.QueryRow(`SELECT COALESCE(SUM(p.amount_cents),0) FROM postings p JOIN transactions t ON t.id = p.transaction_id
-		WHERE p.account_id = ? AND t.status != 'void' AND t.occurred_on <= ?`, accountID, asOf).Scan(&balance)
+		WHERE p.account_id = $1 AND t.status != 'void' AND t.occurred_on <= $2`, accountID, asOf).Scan(&balance)
 	return balance, err
 }
 
@@ -54,14 +54,14 @@ func insertAssertion(tx queryer, in BalanceAssertionInput, now int64) (string, e
 	if err != nil {
 		return "", err
 	}
-	_, err = tx.Exec(`INSERT INTO balance_assertions (seq, id, account_id, as_of, balance_cents, source, created_at) VALUES (?,?,?,?,?,?,?)`,
+	_, err = tx.Exec(`INSERT INTO balance_assertions (seq, id, account_id, as_of, balance_cents, source, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
 		seq, id, in.AccountID, in.AsOf, in.BalanceCents, strings.TrimSpace(in.Source), now)
 	return id, err
 }
 
 // CreateBalanceAssertion records a reported balance and answers how far the
 // ledger is from it.
-func (s *Store) CreateBalanceAssertion(in BalanceAssertionInput) (BalanceAssertion, error) {
+func (s *Ledger) CreateBalanceAssertion(in BalanceAssertionInput) (BalanceAssertion, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return BalanceAssertion{}, err
@@ -80,9 +80,9 @@ func (s *Store) CreateBalanceAssertion(in BalanceAssertionInput) (BalanceAsserti
 	return s.getBalanceAssertion(id)
 }
 
-func (s *Store) getBalanceAssertion(id string) (BalanceAssertion, error) {
+func (s *Ledger) getBalanceAssertion(id string) (BalanceAssertion, error) {
 	var a BalanceAssertion
-	err := s.db.QueryRow(`SELECT id, account_id, as_of, balance_cents, source, created_at FROM balance_assertions WHERE id = ?`, id).
+	err := s.db.QueryRow(`SELECT id, account_id, as_of, balance_cents, source, created_at FROM balance_assertions WHERE id = $1`, id).
 		Scan(&a.ID, &a.AccountID, &a.AsOf, &a.BalanceCents, &a.Source, &a.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return BalanceAssertion{}, ErrNotFound
@@ -99,11 +99,11 @@ func (s *Store) getBalanceAssertion(id string) (BalanceAssertion, error) {
 
 // ListBalanceAssertions returns every assertion, each checked against the
 // ledger as it stands now.
-func (s *Store) ListBalanceAssertions(accountID string) ([]BalanceAssertion, error) {
+func (s *Ledger) ListBalanceAssertions(accountID string) ([]BalanceAssertion, error) {
 	query := `SELECT id FROM balance_assertions`
 	var args []any
 	if accountID != "" {
-		query += ` WHERE account_id = ?`
+		query += ` WHERE account_id = $1`
 		args = append(args, accountID)
 	}
 	rows, err := s.db.Query(query+` ORDER BY as_of, seq`, args...)
@@ -136,7 +136,7 @@ func (s *Store) ListBalanceAssertions(accountID string) ([]BalanceAssertion, err
 // other posting (or as_of when it has none), against the Opening balances
 // category. An existing opening-balance transaction for the account is
 // replaced. The reported balance is also kept as an assertion.
-func (s *Store) SetOpeningBalance(in BalanceAssertionInput) (BalanceAssertion, error) {
+func (s *Ledger) SetOpeningBalance(in BalanceAssertionInput) (BalanceAssertion, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return BalanceAssertion{}, err
@@ -151,7 +151,7 @@ func (s *Store) SetOpeningBalance(in BalanceAssertionInput) (BalanceAssertion, e
 	}
 	if _, err := tx.Exec(`DELETE FROM transactions WHERE id IN (
 		SELECT pa.transaction_id FROM postings pa JOIN postings pc ON pc.transaction_id = pa.transaction_id
-		WHERE pa.account_id = ? AND pc.category_id = ?)`, in.AccountID, openingCategory); err != nil {
+		WHERE pa.account_id = $1 AND pc.category_id = $2)`, in.AccountID, openingCategory); err != nil {
 		return BalanceAssertion{}, err
 	}
 	ledger, err := balanceAsOf(tx, in.AccountID, in.AsOf)
@@ -160,7 +160,7 @@ func (s *Store) SetOpeningBalance(in BalanceAssertionInput) (BalanceAssertion, e
 	}
 	var firstDate string
 	if err := tx.QueryRow(`SELECT COALESCE(MIN(t.occurred_on),'') FROM postings p JOIN transactions t ON t.id = p.transaction_id
-		WHERE p.account_id = ? AND t.status != 'void'`, in.AccountID).Scan(&firstDate); err != nil {
+		WHERE p.account_id = $1 AND t.status != 'void'`, in.AccountID).Scan(&firstDate); err != nil {
 		return BalanceAssertion{}, err
 	}
 	openingDate := in.AsOf
@@ -211,13 +211,13 @@ func validMonth(month string) error {
 }
 
 // SpendingByCategory totals each category's postings in one month.
-func (s *Store) SpendingByCategory(month string) ([]CategoryTotal, error) {
+func (s *Ledger) SpendingByCategory(month string) ([]CategoryTotal, error) {
 	if err := validMonth(month); err != nil {
 		return nil, err
 	}
 	rows, err := s.db.Query(`SELECT c.id, COALESCE(c.parent_id,''), c.name, c.kind, SUM(p.amount_cents), COUNT(DISTINCT t.id)
 		FROM postings p JOIN transactions t ON t.id = p.transaction_id JOIN categories c ON c.id = p.category_id
-		WHERE t.status != 'void' AND substr(t.occurred_on,1,7) = ?
+		WHERE t.status != 'void' AND substr(t.occurred_on,1,7) = $1
 		GROUP BY c.id ORDER BY c.kind, SUM(p.amount_cents) DESC`, month)
 	if err != nil {
 		return nil, err
@@ -245,7 +245,7 @@ type BudgetAssignment struct {
 }
 
 // SetBudgetAssignment creates or replaces the amount for a category and month.
-func (s *Store) SetBudgetAssignment(in BudgetAssignment) (BudgetAssignment, error) {
+func (s *Ledger) SetBudgetAssignment(in BudgetAssignment) (BudgetAssignment, error) {
 	if err := validMonth(in.Month); err != nil {
 		return BudgetAssignment{}, err
 	}
@@ -255,7 +255,7 @@ func (s *Store) SetBudgetAssignment(in BudgetAssignment) (BudgetAssignment, erro
 	}
 	defer tx.Rollback()
 	var kind string
-	if err := tx.QueryRow(`SELECT kind FROM categories WHERE id = ?`, in.CategoryID).Scan(&kind); err != nil {
+	if err := tx.QueryRow(`SELECT kind FROM categories WHERE id = $1`, in.CategoryID).Scan(&kind); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return BudgetAssignment{}, fmt.Errorf("%w: category_id %q does not exist", ErrInvalid, in.CategoryID)
 		}
@@ -266,10 +266,10 @@ func (s *Store) SetBudgetAssignment(in BudgetAssignment) (BudgetAssignment, erro
 	}
 	now := s.unixNow()
 	var id string
-	err = tx.QueryRow(`SELECT id FROM budget_assignments WHERE category_id = ? AND month = ?`, in.CategoryID, in.Month).Scan(&id)
+	err = tx.QueryRow(`SELECT id FROM budget_assignments WHERE category_id = $1 AND month = $2`, in.CategoryID, in.Month).Scan(&id)
 	switch {
 	case err == nil:
-		if _, err := tx.Exec(`UPDATE budget_assignments SET amount_cents = ?, updated_at = ? WHERE id = ?`, in.AmountCents, now, id); err != nil {
+		if _, err := tx.Exec(`UPDATE budget_assignments SET amount_cents = $1, updated_at = $2 WHERE id = $3`, in.AmountCents, now, id); err != nil {
 			return BudgetAssignment{}, err
 		}
 	case errors.Is(err, sql.ErrNoRows):
@@ -277,7 +277,7 @@ func (s *Store) SetBudgetAssignment(in BudgetAssignment) (BudgetAssignment, erro
 		if seq, id, err = mintID(tx, "budget_assignments", "budget_assignment"); err != nil {
 			return BudgetAssignment{}, err
 		}
-		if _, err := tx.Exec(`INSERT INTO budget_assignments (seq, id, category_id, month, amount_cents, created_at, updated_at) VALUES (?,?,?,?,?,?,?)`,
+		if _, err := tx.Exec(`INSERT INTO budget_assignments (seq, id, category_id, month, amount_cents, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
 			seq, id, in.CategoryID, in.Month, in.AmountCents, now, now); err != nil {
 			return BudgetAssignment{}, err
 		}
@@ -288,7 +288,7 @@ func (s *Store) SetBudgetAssignment(in BudgetAssignment) (BudgetAssignment, erro
 		return BudgetAssignment{}, err
 	}
 	var out BudgetAssignment
-	err = s.db.QueryRow(`SELECT id, category_id, month, amount_cents, created_at, updated_at FROM budget_assignments WHERE id = ?`, id).
+	err = s.db.QueryRow(`SELECT id, category_id, month, amount_cents, created_at, updated_at FROM budget_assignments WHERE id = $1`, id).
 		Scan(&out.ID, &out.CategoryID, &out.Month, &out.AmountCents, &out.CreatedAt, &out.UpdatedAt)
 	return out, err
 }
@@ -321,7 +321,7 @@ type Budget struct {
 }
 
 // GetBudget reads one month's assignments in the limit or the envelope view.
-func (s *Store) GetBudget(month, view string) (Budget, error) {
+func (s *Ledger) GetBudget(month, view string) (Budget, error) {
 	if err := validMonth(month); err != nil {
 		return Budget{}, err
 	}
@@ -331,12 +331,12 @@ func (s *Store) GetBudget(month, view string) (Budget, error) {
 	budget := Budget{Month: month, View: view, Lines: []BudgetLine{}}
 	monthEnd := month + "-31" // dates compare as text; no month has a 32nd
 	rows, err := s.db.Query(`SELECT c.id, COALESCE(c.parent_id,''), c.name,
-		COALESCE((SELECT amount_cents FROM budget_assignments WHERE category_id = c.id AND month = ?), 0),
+		COALESCE((SELECT amount_cents FROM budget_assignments WHERE category_id = c.id AND month = $1), 0),
 		COALESCE((SELECT SUM(p.amount_cents) FROM postings p JOIN transactions t ON t.id = p.transaction_id
-			WHERE p.category_id = c.id AND t.status != 'void' AND substr(t.occurred_on,1,7) = ?), 0),
-		COALESCE((SELECT SUM(amount_cents) FROM budget_assignments WHERE category_id = c.id AND month <= ?), 0),
+			WHERE p.category_id = c.id AND t.status != 'void' AND substr(t.occurred_on,1,7) = $2), 0),
+		COALESCE((SELECT SUM(amount_cents) FROM budget_assignments WHERE category_id = c.id AND month <= $3), 0),
 		COALESCE((SELECT SUM(p.amount_cents) FROM postings p JOIN transactions t ON t.id = p.transaction_id
-			WHERE p.category_id = c.id AND t.status != 'void' AND t.occurred_on <= ?), 0)
+			WHERE p.category_id = c.id AND t.status != 'void' AND t.occurred_on <= $4), 0)
 		FROM categories c WHERE c.kind = 'expense' AND c.archived_at = 0 ORDER BY c.seq`, month, month, month, monthEnd)
 	if err != nil {
 		return Budget{}, err
@@ -360,7 +360,7 @@ func (s *Store) GetBudget(month, view string) (Budget, error) {
 		return Budget{}, err
 	}
 	if err := s.db.QueryRow(`SELECT COALESCE(SUM(p.amount_cents),0) FROM postings p JOIN transactions t ON t.id = p.transaction_id
-		JOIN categories c ON c.id = p.category_id WHERE c.role = 'uncategorized' AND t.status != 'void' AND substr(t.occurred_on,1,7) = ?`, month).
+		JOIN categories c ON c.id = p.category_id WHERE c.role = 'uncategorized' AND t.status != 'void' AND substr(t.occurred_on,1,7) = $1`, month).
 		Scan(&budget.UncategorizedCents); err != nil {
 		return Budget{}, err
 	}
@@ -371,12 +371,12 @@ func (s *Store) GetBudget(month, view string) (Budget, error) {
 		// on-budget account count: interest inside the IRA is not spendable.
 		if err := s.db.QueryRow(`SELECT COALESCE(-SUM(p.amount_cents),0) FROM postings p JOIN transactions t ON t.id = p.transaction_id
 			JOIN categories c ON c.id = p.category_id
-			WHERE c.kind IN ('income','equity') AND t.status != 'void' AND t.occurred_on <= ?
+			WHERE c.kind IN ('income','equity') AND t.status != 'void' AND t.occurred_on <= $1
 			AND EXISTS (SELECT 1 FROM postings pa JOIN accounts a ON a.id = pa.account_id WHERE pa.transaction_id = t.id AND a.on_budget = 1)`, monthEnd).
 			Scan(&inflow); err != nil {
 			return Budget{}, err
 		}
-		if err := s.db.QueryRow(`SELECT COALESCE(SUM(amount_cents),0) FROM budget_assignments WHERE month <= ?`, month).Scan(&assigned); err != nil {
+		if err := s.db.QueryRow(`SELECT COALESCE(SUM(amount_cents),0) FROM budget_assignments WHERE month <= $1`, month).Scan(&assigned); err != nil {
 			return Budget{}, err
 		}
 		ready := inflow - assigned
@@ -410,7 +410,7 @@ var linkableTables = map[string]string{
 
 // CreateLink records a pointer from one of this store's records to another
 // store's record, by that store's id.
-func (s *Store) CreateLink(in Link) (Link, error) {
+func (s *Ledger) CreateLink(in Link) (Link, error) {
 	table := ""
 	for prefix, candidate := range linkableTables {
 		if strings.HasPrefix(in.FromID, prefix) && strings.Trim(strings.TrimPrefix(in.FromID, prefix), "0123456789") == "" {
@@ -436,9 +436,9 @@ func (s *Store) CreateLink(in Link) (Link, error) {
 		return Link{}, err
 	}
 	now := s.unixNow()
-	if _, err := tx.Exec(`INSERT INTO links (seq, id, from_id, entity_type, entity_ref, note, created_at) VALUES (?,?,?,?,?,?,?)`,
+	if _, err := tx.Exec(`INSERT INTO links (seq, id, from_id, entity_type, entity_ref, note, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
 		seq, id, in.FromID, in.EntityType, in.EntityRef, in.Note, now); err != nil {
-		if strings.Contains(err.Error(), "UNIQUE") {
+		if isUniqueViolation(err) {
 			return Link{}, fmt.Errorf("%w: that link exists", ErrConflict)
 		}
 		return Link{}, err
@@ -451,8 +451,8 @@ func (s *Store) CreateLink(in Link) (Link, error) {
 }
 
 // ListLinks returns the links from one record.
-func (s *Store) ListLinks(fromID string) ([]Link, error) {
-	rows, err := s.db.Query(`SELECT id, from_id, entity_type, entity_ref, note, created_at FROM links WHERE from_id = ? ORDER BY seq`, fromID)
+func (s *Ledger) ListLinks(fromID string) ([]Link, error) {
+	rows, err := s.db.Query(`SELECT id, from_id, entity_type, entity_ref, note, created_at FROM links WHERE from_id = $1 ORDER BY seq`, fromID)
 	if err != nil {
 		return nil, err
 	}
@@ -481,7 +481,7 @@ type MonthCategoryTotal struct {
 // fromMonth to toMonth inclusive (YYYY-MM; either may be empty for no bound).
 // Transfers between the operator's accounts have no category posting, so they
 // never appear.
-func (s *Store) SpendingByMonth(fromMonth, toMonth string) ([]MonthCategoryTotal, error) {
+func (s *Ledger) SpendingByMonth(fromMonth, toMonth string) ([]MonthCategoryTotal, error) {
 	for name, value := range map[string]string{"from": fromMonth, "to": toMonth} {
 		if value != "" {
 			if err := validMonth(value); err != nil {
@@ -491,7 +491,7 @@ func (s *Store) SpendingByMonth(fromMonth, toMonth string) ([]MonthCategoryTotal
 	}
 	rows, err := s.db.Query(`SELECT substr(t.occurred_on,1,7) AS month, c.id, c.kind, SUM(p.amount_cents), COUNT(DISTINCT t.id)
 		FROM postings p JOIN transactions t ON t.id = p.transaction_id JOIN categories c ON c.id = p.category_id
-		WHERE t.status != 'void' AND (? = '' OR substr(t.occurred_on,1,7) >= ?) AND (? = '' OR substr(t.occurred_on,1,7) <= ?)
+		WHERE t.status != 'void' AND ($1 = '' OR substr(t.occurred_on,1,7) >= $2) AND ($3 = '' OR substr(t.occurred_on,1,7) <= $4)
 		GROUP BY month, c.id ORDER BY month, c.seq`, fromMonth, fromMonth, toMonth, toMonth)
 	if err != nil {
 		return nil, err

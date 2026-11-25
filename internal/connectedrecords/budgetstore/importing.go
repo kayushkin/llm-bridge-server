@@ -210,7 +210,7 @@ type ImportRequest struct {
 // account's posting and the opposite amount on the payee's default category
 // or on Uncategorized. A row an earlier live batch already holds is kept as
 // a duplicate and makes nothing. All or nothing.
-func (s *Store) Import(request ImportRequest, file io.Reader) (ImportBatch, error) {
+func (s *Ledger) Import(request ImportRequest, file io.Reader) (ImportBatch, error) {
 	parser, found := sourceParsers[request.Source]
 	if !found {
 		if err := requireOneOf("source", request.Source, importSources); err != nil {
@@ -254,7 +254,7 @@ func (s *Store) Import(request ImportRequest, file io.Reader) (ImportBatch, erro
 		return ImportBatch{}, fmt.Errorf("%w: account_id %q does not exist", ErrInvalid, request.AccountID)
 	}
 	var sameFileBatch string
-	err = tx.QueryRow(`SELECT id FROM import_batches WHERE file_sha256 = ? AND account_id = ? AND undone_at = 0`, fileSHA, request.AccountID).Scan(&sameFileBatch)
+	err = tx.QueryRow(`SELECT id FROM import_batches WHERE file_sha256 = $1 AND account_id = $2 AND undone_at = 0`, fileSHA, request.AccountID).Scan(&sameFileBatch)
 	if err == nil {
 		return ImportBatch{}, fmt.Errorf("%w: this file is already imported into this account as %s", ErrConflict, sameFileBatch)
 	} else if !errors.Is(err, sql.ErrNoRows) {
@@ -276,7 +276,7 @@ func (s *Store) Import(request ImportRequest, file io.Reader) (ImportBatch, erro
 	}
 	var blocking []string
 	blockRows, err := tx.Query(`SELECT w.transaction_id FROM transfers_without_partner w JOIN transactions t ON t.id = w.transaction_id
-		WHERE w.account_id = ? AND t.occurred_on BETWEEN ? AND ? ORDER BY t.occurred_on`, request.AccountID,
+		WHERE w.account_id = $1 AND t.occurred_on BETWEEN $2 AND $3 ORDER BY t.occurred_on`, request.AccountID,
 		first.AddDate(0, 0, -transferWindowDays).Format("2006-01-02"), last.AddDate(0, 0, transferWindowDays).Format("2006-01-02"))
 	if err != nil {
 		return ImportBatch{}, err
@@ -307,7 +307,7 @@ func (s *Store) Import(request ImportRequest, file io.Reader) (ImportBatch, erro
 		return ImportBatch{}, err
 	}
 	now := s.unixNow()
-	if _, err := tx.Exec(`INSERT INTO import_batches (seq, id, source, account_id, file_name, file_id, file_sha256, first_row_on, last_row_on, imported_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+	if _, err := tx.Exec(`INSERT INTO import_batches (seq, id, source, account_id, file_name, file_id, file_sha256, first_row_on, last_row_on, imported_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
 		batchSeq, batchID, request.Source, request.AccountID, request.FileName, request.FileID, fileSHA, firstRowOn, lastRowOn, now); err != nil {
 		return ImportBatch{}, err
 	}
@@ -318,7 +318,7 @@ func (s *Store) Import(request ImportRequest, file io.Reader) (ImportBatch, erro
 		key := rowDedupeKey(request.Source, request.AccountID, row, occurrences[identity])
 		var liveCopies int
 		if err := tx.QueryRow(`SELECT COUNT(*) FROM import_rows r JOIN import_batches b ON b.id = r.import_batch_id
-			WHERE r.dedupe_key = ? AND b.undone_at = 0 AND r.outcome != 'duplicate'`, key).Scan(&liveCopies); err != nil {
+			WHERE r.dedupe_key = $1 AND b.undone_at = 0 AND r.outcome != 'duplicate'`, key).Scan(&liveCopies); err != nil {
 			return ImportBatch{}, err
 		}
 		outcome := "created"
@@ -336,7 +336,7 @@ func (s *Store) Import(request ImportRequest, file io.Reader) (ImportBatch, erro
 		if err != nil {
 			return ImportBatch{}, err
 		}
-		if _, err := tx.Exec(`INSERT INTO import_rows (seq, id, import_batch_id, row_number, dedupe_key, outcome, raw_json) VALUES (?,?,?,?,?,?,?)`,
+		if _, err := tx.Exec(`INSERT INTO import_rows (seq, id, import_batch_id, row_number, dedupe_key, outcome, raw_json) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
 			rowSeq, rowID, batchID, row.rowNumber, key, outcome, string(raw)); err != nil {
 			return ImportBatch{}, err
 		}
@@ -364,7 +364,7 @@ func (s *Store) Import(request ImportRequest, file io.Reader) (ImportBatch, erro
 		if err != nil {
 			return ImportBatch{}, fmt.Errorf("row %d: %w", row.rowNumber, err)
 		}
-		if _, err := tx.Exec(`INSERT INTO transaction_sources (transaction_id, import_row_id) VALUES (?,?)`, transactionID, rowID); err != nil {
+		if _, err := tx.Exec(`INSERT INTO transaction_sources (transaction_id, import_row_id) VALUES ($1,$2)`, transactionID, rowID); err != nil {
 			return ImportBatch{}, err
 		}
 	}
@@ -375,9 +375,9 @@ func (s *Store) Import(request ImportRequest, file io.Reader) (ImportBatch, erro
 }
 
 // GetImportBatch returns one batch with counts of each row outcome.
-func (s *Store) GetImportBatch(id string) (ImportBatch, error) {
+func (s *Ledger) GetImportBatch(id string) (ImportBatch, error) {
 	var b ImportBatch
-	err := s.db.QueryRow(`SELECT id, source, account_id, file_name, file_id, file_sha256, first_row_on, last_row_on, imported_at, undone_at FROM import_batches WHERE id = ?`, id).
+	err := s.db.QueryRow(`SELECT id, source, account_id, file_name, file_id, file_sha256, first_row_on, last_row_on, imported_at, undone_at FROM import_batches WHERE id = $1`, id).
 		Scan(&b.ID, &b.Source, &b.AccountID, &b.FileName, &b.FileID, &b.FileSHA256, &b.FirstRowOn, &b.LastRowOn, &b.ImportedAt, &b.UndoneAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ImportBatch{}, ErrNotFound
@@ -386,7 +386,7 @@ func (s *Store) GetImportBatch(id string) (ImportBatch, error) {
 		return ImportBatch{}, err
 	}
 	b.Outcomes = map[string]int{}
-	rows, err := s.db.Query(`SELECT outcome, COUNT(*) FROM import_rows WHERE import_batch_id = ? GROUP BY outcome`, id)
+	rows, err := s.db.Query(`SELECT outcome, COUNT(*) FROM import_rows WHERE import_batch_id = $1 GROUP BY outcome`, id)
 	if err != nil {
 		return ImportBatch{}, err
 	}
@@ -401,12 +401,12 @@ func (s *Store) GetImportBatch(id string) (ImportBatch, error) {
 	}
 	rows.Close()
 	err = s.db.QueryRow(`SELECT COALESCE(MIN(t.occurred_on),''), COALESCE(MAX(t.occurred_on),'') FROM transactions t
-		JOIN transaction_sources ts ON ts.transaction_id = t.id JOIN import_rows r ON r.id = ts.import_row_id WHERE r.import_batch_id = ?`, id).Scan(&b.FirstDate, &b.LastDate)
+		JOIN transaction_sources ts ON ts.transaction_id = t.id JOIN import_rows r ON r.id = ts.import_row_id WHERE r.import_batch_id = $1`, id).Scan(&b.FirstDate, &b.LastDate)
 	return b, err
 }
 
 // ListImportBatches returns every batch, newest first.
-func (s *Store) ListImportBatches() ([]ImportBatch, error) {
+func (s *Ledger) ListImportBatches() ([]ImportBatch, error) {
 	rows, err := s.db.Query(`SELECT id FROM import_batches ORDER BY seq DESC`)
 	if err != nil {
 		return nil, err
@@ -436,14 +436,14 @@ func (s *Store) ListImportBatches() ([]ImportBatch, error) {
 // undone; its rows stay as a record. It refuses when one of those
 // transactions also holds a row from another batch (a paired transfer):
 // unpair it first.
-func (s *Store) UndoImportBatch(id string) (ImportBatch, error) {
+func (s *Ledger) UndoImportBatch(id string) (ImportBatch, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return ImportBatch{}, err
 	}
 	defer tx.Rollback()
 	var undoneAt int64
-	if err := tx.QueryRow(`SELECT undone_at FROM import_batches WHERE id = ?`, id).Scan(&undoneAt); err != nil {
+	if err := tx.QueryRow(`SELECT undone_at FROM import_batches WHERE id = $1`, id).Scan(&undoneAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ImportBatch{}, ErrNotFound
 		}
@@ -454,8 +454,8 @@ func (s *Store) UndoImportBatch(id string) (ImportBatch, error) {
 	}
 	var shared string
 	err = tx.QueryRow(`SELECT ts.transaction_id FROM transaction_sources ts JOIN import_rows r ON r.id = ts.import_row_id
-		WHERE r.import_batch_id = ? AND ts.transaction_id IN (
-			SELECT ts2.transaction_id FROM transaction_sources ts2 JOIN import_rows r2 ON r2.id = ts2.import_row_id WHERE r2.import_batch_id != ?)
+		WHERE r.import_batch_id = $1 AND ts.transaction_id IN (
+			SELECT ts2.transaction_id FROM transaction_sources ts2 JOIN import_rows r2 ON r2.id = ts2.import_row_id WHERE r2.import_batch_id != $2)
 		LIMIT 1`, id, id).Scan(&shared)
 	if err == nil {
 		return ImportBatch{}, fmt.Errorf("%w: %s also holds a row from another batch; unpair it before undoing this batch", ErrConflict, shared)
@@ -463,10 +463,10 @@ func (s *Store) UndoImportBatch(id string) (ImportBatch, error) {
 		return ImportBatch{}, err
 	}
 	if _, err := tx.Exec(`DELETE FROM transactions WHERE id IN (
-		SELECT ts.transaction_id FROM transaction_sources ts JOIN import_rows r ON r.id = ts.import_row_id WHERE r.import_batch_id = ?)`, id); err != nil {
+		SELECT ts.transaction_id FROM transaction_sources ts JOIN import_rows r ON r.id = ts.import_row_id WHERE r.import_batch_id = $1)`, id); err != nil {
 		return ImportBatch{}, err
 	}
-	if _, err := tx.Exec(`UPDATE import_batches SET undone_at = ? WHERE id = ?`, s.unixNow(), id); err != nil {
+	if _, err := tx.Exec(`UPDATE import_batches SET undone_at = $1 WHERE id = $2`, s.unixNow(), id); err != nil {
 		return ImportBatch{}, err
 	}
 	if err := tx.Commit(); err != nil {

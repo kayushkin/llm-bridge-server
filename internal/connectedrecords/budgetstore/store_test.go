@@ -6,23 +6,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
-func openTestStore(t *testing.T) *Store {
-	t.Helper()
-	store, err := Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	store.now = func() time.Time { return time.Unix(1_800_000_000, 0) }
-	t.Cleanup(func() { store.Close() })
-	return store
-}
-
-func mustAccount(t *testing.T, s *Store, in AccountInput) Account {
+func mustAccount(t *testing.T, s *Ledger, in AccountInput) Account {
 	t.Helper()
 	a, err := s.CreateAccount(in)
 	if err != nil {
@@ -31,7 +17,7 @@ func mustAccount(t *testing.T, s *Store, in AccountInput) Account {
 	return a
 }
 
-func mustImport(t *testing.T, s *Store, source, accountID, content string) ImportBatch {
+func mustImport(t *testing.T, s *Ledger, source, accountID, content string) ImportBatch {
 	t.Helper()
 	b, err := s.Import(ImportRequest{Source: source, AccountID: accountID, FileName: "test.csv"}, strings.NewReader(content))
 	if err != nil {
@@ -40,7 +26,7 @@ func mustImport(t *testing.T, s *Store, source, accountID, content string) Impor
 	return b
 }
 
-func balance(t *testing.T, s *Store, id string) int64 {
+func balance(t *testing.T, s *Ledger, id string) int64 {
 	t.Helper()
 	a, err := s.GetAccount(id)
 	if err != nil {
@@ -356,25 +342,12 @@ func TestRefusals(t *testing.T) {
 		t.Errorf("a retirement account without plan details = %v, want invalid", err)
 	}
 	mux := http.NewServeMux()
-	RegisterHandlers(mux, s)
-	request := httptest.NewRequest("POST", "/accounts", strings.NewReader(`{"name":"Checking","kind":"checking","last4":"1234"}`))
+	RegisterHandlers(mux, testStoreOf(t, s))
+	request := asCaller(httptest.NewRequest("POST", "/accounts", strings.NewReader(`{"name":"Checking","kind":"checking","last4":"1234"}`)), testOwnerPrincipalID)
 	recorder := httptest.NewRecorder()
 	mux.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusBadRequest {
 		t.Errorf("an unknown JSON key = %d, want 400", recorder.Code)
-	}
-}
-
-func TestSettingsDefaultToLoopbackAndRefuseUnknownVariables(t *testing.T) {
-	registry, err := NewSettingsRegistry(servicesettings.MapEnvironment(map[string]string{"HOME": "/nonexistent"}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := registry.String(SettingListenAddress); !strings.HasPrefix(got, "127.0.0.1:") {
-		t.Errorf("default listen address = %q, want loopback", got)
-	}
-	if _, err := NewSettingsRegistry(servicesettings.MapEnvironment(map[string]string{"BUDGET_STORE_ADDRESS": "x"})); err == nil {
-		t.Error("an undeclared BUDGET_STORE_ variable was accepted")
 	}
 }
 

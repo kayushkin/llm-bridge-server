@@ -100,7 +100,7 @@ func TestPlaidLinksABankAndSyncsWithoutCountingAnythingTwice(t *testing.T) {
 	if _, err := s.SyncPlaid(context.Background()); !errors.Is(err, ErrPlaidOff) {
 		t.Fatalf("sync with no vault = %v, want plaid off", err)
 	}
-	s.SetPlaidVault(&fakeVault{baseURL: server.URL, saved: map[string]string{}})
+	s.plaid = &fakeVault{baseURL: server.URL, saved: map[string]string{}}
 
 	item, err := s.LinkPlaidItem(context.Background(), "public-1", "ins_1", "Test Bank")
 	if err != nil {

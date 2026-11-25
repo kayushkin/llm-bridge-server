@@ -59,7 +59,7 @@ type InterestTransaction struct {
 }
 
 // CreateInterest adds an interest.
-func (s *Store) CreateInterest(name, description string) (Interest, error) {
+func (s *Ledger) CreateInterest(name, description string) (Interest, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return Interest{}, fmt.Errorf("%w: name is required", ErrInvalid)
@@ -74,7 +74,7 @@ func (s *Store) CreateInterest(name, description string) (Interest, error) {
 		return Interest{}, err
 	}
 	now := s.unixNow()
-	if _, err := tx.Exec(`INSERT INTO interests (seq, id, name, description, created_at, updated_at) VALUES (?,?,?,?,?,?)`, seq, id, name, strings.TrimSpace(description), now, now); err != nil {
+	if _, err := tx.Exec(`INSERT INTO interests (seq, id, name, description, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6)`, seq, id, name, strings.TrimSpace(description), now, now); err != nil {
 		return Interest{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -84,7 +84,7 @@ func (s *Store) CreateInterest(name, description string) (Interest, error) {
 }
 
 // AddInterestRule adds a rule and confirms every transaction it matches.
-func (s *Store) AddInterestRule(interestID, kind, value string) (Interest, error) {
+func (s *Ledger) AddInterestRule(interestID, kind, value string) (Interest, error) {
 	if err := requireOneOf("kind", kind, interestRuleKinds); err != nil {
 		return Interest{}, err
 	}
@@ -118,7 +118,7 @@ func (s *Store) AddInterestRule(interestID, kind, value string) (Interest, error
 	if err != nil {
 		return Interest{}, err
 	}
-	if _, err := tx.Exec(`INSERT INTO interest_rules (seq, id, interest_id, kind, value, created_at) VALUES (?,?,?,?,?,?)
+	if _, err := tx.Exec(`INSERT INTO interest_rules (seq, id, interest_id, kind, value, created_at) VALUES ($1,$2,$3,$4,$5,$6)
 		ON CONFLICT(interest_id, kind, value) DO NOTHING`, seq, id, interestID, kind, value, s.unixNow()); err != nil {
 		return Interest{}, err
 	}
@@ -132,7 +132,7 @@ func (s *Store) AddInterestRule(interestID, kind, value string) (Interest, error
 }
 
 // AddInterestHistorySource records where an interest's history lives.
-func (s *Store) AddInterestHistorySource(interestID, kind, ref, note string) (Interest, error) {
+func (s *Ledger) AddInterestHistorySource(interestID, kind, ref, note string) (Interest, error) {
 	if err := requireOneOf("kind", kind, interestHistoryKinds); err != nil {
 		return Interest{}, err
 	}
@@ -157,7 +157,7 @@ func (s *Store) AddInterestHistorySource(interestID, kind, ref, note string) (In
 	if err != nil {
 		return Interest{}, err
 	}
-	if _, err := tx.Exec(`INSERT INTO interest_history_sources (seq, id, interest_id, kind, ref, note, created_at) VALUES (?,?,?,?,?,?,?)
+	if _, err := tx.Exec(`INSERT INTO interest_history_sources (seq, id, interest_id, kind, ref, note, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)
 		ON CONFLICT(interest_id, kind, ref) DO NOTHING`, seq, id, interestID, kind, ref, strings.TrimSpace(note), s.unixNow()); err != nil {
 		return Interest{}, err
 	}
@@ -169,8 +169,8 @@ func (s *Store) AddInterestHistorySource(interestID, kind, ref, note string) (In
 
 // matchInterest confirms every transaction an interest's rules match that
 // the operator has not removed.
-func (s *Store) matchInterest(tx queryer, interestID string) error {
-	rules, err := tx.Query(`SELECT kind, value FROM interest_rules WHERE interest_id = ?`, interestID)
+func (s *Ledger) matchInterest(tx queryer, interestID string) error {
+	rules, err := tx.Query(`SELECT kind, value FROM interest_rules WHERE interest_id = $1`, interestID)
 	if err != nil {
 		return err
 	}
@@ -192,17 +192,17 @@ func (s *Store) matchInterest(tx queryer, interestID string) error {
 		switch r.kind {
 		case "category":
 			query = `SELECT DISTINCT p.transaction_id AS id FROM postings p JOIN transactions t ON t.id = p.transaction_id WHERE t.status != 'void' AND p.category_id IN (
-				WITH RECURSIVE tree(id) AS (SELECT ? UNION ALL SELECT c.id FROM categories c JOIN tree ON c.parent_id = tree.id) SELECT id FROM tree)`
+				WITH RECURSIVE tree(id) AS (SELECT $5::text COLLATE "C" UNION ALL SELECT c.id FROM categories c JOIN tree ON c.parent_id = tree.id) SELECT id FROM tree)`
 			reason = "category " + r.value
 		case "payee":
-			query = `SELECT id FROM transactions WHERE status != 'void' AND payee_id = ?`
+			query = `SELECT id FROM transactions WHERE status != 'void' AND payee_id = $5`
 			reason = "payee " + r.value
 		case "description":
-			query = `SELECT id FROM transactions WHERE status != 'void' AND instr(upper(description), ?) > 0`
+			query = `SELECT id FROM transactions WHERE status != 'void' AND strpos(upper(description), $5) > 0`
 			reason = "description holds " + r.value
 		}
 		if _, err := tx.Exec(`INSERT INTO interest_transactions (interest_id, transaction_id, status, reason, created_at, updated_at)
-			SELECT ?, id, 'confirmed', ?, ?, ? FROM (`+query+`) AS matched WHERE true
+			SELECT $1, id, 'confirmed', $2, $3, $4 FROM (`+query+`) AS matched WHERE true
 			ON CONFLICT(interest_id, transaction_id) DO NOTHING`, interestID, "matched the rule: "+reason, now, now, r.value); err != nil {
 			return err
 		}
@@ -212,7 +212,7 @@ func (s *Store) matchInterest(tx queryer, interestID string) error {
 
 // MatchInterests runs every interest's rules again, for transactions that
 // arrived since. Answers how many links it added.
-func (s *Store) MatchInterests() (int, error) {
+func (s *Ledger) MatchInterests() (int, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, err
@@ -248,7 +248,7 @@ func (s *Store) MatchInterests() (int, error) {
 }
 
 // SetInterestTransaction adds a transaction to an interest or removes it.
-func (s *Store) SetInterestTransaction(interestID, transactionID, status, decidedBy string) (InterestTransaction, error) {
+func (s *Ledger) SetInterestTransaction(interestID, transactionID, status, decidedBy string) (InterestTransaction, error) {
 	if err := requireOneOf("status", status, []string{"confirmed", "removed"}); err != nil {
 		return InterestTransaction{}, err
 	}
@@ -270,7 +270,7 @@ func (s *Store) SetInterestTransaction(interestID, transactionID, status, decide
 		return InterestTransaction{}, err
 	}
 	now := s.unixNow()
-	if _, err := tx.Exec(`INSERT INTO interest_transactions (interest_id, transaction_id, status, reason, decided_by, created_at, updated_at) VALUES (?,?,?,?,?,?,?)
+	if _, err := tx.Exec(`INSERT INTO interest_transactions (interest_id, transaction_id, status, reason, decided_by, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7)
 		ON CONFLICT(interest_id, transaction_id) DO UPDATE SET status = excluded.status, decided_by = excluded.decided_by, updated_at = excluded.updated_at`,
 		interestID, transactionID, status, "set by "+decidedBy, decidedBy, now, now); err != nil {
 		return InterestTransaction{}, err
@@ -292,13 +292,13 @@ func (s *Store) SetInterestTransaction(interestID, transactionID, status, decide
 
 // ListInterestTransactions returns an interest's transactions, newest first,
 // removed ones included.
-func (s *Store) ListInterestTransactions(interestID string) ([]InterestTransaction, error) {
+func (s *Ledger) ListInterestTransactions(interestID string) ([]InterestTransaction, error) {
 	rows, err := s.db.Query(`SELECT it.transaction_id, it.status, it.reason, it.decided_by, t.occurred_on, t.description,
 			COALESCE((SELECT SUM(p.amount_cents) FROM postings p JOIN categories c ON c.id = p.category_id WHERE p.transaction_id = t.id AND c.kind IN ('expense','uncategorized')), 0),
 			COALESCE((SELECT MIN(p.category_id) FROM postings p WHERE p.transaction_id = t.id AND p.category_id IS NOT NULL HAVING COUNT(*) = 1), ''),
 			COALESCE((SELECT MIN(p.account_id) FROM postings p WHERE p.transaction_id = t.id AND p.account_id IS NOT NULL), '')
 		FROM interest_transactions it JOIN transactions t ON t.id = it.transaction_id
-		WHERE it.interest_id = ? ORDER BY t.occurred_on DESC, t.seq DESC`, interestID)
+		WHERE it.interest_id = $1 ORDER BY t.occurred_on DESC, t.seq DESC`, interestID)
 	if err != nil {
 		return nil, err
 	}
@@ -315,9 +315,9 @@ func (s *Store) ListInterestTransactions(interestID string) ([]InterestTransacti
 }
 
 // GetInterest returns one interest with its rules, sources and totals.
-func (s *Store) GetInterest(id string) (Interest, error) {
+func (s *Ledger) GetInterest(id string) (Interest, error) {
 	var i Interest
-	err := s.db.QueryRow(`SELECT id, name, description, created_at, updated_at FROM interests WHERE id = ?`, id).Scan(&i.ID, &i.Name, &i.Description, &i.CreatedAt, &i.UpdatedAt)
+	err := s.db.QueryRow(`SELECT id, name, description, created_at, updated_at FROM interests WHERE id = $1`, id).Scan(&i.ID, &i.Name, &i.Description, &i.CreatedAt, &i.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Interest{}, ErrNotFound
 	}
@@ -325,7 +325,7 @@ func (s *Store) GetInterest(id string) (Interest, error) {
 		return Interest{}, err
 	}
 	i.Rules = []InterestRule{}
-	rows, err := s.db.Query(`SELECT id, kind, value FROM interest_rules WHERE interest_id = ? ORDER BY seq`, id)
+	rows, err := s.db.Query(`SELECT id, kind, value FROM interest_rules WHERE interest_id = $1 ORDER BY seq`, id)
 	if err != nil {
 		return Interest{}, err
 	}
@@ -339,7 +339,7 @@ func (s *Store) GetInterest(id string) (Interest, error) {
 	}
 	rows.Close()
 	i.HistorySources = []InterestHistorySource{}
-	rows, err = s.db.Query(`SELECT id, kind, ref, note FROM interest_history_sources WHERE interest_id = ? ORDER BY seq`, id)
+	rows, err = s.db.Query(`SELECT id, kind, ref, note FROM interest_history_sources WHERE interest_id = $1 ORDER BY seq`, id)
 	if err != nil {
 		return Interest{}, err
 	}
@@ -354,12 +354,12 @@ func (s *Store) GetInterest(id string) (Interest, error) {
 	rows.Close()
 	err = s.db.QueryRow(`SELECT COALESCE(SUM((SELECT COALESCE(SUM(p.amount_cents),0) FROM postings p JOIN categories c ON c.id = p.category_id
 			WHERE p.transaction_id = it.transaction_id AND c.kind IN ('expense','uncategorized'))),0), COUNT(*)
-		FROM interest_transactions it WHERE it.interest_id = ? AND it.status = 'confirmed'`, id).Scan(&i.TotalCents, &i.Transactions)
+		FROM interest_transactions it WHERE it.interest_id = $1 AND it.status = 'confirmed'`, id).Scan(&i.TotalCents, &i.Transactions)
 	return i, err
 }
 
 // ListInterests returns every interest.
-func (s *Store) ListInterests() ([]Interest, error) {
+func (s *Ledger) ListInterests() ([]Interest, error) {
 	rows, err := s.db.Query(`SELECT id FROM interests ORDER BY seq`)
 	if err != nil {
 		return nil, err

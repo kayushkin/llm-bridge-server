@@ -71,7 +71,7 @@ const marketplaceOrderColumns = `id, marketplace, order_number, seller, ordered_
 // CreateMarketplaceOrder records an order and looks for its charge. An
 // order already recorded (the same marketplace and order number, or the
 // same email) is a conflict naming it.
-func (s *Store) CreateMarketplaceOrder(in MarketplaceOrder) (MarketplaceOrder, error) {
+func (s *Ledger) CreateMarketplaceOrder(in MarketplaceOrder) (MarketplaceOrder, error) {
 	if !slices.Contains(marketplaces, in.Marketplace) {
 		return MarketplaceOrder{}, fmt.Errorf("%w: marketplace must be one of %s", ErrInvalid, strings.Join(marketplaces, ", "))
 	}
@@ -112,12 +112,12 @@ func (s *Store) CreateMarketplaceOrder(in MarketplaceOrder) (MarketplaceOrder, e
 	}
 	defer tx.Rollback()
 	for _, existing := range []struct{ query, value, what string }{
-		{`SELECT id FROM marketplace_orders WHERE marketplace = ? AND order_number = ? AND ? != ''`, in.OrderNumber, "order " + in.OrderNumber},
-		{`SELECT id FROM marketplace_orders WHERE mail_account_id || ':' || mail_message_id = ? AND ? != ':'`, in.MailAccountID + ":" + in.MailMessageID, "the order in mail " + in.MailAccountID + ":" + in.MailMessageID},
+		{`SELECT id FROM marketplace_orders WHERE marketplace = $1 AND order_number = $2 AND $3 != ''`, in.OrderNumber, "order " + in.OrderNumber},
+		{`SELECT id FROM marketplace_orders WHERE mail_account_id || ':' || mail_message_id = $1 AND $2 != ':'`, in.MailAccountID + ":" + in.MailMessageID, "the order in mail " + in.MailAccountID + ":" + in.MailMessageID},
 	} {
 		var id string
 		arguments := []any{existing.value, existing.value}
-		if strings.Contains(existing.query, "marketplace = ?") {
+		if strings.Contains(existing.query, "marketplace = $1") {
 			arguments = []any{in.Marketplace, existing.value, existing.value}
 		}
 		err := tx.QueryRow(existing.query, arguments...).Scan(&id)
@@ -134,7 +134,7 @@ func (s *Store) CreateMarketplaceOrder(in MarketplaceOrder) (MarketplaceOrder, e
 	}
 	now := s.unixNow()
 	if _, err := tx.Exec(`INSERT INTO marketplace_orders (seq, id, marketplace, order_number, seller, ordered_at, total_cents, currency, mail_account_id, mail_message_id, extracted_by, created_by, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, seq, id, in.Marketplace, in.OrderNumber, in.Seller, in.OrderedAt, in.TotalCents, in.Currency,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`, seq, id, in.Marketplace, in.OrderNumber, in.Seller, in.OrderedAt, in.TotalCents, in.Currency,
 		in.MailAccountID, in.MailMessageID, in.ExtractedBy, in.CreatedBy, now, now); err != nil {
 		return MarketplaceOrder{}, err
 	}
@@ -149,7 +149,7 @@ func (s *Store) CreateMarketplaceOrder(in MarketplaceOrder) (MarketplaceOrder, e
 		if line.Disposition == "" {
 			line.Disposition = "unreviewed"
 		}
-		if _, err := tx.Exec(`INSERT INTO marketplace_order_lines (seq, id, order_id, line_number, title, item_number, listing_url, quantity, unit_price_cents, disposition) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		if _, err := tx.Exec(`INSERT INTO marketplace_order_lines (seq, id, order_id, line_number, title, item_number, listing_url, quantity, unit_price_cents, disposition) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
 			lineSeq, lineID, id, index+1, line.Title, line.ItemNumber, line.ListingURL, line.Quantity, line.UnitPriceCents, line.Disposition); err != nil {
 			return MarketplaceOrder{}, err
 		}
@@ -172,7 +172,7 @@ func matchOrderTransaction(tx queryer, orderID string, now int64) (string, error
 	var marketplace, orderNumber, currency string
 	var orderedAt int64
 	var total sql.NullInt64
-	if err := tx.QueryRow(`SELECT marketplace, order_number, ordered_at, total_cents, currency FROM marketplace_orders WHERE id = ? AND transaction_id IS NULL`, orderID).
+	if err := tx.QueryRow(`SELECT marketplace, order_number, ordered_at, total_cents, currency FROM marketplace_orders WHERE id = $1 AND transaction_id IS NULL`, orderID).
 		Scan(&marketplace, &orderNumber, &orderedAt, &total, &currency); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", nil
@@ -182,7 +182,7 @@ func matchOrderTransaction(tx queryer, orderID string, now int64) (string, error
 	method := ""
 	candidates := []string{}
 	if orderNumber != "" {
-		ids, err := stringColumn(tx, `SELECT id FROM transactions WHERE instr(upper(description), upper(?)) > 0 AND status != 'void'`, orderNumber)
+		ids, err := stringColumn(tx, `SELECT id FROM transactions WHERE strpos(upper(description), upper($1)) > 0 AND status != 'void'`, orderNumber)
 		if err != nil {
 			return "", err
 		}
@@ -194,9 +194,9 @@ func matchOrderTransaction(tx queryer, orderID string, now int64) (string, error
 		from := time.Unix(orderedAt, 0).UTC().AddDate(0, 0, -1).Format("2006-01-02")
 		to := time.Unix(orderedAt, 0).UTC().AddDate(0, 0, orderMatchWindowDays).Format("2006-01-02")
 		ids, err := stringColumn(tx, `SELECT t.id FROM transactions t JOIN postings p ON p.transaction_id = t.id AND p.account_id IS NOT NULL
-			WHERE t.occurred_on BETWEEN ? AND ? AND instr(upper(t.description), ?) > 0 AND t.status != 'void'
+			WHERE t.occurred_on BETWEEN $1 AND $2 AND strpos(upper(t.description), $3) > 0 AND t.status != 'void'
 			AND NOT EXISTS (SELECT 1 FROM marketplace_orders o WHERE o.transaction_id = t.id)
-			GROUP BY t.id HAVING SUM(p.amount_cents) = ?`, from, to, marketplaceDescriptionMarkers[marketplace], -total.Int64)
+			GROUP BY t.id HAVING SUM(p.amount_cents) = $4`, from, to, marketplaceDescriptionMarkers[marketplace], -total.Int64)
 		if err != nil {
 			return "", err
 		}
@@ -205,7 +205,7 @@ func matchOrderTransaction(tx queryer, orderID string, now int64) (string, error
 	if len(candidates) != 1 {
 		return "", nil
 	}
-	if _, err := tx.Exec(`UPDATE marketplace_orders SET transaction_id = ?, matched_by = ?, updated_at = ? WHERE id = ?`, candidates[0], method, now, orderID); err != nil {
+	if _, err := tx.Exec(`UPDATE marketplace_orders SET transaction_id = $1, matched_by = $2, updated_at = $3 WHERE id = $4`, candidates[0], method, now, orderID); err != nil {
 		return "", err
 	}
 	return method, nil
@@ -214,7 +214,7 @@ func matchOrderTransaction(tx queryer, orderID string, now int64) (string, error
 // MatchMarketplaceOrders looks again for the charge of every order without
 // one, after a new bank file is imported. Answers how many matched each way
 // and how many still have none.
-func (s *Store) MatchMarketplaceOrders() (map[string]int, error) {
+func (s *Ledger) MatchMarketplaceOrders() (map[string]int, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, err
@@ -240,8 +240,8 @@ func (s *Store) MatchMarketplaceOrders() (map[string]int, error) {
 }
 
 // GetMarketplaceOrder answers one order with its lines.
-func (s *Store) GetMarketplaceOrder(id string) (MarketplaceOrder, error) {
-	orders, err := s.marketplaceOrders(`WHERE id = ?`, id)
+func (s *Ledger) GetMarketplaceOrder(id string) (MarketplaceOrder, error) {
+	orders, err := s.marketplaceOrders(`WHERE id = $1`, id)
 	if err != nil {
 		return MarketplaceOrder{}, err
 	}
@@ -259,10 +259,11 @@ type MarketplaceOrderFilter struct {
 }
 
 // ListMarketplaceOrders answers orders, newest first.
-func (s *Store) ListMarketplaceOrders(filter MarketplaceOrderFilter) ([]MarketplaceOrder, error) {
-	conditions, arguments := []string{"1=1"}, []any{}
+func (s *Ledger) ListMarketplaceOrders(filter MarketplaceOrderFilter) ([]MarketplaceOrder, error) {
+	var arguments arguments
+	conditions := []string{"1=1"}
 	if filter.TransactionID != "" {
-		conditions, arguments = append(conditions, "transaction_id = ?"), append(arguments, filter.TransactionID)
+		conditions = append(conditions, "transaction_id = "+arguments.add(filter.TransactionID))
 	}
 	if filter.Unmatched {
 		conditions = append(conditions, "transaction_id IS NULL")
@@ -270,11 +271,10 @@ func (s *Store) ListMarketplaceOrders(filter MarketplaceOrderFilter) ([]Marketpl
 	if filter.Limit <= 0 || filter.Limit > 1000 {
 		filter.Limit = 200
 	}
-	arguments = append(arguments, filter.Limit, filter.Offset)
-	return s.marketplaceOrders(`WHERE `+strings.Join(conditions, " AND ")+` ORDER BY ordered_at DESC, seq DESC LIMIT ? OFFSET ?`, arguments...)
+	return s.marketplaceOrders(`WHERE `+strings.Join(conditions, " AND ")+` ORDER BY ordered_at DESC, seq DESC LIMIT `+arguments.add(filter.Limit)+` OFFSET `+arguments.add(filter.Offset), arguments.values...)
 }
 
-func (s *Store) marketplaceOrders(where string, arguments ...any) ([]MarketplaceOrder, error) {
+func (s *Ledger) marketplaceOrders(where string, arguments ...any) ([]MarketplaceOrder, error) {
 	rows, err := s.db.Query(`SELECT `+marketplaceOrderColumns+` FROM marketplace_orders `+where, arguments...)
 	if err != nil {
 		return nil, err
@@ -298,14 +298,14 @@ func (s *Store) marketplaceOrders(where string, arguments ...any) ([]Marketplace
 		return nil, err
 	}
 	for index := range orders {
-		if orders[index].Lines, err = s.marketplaceOrderLines(`WHERE order_id = ? ORDER BY line_number`, orders[index].ID); err != nil {
+		if orders[index].Lines, err = s.marketplaceOrderLines(`WHERE order_id = $1 ORDER BY line_number`, orders[index].ID); err != nil {
 			return nil, err
 		}
 	}
 	return orders, nil
 }
 
-func (s *Store) marketplaceOrderLines(where string, arguments ...any) ([]MarketplaceOrderLine, error) {
+func (s *Ledger) marketplaceOrderLines(where string, arguments ...any) ([]MarketplaceOrderLine, error) {
 	rows, err := s.db.Query(`SELECT id, order_id, line_number, title, item_number, listing_url, quantity, unit_price_cents, disposition FROM marketplace_order_lines `+where, arguments...)
 	if err != nil {
 		return nil, err
@@ -328,7 +328,7 @@ func (s *Store) marketplaceOrderLines(where string, arguments ...any) ([]Marketp
 		return nil, err
 	}
 	for index := range lines {
-		if lines[index].PossessionIDs, err = stringColumn(s.db, `SELECT entity_ref FROM links WHERE from_id = ? AND entity_type = 'possession' ORDER BY seq`, lines[index].ID); err != nil {
+		if lines[index].PossessionIDs, err = stringColumn(s.db, `SELECT entity_ref FROM links WHERE from_id = $1 AND entity_type = 'possession' ORDER BY seq`, lines[index].ID); err != nil {
 			return nil, err
 		}
 	}
@@ -336,8 +336,8 @@ func (s *Store) marketplaceOrderLines(where string, arguments ...any) ([]Marketp
 }
 
 // GetMarketplaceOrderLine answers one line.
-func (s *Store) GetMarketplaceOrderLine(id string) (MarketplaceOrderLine, error) {
-	lines, err := s.marketplaceOrderLines(`WHERE id = ?`, id)
+func (s *Ledger) GetMarketplaceOrderLine(id string) (MarketplaceOrderLine, error) {
+	lines, err := s.marketplaceOrderLines(`WHERE id = $1`, id)
 	if err != nil {
 		return MarketplaceOrderLine{}, err
 	}
@@ -348,11 +348,11 @@ func (s *Store) GetMarketplaceOrderLine(id string) (MarketplaceOrderLine, error)
 }
 
 // SetOrderLineDisposition says what became of what a line bought.
-func (s *Store) SetOrderLineDisposition(id, disposition string) (MarketplaceOrderLine, error) {
+func (s *Ledger) SetOrderLineDisposition(id, disposition string) (MarketplaceOrderLine, error) {
 	if !slices.Contains(orderLineDispositions, disposition) {
 		return MarketplaceOrderLine{}, fmt.Errorf("%w: disposition must be one of %s", ErrInvalid, strings.Join(orderLineDispositions, ", "))
 	}
-	result, err := s.db.Exec(`UPDATE marketplace_order_lines SET disposition = ? WHERE id = ?`, disposition, id)
+	result, err := s.db.Exec(`UPDATE marketplace_order_lines SET disposition = $1 WHERE id = $2`, disposition, id)
 	if err != nil {
 		return MarketplaceOrderLine{}, err
 	}

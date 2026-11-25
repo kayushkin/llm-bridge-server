@@ -57,7 +57,7 @@ type transferCandidate struct {
 // leg becomes a posting on that account.
 // Only markers of minimumMarkerLengthWithoutPartner characters or more count
 // here, since nothing else confirms the match.
-func (s *Store) MatchTransfers() (TransferMatchResult, error) {
+func (s *Ledger) MatchTransfers() (TransferMatchResult, error) {
 	var result TransferMatchResult
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -71,7 +71,7 @@ func (s *Store) MatchTransfers() (TransferMatchResult, error) {
 	rows, err := tx.Query(`SELECT t.id, t.occurred_on, t.description, pa.account_id, pa.amount_cents, pa.id, pc.id
 		FROM transactions t
 		JOIN postings pa ON pa.transaction_id = t.id AND pa.account_id IS NOT NULL
-		JOIN postings pc ON pc.transaction_id = t.id AND pc.category_id = ?
+		JOIN postings pc ON pc.transaction_id = t.id AND pc.category_id = $1
 		WHERE t.status != 'void' AND (SELECT COUNT(*) FROM postings p WHERE p.transaction_id = t.id) = 2
 		ORDER BY t.seq`, uncategorized)
 	if err != nil {
@@ -174,14 +174,14 @@ func (s *Store) MatchTransfers() (TransferMatchResult, error) {
 			query string
 			args  []any
 		}{
-			{`DELETE FROM postings WHERE id IN (?, ?)`, []any{out.categoryPostingID, in.categoryPostingID}},
-			{`UPDATE postings SET transaction_id = ? WHERE id = ?`, []any{out.transactionID, in.accountPostingID}},
-			{`UPDATE transaction_sources SET transaction_id = ? WHERE transaction_id = ?`, []any{out.transactionID, in.transactionID}},
-			{`UPDATE transaction_merges SET into_transaction_id = ? WHERE into_transaction_id = ?`, []any{out.transactionID, in.transactionID}},
-			{`INSERT INTO transaction_merges (merged_transaction_id, into_transaction_id, reason, merged_at) VALUES (?,?,?,?)`,
+			{`DELETE FROM postings WHERE id IN ($1, $2)`, []any{out.categoryPostingID, in.categoryPostingID}},
+			{`UPDATE postings SET transaction_id = $1 WHERE id = $2`, []any{out.transactionID, in.accountPostingID}},
+			{`UPDATE transaction_sources SET transaction_id = $1 WHERE transaction_id = $2`, []any{out.transactionID, in.transactionID}},
+			{`UPDATE transaction_merges SET into_transaction_id = $1 WHERE into_transaction_id = $2`, []any{out.transactionID, in.transactionID}},
+			{`INSERT INTO transaction_merges (merged_transaction_id, into_transaction_id, reason, merged_at) VALUES ($1,$2,$3,$4)`,
 				[]any{in.transactionID, out.transactionID, fmt.Sprintf("transfer: %s in %s is the other side of %s in %s", in.transactionID, in.accountID, out.transactionID, out.accountID), now}},
-			{`DELETE FROM transactions WHERE id = ?`, []any{in.transactionID}},
-			{`UPDATE transactions SET updated_at = ? WHERE id = ?`, []any{now, out.transactionID}},
+			{`DELETE FROM transactions WHERE id = $1`, []any{in.transactionID}},
+			{`UPDATE transactions SET updated_at = $1 WHERE id = $2`, []any{now, out.transactionID}},
 		} {
 			if _, err := tx.Exec(statement.query, statement.args...); err != nil {
 				return result, fmt.Errorf("pair %s with %s: %w", out.transactionID, in.transactionID, err)
@@ -217,14 +217,14 @@ func (s *Store) MatchTransfers() (TransferMatchResult, error) {
 		if target == "" {
 			continue
 		}
-		if _, err := tx.Exec(`UPDATE postings SET category_id = NULL, account_id = ? WHERE id = ?`, target, c.categoryPostingID); err != nil {
+		if _, err := tx.Exec(`UPDATE postings SET category_id = NULL, account_id = $1 WHERE id = $2`, target, c.categoryPostingID); err != nil {
 			return result, err
 		}
-		if _, err := tx.Exec(`INSERT INTO transfers_without_partner (posting_id, transaction_id, account_id, reason, created_at) VALUES (?,?,?,?,?)`,
+		if _, err := tx.Exec(`INSERT INTO transfers_without_partner (posting_id, transaction_id, account_id, reason, created_at) VALUES ($1,$2,$3,$4,$5)`,
 			c.categoryPostingID, c.transactionID, target, reason, now); err != nil {
 			return result, err
 		}
-		if _, err := tx.Exec(`UPDATE transactions SET updated_at = ? WHERE id = ?`, now, c.transactionID); err != nil {
+		if _, err := tx.Exec(`UPDATE transactions SET updated_at = $1 WHERE id = $2`, now, c.transactionID); err != nil {
 			return result, err
 		}
 		result.AssignedWithoutPartner++
@@ -235,7 +235,7 @@ func (s *Store) MatchTransfers() (TransferMatchResult, error) {
 // UndoTransferWithoutPartner puts a posting the matcher moved without a
 // partner back on Uncategorized, so a file covering its date can be imported
 // and paired properly.
-func (s *Store) UndoTransferWithoutPartner(transactionID string) (Transaction, error) {
+func (s *Ledger) UndoTransferWithoutPartner(transactionID string) (Transaction, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return Transaction{}, err
@@ -245,7 +245,7 @@ func (s *Store) UndoTransferWithoutPartner(transactionID string) (Transaction, e
 	if err != nil {
 		return Transaction{}, err
 	}
-	rows, err := tx.Query(`SELECT posting_id FROM transfers_without_partner WHERE transaction_id = ?`, transactionID)
+	rows, err := tx.Query(`SELECT posting_id FROM transfers_without_partner WHERE transaction_id = $1`, transactionID)
 	if err != nil {
 		return Transaction{}, err
 	}
@@ -263,14 +263,14 @@ func (s *Store) UndoTransferWithoutPartner(transactionID string) (Transaction, e
 		return Transaction{}, fmt.Errorf("%w: %s holds no transfer moved without a partner", ErrNotFound, transactionID)
 	}
 	for _, id := range postingIDs {
-		if _, err := tx.Exec(`UPDATE postings SET account_id = NULL, category_id = ? WHERE id = ?`, uncategorized, id); err != nil {
+		if _, err := tx.Exec(`UPDATE postings SET account_id = NULL, category_id = $1 WHERE id = $2`, uncategorized, id); err != nil {
 			return Transaction{}, err
 		}
-		if _, err := tx.Exec(`DELETE FROM transfers_without_partner WHERE posting_id = ?`, id); err != nil {
+		if _, err := tx.Exec(`DELETE FROM transfers_without_partner WHERE posting_id = $1`, id); err != nil {
 			return Transaction{}, err
 		}
 	}
-	if _, err := tx.Exec(`UPDATE transactions SET updated_at = ? WHERE id = ?`, s.unixNow(), transactionID); err != nil {
+	if _, err := tx.Exec(`UPDATE transactions SET updated_at = $1 WHERE id = $2`, s.unixNow(), transactionID); err != nil {
 		return Transaction{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -286,7 +286,7 @@ func (s *Store) UndoTransferWithoutPartner(transactionID string) (Transaction, e
 // exactly one account posting and one category posting. The move is kept in
 // transfers_without_partner with the caller's reason, so an import that may
 // hold the other side is refused until it is undone.
-func (s *Store) MoveCategoryPostingToAccount(transactionID, accountID, reason string) (Transaction, error) {
+func (s *Ledger) MoveCategoryPostingToAccount(transactionID, accountID, reason string) (Transaction, error) {
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
 		return Transaction{}, fmt.Errorf("%w: reason is required: say why this money moved to that account", ErrInvalid)
@@ -306,7 +306,7 @@ func (s *Store) MoveCategoryPostingToAccount(transactionID, accountID, reason st
 	if !found {
 		return Transaction{}, ErrNotFound
 	}
-	rows, err := tx.Query(`SELECT id, COALESCE(account_id,''), COALESCE(category_id,'') FROM postings WHERE transaction_id = ?`, transactionID)
+	rows, err := tx.Query(`SELECT id, COALESCE(account_id,''), COALESCE(category_id,'') FROM postings WHERE transaction_id = $1`, transactionID)
 	if err != nil {
 		return Transaction{}, err
 	}
@@ -334,14 +334,14 @@ func (s *Store) MoveCategoryPostingToAccount(transactionID, accountID, reason st
 		return Transaction{}, fmt.Errorf("%w: %s already moves money in %s; a transfer needs two accounts", ErrInvalid, transactionID, accountID)
 	}
 	now := s.unixNow()
-	if _, err := tx.Exec(`UPDATE postings SET category_id = NULL, account_id = ? WHERE id = ?`, accountID, categoryPostingID); err != nil {
+	if _, err := tx.Exec(`UPDATE postings SET category_id = NULL, account_id = $1 WHERE id = $2`, accountID, categoryPostingID); err != nil {
 		return Transaction{}, err
 	}
-	if _, err := tx.Exec(`INSERT INTO transfers_without_partner (posting_id, transaction_id, account_id, reason, created_at) VALUES (?,?,?,?,?)`,
+	if _, err := tx.Exec(`INSERT INTO transfers_without_partner (posting_id, transaction_id, account_id, reason, created_at) VALUES ($1,$2,$3,$4,$5)`,
 		categoryPostingID, transactionID, accountID, reason, now); err != nil {
 		return Transaction{}, err
 	}
-	if _, err := tx.Exec(`UPDATE transactions SET updated_at = ? WHERE id = ?`, now, transactionID); err != nil {
+	if _, err := tx.Exec(`UPDATE transactions SET updated_at = $1 WHERE id = $2`, now, transactionID); err != nil {
 		return Transaction{}, err
 	}
 	if err := tx.Commit(); err != nil {

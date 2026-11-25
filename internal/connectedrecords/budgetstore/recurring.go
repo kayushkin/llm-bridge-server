@@ -102,8 +102,8 @@ var (
 )
 
 // billTextKey reduces a bank description to the words that name who was
-// paid: "PURCHASE AUTHORIZED ON 10/08 MAVERIK #704 RENO NV S586…" → "MAVERIK
-// RENO NV".
+// paid: "PURCHASE AUTHORIZED ON 10/08 MAPLE FUEL #704 SPRINGFIELD ST S586…" → "MAPLE FUEL
+// SPRINGFIELD ST".
 func billTextKey(description string) string {
 	text := strings.ToUpper(description)
 	for _, pattern := range billNoisePatterns {
@@ -271,7 +271,7 @@ type DetectResult struct {
 // A known bill keeps the operator's decision; its payments, usual amount and
 // dates are refreshed, a confirmed one that stopped becomes ended, and an
 // ended one paid again becomes confirmed.
-func (s *Store) DetectRecurringBills() (DetectResult, error) {
+func (s *Ledger) DetectRecurringBills() (DetectResult, error) {
 	var result DetectResult
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -294,7 +294,7 @@ func (s *Store) DetectRecurringBills() (DetectResult, error) {
 		sort.Slice(payments, func(i, j int) bool { return payments[i].occurredOn.Before(payments[j].occurredOn) })
 		var operatorCadence string
 		var addedByOperator int
-		switch err := tx.QueryRow(`SELECT cadence, added_by_operator FROM recurring_bills WHERE match_key = ?`, key).Scan(&operatorCadence, &addedByOperator); {
+		switch err := tx.QueryRow(`SELECT cadence, added_by_operator FROM recurring_bills WHERE match_key = $1`, key).Scan(&operatorCadence, &addedByOperator); {
 		case errors.Is(err, sql.ErrNoRows):
 		case err != nil:
 			return result, err
@@ -348,7 +348,7 @@ func (s *Store) DetectRecurringBills() (DetectResult, error) {
 		}
 
 		var id, status string
-		err := tx.QueryRow(`SELECT id, status FROM recurring_bills WHERE match_key = ?`, key).Scan(&id, &status)
+		err := tx.QueryRow(`SELECT id, status FROM recurring_bills WHERE match_key = $1`, key).Scan(&id, &status)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			if !stillPaid {
@@ -359,7 +359,7 @@ func (s *Store) DetectRecurringBills() (DetectResult, error) {
 				return result, err
 			}
 			if _, err := tx.Exec(`INSERT INTO recurring_bills (seq, id, match_key, name, payee_id, cadence, expected_cents, day_of_month, status, first_paid_on, last_paid_on, next_due_on, created_at, updated_at)
-				VALUES (?,?,?,?,?,?,?,?,'suggested',?,?,?,?,?)`, seq, id, key, name, payeeID, spec.name, expected, dayOfMonth,
+				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'suggested',$9,$10,$11,$12,$13)`, seq, id, key, name, payeeID, spec.name, expected, dayOfMonth,
 				payments[0].occurredOn.Format("2006-01-02"), last.Format("2006-01-02"), next.Format("2006-01-02"), now, now); err != nil {
 				return result, err
 			}
@@ -375,17 +375,17 @@ func (s *Store) DetectRecurringBills() (DetectResult, error) {
 				newStatus = "confirmed"
 				result.Resumed++
 			}
-			if _, err := tx.Exec(`UPDATE recurring_bills SET cadence = ?, expected_cents = ?, day_of_month = ?, status = ?, first_paid_on = ?, last_paid_on = ?, next_due_on = ?, updated_at = ? WHERE id = ?`,
+			if _, err := tx.Exec(`UPDATE recurring_bills SET cadence = $1, expected_cents = $2, day_of_month = $3, status = $4, first_paid_on = $5, last_paid_on = $6, next_due_on = $7, updated_at = $8 WHERE id = $9`,
 				spec.name, expected, dayOfMonth, newStatus, payments[0].occurredOn.Format("2006-01-02"), last.Format("2006-01-02"), next.Format("2006-01-02"), now, id); err != nil {
 				return result, err
 			}
 			result.Updated++
 		}
-		if _, err := tx.Exec(`DELETE FROM recurring_bill_payments WHERE recurring_bill_id = ?`, id); err != nil {
+		if _, err := tx.Exec(`DELETE FROM recurring_bill_payments WHERE recurring_bill_id = $1`, id); err != nil {
 			return result, err
 		}
 		for _, p := range payments {
-			if _, err := tx.Exec(`INSERT INTO recurring_bill_payments (recurring_bill_id, transaction_id) VALUES (?,?)
+			if _, err := tx.Exec(`INSERT INTO recurring_bill_payments (recurring_bill_id, transaction_id) VALUES ($1,$2)
 				ON CONFLICT(transaction_id) DO UPDATE SET recurring_bill_id = excluded.recurring_bill_id`, id, p.transactionID); err != nil {
 				return result, err
 			}
@@ -412,13 +412,13 @@ func scanBill(row interface{ Scan(...any) error }) (RecurringBill, error) {
 }
 
 // ListRecurringBills returns bills, soonest due first; status filters.
-func (s *Store) ListRecurringBills(status string) ([]RecurringBill, error) {
+func (s *Ledger) ListRecurringBills(status string) ([]RecurringBill, error) {
 	if status != "" {
 		if err := requireOneOf("status", status, billStatuses); err != nil {
 			return nil, err
 		}
 	}
-	rows, err := s.db.Query(`SELECT `+billColumns+` FROM recurring_bills b WHERE (? = '' OR b.status = ?) ORDER BY b.next_due_on, b.seq`, status, status)
+	rows, err := s.db.Query(`SELECT `+billColumns+` FROM recurring_bills b WHERE ($1 = '' OR b.status = $2) ORDER BY b.next_due_on, b.seq`, status, status)
 	if err != nil {
 		return nil, err
 	}
@@ -435,8 +435,8 @@ func (s *Store) ListRecurringBills(status string) ([]RecurringBill, error) {
 }
 
 // GetRecurringBill returns one bill with every payment, oldest first.
-func (s *Store) GetRecurringBill(id string) (RecurringBill, error) {
-	b, err := scanBill(s.db.QueryRow(`SELECT `+billColumns+` FROM recurring_bills b WHERE b.id = ?`, id))
+func (s *Ledger) GetRecurringBill(id string) (RecurringBill, error) {
+	b, err := scanBill(s.db.QueryRow(`SELECT `+billColumns+` FROM recurring_bills b WHERE b.id = $1`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return RecurringBill{}, ErrNotFound
 	}
@@ -448,7 +448,7 @@ func (s *Store) GetRecurringBill(id string) (RecurringBill, error) {
 		return RecurringBill{}, err
 	}
 	linked := map[string]bool{}
-	rows, err := s.db.Query(`SELECT transaction_id FROM recurring_bill_payments WHERE recurring_bill_id = ?`, id)
+	rows, err := s.db.Query(`SELECT transaction_id FROM recurring_bill_payments WHERE recurring_bill_id = $1`, id)
 	if err != nil {
 		return RecurringBill{}, err
 	}
@@ -485,7 +485,7 @@ type RecurringBillPatch struct {
 
 // PatchRecurringBill confirms, rejects or renames a bill. A status change
 // needs decided_by.
-func (s *Store) PatchRecurringBill(id string, patch RecurringBillPatch) (RecurringBill, error) {
+func (s *Ledger) PatchRecurringBill(id string, patch RecurringBillPatch) (RecurringBill, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return RecurringBill{}, err
@@ -506,7 +506,7 @@ func (s *Store) PatchRecurringBill(id string, patch RecurringBillPatch) (Recurri
 		if strings.TrimSpace(patch.DecidedBy) == "" {
 			return RecurringBill{}, fmt.Errorf("%w: decided_by is required with a status: say who decided", ErrInvalid)
 		}
-		if _, err := tx.Exec(`UPDATE recurring_bills SET status = ?, decided_by = ?, decided_at = ? WHERE id = ?`, *patch.Status, strings.TrimSpace(patch.DecidedBy), now, id); err != nil {
+		if _, err := tx.Exec(`UPDATE recurring_bills SET status = $1, decided_by = $2, decided_at = $3 WHERE id = $4`, *patch.Status, strings.TrimSpace(patch.DecidedBy), now, id); err != nil {
 			return RecurringBill{}, err
 		}
 	}
@@ -515,11 +515,11 @@ func (s *Store) PatchRecurringBill(id string, patch RecurringBillPatch) (Recurri
 		if name == "" {
 			return RecurringBill{}, fmt.Errorf("%w: name cannot be empty", ErrInvalid)
 		}
-		if _, err := tx.Exec(`UPDATE recurring_bills SET name = ? WHERE id = ?`, name, id); err != nil {
+		if _, err := tx.Exec(`UPDATE recurring_bills SET name = $1 WHERE id = $2`, name, id); err != nil {
 			return RecurringBill{}, err
 		}
 	}
-	if _, err := tx.Exec(`UPDATE recurring_bills SET updated_at = ? WHERE id = ?`, now, id); err != nil {
+	if _, err := tx.Exec(`UPDATE recurring_bills SET updated_at = $1 WHERE id = $2`, now, id); err != nil {
 		return RecurringBill{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -542,7 +542,7 @@ type RecurringTotals struct {
 }
 
 // GetRecurringTotals adds up the confirmed bills.
-func (s *Store) GetRecurringTotals() (RecurringTotals, error) {
+func (s *Ledger) GetRecurringTotals() (RecurringTotals, error) {
 	var totals RecurringTotals
 	bills, err := s.ListRecurringBills("confirmed")
 	if err != nil {
@@ -580,7 +580,7 @@ func (s *Store) GetRecurringTotals() (RecurringTotals, error) {
 // count as that period's payment. status is confirmed (the operator says it
 // is a bill) or suggested (an agent proposes it for the operator to decide).
 // An existing bill for the same payments is refused.
-func (s *Store) AddRecurringBill(transactionID, cadence, status, name, decidedBy string) (RecurringBill, error) {
+func (s *Ledger) AddRecurringBill(transactionID, cadence, status, name, decidedBy string) (RecurringBill, error) {
 	if _, found := cadenceNamed(cadence); !found {
 		return RecurringBill{}, requireOneOf("cadence", cadence, billCadences)
 	}
@@ -597,7 +597,7 @@ func (s *Store) AddRecurringBill(transactionID, cadence, status, name, decidedBy
 	}
 	defer tx.Rollback()
 	var description, payeeID, payeeName string
-	err = tx.QueryRow(`SELECT t.description, COALESCE(t.payee_id,''), COALESCE(p.name,'') FROM transactions t LEFT JOIN payees p ON p.id = t.payee_id WHERE t.id = ?`, transactionID).
+	err = tx.QueryRow(`SELECT t.description, COALESCE(t.payee_id,''), COALESCE(p.name,'') FROM transactions t LEFT JOIN payees p ON p.id = t.payee_id WHERE t.id = $1`, transactionID).
 		Scan(&description, &payeeID, &payeeName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return RecurringBill{}, fmt.Errorf("%w: transaction_id %q does not exist", ErrInvalid, transactionID)
@@ -610,7 +610,7 @@ func (s *Store) AddRecurringBill(transactionID, cadence, status, name, decidedBy
 		return RecurringBill{}, fmt.Errorf("%w: %s's description has no words to match other payments by", ErrInvalid, transactionID)
 	}
 	var existing string
-	if err := tx.QueryRow(`SELECT id FROM recurring_bills WHERE match_key = ?`, key).Scan(&existing); err == nil {
+	if err := tx.QueryRow(`SELECT id FROM recurring_bills WHERE match_key = $1`, key).Scan(&existing); err == nil {
 		return RecurringBill{}, fmt.Errorf("%w: these payments are already bill %s; change that one", ErrConflict, existing)
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return RecurringBill{}, err
@@ -635,7 +635,7 @@ func (s *Store) AddRecurringBill(transactionID, cadence, status, name, decidedBy
 		decidedAt = now
 	}
 	if _, err := tx.Exec(`INSERT INTO recurring_bills (seq, id, match_key, name, payee_id, cadence, expected_cents, status, first_paid_on, last_paid_on, added_by_operator, decided_by, decided_at, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,0,?,'','',1,?,?,?,?)`, seq, id, key, name, payee, cadence, status, decidedBy, decidedAt, now, now); err != nil {
+		VALUES ($1,$2,$3,$4,$5,$6,0,$7,'','',1,$8,$9,$10,$11)`, seq, id, key, name, payee, cadence, status, decidedBy, decidedAt, now, now); err != nil {
 		return RecurringBill{}, err
 	}
 	if err := tx.Commit(); err != nil {
