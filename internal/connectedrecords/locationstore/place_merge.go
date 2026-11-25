@@ -1,9 +1,12 @@
 package locationstore
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
+
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 )
 
 // reasonMerge is the revision reason of every record a merge moves. It is not
@@ -17,8 +20,10 @@ const reasonMerge = "merge"
 // revisions (reason merge); a place merged into id earlier now points at into;
 // and id is soft-deleted with merged_into_place_id set, so a later export that
 // names it by Google's id lands on into. The kept place's own fields are
-// untouched. All in one transaction.
-func (s *Store) MergePlace(id string, request PlaceMergeRequest) (*PlaceMerge, error) {
+// untouched. All in one transaction. Place id must be in scope, and into
+// must be its owner's: one the caller cannot reach is not found, and one of
+// another owner's that an administrator names is a 400.
+func (s *Store) MergePlace(ctx context.Context, scope ownership.Scope, id string, request PlaceMergeRequest) (*PlaceMerge, error) {
 	into := strings.TrimSpace(request.Into)
 	if into == "" {
 		return nil, fmt.Errorf("%w: into is required: the place to keep", ErrInvalid)
@@ -27,12 +32,16 @@ func (s *Store) MergePlace(id string, request PlaceMergeRequest) (*PlaceMerge, e
 		return nil, fmt.Errorf("%w: a place cannot be merged into itself", ErrInvalid)
 	}
 	merge := &PlaceMerge{MergedPlaceID: id}
-	err := s.inTransaction(func(tx *sql.Tx) error {
-		merged, err := getPlaceRow(tx, id)
+	err := s.writeOwned(ctx, scope, "places", EntityPlace, id, func(tx *sql.Tx, owner string) error {
+		if err := requireOwner(ctx, tx, scope, owner, "places", EntityPlace, into, ErrNotFound, ""); err != nil {
+			return err
+		}
+		owned := ownership.OwnedBy(owner)
+		merged, err := getPlaceRow(ctx, tx, owned, id)
 		if err != nil {
 			return err
 		}
-		kept, err := getPlaceRow(tx, into)
+		kept, err := getPlaceRow(ctx, tx, owned, into)
 		if err != nil {
 			return err
 		}
@@ -43,34 +52,34 @@ func (s *Store) MergePlace(id string, request PlaceMergeRequest) (*PlaceMerge, e
 			return fmt.Errorf("%w: %s, the place to keep, is deleted", ErrConflict, into)
 		}
 		at := now()
-		if merge.VisitsMoved, err = moveReferences(tx, EntityVisit, "visits", "place_id", id, into, at); err != nil {
+		if merge.VisitsMoved, err = moveReferences(ctx, tx, EntityVisit, "visits", "place_id", id, into, at); err != nil {
 			return err
 		}
-		if merge.TripStartsMoved, err = moveReferences(tx, EntityTrip, "trips", "start_place_id", id, into, at); err != nil {
+		if merge.TripStartsMoved, err = moveReferences(ctx, tx, EntityTrip, "trips", "start_place_id", id, into, at); err != nil {
 			return err
 		}
-		if merge.TripEndsMoved, err = moveReferences(tx, EntityTrip, "trips", "end_place_id", id, into, at); err != nil {
+		if merge.TripEndsMoved, err = moveReferences(ctx, tx, EntityTrip, "trips", "end_place_id", id, into, at); err != nil {
 			return err
 		}
-		if merge.CalendarLinksMoved, merge.CalendarLinksDuplicate, err = moveCalendarLinks(tx, id, into, at); err != nil {
+		if merge.CalendarLinksMoved, merge.CalendarLinksDuplicate, err = moveCalendarLinks(ctx, tx, id, into, at); err != nil {
 			return err
 		}
 		// Series spots and home periods are rewritten by their own runs; moving
 		// them here keeps them right until then.
-		result, err := tx.Exec(`UPDATE calendar_series_places SET place_id = ? WHERE place_id = ?`, into, id)
+		result, err := tx.ExecContext(ctx, `UPDATE calendar_series_places SET place_id = $1 WHERE place_id = $2`, into, id)
 		if err != nil {
 			return err
 		}
 		if merge.CalendarSeriesMoved, err = rowsAffected(result); err != nil {
 			return err
 		}
-		if result, err = tx.Exec(`UPDATE home_periods SET place_id = ? WHERE place_id = ?`, into, id); err != nil {
+		if result, err = tx.ExecContext(ctx, `UPDATE home_periods SET place_id = $1 WHERE place_id = $2`, into, id); err != nil {
 			return err
 		}
 		if merge.HomePeriodsMoved, err = rowsAffected(result); err != nil {
 			return err
 		}
-		earlier, err := tx.Query(`SELECT id FROM places WHERE merged_into_place_id = ?`, id)
+		earlier, err := tx.QueryContext(ctx, `SELECT id FROM places WHERE merged_into_place_id = $1 ORDER BY seq`, id)
 		if err != nil {
 			return err
 		}
@@ -88,24 +97,24 @@ func (s *Store) MergePlace(id string, request PlaceMergeRequest) (*PlaceMerge, e
 			return err
 		}
 		for _, earlierID := range repoint {
-			if err := snapshot(tx, EntityPlace, earlierID, reasonMerge, at); err != nil {
+			if err := snapshot(ctx, tx, EntityPlace, earlierID, reasonMerge, at); err != nil {
 				return err
 			}
-			if _, err := tx.Exec(`UPDATE places SET merged_into_place_id = ?, updated_at = ? WHERE id = ?`, into, at, earlierID); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE places SET merged_into_place_id = $1, updated_at = $2 WHERE id = $3`, into, at, earlierID); err != nil {
 				return err
 			}
 		}
 		merge.PlacesRepointed = len(repoint)
-		if err := snapshot(tx, EntityPlace, id, reasonMerge, at); err != nil {
+		if err := snapshot(ctx, tx, EntityPlace, id, reasonMerge, at); err != nil {
 			return err
 		}
-		_, err = tx.Exec(`UPDATE places SET deleted_at = ?, merged_into_place_id = ?, updated_at = ? WHERE id = ?`, at, into, at, id)
+		_, err = tx.ExecContext(ctx, `UPDATE places SET deleted_at = $1, merged_into_place_id = $2, updated_at = $3 WHERE id = $4`, at, into, at, id)
 		return err
 	})
 	if err != nil {
 		return nil, err
 	}
-	kept, err := s.GetPlace(into, false)
+	kept, err := s.GetPlace(ctx, scope, into, false)
 	if err != nil {
 		return nil, err
 	}
@@ -115,8 +124,8 @@ func (s *Store) MergePlace(id string, request PlaceMergeRequest) (*PlaceMerge, e
 
 // moveReferences points every record of table whose column names from at to,
 // deleted records too, copying each to revisions first.
-func moveReferences(tx *sql.Tx, entityType, table, column, from, to string, at int64) (int, error) {
-	rows, err := tx.Query(`SELECT id FROM `+table+` WHERE `+column+` = ?`, from)
+func moveReferences(ctx context.Context, tx *sql.Tx, entityType, table, column, from, to string, at int64) (int, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM `+table+` WHERE `+column+` = $1 ORDER BY seq`, from)
 	if err != nil {
 		return 0, err
 	}
@@ -134,10 +143,10 @@ func moveReferences(tx *sql.Tx, entityType, table, column, from, to string, at i
 		return 0, err
 	}
 	for _, id := range ids {
-		if err := snapshot(tx, entityType, id, reasonMerge, at); err != nil {
+		if err := snapshot(ctx, tx, entityType, id, reasonMerge, at); err != nil {
 			return 0, err
 		}
-		if _, err := tx.Exec(`UPDATE `+table+` SET `+column+` = ?, updated_at = ? WHERE id = ?`, to, at, id); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE `+table+` SET `+column+` = $1, updated_at = $2 WHERE id = $3`, to, at, id); err != nil {
 			return 0, err
 		}
 	}
@@ -147,10 +156,10 @@ func moveReferences(tx *sql.Tx, entityType, table, column, from, to string, at i
 // moveCalendarLinks points calendar links to the merged place at the kept
 // one. A link whose event already links to the kept place is a duplicate,
 // soft-deleted with deleted_by merge.
-func moveCalendarLinks(tx *sql.Tx, from, to string, at int64) (moved, duplicate int, err error) {
-	rows, err := tx.Query(`SELECT l.id, EXISTS (SELECT 1 FROM calendar_event_links k WHERE k.calendar_id = l.calendar_id
-			AND k.event_id = l.event_id AND k.target_type = 'place' AND k.target_id = ?)
-		FROM calendar_event_links l WHERE l.target_type = 'place' AND l.target_id = ?`, to, from)
+func moveCalendarLinks(ctx context.Context, tx *sql.Tx, from, to string, at int64) (moved, duplicate int, err error) {
+	rows, err := tx.QueryContext(ctx, `SELECT l.id, EXISTS (SELECT 1 FROM calendar_event_links k WHERE k.owner_principal_id = l.owner_principal_id
+			AND k.calendar_id = l.calendar_id AND k.event_id = l.event_id AND k.target_type = 'place' AND k.target_id = $1)
+		FROM calendar_event_links l WHERE l.target_type = 'place' AND l.target_id = $2 ORDER BY l.seq`, to, from)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -173,15 +182,15 @@ func moveCalendarLinks(tx *sql.Tx, from, to string, at int64) (moved, duplicate 
 	}
 	for _, found := range links {
 		if found.duplicate {
-			if _, err := tx.Exec(`UPDATE calendar_event_links SET deleted_at = CASE WHEN deleted_at = 0 THEN ? ELSE deleted_at END,
-				deleted_by = CASE WHEN deleted_at = 0 THEN ? ELSE deleted_by END, updated_at = ? WHERE id = ?`,
+			if _, err := tx.ExecContext(ctx, `UPDATE calendar_event_links SET deleted_at = CASE WHEN deleted_at = 0 THEN $1 ELSE deleted_at END,
+				deleted_by = CASE WHEN deleted_at = 0 THEN $2 ELSE deleted_by END, updated_at = $3 WHERE id = $4`,
 				at, reasonMerge, at, found.id); err != nil {
 				return 0, 0, err
 			}
 			duplicate++
 			continue
 		}
-		if _, err := tx.Exec(`UPDATE calendar_event_links SET target_id = ?, updated_at = ? WHERE id = ?`, to, at, found.id); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE calendar_event_links SET target_id = $1, updated_at = $2 WHERE id = $3`, to, at, found.id); err != nil {
 			return 0, 0, err
 		}
 		moved++

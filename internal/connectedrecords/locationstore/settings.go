@@ -1,7 +1,6 @@
 package locationstore
 
 import (
-	"net/http"
 	"os"
 	"path/filepath"
 
@@ -9,58 +8,13 @@ import (
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
-// ServiceName is this service's name in its own settings description, as
-// healthcheck and the repo know it.
-const ServiceName = "location-store"
-
-// OwnedEnvironmentVariablePrefix is the prefix of the variables that are this
-// service's alone. A set variable carrying it that SettingDefinitions does not
-// declare stops the service from starting.
-const OwnedEnvironmentVariablePrefix = "LOCATION_STORE_"
-
-// Keys of the settings, as GET /settings names them.
-const (
-	SettingListenAddress = "listen_address"
-	SettingDataDirectory = "data_directory"
-)
-
-// DefaultListenAddress is loopback, deliberately: this is where the user has
-// been, and the service has no auth of its own. dash is the front door.
-const DefaultListenAddress = "127.0.0.1:8333"
-
-// DefaultDataDir is where the database lives when the environment says
-// nothing.
-func DefaultDataDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = "."
-	}
-	return filepath.Join(home, ".config", "location-store")
-}
-
-// SettingDefinitions declares every environment variable the service reads,
-// once. Nothing is Editable: GET /settings is as open as every other route.
-func SettingDefinitions() []servicesettings.Definition {
-	return []servicesettings.Definition{
-		{Key: SettingListenAddress, EnvironmentVariable: "LOCATION_STORE_ADDR", Kind: msg.ServiceSettingKindWiring, ValueType: msg.ServiceSettingValueTypeString, Default: DefaultListenAddress,
-			Description: "The address the HTTP server listens on. Keep it on loopback: the service has no auth."},
-		{Key: SettingDataDirectory, EnvironmentVariable: "LOCATION_STORE_DATA_DIR", Kind: msg.ServiceSettingKindPath, ValueType: msg.ServiceSettingValueTypeString, Default: DefaultDataDir(),
-			Description: "The directory that holds location-store.db. Changing it starts the service on whatever is there, or nothing."},
-	}
-}
-
-// NewSettingsRegistry reads this service's settings from environment.
-func NewSettingsRegistry(environment servicesettings.Environment) (*servicesettings.Registry, error) {
-	return servicesettings.New(ServiceName, []string{OwnedEnvironmentVariablePrefix}, SettingDefinitions(), environment)
-}
-
-// RegisterSettingsHandler serves the registry at GET /settings.
-func RegisterSettingsHandler(mux *http.ServeMux, registry *servicesettings.Registry) {
-	mux.Handle("GET /settings", servicesettings.Handler(registry, "/settings"))
-}
+// The store runs inside llm-bridge-server, which declares its settings (the
+// database, and the GeoNames directory it hands to New). What is declared
+// here are the commands' own settings: they are HTTP clients of the store's
+// routes, and each reads its variables from its own environment.
 
 // Keys of the import commands' settings. The commands read them from the
-// environment; the service itself reads none.
+// environment; the store itself reads none.
 const (
 	SettingLocationStoreURL = "location_store_url"
 	SettingPhotoStoreURL    = "photo_store_url"
@@ -127,10 +81,21 @@ func NewImportActivitySettingsRegistry(environment servicesettings.Environment) 
 	return servicesettings.New("location-import-activity", nil, ImportActivitySettingDefinitions(), environment)
 }
 
+// SettingGeonamesDirectory is the key of location-name-localities' GeoNames
+// directory setting.
+const SettingGeonamesDirectory = "geonames_directory"
+
 // LocalityNamingSettingDefinitions declares every environment variable
-// location-name-localities reads.
+// location-name-localities reads. The GeoNames directory is where it
+// downloads the town dump, and must be the directory the server's
+// location_store.geonames_directory names, which the store reads: the store
+// no longer answers where its data is.
 func LocalityNamingSettingDefinitions() []servicesettings.Definition {
-	return []servicesettings.Definition{locationStoreURLDefinition()}
+	return []servicesettings.Definition{
+		locationStoreURLDefinition(),
+		{Key: SettingGeonamesDirectory, EnvironmentVariable: "LOCATION_STORE_GEONAMES_DIRECTORY", Kind: msg.ServiceSettingKindPath, ValueType: msg.ServiceSettingValueTypeString, Required: true,
+			Description: "Where the GeoNames town files are downloaded: the directory llm-bridge-server's location_store.geonames_directory names, which location-store reads them from."},
+	}
 }
 
 // NewLocalityNamingSettingsRegistry reads location-name-localities' settings.
@@ -213,7 +178,8 @@ func PlaceNameSuggestingSettingDefinitions() []servicesettings.Definition {
 }
 
 // NewPlaceNameSuggestingSettingsRegistry reads location-suggest-place-names'
-// settings. It owns no prefix: LOCATION_STORE_ belongs to the service.
+// settings. It owns no prefix: the other commands read LOCATION_STORE_
+// variables too.
 func NewPlaceNameSuggestingSettingsRegistry(environment servicesettings.Environment) (*servicesettings.Registry, error) {
 	return servicesettings.New(SetByPlaceNameSuggesting, nil, PlaceNameSuggestingSettingDefinitions(), environment)
 }

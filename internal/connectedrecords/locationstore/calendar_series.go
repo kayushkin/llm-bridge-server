@@ -1,6 +1,7 @@
 package locationstore
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locationstore/internal/geonames"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 )
 
 // A recurring series with no location (a weekly class, a standing practice)
@@ -263,7 +265,7 @@ func (m *calendarMatcher) decideUnlocatedSeries(series *unlocatedSeries, windowF
 
 // ---- storage ----
 
-const seriesPlaceColumns = `s.id, s.calendar_id, s.recurring_event_id, s.summary, s.place_id, COALESCE(p.name, ''), s.spot_place_ids,
+const seriesPlaceColumns = `s.id, s.owner_principal_id, s.calendar_id, s.recurring_event_id, s.summary, s.place_id, COALESCE(p.name, ''), s.spot_place_ids::text,
 	s.instances, s.instances_out, s.instances_at_place, s.agreement, s.confidence, s.outcome, s.first_instance_at, s.last_instance_at,
 	s.window_from, s.window_to, s.matched_by, s.created_at, s.updated_at`
 
@@ -273,7 +275,7 @@ func scanSeriesPlace(scan func(...any) error) (*CalendarSeriesPlace, error) {
 	var row CalendarSeriesPlace
 	var placeID sql.NullString
 	var spot string
-	if err := scan(&row.ID, &row.CalendarID, &row.RecurringEventID, &row.Summary, &placeID, &row.PlaceName, &spot, &row.Instances,
+	if err := scan(&row.ID, &row.OwnerPrincipalID, &row.CalendarID, &row.RecurringEventID, &row.Summary, &placeID, &row.PlaceName, &spot, &row.Instances,
 		&row.InstancesOut, &row.InstancesAtPlace, &row.Agreement, &row.Confidence, &row.Outcome, &row.FirstInstanceAt, &row.LastInstanceAt,
 		&row.WindowFrom, &row.WindowTo, &row.MatchedBy, &row.CreatedAt, &row.UpdatedAt); err != nil {
 		return nil, err
@@ -285,36 +287,39 @@ func scanSeriesPlace(scan func(...any) error) (*CalendarSeriesPlace, error) {
 	return &row, nil
 }
 
-// saveSeriesPlaces writes what a run found for each series, over what an
-// earlier run wrote for the same series, and answers the rows with their ids.
-func saveSeriesPlaces(tx *sql.Tx, series []*unlocatedSeries, at int64) error {
+// saveSeriesPlaces writes what a run found for each of owner's series, over
+// what an earlier run wrote for the same series, and answers the rows with
+// their ids.
+func saveSeriesPlaces(ctx context.Context, tx *sql.Tx, owner string, series []*unlocatedSeries, at int64) error {
 	for _, one := range series {
 		found := &one.found
+		found.OwnerPrincipalID = owner
 		var id string
-		err := tx.QueryRow(`SELECT id FROM calendar_series_places WHERE calendar_id = ? AND recurring_event_id = ?`,
-			found.CalendarID, found.RecurringEventID).Scan(&id)
+		err := tx.QueryRowContext(ctx, `SELECT id FROM calendar_series_places WHERE owner_principal_id = $1 AND calendar_id = $2 AND recurring_event_id = $3`,
+			owner, found.CalendarID, found.RecurringEventID).Scan(&id)
 		values := []any{found.Summary, found.PlaceID, encodeStrings(found.SpotPlaceIDs), found.Instances, found.InstancesOut,
 			found.InstancesAtPlace, found.Agreement, found.Confidence, found.Outcome, found.FirstInstanceAt, found.LastInstanceAt,
 			found.WindowFrom, found.WindowTo, found.MatchedBy, at}
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			var seq int64
-			if id, seq, err = nextID(tx, "calendar_series_places", "calendar_series_place"); err != nil {
+			if id, seq, err = nextID(ctx, tx, "calendar_series_places", "calendar_series_place"); err != nil {
 				return err
 			}
-			if _, err := tx.Exec(`INSERT INTO calendar_series_places (summary, place_id, spot_place_ids, instances, instances_out,
+			if _, err := tx.ExecContext(ctx, `INSERT INTO calendar_series_places (summary, place_id, spot_place_ids, instances, instances_out,
 				instances_at_place, agreement, confidence, outcome, first_instance_at, last_instance_at, window_from, window_to, matched_by,
-				updated_at, id, seq, calendar_id, recurring_event_id, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-				append(values, id, seq, found.CalendarID, found.RecurringEventID, at)...); err != nil {
+				updated_at, id, seq, owner_principal_id, calendar_id, recurring_event_id, created_at)
+				VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`,
+				append(values, id, seq, owner, found.CalendarID, found.RecurringEventID, at)...); err != nil {
 				return err
 			}
 			found.CreatedAt = at
 		case err != nil:
 			return err
 		default:
-			if _, err := tx.Exec(`UPDATE calendar_series_places SET summary=?, place_id=?, spot_place_ids=?, instances=?, instances_out=?,
-				instances_at_place=?, agreement=?, confidence=?, outcome=?, first_instance_at=?, last_instance_at=?, window_from=?, window_to=?,
-				matched_by=?, updated_at=? WHERE id=?`, append(values, id)...); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE calendar_series_places SET summary = $1, place_id = $2, spot_place_ids = $3::jsonb, instances = $4,
+				instances_out = $5, instances_at_place = $6, agreement = $7, confidence = $8, outcome = $9, first_instance_at = $10, last_instance_at = $11,
+				window_from = $12, window_to = $13, matched_by = $14, updated_at = $15 WHERE id = $16`, append(values, id)...); err != nil {
 				return err
 			}
 		}
@@ -332,30 +337,29 @@ type CalendarSeriesPlaceFilter struct {
 	Limit, Offset int
 }
 
-// ListCalendarSeriesPlaces answers GET /calendar-series-places. PlaceID
-// selects the series whose spot holds that place.
-func (s *Store) ListCalendarSeriesPlaces(filter CalendarSeriesPlaceFilter) ([]CalendarSeriesPlace, error) {
-	where, args := []string{}, []any{}
+// ListCalendarSeriesPlaces answers GET /calendar-series-places: the rows in
+// scope. PlaceID selects the series whose spot holds that place.
+func (s *Store) ListCalendarSeriesPlaces(ctx context.Context, scope ownership.Scope, filter CalendarSeriesPlaceFilter) ([]CalendarSeriesPlace, error) {
+	if err := checkScope(scope); err != nil {
+		return nil, err
+	}
+	var args arguments
+	where := []string{args.within(scope, "s.owner_principal_id")}
 	if filter.PlaceID != "" {
-		where = append(where, "EXISTS (SELECT 1 FROM json_each(s.spot_place_ids) WHERE value = ?)")
-		args = append(args, filter.PlaceID)
+		where = append(where, "s.spot_place_ids @> jsonb_build_array("+args.add(filter.PlaceID)+"::text)")
 	}
 	if filter.CalendarID != "" {
-		where, args = append(where, "s.calendar_id = ?"), append(args, filter.CalendarID)
+		where = append(where, "s.calendar_id = "+args.add(filter.CalendarID))
 	}
 	if filter.Outcome != "" {
 		if !knownWord(SeriesOutcomes, filter.Outcome) {
 			return nil, fmt.Errorf("%w: unknown outcome %q: use one of %s", ErrInvalid, filter.Outcome, strings.Join(SeriesOutcomes, ", "))
 		}
-		where, args = append(where, "s.outcome = ?"), append(args, filter.Outcome)
+		where = append(where, "s.outcome = "+args.add(filter.Outcome))
 	}
-	query := `SELECT ` + seriesPlaceColumns + seriesPlaceFrom
-	if len(where) > 0 {
-		query += " WHERE " + strings.Join(where, " AND ")
-	}
-	query += ` ORDER BY s.instances_at_place DESC, s.seq LIMIT ? OFFSET ?`
-	args = append(args, clampLimit(filter.Limit, defaultLimit, maximumLimit), max(filter.Offset, 0))
-	rows, err := s.db.Query(query, args...)
+	query := `SELECT ` + seriesPlaceColumns + seriesPlaceFrom + ` WHERE ` + strings.Join(where, " AND ") + ` ORDER BY s.instances_at_place DESC, s.seq LIMIT ` +
+		args.add(clampLimit(filter.Limit, defaultLimit, maximumLimit)) + ` OFFSET ` + args.add(max(filter.Offset, 0))
+	rows, err := s.db.QueryContext(ctx, query, args.values...)
 	if err != nil {
 		return nil, err
 	}
@@ -371,9 +375,14 @@ func (s *Store) ListCalendarSeriesPlaces(filter CalendarSeriesPlaceFilter) ([]Ca
 	return found, rows.Err()
 }
 
-// GetCalendarSeriesPlace reads one row.
-func (s *Store) GetCalendarSeriesPlace(id string) (*CalendarSeriesPlace, error) {
-	row, err := scanSeriesPlace(s.db.QueryRow(`SELECT `+seriesPlaceColumns+seriesPlaceFrom+` WHERE s.id = ?`, id).Scan)
+// GetCalendarSeriesPlace reads one row in scope.
+func (s *Store) GetCalendarSeriesPlace(ctx context.Context, scope ownership.Scope, id string) (*CalendarSeriesPlace, error) {
+	if err := checkScope(scope); err != nil {
+		return nil, err
+	}
+	var args arguments
+	row, err := scanSeriesPlace(s.db.QueryRowContext(ctx, `SELECT `+seriesPlaceColumns+seriesPlaceFrom+` WHERE s.id = `+args.add(id)+
+		` AND `+args.within(scope, "s.owner_principal_id"), args.values...).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("%w: no calendar series place %s", ErrNotFound, id)
 	}

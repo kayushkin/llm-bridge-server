@@ -1,19 +1,16 @@
 package locationstore
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
-	"path/filepath"
 
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locationstore/internal/geonames"
 )
 
-// GeonamesDir is where location-name-localities downloads the GeoNames files:
-// <data dir>/geonames.
-func (s *Store) GeonamesDir() string { return GeonamesDirIn(s.dataDir) }
-
-// GeonamesDirIn is the GeoNames directory of a data directory.
-func GeonamesDirIn(dataDir string) string { return filepath.Join(dataDir, "geonames") }
+// GeonamesDir is the directory the store reads the GeoNames files from, the
+// one New was given, where location-name-localities downloads them.
+func (s *Store) GeonamesDir() string { return s.geonamesDirectory }
 
 // townIndex reads the GeoNames files once. Missing files are a conflict the
 // caller fixes by running location-name-localities, which downloads them.
@@ -46,10 +43,10 @@ func localityFor(index *geonames.Index, latitude, longitude float64) *Locality {
 		DescribedBy: SetByLocalityNaming + " (" + geonames.Source + ")"}
 }
 
-// FillLocalities names the town of every place, visit and trip end whose
-// locality is empty. It never changes one already set. Each record it fills
-// is first copied to revisions, reason "locality".
-func (s *Store) FillLocalities(dryRun bool) (*LocalityFill, error) {
+// FillLocalities names the town of every place, visit and trip end of
+// owner's whose locality is empty. It never changes one already set. Each
+// record it fills is first copied to revisions, reason "locality".
+func (s *Store) FillLocalities(ctx context.Context, owner string, dryRun bool) (*LocalityFill, error) {
 	index, err := s.townIndex()
 	if err != nil {
 		return nil, err
@@ -73,12 +70,12 @@ func (s *Store) FillLocalities(dryRun bool) (*LocalityFill, error) {
 		entityType, id, column string
 		locality               *Locality
 	}
-	err = s.inTransaction(func(tx *sql.Tx) error {
+	err = s.inOwnerTransaction(ctx, owner, func(tx *sql.Tx) error {
 		var work []pending
 		var rows *sql.Rows
 		var err error
 		collect := func(entityType, column, query string, counter *int) error {
-			if rows, err = tx.Query(query); err != nil {
+			if rows, err = tx.QueryContext(ctx, query, owner); err != nil {
 				return err
 			}
 			defer rows.Close()
@@ -100,17 +97,17 @@ func (s *Store) FillLocalities(dryRun bool) (*LocalityFill, error) {
 			}
 			return rows.Err()
 		}
-		if err := collect(EntityPlace, "locality", `SELECT id, locality IS NOT NULL, latitude, longitude FROM places WHERE deleted_at = 0`, &fill.Places); err != nil {
+		if err := collect(EntityPlace, "locality", `SELECT id, locality IS NOT NULL, latitude, longitude FROM places WHERE owner_principal_id = $1 AND deleted_at = 0 ORDER BY seq`, &fill.Places); err != nil {
 			return err
 		}
 		if err := collect(EntityVisit, "locality", `SELECT v.id, v.locality IS NOT NULL, COALESCE(v.latitude, p.latitude), COALESCE(v.longitude, p.longitude)
-			FROM visits v LEFT JOIN places p ON p.id = v.place_id WHERE v.deleted_at = 0`, &fill.Visits); err != nil {
+			FROM visits v LEFT JOIN places p ON p.id = v.place_id WHERE v.owner_principal_id = $1 AND v.deleted_at = 0 ORDER BY v.seq`, &fill.Visits); err != nil {
 			return err
 		}
-		if err := collect(EntityTrip, "start_locality", `SELECT id, start_locality IS NOT NULL, start_latitude, start_longitude FROM trips WHERE deleted_at = 0`, &fill.TripStarts); err != nil {
+		if err := collect(EntityTrip, "start_locality", `SELECT id, start_locality IS NOT NULL, start_latitude, start_longitude FROM trips WHERE owner_principal_id = $1 AND deleted_at = 0 ORDER BY seq`, &fill.TripStarts); err != nil {
 			return err
 		}
-		if err := collect(EntityTrip, "end_locality", `SELECT id, end_locality IS NOT NULL, end_latitude, end_longitude FROM trips WHERE deleted_at = 0`, &fill.TripEnds); err != nil {
+		if err := collect(EntityTrip, "end_locality", `SELECT id, end_locality IS NOT NULL, end_latitude, end_longitude FROM trips WHERE owner_principal_id = $1 AND deleted_at = 0 ORDER BY seq`, &fill.TripEnds); err != nil {
 			return err
 		}
 		if dryRun {
@@ -118,12 +115,12 @@ func (s *Store) FillLocalities(dryRun bool) (*LocalityFill, error) {
 		}
 		at := now()
 		for _, item := range work {
-			if err := snapshot(tx, item.entityType, item.id, "locality", at); err != nil {
+			if err := snapshot(ctx, tx, item.entityType, item.id, "locality", at); err != nil {
 				return err
 			}
 			// The column is NULL-guarded again, so a value set since the read
 			// above is never replaced.
-			if _, err := tx.Exec(`UPDATE `+entityTables[item.entityType]+` SET `+item.column+`=?, updated_at=? WHERE id=? AND `+item.column+` IS NULL`,
+			if _, err := tx.ExecContext(ctx, `UPDATE `+entityTables[item.entityType]+` SET `+item.column+` = $1, updated_at = $2 WHERE id = $3 AND `+item.column+` IS NULL`,
 				encodeLocality(item.locality), at, item.id); err != nil {
 				return err
 			}

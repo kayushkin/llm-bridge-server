@@ -1,6 +1,7 @@
 package locationstore
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -48,9 +49,13 @@ const (
 	SnapshotRestoredReason   = "restored by "
 )
 
-func reconcileSnapshots(tx *sql.Tx, at int64) (*SnapshotChanges, error) {
+// reconcileSnapshots reconciles one owner's snapshot imports and that
+// owner's google_timeline visits and trips; another owner's exports never
+// decide this owner's records.
+func reconcileSnapshots(ctx context.Context, tx *sql.Tx, owner string, at int64) (*SnapshotChanges, error) {
 	changes := &SnapshotChanges{KeptEditedIDs: []string{}}
-	rows, err := tx.Query(`SELECT id, seq, snapshot FROM imports WHERE snapshot IS NOT NULL AND finished_at != 0 AND kind = ?`, ImportKindGoogleTimeline)
+	rows, err := tx.QueryContext(ctx, `SELECT id, seq, snapshot FROM imports WHERE owner_principal_id = $1 AND snapshot IS NOT NULL AND finished_at <> 0 AND kind = $2`,
+		owner, ImportKindGoogleTimeline)
 	if err != nil {
 		return nil, err
 	}
@@ -80,7 +85,7 @@ func reconcileSnapshots(tx *sql.Tx, at int64) (*SnapshotChanges, error) {
 	held := map[string]map[string]bool{} // import id → record ids it holds
 	for _, item := range snapshots {
 		held[item.id] = map[string]bool{}
-		heldRows, err := tx.Query(`SELECT entity_id FROM import_records WHERE import_id = ?`, item.id)
+		heldRows, err := tx.QueryContext(ctx, `SELECT entity_id FROM import_records WHERE import_id = $1`, item.id)
 		if err != nil {
 			return nil, err
 		}
@@ -113,8 +118,8 @@ func reconcileSnapshots(tx *sql.Tx, at int64) (*SnapshotChanges, error) {
 		if entityType == EntityTrip {
 			query += ` OR r.title_by = 'hand' OR r.parent_set_by = 'hand'`
 		}
-		query += ` FROM ` + table + ` r WHERE r.source = ?`
-		recordRows, err := tx.Query(query, SourceGoogleTimeline)
+		query += ` FROM ` + table + ` r WHERE r.owner_principal_id = $1 AND r.source = $2`
+		recordRows, err := tx.QueryContext(ctx, query, owner, SourceGoogleTimeline)
 		if err != nil {
 			return nil, err
 		}
@@ -143,10 +148,10 @@ func reconcileSnapshots(tx *sql.Tx, at int64) (*SnapshotChanges, error) {
 			}
 			switch {
 			case held[decider.id][item.id] && item.deletedAt != 0 && item.supersededBy.Valid:
-				if err := snapshot(tx, entityType, item.id, SnapshotRestoredReason+decider.id, at); err != nil {
+				if err := snapshot(ctx, tx, entityType, item.id, SnapshotRestoredReason+decider.id, at); err != nil {
 					return nil, err
 				}
-				if _, err := tx.Exec(`UPDATE `+table+` SET deleted_at=0, superseded_by_import_id=NULL, updated_at=? WHERE id=?`, at, item.id); err != nil {
+				if _, err := tx.ExecContext(ctx, `UPDATE `+table+` SET deleted_at = 0, superseded_by_import_id = NULL, updated_at = $1 WHERE id = $2`, at, item.id); err != nil {
 					return nil, err
 				}
 				if entityType == EntityVisit {
@@ -160,10 +165,10 @@ func reconcileSnapshots(tx *sql.Tx, at int64) (*SnapshotChanges, error) {
 			case item.editedByHand:
 				changes.KeptEditedIDs = append(changes.KeptEditedIDs, item.id)
 			default:
-				if err := snapshot(tx, entityType, item.id, SnapshotSupersededReason+decider.id, at); err != nil {
+				if err := snapshot(ctx, tx, entityType, item.id, SnapshotSupersededReason+decider.id, at); err != nil {
 					return nil, err
 				}
-				if _, err := tx.Exec(`UPDATE `+table+` SET deleted_at=?, superseded_by_import_id=?, updated_at=? WHERE id=?`, at, decider.id, at, item.id); err != nil {
+				if _, err := tx.ExecContext(ctx, `UPDATE `+table+` SET deleted_at = $1, superseded_by_import_id = $2, updated_at = $3 WHERE id = $4`, at, decider.id, at, item.id); err != nil {
 					return nil, err
 				}
 				if entityType == EntityVisit {
@@ -177,8 +182,10 @@ func reconcileSnapshots(tx *sql.Tx, at int64) (*SnapshotChanges, error) {
 	return changes, nil
 }
 
-// recordHeld notes that an import's file holds a visit or trip.
-func recordHeld(tx *sql.Tx, importID, entityType, id string) error {
-	_, err := tx.Exec(`INSERT OR IGNORE INTO import_records (import_id, entity_type, entity_id) VALUES (?,?,?)`, importID, entityType, id)
+// recordHeld notes that an owner's import's file holds a visit or trip of
+// the same owner.
+func recordHeld(ctx context.Context, tx *sql.Tx, owner, importID, entityType, id string) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO import_records (owner_principal_id, import_id, entity_type, entity_id) VALUES ($1, $2, $3, $4)
+		ON CONFLICT DO NOTHING`, owner, importID, entityType, id)
 	return err
 }

@@ -1,6 +1,7 @@
 package googletimeline_test
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,8 @@ import (
 	locationstore "github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locationstore"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locationstore/internal/googletimeline"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locationstore/internal/importclient"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
+	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 )
 
 // Every file here is invented: the shapes are Google's, the places and times
@@ -252,14 +255,19 @@ func TestFilesThatAreNotLocationHistory(t *testing.T) {
 // The whole path: parse, post in batches to a real store, finish; the same
 // file again is a no-op.
 func TestAnImportThroughTheStoreAndAgain(t *testing.T) {
-	store, err := locationstore.Open(t.TempDir())
+	module, err := locationstore.Module()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	store := locationstore.New(postgrestest.NewDatabase(t, module).Open(module), t.TempDir())
 	mux := http.NewServeMux()
 	locationstore.RegisterHandlers(mux, store)
-	server := httptest.NewServer(mux)
+	// The server puts the verified caller on every request; here a made-up
+	// owner sends the file.
+	owner := ownership.OwnedBy("principal_000001")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mux.ServeHTTP(w, r.WithContext(ownership.ContextWithCaller(r.Context(), ownership.Caller{PrincipalID: "principal_000001"})))
+	}))
 	defer server.Close()
 
 	const hash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
@@ -275,11 +283,11 @@ func TestAnImportThroughTheStoreAndAgain(t *testing.T) {
 		record.Counts.PlacesCreated != 2 || record.Counts.PlacesUpdated != 1 || record.Counts.PointsAdded != 4 {
 		t.Errorf("import = %+v", record)
 	}
-	cafe, err := store.ListPlaces(locationstore.PlaceFilter{GooglePlaceID: "example-cafe"})
+	cafe, err := store.ListPlaces(context.Background(), owner, locationstore.PlaceFilter{GooglePlaceID: "example-cafe"})
 	if err != nil || len(cafe) != 1 || cafe[0].Kind != locationstore.PlaceKindWork {
 		t.Errorf("the cafe = %+v %v, want kind work from frequentPlaces", cafe, err)
 	}
-	trip, err := store.GetTrip("trip_000001", false)
+	trip, err := store.GetTrip(context.Background(), owner, "trip_000001", false)
 	if err != nil || trip.PathPoints != 2 {
 		t.Errorf("trip = %+v %v", trip, err)
 	}

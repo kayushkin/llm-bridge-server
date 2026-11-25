@@ -1,11 +1,14 @@
 package locationstore
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 )
 
 // OptionalID is a nullable id field of a patch: Set says the patch names the
@@ -57,14 +60,14 @@ func describedByRequired(description, describedBy string) error {
 
 // ---- places ----
 
-const placeColumns = `id, name, latitude, longitude, radius_meters, address, kind, google_place_id, description,
-	described_by, tags, source, import_id, locality, created_at, updated_at, deleted_at, merged_into_place_id`
+const placeColumns = `id, owner_principal_id, name, latitude, longitude, radius_meters, address, kind, google_place_id, description,
+	described_by, tags::text, source, import_id, locality, created_at, updated_at, deleted_at, merged_into_place_id`
 
 func scanPlace(scan func(...any) error) (*Place, error) {
 	var place Place
 	var googlePlaceID, importID, locality, mergedInto sql.NullString
 	var tags string
-	if err := scan(&place.ID, &place.Name, &place.Latitude, &place.Longitude, &place.RadiusMeters, &place.Address, &place.Kind,
+	if err := scan(&place.ID, &place.OwnerPrincipalID, &place.Name, &place.Latitude, &place.Longitude, &place.RadiusMeters, &place.Address, &place.Kind,
 		&googlePlaceID, &place.Description, &place.DescribedBy, &tags, &place.Source, &importID, &locality,
 		&place.CreatedAt, &place.UpdatedAt, &place.DeletedAt, &mergedInto); err != nil {
 		return nil, err
@@ -81,8 +84,13 @@ func scanPlace(scan func(...any) error) (*Place, error) {
 	return &place, nil
 }
 
-func getPlaceRow(q queryer, id string) (*Place, error) {
-	place, err := scanPlace(q.QueryRow(`SELECT `+placeColumns+` FROM places WHERE id = ?`, id).Scan)
+func getPlaceRow(ctx context.Context, q queryer, scope ownership.Scope, id string) (*Place, error) {
+	if err := checkScope(scope); err != nil {
+		return nil, err
+	}
+	var args arguments
+	place, err := scanPlace(q.QueryRowContext(ctx, `SELECT `+placeColumns+` FROM places WHERE id = `+args.add(id)+` AND `+args.within(scope, "owner_principal_id"),
+		args.values...).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("%w: no place %s", ErrNotFound, id)
 	}
@@ -90,8 +98,8 @@ func getPlaceRow(q queryer, id string) (*Place, error) {
 }
 
 // GetPlace reads one place. A deleted place is not found unless asked for.
-func (s *Store) GetPlace(id string, includeDeleted bool) (*Place, error) {
-	place, err := getPlaceRow(s.db, id)
+func (s *Store) GetPlace(ctx context.Context, scope ownership.Scope, id string, includeDeleted bool) (*Place, error) {
+	place, err := getPlaceRow(ctx, s.db, scope, id)
 	if err != nil {
 		return nil, err
 	}
@@ -113,8 +121,8 @@ func validatePlace(place *Place) error {
 	return describedByRequired(place.Description, place.DescribedBy)
 }
 
-// CreatePlace makes a place by hand.
-func (s *Store) CreatePlace(create PlaceCreate) (*Place, error) {
+// CreatePlace makes a place by hand, owned by owner.
+func (s *Store) CreatePlace(ctx context.Context, owner string, create PlaceCreate) (*Place, error) {
 	if create.Latitude == nil || create.Longitude == nil {
 		return nil, fmt.Errorf("%w: latitude and longitude are required", ErrInvalid)
 	}
@@ -132,23 +140,23 @@ func (s *Store) CreatePlace(create PlaceCreate) (*Place, error) {
 		return nil, err
 	}
 	var id string
-	err = s.inTransaction(func(tx *sql.Tx) error {
+	err = s.inOwnerTransaction(ctx, owner, func(tx *sql.Tx) error {
 		var seq int64
 		var err error
-		if id, seq, err = nextID(tx, "places", "place"); err != nil {
+		if id, seq, err = nextID(ctx, tx, "places", "place"); err != nil {
 			return err
 		}
 		at := now()
-		_, err = tx.Exec(`INSERT INTO places (id, seq, name, latitude, longitude, radius_meters, address, kind, description,
-			described_by, tags, source, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			id, seq, place.Name, place.Latitude, place.Longitude, place.RadiusMeters, place.Address, place.Kind,
+		_, err = tx.ExecContext(ctx, `INSERT INTO places (id, seq, owner_principal_id, name, latitude, longitude, radius_meters, address, kind, description,
+			described_by, tags, source, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15)`,
+			id, seq, owner, place.Name, place.Latitude, place.Longitude, place.RadiusMeters, place.Address, place.Kind,
 			place.Description, place.DescribedBy, encodeStrings(place.Tags), SourceManual, at, at)
 		return err
 	})
 	if err != nil {
 		return nil, err
 	}
-	return s.GetPlace(id, false)
+	return s.GetPlace(ctx, ownership.OwnedBy(owner), id, false)
 }
 
 // PlaceFilter selects places for GET /places, oldest first.
@@ -161,36 +169,35 @@ type PlaceFilter struct {
 	Limit, Offset  int
 }
 
-// ListPlaces answers GET /places.
-func (s *Store) ListPlaces(filter PlaceFilter) ([]Place, error) {
-	where, args := []string{}, []any{}
+// ListPlaces answers GET /places: the places in scope.
+func (s *Store) ListPlaces(ctx context.Context, scope ownership.Scope, filter PlaceFilter) ([]Place, error) {
+	if err := checkScope(scope); err != nil {
+		return nil, err
+	}
+	var args arguments
+	where := []string{args.within(scope, "owner_principal_id")}
 	if !filter.IncludeDeleted {
 		where = append(where, "deleted_at = 0")
 	}
 	for _, word := range strings.Fields(filter.Query) {
-		where = append(where, `(name LIKE ? ESCAPE '\' OR address LIKE ? ESCAPE '\' OR description LIKE ? ESCAPE '\' OR tags LIKE ? ESCAPE '\')`)
-		pattern := likePattern(word)
-		args = append(args, pattern, pattern, pattern, pattern)
+		where = append(where, `(`+containsText("name", &args, word)+` OR `+containsText("address", &args, word)+` OR `+
+			containsText("description", &args, word)+` OR `+containsText("tags::text", &args, word)+`)`)
 	}
 	if filter.Kind != "" {
 		if !knownWord(PlaceKinds, filter.Kind) {
 			return nil, fmt.Errorf("%w: unknown kind %q: use one of %s", ErrInvalid, filter.Kind, strings.Join(PlaceKinds, ", "))
 		}
-		where, args = append(where, "kind = ?"), append(args, filter.Kind)
+		where = append(where, "kind = "+args.add(filter.Kind))
 	}
 	if filter.Tag != "" {
-		where, args = append(where, "EXISTS (SELECT 1 FROM json_each(places.tags) WHERE value = ?)"), append(args, filter.Tag)
+		where = append(where, "tags @> jsonb_build_array("+args.add(filter.Tag)+"::text)")
 	}
 	if filter.GooglePlaceID != "" {
-		where, args = append(where, "google_place_id = ?"), append(args, filter.GooglePlaceID)
+		where = append(where, "google_place_id = "+args.add(filter.GooglePlaceID))
 	}
-	query := `SELECT ` + placeColumns + ` FROM places`
-	if len(where) > 0 {
-		query += " WHERE " + strings.Join(where, " AND ")
-	}
-	query += ` ORDER BY seq LIMIT ? OFFSET ?`
-	args = append(args, clampLimit(filter.Limit, defaultLimit, maximumLimit), max(filter.Offset, 0))
-	rows, err := s.db.Query(query, args...)
+	query := `SELECT ` + placeColumns + ` FROM places WHERE ` + strings.Join(where, " AND ") + ` ORDER BY seq LIMIT ` +
+		args.add(clampLimit(filter.Limit, defaultLimit, maximumLimit)) + ` OFFSET ` + args.add(max(filter.Offset, 0))
+	rows, err := s.db.QueryContext(ctx, query, args.values...)
 	if err != nil {
 		return nil, err
 	}
@@ -206,10 +213,10 @@ func (s *Store) ListPlaces(filter PlaceFilter) ([]Place, error) {
 	return places, rows.Err()
 }
 
-// PatchPlace changes the fields the patch names on a live place.
-func (s *Store) PatchPlace(id string, patch PlacePatch) (*Place, error) {
-	err := s.inTransaction(func(tx *sql.Tx) error {
-		place, err := getPlaceRow(tx, id)
+// PatchPlace changes the fields the patch names on a live place in scope.
+func (s *Store) PatchPlace(ctx context.Context, scope ownership.Scope, id string, patch PlacePatch) (*Place, error) {
+	err := s.writeOwned(ctx, scope, "places", EntityPlace, id, func(tx *sql.Tx, owner string) error {
+		place, err := getPlaceRow(ctx, tx, ownership.OwnedBy(owner), id)
 		if err != nil {
 			return err
 		}
@@ -217,7 +224,7 @@ func (s *Store) PatchPlace(id string, patch PlacePatch) (*Place, error) {
 			return fmt.Errorf("%w: place %s is deleted; restore it first", ErrNotFound, id)
 		}
 		at := now()
-		if err := snapshot(tx, EntityPlace, id, "update", at); err != nil {
+		if err := snapshot(ctx, tx, EntityPlace, id, "update", at); err != nil {
 			return err
 		}
 		if patch.Name != nil {
@@ -252,21 +259,21 @@ func (s *Store) PatchPlace(id string, patch PlacePatch) (*Place, error) {
 		if err := validatePlace(place); err != nil {
 			return err
 		}
-		_, err = tx.Exec(`UPDATE places SET name=?, latitude=?, longitude=?, radius_meters=?, address=?, kind=?, description=?,
-			described_by=?, tags=?, updated_at=? WHERE id=?`, place.Name, place.Latitude, place.Longitude, place.RadiusMeters,
-			place.Address, place.Kind, place.Description, place.DescribedBy, encodeStrings(place.Tags), at, id)
+		_, err = tx.ExecContext(ctx, `UPDATE places SET name = $1, latitude = $2, longitude = $3, radius_meters = $4, address = $5, kind = $6,
+			description = $7, described_by = $8, tags = $9::jsonb, updated_at = $10 WHERE id = $11`, place.Name, place.Latitude, place.Longitude,
+			place.RadiusMeters, place.Address, place.Kind, place.Description, place.DescribedBy, encodeStrings(place.Tags), at, id)
 		return err
 	})
 	if err != nil {
 		return nil, err
 	}
-	return s.GetPlace(id, false)
+	return s.GetPlace(ctx, scope, id, false)
 }
 
 // ---- visits ----
 
-const visitSelect = `SELECT v.id, v.place_id, COALESCE(p.name, ''), v.started_at, v.ended_at, v.latitude, v.longitude,
-	v.probability, v.source_semantic_type, v.description, v.described_by, v.tags, v.source, v.source_ref, v.import_id,
+const visitSelect = `SELECT v.id, v.owner_principal_id, v.place_id, COALESCE(p.name, ''), v.started_at, v.ended_at, v.latitude, v.longitude,
+	v.probability, v.source_semantic_type, v.description, v.described_by, v.tags::text, v.source, v.source_ref, v.import_id,
 	v.superseded_by_import_id, v.locality, v.created_at, v.updated_at, v.deleted_at FROM visits v LEFT JOIN places p ON p.id = v.place_id`
 
 func scanVisit(scan func(...any) error) (*Visit, error) {
@@ -274,7 +281,7 @@ func scanVisit(scan func(...any) error) (*Visit, error) {
 	var placeID, importID, supersededBy, locality sql.NullString
 	var latitude, longitude, probability sql.NullFloat64
 	var tags string
-	if err := scan(&visit.ID, &placeID, &visit.PlaceName, &visit.StartedAt, &visit.EndedAt, &latitude, &longitude,
+	if err := scan(&visit.ID, &visit.OwnerPrincipalID, &placeID, &visit.PlaceName, &visit.StartedAt, &visit.EndedAt, &latitude, &longitude,
 		&probability, &visit.SourceSemanticType, &visit.Description, &visit.DescribedBy, &tags, &visit.Source,
 		&visit.SourceRef, &importID, &supersededBy, &locality, &visit.CreatedAt, &visit.UpdatedAt, &visit.DeletedAt); err != nil {
 		return nil, err
@@ -291,8 +298,13 @@ func scanVisit(scan func(...any) error) (*Visit, error) {
 	return &visit, nil
 }
 
-func getVisitRow(q queryer, id string) (*Visit, error) {
-	visit, err := scanVisit(q.QueryRow(visitSelect+` WHERE v.id = ?`, id).Scan)
+func getVisitRow(ctx context.Context, q queryer, scope ownership.Scope, id string) (*Visit, error) {
+	if err := checkScope(scope); err != nil {
+		return nil, err
+	}
+	var args arguments
+	visit, err := scanVisit(q.QueryRowContext(ctx, visitSelect+` WHERE v.id = `+args.add(id)+` AND `+args.within(scope, "v.owner_principal_id"),
+		args.values...).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("%w: no visit %s", ErrNotFound, id)
 	}
@@ -300,8 +312,8 @@ func getVisitRow(q queryer, id string) (*Visit, error) {
 }
 
 // GetVisit reads one visit. A deleted visit is not found unless asked for.
-func (s *Store) GetVisit(id string, includeDeleted bool) (*Visit, error) {
-	visit, err := getVisitRow(s.db, id)
+func (s *Store) GetVisit(ctx context.Context, scope ownership.Scope, id string, includeDeleted bool) (*Visit, error) {
+	visit, err := getVisitRow(ctx, s.db, scope, id)
 	if err != nil {
 		return nil, err
 	}
@@ -311,20 +323,20 @@ func (s *Store) GetVisit(id string, includeDeleted bool) (*Visit, error) {
 	return visit, nil
 }
 
-// requirePlace refuses an id that names no place. A deleted place may still be
-// linked: the link is history, not an endorsement.
-func requirePlace(q queryer, id *string, field string) error {
+// requirePlace refuses an id that names no place owner keeps: one that does
+// not exist or is outside scope is a 400, as a missing place always was, and
+// one of another owner's that scope reaches is a 400 too. A deleted place may
+// still be linked: the link is history, not an endorsement.
+func requirePlace(ctx context.Context, q queryer, scope ownership.Scope, owner string, id *string, field string) error {
 	if id == nil {
 		return nil
 	}
-	if _, err := getPlaceRow(q, *id); err != nil {
-		return fmt.Errorf("%w: %s: %v", ErrInvalid, field, err)
-	}
-	return nil
+	return requireOwner(ctx, q, scope, owner, "places", EntityPlace, *id, ErrInvalid, field)
 }
 
-// CreateVisit makes a visit by hand.
-func (s *Store) CreateVisit(create VisitCreate) (*Visit, error) {
+// CreateVisit makes a visit by hand, owned by owner. Its place must be in
+// scope and owner's.
+func (s *Store) CreateVisit(ctx context.Context, scope ownership.Scope, owner string, create VisitCreate) (*Visit, error) {
 	if err := checkTimeRange(create.StartedAt, create.EndedAt); err != nil {
 		return nil, err
 	}
@@ -343,26 +355,26 @@ func (s *Store) CreateVisit(create VisitCreate) (*Visit, error) {
 		return nil, err
 	}
 	var id string
-	err = s.inTransaction(func(tx *sql.Tx) error {
-		if err := requirePlace(tx, create.PlaceID, "place_id"); err != nil {
+	err = s.inOwnerTransaction(ctx, owner, func(tx *sql.Tx) error {
+		if err := requirePlace(ctx, tx, scope, owner, create.PlaceID, "place_id"); err != nil {
 			return err
 		}
 		var seq int64
 		var err error
-		if id, seq, err = nextID(tx, "visits", "visit"); err != nil {
+		if id, seq, err = nextID(ctx, tx, "visits", "visit"); err != nil {
 			return err
 		}
 		at := now()
-		_, err = tx.Exec(`INSERT INTO visits (id, seq, place_id, started_at, ended_at, latitude, longitude, description,
-			described_by, tags, source, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			id, seq, nullableString(create.PlaceID), create.StartedAt, create.EndedAt, nullableFloat(create.Latitude),
+		_, err = tx.ExecContext(ctx, `INSERT INTO visits (id, seq, owner_principal_id, place_id, started_at, ended_at, latitude, longitude, description,
+			described_by, tags, source, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13, $14)`,
+			id, seq, owner, nullableString(create.PlaceID), create.StartedAt, create.EndedAt, nullableFloat(create.Latitude),
 			nullableFloat(create.Longitude), description, describedBy, encodeStrings(tags), SourceManual, at, at)
 		return err
 	})
 	if err != nil {
 		return nil, err
 	}
-	return s.GetVisit(id, false)
+	return s.GetVisit(ctx, ownership.OwnedBy(owner), id, false)
 }
 
 // TimeFilter is the time range and paging every time-ordered list shares. A
@@ -376,24 +388,24 @@ type TimeFilter struct {
 	Limit, Offset  int
 }
 
-func (filter TimeFilter) clauses(alias string) ([]string, []any) {
-	where, args := []string{}, []any{}
+func (filter TimeFilter) clauses(alias string, args *arguments) []string {
+	where := []string{}
 	if !filter.IncludeDeleted {
 		where = append(where, alias+".deleted_at = 0")
 	}
 	if filter.From > 0 {
-		where, args = append(where, alias+".ended_at >= ?"), append(args, filter.From)
+		where = append(where, alias+".ended_at >= "+args.add(filter.From))
 	}
 	if filter.To > 0 {
-		where, args = append(where, alias+".started_at < ?"), append(args, filter.To)
+		where = append(where, alias+".started_at < "+args.add(filter.To))
 	}
 	if filter.Source != "" {
-		where, args = append(where, alias+".source = ?"), append(args, filter.Source)
+		where = append(where, alias+".source = "+args.add(filter.Source))
 	}
 	if filter.Tag != "" {
-		where, args = append(where, "EXISTS (SELECT 1 FROM json_each("+alias+".tags) WHERE value = ?)"), append(args, filter.Tag)
+		where = append(where, alias+".tags @> jsonb_build_array("+args.add(filter.Tag)+"::text)")
 	}
-	return where, args
+	return where
 }
 
 // VisitFilter selects visits for GET /visits, earliest first.
@@ -402,19 +414,23 @@ type VisitFilter struct {
 	PlaceID string
 }
 
-// ListVisits answers GET /visits.
-func (s *Store) ListVisits(filter VisitFilter) ([]Visit, error) {
-	where, args := filter.clauses("v")
+// ListVisits answers GET /visits: the visits in scope.
+func (s *Store) ListVisits(ctx context.Context, scope ownership.Scope, filter VisitFilter) ([]Visit, error) {
+	if err := checkScope(scope); err != nil {
+		return nil, err
+	}
+	var args arguments
+	where := append([]string{args.within(scope, "v.owner_principal_id")}, filter.clauses("v", &args)...)
 	if filter.PlaceID != "" {
-		where, args = append(where, "v.place_id = ?"), append(args, filter.PlaceID)
+		where = append(where, "v.place_id = "+args.add(filter.PlaceID))
 	}
-	query := visitSelect
-	if len(where) > 0 {
-		query += " WHERE " + strings.Join(where, " AND ")
-	}
-	query += ` ORDER BY v.started_at, v.seq LIMIT ? OFFSET ?`
-	args = append(args, clampLimit(filter.Limit, defaultLimit, maximumLimit), max(filter.Offset, 0))
-	rows, err := s.db.Query(query, args...)
+	query := visitSelect + " WHERE " + strings.Join(where, " AND ") + ` ORDER BY v.started_at, v.seq LIMIT ` +
+		args.add(clampLimit(filter.Limit, defaultLimit, maximumLimit)) + ` OFFSET ` + args.add(max(filter.Offset, 0))
+	return queryVisits(ctx, s.db, query, args.values...)
+}
+
+func queryVisits(ctx context.Context, q queryer, query string, args ...any) ([]Visit, error) {
+	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -430,10 +446,10 @@ func (s *Store) ListVisits(filter VisitFilter) ([]Visit, error) {
 	return visits, rows.Err()
 }
 
-// PatchVisit changes the fields the patch names on a live visit.
-func (s *Store) PatchVisit(id string, patch VisitPatch) (*Visit, error) {
-	err := s.inTransaction(func(tx *sql.Tx) error {
-		visit, err := getVisitRow(tx, id)
+// PatchVisit changes the fields the patch names on a live visit in scope.
+func (s *Store) PatchVisit(ctx context.Context, scope ownership.Scope, id string, patch VisitPatch) (*Visit, error) {
+	err := s.writeOwned(ctx, scope, "visits", EntityVisit, id, func(tx *sql.Tx, owner string) error {
+		visit, err := getVisitRow(ctx, tx, ownership.OwnedBy(owner), id)
 		if err != nil {
 			return err
 		}
@@ -441,13 +457,15 @@ func (s *Store) PatchVisit(id string, patch VisitPatch) (*Visit, error) {
 			return fmt.Errorf("%w: visit %s is deleted; restore it first", ErrNotFound, id)
 		}
 		at := now()
-		if err := snapshot(tx, EntityVisit, id, "update", at); err != nil {
+		if patch.PlaceID.Set {
+			if err := requirePlace(ctx, tx, scope, owner, patch.PlaceID.Value, "place_id"); err != nil {
+				return err
+			}
+		}
+		if err := snapshot(ctx, tx, EntityVisit, id, "update", at); err != nil {
 			return err
 		}
 		if patch.PlaceID.Set {
-			if err := requirePlace(tx, patch.PlaceID.Value, "place_id"); err != nil {
-				return err
-			}
 			visit.PlaceID = patch.PlaceID.Value
 		}
 		if patch.Description != nil {
@@ -464,21 +482,21 @@ func (s *Store) PatchVisit(id string, patch VisitPatch) (*Visit, error) {
 		if err := describedByRequired(visit.Description, visit.DescribedBy); err != nil {
 			return err
 		}
-		_, err = tx.Exec(`UPDATE visits SET place_id=?, description=?, described_by=?, tags=?, updated_at=? WHERE id=?`,
+		_, err = tx.ExecContext(ctx, `UPDATE visits SET place_id = $1, description = $2, described_by = $3, tags = $4::jsonb, updated_at = $5 WHERE id = $6`,
 			nullableString(visit.PlaceID), visit.Description, visit.DescribedBy, encodeStrings(visit.Tags), at, id)
 		return err
 	})
 	if err != nil {
 		return nil, err
 	}
-	return s.GetVisit(id, false)
+	return s.GetVisit(ctx, scope, id, false)
 }
 
 // ---- trips ----
 
-const tripSelect = `SELECT t.id, t.kind, t.parent_trip_id, t.parent_set_by, t.started_at, t.ended_at, t.start_latitude, t.start_longitude,
+const tripSelect = `SELECT t.id, t.owner_principal_id, t.kind, t.parent_trip_id, t.parent_set_by, t.started_at, t.ended_at, t.start_latitude, t.start_longitude,
 	t.end_latitude, t.end_longitude, t.start_place_id, COALESCE(sp.name, ''), t.end_place_id, COALESCE(ep.name, ''),
-	t.mode, t.source_mode, t.distance_meters, t.probability, t.title, t.title_by, t.description, t.described_by, t.tags,
+	t.mode, t.source_mode, t.distance_meters, t.probability, t.title, t.title_by, t.description, t.described_by, t.tags::text,
 	t.source, t.source_ref, t.import_id, t.superseded_by_import_id, t.start_locality, t.end_locality,
 	(SELECT COUNT(*) FROM trip_path_points pp WHERE pp.trip_id = t.id),
 	(SELECT COUNT(*) FROM trips c WHERE c.parent_trip_id = t.id AND c.deleted_at = 0),
@@ -490,7 +508,7 @@ func scanTrip(scan func(...any) error) (*Trip, error) {
 	var parentTripID, startPlaceID, endPlaceID, importID, supersededBy, startLocality, endLocality sql.NullString
 	var startLatitude, startLongitude, endLatitude, endLongitude, distance, probability sql.NullFloat64
 	var tags string
-	if err := scan(&trip.ID, &trip.Kind, &parentTripID, &trip.ParentSetBy, &trip.StartedAt, &trip.EndedAt, &startLatitude, &startLongitude,
+	if err := scan(&trip.ID, &trip.OwnerPrincipalID, &trip.Kind, &parentTripID, &trip.ParentSetBy, &trip.StartedAt, &trip.EndedAt, &startLatitude, &startLongitude,
 		&endLatitude, &endLongitude, &startPlaceID, &trip.StartPlaceName, &endPlaceID, &trip.EndPlaceName,
 		&trip.Mode, &trip.SourceMode, &distance, &probability, &trip.Title, &trip.TitleBy, &trip.Description, &trip.DescribedBy, &tags,
 		&trip.Source, &trip.SourceRef, &importID, &supersededBy, &startLocality, &endLocality, &trip.PathPoints, &trip.ChildTrips,
@@ -515,17 +533,39 @@ func scanTrip(scan func(...any) error) (*Trip, error) {
 	return &trip, nil
 }
 
-func getTripRow(q queryer, id string) (*Trip, error) {
-	trip, err := scanTrip(q.QueryRow(tripSelect+` WHERE t.id = ?`, id).Scan)
+func getTripRow(ctx context.Context, q queryer, scope ownership.Scope, id string) (*Trip, error) {
+	if err := checkScope(scope); err != nil {
+		return nil, err
+	}
+	var args arguments
+	trip, err := scanTrip(q.QueryRowContext(ctx, tripSelect+` WHERE t.id = `+args.add(id)+` AND `+args.within(scope, "t.owner_principal_id"),
+		args.values...).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("%w: no trip %s", ErrNotFound, id)
 	}
 	return trip, err
 }
 
+func queryTrips(ctx context.Context, q queryer, query string, args ...any) ([]Trip, error) {
+	rows, err := q.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	trips := []Trip{}
+	for rows.Next() {
+		trip, err := scanTrip(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		trips = append(trips, *trip)
+	}
+	return trips, rows.Err()
+}
+
 // GetTrip reads one trip. A deleted trip is not found unless asked for.
-func (s *Store) GetTrip(id string, includeDeleted bool) (*Trip, error) {
-	trip, err := getTripRow(s.db, id)
+func (s *Store) GetTrip(ctx context.Context, scope ownership.Scope, id string, includeDeleted bool) (*Trip, error) {
+	trip, err := getTripRow(ctx, s.db, scope, id)
 	if err != nil {
 		return nil, err
 	}
@@ -535,13 +575,18 @@ func (s *Store) GetTrip(id string, includeDeleted bool) (*Trip, error) {
 	return trip, nil
 }
 
-// checkParent refuses a parent that does not exist, is deleted, or would make
-// a loop: the child itself or one of its own descendants.
-func checkParent(q queryer, childID string, parentID *string) error {
+// checkParent refuses a parent that does not exist, is outside scope or
+// another owner's, is deleted, or would make a loop: the child itself or one
+// of its own descendants.
+func checkParent(ctx context.Context, q queryer, scope ownership.Scope, owner, childID string, parentID *string) error {
 	if parentID == nil {
 		return nil
 	}
-	parent, err := getTripRow(q, *parentID)
+	if err := requireOwner(ctx, q, scope, owner, "trips", EntityTrip, *parentID, ErrInvalid, "parent_trip_id"); err != nil {
+		return err
+	}
+	owned := ownership.OwnedBy(owner)
+	parent, err := getTripRow(ctx, q, owned, *parentID)
 	if err != nil {
 		return fmt.Errorf("%w: parent_trip_id: %v", ErrInvalid, err)
 	}
@@ -555,15 +600,16 @@ func checkParent(q queryer, childID string, parentID *string) error {
 		if ancestor.ParentTripID == nil {
 			return nil
 		}
-		if ancestor, err = getTripRow(q, *ancestor.ParentTripID); err != nil {
+		if ancestor, err = getTripRow(ctx, q, owned, *ancestor.ParentTripID); err != nil {
 			return err
 		}
 	}
 }
 
-// CreateTrip makes a trip by hand: usually a road trip or holiday that
-// imported trips are then attached to.
-func (s *Store) CreateTrip(create TripCreate) (*Trip, error) {
+// CreateTrip makes a trip by hand, owned by owner: usually a road trip or
+// holiday that imported trips are then attached to. Its places and parent
+// must be in scope and owner's.
+func (s *Store) CreateTrip(ctx context.Context, scope ownership.Scope, owner string, create TripCreate) (*Trip, error) {
 	if err := checkTimeRange(create.StartedAt, create.EndedAt); err != nil {
 		return nil, err
 	}
@@ -599,19 +645,19 @@ func (s *Store) CreateTrip(create TripCreate) (*Trip, error) {
 		return nil, err
 	}
 	var id string
-	err = s.inTransaction(func(tx *sql.Tx) error {
-		if err := requirePlace(tx, create.StartPlaceID, "start_place_id"); err != nil {
+	err = s.inOwnerTransaction(ctx, owner, func(tx *sql.Tx) error {
+		if err := requirePlace(ctx, tx, scope, owner, create.StartPlaceID, "start_place_id"); err != nil {
 			return err
 		}
-		if err := requirePlace(tx, create.EndPlaceID, "end_place_id"); err != nil {
+		if err := requirePlace(ctx, tx, scope, owner, create.EndPlaceID, "end_place_id"); err != nil {
 			return err
 		}
 		var seq int64
 		var err error
-		if id, seq, err = nextID(tx, "trips", "trip"); err != nil {
+		if id, seq, err = nextID(ctx, tx, "trips", "trip"); err != nil {
 			return err
 		}
-		if err := checkParent(tx, id, create.ParentTripID); err != nil {
+		if err := checkParent(ctx, tx, scope, owner, id, create.ParentTripID); err != nil {
 			return err
 		}
 		at := now()
@@ -619,10 +665,11 @@ func (s *Store) CreateTrip(create TripCreate) (*Trip, error) {
 		if create.ParentTripID != nil {
 			parentSetBy = SetByHand
 		}
-		_, err = tx.Exec(`INSERT INTO trips (id, seq, kind, parent_trip_id, parent_set_by, title_by, started_at, ended_at, start_latitude, start_longitude,
-			end_latitude, end_longitude, start_place_id, end_place_id, mode, distance_meters, title, description,
-			described_by, tags, source, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			id, seq, kind, nullableString(create.ParentTripID), parentSetBy, SetByHand, create.StartedAt, create.EndedAt,
+		_, err = tx.ExecContext(ctx, `INSERT INTO trips (id, seq, owner_principal_id, kind, parent_trip_id, parent_set_by, title_by, started_at, ended_at,
+			start_latitude, start_longitude, end_latitude, end_longitude, start_place_id, end_place_id, mode, distance_meters, title, description,
+			described_by, tags, source, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21::jsonb, $22, $23, $24)`,
+			id, seq, owner, kind, nullableString(create.ParentTripID), parentSetBy, SetByHand, create.StartedAt, create.EndedAt,
 			nullableFloat(create.StartLatitude), nullableFloat(create.StartLongitude), nullableFloat(create.EndLatitude),
 			nullableFloat(create.EndLongitude), nullableString(create.StartPlaceID), nullableString(create.EndPlaceID),
 			create.Mode, nullableFloat(create.DistanceMeters), title, description, describedBy, encodeStrings(tags),
@@ -632,7 +679,7 @@ func (s *Store) CreateTrip(create TripCreate) (*Trip, error) {
 	if err != nil {
 		return nil, err
 	}
-	return s.GetTrip(id, false)
+	return s.GetTrip(ctx, ownership.OwnedBy(owner), id, false)
 }
 
 // TripFilter selects trips for GET /trips, earliest first.
@@ -649,60 +696,47 @@ type TripFilter struct {
 	ExcludeParents bool
 }
 
-// ListTrips answers GET /trips.
-func (s *Store) ListTrips(filter TripFilter) ([]Trip, error) {
-	where, args := filter.clauses("t")
+// ListTrips answers GET /trips: the trips in scope.
+func (s *Store) ListTrips(ctx context.Context, scope ownership.Scope, filter TripFilter) ([]Trip, error) {
+	if err := checkScope(scope); err != nil {
+		return nil, err
+	}
+	var args arguments
+	where := append([]string{args.within(scope, "t.owner_principal_id")}, filter.clauses("t", &args)...)
 	if filter.Mode != "" {
 		if !knownWord(TripModes, filter.Mode) {
 			return nil, fmt.Errorf("%w: unknown mode %q: use one of %s", ErrInvalid, filter.Mode, strings.Join(TripModes, ", "))
 		}
-		where, args = append(where, "t.mode = ?"), append(args, filter.Mode)
+		where = append(where, "t.mode = "+args.add(filter.Mode))
 	}
 	if filter.Kind != "" {
 		if !knownWord(TripKinds, filter.Kind) {
 			return nil, fmt.Errorf("%w: unknown kind %q: use one of %s", ErrInvalid, filter.Kind, strings.Join(TripKinds, ", "))
 		}
-		where, args = append(where, "t.kind = ?"), append(args, filter.Kind)
+		where = append(where, "t.kind = "+args.add(filter.Kind))
 	}
 	switch filter.ParentTripID {
 	case "":
 	case "none":
 		where = append(where, "t.parent_trip_id IS NULL")
 	default:
-		where, args = append(where, "t.parent_trip_id = ?"), append(args, filter.ParentTripID)
+		where = append(where, "t.parent_trip_id = "+args.add(filter.ParentTripID))
 	}
 	if filter.MinimumDistanceMeters > 0 {
-		where, args = append(where, "t.distance_meters >= ?"), append(args, filter.MinimumDistanceMeters)
+		where = append(where, "t.distance_meters >= "+args.add(filter.MinimumDistanceMeters))
 	}
 	if filter.ExcludeParents {
 		where = append(where, "NOT EXISTS (SELECT 1 FROM trips c WHERE c.parent_trip_id = t.id AND c.deleted_at = 0)")
 	}
-	query := tripSelect
-	if len(where) > 0 {
-		query += " WHERE " + strings.Join(where, " AND ")
-	}
-	query += ` ORDER BY t.started_at, t.seq LIMIT ? OFFSET ?`
-	args = append(args, clampLimit(filter.Limit, defaultLimit, maximumLimit), max(filter.Offset, 0))
-	rows, err := s.db.Query(query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	trips := []Trip{}
-	for rows.Next() {
-		trip, err := scanTrip(rows.Scan)
-		if err != nil {
-			return nil, err
-		}
-		trips = append(trips, *trip)
-	}
-	return trips, rows.Err()
+	query := tripSelect + " WHERE " + strings.Join(where, " AND ") + ` ORDER BY t.started_at, t.seq LIMIT ` +
+		args.add(clampLimit(filter.Limit, defaultLimit, maximumLimit)) + ` OFFSET ` + args.add(max(filter.Offset, 0))
+	return queryTrips(ctx, s.db, query, args.values...)
 }
 
-// PatchTrip changes the fields the patch names on a live trip.
-func (s *Store) PatchTrip(id string, patch TripPatch) (*Trip, error) {
-	err := s.inTransaction(func(tx *sql.Tx) error {
-		trip, err := getTripRow(tx, id)
+// PatchTrip changes the fields the patch names on a live trip in scope.
+func (s *Store) PatchTrip(ctx context.Context, scope ownership.Scope, id string, patch TripPatch) (*Trip, error) {
+	err := s.writeOwned(ctx, scope, "trips", EntityTrip, id, func(tx *sql.Tx, owner string) error {
+		trip, err := getTripRow(ctx, tx, ownership.OwnedBy(owner), id)
 		if err != nil {
 			return err
 		}
@@ -710,24 +744,24 @@ func (s *Store) PatchTrip(id string, patch TripPatch) (*Trip, error) {
 			return fmt.Errorf("%w: trip %s is deleted; restore it first", ErrNotFound, id)
 		}
 		at := now()
-		if err := snapshot(tx, EntityTrip, id, "update", at); err != nil {
+		if err := snapshot(ctx, tx, EntityTrip, id, "update", at); err != nil {
 			return err
 		}
 		if patch.ParentTripID.Set {
-			if err := checkParent(tx, id, patch.ParentTripID.Value); err != nil {
+			if err := checkParent(ctx, tx, scope, owner, id, patch.ParentTripID.Value); err != nil {
 				return err
 			}
 			trip.ParentTripID = patch.ParentTripID.Value
 			trip.ParentSetBy = SetByHand
 		}
 		if patch.StartPlaceID.Set {
-			if err := requirePlace(tx, patch.StartPlaceID.Value, "start_place_id"); err != nil {
+			if err := requirePlace(ctx, tx, scope, owner, patch.StartPlaceID.Value, "start_place_id"); err != nil {
 				return err
 			}
 			trip.StartPlaceID = patch.StartPlaceID.Value
 		}
 		if patch.EndPlaceID.Set {
-			if err := requirePlace(tx, patch.EndPlaceID.Value, "end_place_id"); err != nil {
+			if err := requirePlace(ctx, tx, scope, owner, patch.EndPlaceID.Value, "end_place_id"); err != nil {
 				return err
 			}
 			trip.EndPlaceID = patch.EndPlaceID.Value
@@ -756,8 +790,8 @@ func (s *Store) PatchTrip(id string, patch TripPatch) (*Trip, error) {
 		if err := describedByRequired(trip.Description, trip.DescribedBy); err != nil {
 			return err
 		}
-		_, err = tx.Exec(`UPDATE trips SET parent_trip_id=?, parent_set_by=?, start_place_id=?, end_place_id=?, mode=?, title=?,
-			title_by=?, description=?, described_by=?, tags=?, updated_at=? WHERE id=?`, nullableString(trip.ParentTripID),
+		_, err = tx.ExecContext(ctx, `UPDATE trips SET parent_trip_id = $1, parent_set_by = $2, start_place_id = $3, end_place_id = $4, mode = $5, title = $6,
+			title_by = $7, description = $8, described_by = $9, tags = $10::jsonb, updated_at = $11 WHERE id = $12`, nullableString(trip.ParentTripID),
 			trip.ParentSetBy, nullableString(trip.StartPlaceID), nullableString(trip.EndPlaceID), trip.Mode, trip.Title, trip.TitleBy,
 			trip.Description, trip.DescribedBy, encodeStrings(trip.Tags), at, id)
 		return err
@@ -765,20 +799,24 @@ func (s *Store) PatchTrip(id string, patch TripPatch) (*Trip, error) {
 	if err != nil {
 		return nil, err
 	}
-	return s.GetTrip(id, false)
+	return s.GetTrip(ctx, scope, id, false)
 }
 
 // AttachChildren makes each named trip part of parentID, in one transaction:
-// one bad id attaches none. The routes call it; a trip attached so is placed
-// by hand, and location-group-journeys leaves it there.
-func (s *Store) AttachChildren(parentID string, childIDs []string) (*Trip, error) {
+// one bad id attaches none. The parent must be in scope; each child must be
+// the parent's owner's. The routes call it; a trip attached so is placed by
+// hand, and location-group-journeys leaves it there.
+func (s *Store) AttachChildren(ctx context.Context, scope ownership.Scope, parentID string, childIDs []string) (*Trip, error) {
 	if len(childIDs) == 0 {
 		return nil, fmt.Errorf("%w: trip_ids is empty", ErrInvalid)
 	}
-	err := s.inTransaction(func(tx *sql.Tx) error {
+	err := s.writeOwned(ctx, scope, "trips", EntityTrip, parentID, func(tx *sql.Tx, owner string) error {
 		at := now()
 		for _, childID := range childIDs {
-			child, err := getTripRow(tx, childID)
+			if err := requireOwner(ctx, tx, scope, owner, "trips", EntityTrip, childID, ErrInvalid, ""); err != nil {
+				return err
+			}
+			child, err := getTripRow(ctx, tx, ownership.OwnedBy(owner), childID)
 			if err != nil {
 				return fmt.Errorf("%w: %v", ErrInvalid, err)
 			}
@@ -788,13 +826,14 @@ func (s *Store) AttachChildren(parentID string, childIDs []string) (*Trip, error
 			if child.ParentTripID != nil && *child.ParentTripID == parentID && child.ParentSetBy == SetByHand {
 				continue
 			}
-			if err := checkParent(tx, childID, &parentID); err != nil {
+			if err := checkParent(ctx, tx, scope, owner, childID, &parentID); err != nil {
 				return err
 			}
-			if err := snapshot(tx, EntityTrip, childID, "attach", at); err != nil {
+			if err := snapshot(ctx, tx, EntityTrip, childID, "attach", at); err != nil {
 				return err
 			}
-			if _, err := tx.Exec(`UPDATE trips SET parent_trip_id=?, parent_set_by=?, updated_at=? WHERE id=?`, parentID, SetByHand, at, childID); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE trips SET parent_trip_id = $1, parent_set_by = $2, updated_at = $3 WHERE id = $4`,
+				parentID, SetByHand, at, childID); err != nil {
 				return err
 			}
 		}
@@ -803,81 +842,75 @@ func (s *Store) AttachChildren(parentID string, childIDs []string) (*Trip, error
 	if err != nil {
 		return nil, err
 	}
-	return s.GetTrip(parentID, false)
+	return s.GetTrip(ctx, scope, parentID, false)
 }
 
-// TripPath is a trip's path, in order.
-func (s *Store) TripPath(id string) ([]PathPoint, error) {
-	if _, err := getTripRow(s.db, id); err != nil {
+// TripPath is the path of a trip in scope, in order.
+func (s *Store) TripPath(ctx context.Context, scope ownership.Scope, id string) ([]PathPoint, error) {
+	if _, err := ownerOfRecord(ctx, s.db, scope, "trips", EntityTrip, id); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.Query(`SELECT latitude, longitude, timestamp FROM trip_path_points WHERE trip_id = ? ORDER BY position`, id)
-	if err != nil {
-		return nil, err
+	path, err := readPath(ctx, s.db, id)
+	if path == nil {
+		path = []PathPoint{}
 	}
-	defer rows.Close()
-	path := []PathPoint{}
-	for rows.Next() {
-		var point PathPoint
-		var timestamp sql.NullInt64
-		if err := rows.Scan(&point.Latitude, &point.Longitude, &timestamp); err != nil {
-			return nil, err
-		}
-		if timestamp.Valid {
-			point.Timestamp = &timestamp.Int64
-		}
-		path = append(path, point)
-	}
-	return path, rows.Err()
+	return path, err
 }
 
 // ---- delete and restore, shared ----
 
-var entityTables = map[string]string{EntityPlace: "places", EntityVisit: "visits", EntityTrip: "trips"}
-
-func deletedAtOf(tx *sql.Tx, entityType, id string) (int64, error) {
+func deletedAtOf(ctx context.Context, tx *sql.Tx, entityType, id string) (int64, error) {
 	var deletedAt int64
-	err := tx.QueryRow(`SELECT deleted_at FROM `+entityTables[entityType]+` WHERE id = ?`, id).Scan(&deletedAt)
+	err := tx.QueryRowContext(ctx, `SELECT deleted_at FROM `+entityTables[entityType]+` WHERE id = $1`, id).Scan(&deletedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, fmt.Errorf("%w: no %s %s", ErrNotFound, entityType, id)
 	}
 	return deletedAt, err
 }
 
-// Delete stamps deleted_at on a place, visit or trip; again changes nothing.
-func (s *Store) Delete(entityType, id string) error {
-	return s.inTransaction(func(tx *sql.Tx) error {
-		deletedAt, err := deletedAtOf(tx, entityType, id)
+// Delete stamps deleted_at on a place, visit or trip in scope; again changes
+// nothing.
+func (s *Store) Delete(ctx context.Context, scope ownership.Scope, entityType, id string) error {
+	table, known := entityTables[entityType]
+	if !known {
+		return fmt.Errorf("delete of unknown entity type %q", entityType)
+	}
+	return s.writeOwned(ctx, scope, table, entityType, id, func(tx *sql.Tx, owner string) error {
+		deletedAt, err := deletedAtOf(ctx, tx, entityType, id)
 		if err != nil || deletedAt != 0 {
 			return err
 		}
 		at := now()
-		if err := snapshot(tx, entityType, id, "delete", at); err != nil {
+		if err := snapshot(ctx, tx, entityType, id, "delete", at); err != nil {
 			return err
 		}
-		_, err = tx.Exec(`UPDATE `+entityTables[entityType]+` SET deleted_at=?, updated_at=? WHERE id=?`, at, at, id)
+		_, err = tx.ExecContext(ctx, `UPDATE `+table+` SET deleted_at = $1, updated_at = $2 WHERE id = $3`, at, at, id)
 		return err
 	})
 }
 
-// Restore brings a deleted place, visit or trip back as it was.
-func (s *Store) Restore(entityType, id string) error {
-	return s.inTransaction(func(tx *sql.Tx) error {
-		deletedAt, err := deletedAtOf(tx, entityType, id)
+// Restore brings a deleted place, visit or trip in scope back as it was.
+func (s *Store) Restore(ctx context.Context, scope ownership.Scope, entityType, id string) error {
+	table, known := entityTables[entityType]
+	if !known {
+		return fmt.Errorf("restore of unknown entity type %q", entityType)
+	}
+	return s.writeOwned(ctx, scope, table, entityType, id, func(tx *sql.Tx, owner string) error {
+		deletedAt, err := deletedAtOf(ctx, tx, entityType, id)
 		if err != nil || deletedAt == 0 {
 			return err
 		}
 		at := now()
-		if err := snapshot(tx, entityType, id, "restore", at); err != nil {
+		if err := snapshot(ctx, tx, entityType, id, "restore", at); err != nil {
 			return err
 		}
 		if entityType == EntityPlace {
-			_, err = tx.Exec(`UPDATE places SET deleted_at=0, merged_into_place_id=NULL, updated_at=? WHERE id=?`, at, id)
+			_, err = tx.ExecContext(ctx, `UPDATE places SET deleted_at = 0, merged_into_place_id = NULL, updated_at = $1 WHERE id = $2`, at, id)
 			return err
 		}
 		// Brought back by hand, a record a newer export set aside stays: the
 		// "restore" revision marks it as someone's choice.
-		_, err = tx.Exec(`UPDATE `+entityTables[entityType]+` SET deleted_at=0, superseded_by_import_id=NULL, updated_at=? WHERE id=?`, at, id)
+		_, err = tx.ExecContext(ctx, `UPDATE `+table+` SET deleted_at = 0, superseded_by_import_id = NULL, updated_at = $1 WHERE id = $2`, at, id)
 		return err
 	})
 }
@@ -889,17 +922,17 @@ const (
 	maximumTimelineLimit = 5000
 )
 
-// Timeline is the visits and trips overlapping [from, to), interleaved by
-// start time. Trips that have children are left out unless includeParentTrips,
-// so a road trip does not stand beside its own drives.
-func (s *Store) Timeline(from, to int64, source string, includeParentTrips bool, limit int) ([]TimelineItem, error) {
+// Timeline is the visits and trips in scope overlapping [from, to),
+// interleaved by start time. Trips that have children are left out unless
+// includeParentTrips, so a road trip does not stand beside its own drives.
+func (s *Store) Timeline(ctx context.Context, scope ownership.Scope, from, to int64, source string, includeParentTrips bool, limit int) ([]TimelineItem, error) {
 	limit = clampLimit(limit, defaultTimelineLimit, maximumTimelineLimit)
 	filter := TimeFilter{From: from, To: to, Source: source, Limit: limit}
-	visits, err := s.listVisitsUncapped(VisitFilter{TimeFilter: filter})
+	visits, err := s.listVisitsUncapped(ctx, scope, VisitFilter{TimeFilter: filter})
 	if err != nil {
 		return nil, err
 	}
-	trips, err := s.listTripsUncapped(TripFilter{TimeFilter: filter, ExcludeParents: !includeParentTrips})
+	trips, err := s.listTripsUncapped(ctx, scope, TripFilter{TimeFilter: filter, ExcludeParents: !includeParentTrips})
 	if err != nil {
 		return nil, err
 	}
@@ -932,12 +965,12 @@ func (s *Store) Timeline(from, to int64, source string, includeParentTrips bool,
 
 // The timeline asks each list for up to its own limit, which may be above the
 // lists' usual maximum.
-func (s *Store) listVisitsUncapped(filter VisitFilter) ([]Visit, error) {
+func (s *Store) listVisitsUncapped(ctx context.Context, scope ownership.Scope, filter VisitFilter) ([]Visit, error) {
 	var all []Visit
 	for offset := 0; offset < filter.Limit; offset += maximumLimit {
 		page := filter
 		page.Limit, page.Offset = min(maximumLimit, filter.Limit-offset), offset
-		visits, err := s.ListVisits(page)
+		visits, err := s.ListVisits(ctx, scope, page)
 		if err != nil {
 			return nil, err
 		}
@@ -949,12 +982,12 @@ func (s *Store) listVisitsUncapped(filter VisitFilter) ([]Visit, error) {
 	return all, nil
 }
 
-func (s *Store) listTripsUncapped(filter TripFilter) ([]Trip, error) {
+func (s *Store) listTripsUncapped(ctx context.Context, scope ownership.Scope, filter TripFilter) ([]Trip, error) {
 	var all []Trip
 	for offset := 0; offset < filter.Limit; offset += maximumLimit {
 		page := filter
 		page.Limit, page.Offset = min(maximumLimit, filter.Limit-offset), offset
-		trips, err := s.ListTrips(page)
+		trips, err := s.ListTrips(ctx, scope, page)
 		if err != nil {
 			return nil, err
 		}
@@ -980,31 +1013,31 @@ type PointFilter struct {
 	Limit, Offset int
 }
 
-// ListPoints answers GET /points.
-func (s *Store) ListPoints(filter PointFilter) ([]Point, error) {
-	where, args := []string{}, []any{}
+// ListPoints answers GET /points: the points in scope.
+func (s *Store) ListPoints(ctx context.Context, scope ownership.Scope, filter PointFilter) ([]Point, error) {
+	if err := checkScope(scope); err != nil {
+		return nil, err
+	}
+	var args arguments
+	where := []string{args.within(scope, "owner_principal_id")}
 	if filter.From > 0 {
-		where, args = append(where, "timestamp >= ?"), append(args, filter.From)
+		where = append(where, "timestamp >= "+args.add(filter.From))
 	}
 	if filter.To > 0 {
-		where, args = append(where, "timestamp < ?"), append(args, filter.To)
+		where = append(where, "timestamp < "+args.add(filter.To))
 	}
 	if filter.Source != "" {
 		if !knownWord(PointSources, filter.Source) {
 			return nil, fmt.Errorf("%w: unknown point source %q: use one of %s", ErrInvalid, filter.Source, strings.Join(PointSources, ", "))
 		}
-		where, args = append(where, "source = ?"), append(args, filter.Source)
+		where = append(where, "source = "+args.add(filter.Source))
 	}
 	if filter.SourceRef != "" {
-		where, args = append(where, "source_ref = ?"), append(args, filter.SourceRef)
+		where = append(where, "source_ref = "+args.add(filter.SourceRef))
 	}
-	query := `SELECT timestamp, latitude, longitude, accuracy_meters, source, source_ref, import_id FROM points`
-	if len(where) > 0 {
-		query += " WHERE " + strings.Join(where, " AND ")
-	}
-	query += ` ORDER BY timestamp, rowid LIMIT ? OFFSET ?`
-	args = append(args, clampLimit(filter.Limit, defaultPointLimit, maximumPointLimit), max(filter.Offset, 0))
-	rows, err := s.db.Query(query, args...)
+	query := `SELECT timestamp, latitude, longitude, accuracy_meters, source, source_ref, import_id FROM points WHERE ` + strings.Join(where, " AND ") +
+		` ORDER BY timestamp, seq LIMIT ` + args.add(clampLimit(filter.Limit, defaultPointLimit, maximumPointLimit)) + ` OFFSET ` + args.add(max(filter.Offset, 0))
+	rows, err := s.db.QueryContext(ctx, query, args.values...)
 	if err != nil {
 		return nil, err
 	}

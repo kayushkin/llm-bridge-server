@@ -10,11 +10,17 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 )
 
-// RegisterHandlers mounts the API on mux. Routes are rooted at /; a front door
-// such as dash adds its prefix and the auth this service has none of, which
-// is why the service binds 127.0.0.1.
+// RegisterHandlers mounts the API on mux. Routes are rooted at /; the server
+// mounts them under its own prefix. Every request must carry the Caller the
+// server verified (ownership.ContextWithCaller); one with none is 401. A
+// read reaches the records in the caller's scope, a new record is the
+// caller's, and a pass over a whole owner's records (localities, journeys,
+// phone points, calendar matching, place suggestions) works through the one
+// owner the request acts for.
 func RegisterHandlers(mux *http.ServeMux, s *Store) {
 	h := &handler{s: s}
 	mux.HandleFunc("GET /health", h.health)
@@ -82,8 +88,46 @@ type handler struct {
 	s *Store
 }
 
+// respondRefusal answers an ownership refusal in the store's error shape.
+func respondRefusal(w http.ResponseWriter, refusal *ownership.RequestError) bool {
+	if refusal == nil {
+		return false
+	}
+	writeErr(w, refusal.Status, refusal.Message)
+	return true
+}
+
+// readScope is whose records the request reaches, or false after answering
+// the refusal.
+func readScope(w http.ResponseWriter, r *http.Request) (ownership.Scope, bool) {
+	scope, refusal := ownership.ReadScope(r)
+	return scope, !respondRefusal(w, refusal)
+}
+
+// newRecordOwner is who owns what the request creates, and the scope the
+// records it names are looked up in, or false after answering the refusal.
+func newRecordOwner(w http.ResponseWriter, r *http.Request) (string, ownership.Scope, bool) {
+	owner, refusal := ownership.OwnerOfNewRecord(r)
+	if respondRefusal(w, refusal) {
+		return "", ownership.Scope{}, false
+	}
+	scope, ok := readScope(w, r)
+	return owner, scope, ok
+}
+
+// ownerActedFor is the one owner a pass over a whole owner's records works
+// through, or false after answering the refusal.
+func ownerActedFor(w http.ResponseWriter, r *http.Request) (string, bool) {
+	owner, refusal := ownership.OwnerActedFor(r)
+	return owner, !respondRefusal(w, refusal)
+}
+
 func (h *handler) health(w http.ResponseWriter, r *http.Request) {
-	counts, err := h.s.Counts()
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	counts, err := h.s.Counts(r.Context(), scope)
 	if respondError(w, err) {
 		return
 	}
@@ -91,6 +135,9 @@ func (h *handler) health(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) vocabularies(w http.ResponseWriter, r *http.Request) {
+	if _, refusal := ownership.CallerOfRequest(r); respondRefusal(w, refusal) {
+		return
+	}
 	writeJSON(w, http.StatusOK, Vocabularies{PlaceKinds: PlaceKinds, TripKinds: TripKinds, TripModes: TripModes, RecordSources: RecordSources,
 		PointSources: PointSources, ImportKinds: ImportKinds, CalendarMatchRules: CalendarMatchRules, CalendarLinkTargetTypes: CalendarLinkTargetTypes,
 		SeriesOutcomes: SeriesOutcomes, PlaceSuggestionStatuses: PlaceSuggestionStatuses, PlaceSuggestionSources: PlaceSuggestionSources})
@@ -218,13 +265,17 @@ func optionalID(w http.ResponseWriter, raw map[string]json.RawMessage, field str
 // ---- places ----
 
 func (h *handler) listPlaces(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	q := &queryReader{w: w, r: r}
 	filter := PlaceFilter{Query: q.text("q"), Kind: q.text("kind"), Tag: q.text("tag"), GooglePlaceID: q.text("google_place_id"),
 		IncludeDeleted: q.boolean("include_deleted"), Limit: int(q.integer("limit")), Offset: int(q.integer("offset"))}
 	if q.failed {
 		return
 	}
-	places, err := h.s.ListPlaces(filter)
+	places, err := h.s.ListPlaces(r.Context(), scope, filter)
 	if respondError(w, err) {
 		return
 	}
@@ -232,11 +283,15 @@ func (h *handler) listPlaces(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) createPlace(w http.ResponseWriter, r *http.Request) {
+	owner, refusal := ownership.OwnerOfNewRecord(r)
+	if respondRefusal(w, refusal) {
+		return
+	}
 	var create PlaceCreate
 	if !decodeBody(w, r, 1<<20, &create) {
 		return
 	}
-	place, err := h.s.CreatePlace(create)
+	place, err := h.s.CreatePlace(r.Context(), owner, create)
 	if respondError(w, err) {
 		return
 	}
@@ -244,7 +299,11 @@ func (h *handler) createPlace(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) getPlace(w http.ResponseWriter, r *http.Request) {
-	place, err := h.s.GetPlace(r.PathValue("id"), r.URL.Query().Get("include_deleted") == "true")
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	place, err := h.s.GetPlace(r.Context(), scope, r.PathValue("id"), r.URL.Query().Get("include_deleted") == "true")
 	if respondError(w, err) {
 		return
 	}
@@ -252,11 +311,15 @@ func (h *handler) getPlace(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) patchPlace(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	var patch PlacePatch
 	if _, ok := decodePatch(w, r, []string{"name", "latitude", "longitude", "radius_meters", "address", "kind", "description", "described_by", "tags"}, nil, &patch); !ok {
 		return
 	}
-	place, err := h.s.PatchPlace(r.PathValue("id"), patch)
+	place, err := h.s.PatchPlace(r.Context(), scope, r.PathValue("id"), patch)
 	if respondError(w, err) {
 		return
 	}
@@ -264,11 +327,15 @@ func (h *handler) patchPlace(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) mergePlace(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	var request PlaceMergeRequest
 	if !decodeBody(w, r, 1<<16, &request) {
 		return
 	}
-	merge, err := h.s.MergePlace(r.PathValue("id"), request)
+	merge, err := h.s.MergePlace(r.Context(), scope, r.PathValue("id"), request)
 	if respondError(w, err) {
 		return
 	}
@@ -278,12 +345,16 @@ func (h *handler) mergePlace(w http.ResponseWriter, r *http.Request) {
 // ---- visits ----
 
 func (h *handler) listVisits(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	q := &queryReader{w: w, r: r}
 	filter := VisitFilter{TimeFilter: q.timeFilter(), PlaceID: q.text("place_id")}
 	if q.failed {
 		return
 	}
-	visits, err := h.s.ListVisits(filter)
+	visits, err := h.s.ListVisits(r.Context(), scope, filter)
 	if respondError(w, err) {
 		return
 	}
@@ -291,11 +362,15 @@ func (h *handler) listVisits(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) createVisit(w http.ResponseWriter, r *http.Request) {
+	owner, scope, ok := newRecordOwner(w, r)
+	if !ok {
+		return
+	}
 	var create VisitCreate
 	if !decodeBody(w, r, 1<<20, &create) {
 		return
 	}
-	visit, err := h.s.CreateVisit(create)
+	visit, err := h.s.CreateVisit(r.Context(), scope, owner, create)
 	if respondError(w, err) {
 		return
 	}
@@ -303,17 +378,25 @@ func (h *handler) createVisit(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) getVisit(w http.ResponseWriter, r *http.Request) {
-	visit, err := h.s.GetVisit(r.PathValue("id"), r.URL.Query().Get("include_deleted") == "true")
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	visit, err := h.s.GetVisit(r.Context(), scope, r.PathValue("id"), r.URL.Query().Get("include_deleted") == "true")
 	if respondError(w, err) {
 		return
 	}
-	if visit.CalendarEventLinks, err = h.s.liveCalendarEventLinksTo([]string{visit.ID}); respondError(w, err) {
+	if visit.CalendarEventLinks, err = h.s.liveCalendarEventLinksTo(r.Context(), ownership.OwnedBy(visit.OwnerPrincipalID), []string{visit.ID}); respondError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, visit)
 }
 
 func (h *handler) patchVisit(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	var patch VisitPatch
 	raw, ok := decodePatch(w, r, []string{"description", "described_by", "tags"}, []string{"place_id"}, &patch)
 	if !ok {
@@ -322,7 +405,7 @@ func (h *handler) patchVisit(w http.ResponseWriter, r *http.Request) {
 	if patch.PlaceID, ok = optionalID(w, raw, "place_id"); !ok {
 		return
 	}
-	visit, err := h.s.PatchVisit(r.PathValue("id"), patch)
+	visit, err := h.s.PatchVisit(r.Context(), scope, r.PathValue("id"), patch)
 	if respondError(w, err) {
 		return
 	}
@@ -332,13 +415,17 @@ func (h *handler) patchVisit(w http.ResponseWriter, r *http.Request) {
 // ---- trips ----
 
 func (h *handler) listTrips(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	q := &queryReader{w: w, r: r}
 	filter := TripFilter{TimeFilter: q.timeFilter(), Mode: q.text("mode"), Kind: q.text("kind"), ParentTripID: q.text("parent_trip_id"),
 		MinimumDistanceMeters: q.number("min_distance_meters"), ExcludeParents: q.boolean("exclude_parents")}
 	if q.failed {
 		return
 	}
-	trips, err := h.s.ListTrips(filter)
+	trips, err := h.s.ListTrips(r.Context(), scope, filter)
 	if respondError(w, err) {
 		return
 	}
@@ -346,11 +433,15 @@ func (h *handler) listTrips(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) createTrip(w http.ResponseWriter, r *http.Request) {
+	owner, scope, ok := newRecordOwner(w, r)
+	if !ok {
+		return
+	}
 	var create TripCreate
 	if !decodeBody(w, r, 1<<20, &create) {
 		return
 	}
-	trip, err := h.s.CreateTrip(create)
+	trip, err := h.s.CreateTrip(r.Context(), scope, owner, create)
 	if respondError(w, err) {
 		return
 	}
@@ -358,17 +449,25 @@ func (h *handler) createTrip(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) getTrip(w http.ResponseWriter, r *http.Request) {
-	trip, err := h.s.GetTrip(r.PathValue("id"), r.URL.Query().Get("include_deleted") == "true")
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	trip, err := h.s.GetTrip(r.Context(), scope, r.PathValue("id"), r.URL.Query().Get("include_deleted") == "true")
 	if respondError(w, err) {
 		return
 	}
-	if trip.CalendarEventLinks, err = h.s.liveCalendarEventLinksTo([]string{trip.ID}); respondError(w, err) {
+	if trip.CalendarEventLinks, err = h.s.liveCalendarEventLinksTo(r.Context(), ownership.OwnedBy(trip.OwnerPrincipalID), []string{trip.ID}); respondError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, trip)
 }
 
 func (h *handler) patchTrip(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	var patch TripPatch
 	raw, ok := decodePatch(w, r, []string{"mode", "title", "description", "described_by", "tags"},
 		[]string{"parent_trip_id", "start_place_id", "end_place_id"}, &patch)
@@ -384,7 +483,7 @@ func (h *handler) patchTrip(w http.ResponseWriter, r *http.Request) {
 	if patch.EndPlaceID, ok = optionalID(w, raw, "end_place_id"); !ok {
 		return
 	}
-	trip, err := h.s.PatchTrip(r.PathValue("id"), patch)
+	trip, err := h.s.PatchTrip(r.Context(), scope, r.PathValue("id"), patch)
 	if respondError(w, err) {
 		return
 	}
@@ -392,7 +491,11 @@ func (h *handler) patchTrip(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) tripPath(w http.ResponseWriter, r *http.Request) {
-	path, err := h.s.TripPath(r.PathValue("id"))
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	path, err := h.s.TripPath(r.Context(), scope, r.PathValue("id"))
 	if respondError(w, err) {
 		return
 	}
@@ -400,11 +503,15 @@ func (h *handler) tripPath(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) attachChildren(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	var attach AttachChildren
 	if !decodeBody(w, r, 1<<20, &attach) {
 		return
 	}
-	trip, err := h.s.AttachChildren(r.PathValue("id"), attach.TripIDs)
+	trip, err := h.s.AttachChildren(r.Context(), scope, r.PathValue("id"), attach.TripIDs)
 	if respondError(w, err) {
 		return
 	}
@@ -414,11 +521,15 @@ func (h *handler) attachChildren(w http.ResponseWriter, r *http.Request) {
 // ---- localities, home periods and journeys ----
 
 func (h *handler) fillLocalities(w http.ResponseWriter, r *http.Request) {
+	owner, ok := ownerActedFor(w, r)
+	if !ok {
+		return
+	}
 	var request LocalityFillRequest
 	if !decodeBody(w, r, 1<<20, &request) {
 		return
 	}
-	fill, err := h.s.FillLocalities(request.DryRun)
+	fill, err := h.s.FillLocalities(r.Context(), owner, request.DryRun)
 	if respondError(w, err) {
 		return
 	}
@@ -426,12 +537,16 @@ func (h *handler) fillLocalities(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) listHomePeriods(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	q := &queryReader{w: w, r: r}
 	includeDeleted := q.boolean("include_deleted")
 	if q.failed {
 		return
 	}
-	periods, err := h.s.ListHomePeriods(includeDeleted)
+	periods, err := h.s.ListHomePeriods(r.Context(), scope, includeDeleted)
 	if respondError(w, err) {
 		return
 	}
@@ -439,7 +554,11 @@ func (h *handler) listHomePeriods(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) getHomePeriod(w http.ResponseWriter, r *http.Request) {
-	period, err := h.s.GetHomePeriod(r.PathValue("id"))
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	period, err := h.s.GetHomePeriod(r.Context(), scope, r.PathValue("id"))
 	if respondError(w, err) {
 		return
 	}
@@ -447,11 +566,15 @@ func (h *handler) getHomePeriod(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) recordLivePoints(w http.ResponseWriter, r *http.Request) {
+	owner, refusal := ownership.OwnerOfNewRecord(r)
+	if respondRefusal(w, refusal) {
+		return
+	}
 	var live LivePoints
 	if !decodeBody(w, r, 4<<20, &live) {
 		return
 	}
-	recorded, err := h.s.RecordLivePoints(live)
+	recorded, err := h.s.RecordLivePoints(r.Context(), owner, live)
 	if respondError(w, err) {
 		return
 	}
@@ -459,11 +582,15 @@ func (h *handler) recordLivePoints(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) segmentPhonePoints(w http.ResponseWriter, r *http.Request) {
+	owner, ok := ownerActedFor(w, r)
+	if !ok {
+		return
+	}
 	var request PhoneSegmentRequest
 	if !decodeBody(w, r, 1<<20, &request) {
 		return
 	}
-	segmentation, err := h.s.SegmentPhonePoints(request)
+	segmentation, err := h.s.SegmentPhonePoints(r.Context(), owner, request)
 	if respondError(w, err) {
 		return
 	}
@@ -471,11 +598,15 @@ func (h *handler) segmentPhonePoints(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) groupJourneys(w http.ResponseWriter, r *http.Request) {
+	owner, ok := ownerActedFor(w, r)
+	if !ok {
+		return
+	}
 	var request JourneyGroupRequest
 	if !decodeBody(w, r, 1<<20, &request) {
 		return
 	}
-	grouping, err := h.s.GroupJourneys(request)
+	grouping, err := h.s.GroupJourneys(r.Context(), owner, request)
 	if respondError(w, err) {
 		return
 	}
@@ -483,12 +614,16 @@ func (h *handler) groupJourneys(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) listJourneys(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	q := &queryReader{w: w, r: r}
 	filter := TripFilter{TimeFilter: q.timeFilter(), Kind: TripKindJourney}
 	if q.failed {
 		return
 	}
-	trips, err := h.s.ListTrips(filter)
+	trips, err := h.s.ListTrips(r.Context(), scope, filter)
 	if respondError(w, err) {
 		return
 	}
@@ -496,7 +631,11 @@ func (h *handler) listJourneys(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) getJourney(w http.ResponseWriter, r *http.Request) {
-	summary, err := h.s.Journey(r.PathValue("id"))
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	summary, err := h.s.Journey(r.Context(), scope, r.PathValue("id"))
 	if respondError(w, err) {
 		return
 	}
@@ -506,11 +645,15 @@ func (h *handler) getJourney(w http.ResponseWriter, r *http.Request) {
 // ---- calendar events ----
 
 func (h *handler) matchCalendar(w http.ResponseWriter, r *http.Request) {
+	owner, ok := ownerActedFor(w, r)
+	if !ok {
+		return
+	}
 	var request CalendarMatchRequest
 	if !decodeBody(w, r, 64<<20, &request) {
 		return
 	}
-	matching, err := h.s.MatchCalendar(request)
+	matching, err := h.s.MatchCalendar(r.Context(), owner, request)
 	if respondError(w, err) {
 		return
 	}
@@ -518,6 +661,10 @@ func (h *handler) matchCalendar(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) listCalendarEventLinks(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	q := &queryReader{w: w, r: r}
 	filter := CalendarEventLinkFilter{From: q.integer("from"), To: q.integer("to"), VisitID: q.text("visit_id"), TripID: q.text("trip_id"),
 		PlaceID: q.text("place_id"), CalendarID: q.text("calendar_id"), EventID: q.text("event_id"), Rule: q.text("rule"),
@@ -525,7 +672,7 @@ func (h *handler) listCalendarEventLinks(w http.ResponseWriter, r *http.Request)
 	if q.failed {
 		return
 	}
-	links, err := h.s.ListCalendarEventLinks(filter)
+	links, err := h.s.ListCalendarEventLinks(r.Context(), scope, filter)
 	if respondError(w, err) {
 		return
 	}
@@ -533,13 +680,17 @@ func (h *handler) listCalendarEventLinks(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *handler) listCalendarSeriesPlaces(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	q := &queryReader{w: w, r: r}
 	filter := CalendarSeriesPlaceFilter{PlaceID: q.text("place_id"), CalendarID: q.text("calendar_id"), Outcome: q.text("outcome"),
 		Limit: int(q.integer("limit")), Offset: int(q.integer("offset"))}
 	if q.failed {
 		return
 	}
-	rows, err := h.s.ListCalendarSeriesPlaces(filter)
+	rows, err := h.s.ListCalendarSeriesPlaces(r.Context(), scope, filter)
 	if respondError(w, err) {
 		return
 	}
@@ -547,7 +698,11 @@ func (h *handler) listCalendarSeriesPlaces(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *handler) getCalendarSeriesPlace(w http.ResponseWriter, r *http.Request) {
-	row, err := h.s.GetCalendarSeriesPlace(r.PathValue("id"))
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	row, err := h.s.GetCalendarSeriesPlace(r.Context(), scope, r.PathValue("id"))
 	if respondError(w, err) {
 		return
 	}
@@ -555,12 +710,16 @@ func (h *handler) getCalendarSeriesPlace(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *handler) listUnnamedPlaces(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	q := &queryReader{w: w, r: r}
 	limit, offset := int(q.integer("limit")), int(q.integer("offset"))
 	if q.failed {
 		return
 	}
-	places, err := h.s.ListUnnamedPlaces(limit, offset)
+	places, err := h.s.ListUnnamedPlaces(r.Context(), scope, limit, offset)
 	if respondError(w, err) {
 		return
 	}
@@ -568,11 +727,15 @@ func (h *handler) listUnnamedPlaces(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) proposePlaceSuggestions(w http.ResponseWriter, r *http.Request) {
+	owner, ok := ownerActedFor(w, r)
+	if !ok {
+		return
+	}
 	var request PlaceSuggestionProposals
 	if !decodeBody(w, r, 64<<20, &request) {
 		return
 	}
-	answer, err := h.s.ProposePlaceSuggestions(request)
+	answer, err := h.s.ProposePlaceSuggestions(r.Context(), owner, request)
 	if respondError(w, err) {
 		return
 	}
@@ -580,13 +743,17 @@ func (h *handler) proposePlaceSuggestions(w http.ResponseWriter, r *http.Request
 }
 
 func (h *handler) listPlaceSuggestions(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	q := &queryReader{w: w, r: r}
 	filter := PlaceSuggestionFilter{PlaceID: q.text("place_id"), Status: q.text("status"), Source: q.text("source"),
 		IncludeDeleted: q.boolean("include_deleted"), Limit: int(q.integer("limit")), Offset: int(q.integer("offset"))}
 	if q.failed {
 		return
 	}
-	suggestions, err := h.s.ListPlaceSuggestions(filter)
+	suggestions, err := h.s.ListPlaceSuggestions(r.Context(), scope, filter)
 	if respondError(w, err) {
 		return
 	}
@@ -594,7 +761,11 @@ func (h *handler) listPlaceSuggestions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) getPlaceSuggestion(w http.ResponseWriter, r *http.Request) {
-	suggestion, err := h.s.GetPlaceSuggestion(r.PathValue("id"))
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	suggestion, err := h.s.GetPlaceSuggestion(r.Context(), scope, r.PathValue("id"))
 	if respondError(w, err) {
 		return
 	}
@@ -603,6 +774,10 @@ func (h *handler) getPlaceSuggestion(w http.ResponseWriter, r *http.Request) {
 
 func (h *handler) decidePlaceSuggestion(accept bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		scope, ok := readScope(w, r)
+		if !ok {
+			return
+		}
 		var decision PlaceSuggestionDecision
 		if !decodeBody(w, r, 1<<20, &decision) {
 			return
@@ -614,7 +789,7 @@ func (h *handler) decidePlaceSuggestion(accept bool) http.HandlerFunc {
 			writeErr(w, http.StatusBadRequest, "reject takes decided_by and note only")
 			return
 		}
-		suggestion, err := decide(r.PathValue("id"), decision)
+		suggestion, err := decide(r.Context(), scope, r.PathValue("id"), decision)
 		if respondError(w, err) {
 			return
 		}
@@ -623,11 +798,15 @@ func (h *handler) decidePlaceSuggestion(accept bool) http.HandlerFunc {
 }
 
 func (h *handler) createCalendarEventLink(w http.ResponseWriter, r *http.Request) {
+	owner, scope, ok := newRecordOwner(w, r)
+	if !ok {
+		return
+	}
 	var create CalendarEventLinkCreate
 	if !decodeBody(w, r, 1<<20, &create) {
 		return
 	}
-	link, err := h.s.CreateCalendarEventLink(create)
+	link, err := h.s.CreateCalendarEventLink(r.Context(), scope, owner, create)
 	if respondError(w, err) {
 		return
 	}
@@ -635,7 +814,11 @@ func (h *handler) createCalendarEventLink(w http.ResponseWriter, r *http.Request
 }
 
 func (h *handler) getCalendarEventLink(w http.ResponseWriter, r *http.Request) {
-	link, err := h.s.GetCalendarEventLink(r.PathValue("id"), r.URL.Query().Get("include_deleted") == "true")
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	link, err := h.s.GetCalendarEventLink(r.Context(), scope, r.PathValue("id"), r.URL.Query().Get("include_deleted") == "true")
 	if respondError(w, err) {
 		return
 	}
@@ -643,7 +826,11 @@ func (h *handler) getCalendarEventLink(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) deleteCalendarEventLink(w http.ResponseWriter, r *http.Request) {
-	if respondError(w, h.s.DeleteCalendarEventLink(r.PathValue("id"))) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	if respondError(w, h.s.DeleteCalendarEventLink(r.Context(), scope, r.PathValue("id"))) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -653,7 +840,11 @@ func (h *handler) deleteCalendarEventLink(w http.ResponseWriter, r *http.Request
 
 func (h *handler) remove(entityType string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if respondError(w, h.s.Delete(entityType, r.PathValue("id"))) {
+		scope, ok := readScope(w, r)
+		if !ok {
+			return
+		}
+		if respondError(w, h.s.Delete(r.Context(), scope, entityType, r.PathValue("id"))) {
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -662,19 +853,23 @@ func (h *handler) remove(entityType string) http.HandlerFunc {
 
 func (h *handler) restore(entityType string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		scope, ok := readScope(w, r)
+		if !ok {
+			return
+		}
 		id := r.PathValue("id")
-		if respondError(w, h.s.Restore(entityType, id)) {
+		if respondError(w, h.s.Restore(r.Context(), scope, entityType, id)) {
 			return
 		}
 		var record any
 		var err error
 		switch entityType {
 		case EntityPlace:
-			record, err = h.s.GetPlace(id, false)
+			record, err = h.s.GetPlace(r.Context(), scope, id, false)
 		case EntityVisit:
-			record, err = h.s.GetVisit(id, false)
+			record, err = h.s.GetVisit(r.Context(), scope, id, false)
 		default:
-			record, err = h.s.GetTrip(id, false)
+			record, err = h.s.GetTrip(r.Context(), scope, id, false)
 		}
 		if respondError(w, err) {
 			return
@@ -685,12 +880,16 @@ func (h *handler) restore(entityType string) http.HandlerFunc {
 
 func (h *handler) revisions(entityType string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		scope, ok := readScope(w, r)
+		if !ok {
+			return
+		}
 		q := &queryReader{w: w, r: r}
 		limit, offset := q.integer("limit"), q.integer("offset")
 		if q.failed {
 			return
 		}
-		revisions, err := h.s.Revisions(entityType, r.PathValue("id"), int(limit), int(offset))
+		revisions, err := h.s.Revisions(r.Context(), scope, entityType, r.PathValue("id"), int(limit), int(offset))
 		if respondError(w, err) {
 			return
 		}
@@ -699,13 +898,17 @@ func (h *handler) revisions(entityType string) http.HandlerFunc {
 }
 
 func (h *handler) timeline(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	q := &queryReader{w: w, r: r}
 	from, to, limit := q.integer("from"), q.integer("to"), q.integer("limit")
 	source, includeParentTrips := q.text("source"), q.boolean("include_parent_trips")
 	if q.failed {
 		return
 	}
-	items, err := h.s.Timeline(from, to, source, includeParentTrips, int(limit))
+	items, err := h.s.Timeline(r.Context(), scope, from, to, source, includeParentTrips, int(limit))
 	if respondError(w, err) {
 		return
 	}
@@ -713,13 +916,17 @@ func (h *handler) timeline(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) listPoints(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	q := &queryReader{w: w, r: r}
 	filter := PointFilter{From: q.integer("from"), To: q.integer("to"), Source: q.text("source"), SourceRef: q.text("source_ref"),
 		Limit: int(q.integer("limit")), Offset: int(q.integer("offset"))}
 	if q.failed {
 		return
 	}
-	points, err := h.s.ListPoints(filter)
+	points, err := h.s.ListPoints(r.Context(), scope, filter)
 	if respondError(w, err) {
 		return
 	}
@@ -729,12 +936,16 @@ func (h *handler) listPoints(w http.ResponseWriter, r *http.Request) {
 // ---- imports ----
 
 func (h *handler) listImports(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	q := &queryReader{w: w, r: r}
 	limit, offset := q.integer("limit"), q.integer("offset")
 	if q.failed {
 		return
 	}
-	imports, err := h.s.ListImports(int(limit), int(offset))
+	imports, err := h.s.ListImports(r.Context(), scope, int(limit), int(offset))
 	if respondError(w, err) {
 		return
 	}
@@ -742,11 +953,15 @@ func (h *handler) listImports(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) startImport(w http.ResponseWriter, r *http.Request) {
+	owner, refusal := ownership.OwnerOfNewRecord(r)
+	if respondRefusal(w, refusal) {
+		return
+	}
 	var start ImportStart
 	if !decodeBody(w, r, 1<<20, &start) {
 		return
 	}
-	started, err := h.s.StartImport(start)
+	started, err := h.s.StartImport(r.Context(), owner, start)
 	if respondError(w, err) {
 		return
 	}
@@ -754,7 +969,11 @@ func (h *handler) startImport(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) getImport(w http.ResponseWriter, r *http.Request) {
-	record, err := h.s.GetImport(r.PathValue("id"))
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
+	record, err := h.s.GetImport(r.Context(), scope, r.PathValue("id"))
 	if respondError(w, err) {
 		return
 	}
@@ -762,11 +981,15 @@ func (h *handler) getImport(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) importBatch(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	var batch ImportBatch
 	if !decodeBody(w, r, 256<<20, &batch) {
 		return
 	}
-	counts, err := h.s.ApplyBatch(r.PathValue("id"), batch)
+	counts, err := h.s.ApplyBatch(r.Context(), scope, r.PathValue("id"), batch)
 	if respondError(w, err) {
 		return
 	}
@@ -774,6 +997,10 @@ func (h *handler) importBatch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) finishImport(w http.ResponseWriter, r *http.Request) {
+	scope, ok := readScope(w, r)
+	if !ok {
+		return
+	}
 	var finish ImportFinish
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
 	decoder.DisallowUnknownFields()
@@ -781,7 +1008,7 @@ func (h *handler) finishImport(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad json: "+err.Error())
 		return
 	}
-	record, err := h.s.FinishImport(r.PathValue("id"), finish)
+	record, err := h.s.FinishImport(r.Context(), scope, r.PathValue("id"), finish)
 	if respondError(w, err) {
 		return
 	}
@@ -810,6 +1037,9 @@ func respondError(w http.ResponseWriter, err error) bool {
 	case errors.Is(err, ErrInvalid):
 		writeErr(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, ErrConflict):
+		writeErr(w, http.StatusConflict, err.Error())
+	case isUniqueViolation(err):
+		// A concurrent write of the same owner took the same key first.
 		writeErr(w, http.StatusConflict, err.Error())
 	default:
 		log.Printf("location-store: %v", err)

@@ -1,8 +1,10 @@
 // Command location-name-localities names the town of every place, visit and
 // trip end in location-store whose locality is empty, offline. The first run
-// downloads GeoNames' public list of towns of 1000 people or more into the
-// service's data directory (<data dir>/geonames); the download asks for the
-// public files and sends nothing about anyone. The towns are then looked up
+// downloads GeoNames' public list of towns of 1000 people or more into
+// LOCATION_STORE_GEONAMES_DIRECTORY, which must be the directory
+// llm-bridge-server's location_store.geonames_directory names, since the
+// store reads the files from there; the download asks for the public files
+// and sends nothing about anyone. The towns are then looked up
 // inside location-store: no coordinate leaves the host. A locality already set
 // is never changed.
 //
@@ -23,7 +25,18 @@ import (
 
 func main() {
 	dryRun := flag.Bool("dry-run", false, "count what would be named, write nothing")
-	downloadAgain := flag.Bool("download-again", false, "fetch the GeoNames files again even when they are there (the service reads them once per start)")
+	downloadAgain := flag.Bool("download-again", false, "fetch the GeoNames files again even when they are there (the store reads them once per start)")
+	flag.Usage = func() {
+		fmt.Fprintf(flag.CommandLine.Output(), `usage: location-name-localities [-dry-run] [-download-again]
+
+LOCATION_STORE_GEONAMES_DIRECTORY (required) must name the directory
+llm-bridge-server's location_store.geonames_directory names: the GeoNames
+files are downloaded there, and the store reads them from there.
+LOCATION_STORE_URL is where location-store answers.
+
+`)
+		flag.PrintDefaults()
+	}
 	flag.Parse()
 	settings, err := locationstore.NewLocalityNamingSettingsRegistry(servicesettings.ProcessEnvironment())
 	if err != nil {
@@ -34,26 +47,10 @@ func main() {
 	}
 	client := storeclient.New(settings.String(locationstore.SettingLocationStoreURL))
 
-	// The service says where its data is, so the files land where it reads.
-	var served struct {
-		Settings []struct {
-			Key   string `json:"key"`
-			Value string `json:"value"`
-		} `json:"settings"`
-	}
-	if err := client.Do(http.MethodGet, "/settings", nil, &served); err != nil {
-		log.Fatal(err)
-	}
-	dataDir := ""
-	for _, setting := range served.Settings {
-		if setting.Key == locationstore.SettingDataDirectory {
-			dataDir = setting.Value
-		}
-	}
-	if dataDir == "" {
-		log.Fatalf("location-store's GET /settings names no %s", locationstore.SettingDataDirectory)
-	}
-	dir := locationstore.GeonamesDirIn(dataDir)
+	// The files must land where the store reads them: the directory the
+	// server's location_store.geonames_directory names, which
+	// LOCATION_STORE_GEONAMES_DIRECTORY must name too.
+	dir := settings.String(locationstore.SettingGeonamesDirectory)
 	if *downloadAgain || !geonames.Present(dir) {
 		fmt.Printf("downloading the GeoNames towns to %s…\n", dir)
 		if err := geonames.Download(dir); err != nil {

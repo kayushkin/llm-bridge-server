@@ -1,30 +1,74 @@
 # location-store — API contract
 
-`127.0.0.1:8333`, loopback only, no auth: a front door such as dash adds it.
-Where the user has been: named places, visits to them, trips between them, the
-raw location points underneath, and the imports that brought them in. SQLite
-at `<data dir>/location-store.db` (default `~/.config/location-store`,
-directory 0700, file 0600). Timestamps are epoch seconds.
+Where the user has been: named places, visits to them, trips between them,
+the raw location points underneath, and the imports that brought them in.
+location-store runs inside llm-bridge-server, at `/location-store/` with the
+paths below, and keeps its records in Postgres, in the schema `locations`
+(role `locations_module`). It was a standalone SQLite service on `:8333`
+until it moved; `llm-bridge-server` copies a standalone file in with
+`ImportStandaloneDatabase` (every id kept, every record given one owner).
+Timestamps are epoch seconds.
 
-## Settings
+## Owners
+
+Every record carries `owner_principal_id`: principal-store's id of the
+person who keeps it. The server puts the caller it verified on every
+request; a request with none is **401**.
+
+- **Reads** reach the caller's own records. An administrator reaches every
+  owner's, or one owner's with `?owner_principal_id=`; anyone else may name
+  only themselves there (**403** otherwise). A record outside the caller's
+  reach is **404**, as a missing one, and lists and `/health` counts hold
+  only records in reach. `GET /vocabularies` answers any caller.
+- **New records** made through the routes (`POST /places`, `/visits`,
+  `/trips`, `/calendar-event-links`, `/imports`, `/points/live`) are the
+  caller's; a caller acting as no principal is **403**. Everything an import
+  creates or updates is the import owner's, and a batch or finish on an
+  import out of reach is 404.
+- **Writes to a record** (PATCH, DELETE, restore, merge, attach children,
+  accept or reject a suggestion) need it in reach; what they write under it
+  (a revision, a path, a moved link) takes its owner.
+- **Two records of different owners are never joined.** A record a write
+  names that the caller cannot reach answers as a missing one always did
+  (`into` of a merge is 404; a place, parent trip, child trip or link target
+  is 400). One the caller can reach but another owner keeps, which only an
+  administrator can name, is **400**. The schema holds this too: every link
+  between records is a foreign key over the owner and the id.
+- **The passes** — `POST /localities/fill`, `/journeys/group`,
+  `/phone-points/segment`, `/calendar/match` and
+  `/place-suggestions/proposals` — each work through one owner's records:
+  the caller's, or for an administrator the one named in
+  `?owner_principal_id=` (their own when none is named). They read and write
+  nothing of anyone else's.
+- **Every uniqueness rule is per owner**: an import's `sha256`, a place's
+  `google_place_id`, a visit's or trip's `source` + `source_ref`, a point's
+  time, coordinates and source, a calendar link's event and record, a series
+  place's calendar and series, and a suggestion's place, source and
+  `source_ref`. Two people may each import the same file. Snapshot
+  supersession weighs one owner's exports against that owner's records only.
+
+## Commands' settings
+
+The commands are HTTP clients of the routes. Each reads its own settings:
 
 | Variable | Default | What it is |
 |---|---|---|
-| `LOCATION_STORE_ADDR` | `127.0.0.1:8333` | listen address |
-| `LOCATION_STORE_DATA_DIR` | `~/.config/location-store` | holds `location-store.db` |
 | `LOCATION_STORE_URL` | `http://127.0.0.1:8333` | the commands: where location-store answers |
+| `LOCATION_STORE_GEONAMES_DIRECTORY` | (required) | `location-name-localities`: where it downloads the GeoNames files. It must name the directory llm-bridge-server's `location_store.geonames_directory` names, which the store reads them from |
 | `PHOTO_STORE_URL` | `http://127.0.0.1:8329` | `location-import-photos`: where photo-store answers |
 | `DASH_URL` | `http://localhost:8101` | `location-match-calendar`: where dash answers, the one way to Google Calendar |
-| `DASH_TOKEN` | (secret, required) | `location-match-calendar` and `location-suggest-place-names`: dash's bearer token, sent only to `DASH_URL`, never printed. The service itself never holds it |
-| `LOCATION_STORE_OSM_EXTRACTS` | `~/.cache/osm` | `location-suggest-place-names`: OpenStreetMap extracts (`.osm.pbf`), comma-separated files or directories of them. Never set it in the service's own environment |
+| `DASH_TOKEN` | (secret, required) | `location-match-calendar` and `location-suggest-place-names`: dash's bearer token, sent only to `DASH_URL`, never printed. The store itself never holds it |
+| `LOCATION_STORE_OSM_EXTRACTS` | `~/.cache/osm` | `location-suggest-place-names`: OpenStreetMap extracts (`.osm.pbf`), comma-separated files or directories of them |
 
 ## Records
 
 Places, visits and trips have ids from this store (`place_000001`,
-`visit_000001`, `trip_000001`), registered in kanban-store's entity-type
-registry as types `place`, `visit` and `trip`, so a timeline item or a note
+`visit_000001`, `trip_000001`), registered in reference-store's list of
+types as `place`, `visit` and `trip`, so a timeline item or a note
 cites one as a chip. Each update, import change, delete and restore first
-copies the whole record to `revisions`; deletes are soft.
+copies the whole record to `revisions`; deletes are soft. Every record with
+an id of its own, and every revision, answers its `owner_principal_id` (see
+*Owners*).
 
 **An import never touches** a name, title, description, tags,
 `parent_trip_id` or locality, never changes a place link already set, never
@@ -46,8 +90,8 @@ trips) is the town a coordinate is in: `{city, region, country,
 country_code, time_zone, geonames_id, distance_meters, described_by}`, null
 until named. `location-name-localities` names them offline from GeoNames'
 `cities1000` (towns of 1000 people or more, parts of towns left out) with
-first-level region and country names, downloaded once to `<data
-dir>/geonames`: of the towns whose reach (15 m × √population) covers the
+first-level region and country names, downloaded once to the directory
+the server's `location_store.geonames_directory` names: of the towns whose reach (15 m × √population) covers the
 coordinate, the most populous, else the nearest. A visit is named from its
 own coordinate, else its place's. Filling never replaces a locality already
 set, and copies the record to `revisions` first (reason `locality`).
@@ -60,7 +104,7 @@ set, and copies the record to `revisions` first (reason `locality`).
 | `name`, `address` | an import fills them only while blank |
 | `latitude`, `longitude`, `radius_meters` | `radius_meters` 0 = not given |
 | `kind` | `GET /vocabularies` `place_kinds`: `home`, `work`, `venue`, `saved`, `other`. An import turns `other` into what the source says, never anything else; `location-group-journeys` sets a home period's place to `home` unless someone set its kind by hand |
-| `google_place_id` | Google's id, when a source gave one; unique; an import finds the place again by it |
+| `google_place_id` | Google's id, when a source gave one; unique among the owner's places; an import finds the place again by it |
 | `description`, `described_by` | markdown; `described_by` (who wrote it) is required with a description |
 | `tags` | JSON array of strings |
 | `source`, `import_id` | `google_timeline`, `google_semantic`, `manual` or `generated`; the import that created it |
@@ -320,7 +364,7 @@ point with a `source_ref` replaces an earlier one with the same source and
 `id` (`import_000001`), `kind` (`import_kinds`: `google_timeline`,
 `google_records`, `google_semantic`, `photo_store`, `activity_store`,
 `google_photos_sidecars`, `phone_live`), `sha256` (of the file;
-unique), `source_machine`, `source_path`, `recorded_by` (who sent a live
+unique among the owner's imports), `source_machine`, `source_path`, `recorded_by` (who sent a live
 import's points, as the front door signed it; `""` for a file), `imported_at`, `finished_at` (0
 while sending), `counts` (`points_added`, `points_unchanged`,
 `places_created`, `places_updated`, `visits_created`, `visits_updated`,
@@ -336,10 +380,9 @@ A `PATCH` with an unknown key, or `null` on a field that is not a link, is a
 
 | Method | Path | |
 |---|---|---|
-| `GET` | `/health` | `{status, counts:{places, visits, trips, points, imports, deleted, revisions}}` |
-| `GET` | `/settings` | the declared settings |
+| `GET` | `/health` | `{status, counts:{places, visits, trips, points, imports, deleted, revisions}}`, counted in the caller's reach |
 | `GET` | `/vocabularies` | `{place_kinds, trip_kinds, trip_modes, record_sources, point_sources, import_kinds, calendar_match_rules, calendar_link_target_types, series_outcomes, place_suggestion_statuses, place_suggestion_sources}` |
-| `GET` | `/places` | oldest first. `?q=` (every word in name, address, description or tags), `?kind=`, `?tag=`, `?google_place_id=` |
+| `GET` | `/places` | oldest first. `?q=` (every word somewhere in the name, address, description or tags, ignoring the case of A to Z only; `%` and `_` are plain characters), `?kind=`, `?tag=`, `?google_place_id=` |
 | `POST` | `/places` | `{name, latitude, longitude, radius_meters, address, kind, description, described_by, tags}`; name, latitude, longitude, kind required. **201** |
 | `GET` | `/places/{id}` | deleted is 404 unless `?include_deleted=true` |
 | `PATCH` | `/places/{id}` | any of `name`, `latitude`, `longitude`, `radius_meters`, `address`, `kind`, `description`, `described_by`, `tags` |
@@ -357,7 +400,7 @@ A `PATCH` with an unknown key, or `null` on a field that is not a link, is a
 | `DELETE` | `/places/{id}`, `/visits/{id}`, `/trips/{id}` | soft, **204**; again is a no-op |
 | `POST` | `/places/{id}/restore`, `/visits/{id}/restore`, `/trips/{id}/restore` | answers the record |
 | `GET` | `/places/{id}/revisions`, `/visits/{id}/revisions`, `/trips/{id}/revisions` | newest first: `{revision_id, entity_type, entity_id, reason, replaced_at, row}`, `row` the whole record as it was |
-| `POST` | `/localities/fill` | `{dry_run}`: names every empty locality (see *Localities*). Answers `{places, visits, trip_starts, trip_ends, already_named, no_coordinate, no_town_nearby, distinct_towns, geonames_towns_in}`. **409** until the GeoNames files are in `<data dir>/geonames` |
+| `POST` | `/localities/fill` | `{dry_run}`: names every empty locality (see *Localities*). Answers `{places, visits, trip_starts, trip_ends, already_named, no_coordinate, no_town_nearby, distinct_towns, geonames_towns_in}`. **409** until the GeoNames files are in the directory `location_store.geonames_directory` names |
 | `GET` | `/home-periods` | earliest first; `?include_deleted=true` |
 | `GET` | `/home-periods/{id}` | |
 | `POST` | `/journeys/group` | `{dry_run, away_distance_meters, minimum_away_seconds, home_change_days, return_break_seconds}`, 0 = default. Answers `{dry_run, request, home_periods, journeys:[{action, trip_id, title, started_at, ended_at, mode, nights, farthest_meters, child_trip_ids, children_attached, children_detached, children_kept_elsewhere, notes}], deleted_journey_ids, home_places_marked, notes}`; `action` is `create`, `update`, `unchanged` or `skip`. A dry run writes nothing and answers `trip_id` `""` for a journey it would create. **409** without the GeoNames files |
@@ -379,7 +422,7 @@ A `PATCH` with an unknown key, or `null` on a field that is not a link, is a
 | `GET` | `/timeline` | visits and trips overlapping `?from=&to=`, in start order: `[{kind:"visit"\|"trip", visit, trip}]`. Trips that have children are left out unless `?include_parent_trips=true`. `?source=`; `?limit=` default 500, max 5000 |
 | `GET` | `/points` | earliest first. `?from=` (inclusive) `&to=` (exclusive) on `timestamp`, `?source=`, `?source_ref=`; `?limit=` default 1000, max 10000 |
 | `POST` | `/points/live` | `{device, recorded_by, points:[{timestamp, latitude, longitude, accuracy_meters}]}`, at most 5000 points: fixes a phone sent as it made them (see *Phone points*). Answers `{import_ids, points_added, points_unchanged}` |
-| `POST` | `/phone-points/segment` | `{dry_run, from, to}`, at most 400 days: makes the phone points into visits and movements (see *Phone points*). Answers `{dry_run, from, to, points_read, points_too_rough, places_created, actions:[{action, entity_type, id, started_at, ended_at, place_id, mode, distance_meters, points, note}], action_counts}`; `action` is `create`, `update`, `unchanged`, `delete`, `kept_edited`, `kept_deleted` or `skip_other_source`. A dry run does the work and writes none of it, so the ids it answers are the ones a real run would have made |
+| `POST` | `/phone-points/segment` | `{dry_run, from, to}`, at most 400 days: makes the phone points into visits and movements (see *Phone points*). Answers `{dry_run, from, to, points_read, points_too_rough, places_created, actions:[{action, entity_type, id, started_at, ended_at, place_id, mode, distance_meters, points, note}], action_counts}`; `action` is `create`, `update`, `unchanged`, `delete`, `kept_edited`, `kept_deleted` or `skip_other_source`. A dry run does the work and writes none of it. The ids it answers for records it would create are numbers it took and gave back: Postgres never hands a number out twice, so a real run after it makes the same records under later numbers |
 | `GET` | `/imports` | newest first |
 | `POST` | `/imports` | `{kind, sha256, source_machine, source_path, reapply}`: starts an import, or answers the one with that hash. `{import, already_finished}`. `reapply: true` opens a finished import again (its counts and its record of what the file holds start afresh), so the same file can be sent once more |
 | `GET` | `/imports/{id}` | |

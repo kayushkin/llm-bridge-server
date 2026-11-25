@@ -2,34 +2,96 @@ package locationstore
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
+	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 )
 
 // Every coordinate here is invented: a grid near 10°N 20°E.
+
+// The made-up people the tests act as.
+const (
+	alicePrincipalID = "principal_000001"
+	bobPrincipalID   = "principal_000002"
+)
+
+var (
+	alice              = ownership.Caller{PrincipalID: alicePrincipalID}
+	bob                = ownership.Caller{PrincipalID: bobPrincipalID}
+	aliceAdministrator = ownership.Caller{PrincipalID: alicePrincipalID, SeesEveryOwner: true}
+)
+
+// The test server reads who the request acts as from these headers, as the
+// real server reads it from the credential it verified. A request with
+// noCallerHeader carries no caller at all.
+const (
+	callerPrincipalHeader     = "X-Test-Caller-Principal"
+	callerAdministratorHeader = "X-Test-Caller-Administrator"
+	noCallerHeader            = "X-Test-No-Caller"
+)
+
+func withTestCaller(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(noCallerHeader) == "" {
+			caller := ownership.Caller{PrincipalID: r.Header.Get(callerPrincipalHeader), SeesEveryOwner: r.Header.Get(callerAdministratorHeader) != ""}
+			r = r.WithContext(ownership.ContextWithCaller(r.Context(), caller))
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 
 type testService struct {
 	t      *testing.T
 	store  *Store
 	server *httptest.Server
+	// caller is who call acts as; nil sends no caller.
+	caller *ownership.Caller
 }
 
+// as is the same service called as caller.
+func (s *testService) as(caller ownership.Caller) *testService {
+	copied := *s
+	copied.caller = &caller
+	return &copied
+}
+
+// withoutCaller is the same service called with no caller on the request.
+func (s *testService) withoutCaller() *testService {
+	copied := *s
+	copied.caller = nil
+	return &copied
+}
+
+// newTestDatabase gives the test a Postgres database of its own holding the
+// module, migrated (postgresstorage/postgrestest), and the module's pool on it.
+func newTestDatabase(t *testing.T) *sql.DB {
+	t.Helper()
+	module, err := Module()
+	if err != nil {
+		t.Fatalf("module: %v", err)
+	}
+	database := postgrestest.NewDatabase(t, module)
+	return database.Open(module)
+}
+
+// newTestService is the store on a database of its own, called as Alice. Its
+// GeoNames directory is empty until a test writes the town fixture there.
 func newTestService(t *testing.T) *testService {
 	t.Helper()
-	store, err := Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { store.Close() })
+	store := New(newTestDatabase(t), filepath.Join(t.TempDir(), "geonames"))
 	mux := http.NewServeMux()
 	RegisterHandlers(mux, store)
-	server := httptest.NewServer(mux)
+	server := httptest.NewServer(withTestCaller(mux))
 	t.Cleanup(server.Close)
-	return &testService{t: t, store: store, server: server}
+	return &testService{t: t, store: store, server: server, caller: &alice}
 }
 
 func (s *testService) call(method, path string, body any, out any) (int, []byte) {
@@ -45,6 +107,14 @@ func (s *testService) call(method, path string, body any, out any) (int, []byte)
 	}
 	request, _ := http.NewRequest(method, s.server.URL+path, reader)
 	request.Header.Set("Content-Type", "application/json")
+	if s.caller == nil {
+		request.Header.Set(noCallerHeader, "1")
+	} else {
+		request.Header.Set(callerPrincipalHeader, s.caller.PrincipalID)
+		if s.caller.SeesEveryOwner {
+			request.Header.Set(callerAdministratorHeader, "1")
+		}
+	}
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		s.t.Fatal(err)

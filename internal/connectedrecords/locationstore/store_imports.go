@@ -1,17 +1,20 @@
 package locationstore
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 )
 
 var sha256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-const importColumns = `id, kind, sha256, source_machine, source_path, imported_at, finished_at, counts, snapshot, snapshot_changes, recorded_by, seq`
+const importColumns = `id, owner_principal_id, kind, sha256, source_machine, source_path, imported_at, finished_at, counts, snapshot, snapshot_changes, recorded_by, seq`
 
 // importRow is an import with its seq, which orders snapshots that tie.
 type importRow struct {
@@ -23,7 +26,7 @@ func scanImportRow(scan func(...any) error) (*importRow, error) {
 	var record importRow
 	var counts string
 	var snapshot, changes sql.NullString
-	if err := scan(&record.ID, &record.Kind, &record.Sha256, &record.SourceMachine, &record.SourcePath,
+	if err := scan(&record.ID, &record.OwnerPrincipalID, &record.Kind, &record.Sha256, &record.SourceMachine, &record.SourcePath,
 		&record.ImportedAt, &record.FinishedAt, &counts, &snapshot, &changes, &record.RecordedBy, &record.seq); err != nil {
 		return nil, err
 	}
@@ -53,21 +56,32 @@ func scanImport(scan func(...any) error) (*Import, error) {
 	return &record.Import, nil
 }
 
-func getImportRow(q queryer, id string) (*Import, error) {
-	record, err := scanImport(q.QueryRow(`SELECT `+importColumns+` FROM imports WHERE id = ?`, id).Scan)
+func getImportRow(ctx context.Context, q queryer, scope ownership.Scope, id string) (*Import, error) {
+	if err := checkScope(scope); err != nil {
+		return nil, err
+	}
+	var args arguments
+	record, err := scanImport(q.QueryRowContext(ctx, `SELECT `+importColumns+` FROM imports WHERE id = `+args.add(id)+` AND `+args.within(scope, "owner_principal_id"),
+		args.values...).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("%w: no import %s", ErrNotFound, id)
 	}
 	return record, err
 }
 
-// GetImport reads one import.
-func (s *Store) GetImport(id string) (*Import, error) { return getImportRow(s.db, id) }
+// GetImport reads one import in scope.
+func (s *Store) GetImport(ctx context.Context, scope ownership.Scope, id string) (*Import, error) {
+	return getImportRow(ctx, s.db, scope, id)
+}
 
-// ListImports is every import, newest first.
-func (s *Store) ListImports(limit, offset int) ([]Import, error) {
-	rows, err := s.db.Query(`SELECT `+importColumns+` FROM imports ORDER BY seq DESC LIMIT ? OFFSET ?`,
-		clampLimit(limit, defaultLimit, maximumLimit), max(offset, 0))
+// ListImports is every import in scope, newest first.
+func (s *Store) ListImports(ctx context.Context, scope ownership.Scope, limit, offset int) ([]Import, error) {
+	if err := checkScope(scope); err != nil {
+		return nil, err
+	}
+	var args arguments
+	rows, err := s.db.QueryContext(ctx, `SELECT `+importColumns+` FROM imports WHERE `+args.within(scope, "owner_principal_id")+
+		` ORDER BY seq DESC LIMIT `+args.add(clampLimit(limit, defaultLimit, maximumLimit))+` OFFSET `+args.add(max(offset, 0)), args.values...)
 	if err != nil {
 		return nil, err
 	}
@@ -83,11 +97,13 @@ func (s *Store) ListImports(limit, offset int) ([]Import, error) {
 	return imports, rows.Err()
 }
 
-// StartImport begins an import of one file, found again by its hash: a file
-// imported before answers AlreadyFinished, and one whose import stopped part
-// way answers that import again so the importer can send it all again (every
-// batch is idempotent).
-func (s *Store) StartImport(start ImportStart) (*ImportStarted, error) {
+// StartImport begins an import of one file for owner, found again among
+// owner's imports by its hash: a file imported before answers
+// AlreadyFinished, and one whose import stopped part way answers that import
+// again so the importer can send it all again (every batch is idempotent).
+// Another owner's import of the same file is that owner's, and never this
+// one.
+func (s *Store) StartImport(ctx context.Context, owner string, start ImportStart) (*ImportStarted, error) {
 	switch {
 	case !knownWord(ImportKinds, start.Kind):
 		return nil, fmt.Errorf("%w: unknown kind %q: use one of %s", ErrInvalid, start.Kind, strings.Join(ImportKinds, ", "))
@@ -95,20 +111,21 @@ func (s *Store) StartImport(start ImportStart) (*ImportStarted, error) {
 		return nil, fmt.Errorf("%w: sha256 must be 64 lowercase hex characters", ErrInvalid)
 	}
 	var id string
-	err := s.inTransaction(func(tx *sql.Tx) error {
+	err := s.inOwnerTransaction(ctx, owner, func(tx *sql.Tx) error {
 		var kind string
 		var finishedAt int64
-		err := tx.QueryRow(`SELECT id, kind, finished_at FROM imports WHERE sha256 = ?`, start.Sha256).Scan(&id, &kind, &finishedAt)
+		err := tx.QueryRowContext(ctx, `SELECT id, kind, finished_at FROM imports WHERE owner_principal_id = $1 AND sha256 = $2`, owner, start.Sha256).
+			Scan(&id, &kind, &finishedAt)
 		if err == nil {
 			if kind != start.Kind {
 				return fmt.Errorf("%w: this file was imported as %s (%s), not %s", ErrConflict, kind, id, start.Kind)
 			}
 			if start.Reapply && finishedAt != 0 {
 				// Open it again; what it holds is recorded afresh as it is sent.
-				if _, err := tx.Exec(`DELETE FROM import_records WHERE import_id = ?`, id); err != nil {
+				if _, err := tx.ExecContext(ctx, `DELETE FROM import_records WHERE import_id = $1`, id); err != nil {
 					return err
 				}
-				_, err = tx.Exec(`UPDATE imports SET finished_at = 0, counts = '{}', snapshot_changes = NULL WHERE id = ?`, id)
+				_, err = tx.ExecContext(ctx, `UPDATE imports SET finished_at = 0, counts = '{}', snapshot_changes = NULL WHERE id = $1`, id)
 				return err
 			}
 			return nil
@@ -117,28 +134,29 @@ func (s *Store) StartImport(start ImportStart) (*ImportStarted, error) {
 			return err
 		}
 		var seq int64
-		if id, seq, err = nextID(tx, "imports", "import"); err != nil {
+		if id, seq, err = nextID(ctx, tx, "imports", "import"); err != nil {
 			return err
 		}
-		_, err = tx.Exec(`INSERT INTO imports (id, seq, kind, sha256, source_machine, source_path, imported_at) VALUES (?,?,?,?,?,?,?)`,
-			id, seq, start.Kind, start.Sha256, strings.TrimSpace(start.SourceMachine), strings.TrimSpace(start.SourcePath), now())
+		_, err = tx.ExecContext(ctx, `INSERT INTO imports (id, seq, owner_principal_id, kind, sha256, source_machine, source_path, imported_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+			id, seq, owner, start.Kind, start.Sha256, strings.TrimSpace(start.SourceMachine), strings.TrimSpace(start.SourcePath), now())
 		return err
 	})
 	if err != nil {
 		return nil, err
 	}
-	record, err := s.GetImport(id)
+	record, err := s.GetImport(ctx, ownership.OwnedBy(owner), id)
 	if err != nil {
 		return nil, err
 	}
 	return &ImportStarted{Import: *record, AlreadyFinished: record.FinishedAt != 0}, nil
 }
 
-// FinishImport stamps finished_at, after which the same file is not imported
-// again. Again changes nothing. With a snapshot, the import is a full
-// snapshot of its span, and the snapshots are reconciled in the same
-// transaction (reconcileSnapshots).
-func (s *Store) FinishImport(id string, finish ImportFinish) (*Import, error) {
+// FinishImport stamps finished_at on an import in scope, after which the same
+// file is not imported again. Again changes nothing. With a snapshot, the
+// import is a full snapshot of its span, and the import owner's snapshots
+// are reconciled in the same transaction (reconcileSnapshots).
+func (s *Store) FinishImport(ctx context.Context, scope ownership.Scope, id string, finish ImportFinish) (*Import, error) {
 	if finish.Snapshot != nil {
 		if err := checkTimeRange(finish.Snapshot.CoversFrom, finish.Snapshot.CoversTo); err != nil {
 			return nil, fmt.Errorf("snapshot: %w", err)
@@ -147,8 +165,8 @@ func (s *Store) FinishImport(id string, finish ImportFinish) (*Import, error) {
 			return nil, fmt.Errorf("%w: snapshot: raw_signals_newest_at is before raw_signals_oldest_at", ErrInvalid)
 		}
 	}
-	err := s.inTransaction(func(tx *sql.Tx) error {
-		record, err := getImportRow(tx, id)
+	err := s.writeOwned(ctx, scope, "imports", "import", id, func(tx *sql.Tx, owner string) error {
+		record, err := getImportRow(ctx, tx, ownership.OwnedBy(owner), id)
 		if err != nil || record.FinishedAt != 0 {
 			return err
 		}
@@ -160,10 +178,10 @@ func (s *Store) FinishImport(id string, finish ImportFinish) (*Import, error) {
 			if err != nil {
 				return err
 			}
-			if _, err := tx.Exec(`UPDATE imports SET snapshot=?, finished_at=? WHERE id=?`, string(encoded), now(), id); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE imports SET snapshot = $1, finished_at = $2 WHERE id = $3`, string(encoded), now(), id); err != nil {
 				return err
 			}
-			changes, err := reconcileSnapshots(tx, now())
+			changes, err := reconcileSnapshots(ctx, tx, owner, now())
 			if err != nil {
 				return err
 			}
@@ -171,16 +189,16 @@ func (s *Store) FinishImport(id string, finish ImportFinish) (*Import, error) {
 			if err != nil {
 				return err
 			}
-			_, err = tx.Exec(`UPDATE imports SET snapshot_changes=? WHERE id=?`, string(encoded), id)
+			_, err = tx.ExecContext(ctx, `UPDATE imports SET snapshot_changes = $1 WHERE id = $2`, string(encoded), id)
 			return err
 		}
-		_, err = tx.Exec(`UPDATE imports SET finished_at=? WHERE id=?`, now(), id)
+		_, err = tx.ExecContext(ctx, `UPDATE imports SET finished_at = $1 WHERE id = $2`, now(), id)
 		return err
 	})
 	if err != nil {
 		return nil, err
 	}
-	return s.GetImport(id)
+	return s.GetImport(ctx, scope, id)
 }
 
 func importedSource(where, source string) error {
@@ -264,13 +282,24 @@ func validateBatch(batch ImportBatch) error {
 	return nil
 }
 
-func placeIDByGoogleID(tx *sql.Tx, googlePlaceID string) (*string, error) {
+// batchWriter writes one batch of one owner's import.
+type batchWriter struct {
+	ctx      context.Context
+	tx       *sql.Tx
+	owner    string
+	importID string
+	at       int64
+	counts   *ImportCounts
+}
+
+func (w *batchWriter) placeIDByGoogleID(googlePlaceID string) (*string, error) {
 	if googlePlaceID == "" {
 		return nil, nil
 	}
 	var id string
 	var mergedInto sql.NullString
-	err := tx.QueryRow(`SELECT id, merged_into_place_id FROM places WHERE google_place_id = ?`, googlePlaceID).Scan(&id, &mergedInto)
+	err := w.tx.QueryRowContext(w.ctx, `SELECT id, merged_into_place_id FROM places WHERE owner_principal_id = $1 AND google_place_id = $2`,
+		w.owner, googlePlaceID).Scan(&id, &mergedInto)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -285,43 +314,44 @@ func placeIDByGoogleID(tx *sql.Tx, googlePlaceID string) (*string, error) {
 	return &id, nil
 }
 
-// ApplyBatch writes one batch of an import, in one transaction: one bad record
-// writes nothing. Each record is found again by its key (a place by
-// google_place_id, a visit or trip by source and source_ref, a point by time,
-// place and source), so sending a batch twice changes nothing. An import never
-// touches a name, title, description, tags or parent someone wrote, never
-// changes a place link already set, never changes a mode someone corrected,
-// and leaves a deleted record deleted.
-func (s *Store) ApplyBatch(importID string, batch ImportBatch) (*ImportCounts, error) {
+// ApplyBatch writes one batch of an import in scope, in one transaction: one
+// bad record writes nothing. Every record it creates or updates is the
+// import owner's, and each is found again among that owner's records by its
+// key (a place by google_place_id, a visit or trip by source and source_ref,
+// a point by time, place and source), so sending a batch twice changes
+// nothing. An import never touches a name, title, description, tags or
+// parent someone wrote, never changes a place link already set, never
+// changes a mode someone corrected, and leaves a deleted record deleted.
+func (s *Store) ApplyBatch(ctx context.Context, scope ownership.Scope, importID string, batch ImportBatch) (*ImportCounts, error) {
 	if err := validateBatch(batch); err != nil {
 		return nil, err
 	}
 	counts := &ImportCounts{}
-	err := s.inTransaction(func(tx *sql.Tx) error {
-		record, err := getImportRow(tx, importID)
+	err := s.writeOwned(ctx, scope, "imports", "import", importID, func(tx *sql.Tx, owner string) error {
+		record, err := getImportRow(ctx, tx, ownership.OwnedBy(owner), importID)
 		if err != nil {
 			return err
 		}
 		if record.FinishedAt != 0 {
 			return fmt.Errorf("%w: import %s is finished; a file is imported once", ErrConflict, importID)
 		}
-		at := now()
+		writer := &batchWriter{ctx: ctx, tx: tx, owner: owner, importID: importID, at: now(), counts: counts}
 		for _, place := range batch.Places {
-			if err := applyPlace(tx, importID, place, at, counts); err != nil {
+			if err := writer.applyPlace(place); err != nil {
 				return err
 			}
 		}
 		for _, visit := range batch.Visits {
-			if err := applyVisit(tx, importID, visit, at, counts); err != nil {
+			if err := writer.applyVisit(visit); err != nil {
 				return err
 			}
 		}
 		for _, trip := range batch.Trips {
-			if err := applyTrip(tx, importID, trip, at, counts); err != nil {
+			if err := writer.applyTrip(trip); err != nil {
 				return err
 			}
 		}
-		if err := applyPoints(tx, importID, batch.Points, counts); err != nil {
+		if err := applyPoints(ctx, tx, owner, importID, batch.Points, counts); err != nil {
 			return err
 		}
 		total := record.Counts
@@ -338,7 +368,7 @@ func (s *Store) ApplyBatch(importID string, batch ImportBatch) (*ImportCounts, e
 		if err != nil {
 			return err
 		}
-		_, err = tx.Exec(`UPDATE imports SET counts=? WHERE id=?`, string(encoded), importID)
+		_, err = tx.ExecContext(ctx, `UPDATE imports SET counts = $1 WHERE id = $2`, string(encoded), importID)
 		return err
 	})
 	if err != nil {
@@ -347,28 +377,30 @@ func (s *Store) ApplyBatch(importID string, batch ImportBatch) (*ImportCounts, e
 	return counts, nil
 }
 
-// applyPlace creates a place the first time its Google id is seen. Later it
-// only fills a blank name or address and turns kind other into what the
-// source says; it never moves a place or overwrites what someone wrote.
-func applyPlace(tx *sql.Tx, importID string, place ImportPlace, at int64, counts *ImportCounts) error {
-	existingID, err := placeIDByGoogleID(tx, place.GooglePlaceID)
+// applyPlace creates a place the first time the owner's imports see its
+// Google id. Later it only fills a blank name or address and turns kind
+// other into what the source says; it never moves a place or overwrites what
+// someone wrote.
+func (w *batchWriter) applyPlace(place ImportPlace) error {
+	existingID, err := w.placeIDByGoogleID(place.GooglePlaceID)
 	if err != nil {
 		return err
 	}
 	if existingID == nil {
-		id, seq, err := nextID(tx, "places", "place")
+		id, seq, err := nextID(w.ctx, w.tx, "places", "place")
 		if err != nil {
 			return err
 		}
-		_, err = tx.Exec(`INSERT INTO places (id, seq, name, latitude, longitude, address, kind, google_place_id, source, import_id,
-			created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, id, seq, strings.TrimSpace(place.Name), place.Latitude,
-			place.Longitude, strings.TrimSpace(place.Address), place.Kind, place.GooglePlaceID, place.Source, importID, at, at)
+		_, err = w.tx.ExecContext(w.ctx, `INSERT INTO places (id, seq, owner_principal_id, name, latitude, longitude, address, kind, google_place_id, source,
+			import_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`, id, seq, w.owner,
+			strings.TrimSpace(place.Name), place.Latitude, place.Longitude, strings.TrimSpace(place.Address), place.Kind, place.GooglePlaceID,
+			place.Source, w.importID, w.at, w.at)
 		if err == nil {
-			counts.PlacesCreated++
+			w.counts.PlacesCreated++
 		}
 		return err
 	}
-	current, err := getPlaceRow(tx, *existingID)
+	current, err := getPlaceRow(w.ctx, w.tx, ownership.OwnedBy(w.owner), *existingID)
 	if err != nil {
 		return err
 	}
@@ -383,56 +415,58 @@ func applyPlace(tx *sql.Tx, importID string, place ImportPlace, at int64, counts
 		kind = place.Kind
 	}
 	if current.DeletedAt != 0 || (name == current.Name && address == current.Address && kind == current.Kind) {
-		counts.RecordsUnchanged++
+		w.counts.RecordsUnchanged++
 		return nil
 	}
-	if err := snapshot(tx, EntityPlace, current.ID, "import", at); err != nil {
+	if err := snapshot(w.ctx, w.tx, EntityPlace, current.ID, "import", w.at); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`UPDATE places SET name=?, address=?, kind=?, updated_at=? WHERE id=?`, name, address, kind, at, current.ID); err != nil {
+	if _, err := w.tx.ExecContext(w.ctx, `UPDATE places SET name = $1, address = $2, kind = $3, updated_at = $4 WHERE id = $5`,
+		name, address, kind, w.at, current.ID); err != nil {
 		return err
 	}
-	counts.PlacesUpdated++
+	w.counts.PlacesUpdated++
 	return nil
 }
 
-func existingByRef(tx *sql.Tx, table, source, sourceRef string) (string, error) {
+func (w *batchWriter) existingByRef(table, source, sourceRef string) (string, error) {
 	var id string
-	err := tx.QueryRow(`SELECT id FROM `+table+` WHERE source = ? AND source_ref = ?`, source, sourceRef).Scan(&id)
+	err := w.tx.QueryRowContext(w.ctx, `SELECT id FROM `+table+` WHERE owner_principal_id = $1 AND source = $2 AND source_ref = $3`,
+		w.owner, source, sourceRef).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
 	return id, err
 }
 
-func applyVisit(tx *sql.Tx, importID string, visit ImportVisit, at int64, counts *ImportCounts) error {
-	placeID, err := placeIDByGoogleID(tx, visit.GooglePlaceID)
+func (w *batchWriter) applyVisit(visit ImportVisit) error {
+	placeID, err := w.placeIDByGoogleID(visit.GooglePlaceID)
 	if err != nil {
 		return err
 	}
-	existingID, err := existingByRef(tx, "visits", visit.Source, visit.SourceRef)
+	existingID, err := w.existingByRef("visits", visit.Source, visit.SourceRef)
 	if err != nil {
 		return err
 	}
 	if existingID == "" {
-		id, seq, err := nextID(tx, "visits", "visit")
+		id, seq, err := nextID(w.ctx, w.tx, "visits", "visit")
 		if err != nil {
 			return err
 		}
-		_, err = tx.Exec(`INSERT INTO visits (id, seq, place_id, started_at, ended_at, latitude, longitude, probability,
-			source_semantic_type, source, source_ref, import_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			id, seq, nullableString(placeID), visit.StartedAt, visit.EndedAt, nullableFloat(visit.Latitude), nullableFloat(visit.Longitude),
-			nullableFloat(visit.Probability), visit.SourceSemanticType, visit.Source, visit.SourceRef, importID, at, at)
+		_, err = w.tx.ExecContext(w.ctx, `INSERT INTO visits (id, seq, owner_principal_id, place_id, started_at, ended_at, latitude, longitude, probability,
+			source_semantic_type, source, source_ref, import_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+			id, seq, w.owner, nullableString(placeID), visit.StartedAt, visit.EndedAt, nullableFloat(visit.Latitude), nullableFloat(visit.Longitude),
+			nullableFloat(visit.Probability), visit.SourceSemanticType, visit.Source, visit.SourceRef, w.importID, w.at, w.at)
 		if err != nil {
 			return err
 		}
-		counts.VisitsCreated++
-		return recordHeld(tx, importID, EntityVisit, id)
+		w.counts.VisitsCreated++
+		return recordHeld(w.ctx, w.tx, w.owner, w.importID, EntityVisit, id)
 	}
-	if err := recordHeld(tx, importID, EntityVisit, existingID); err != nil {
+	if err := recordHeld(w.ctx, w.tx, w.owner, w.importID, EntityVisit, existingID); err != nil {
 		return err
 	}
-	current, err := getVisitRow(tx, existingID)
+	current, err := getVisitRow(w.ctx, w.tx, ownership.OwnedBy(w.owner), existingID)
 	if err != nil {
 		return err
 	}
@@ -445,19 +479,19 @@ func applyVisit(tx *sql.Tx, importID string, visit ImportVisit, at int64, counts
 	if (current.DeletedAt != 0 && current.SupersededByImportID == nil) || (sameString(current.PlaceID, placeID) && current.StartedAt == visit.StartedAt &&
 		current.EndedAt == visit.EndedAt && sameFloat(current.Latitude, visit.Latitude) && sameFloat(current.Longitude, visit.Longitude) &&
 		sameFloat(current.Probability, visit.Probability) && current.SourceSemanticType == visit.SourceSemanticType) {
-		counts.RecordsUnchanged++
+		w.counts.RecordsUnchanged++
 		return nil
 	}
-	if err := snapshot(tx, EntityVisit, existingID, "import", at); err != nil {
+	if err := snapshot(w.ctx, w.tx, EntityVisit, existingID, "import", w.at); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`UPDATE visits SET place_id=?, started_at=?, ended_at=?, latitude=?, longitude=?, probability=?,
-		source_semantic_type=?, updated_at=? WHERE id=?`, nullableString(placeID), visit.StartedAt, visit.EndedAt,
+	if _, err := w.tx.ExecContext(w.ctx, `UPDATE visits SET place_id = $1, started_at = $2, ended_at = $3, latitude = $4, longitude = $5, probability = $6,
+		source_semantic_type = $7, updated_at = $8 WHERE id = $9`, nullableString(placeID), visit.StartedAt, visit.EndedAt,
 		nullableFloat(visit.Latitude), nullableFloat(visit.Longitude), nullableFloat(visit.Probability), visit.SourceSemanticType,
-		at, existingID); err != nil {
+		w.at, existingID); err != nil {
 		return err
 	}
-	counts.VisitsUpdated++
+	w.counts.VisitsUpdated++
 	return nil
 }
 
@@ -476,11 +510,13 @@ func samePath(a, b []PathPoint) bool {
 	return true
 }
 
-func writePath(tx *sql.Tx, tripID string, path []PathPoint) error {
-	if _, err := tx.Exec(`DELETE FROM trip_path_points WHERE trip_id = ?`, tripID); err != nil {
+// writePath replaces a trip's path. The points take the trip's owner.
+func writePath(ctx context.Context, tx *sql.Tx, owner, tripID string, path []PathPoint) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM trip_path_points WHERE trip_id = $1`, tripID); err != nil {
 		return err
 	}
-	statement, err := tx.Prepare(`INSERT INTO trip_path_points (trip_id, position, latitude, longitude, timestamp) VALUES (?,?,?,?,?)`)
+	statement, err := tx.PrepareContext(ctx, `INSERT INTO trip_path_points (owner_principal_id, trip_id, position, latitude, longitude, timestamp)
+		VALUES ($1, $2, $3, $4, $5, $6)`)
 	if err != nil {
 		return err
 	}
@@ -490,15 +526,15 @@ func writePath(tx *sql.Tx, tripID string, path []PathPoint) error {
 		if point.Timestamp != nil {
 			timestamp = *point.Timestamp
 		}
-		if _, err := statement.Exec(tripID, position, point.Latitude, point.Longitude, timestamp); err != nil {
+		if _, err := statement.ExecContext(ctx, owner, tripID, position, point.Latitude, point.Longitude, timestamp); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func readPath(tx *sql.Tx, tripID string) ([]PathPoint, error) {
-	rows, err := tx.Query(`SELECT latitude, longitude, timestamp FROM trip_path_points WHERE trip_id = ? ORDER BY position`, tripID)
+func readPath(ctx context.Context, q queryer, tripID string) ([]PathPoint, error) {
+	rows, err := q.QueryContext(ctx, `SELECT latitude, longitude, timestamp FROM trip_path_points WHERE trip_id = $1 ORDER BY position`, tripID)
 	if err != nil {
 		return nil, err
 	}
@@ -518,43 +554,43 @@ func readPath(tx *sql.Tx, tripID string) ([]PathPoint, error) {
 	return path, rows.Err()
 }
 
-func applyTrip(tx *sql.Tx, importID string, trip ImportTrip, at int64, counts *ImportCounts) error {
-	startPlaceID, err := placeIDByGoogleID(tx, trip.StartGooglePlaceID)
+func (w *batchWriter) applyTrip(trip ImportTrip) error {
+	startPlaceID, err := w.placeIDByGoogleID(trip.StartGooglePlaceID)
 	if err != nil {
 		return err
 	}
-	endPlaceID, err := placeIDByGoogleID(tx, trip.EndGooglePlaceID)
+	endPlaceID, err := w.placeIDByGoogleID(trip.EndGooglePlaceID)
 	if err != nil {
 		return err
 	}
-	existingID, err := existingByRef(tx, "trips", trip.Source, trip.SourceRef)
+	existingID, err := w.existingByRef("trips", trip.Source, trip.SourceRef)
 	if err != nil {
 		return err
 	}
 	if existingID == "" {
-		id, seq, err := nextID(tx, "trips", "trip")
+		id, seq, err := nextID(w.ctx, w.tx, "trips", "trip")
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(`INSERT INTO trips (id, seq, started_at, ended_at, start_latitude, start_longitude, end_latitude,
+		if _, err := w.tx.ExecContext(w.ctx, `INSERT INTO trips (id, seq, owner_principal_id, started_at, ended_at, start_latitude, start_longitude, end_latitude,
 			end_longitude, start_place_id, end_place_id, mode, source_mode, distance_meters, probability, source, source_ref,
-			import_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			id, seq, trip.StartedAt, trip.EndedAt, nullableFloat(trip.StartLatitude), nullableFloat(trip.StartLongitude),
+			import_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
+			id, seq, w.owner, trip.StartedAt, trip.EndedAt, nullableFloat(trip.StartLatitude), nullableFloat(trip.StartLongitude),
 			nullableFloat(trip.EndLatitude), nullableFloat(trip.EndLongitude), nullableString(startPlaceID), nullableString(endPlaceID),
 			trip.Mode, trip.SourceMode, nullableFloat(trip.DistanceMeters), nullableFloat(trip.Probability), trip.Source,
-			trip.SourceRef, importID, at, at); err != nil {
+			trip.SourceRef, w.importID, w.at, w.at); err != nil {
 			return err
 		}
-		counts.TripsCreated++
-		if err := recordHeld(tx, importID, EntityTrip, id); err != nil {
+		w.counts.TripsCreated++
+		if err := recordHeld(w.ctx, w.tx, w.owner, w.importID, EntityTrip, id); err != nil {
 			return err
 		}
-		return writePath(tx, id, trip.Path)
+		return writePath(w.ctx, w.tx, w.owner, id, trip.Path)
 	}
-	if err := recordHeld(tx, importID, EntityTrip, existingID); err != nil {
+	if err := recordHeld(w.ctx, w.tx, w.owner, w.importID, EntityTrip, existingID); err != nil {
 		return err
 	}
-	current, err := getTripRow(tx, existingID)
+	current, err := getTripRow(w.ctx, w.tx, ownership.OwnedBy(w.owner), existingID)
 	if err != nil {
 		return err
 	}
@@ -570,12 +606,12 @@ func applyTrip(tx *sql.Tx, importID string, trip ImportTrip, at int64, counts *I
 	if current.Mode != ModeForGoogleActivityType(current.SourceMode) {
 		mode = current.Mode
 	}
-	path, err := readPath(tx, existingID)
+	path, err := readPath(w.ctx, w.tx, existingID)
 	if err != nil {
 		return err
 	}
 	if current.DeletedAt != 0 && current.SupersededByImportID == nil {
-		counts.RecordsUnchanged++
+		w.counts.RecordsUnchanged++
 		return nil
 	}
 	if current.StartedAt == trip.StartedAt && current.EndedAt == trip.EndedAt && sameFloat(current.StartLatitude, trip.StartLatitude) &&
@@ -583,35 +619,36 @@ func applyTrip(tx *sql.Tx, importID string, trip ImportTrip, at int64, counts *I
 		sameFloat(current.EndLongitude, trip.EndLongitude) && sameString(current.StartPlaceID, startPlaceID) &&
 		sameString(current.EndPlaceID, endPlaceID) && current.Mode == mode && current.SourceMode == trip.SourceMode &&
 		sameFloat(current.DistanceMeters, trip.DistanceMeters) && sameFloat(current.Probability, trip.Probability) && samePath(path, trip.Path) {
-		counts.RecordsUnchanged++
+		w.counts.RecordsUnchanged++
 		return nil
 	}
-	if err := snapshot(tx, EntityTrip, existingID, "import", at); err != nil {
+	if err := snapshot(w.ctx, w.tx, EntityTrip, existingID, "import", w.at); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`UPDATE trips SET started_at=?, ended_at=?, start_latitude=?, start_longitude=?, end_latitude=?,
-		end_longitude=?, start_place_id=?, end_place_id=?, mode=?, source_mode=?, distance_meters=?, probability=?, updated_at=?
-		WHERE id=?`, trip.StartedAt, trip.EndedAt, nullableFloat(trip.StartLatitude), nullableFloat(trip.StartLongitude),
+	if _, err := w.tx.ExecContext(w.ctx, `UPDATE trips SET started_at = $1, ended_at = $2, start_latitude = $3, start_longitude = $4, end_latitude = $5,
+		end_longitude = $6, start_place_id = $7, end_place_id = $8, mode = $9, source_mode = $10, distance_meters = $11, probability = $12, updated_at = $13
+		WHERE id = $14`, trip.StartedAt, trip.EndedAt, nullableFloat(trip.StartLatitude), nullableFloat(trip.StartLongitude),
 		nullableFloat(trip.EndLatitude), nullableFloat(trip.EndLongitude), nullableString(startPlaceID), nullableString(endPlaceID),
-		mode, trip.SourceMode, nullableFloat(trip.DistanceMeters), nullableFloat(trip.Probability), at, existingID); err != nil {
+		mode, trip.SourceMode, nullableFloat(trip.DistanceMeters), nullableFloat(trip.Probability), w.at, existingID); err != nil {
 		return err
 	}
-	counts.TripsUpdated++
+	w.counts.TripsUpdated++
 	if samePath(path, trip.Path) {
 		return nil
 	}
-	return writePath(tx, existingID, trip.Path)
+	return writePath(w.ctx, w.tx, w.owner, existingID, trip.Path)
 }
 
-// applyPoints adds raw points. A point already there from the same source is
-// left alone. A point with a source_ref replaces an earlier point with the
-// same source and source_ref, so a photo whose GPS changed moves.
-func applyPoints(tx *sql.Tx, importID string, points []ImportPoint, counts *ImportCounts) error {
+// applyPoints adds raw points to an owner's import. A point the owner
+// already has from the same source is left alone. A point with a source_ref
+// replaces an earlier point of the owner's with the same source and
+// source_ref, so a photo whose GPS changed moves.
+func applyPoints(ctx context.Context, tx *sql.Tx, owner, importID string, points []ImportPoint, counts *ImportCounts) error {
 	if len(points) == 0 {
 		return nil
 	}
-	insert, err := tx.Prepare(`INSERT OR IGNORE INTO points (timestamp, latitude, longitude, accuracy_meters, source, source_ref, import_id)
-		VALUES (?,?,?,?,?,?,?)`)
+	insert, err := tx.PrepareContext(ctx, `INSERT INTO points (owner_principal_id, timestamp, latitude, longitude, accuracy_meters, source, source_ref, import_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING`)
 	if err != nil {
 		return err
 	}
@@ -619,19 +656,21 @@ func applyPoints(tx *sql.Tx, importID string, points []ImportPoint, counts *Impo
 	for _, point := range points {
 		if point.SourceRef != "" {
 			var same int
-			if err := tx.QueryRow(`SELECT COUNT(*) FROM points WHERE source = ? AND source_ref = ? AND timestamp = ? AND latitude = ? AND longitude = ?`,
-				point.Source, point.SourceRef, point.Timestamp, point.Latitude, point.Longitude).Scan(&same); err != nil {
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM points WHERE owner_principal_id = $1 AND source = $2 AND source_ref = $3
+				AND timestamp = $4 AND latitude = $5 AND longitude = $6`,
+				owner, point.Source, point.SourceRef, point.Timestamp, point.Latitude, point.Longitude).Scan(&same); err != nil {
 				return err
 			}
 			if same > 0 {
 				counts.PointsUnchanged++
 				continue
 			}
-			if _, err := tx.Exec(`DELETE FROM points WHERE source = ? AND source_ref = ?`, point.Source, point.SourceRef); err != nil {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM points WHERE owner_principal_id = $1 AND source = $2 AND source_ref = $3`,
+				owner, point.Source, point.SourceRef); err != nil {
 				return err
 			}
 		}
-		result, err := insert.Exec(point.Timestamp, point.Latitude, point.Longitude, nullableFloat(point.AccuracyMeters),
+		result, err := insert.ExecContext(ctx, owner, point.Timestamp, point.Latitude, point.Longitude, nullableFloat(point.AccuracyMeters),
 			point.Source, point.SourceRef, importID)
 		if err != nil {
 			return err

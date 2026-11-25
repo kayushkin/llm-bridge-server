@@ -1,12 +1,7 @@
--- location-store schema. Create-only and idempotent: Open() runs this whole
--- file on every boot. A new column goes in an additive migration in store.go,
--- never in an edit to a CREATE TABLE below.
---
--- Nothing a person can cite is hard-deleted: DELETE stamps deleted_at, and
--- every update, import change, delete and restore of a place, visit or trip
--- first copies the whole row into revisions.
+-- The standalone location-store's live schema: its schema.sql, then the
+-- columns its addColumns migration added, in order, with what ran after each.
+-- The import test builds a made-up standalone file from it.
 
-PRAGMA foreign_keys = ON;
 
 -- One imported file, found again by its hash: importing the same file twice
 -- changes nothing. finished_at is 0 while an import is still sending; running
@@ -263,3 +258,22 @@ CREATE TABLE IF NOT EXISTS place_suggestions (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_place_suggestions_identity ON place_suggestions(place_id, source, source_ref);
 CREATE INDEX IF NOT EXISTS idx_place_suggestions_status ON place_suggestions(status, deleted_at);
+
+-- addColumns in the standalone store.go.
+ALTER TABLE places ADD COLUMN locality TEXT;
+ALTER TABLE visits ADD COLUMN locality TEXT;
+ALTER TABLE trips ADD COLUMN start_locality TEXT;
+ALTER TABLE trips ADD COLUMN end_locality TEXT;
+ALTER TABLE trips ADD COLUMN kind TEXT NOT NULL DEFAULT 'movement';
+UPDATE trips SET kind = 'journey' WHERE source = 'manual';
+CREATE INDEX IF NOT EXISTS idx_trips_kind ON trips(kind, deleted_at, started_at);
+ALTER TABLE trips ADD COLUMN title_by TEXT NOT NULL DEFAULT '';
+UPDATE trips SET title_by = 'hand' WHERE title != '';
+ALTER TABLE visits ADD COLUMN superseded_by_import_id TEXT REFERENCES imports(id);
+ALTER TABLE trips ADD COLUMN superseded_by_import_id TEXT REFERENCES imports(id);
+ALTER TABLE imports ADD COLUMN snapshot TEXT;
+ALTER TABLE imports ADD COLUMN snapshot_changes TEXT;
+ALTER TABLE trips ADD COLUMN parent_set_by TEXT NOT NULL DEFAULT '';
+UPDATE trips SET parent_set_by = 'hand' WHERE parent_trip_id IS NOT NULL;
+ALTER TABLE imports ADD COLUMN recorded_by TEXT NOT NULL DEFAULT '';
+ALTER TABLE places ADD COLUMN merged_into_place_id TEXT REFERENCES places(id);

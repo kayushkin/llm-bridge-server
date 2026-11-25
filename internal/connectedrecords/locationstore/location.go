@@ -7,10 +7,13 @@ package locationstore
 // Place is a named spot.
 type Place struct {
 	// ID is place_000001: what anything else joins on.
-	ID        string  `json:"id"`
-	Name      string  `json:"name"`
-	Latitude  float64 `json:"latitude"`
-	Longitude float64 `json:"longitude"`
+	ID string `json:"id"`
+	// OwnerPrincipalID is principal-store's id of the person who keeps the
+	// record.
+	OwnerPrincipalID string  `json:"owner_principal_id"`
+	Name             string  `json:"name"`
+	Latitude         float64 `json:"latitude"`
+	Longitude        float64 `json:"longitude"`
 	// RadiusMeters is how far the place reaches; 0 when not given.
 	RadiusMeters float64 `json:"radius_meters"`
 	Address      string  `json:"address"`
@@ -61,8 +64,11 @@ type PlaceMerge struct {
 // Visit is being somewhere from StartedAt to EndedAt.
 type Visit struct {
 	// ID is visit_000001.
-	ID      string  `json:"id"`
-	PlaceID *string `json:"place_id"`
+	ID string `json:"id"`
+	// OwnerPrincipalID is principal-store's id of the person who keeps the
+	// record.
+	OwnerPrincipalID string  `json:"owner_principal_id"`
+	PlaceID          *string `json:"place_id"`
 	// PlaceName is the place's name when the visit was read, for display only.
 	PlaceName string   `json:"place_name"`
 	StartedAt int64    `json:"started_at"`
@@ -100,6 +106,9 @@ type Visit struct {
 type Trip struct {
 	// ID is trip_000001.
 	ID string `json:"id"`
+	// OwnerPrincipalID is principal-store's id of the person who keeps the
+	// record.
+	OwnerPrincipalID string `json:"owner_principal_id"`
 	// Kind is one of GET /vocabularies trip_kinds: a movement a source
 	// recorded, or a journey made of them.
 	Kind string `json:"kind"`
@@ -207,6 +216,9 @@ type ImportCounts struct {
 type Import struct {
 	// ID is import_000001.
 	ID string `json:"id"`
+	// OwnerPrincipalID is principal-store's id of the person who keeps the
+	// record.
+	OwnerPrincipalID string `json:"owner_principal_id"`
 	// Kind is one of GET /vocabularies import_kinds.
 	Kind          string `json:"kind"`
 	Sha256        string `json:"sha256"`
@@ -404,12 +416,15 @@ type AttachChildren struct {
 // Revision is the whole state of a place, visit or trip just before one
 // change: Row is that record as GET answered it then.
 type Revision struct {
-	RevisionID int64  `json:"revision_id"`
-	EntityType string `json:"entity_type"`
-	EntityID   string `json:"entity_id"`
-	Reason     string `json:"reason"`
-	ReplacedAt int64  `json:"replaced_at"`
-	Row        any    `json:"row"`
+	RevisionID int64 `json:"revision_id"`
+	// OwnerPrincipalID is principal-store's id of the person who keeps the
+	// record.
+	OwnerPrincipalID string `json:"owner_principal_id"`
+	EntityType       string `json:"entity_type"`
+	EntityID         string `json:"entity_id"`
+	Reason           string `json:"reason"`
+	ReplacedAt       int64  `json:"replaced_at"`
+	Row              any    `json:"row"`
 }
 
 // Counts is what GET /health counts.
@@ -472,6 +487,9 @@ type LocalityFill struct {
 type HomePeriod struct {
 	// ID is home_period_000001.
 	ID string `json:"id"`
+	// OwnerPrincipalID is principal-store's id of the person who keeps the
+	// record.
+	OwnerPrincipalID string `json:"owner_principal_id"`
 	// PlaceID is the home place; null when the nights there named no place.
 	PlaceID   *string   `json:"place_id"`
 	PlaceName string    `json:"place_name"`
@@ -573,6 +591,9 @@ type JourneySummary struct {
 type CalendarEventLink struct {
 	// ID is calendar_event_link_000001.
 	ID string `json:"id"`
+	// OwnerPrincipalID is principal-store's id of the person who keeps the
+	// record.
+	OwnerPrincipalID string `json:"owner_principal_id"`
 	// CalendarID and EventID are Google Calendar's ids for the event: what
 	// the link is found again by.
 	CalendarID string `json:"calendar_id"`
@@ -715,6 +736,9 @@ type CalendarMatching struct {
 type CalendarSeriesPlace struct {
 	// ID is calendar_series_place_000001.
 	ID string `json:"id"`
+	// OwnerPrincipalID is principal-store's id of the person who keeps the
+	// record.
+	OwnerPrincipalID string `json:"owner_principal_id"`
 	// CalendarID and RecurringEventID are Google's ids for the series: what
 	// the row is found again by.
 	CalendarID       string `json:"calendar_id"`
@@ -874,8 +898,11 @@ type PlaceSuggestionEvidence struct {
 // person or agent accepts it.
 type PlaceSuggestion struct {
 	// ID is place_suggestion_000001.
-	ID      string `json:"id"`
-	PlaceID string `json:"place_id"`
+	ID string `json:"id"`
+	// OwnerPrincipalID is principal-store's id of the person who keeps the
+	// record.
+	OwnerPrincipalID string `json:"owner_principal_id"`
+	PlaceID          string `json:"place_id"`
 	// Source is one of GET /vocabularies place_suggestion_sources; SourceRef
 	// is the OpenStreetMap id it came from (node/123), or for a calendar
 	// address, calendar:<the address's OpenStreetMap id>.

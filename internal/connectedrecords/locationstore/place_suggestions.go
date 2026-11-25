@@ -1,6 +1,7 @@
 package locationstore
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 )
 
 // Place name suggestions. location-suggest-place-names reads OpenStreetMap
@@ -100,9 +103,9 @@ func visitPattern(place *Place, visits []Visit) (PlaceVisitPattern, error) {
 	return pattern, nil
 }
 
-// visitsByPlace is every live visit, by the place it names.
-func (s *Store) visitsByPlace() (map[string][]Visit, error) {
-	visits, err := s.listVisitsUncapped(VisitFilter{TimeFilter: TimeFilter{Limit: math.MaxInt32}})
+// visitsByPlace is every live visit in scope, by the place it names.
+func (s *Store) visitsByPlace(ctx context.Context, scope ownership.Scope) (map[string][]Visit, error) {
+	visits, err := s.listVisitsUncapped(ctx, scope, VisitFilter{TimeFilter: TimeFilter{Limit: math.MaxInt32}})
 	if err != nil {
 		return nil, err
 	}
@@ -116,15 +119,15 @@ func (s *Store) visitsByPlace() (map[string][]Visit, error) {
 }
 
 // homePlaceIDs is every place of kind home and every place a home period
-// names.
-func (s *Store) homePlaceIDs(places []Place) (map[string]bool, error) {
+// names, in scope.
+func (s *Store) homePlaceIDs(ctx context.Context, scope ownership.Scope, places []Place) (map[string]bool, error) {
 	homes := map[string]bool{}
 	for _, place := range places {
 		if place.Kind == PlaceKindHome {
 			homes[place.ID] = true
 		}
 	}
-	periods, err := s.ListHomePeriods(false)
+	periods, err := s.ListHomePeriods(ctx, scope, false)
 	if err != nil {
 		return nil, err
 	}
@@ -138,17 +141,18 @@ func (s *Store) homePlaceIDs(places []Place) (map[string]bool, error) {
 
 // ListUnnamedPlaces answers GET /unnamed-places: every live place with no
 // name that the user has visited, home left out, most days visited first,
-// then most hours.
-func (s *Store) ListUnnamedPlaces(limit, offset int) ([]UnnamedPlace, error) {
-	places, err := s.listPlacesUncapped()
+// then most hours. It reads in scope: an administrator reading every owner
+// sees each owner's places, ranked together.
+func (s *Store) ListUnnamedPlaces(ctx context.Context, scope ownership.Scope, limit, offset int) ([]UnnamedPlace, error) {
+	places, err := s.listPlacesUncapped(ctx, scope)
 	if err != nil {
 		return nil, err
 	}
-	homes, err := s.homePlaceIDs(places)
+	homes, err := s.homePlaceIDs(ctx, scope, places)
 	if err != nil {
 		return nil, err
 	}
-	byPlace, err := s.visitsByPlace()
+	byPlace, err := s.visitsByPlace(ctx, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -194,7 +198,7 @@ func featureType(feature OSMFeature) string {
 func suggestionsFound(place *Place, evidence PlaceSuggestionEvidence, proposedBy string) []PlaceSuggestion {
 	var found []PlaceSuggestion
 	suggest := func(source, ref, name, address, kind string, distance float64, reason string) {
-		found = append(found, PlaceSuggestion{PlaceID: place.ID, Source: source, SourceRef: ref, Name: name, Address: address, Kind: kind,
+		found = append(found, PlaceSuggestion{OwnerPrincipalID: place.OwnerPrincipalID, PlaceID: place.ID, Source: source, SourceRef: ref, Name: name, Address: address, Kind: kind,
 			DistanceMeters: math.Round(distance), Reason: reason, Evidence: evidence, Status: PlaceSuggestionProposed, ProposedBy: proposedBy})
 	}
 	addressFor := func(own string) string {
@@ -262,13 +266,13 @@ func suggestionsFound(place *Place, evidence PlaceSuggestionEvidence, proposedBy
 
 // ---- storage ----
 
-const suggestionColumns = `id, place_id, source, source_ref, name, address, kind, distance_meters, reason, evidence, status, proposed_by,
+const suggestionColumns = `id, owner_principal_id, place_id, source, source_ref, name, address, kind, distance_meters, reason, evidence, status, proposed_by,
 	decided_by, decided_at, decision_note, created_at, updated_at, deleted_at`
 
 func scanSuggestion(scan func(...any) error) (*PlaceSuggestion, error) {
 	var suggestion PlaceSuggestion
 	var evidence string
-	if err := scan(&suggestion.ID, &suggestion.PlaceID, &suggestion.Source, &suggestion.SourceRef, &suggestion.Name, &suggestion.Address,
+	if err := scan(&suggestion.ID, &suggestion.OwnerPrincipalID, &suggestion.PlaceID, &suggestion.Source, &suggestion.SourceRef, &suggestion.Name, &suggestion.Address,
 		&suggestion.Kind, &suggestion.DistanceMeters, &suggestion.Reason, &evidence, &suggestion.Status, &suggestion.ProposedBy,
 		&suggestion.DecidedBy, &suggestion.DecidedAt, &suggestion.DecisionNote, &suggestion.CreatedAt, &suggestion.UpdatedAt,
 		&suggestion.DeletedAt); err != nil {
@@ -280,8 +284,8 @@ func scanSuggestion(scan func(...any) error) (*PlaceSuggestion, error) {
 	return &suggestion, nil
 }
 
-func querySuggestions(q queryer, query string, args ...any) ([]PlaceSuggestion, error) {
-	rows, err := q.Query(query, args...)
+func querySuggestions(ctx context.Context, q queryer, query string, args ...any) ([]PlaceSuggestion, error) {
+	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -297,17 +301,22 @@ func querySuggestions(q queryer, query string, args ...any) ([]PlaceSuggestion, 
 	return found, rows.Err()
 }
 
-func getSuggestionRow(q queryer, id string) (*PlaceSuggestion, error) {
-	suggestion, err := scanSuggestion(q.QueryRow(`SELECT `+suggestionColumns+` FROM place_suggestions WHERE id = ?`, id).Scan)
+func getSuggestionRow(ctx context.Context, q queryer, scope ownership.Scope, id string) (*PlaceSuggestion, error) {
+	if err := checkScope(scope); err != nil {
+		return nil, err
+	}
+	var args arguments
+	suggestion, err := scanSuggestion(q.QueryRowContext(ctx, `SELECT `+suggestionColumns+` FROM place_suggestions WHERE id = `+args.add(id)+
+		` AND `+args.within(scope, "owner_principal_id"), args.values...).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("%w: no place suggestion %s", ErrNotFound, id)
 	}
 	return suggestion, err
 }
 
-// GetPlaceSuggestion reads one suggestion, deleted or not.
-func (s *Store) GetPlaceSuggestion(id string) (*PlaceSuggestion, error) {
-	return getSuggestionRow(s.db, id)
+// GetPlaceSuggestion reads one suggestion in scope, deleted or not.
+func (s *Store) GetPlaceSuggestion(ctx context.Context, scope ownership.Scope, id string) (*PlaceSuggestion, error) {
+	return getSuggestionRow(ctx, s.db, scope, id)
 }
 
 // PlaceSuggestionFilter selects suggestions for GET /place-suggestions.
@@ -319,34 +328,35 @@ type PlaceSuggestionFilter struct {
 	Limit, Offset  int
 }
 
-// ListPlaceSuggestions answers GET /place-suggestions, oldest first.
-func (s *Store) ListPlaceSuggestions(filter PlaceSuggestionFilter) ([]PlaceSuggestion, error) {
-	where, args := []string{}, []any{}
+// ListPlaceSuggestions answers GET /place-suggestions, oldest first: the
+// suggestions in scope.
+func (s *Store) ListPlaceSuggestions(ctx context.Context, scope ownership.Scope, filter PlaceSuggestionFilter) ([]PlaceSuggestion, error) {
+	if err := checkScope(scope); err != nil {
+		return nil, err
+	}
+	var args arguments
+	where := []string{args.within(scope, "owner_principal_id")}
 	if !filter.IncludeDeleted {
 		where = append(where, "deleted_at = 0")
 	}
 	if filter.PlaceID != "" {
-		where, args = append(where, "place_id = ?"), append(args, filter.PlaceID)
+		where = append(where, "place_id = "+args.add(filter.PlaceID))
 	}
 	if filter.Status != "" {
 		if !knownWord(PlaceSuggestionStatuses, filter.Status) {
 			return nil, fmt.Errorf("%w: unknown status %q: use one of %s", ErrInvalid, filter.Status, strings.Join(PlaceSuggestionStatuses, ", "))
 		}
-		where, args = append(where, "status = ?"), append(args, filter.Status)
+		where = append(where, "status = "+args.add(filter.Status))
 	}
 	if filter.Source != "" {
 		if !knownWord(PlaceSuggestionSources, filter.Source) {
 			return nil, fmt.Errorf("%w: unknown source %q: use one of %s", ErrInvalid, filter.Source, strings.Join(PlaceSuggestionSources, ", "))
 		}
-		where, args = append(where, "source = ?"), append(args, filter.Source)
+		where = append(where, "source = "+args.add(filter.Source))
 	}
-	query := `SELECT ` + suggestionColumns + ` FROM place_suggestions`
-	if len(where) > 0 {
-		query += " WHERE " + strings.Join(where, " AND ")
-	}
-	query += ` ORDER BY seq LIMIT ? OFFSET ?`
-	args = append(args, clampLimit(filter.Limit, defaultLimit, maximumLimit), max(filter.Offset, 0))
-	return querySuggestions(s.db, query, args...)
+	query := `SELECT ` + suggestionColumns + ` FROM place_suggestions WHERE ` + strings.Join(where, " AND ") + ` ORDER BY seq LIMIT ` +
+		args.add(clampLimit(filter.Limit, defaultLimit, maximumLimit)) + ` OFFSET ` + args.add(max(filter.Offset, 0))
+	return querySuggestions(ctx, s.db, query, args.values...)
 }
 
 func encodeEvidence(evidence PlaceSuggestionEvidence) (string, error) {
@@ -366,12 +376,17 @@ func sameSuggestion(stored, found PlaceSuggestion) bool {
 // settles them against earlier runs': new ones made, changed ones rewritten,
 // proposed ones no longer found deleted. One accepted or rejected is never
 // changed. Proposed suggestions for a place that has since been named, by
-// any means, are deleted too.
-func (s *Store) ProposePlaceSuggestions(request PlaceSuggestionProposals) (*PlaceSuggesting, error) {
+// any means, are deleted too. It reads and writes owner's records only: a
+// place sent that owner does not keep is a 400, as a missing one.
+func (s *Store) ProposePlaceSuggestions(ctx context.Context, owner string, request PlaceSuggestionProposals) (*PlaceSuggesting, error) {
 	if strings.TrimSpace(request.ProposedBy) == "" {
 		return nil, fmt.Errorf("%w: proposed_by is required: who found these", ErrInvalid)
 	}
-	byPlace, err := s.visitsByPlace()
+	if err := checkOwner(owner); err != nil {
+		return nil, err
+	}
+	owned := ownership.OwnedBy(owner)
+	byPlace, err := s.visitsByPlace(ctx, owned)
 	if err != nil {
 		return nil, err
 	}
@@ -381,7 +396,7 @@ func (s *Store) ProposePlaceSuggestions(request PlaceSuggestionProposals) (*Plac
 		days     int
 	}
 	var all []ranked
-	err = s.inTransaction(func(tx *sql.Tx) error {
+	err = s.inOwnerTransaction(ctx, owner, func(tx *sql.Tx) error {
 		at := now()
 		seen := map[string]bool{}
 		for _, sent := range request.Places {
@@ -389,7 +404,7 @@ func (s *Store) ProposePlaceSuggestions(request PlaceSuggestionProposals) (*Plac
 				return fmt.Errorf("%w: place %s is sent twice", ErrInvalid, sent.PlaceID)
 			}
 			seen[sent.PlaceID] = true
-			place, err := getPlaceRow(tx, sent.PlaceID)
+			place, err := getPlaceRow(ctx, tx, owned, sent.PlaceID)
 			if errors.Is(err, ErrNotFound) {
 				return fmt.Errorf("%w: %v", ErrInvalid, err)
 			}
@@ -433,7 +448,7 @@ func (s *Store) ProposePlaceSuggestions(request PlaceSuggestionProposals) (*Plac
 				}
 			}
 			found := suggestionsFound(place, evidence, request.ProposedBy)
-			stored, err := querySuggestions(tx, `SELECT `+suggestionColumns+` FROM place_suggestions WHERE place_id = ? ORDER BY seq`, place.ID)
+			stored, err := querySuggestions(ctx, tx, `SELECT `+suggestionColumns+` FROM place_suggestions WHERE place_id = $1 ORDER BY seq`, place.ID)
 			if err != nil {
 				return err
 			}
@@ -450,7 +465,7 @@ func (s *Store) ProposePlaceSuggestions(request PlaceSuggestionProposals) (*Plac
 				case existing == nil:
 					action = suggestionCreate
 					if !request.DryRun {
-						if suggestion.ID, err = insertSuggestion(tx, suggestion, at); err != nil {
+						if suggestion.ID, err = insertSuggestion(ctx, tx, owner, suggestion, at); err != nil {
 							return err
 						}
 						suggestion.CreatedAt, suggestion.UpdatedAt = at, at
@@ -463,7 +478,7 @@ func (s *Store) ProposePlaceSuggestions(request PlaceSuggestionProposals) (*Plac
 					action = suggestionUpdate
 					suggestion.ID, suggestion.CreatedAt, suggestion.UpdatedAt = existing.ID, existing.CreatedAt, at
 					if !request.DryRun {
-						if err := updateSuggestion(tx, suggestion, at); err != nil {
+						if err := updateSuggestion(ctx, tx, suggestion, at); err != nil {
 							return err
 						}
 					}
@@ -482,7 +497,7 @@ func (s *Store) ProposePlaceSuggestions(request PlaceSuggestionProposals) (*Plac
 				}
 				answer.Actions[suggestionDelete]++
 				if !request.DryRun {
-					if _, err := tx.Exec(`UPDATE place_suggestions SET deleted_at = ?, updated_at = ? WHERE id = ?`, at, at, existing.ID); err != nil {
+					if _, err := tx.ExecContext(ctx, `UPDATE place_suggestions SET deleted_at = $1, updated_at = $2 WHERE id = $3`, at, at, existing.ID); err != nil {
 						return err
 					}
 				}
@@ -490,15 +505,15 @@ func (s *Store) ProposePlaceSuggestions(request PlaceSuggestionProposals) (*Plac
 			all = append(all, ranked{forPlace: PlaceSuggestionsForPlace{Place: *place, Suggestions: live}, days: pattern.Days})
 		}
 		// Proposed suggestions for a place named since, by anyone, are moot.
-		named, err := querySuggestions(tx, `SELECT `+suggestionColumns+` FROM place_suggestions WHERE status = ? AND deleted_at = 0
-			AND place_id IN (SELECT id FROM places WHERE TRIM(name) != '' OR deleted_at != 0)`, PlaceSuggestionProposed)
+		named, err := querySuggestions(ctx, tx, `SELECT `+suggestionColumns+` FROM place_suggestions WHERE owner_principal_id = $1 AND status = $2 AND deleted_at = 0
+			AND place_id IN (SELECT id FROM places WHERE TRIM(name) <> '' OR deleted_at <> 0) ORDER BY seq`, owner, PlaceSuggestionProposed)
 		if err != nil {
 			return err
 		}
 		for _, suggestion := range named {
 			answer.Actions[suggestionDelete]++
 			if !request.DryRun {
-				if _, err := tx.Exec(`UPDATE place_suggestions SET deleted_at = ?, updated_at = ? WHERE id = ?`, at, at, suggestion.ID); err != nil {
+				if _, err := tx.ExecContext(ctx, `UPDATE place_suggestions SET deleted_at = $1, updated_at = $2 WHERE id = $3`, at, at, suggestion.ID); err != nil {
 					return err
 				}
 			}
@@ -515,8 +530,8 @@ func (s *Store) ProposePlaceSuggestions(request PlaceSuggestionProposals) (*Plac
 	return answer, nil
 }
 
-func insertSuggestion(tx *sql.Tx, suggestion PlaceSuggestion, at int64) (string, error) {
-	id, seq, err := nextID(tx, "place_suggestions", "place_suggestion")
+func insertSuggestion(ctx context.Context, tx *sql.Tx, owner string, suggestion PlaceSuggestion, at int64) (string, error) {
+	id, seq, err := nextID(ctx, tx, "place_suggestions", "place_suggestion")
 	if err != nil {
 		return "", err
 	}
@@ -524,31 +539,32 @@ func insertSuggestion(tx *sql.Tx, suggestion PlaceSuggestion, at int64) (string,
 	if err != nil {
 		return "", err
 	}
-	_, err = tx.Exec(`INSERT INTO place_suggestions (id, seq, place_id, source, source_ref, name, address, kind, distance_meters, reason,
-		evidence, status, proposed_by, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, seq, suggestion.PlaceID,
+	_, err = tx.ExecContext(ctx, `INSERT INTO place_suggestions (id, seq, owner_principal_id, place_id, source, source_ref, name, address, kind, distance_meters,
+		reason, evidence, status, proposed_by, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+		id, seq, owner, suggestion.PlaceID,
 		suggestion.Source, suggestion.SourceRef, suggestion.Name, suggestion.Address, suggestion.Kind, suggestion.DistanceMeters,
 		suggestion.Reason, evidence, PlaceSuggestionProposed, suggestion.ProposedBy, at, at)
 	return id, err
 }
 
-func updateSuggestion(tx *sql.Tx, suggestion PlaceSuggestion, at int64) error {
+func updateSuggestion(ctx context.Context, tx *sql.Tx, suggestion PlaceSuggestion, at int64) error {
 	evidence, err := encodeEvidence(suggestion.Evidence)
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(`UPDATE place_suggestions SET name = ?, address = ?, kind = ?, distance_meters = ?, reason = ?, evidence = ?,
-		proposed_by = ?, updated_at = ?, deleted_at = 0 WHERE id = ?`, suggestion.Name, suggestion.Address, suggestion.Kind,
+	_, err = tx.ExecContext(ctx, `UPDATE place_suggestions SET name = $1, address = $2, kind = $3, distance_meters = $4, reason = $5, evidence = $6,
+		proposed_by = $7, updated_at = $8, deleted_at = 0 WHERE id = $9`, suggestion.Name, suggestion.Address, suggestion.Kind,
 		suggestion.DistanceMeters, suggestion.Reason, evidence, suggestion.ProposedBy, at, suggestion.ID)
 	return err
 }
 
 // ---- deciding ----
 
-func (s *Store) liveProposedSuggestion(tx *sql.Tx, id string, decision PlaceSuggestionDecision) (*PlaceSuggestion, error) {
+func liveProposedSuggestion(ctx context.Context, tx *sql.Tx, owner, id string, decision PlaceSuggestionDecision) (*PlaceSuggestion, error) {
 	if strings.TrimSpace(decision.DecidedBy) == "" {
 		return nil, fmt.Errorf("%w: decided_by is required: who decided, and on what evidence belongs in note", ErrInvalid)
 	}
-	suggestion, err := getSuggestionRow(tx, id)
+	suggestion, err := getSuggestionRow(ctx, tx, ownership.OwnedBy(owner), id)
 	if err != nil {
 		return nil, err
 	}
@@ -561,8 +577,8 @@ func (s *Store) liveProposedSuggestion(tx *sql.Tx, id string, decision PlaceSugg
 	return suggestion, nil
 }
 
-func decideSuggestion(tx *sql.Tx, id, status, decidedBy, note string, at int64) error {
-	_, err := tx.Exec(`UPDATE place_suggestions SET status = ?, decided_by = ?, decided_at = ?, decision_note = ?, updated_at = ? WHERE id = ?`,
+func decideSuggestion(ctx context.Context, tx *sql.Tx, id, status, decidedBy, note string, at int64) error {
+	_, err := tx.ExecContext(ctx, `UPDATE place_suggestions SET status = $1, decided_by = $2, decided_at = $3, decision_note = $4, updated_at = $5 WHERE id = $6`,
 		status, strings.TrimSpace(decidedBy), at, strings.TrimSpace(note), at, id)
 	return err
 }
@@ -571,14 +587,15 @@ func decideSuggestion(tx *sql.Tx, id, status, decidedBy, note string, at int64) 
 // and its address and kind where the place has none (a kind only replaces
 // other), with a description saying where the name came from unless the
 // place has one. A place someone already named is never renamed. The
-// place's other proposed suggestions are rejected, naming this one.
-func (s *Store) AcceptPlaceSuggestion(id string, decision PlaceSuggestionDecision) (*PlaceSuggestion, error) {
-	err := s.inTransaction(func(tx *sql.Tx) error {
-		suggestion, err := s.liveProposedSuggestion(tx, id, decision)
+// place's other proposed suggestions are rejected, naming this one. The
+// suggestion must be in scope; its place is its owner's by the schema.
+func (s *Store) AcceptPlaceSuggestion(ctx context.Context, scope ownership.Scope, id string, decision PlaceSuggestionDecision) (*PlaceSuggestion, error) {
+	err := s.writeOwned(ctx, scope, "place_suggestions", "place suggestion", id, func(tx *sql.Tx, owner string) error {
+		suggestion, err := liveProposedSuggestion(ctx, tx, owner, id, decision)
 		if err != nil {
 			return err
 		}
-		place, err := getPlaceRow(tx, suggestion.PlaceID)
+		place, err := getPlaceRow(ctx, tx, ownership.OwnedBy(owner), suggestion.PlaceID)
 		if err != nil {
 			return err
 		}
@@ -597,7 +614,7 @@ func (s *Store) AcceptPlaceSuggestion(id string, decision PlaceSuggestionDecisio
 			return fmt.Errorf("%w: kind %q: use one of %s", ErrInvalid, kind, strings.Join(PlaceKinds, ", "))
 		}
 		at := now()
-		if err := snapshot(tx, EntityPlace, place.ID, "suggestion", at); err != nil {
+		if err := snapshot(ctx, tx, EntityPlace, place.ID, "suggestion", at); err != nil {
 			return err
 		}
 		place.Name = name
@@ -617,7 +634,7 @@ func (s *Store) AcceptPlaceSuggestion(id string, decision PlaceSuggestionDecisio
 		if err := validatePlace(place); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(`UPDATE places SET name = ?, address = ?, kind = ?, description = ?, described_by = ?, updated_at = ? WHERE id = ?`,
+		if _, err := tx.ExecContext(ctx, `UPDATE places SET name = $1, address = $2, kind = $3, description = $4, described_by = $5, updated_at = $6 WHERE id = $7`,
 			place.Name, place.Address, place.Kind, place.Description, place.DescribedBy, at, place.ID); err != nil {
 			return err
 		}
@@ -625,33 +642,33 @@ func (s *Store) AcceptPlaceSuggestion(id string, decision PlaceSuggestionDecisio
 		if name != suggestion.Name {
 			note = strings.TrimSpace(fmt.Sprintf("named %q. %s", name, note))
 		}
-		if err := decideSuggestion(tx, id, PlaceSuggestionAccepted, decision.DecidedBy, note, at); err != nil {
+		if err := decideSuggestion(ctx, tx, id, PlaceSuggestionAccepted, decision.DecidedBy, note, at); err != nil {
 			return err
 		}
-		_, err = tx.Exec(`UPDATE place_suggestions SET status = ?, decided_by = ?, decided_at = ?, decision_note = ?, updated_at = ?
-			WHERE place_id = ? AND id != ? AND status = ? AND deleted_at = 0`, PlaceSuggestionRejected, strings.TrimSpace(decision.DecidedBy), at,
+		_, err = tx.ExecContext(ctx, `UPDATE place_suggestions SET status = $1, decided_by = $2, decided_at = $3, decision_note = $4, updated_at = $5
+			WHERE place_id = $6 AND id <> $7 AND status = $8 AND deleted_at = 0`, PlaceSuggestionRejected, strings.TrimSpace(decision.DecidedBy), at,
 			id+" was accepted for this place", at, place.ID, id, PlaceSuggestionProposed)
 		return err
 	})
 	if err != nil {
 		return nil, err
 	}
-	return s.GetPlaceSuggestion(id)
+	return s.GetPlaceSuggestion(ctx, scope, id)
 }
 
-// RejectPlaceSuggestion records that the suggestion is wrong; no run
+// RejectPlaceSuggestion records that a suggestion in scope is wrong; no run
 // proposes it again.
-func (s *Store) RejectPlaceSuggestion(id string, decision PlaceSuggestionDecision) (*PlaceSuggestion, error) {
-	err := s.inTransaction(func(tx *sql.Tx) error {
-		if _, err := s.liveProposedSuggestion(tx, id, decision); err != nil {
+func (s *Store) RejectPlaceSuggestion(ctx context.Context, scope ownership.Scope, id string, decision PlaceSuggestionDecision) (*PlaceSuggestion, error) {
+	err := s.writeOwned(ctx, scope, "place_suggestions", "place suggestion", id, func(tx *sql.Tx, owner string) error {
+		if _, err := liveProposedSuggestion(ctx, tx, owner, id, decision); err != nil {
 			return err
 		}
-		return decideSuggestion(tx, id, PlaceSuggestionRejected, decision.DecidedBy, decision.Note, now())
+		return decideSuggestion(ctx, tx, id, PlaceSuggestionRejected, decision.DecidedBy, decision.Note, now())
 	})
 	if err != nil {
 		return nil, err
 	}
-	return s.GetPlaceSuggestion(id)
+	return s.GetPlaceSuggestion(ctx, scope, id)
 }
 
 func firstNonBlank(values ...string) string {

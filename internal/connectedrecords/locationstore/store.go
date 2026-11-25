@@ -3,169 +3,203 @@
 // imports that brought them in.
 //
 // Places, visits and trips are cited elsewhere by their ids (place_000001,
-// visit_000001, trip_000001), which kanban-store's registry claims, so a
-// journal timeline or a note can link one as a chip.
+// visit_000001, trip_000001), which reference-store's list of types claims,
+// so a journal timeline or a note can link one as a chip.
+//
+// The records live in Postgres, in the schema of Module, through
+// postgresstorage. The server provisions, migrates and opens the module, then
+// hands the pool to New. Every record carries the principal who keeps it
+// (owner_principal_id), and every call reaches only the records of the scope
+// it is given (connectedrecords/ownership).
 package locationstore
 
 import (
+	"context"
 	"database/sql"
+	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locationstore/internal/geonames"
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
+	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 )
 
 var (
+	// ErrNotFound is a 404: no such record, or one outside the caller's reach.
 	ErrNotFound = errors.New("not found")
-	ErrInvalid  = errors.New("invalid")
+	// ErrInvalid is a 400: the caller sent something this store refuses.
+	ErrInvalid = errors.New("invalid")
+	// ErrConflict is a 409: the write contradicts a record that exists.
 	ErrConflict = errors.New("conflict")
 )
 
-// Store owns the database.
-type Store struct {
-	db      *sql.DB
-	dataDir string
-	// writeMutex serializes every write; the next id is MAX(seq)+1 read inside
-	// the write's transaction.
-	writeMutex sync.Mutex
-	// towns is the GeoNames index, read from <data dir>/geonames the first
-	// time something needs a town named.
-	townsMutex sync.Mutex
-	towns      *geonames.Index
-}
+//go:embed migrations/*.sql
+var migrationFiles embed.FS
 
-// Open creates the data directory (0700) if needed, opens the database and
-// applies the schema.
-func Open(dataDir string) (*Store, error) {
-	if dataDir == "" {
-		return nil, errors.New("open store: no data directory given")
-	}
-	if err := os.MkdirAll(dataDir, 0o700); err != nil {
-		return nil, fmt.Errorf("create data dir: %w", err)
-	}
-	if err := os.Chmod(dataDir, 0o700); err != nil {
-		return nil, err
-	}
-	dbPath := filepath.Join(dataDir, "location-store.db")
-	db, err := sql.Open("sqlite3", dbPath+"?_foreign_keys=on&_busy_timeout=5000")
+// Module is the Postgres schema and role the store keeps its records in, with
+// the migrations that build them.
+func Module() (postgresstorage.Module, error) {
+	migrations, err := postgresstorage.MigrationsFromFiles(migrationFiles, "migrations")
 	if err != nil {
-		return nil, fmt.Errorf("open db: %w", err)
+		return postgresstorage.Module{}, err
 	}
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("set WAL: %w", err)
-	}
-	if _, err := db.Exec(schemaSQL); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("migrate: %w", err)
-	}
-	if err := addColumns(db); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("migrate: %w", err)
-	}
-	if err := os.Chmod(dbPath, 0o600); err != nil {
-		db.Close()
-		return nil, err
-	}
-	return &Store{db: db, dataDir: dataDir}, nil
+	return postgresstorage.Module{Schema: "locations", Role: "locations_module", Migrations: migrations}, nil
 }
 
-// addedColumns are the columns added after a table was first made, in order.
-// Each runs once, when the table lacks it; then statements follow it, once.
-var addedColumns = []struct {
-	table, column, definition string
-	then                      []string
-}{
-	{"places", "locality", "TEXT", nil},
-	{"visits", "locality", "TEXT", nil},
-	{"trips", "start_locality", "TEXT", nil},
-	{"trips", "end_locality", "TEXT", nil},
-	{"trips", "kind", "TEXT NOT NULL DEFAULT 'movement'", []string{
-		// Every trip made by hand before trips had a kind was a road trip or
-		// holiday to attach drives to.
-		`UPDATE trips SET kind = 'journey' WHERE source = 'manual'`,
-		`CREATE INDEX IF NOT EXISTS idx_trips_kind ON trips(kind, deleted_at, started_at)`,
-	}},
-	{"trips", "title_by", "TEXT NOT NULL DEFAULT ''", []string{`UPDATE trips SET title_by = 'hand' WHERE title != ''`}},
-	{"visits", "superseded_by_import_id", "TEXT REFERENCES imports(id)", nil},
-	{"trips", "superseded_by_import_id", "TEXT REFERENCES imports(id)", nil},
-	{"imports", "snapshot", "TEXT", nil},
-	{"imports", "snapshot_changes", "TEXT", nil},
-	{"trips", "parent_set_by", "TEXT NOT NULL DEFAULT ''", []string{`UPDATE trips SET parent_set_by = 'hand' WHERE parent_trip_id IS NOT NULL`}},
-	{"imports", "recorded_by", "TEXT NOT NULL DEFAULT ''", nil},
-	{"places", "merged_into_place_id", "TEXT REFERENCES places(id)", nil},
+// Store keeps the records in the module's pool.
+type Store struct {
+	db *sql.DB
+	// geonamesDirectory holds GeoNames' town dump, which names localities and
+	// matches calendar locations. It is read the first time something needs
+	// a town named; a directory with no dump makes those calls a conflict.
+	geonamesDirectory string
+	townsMutex        sync.Mutex
+	towns             *geonames.Index
 }
 
-func addColumns(db *sql.DB) error {
-	for _, added := range addedColumns {
-		var present int
-		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, added.table, added.column).Scan(&present); err != nil {
-			return err
-		}
-		if present > 0 {
-			continue
-		}
-		tx, err := db.Begin()
-		if err != nil {
-			return err
-		}
-		statements := append([]string{`ALTER TABLE ` + added.table + ` ADD COLUMN ` + added.column + ` ` + added.definition}, added.then...)
-		for _, statement := range statements {
-			if _, err := tx.Exec(statement); err != nil {
-				tx.Rollback()
-				return fmt.Errorf("%s.%s: %w", added.table, added.column, err)
-			}
-		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
+// New is the store on db, the module's pool from postgresstorage.Open.
+// geonamesDirectory is where location-name-localities downloads the GeoNames
+// files.
+func New(db *sql.DB, geonamesDirectory string) *Store {
+	return &Store{db: db, geonamesDirectory: geonamesDirectory}
+}
+
+func now() int64 { return time.Now().Unix() }
+
+// queryer is what both *sql.DB and *sql.Tx offer.
+type queryer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// arguments numbers the placeholders of one statement as they are added.
+type arguments struct{ values []any }
+
+func (a *arguments) add(value any) string {
+	a.values = append(a.values, value)
+	return "$" + strconv.Itoa(len(a.values))
+}
+
+// within is the condition that column is in scope, numbered after the
+// arguments added so far.
+func (a *arguments) within(scope ownership.Scope, column string) string {
+	condition, values := scope.Condition(column, len(a.values)+1)
+	a.values = append(a.values, values...)
+	return condition
+}
+
+// checkScope refuses the zero scope, which reaches nothing: a caller that
+// never set one has a bug, and must not be read as "everyone".
+func checkScope(scope ownership.Scope) error {
+	if err := scope.Check(); err != nil {
+		return fmt.Errorf("locationstore: %w", err)
 	}
 	return nil
 }
 
-// Close releases the database handle.
-func (s *Store) Close() error { return s.db.Close() }
-
-// DataDir is the directory the database lives in.
-func (s *Store) DataDir() string { return s.dataDir }
-
-func now() int64 { return time.Now().Unix() }
-
-type queryer interface {
-	Exec(query string, args ...any) (sql.Result, error)
-	Query(query string, args ...any) (*sql.Rows, error)
-	QueryRow(query string, args ...any) *sql.Row
+// checkOwner refuses an owner that is not a principal id.
+func checkOwner(ownerPrincipalID string) error {
+	if err := ownership.CheckPrincipalID("owner_principal_id", ownerPrincipalID); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
+	return nil
 }
 
-func (s *Store) inTransaction(work func(tx *sql.Tx) error) error {
-	s.writeMutex.Lock()
-	defer s.writeMutex.Unlock()
-	tx, err := s.db.Begin()
+// inOwnerTransaction runs work in one transaction holding owner's lock. The
+// SQLite store serialized every write; this serializes the writes of one
+// owner, which is all a write may touch, so an import batch, a segmenting run
+// and a hand edit that read before they write never act on the same state at
+// once. An error work returns rolls everything back and comes back unchanged.
+func (s *Store) inOwnerTransaction(ctx context.Context, owner string, work func(tx *sql.Tx) error) error {
+	if err := checkOwner(owner); err != nil {
+		return err
+	}
+	return postgresstorage.InTransaction(ctx, s.db, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "locationstore.owner."+owner); err != nil {
+			return fmt.Errorf("locking the records of %s: %w", owner, err)
+		}
+		return work(tx)
+	})
+}
+
+// isUniqueViolation reports a write a uniqueness rule refused.
+func isUniqueViolation(err error) bool {
+	var postgresError *pgconn.PgError
+	return errors.As(err, &postgresError) && postgresError.Code == "23505"
+}
+
+// nextID takes the next number of a table's identity column and writes its
+// id: prefix_000001. The table name is always one of this package's
+// constants. A number taken by a transaction that rolls back is never handed
+// out again.
+func nextID(ctx context.Context, tx *sql.Tx, table, prefix string) (string, int64, error) {
+	var seq int64
+	if err := tx.QueryRowContext(ctx, `SELECT nextval(pg_get_serial_sequence($1, 'seq'))`, table).Scan(&seq); err != nil {
+		return "", 0, fmt.Errorf("numbering a new row of %s: %w", table, err)
+	}
+	return postgresstorage.FormatRecordID(prefix, seq), seq, nil
+}
+
+// ownerOfRecord is the owner of the record id of table, when it is in scope;
+// ErrNotFound otherwise, as for a missing one. The table name is always one
+// of this package's constants.
+func ownerOfRecord(ctx context.Context, q queryer, scope ownership.Scope, table, label, id string) (string, error) {
+	if err := checkScope(scope); err != nil {
+		return "", err
+	}
+	var args arguments
+	var owner string
+	err := q.QueryRowContext(ctx, `SELECT owner_principal_id FROM `+table+` WHERE id = `+args.add(id)+` AND `+args.within(scope, "owner_principal_id"),
+		args.values...).Scan(&owner)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("%w: no %s %s", ErrNotFound, label, id)
+	}
+	return owner, err
+}
+
+// requireOwner refuses a record a write names when it is not owner's. One
+// outside the caller's scope answers as a missing one does: missing (the
+// error the write gives a record that does not exist), with field naming
+// where the write named it. One the caller can reach but another owner keeps
+// (an administrator naming two owners' records) is a 400.
+func requireOwner(ctx context.Context, q queryer, scope ownership.Scope, owner, table, label, id string, missing error, field string) error {
+	found, err := ownerOfRecord(ctx, q, scope, table, label, id)
+	if errors.Is(err, ErrNotFound) {
+		if field != "" {
+			return fmt.Errorf("%w: %s: %v", missing, field, err)
+		}
+		if missing == ErrNotFound {
+			return err
+		}
+		return fmt.Errorf("%w: %v", missing, err)
+	}
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
-	if err := work(tx); err != nil {
-		return err
+	if found != owner {
+		return fmt.Errorf("%w: %s %s belongs to %s and the record it would join belongs to %s; records of two owners are never joined", ErrInvalid, label, id, found, owner)
 	}
-	return tx.Commit()
+	return nil
 }
 
-// nextID mints the next id of a table: prefix_000001.
-func nextID(tx *sql.Tx, table, prefix string) (string, int64, error) {
-	var maxSeq sql.NullInt64
-	if err := tx.QueryRow(`SELECT MAX(seq) FROM ` + table).Scan(&maxSeq); err != nil {
-		return "", 0, err
+// writeOwned finds the owner of record id of table in scope (404 outside
+// it), then runs work in a transaction holding that owner's lock. A record's
+// owner never changes, so finding it first is safe.
+func (s *Store) writeOwned(ctx context.Context, scope ownership.Scope, table, label, id string, work func(tx *sql.Tx, owner string) error) error {
+	owner, err := ownerOfRecord(ctx, s.db, scope, table, label, id)
+	if err != nil {
+		return err
 	}
-	seq := maxSeq.Int64 + 1
-	return fmt.Sprintf("%s_%06d", prefix, seq), seq, nil
+	return s.inOwnerTransaction(ctx, owner, func(tx *sql.Tx) error { return work(tx, owner) })
 }
 
 func encodeStrings(values []string) string {
@@ -281,30 +315,43 @@ const (
 	EntityTrip  = "trip"
 )
 
+// entityTables is the table of each entity type.
+var entityTables = map[string]string{EntityPlace: "places", EntityVisit: "visits", EntityTrip: "trips"}
+
 // snapshot copies the whole current record into revisions before a change, in
-// the change's own transaction.
-func snapshot(tx *sql.Tx, entityType, id, reason string, at int64) error {
+// the change's own transaction. The revision takes the record's owner. The
+// caller has already found the record in its scope.
+func snapshot(ctx context.Context, tx *sql.Tx, entityType, id, reason string, at int64) error {
 	var row any
-	var err error
+	var owner string
 	switch entityType {
 	case EntityPlace:
-		row, err = getPlaceRow(tx, id)
+		place, err := getPlaceRow(ctx, tx, ownership.EveryOwner(), id)
+		if err != nil {
+			return err
+		}
+		row, owner = place, place.OwnerPrincipalID
 	case EntityVisit:
-		row, err = getVisitRow(tx, id)
+		visit, err := getVisitRow(ctx, tx, ownership.EveryOwner(), id)
+		if err != nil {
+			return err
+		}
+		row, owner = visit, visit.OwnerPrincipalID
 	case EntityTrip:
-		row, err = getTripRow(tx, id)
+		trip, err := getTripRow(ctx, tx, ownership.EveryOwner(), id)
+		if err != nil {
+			return err
+		}
+		row, owner = trip, trip.OwnerPrincipalID
 	default:
 		return fmt.Errorf("snapshot of unknown entity type %q", entityType)
-	}
-	if err != nil {
-		return err
 	}
 	encoded, err := json.Marshal(row)
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(`INSERT INTO revisions (entity_type, entity_id, reason, replaced_at, row_json) VALUES (?,?,?,?,?)`,
-		entityType, id, reason, at, string(encoded))
+	_, err = tx.ExecContext(ctx, `INSERT INTO revisions (owner_principal_id, entity_type, entity_id, reason, replaced_at, row_json) VALUES ($1, $2, $3, $4, $5, $6)`,
+		owner, entityType, id, reason, at, string(encoded))
 	return err
 }
 
@@ -321,21 +368,16 @@ func clampLimit(limit, fallbackDefault, maximum int) int {
 }
 
 // Revisions is a place's, visit's or trip's history, newest first.
-func (s *Store) Revisions(entityType, id string, limit, offset int) ([]Revision, error) {
-	var err error
-	switch entityType {
-	case EntityPlace:
-		_, err = getPlaceRow(s.db, id)
-	case EntityVisit:
-		_, err = getVisitRow(s.db, id)
-	case EntityTrip:
-		_, err = getTripRow(s.db, id)
+func (s *Store) Revisions(ctx context.Context, scope ownership.Scope, entityType, id string, limit, offset int) ([]Revision, error) {
+	table, known := entityTables[entityType]
+	if !known {
+		return nil, fmt.Errorf("revisions of unknown entity type %q", entityType)
 	}
-	if err != nil {
+	if _, err := ownerOfRecord(ctx, s.db, scope, table, entityType, id); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.Query(`SELECT revision_id, entity_type, entity_id, reason, replaced_at, row_json FROM revisions
-		WHERE entity_id = ? ORDER BY revision_id DESC LIMIT ? OFFSET ?`, id, clampLimit(limit, defaultLimit, maximumLimit), max(offset, 0))
+	rows, err := s.db.QueryContext(ctx, `SELECT revision_id, owner_principal_id, entity_type, entity_id, reason, replaced_at, row_json FROM revisions
+		WHERE entity_id = $1 ORDER BY revision_id DESC LIMIT $2 OFFSET $3`, id, clampLimit(limit, defaultLimit, maximumLimit), max(offset, 0))
 	if err != nil {
 		return nil, err
 	}
@@ -344,7 +386,7 @@ func (s *Store) Revisions(entityType, id string, limit, offset int) ([]Revision,
 	for rows.Next() {
 		var revision Revision
 		var row string
-		if err := rows.Scan(&revision.RevisionID, &revision.EntityType, &revision.EntityID, &revision.Reason, &revision.ReplacedAt, &row); err != nil {
+		if err := rows.Scan(&revision.RevisionID, &revision.OwnerPrincipalID, &revision.EntityType, &revision.EntityID, &revision.Reason, &revision.ReplacedAt, &row); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(row), &revision.Row); err != nil {
@@ -355,24 +397,32 @@ func (s *Store) Revisions(entityType, id string, limit, offset int) ([]Revision,
 	return revisions, rows.Err()
 }
 
-// Counts reports what GET /health shows.
-func (s *Store) Counts() (Counts, error) {
+// Counts reports what GET /health shows, within scope.
+func (s *Store) Counts(ctx context.Context, scope ownership.Scope) (Counts, error) {
 	var counts Counts
-	err := s.db.QueryRow(`SELECT
-		(SELECT COUNT(*) FROM places WHERE deleted_at = 0),
-		(SELECT COUNT(*) FROM visits WHERE deleted_at = 0),
-		(SELECT COUNT(*) FROM trips WHERE deleted_at = 0),
-		(SELECT COUNT(*) FROM points),
-		(SELECT COUNT(*) FROM imports),
-		(SELECT COUNT(*) FROM places WHERE deleted_at != 0) + (SELECT COUNT(*) FROM visits WHERE deleted_at != 0) + (SELECT COUNT(*) FROM trips WHERE deleted_at != 0),
-		(SELECT COUNT(*) FROM revisions)`).
+	if err := checkScope(scope); err != nil {
+		return counts, err
+	}
+	condition, values := scope.Condition("owner_principal_id", 1)
+	err := s.db.QueryRowContext(ctx, `SELECT
+		(SELECT COUNT(*) FROM places WHERE deleted_at = 0 AND `+condition+`),
+		(SELECT COUNT(*) FROM visits WHERE deleted_at = 0 AND `+condition+`),
+		(SELECT COUNT(*) FROM trips WHERE deleted_at = 0 AND `+condition+`),
+		(SELECT COUNT(*) FROM points WHERE `+condition+`),
+		(SELECT COUNT(*) FROM imports WHERE `+condition+`),
+		(SELECT COUNT(*) FROM places WHERE deleted_at <> 0 AND `+condition+`) + (SELECT COUNT(*) FROM visits WHERE deleted_at <> 0 AND `+condition+`) +
+			(SELECT COUNT(*) FROM trips WHERE deleted_at <> 0 AND `+condition+`),
+		(SELECT COUNT(*) FROM revisions WHERE `+condition+`)`, values...).
 		Scan(&counts.Places, &counts.Visits, &counts.Trips, &counts.Points, &counts.Imports, &counts.Deleted, &counts.Revisions)
 	return counts, err
 }
 
-// likePattern turns a word into a LIKE pattern that matches it anywhere.
-func likePattern(word string) string {
-	return "%" + strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(word) + "%"
+// containsText is the condition that column holds text anywhere, ignoring
+// the case of ASCII letters only, as SQLite's LIKE did: lower() under the C
+// collation folds A to Z and nothing else. strpos matches the text itself, so
+// % and _ in it are plain characters, as the escaped LIKE pattern made them.
+func containsText(column string, args *arguments, text string) string {
+	return `strpos(lower(` + column + ` COLLATE "C"), lower(` + args.add(text) + `::text COLLATE "C")) > 0`
 }
 
 func encodeLocality(locality *Locality) any {

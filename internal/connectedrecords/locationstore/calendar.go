@@ -1,8 +1,8 @@
 package locationstore
 
 import (
+	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locationstore/internal/geonames"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 )
 
 // Calendar event links tie a Google Calendar event to the visit or trip it
@@ -102,24 +103,22 @@ var (
 
 // ---- storage ----
 
-const calendarLinkColumns = `id, calendar_id, event_id, recurring_event_id, summary, location, started_at, ended_at, all_day,
+const calendarLinkColumns = `id, owner_principal_id, calendar_id, event_id, recurring_event_id, summary, location, started_at, ended_at, all_day,
 	target_type, target_id, rule, confidence, reason, matched_by, created_at, updated_at, deleted_at, deleted_by`
 
 func scanCalendarEventLink(scan func(...any) error) (*CalendarEventLink, error) {
 	var link CalendarEventLink
-	var allDay int
-	err := scan(&link.ID, &link.CalendarID, &link.EventID, &link.RecurringEventID, &link.Summary, &link.Location, &link.StartedAt,
-		&link.EndedAt, &allDay, &link.TargetType, &link.TargetID, &link.Rule, &link.Confidence, &link.Reason, &link.MatchedBy,
+	err := scan(&link.ID, &link.OwnerPrincipalID, &link.CalendarID, &link.EventID, &link.RecurringEventID, &link.Summary, &link.Location, &link.StartedAt,
+		&link.EndedAt, &link.AllDay, &link.TargetType, &link.TargetID, &link.Rule, &link.Confidence, &link.Reason, &link.MatchedBy,
 		&link.CreatedAt, &link.UpdatedAt, &link.DeletedAt, &link.DeletedBy)
 	if err != nil {
 		return nil, err
 	}
-	link.AllDay = allDay != 0
 	return &link, nil
 }
 
-func queryCalendarEventLinks(q queryer, query string, args ...any) ([]CalendarEventLink, error) {
-	rows, err := q.Query(query, args...)
+func queryCalendarEventLinks(ctx context.Context, q queryer, query string, args ...any) ([]CalendarEventLink, error) {
+	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -135,18 +134,23 @@ func queryCalendarEventLinks(q queryer, query string, args ...any) ([]CalendarEv
 	return links, rows.Err()
 }
 
-func getCalendarEventLinkRow(q queryer, id string) (*CalendarEventLink, error) {
-	link, err := scanCalendarEventLink(q.QueryRow(`SELECT `+calendarLinkColumns+` FROM calendar_event_links WHERE id = ?`, id).Scan)
+func getCalendarEventLinkRow(ctx context.Context, q queryer, scope ownership.Scope, id string) (*CalendarEventLink, error) {
+	if err := checkScope(scope); err != nil {
+		return nil, err
+	}
+	var args arguments
+	link, err := scanCalendarEventLink(q.QueryRowContext(ctx, `SELECT `+calendarLinkColumns+` FROM calendar_event_links WHERE id = `+args.add(id)+
+		` AND `+args.within(scope, "owner_principal_id"), args.values...).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("%w: no calendar event link %s", ErrNotFound, id)
 	}
 	return link, err
 }
 
-// GetCalendarEventLink reads one link. A deleted one is not found unless
-// asked for.
-func (s *Store) GetCalendarEventLink(id string, includeDeleted bool) (*CalendarEventLink, error) {
-	link, err := getCalendarEventLinkRow(s.db, id)
+// GetCalendarEventLink reads one link in scope. A deleted one is not found
+// unless asked for.
+func (s *Store) GetCalendarEventLink(ctx context.Context, scope ownership.Scope, id string, includeDeleted bool) (*CalendarEventLink, error) {
+	link, err := getCalendarEventLinkRow(ctx, s.db, scope, id)
 	if err != nil {
 		return nil, err
 	}
@@ -172,87 +176,80 @@ type CalendarEventLinkFilter struct {
 	Limit, Offset  int
 }
 
-// ListCalendarEventLinks answers GET /calendar-event-links. PlaceID selects
-// the links to the place and to every visit at it.
-func (s *Store) ListCalendarEventLinks(filter CalendarEventLinkFilter) ([]CalendarEventLink, error) {
-	where, args := []string{}, []any{}
+// ListCalendarEventLinks answers GET /calendar-event-links: the links in
+// scope. PlaceID selects the links to the place and to every visit at it.
+func (s *Store) ListCalendarEventLinks(ctx context.Context, scope ownership.Scope, filter CalendarEventLinkFilter) ([]CalendarEventLink, error) {
+	if err := checkScope(scope); err != nil {
+		return nil, err
+	}
+	var args arguments
+	where := []string{args.within(scope, "owner_principal_id")}
 	if !filter.IncludeDeleted {
 		where = append(where, "deleted_at = 0")
 	}
 	if filter.From > 0 {
-		where, args = append(where, "ended_at >= ?"), append(args, filter.From)
+		where = append(where, "ended_at >= "+args.add(filter.From))
 	}
 	if filter.To > 0 {
-		where, args = append(where, "started_at < ?"), append(args, filter.To)
+		where = append(where, "started_at < "+args.add(filter.To))
 	}
 	if filter.VisitID != "" {
-		where, args = append(where, "target_type = 'visit' AND target_id = ?"), append(args, filter.VisitID)
+		where = append(where, "target_type = 'visit' AND target_id = "+args.add(filter.VisitID))
 	}
 	if filter.TripID != "" {
-		where, args = append(where, "target_type = 'trip' AND target_id = ?"), append(args, filter.TripID)
+		where = append(where, "target_type = 'trip' AND target_id = "+args.add(filter.TripID))
 	}
 	if filter.PlaceID != "" {
-		where = append(where, "((target_type = 'place' AND target_id = ?) OR (target_type = 'visit' AND target_id IN (SELECT id FROM visits WHERE place_id = ?)))")
-		args = append(args, filter.PlaceID, filter.PlaceID)
+		place := args.add(filter.PlaceID)
+		where = append(where, "((target_type = 'place' AND target_id = "+place+") OR (target_type = 'visit' AND target_id IN (SELECT id FROM visits WHERE place_id = "+place+")))")
 	}
-	for column, value := range map[string]string{"calendar_id": filter.CalendarID, "event_id": filter.EventID, "matched_by": filter.MatchedBy} {
-		if value != "" {
-			where, args = append(where, column+" = ?"), append(args, value)
+	for _, column := range []struct{ name, value string }{{"calendar_id", filter.CalendarID}, {"event_id", filter.EventID}, {"matched_by", filter.MatchedBy}} {
+		if column.value != "" {
+			where = append(where, column.name+" = "+args.add(column.value))
 		}
 	}
 	if filter.Rule != "" {
 		if !knownWord(CalendarMatchRules, filter.Rule) {
 			return nil, fmt.Errorf("%w: unknown rule %q: use one of %s", ErrInvalid, filter.Rule, strings.Join(CalendarMatchRules, ", "))
 		}
-		where, args = append(where, "rule = ?"), append(args, filter.Rule)
+		where = append(where, "rule = "+args.add(filter.Rule))
 	}
-	query := `SELECT ` + calendarLinkColumns + ` FROM calendar_event_links`
-	if len(where) > 0 {
-		query += " WHERE " + strings.Join(where, " AND ")
-	}
-	query += ` ORDER BY started_at, seq LIMIT ? OFFSET ?`
-	args = append(args, clampLimit(filter.Limit, defaultLimit, maximumLimit), max(filter.Offset, 0))
-	return queryCalendarEventLinks(s.db, query, args...)
+	query := `SELECT ` + calendarLinkColumns + ` FROM calendar_event_links WHERE ` + strings.Join(where, " AND ") + ` ORDER BY started_at, seq LIMIT ` +
+		args.add(clampLimit(filter.Limit, defaultLimit, maximumLimit)) + ` OFFSET ` + args.add(max(filter.Offset, 0))
+	return queryCalendarEventLinks(ctx, s.db, query, args.values...)
 }
 
-// liveCalendarEventLinksTo is every live link to any of the records named,
-// earliest event first.
-func (s *Store) liveCalendarEventLinksTo(targetIDs []string) ([]CalendarEventLink, error) {
-	encoded, err := json.Marshal(targetIDs)
-	if err != nil {
+// liveCalendarEventLinksTo is every live link in scope to any of the records
+// named, earliest event first.
+func (s *Store) liveCalendarEventLinksTo(ctx context.Context, scope ownership.Scope, targetIDs []string) ([]CalendarEventLink, error) {
+	if err := checkScope(scope); err != nil {
 		return nil, err
 	}
-	return queryCalendarEventLinks(s.db, `SELECT `+calendarLinkColumns+` FROM calendar_event_links
-		WHERE deleted_at = 0 AND target_id IN (SELECT value FROM json_each(?)) ORDER BY started_at, seq`, string(encoded))
+	var args arguments
+	return queryCalendarEventLinks(ctx, s.db, `SELECT `+calendarLinkColumns+` FROM calendar_event_links
+		WHERE deleted_at = 0 AND target_id = ANY(`+args.add(targetIDs)+`::text[]) AND `+args.within(scope, "owner_principal_id")+` ORDER BY started_at, seq`, args.values...)
 }
 
-// requireLinkTarget refuses a target that is not a live visit, trip or place.
-func requireLinkTarget(q queryer, targetType, targetID string) error {
-	var deletedAt int64
-	var err error
-	switch targetType {
-	case EntityVisit:
-		var visit *Visit
-		if visit, err = getVisitRow(q, targetID); err == nil {
-			deletedAt = visit.DeletedAt
-		}
-	case EntityTrip:
-		var trip *Trip
-		if trip, err = getTripRow(q, targetID); err == nil {
-			deletedAt = trip.DeletedAt
-		}
-	case EntityPlace:
-		var place *Place
-		if place, err = getPlaceRow(q, targetID); err == nil {
-			deletedAt = place.DeletedAt
-		}
-	default:
+// requireLinkTarget refuses a target that is not a live visit, trip or place
+// owner keeps: one that does not exist or is outside scope "does not exist",
+// and one of another owner's that scope reaches is a 400 too.
+func requireLinkTarget(ctx context.Context, q queryer, scope ownership.Scope, owner, targetType, targetID string) error {
+	table, known := entityTables[targetType]
+	if !known {
 		return fmt.Errorf("%w: target_type %q: use one of %s", ErrInvalid, targetType, strings.Join(CalendarLinkTargetTypes, ", "))
 	}
+	found, err := ownerOfRecord(ctx, q, scope, table, targetType, targetID)
 	if errors.Is(err, ErrNotFound) {
 		return fmt.Errorf("%w: target %s %s does not exist", ErrInvalid, targetType, targetID)
 	}
 	if err != nil {
+		return err
+	}
+	if found != owner {
+		return fmt.Errorf("%w: target %s %s belongs to %s and the link would belong to %s; records of two owners are never joined", ErrInvalid, targetType, targetID, found, owner)
+	}
+	var deletedAt int64
+	if err := q.QueryRowContext(ctx, `SELECT deleted_at FROM `+table+` WHERE id = $1`, targetID).Scan(&deletedAt); err != nil {
 		return err
 	}
 	if deletedAt != 0 {
@@ -261,10 +258,11 @@ func requireLinkTarget(q queryer, targetType, targetID string) error {
 	return nil
 }
 
-// CreateCalendarEventLink makes a link by hand. A link between the same
-// event and record already there, made by the matcher or deleted, becomes
-// this one: live, rule hand, confidence 1, so no matching run changes it.
-func (s *Store) CreateCalendarEventLink(create CalendarEventLinkCreate) (*CalendarEventLink, error) {
+// CreateCalendarEventLink makes a link by hand, owned by owner, to a target
+// in scope that owner keeps. A link between the same event and record
+// already there, made by the matcher or deleted, becomes this one: live,
+// rule hand, confidence 1, so no matching run changes it.
+func (s *Store) CreateCalendarEventLink(ctx context.Context, scope ownership.Scope, owner string, create CalendarEventLinkCreate) (*CalendarEventLink, error) {
 	if strings.TrimSpace(create.CalendarID) == "" || strings.TrimSpace(create.EventID) == "" {
 		return nil, fmt.Errorf("%w: calendar_id and event_id are required: the link is found again by them", ErrInvalid)
 	}
@@ -272,82 +270,80 @@ func (s *Store) CreateCalendarEventLink(create CalendarEventLinkCreate) (*Calend
 		return nil, err
 	}
 	var id string
-	err := s.inTransaction(func(tx *sql.Tx) error {
-		if err := requireLinkTarget(tx, create.TargetType, create.TargetID); err != nil {
+	err := s.inOwnerTransaction(ctx, owner, func(tx *sql.Tx) error {
+		if err := requireLinkTarget(ctx, tx, scope, owner, create.TargetType, create.TargetID); err != nil {
 			return err
 		}
 		link := CalendarEventLink{CalendarID: create.CalendarID, EventID: create.EventID, RecurringEventID: create.RecurringEventID,
 			Summary: create.Summary, Location: create.Location, StartedAt: create.StartedAt, EndedAt: create.EndedAt, AllDay: create.AllDay,
 			TargetType: create.TargetType, TargetID: create.TargetID, Rule: CalendarRuleHand, Confidence: confidenceHand,
 			Reason: create.Reason, MatchedBy: SetByHand}
-		existing, err := findCalendarEventLink(tx, link)
+		existing, err := findCalendarEventLink(ctx, tx, owner, link)
 		if err != nil {
 			return err
 		}
 		at := now()
 		if existing == nil {
-			id, err = insertCalendarEventLink(tx, link, at)
+			id, err = insertCalendarEventLink(ctx, tx, owner, link, at)
 			return err
 		}
 		id = existing.ID
-		return updateCalendarEventLink(tx, existing.ID, link, at)
+		return updateCalendarEventLink(ctx, tx, existing.ID, link, at)
 	})
 	if err != nil {
 		return nil, err
 	}
-	return getCalendarEventLinkRow(s.db, id)
+	return getCalendarEventLinkRow(ctx, s.db, ownership.OwnedBy(owner), id)
 }
 
-// DeleteCalendarEventLink soft-deletes a link, as a person's judgment: a
-// matching run never makes it again. Deleting a deleted link is a no-op.
-func (s *Store) DeleteCalendarEventLink(id string) error {
-	return s.inTransaction(func(tx *sql.Tx) error {
-		link, err := getCalendarEventLinkRow(tx, id)
+// DeleteCalendarEventLink soft-deletes a link in scope, as a person's
+// judgment: a matching run never makes it again. Deleting a deleted link is
+// a no-op.
+func (s *Store) DeleteCalendarEventLink(ctx context.Context, scope ownership.Scope, id string) error {
+	return s.writeOwned(ctx, scope, "calendar_event_links", "calendar event link", id, func(tx *sql.Tx, owner string) error {
+		link, err := getCalendarEventLinkRow(ctx, tx, ownership.OwnedBy(owner), id)
 		if err != nil {
 			return err
 		}
 		if link.DeletedAt != 0 {
 			return nil
 		}
-		_, err = tx.Exec(`UPDATE calendar_event_links SET deleted_at = ?, deleted_by = ?, updated_at = ? WHERE id = ?`, now(), SetByHand, now(), id)
+		at := now()
+		_, err = tx.ExecContext(ctx, `UPDATE calendar_event_links SET deleted_at = $1, deleted_by = $2, updated_at = $3 WHERE id = $4`, at, SetByHand, at, id)
 		return err
 	})
 }
 
-func findCalendarEventLink(q queryer, link CalendarEventLink) (*CalendarEventLink, error) {
-	found, err := scanCalendarEventLink(q.QueryRow(`SELECT `+calendarLinkColumns+` FROM calendar_event_links
-		WHERE calendar_id = ? AND event_id = ? AND target_type = ? AND target_id = ?`,
-		link.CalendarID, link.EventID, link.TargetType, link.TargetID).Scan)
+// findCalendarEventLink is owner's link between the event and the record,
+// or nil.
+func findCalendarEventLink(ctx context.Context, q queryer, owner string, link CalendarEventLink) (*CalendarEventLink, error) {
+	found, err := scanCalendarEventLink(q.QueryRowContext(ctx, `SELECT `+calendarLinkColumns+` FROM calendar_event_links
+		WHERE owner_principal_id = $1 AND calendar_id = $2 AND event_id = $3 AND target_type = $4 AND target_id = $5`,
+		owner, link.CalendarID, link.EventID, link.TargetType, link.TargetID).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	return found, err
 }
 
-func boolInteger(value bool) int {
-	if value {
-		return 1
-	}
-	return 0
-}
-
-func insertCalendarEventLink(tx *sql.Tx, link CalendarEventLink, at int64) (string, error) {
-	id, seq, err := nextID(tx, "calendar_event_links", "calendar_event_link")
+func insertCalendarEventLink(ctx context.Context, tx *sql.Tx, owner string, link CalendarEventLink, at int64) (string, error) {
+	id, seq, err := nextID(ctx, tx, "calendar_event_links", "calendar_event_link")
 	if err != nil {
 		return "", err
 	}
-	_, err = tx.Exec(`INSERT INTO calendar_event_links (id, seq, calendar_id, event_id, recurring_event_id, summary, location, started_at,
-		ended_at, all_day, target_type, target_id, rule, confidence, reason, matched_by, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		id, seq, link.CalendarID, link.EventID, link.RecurringEventID, link.Summary, link.Location, link.StartedAt, link.EndedAt,
-		boolInteger(link.AllDay), link.TargetType, link.TargetID, link.Rule, link.Confidence, link.Reason, link.MatchedBy, at, at)
+	_, err = tx.ExecContext(ctx, `INSERT INTO calendar_event_links (id, seq, owner_principal_id, calendar_id, event_id, recurring_event_id, summary, location,
+		started_at, ended_at, all_day, target_type, target_id, rule, confidence, reason, matched_by, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`,
+		id, seq, owner, link.CalendarID, link.EventID, link.RecurringEventID, link.Summary, link.Location, link.StartedAt, link.EndedAt,
+		link.AllDay, link.TargetType, link.TargetID, link.Rule, link.Confidence, link.Reason, link.MatchedBy, at, at)
 	return id, err
 }
 
 // updateCalendarEventLink writes every field of link onto the row, live.
-func updateCalendarEventLink(tx *sql.Tx, id string, link CalendarEventLink, at int64) error {
-	_, err := tx.Exec(`UPDATE calendar_event_links SET recurring_event_id = ?, summary = ?, location = ?, started_at = ?, ended_at = ?,
-		all_day = ?, rule = ?, confidence = ?, reason = ?, matched_by = ?, updated_at = ?, deleted_at = 0, deleted_by = '' WHERE id = ?`,
-		link.RecurringEventID, link.Summary, link.Location, link.StartedAt, link.EndedAt, boolInteger(link.AllDay), link.Rule,
+func updateCalendarEventLink(ctx context.Context, tx *sql.Tx, id string, link CalendarEventLink, at int64) error {
+	_, err := tx.ExecContext(ctx, `UPDATE calendar_event_links SET recurring_event_id = $1, summary = $2, location = $3, started_at = $4, ended_at = $5,
+		all_day = $6, rule = $7, confidence = $8, reason = $9, matched_by = $10, updated_at = $11, deleted_at = 0, deleted_by = '' WHERE id = $12`,
+		link.RecurringEventID, link.Summary, link.Location, link.StartedAt, link.EndedAt, link.AllDay, link.Rule,
 		link.Confidence, link.Reason, link.MatchedBy, at, id)
 	return err
 }
@@ -416,7 +412,12 @@ type calendarMatcher struct {
 // explain, and settles the run's own links of those calendars in the
 // window: new ones made, changed ones rewritten, ones no longer found
 // deleted. A link made by hand, or one a person deleted, is never changed.
-func (s *Store) MatchCalendar(request CalendarMatchRequest) (*CalendarMatching, error) {
+// It reads owner's records only, and the links and series places it writes
+// are owner's.
+func (s *Store) MatchCalendar(ctx context.Context, owner string, request CalendarMatchRequest) (*CalendarMatching, error) {
+	if err := checkOwner(owner); err != nil {
+		return nil, err
+	}
 	if request.From <= 0 || request.To <= request.From {
 		return nil, fmt.Errorf("%w: from and to (epoch seconds) must be set, from before to; got %d to %d", ErrInvalid, request.From, request.To)
 	}
@@ -424,7 +425,7 @@ func (s *Store) MatchCalendar(request CalendarMatchRequest) (*CalendarMatching, 
 	if err != nil {
 		return nil, err
 	}
-	matcher, err := s.loadCalendarMatcher(index, request.From-loadMarginSeconds, request.To+loadMarginSeconds)
+	matcher, err := s.loadCalendarMatcher(ctx, ownership.OwnedBy(owner), index, request.From-loadMarginSeconds, request.To+loadMarginSeconds)
 	if err != nil {
 		return nil, err
 	}
@@ -447,19 +448,20 @@ func (s *Store) MatchCalendar(request CalendarMatchRequest) (*CalendarMatching, 
 	for _, calendar := range request.Calendars {
 		calendarIDs = append(calendarIDs, calendar.Calendar.ID)
 	}
-	err = s.inTransaction(func(tx *sql.Tx) error {
-		if err := settleCalendarLinks(tx, matching, matcher.found, calendarIDs, request); err != nil {
+	err = s.inOwnerTransaction(ctx, owner, func(tx *sql.Tx) error {
+		if err := settleCalendarLinks(ctx, tx, owner, matching, matcher.found, calendarIDs, request); err != nil {
 			return err
 		}
 		if request.DryRun {
 			return nil
 		}
-		return saveSeriesPlaces(tx, unlocated, now())
+		return saveSeriesPlaces(ctx, tx, owner, unlocated, now())
 	})
 	if err != nil {
 		return nil, err
 	}
 	for _, series := range unlocated {
+		series.found.OwnerPrincipalID = owner
 		matching.SeriesPlaces = append(matching.SeriesPlaces, series.found)
 	}
 	if len(matcher.homes) == 0 {
@@ -468,9 +470,9 @@ func (s *Store) MatchCalendar(request CalendarMatchRequest) (*CalendarMatching, 
 	return matching, nil
 }
 
-func (s *Store) loadCalendarMatcher(index *geonames.Index, from, to int64) (*calendarMatcher, error) {
+func (s *Store) loadCalendarMatcher(ctx context.Context, scope ownership.Scope, index *geonames.Index, from, to int64) (*calendarMatcher, error) {
 	matcher := &calendarMatcher{index: index, places: map[string]*Place{}, tripByID: map[string]*Trip{}, unlinked: map[string]int{}}
-	places, err := s.listPlacesUncapped()
+	places, err := s.listPlacesUncapped(ctx, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -481,10 +483,10 @@ func (s *Store) loadCalendarMatcher(index *geonames.Index, from, to int64) (*cal
 			matcher.named = append(matcher.named, place)
 		}
 	}
-	if matcher.visits, err = s.listVisitsUncapped(VisitFilter{TimeFilter: TimeFilter{From: from, To: to, Limit: math.MaxInt32}}); err != nil {
+	if matcher.visits, err = s.listVisitsUncapped(ctx, scope, VisitFilter{TimeFilter: TimeFilter{From: from, To: to, Limit: math.MaxInt32}}); err != nil {
 		return nil, err
 	}
-	if matcher.trips, err = s.listTripsUncapped(TripFilter{TimeFilter: TimeFilter{From: from, To: to, Limit: math.MaxInt32}}); err != nil {
+	if matcher.trips, err = s.listTripsUncapped(ctx, scope, TripFilter{TimeFilter: TimeFilter{From: from, To: to, Limit: math.MaxInt32}}); err != nil {
 		return nil, err
 	}
 	for position := range matcher.trips {
@@ -495,7 +497,7 @@ func (s *Store) loadCalendarMatcher(index *geonames.Index, from, to int64) (*cal
 		if trip.ParentTripID == nil || matcher.tripByID[*trip.ParentTripID] != nil {
 			continue
 		}
-		parent, err := s.GetTrip(*trip.ParentTripID, false)
+		parent, err := s.GetTrip(ctx, scope, *trip.ParentTripID, false)
 		if errors.Is(err, ErrNotFound) {
 			continue
 		}
@@ -504,17 +506,17 @@ func (s *Store) loadCalendarMatcher(index *geonames.Index, from, to int64) (*cal
 		}
 		matcher.tripByID[parent.ID] = parent
 	}
-	if matcher.homes, err = s.ListHomePeriods(false); err != nil {
+	if matcher.homes, err = s.ListHomePeriods(ctx, scope, false); err != nil {
 		return nil, err
 	}
 	sort.Slice(matcher.homes, func(a, b int) bool { return matcher.homes[a].StartedAt < matcher.homes[b].StartedAt })
 	return matcher, nil
 }
 
-func (s *Store) listPlacesUncapped() ([]Place, error) {
+func (s *Store) listPlacesUncapped(ctx context.Context, scope ownership.Scope) ([]Place, error) {
 	var all []Place
 	for offset := 0; ; offset += maximumLimit {
-		places, err := s.ListPlaces(PlaceFilter{Limit: maximumLimit, Offset: offset})
+		places, err := s.ListPlaces(ctx, scope, PlaceFilter{Limit: maximumLimit, Offset: offset})
 		if err != nil {
 			return nil, err
 		}
@@ -1070,14 +1072,10 @@ func (m *calendarMatcher) matchNoLocation(event *calendarEvent) {
 
 // settleCalendarLinks writes what a run found against what earlier runs
 // wrote. A dry run decides the same and writes nothing.
-func settleCalendarLinks(tx *sql.Tx, matching *CalendarMatching, found []CalendarEventLink, calendarIDs []string, request CalendarMatchRequest) error {
-	encoded, err := json.Marshal(calendarIDs)
-	if err != nil {
-		return err
-	}
-	stored, err := queryCalendarEventLinks(tx, `SELECT `+calendarLinkColumns+` FROM calendar_event_links
-		WHERE calendar_id IN (SELECT value FROM json_each(?)) AND ended_at >= ? AND started_at < ? ORDER BY started_at, seq`,
-		string(encoded), request.From, request.To)
+func settleCalendarLinks(ctx context.Context, tx *sql.Tx, owner string, matching *CalendarMatching, found []CalendarEventLink, calendarIDs []string, request CalendarMatchRequest) error {
+	stored, err := queryCalendarEventLinks(ctx, tx, `SELECT `+calendarLinkColumns+` FROM calendar_event_links
+		WHERE owner_principal_id = $1 AND calendar_id = ANY($2::text[]) AND ended_at >= $3 AND started_at < $4 ORDER BY started_at, seq`,
+		owner, calendarIDs, request.From, request.To)
 	if err != nil {
 		return err
 	}
@@ -1092,6 +1090,7 @@ func settleCalendarLinks(tx *sql.Tx, matching *CalendarMatching, found []Calenda
 	}
 	seen := map[string]bool{}
 	for _, link := range found {
+		link.OwnerPrincipalID = owner
 		identity := calendarLinkIdentity(link)
 		if seen[identity] {
 			continue
@@ -1101,14 +1100,14 @@ func settleCalendarLinks(tx *sql.Tx, matching *CalendarMatching, found []Calenda
 		if existing == nil {
 			// One outside the window (an event that moved) is found by its
 			// identity too.
-			if existing, err = findCalendarEventLink(tx, link); err != nil {
+			if existing, err = findCalendarEventLink(ctx, tx, owner, link); err != nil {
 				return err
 			}
 		}
 		switch {
 		case existing == nil:
 			if !request.DryRun {
-				if link.ID, err = insertCalendarEventLink(tx, link, at); err != nil {
+				if link.ID, err = insertCalendarEventLink(ctx, tx, owner, link, at); err != nil {
 					return err
 				}
 				link.CreatedAt, link.UpdatedAt = at, at
@@ -1125,7 +1124,7 @@ func settleCalendarLinks(tx *sql.Tx, matching *CalendarMatching, found []Calenda
 			}
 			link.ID, link.CreatedAt, link.UpdatedAt = existing.ID, existing.CreatedAt, at
 			if !request.DryRun {
-				if err := updateCalendarEventLink(tx, existing.ID, link, at); err != nil {
+				if err := updateCalendarEventLink(ctx, tx, existing.ID, link, at); err != nil {
 					return err
 				}
 			}
@@ -1139,7 +1138,7 @@ func settleCalendarLinks(tx *sql.Tx, matching *CalendarMatching, found []Calenda
 			continue
 		}
 		if !request.DryRun {
-			if _, err := tx.Exec(`UPDATE calendar_event_links SET deleted_at = ?, deleted_by = ?, updated_at = ? WHERE id = ?`,
+			if _, err := tx.ExecContext(ctx, `UPDATE calendar_event_links SET deleted_at = $1, deleted_by = $2, updated_at = $3 WHERE id = $4`,
 				at, SetByCalendarMatching, at, existing.ID); err != nil {
 				return err
 			}

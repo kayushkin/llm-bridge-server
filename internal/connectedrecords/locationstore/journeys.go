@@ -1,6 +1,7 @@
 package locationstore
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locationstore/internal/geonames"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 )
 
 // Journey grouping: find the home base of each stretch of time from where
@@ -76,7 +78,10 @@ type nightSite struct {
 }
 
 type grouper struct {
-	tx       *sql.Tx
+	ctx context.Context
+	tx  *sql.Tx
+	// owner is whose records the grouping reads and writes, and no one else's.
+	owner    string
 	index    *geonames.Index
 	request  JourneyGroupRequest
 	zones    map[string]*time.Location
@@ -110,8 +115,9 @@ func normalizeJourneyRequest(request JourneyGroupRequest) (JourneyGroupRequest, 
 // writes both, in one transaction; a dry run writes nothing and answers what
 // it would have done. Running it again changes only what new data changed.
 // It never touches a journey made by hand, never moves a trip someone placed
-// by hand, and rewrites only titles it wrote itself.
-func (s *Store) GroupJourneys(request JourneyGroupRequest) (*JourneyGrouping, error) {
+// by hand, and rewrites only titles it wrote itself. It reads and writes
+// owner's records only, and what it writes is owner's.
+func (s *Store) GroupJourneys(ctx context.Context, owner string, request JourneyGroupRequest) (*JourneyGrouping, error) {
 	request, err := normalizeJourneyRequest(request)
 	if err != nil {
 		return nil, err
@@ -122,8 +128,8 @@ func (s *Store) GroupJourneys(request JourneyGroupRequest) (*JourneyGrouping, er
 	}
 	plan := &JourneyGrouping{DryRun: request.DryRun, Request: request, HomePeriods: []HomePeriod{}, Journeys: []PlannedJourney{},
 		DeletedJourneyIDs: []string{}, HomePlacesMarked: []string{}, Notes: []string{}}
-	err = s.inTransaction(func(tx *sql.Tx) error {
-		g := &grouper{tx: tx, index: index, request: request, zones: map[string]*time.Location{}, plan: plan, at: now()}
+	err = s.inOwnerTransaction(ctx, owner, func(tx *sql.Tx) error {
+		g := &grouper{ctx: ctx, tx: tx, owner: owner, index: index, request: request, zones: map[string]*time.Location{}, plan: plan, at: now()}
 		if err := g.load(); err != nil {
 			return err
 		}
@@ -153,25 +159,12 @@ func (g *grouper) finish() error {
 }
 
 func (g *grouper) load() error {
-	rows, err := g.tx.Query(visitSelect + ` WHERE v.deleted_at = 0 ORDER BY v.started_at, v.seq`)
+	visits, err := queryVisits(g.ctx, g.tx, visitSelect+` WHERE v.owner_principal_id = $1 AND v.deleted_at = 0 ORDER BY v.started_at, v.seq`, g.owner)
 	if err != nil {
 		return err
 	}
-	var visits []Visit
-	for rows.Next() {
-		visit, err := scanVisit(rows.Scan)
-		if err != nil {
-			rows.Close()
-			return err
-		}
-		visits = append(visits, *visit)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return err
-	}
 	placeCoordinates := map[string][2]float64{}
-	placeRows, err := g.tx.Query(`SELECT id, latitude, longitude FROM places`)
+	placeRows, err := g.tx.QueryContext(g.ctx, `SELECT id, latitude, longitude FROM places WHERE owner_principal_id = $1`, g.owner)
 	if err != nil {
 		return err
 	}
@@ -204,19 +197,12 @@ func (g *grouper) load() error {
 		}
 		g.visits = append(g.visits, item)
 	}
-	tripRows, err := g.tx.Query(tripSelect + ` WHERE t.deleted_at = 0 ORDER BY t.started_at, t.seq`)
+	trips, err := queryTrips(g.ctx, g.tx, tripSelect+` WHERE t.owner_principal_id = $1 AND t.deleted_at = 0 ORDER BY t.started_at, t.seq`, g.owner)
 	if err != nil {
 		return err
 	}
-	defer tripRows.Close()
-	for tripRows.Next() {
-		trip, err := scanTrip(tripRows.Scan)
-		if err != nil {
-			return err
-		}
-		g.trips = append(g.trips, *trip)
-	}
-	return tripRows.Err()
+	g.trips = append(g.trips, trips...)
+	return nil
 }
 
 // zoneAt is the time zone of the town nearest a coordinate.
@@ -441,7 +427,7 @@ func (g *grouper) findHomes() error {
 		if bestPlace != "" {
 			id := bestPlace
 			period.PlaceID = &id
-			place, err := getPlaceRow(g.tx, bestPlace)
+			place, err := getPlaceRow(g.ctx, g.tx, ownership.OwnedBy(g.owner), bestPlace)
 			if err != nil {
 				return err
 			}
@@ -499,12 +485,16 @@ func scanHomePeriod(scan func(...any) error) (*HomePeriod, error) {
 	return &period, err
 }
 
-func listHomePeriods(q queryer, includeDeleted bool) ([]HomePeriod, error) {
-	query := `SELECT ` + homePeriodColumns + ` FROM home_periods h LEFT JOIN places p ON p.id = h.place_id`
-	if !includeDeleted {
-		query += ` WHERE h.deleted_at = 0`
+func listHomePeriods(ctx context.Context, q queryer, scope ownership.Scope, includeDeleted bool) ([]HomePeriod, error) {
+	if err := checkScope(scope); err != nil {
+		return nil, err
 	}
-	rows, err := q.Query(query + ` ORDER BY h.started_at, h.seq`)
+	var args arguments
+	query := `SELECT ` + homePeriodColumns + ` FROM home_periods h LEFT JOIN places p ON p.id = h.place_id WHERE ` + args.within(scope, "h.owner_principal_id")
+	if !includeDeleted {
+		query += ` AND h.deleted_at = 0`
+	}
+	rows, err := q.QueryContext(ctx, query+` ORDER BY h.started_at, h.seq`, args.values...)
 	if err != nil {
 		return nil, err
 	}
@@ -520,14 +510,20 @@ func listHomePeriods(q queryer, includeDeleted bool) ([]HomePeriod, error) {
 	return periods, rows.Err()
 }
 
-// ListHomePeriods answers GET /home-periods, earliest first.
-func (s *Store) ListHomePeriods(includeDeleted bool) ([]HomePeriod, error) {
-	return listHomePeriods(s.db, includeDeleted)
+// ListHomePeriods answers GET /home-periods, earliest first: the home
+// periods in scope.
+func (s *Store) ListHomePeriods(ctx context.Context, scope ownership.Scope, includeDeleted bool) ([]HomePeriod, error) {
+	return listHomePeriods(ctx, s.db, scope, includeDeleted)
 }
 
-// GetHomePeriod answers GET /home-periods/{id}.
-func (s *Store) GetHomePeriod(id string) (*HomePeriod, error) {
-	period, err := scanHomePeriod(s.db.QueryRow(`SELECT `+homePeriodColumns+` FROM home_periods h LEFT JOIN places p ON p.id = h.place_id WHERE h.id = ?`, id).Scan)
+// GetHomePeriod answers GET /home-periods/{id}, for one in scope.
+func (s *Store) GetHomePeriod(ctx context.Context, scope ownership.Scope, id string) (*HomePeriod, error) {
+	if err := checkScope(scope); err != nil {
+		return nil, err
+	}
+	var args arguments
+	period, err := scanHomePeriod(s.db.QueryRowContext(ctx, `SELECT `+homePeriodColumns+` FROM home_periods h LEFT JOIN places p ON p.id = h.place_id
+		WHERE h.id = `+args.add(id)+` AND `+args.within(scope, "h.owner_principal_id"), args.values...).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("%w: no home period %s", ErrNotFound, id)
 	}
@@ -539,7 +535,7 @@ func (s *Store) GetHomePeriod(id string) (*HomePeriod, error) {
 // existing ones nothing matched. It marks each home place's kind home unless
 // someone set the place's kind by hand.
 func (g *grouper) writeHomePeriods(found []HomePeriod) error {
-	existing, err := listHomePeriods(g.tx, false)
+	existing, err := listHomePeriods(g.ctx, g.tx, ownership.OwnedBy(g.owner), false)
 	if err != nil {
 		return err
 	}
@@ -564,19 +560,19 @@ func (g *grouper) writeHomePeriods(found []HomePeriod) error {
 			}
 		}
 		if period.ID == "" {
-			id, seq, err := nextID(g.tx, "home_periods", "home_period")
+			id, seq, err := nextID(g.ctx, g.tx, "home_periods", "home_period")
 			if err != nil {
 				return err
 			}
 			period.ID, period.CreatedAt = id, g.at
-			if _, err := g.tx.Exec(`INSERT INTO home_periods (id, seq, latitude, longitude, started_at, described_by, created_at, updated_at)
-				VALUES (?,?,?,?,?,?,?,?)`, id, seq, period.Latitude, period.Longitude, period.StartedAt, period.DescribedBy, g.at, g.at); err != nil {
+			if _, err := g.tx.ExecContext(g.ctx, `INSERT INTO home_periods (id, seq, owner_principal_id, latitude, longitude, started_at, described_by, created_at, updated_at)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, id, seq, g.owner, period.Latitude, period.Longitude, period.StartedAt, period.DescribedBy, g.at, g.at); err != nil {
 				return err
 			}
 		}
 		period.UpdatedAt = g.at
-		if _, err := g.tx.Exec(`UPDATE home_periods SET place_id=?, latitude=?, longitude=?, locality=?, started_at=?, ended_at=?,
-			nights_known=?, nights_at_home=?, described_by=?, updated_at=? WHERE id=?`, nullableString(period.PlaceID), period.Latitude,
+		if _, err := g.tx.ExecContext(g.ctx, `UPDATE home_periods SET place_id = $1, latitude = $2, longitude = $3, locality = $4, started_at = $5, ended_at = $6,
+			nights_known = $7, nights_at_home = $8, described_by = $9, updated_at = $10 WHERE id = $11`, nullableString(period.PlaceID), period.Latitude,
 			period.Longitude, encodeLocality(period.Locality), period.StartedAt, period.EndedAt, period.NightsKnown, period.NightsAtHome,
 			period.DescribedBy, g.at, period.ID); err != nil {
 			return err
@@ -587,7 +583,7 @@ func (g *grouper) writeHomePeriods(found []HomePeriod) error {
 	}
 	for _, old := range existing {
 		if !used[old.ID] {
-			if _, err := g.tx.Exec(`UPDATE home_periods SET deleted_at=?, updated_at=? WHERE id=?`, g.at, g.at, old.ID); err != nil {
+			if _, err := g.tx.ExecContext(g.ctx, `UPDATE home_periods SET deleted_at = $1, updated_at = $2 WHERE id = $3`, g.at, g.at, old.ID); err != nil {
 				return err
 			}
 		}
@@ -608,7 +604,7 @@ func (g *grouper) markHome(placeID *string) error {
 	if placeID == nil {
 		return nil
 	}
-	place, err := getPlaceRow(g.tx, *placeID)
+	place, err := getPlaceRow(g.ctx, g.tx, ownership.OwnedBy(g.owner), *placeID)
 	if err != nil {
 		return err
 	}
@@ -616,17 +612,17 @@ func (g *grouper) markHome(placeID *string) error {
 		return nil
 	}
 	var editedByHand int
-	if err := g.tx.QueryRow(`SELECT COUNT(*) FROM revisions WHERE entity_id = ? AND reason = 'update'`, place.ID).Scan(&editedByHand); err != nil {
+	if err := g.tx.QueryRowContext(g.ctx, `SELECT COUNT(*) FROM revisions WHERE entity_id = $1 AND reason = 'update'`, place.ID).Scan(&editedByHand); err != nil {
 		return err
 	}
 	if editedByHand > 0 {
 		g.plan.Notes = append(g.plan.Notes, fmt.Sprintf("home place %s has kind %s, set by hand; left as it is", place.ID, place.Kind))
 		return nil
 	}
-	if err := snapshot(g.tx, EntityPlace, place.ID, "home", g.at); err != nil {
+	if err := snapshot(g.ctx, g.tx, EntityPlace, place.ID, "home", g.at); err != nil {
 		return err
 	}
-	if _, err := g.tx.Exec(`UPDATE places SET kind=?, updated_at=? WHERE id=?`, PlaceKindHome, g.at, place.ID); err != nil {
+	if _, err := g.tx.ExecContext(g.ctx, `UPDATE places SET kind = $1, updated_at = $2 WHERE id = $3`, PlaceKindHome, g.at, place.ID); err != nil {
 		return err
 	}
 	g.plan.HomePlacesMarked = append(g.plan.HomePlacesMarked, place.ID)
@@ -908,11 +904,11 @@ func (g *grouper) writeJourney(candidate candidateJourney, generated, byHand []*
 		planned.Action = JourneyCreate
 		var seq int64
 		var err error
-		if id, seq, err = nextID(g.tx, "trips", "trip"); err != nil {
+		if id, seq, err = nextID(g.ctx, g.tx, "trips", "trip"); err != nil {
 			return planned, err
 		}
-		if _, err := g.tx.Exec(`INSERT INTO trips (id, seq, kind, started_at, ended_at, mode, title, title_by, source, created_at, updated_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?)`, id, seq, TripKindJourney, candidate.startedAt, candidate.endedAt, planned.Mode,
+		if _, err := g.tx.ExecContext(g.ctx, `INSERT INTO trips (id, seq, owner_principal_id, kind, started_at, ended_at, mode, title, title_by, source, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`, id, seq, g.owner, TripKindJourney, candidate.startedAt, candidate.endedAt, planned.Mode,
 			planned.Title, SetByJourneyGrouping, SourceGenerated, g.at, g.at); err != nil {
 			return planned, err
 		}
@@ -930,15 +926,15 @@ func (g *grouper) writeJourney(candidate candidateJourney, generated, byHand []*
 			sameFloat(existing.StartLatitude, first.StartLatitude) && sameFloat(existing.EndLatitude, last.EndLatitude) &&
 			sameLocality(existing.StartLocality, startLocality) && sameLocality(existing.EndLocality, endLocality)) {
 			planned.Action = JourneyUpdate
-			if err := snapshot(g.tx, EntityTrip, id, "journey", g.at); err != nil {
+			if err := snapshot(g.ctx, g.tx, EntityTrip, id, "journey", g.at); err != nil {
 				return planned, err
 			}
 		}
 	}
 	if planned.Action != JourneyUnchanged {
-		if _, err := g.tx.Exec(`UPDATE trips SET started_at=?, ended_at=?, start_latitude=?, start_longitude=?, end_latitude=?,
-			end_longitude=?, start_place_id=?, end_place_id=?, mode=?, distance_meters=?, title=?, start_locality=?, end_locality=?,
-			updated_at=? WHERE id=?`, candidate.startedAt, candidate.endedAt, nullableFloat(first.StartLatitude),
+		if _, err := g.tx.ExecContext(g.ctx, `UPDATE trips SET started_at = $1, ended_at = $2, start_latitude = $3, start_longitude = $4, end_latitude = $5,
+			end_longitude = $6, start_place_id = $7, end_place_id = $8, mode = $9, distance_meters = $10, title = $11, start_locality = $12, end_locality = $13,
+			updated_at = $14 WHERE id = $15`, candidate.startedAt, candidate.endedAt, nullableFloat(first.StartLatitude),
 			nullableFloat(first.StartLongitude), nullableFloat(last.EndLatitude), nullableFloat(last.EndLongitude),
 			nullableString(first.StartPlaceID), nullableString(last.EndPlaceID), planned.Mode, distance, planned.Title,
 			encodeLocality(startLocality), encodeLocality(endLocality), g.at, id); err != nil {
@@ -998,7 +994,7 @@ func (g *grouper) isGenerated(tripID string) bool {
 
 // setParent places a movement in a journey, or out of one, as this command.
 func (g *grouper) setParent(child *Trip, parentID *string) error {
-	if err := snapshot(g.tx, EntityTrip, child.ID, "journey", g.at); err != nil {
+	if err := snapshot(g.ctx, g.tx, EntityTrip, child.ID, "journey", g.at); err != nil {
 		return err
 	}
 	setBy := SetByJourneyGrouping
@@ -1006,7 +1002,7 @@ func (g *grouper) setParent(child *Trip, parentID *string) error {
 		// Out of a journey this command made, the trip is nobody's again.
 		setBy = ""
 	}
-	if _, err := g.tx.Exec(`UPDATE trips SET parent_trip_id=?, parent_set_by=?, updated_at=? WHERE id=?`, nullableString(parentID), setBy, g.at, child.ID); err != nil {
+	if _, err := g.tx.ExecContext(g.ctx, `UPDATE trips SET parent_trip_id = $1, parent_set_by = $2, updated_at = $3 WHERE id = $4`, nullableString(parentID), setBy, g.at, child.ID); err != nil {
 		return err
 	}
 	child.ParentTripID, child.ParentSetBy = parentID, setBy
@@ -1035,10 +1031,10 @@ func (g *grouper) retire(old *Trip) error {
 		g.plan.Notes = append(g.plan.Notes, fmt.Sprintf("%s no longer matches a journey, but someone wrote on it or placed trips in it by hand; kept", old.ID))
 		return nil
 	}
-	if err := snapshot(g.tx, EntityTrip, old.ID, "delete", g.at); err != nil {
+	if err := snapshot(g.ctx, g.tx, EntityTrip, old.ID, "delete", g.at); err != nil {
 		return err
 	}
-	if _, err := g.tx.Exec(`UPDATE trips SET deleted_at=?, updated_at=? WHERE id=?`, g.at, g.at, old.ID); err != nil {
+	if _, err := g.tx.ExecContext(g.ctx, `UPDATE trips SET deleted_at = $1, updated_at = $2 WHERE id = $3`, g.at, g.at, old.ID); err != nil {
 		return err
 	}
 	g.plan.DeletedJourneyIDs = append(g.plan.DeletedJourneyIDs, old.ID)
@@ -1210,17 +1206,19 @@ func DateSpanLabel(startedAt, endedAt int64, zone *time.Location) string {
 }
 
 // Journey answers GET /journeys/{id}: the trip, its children, the visits in
-// its span and the towns those visits were in.
-func (s *Store) Journey(id string) (*JourneySummary, error) {
-	trip, err := s.GetTrip(id, false)
+// its span and the towns those visits were in. The trip must be in scope;
+// what is read around it is the trip owner's.
+func (s *Store) Journey(ctx context.Context, scope ownership.Scope, id string) (*JourneySummary, error) {
+	trip, err := s.GetTrip(ctx, scope, id, false)
 	if err != nil {
 		return nil, err
 	}
-	children, err := s.listTripsUncapped(TripFilter{TimeFilter: TimeFilter{Limit: math.MaxInt32}, ParentTripID: id})
+	owned := ownership.OwnedBy(trip.OwnerPrincipalID)
+	children, err := s.listTripsUncapped(ctx, owned, TripFilter{TimeFilter: TimeFilter{Limit: math.MaxInt32}, ParentTripID: id})
 	if err != nil {
 		return nil, err
 	}
-	visits, err := s.listVisitsUncapped(VisitFilter{TimeFilter: TimeFilter{From: trip.StartedAt, To: trip.EndedAt, Limit: math.MaxInt32}})
+	visits, err := s.listVisitsUncapped(ctx, owned, VisitFilter{TimeFilter: TimeFilter{From: trip.StartedAt, To: trip.EndedAt, Limit: math.MaxInt32}})
 	if err != nil {
 		return nil, err
 	}
@@ -1254,7 +1252,7 @@ func (s *Store) Journey(id string) (*JourneySummary, error) {
 	for _, visit := range summary.Visits {
 		targets = append(targets, visit.ID)
 	}
-	if summary.CalendarEventLinks, err = s.liveCalendarEventLinksTo(targets); err != nil {
+	if summary.CalendarEventLinks, err = s.liveCalendarEventLinksTo(ctx, owned, targets); err != nil {
 		return nil, err
 	}
 	return summary, nil

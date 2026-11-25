@@ -1,6 +1,7 @@
 package locationstore
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locationstore/internal/geonames"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 )
 
 // A phone sends its fixes as it makes them (POST /points/live). They are
@@ -59,9 +61,10 @@ var devicePattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
 // run does, then writes none of it.
 var errDryRun = errors.New("dry run")
 
-// RecordLivePoints stores the fixes a phone sent. A fix already there is a
-// no-op, so a phone may send a batch again after a lost answer.
-func (s *Store) RecordLivePoints(live LivePoints) (*LivePointsRecorded, error) {
+// RecordLivePoints stores the fixes a phone sent, as owner's: one phone_live
+// import per owner, device and UTC day. A fix already there is a no-op, so a
+// phone may send a batch again after a lost answer.
+func (s *Store) RecordLivePoints(ctx context.Context, owner string, live LivePoints) (*LivePointsRecorded, error) {
 	device := strings.TrimSpace(live.Device)
 	recordedBy := strings.TrimSpace(live.RecordedBy)
 	switch {
@@ -95,14 +98,14 @@ func (s *Store) RecordLivePoints(live LivePoints) (*LivePointsRecorded, error) {
 	}
 	sort.Strings(days)
 	recorded := &LivePointsRecorded{ImportIDs: []string{}}
-	err := s.inTransaction(func(tx *sql.Tx) error {
+	err := s.inOwnerTransaction(ctx, owner, func(tx *sql.Tx) error {
 		for _, day := range days {
-			importID, counts, err := livePointsImport(tx, device, day, recordedBy, at)
+			importID, counts, err := livePointsImport(ctx, tx, owner, device, day, recordedBy, at)
 			if err != nil {
 				return err
 			}
 			before := *counts
-			if err := applyPoints(tx, importID, byDay[day], counts); err != nil {
+			if err := applyPoints(ctx, tx, owner, importID, byDay[day], counts); err != nil {
 				return err
 			}
 			recorded.PointsAdded += counts.PointsAdded - before.PointsAdded
@@ -111,7 +114,7 @@ func (s *Store) RecordLivePoints(live LivePoints) (*LivePointsRecorded, error) {
 			if err != nil {
 				return err
 			}
-			if _, err := tx.Exec(`UPDATE imports SET counts=?, finished_at=?, recorded_by=? WHERE id=?`,
+			if _, err := tx.ExecContext(ctx, `UPDATE imports SET counts = $1, finished_at = $2, recorded_by = $3 WHERE id = $4`,
 				string(encoded), at, recordedBy, importID); err != nil {
 				return err
 			}
@@ -127,19 +130,21 @@ func (s *Store) RecordLivePoints(live LivePoints) (*LivePointsRecorded, error) {
 
 // livePointsImport finds or makes the import that holds one device's points
 // of one UTC day. Its hash is of the device and day, so it is found again;
-// finished_at is when it last took points.
-func livePointsImport(tx *sql.Tx, device, day, recordedBy string, at int64) (string, *ImportCounts, error) {
+// finished_at is when it last took points. It is owner's, found among owner's
+// imports only.
+func livePointsImport(ctx context.Context, tx *sql.Tx, owner, device, day, recordedBy string, at int64) (string, *ImportCounts, error) {
 	sum := sha256.Sum256([]byte(ImportKindPhoneLive + "\n" + device + "\n" + day))
 	hash := hex.EncodeToString(sum[:])
 	var id, kind, encoded string
-	err := tx.QueryRow(`SELECT id, kind, counts FROM imports WHERE sha256 = ?`, hash).Scan(&id, &kind, &encoded)
+	err := tx.QueryRowContext(ctx, `SELECT id, kind, counts FROM imports WHERE owner_principal_id = $1 AND sha256 = $2`, owner, hash).Scan(&id, &kind, &encoded)
 	if errors.Is(err, sql.ErrNoRows) {
 		var seq int64
-		if id, seq, err = nextID(tx, "imports", "import"); err != nil {
+		if id, seq, err = nextID(ctx, tx, "imports", "import"); err != nil {
 			return "", nil, err
 		}
-		_, err = tx.Exec(`INSERT INTO imports (id, seq, kind, sha256, source_machine, source_path, recorded_by, imported_at) VALUES (?,?,?,?,?,?,?,?)`,
-			id, seq, ImportKindPhoneLive, hash, device, "", recordedBy, at)
+		_, err = tx.ExecContext(ctx, `INSERT INTO imports (id, seq, owner_principal_id, kind, sha256, source_machine, source_path, recorded_by, imported_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+			id, seq, owner, ImportKindPhoneLive, hash, device, "", recordedBy, at)
 		return id, &ImportCounts{}, err
 	}
 	if err != nil {
@@ -279,8 +284,9 @@ type storedPhoneRecord struct {
 // edited (a revision with reason update, attach or restore, or a description
 // or tags) is left as it is, as is one someone deleted, and no segment is
 // made where it would overlap one of those or any visit or movement from
-// another source. A stored record no segment matches is soft-deleted.
-func (s *Store) SegmentPhonePoints(request PhoneSegmentRequest) (*PhoneSegmentation, error) {
+// another source. A stored record no segment matches is soft-deleted. It
+// reads and writes owner's records only.
+func (s *Store) SegmentPhonePoints(ctx context.Context, owner string, request PhoneSegmentRequest) (*PhoneSegmentation, error) {
 	if request.From <= 0 || request.To <= request.From {
 		return nil, fmt.Errorf("%w: from and to are required, and to must be after from", ErrInvalid)
 	}
@@ -289,28 +295,28 @@ func (s *Store) SegmentPhonePoints(request PhoneSegmentRequest) (*PhoneSegmentat
 	}
 	result := &PhoneSegmentation{DryRun: request.DryRun, To: request.To, PlacesCreated: []string{},
 		Actions: []PhoneSegmentAction{}, ActionCounts: map[string]int{}}
-	err := s.inTransaction(func(tx *sql.Tx) error {
+	err := s.inOwnerTransaction(ctx, owner, func(tx *sql.Tx) error {
 		at := now()
-		from, err := phoneSegmentStart(tx, request.From)
+		from, err := phoneSegmentStart(ctx, tx, owner, request.From)
 		if err != nil {
 			return err
 		}
 		result.From = from
-		fixes, tooRough, err := readPhoneFixes(tx, from, request.To)
+		fixes, tooRough, err := readPhoneFixes(ctx, tx, owner, from, request.To)
 		if err != nil {
 			return err
 		}
 		result.PointsRead, result.PointsTooRough = len(fixes)+tooRough, tooRough
 		stays := findPhoneStays(fixes)
-		storedVisits, err := readStoredPhoneRecords(tx, "visits", "", from, request.To)
+		storedVisits, err := readStoredPhoneRecords(ctx, tx, owner, "visits", "", from, request.To)
 		if err != nil {
 			return err
 		}
-		storedTrips, err := readStoredPhoneRecords(tx, "trips", "AND kind = 'movement'", from, request.To)
+		storedTrips, err := readStoredPhoneRecords(ctx, tx, owner, "trips", "AND kind = 'movement'", from, request.To)
 		if err != nil {
 			return err
 		}
-		segmenter := phoneSegmenter{stayPlaces: map[int]string{}, tx: tx, at: at, fixes: fixes, result: result}
+		segmenter := phoneSegmenter{stayPlaces: map[int]string{}, ctx: ctx, tx: tx, owner: owner, at: at, fixes: fixes, result: result}
 		// Visits first, so each movement starts and ends at its stays' places.
 		for _, stay := range stays {
 			if err := segmenter.visit(stay, storedVisits); err != nil {
@@ -344,13 +350,13 @@ func (s *Store) SegmentPhonePoints(request PhoneSegmentRequest) (*PhoneSegmentat
 
 // phoneSegmentStart moves from back to the start of a stored phone visit or
 // movement that runs across it, so a run never cuts a stay in two.
-func phoneSegmentStart(tx *sql.Tx, from int64) (int64, error) {
+func phoneSegmentStart(ctx context.Context, tx *sql.Tx, owner string, from int64) (int64, error) {
 	var earliest sql.NullInt64
-	err := tx.QueryRow(`SELECT MIN(started_at) FROM (
-			SELECT started_at FROM visits WHERE source = ? AND deleted_at = 0 AND started_at < ? AND ended_at >= ?
+	err := tx.QueryRowContext(ctx, `SELECT MIN(started_at) FROM (
+			SELECT started_at FROM visits WHERE owner_principal_id = $1 AND source = $2 AND deleted_at = 0 AND started_at < $3 AND ended_at >= $3
 			UNION ALL
-			SELECT started_at FROM trips WHERE source = ? AND kind = 'movement' AND deleted_at = 0 AND started_at < ? AND ended_at >= ?)`,
-		SourcePhonePoints, from, from, SourcePhonePoints, from, from).Scan(&earliest)
+			SELECT started_at FROM trips WHERE owner_principal_id = $1 AND source = $2 AND kind = 'movement' AND deleted_at = 0 AND started_at < $3 AND ended_at >= $3
+		) AS crossing`, owner, SourcePhonePoints, from).Scan(&earliest)
 	if err != nil {
 		return 0, err
 	}
@@ -362,9 +368,9 @@ func phoneSegmentStart(tx *sql.Tx, from int64) (int64, error) {
 
 // readPhoneFixes is the phone points of [from, to) in time order, without
 // the ones too rough to place a stay, which it counts.
-func readPhoneFixes(tx *sql.Tx, from, to int64) ([]phoneFix, int, error) {
-	rows, err := tx.Query(`SELECT timestamp, latitude, longitude, accuracy_meters FROM points
-		WHERE source = ? AND timestamp >= ? AND timestamp < ? ORDER BY timestamp, latitude, longitude`, PointSourcePhone, from, to)
+func readPhoneFixes(ctx context.Context, tx *sql.Tx, owner string, from, to int64) ([]phoneFix, int, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT timestamp, latitude, longitude, accuracy_meters FROM points
+		WHERE owner_principal_id = $1 AND source = $2 AND timestamp >= $3 AND timestamp < $4 ORDER BY timestamp, latitude, longitude`, owner, PointSourcePhone, from, to)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -388,12 +394,12 @@ func readPhoneFixes(tx *sql.Tx, from, to int64) ([]phoneFix, int, error) {
 
 // readStoredPhoneRecords is the visits or movements earlier runs made that
 // start in [from, to), deleted ones too.
-func readStoredPhoneRecords(tx *sql.Tx, table, extraWhere string, from, to int64) ([]*storedPhoneRecord, error) {
-	rows, err := tx.Query(`SELECT r.id, r.started_at, r.ended_at, r.deleted_at,
-			r.description != '' OR r.tags != '[]' OR EXISTS (SELECT 1 FROM revisions v WHERE v.entity_id = r.id AND v.reason IN ('update', 'attach', 'restore')),
+func readStoredPhoneRecords(ctx context.Context, tx *sql.Tx, owner, table, extraWhere string, from, to int64) ([]*storedPhoneRecord, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT r.id, r.started_at, r.ended_at, r.deleted_at,
+			r.description <> '' OR r.tags <> '[]'::jsonb OR EXISTS (SELECT 1 FROM revisions v WHERE v.entity_id = r.id AND v.reason IN ('update', 'attach', 'restore')),
 			EXISTS (SELECT 1 FROM revisions v WHERE v.entity_id = r.id AND v.reason = 'delete')
-		FROM `+table+` r WHERE r.source = ? `+extraWhere+` AND r.started_at >= ? AND r.started_at < ? ORDER BY r.started_at, r.seq`,
-		SourcePhonePoints, from, to)
+		FROM `+table+` r WHERE r.owner_principal_id = $1 AND r.source = $2 `+extraWhere+` AND r.started_at >= $3 AND r.started_at < $4 ORDER BY r.started_at, r.seq`,
+		owner, SourcePhonePoints, from, to)
 	if err != nil {
 		return nil, err
 	}
@@ -413,10 +419,13 @@ type phoneSegmenter struct {
 	// stayPlaces is the place each stay's visit is at, by the stay's first
 	// fix, so the movements between stays start and end at the same places.
 	stayPlaces map[int]string
+	ctx        context.Context
 	tx         *sql.Tx
-	at         int64
-	fixes      []phoneFix
-	result     *PhoneSegmentation
+	// owner is whose records the run reads and writes, and no one else's.
+	owner  string
+	at     int64
+	fixes  []phoneFix
+	result *PhoneSegmentation
 }
 
 func (segmenter *phoneSegmenter) record(action PhoneSegmentAction) {
@@ -457,8 +466,8 @@ func claim(stored []*storedPhoneRecord, startedAt, endedAt int64) (own *storedPh
 // source that overlaps the span, or "".
 func (segmenter *phoneSegmenter) otherSourceOverlaps(table, extraWhere string, startedAt, endedAt int64) (string, error) {
 	var id string
-	err := segmenter.tx.QueryRow(`SELECT id FROM `+table+` WHERE source != ? `+extraWhere+` AND deleted_at = 0
-		AND started_at < ? AND ended_at > ? ORDER BY started_at LIMIT 1`, SourcePhonePoints, endedAt, startedAt).Scan(&id)
+	err := segmenter.tx.QueryRowContext(segmenter.ctx, `SELECT id FROM `+table+` WHERE owner_principal_id = $1 AND source <> $2 `+extraWhere+` AND deleted_at = 0
+		AND started_at < $3 AND ended_at > $4 ORDER BY started_at, seq LIMIT 1`, segmenter.owner, SourcePhonePoints, endedAt, startedAt).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
@@ -474,7 +483,7 @@ func (segmenter *phoneSegmenter) otherSourceOverlaps(table, extraWhere string, s
 func (segmenter *phoneSegmenter) placeFor(stay phoneStay, current *string) (string, error) {
 	if current != nil {
 		var latitude, longitude, radius float64
-		err := segmenter.tx.QueryRow(`SELECT latitude, longitude, radius_meters FROM places WHERE id = ? AND deleted_at = 0`, *current).
+		err := segmenter.tx.QueryRowContext(segmenter.ctx, `SELECT latitude, longitude, radius_meters FROM places WHERE id = $1 AND owner_principal_id = $2 AND deleted_at = 0`, *current, segmenter.owner).
 			Scan(&latitude, &longitude, &radius)
 		switch {
 		case err == nil:
@@ -489,9 +498,9 @@ func (segmenter *phoneSegmenter) placeFor(stay phoneStay, current *string) (stri
 	// radius a source gives, and the distance decides.
 	const boxDegrees = 0.05
 	longitudeBox := boxDegrees / math.Max(math.Cos(stay.latitude*math.Pi/180), 0.01)
-	rows, err := segmenter.tx.Query(`SELECT id, latitude, longitude, radius_meters FROM places WHERE deleted_at = 0
-		AND latitude BETWEEN ? AND ? AND longitude BETWEEN ? AND ? ORDER BY seq`,
-		stay.latitude-boxDegrees, stay.latitude+boxDegrees, stay.longitude-longitudeBox, stay.longitude+longitudeBox)
+	rows, err := segmenter.tx.QueryContext(segmenter.ctx, `SELECT id, latitude, longitude, radius_meters FROM places WHERE owner_principal_id = $1 AND deleted_at = 0
+		AND latitude BETWEEN $2 AND $3 AND longitude BETWEEN $4 AND $5 ORDER BY seq`,
+		segmenter.owner, stay.latitude-boxDegrees, stay.latitude+boxDegrees, stay.longitude-longitudeBox, stay.longitude+longitudeBox)
 	if err != nil {
 		return "", err
 	}
@@ -515,12 +524,12 @@ func (segmenter *phoneSegmenter) placeFor(stay phoneStay, current *string) (stri
 	if nearestID != "" {
 		return nearestID, nil
 	}
-	id, seq, err := nextID(segmenter.tx, "places", "place")
+	id, seq, err := nextID(segmenter.ctx, segmenter.tx, "places", "place")
 	if err != nil {
 		return "", err
 	}
-	if _, err := segmenter.tx.Exec(`INSERT INTO places (id, seq, latitude, longitude, radius_meters, kind, source, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?)`, id, seq, stay.latitude, stay.longitude, phonePlaceMatchMeters, PlaceKindOther,
+	if _, err := segmenter.tx.ExecContext(segmenter.ctx, `INSERT INTO places (id, seq, owner_principal_id, latitude, longitude, radius_meters, kind, source, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`, id, seq, segmenter.owner, stay.latitude, stay.longitude, phonePlaceMatchMeters, PlaceKindOther,
 		SourcePhonePoints, segmenter.at, segmenter.at); err != nil {
 		return "", err
 	}
@@ -563,7 +572,7 @@ func (segmenter *phoneSegmenter) visit(stay phoneStay, stored []*storedPhoneReco
 	}
 	var current *Visit
 	if own != nil {
-		if current, err = getVisitRow(segmenter.tx, own.id); err != nil {
+		if current, err = getVisitRow(segmenter.ctx, segmenter.tx, ownership.OwnedBy(segmenter.owner), own.id); err != nil {
 			return err
 		}
 	}
@@ -578,12 +587,12 @@ func (segmenter *phoneSegmenter) visit(stay phoneStay, stored []*storedPhoneReco
 	segmenter.stayPlaces[stay.first] = placeID
 	action.PlaceID = &placeID
 	if own == nil {
-		id, seq, err := nextID(segmenter.tx, "visits", "visit")
+		id, seq, err := nextID(segmenter.ctx, segmenter.tx, "visits", "visit")
 		if err != nil {
 			return err
 		}
-		if _, err := segmenter.tx.Exec(`INSERT INTO visits (id, seq, place_id, started_at, ended_at, latitude, longitude,
-			source, source_ref, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`, id, seq, placeID, startedAt, endedAt,
+		if _, err := segmenter.tx.ExecContext(segmenter.ctx, `INSERT INTO visits (id, seq, owner_principal_id, place_id, started_at, ended_at, latitude, longitude,
+			source, source_ref, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`, id, seq, segmenter.owner, placeID, startedAt, endedAt,
 			stay.latitude, stay.longitude, SourcePhonePoints, phoneSourceRef(startedAt, endedAt), segmenter.at, segmenter.at); err != nil {
 			return err
 		}
@@ -598,17 +607,17 @@ func (segmenter *phoneSegmenter) visit(stay phoneStay, stored []*storedPhoneReco
 		segmenter.record(action)
 		return nil
 	}
-	if err := snapshot(segmenter.tx, EntityVisit, own.id, reasonPhonePoints, segmenter.at); err != nil {
+	if err := snapshot(segmenter.ctx, segmenter.tx, EntityVisit, own.id, reasonPhonePoints, segmenter.at); err != nil {
 		return err
 	}
 	// A moved center may be in another town: clear it for
 	// location-name-localities to name again.
 	locality := ""
 	if !sameFloat(current.Latitude, &stay.latitude) || !sameFloat(current.Longitude, &stay.longitude) {
-		locality = "locality=NULL, "
+		locality = "locality = NULL, "
 	}
-	if _, err := segmenter.tx.Exec(`UPDATE visits SET place_id=?, started_at=?, ended_at=?, latitude=?, longitude=?, source_ref=?,
-		`+locality+`updated_at=? WHERE id=?`, placeID, startedAt, endedAt, stay.latitude, stay.longitude,
+	if _, err := segmenter.tx.ExecContext(segmenter.ctx, `UPDATE visits SET place_id = $1, started_at = $2, ended_at = $3, latitude = $4, longitude = $5,
+		source_ref = $6, `+locality+`updated_at = $7 WHERE id = $8`, placeID, startedAt, endedAt, stay.latitude, stay.longitude,
 		phoneSourceRef(startedAt, endedAt), segmenter.at, own.id); err != nil {
 		return err
 	}
@@ -643,7 +652,7 @@ func (segmenter *phoneSegmenter) movement(movement phoneMovement, stored []*stor
 	var current *Trip
 	var currentStart, currentEnd *string
 	if own != nil {
-		if current, err = getTripRow(segmenter.tx, own.id); err != nil {
+		if current, err = getTripRow(segmenter.ctx, segmenter.tx, ownership.OwnedBy(segmenter.owner), own.id); err != nil {
 			return err
 		}
 		currentStart, currentEnd = current.StartPlaceID, current.EndPlaceID
@@ -657,18 +666,18 @@ func (segmenter *phoneSegmenter) movement(movement phoneMovement, stored []*stor
 		return err
 	}
 	if own == nil {
-		id, seq, err := nextID(segmenter.tx, "trips", "trip")
+		id, seq, err := nextID(segmenter.ctx, segmenter.tx, "trips", "trip")
 		if err != nil {
 			return err
 		}
-		if _, err := segmenter.tx.Exec(`INSERT INTO trips (id, seq, kind, started_at, ended_at, start_latitude, start_longitude,
+		if _, err := segmenter.tx.ExecContext(segmenter.ctx, `INSERT INTO trips (id, seq, owner_principal_id, kind, started_at, ended_at, start_latitude, start_longitude,
 			end_latitude, end_longitude, start_place_id, end_place_id, mode, distance_meters, source, source_ref, created_at, updated_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, seq, TripKindMovement, movement.startedAt, movement.endedAt,
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`, id, seq, segmenter.owner, TripKindMovement, movement.startedAt, movement.endedAt,
 			from.latitude, from.longitude, to.latitude, to.longitude, startPlace, endPlace, movement.mode, distance,
 			SourcePhonePoints, phoneSourceRef(movement.startedAt, movement.endedAt), segmenter.at, segmenter.at); err != nil {
 			return err
 		}
-		if err := writePath(segmenter.tx, id, movement.path); err != nil {
+		if err := writePath(segmenter.ctx, segmenter.tx, segmenter.owner, id, movement.path); err != nil {
 			return err
 		}
 		action.Action, action.ID = "create", id
@@ -676,7 +685,7 @@ func (segmenter *phoneSegmenter) movement(movement phoneMovement, stored []*stor
 		return nil
 	}
 	action.ID = own.id
-	path, err := readPath(segmenter.tx, own.id)
+	path, err := readPath(segmenter.ctx, segmenter.tx, own.id)
 	if err != nil {
 		return err
 	}
@@ -689,20 +698,20 @@ func (segmenter *phoneSegmenter) movement(movement phoneMovement, stored []*stor
 		segmenter.record(action)
 		return nil
 	}
-	if err := snapshot(segmenter.tx, EntityTrip, own.id, reasonPhonePoints, segmenter.at); err != nil {
+	if err := snapshot(segmenter.ctx, segmenter.tx, EntityTrip, own.id, reasonPhonePoints, segmenter.at); err != nil {
 		return err
 	}
 	localities := ""
 	if !endsSame {
-		localities = "start_locality=NULL, end_locality=NULL, "
+		localities = "start_locality = NULL, end_locality = NULL, "
 	}
-	if _, err := segmenter.tx.Exec(`UPDATE trips SET started_at=?, ended_at=?, start_latitude=?, start_longitude=?, end_latitude=?,
-		end_longitude=?, start_place_id=?, end_place_id=?, mode=?, distance_meters=?, source_ref=?, `+localities+`updated_at=? WHERE id=?`,
+	if _, err := segmenter.tx.ExecContext(segmenter.ctx, `UPDATE trips SET started_at = $1, ended_at = $2, start_latitude = $3, start_longitude = $4, end_latitude = $5,
+		end_longitude = $6, start_place_id = $7, end_place_id = $8, mode = $9, distance_meters = $10, source_ref = $11, `+localities+`updated_at = $12 WHERE id = $13`,
 		movement.startedAt, movement.endedAt, from.latitude, from.longitude, to.latitude, to.longitude, startPlace, endPlace,
 		movement.mode, distance, phoneSourceRef(movement.startedAt, movement.endedAt), segmenter.at, own.id); err != nil {
 		return err
 	}
-	if err := writePath(segmenter.tx, own.id, movement.path); err != nil {
+	if err := writePath(segmenter.ctx, segmenter.tx, segmenter.owner, own.id, movement.path); err != nil {
 		return err
 	}
 	action.Action = "update"
@@ -717,10 +726,10 @@ func (segmenter *phoneSegmenter) deleteUnmatched(entityType string, stored []*st
 		if record.matched || record.deletedAt != 0 || record.editedByHand {
 			continue
 		}
-		if err := snapshot(segmenter.tx, entityType, record.id, reasonPhonePoints, segmenter.at); err != nil {
+		if err := snapshot(segmenter.ctx, segmenter.tx, entityType, record.id, reasonPhonePoints, segmenter.at); err != nil {
 			return err
 		}
-		if _, err := segmenter.tx.Exec(`UPDATE `+entityTables[entityType]+` SET deleted_at=?, updated_at=? WHERE id=?`,
+		if _, err := segmenter.tx.ExecContext(segmenter.ctx, `UPDATE `+entityTables[entityType]+` SET deleted_at = $1, updated_at = $2 WHERE id = $3`,
 			segmenter.at, segmenter.at, record.id); err != nil {
 			return err
 		}

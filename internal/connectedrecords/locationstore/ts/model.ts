@@ -19,6 +19,11 @@ export interface Place {
    * ID is place_000001: what anything else joins on.
    */
   id: string;
+  /**
+   * OwnerPrincipalID is principal-store's id of the person who keeps the
+   * record.
+   */
+  owner_principal_id: string;
   name: string;
   latitude: number /* float64 */;
   longitude: number /* float64 */;
@@ -92,6 +97,11 @@ export interface Visit {
    * ID is visit_000001.
    */
   id: string;
+  /**
+   * OwnerPrincipalID is principal-store's id of the person who keeps the
+   * record.
+   */
+  owner_principal_id: string;
   place_id?: string;
   /**
    * PlaceName is the place's name when the visit was read, for display only.
@@ -147,6 +157,11 @@ export interface Trip {
    * ID is trip_000001.
    */
   id: string;
+  /**
+   * OwnerPrincipalID is principal-store's id of the person who keeps the
+   * record.
+   */
+  owner_principal_id: string;
   /**
    * Kind is one of GET /vocabularies trip_kinds: a movement a source
    * recorded, or a journey made of them.
@@ -297,6 +312,11 @@ export interface Import {
    * ID is import_000001.
    */
   id: string;
+  /**
+   * OwnerPrincipalID is principal-store's id of the person who keeps the
+   * record.
+   */
+  owner_principal_id: string;
   /**
    * Kind is one of GET /vocabularies import_kinds.
    */
@@ -534,6 +554,11 @@ export interface AttachChildren {
  */
 export interface Revision {
   revision_id: number /* int64 */;
+  /**
+   * OwnerPrincipalID is principal-store's id of the person who keeps the
+   * record.
+   */
+  owner_principal_id: string;
   entity_type: string;
   entity_id: string;
   reason: string;
@@ -617,6 +642,11 @@ export interface HomePeriod {
    * ID is home_period_000001.
    */
   id: string;
+  /**
+   * OwnerPrincipalID is principal-store's id of the person who keeps the
+   * record.
+   */
+  owner_principal_id: string;
   /**
    * PlaceID is the home place; null when the nights there named no place.
    */
@@ -758,6 +788,11 @@ export interface CalendarEventLink {
    * ID is calendar_event_link_000001.
    */
   id: string;
+  /**
+   * OwnerPrincipalID is principal-store's id of the person who keeps the
+   * record.
+   */
+  owner_principal_id: string;
   /**
    * CalendarID and EventID are Google Calendar's ids for the event: what
    * the link is found again by.
@@ -949,6 +984,11 @@ export interface CalendarSeriesPlace {
    * ID is calendar_series_place_000001.
    */
   id: string;
+  /**
+   * OwnerPrincipalID is principal-store's id of the person who keeps the
+   * record.
+   */
+  owner_principal_id: string;
   /**
    * CalendarID and RecurringEventID are Google's ids for the series: what
    * the row is found again by.
@@ -1176,6 +1216,11 @@ export interface PlaceSuggestion {
    * ID is place_suggestion_000001.
    */
   id: string;
+  /**
+   * OwnerPrincipalID is principal-store's id of the person who keeps the
+   * record.
+   */
+  owner_principal_id: string;
   place_id: string;
   /**
    * Source is one of GET /vocabularies place_suggestion_sources; SourceRef
