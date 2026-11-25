@@ -66,7 +66,7 @@ func gateCommandsOfEveryHarness(t *testing.T) map[string]string {
 	for harness, build := range map[string]func(*store.Session) (map[string][]any, error){
 		"codex": srv.buildCodexHookConfig,
 		"devin": func(sess *store.Session) (map[string][]any, error) {
-			return srv.buildPrehookCommandHookTree(sess, msg.HarnessDevin, "devin-prehook")
+			return srv.buildPrehookCommandHookTree(sess, msg.HarnessDevin)
 		},
 	} {
 		tree, err := build(&store.Session{SessionID: "s1"})
@@ -131,6 +131,103 @@ func TestPermissionGateCurlGivesUpBeforeTheHookTimeout(t *testing.T) {
 	for harness, command := range gateCommandsOfEveryHarness(t) {
 		if !strings.Contains(command, "--max-time 86100 ") {
 			t.Errorf("%s: command %q does not limit curl to %ds", harness, command, permissionGateCurlMaxTimeSeconds)
+		}
+	}
+}
+
+// Codex trusts a hook by a hash of its command, stored under the hook's
+// position, so a command that differs between sessions makes one session's
+// trust undo another's. The codex and devin gates must be one string for every
+// session, server address and harness, with nothing of the session in it.
+func TestTheCodexAndDevinGateCommandIsTheSameInEverySession(t *testing.T) {
+	want := permissionGateCommandPostingToTheURLInTheEnvironment()
+	for _, listenAddr := range []string{"127.0.0.1:8160", ":18160", "https://bridge.example"} {
+		srv, _ := testServerWithHookStore(t)
+		srv.cfg.ListenAddr = listenAddr
+		for _, harness := range []msg.Harness{msg.HarnessCodex, msg.HarnessDevin} {
+			for _, sessionID := range []string{"br_1", "br_2", "a&touch x;#"} {
+				tree, err := srv.buildPrehookCommandHookTree(&store.Session{SessionID: sessionID, Harness: harness}, harness)
+				if err != nil {
+					t.Fatal(err)
+				}
+				encoded, _ := json.Marshal(tree["PreToolUse"])
+				var entries []struct {
+					Hooks []struct {
+						Command string `json:"command"`
+					} `json:"hooks"`
+				}
+				if err := json.Unmarshal(encoded, &entries); err != nil {
+					t.Fatal(err)
+				}
+				if got := entries[0].Hooks[0].Command; got != want {
+					t.Errorf("%s at %s, session %q: gate command %q, want the one fixed command %q", harness, listenAddr, sessionID, got, want)
+				}
+			}
+		}
+	}
+	if !strings.Contains(want, `"$`+permissionGateURLEnvironmentVariable+`"`) {
+		t.Errorf("the gate command %q does not post to the quoted %s", want, permissionGateURLEnvironmentVariable)
+	}
+}
+
+// The spawn hands codex and devin their gate's address in the variable the
+// command reads, and hands it to no other harness.
+func TestPermissionGateEnvironmentNamesTheSessionsGate(t *testing.T) {
+	srv, _ := testServerWithHookStore(t)
+	srv.cfg.ListenAddr = "127.0.0.1:8160"
+	cases := map[msg.Harness]string{
+		msg.HarnessCodex:      permissionGateURLEnvironmentVariable + "=http://127.0.0.1:8160/permission/codex-prehook/br_1",
+		msg.HarnessDevin:      permissionGateURLEnvironmentVariable + "=http://127.0.0.1:8160/permission/devin-prehook/br_1",
+		msg.HarnessClaudeCode: "",
+		msg.HarnessMock:       "",
+	}
+	for harness, want := range cases {
+		got := srv.permissionGateEnvironment(&store.Session{SessionID: "br_1", Harness: harness})
+		if want == "" {
+			if len(got) != 0 {
+				t.Errorf("%s: environment %q, want none", harness, got)
+			}
+			continue
+		}
+		if len(got) != 1 || got[0] != want {
+			t.Errorf("%s: environment %q, want [%q]", harness, got, want)
+		}
+	}
+	if got := srv.permissionGateEnvironment(&store.Session{Harness: msg.HarnessCodex}); len(got) != 0 {
+		t.Errorf("a session with no id: environment %q, want none", got)
+	}
+}
+
+// With the variable empty or unset the real curl has no address to post to,
+// and the command must take the blocking exit, as it does for any failed post.
+func TestTheEnvironmentGateBlocksWhenTheVariableIsEmptyOrUnset(t *testing.T) {
+	curl, err := exec.LookPath("curl")
+	if err != nil {
+		t.Skip("no curl on PATH")
+	}
+	command := permissionGateCommandPostingToTheURLInTheEnvironment()
+	var withoutTheVariable []string
+	for _, variable := range os.Environ() {
+		if !strings.HasPrefix(variable, permissionGateURLEnvironmentVariable+"=") {
+			withoutTheVariable = append(withoutTheVariable, variable)
+		}
+	}
+	for name, environment := range map[string][]string{
+		"unset": withoutTheVariable,
+		"empty": append(append([]string{}, withoutTheVariable...), permissionGateURLEnvironmentVariable+"="),
+	} {
+		shell := exec.Command("/bin/sh", "-c", command)
+		shell.Env = append(environment, "PATH="+filepath.Dir(curl)+":/usr/bin:/bin")
+		shell.Stdin = strings.NewReader(`{"tool_name":"Bash"}`)
+		var stdout, stderr bytes.Buffer
+		shell.Stdout, shell.Stderr = &stdout, &stderr
+		err := shell.Run()
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 2 {
+			t.Errorf("%s: %v, stdout %q, stderr %q; want exit 2", name, err, stdout.String(), stderr.String())
+		}
+		if !strings.Contains(stderr.String(), permissionGateUnreachableMessage) {
+			t.Errorf("%s: stderr %q lacks the blocking message", name, stderr.String())
 		}
 	}
 }

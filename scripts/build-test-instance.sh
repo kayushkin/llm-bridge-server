@@ -38,10 +38,16 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$OUT/llm-bridge-mock" ./cmd/m
 
 # The real harness wrappers. The machine supplies the agent programs
 # themselves (claude, codex) and their logins; scripts/test-instance.sh
-# use-machine-logins links them in.
+# use-machine-logins links them in. Each is built from its main clone beside
+# this repo unless LLM_BRIDGE_CLAUDECODE_SOURCE or LLM_BRIDGE_CODEX_SOURCE names
+# another folder, such as a worktree of the branch under test.
 for wrapper in llm-bridge-claudecode llm-bridge-codex; do
-  echo "==> Building $wrapper..."
-  (cd "$PARENT_DIR/$wrapper" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$OUT/$wrapper" .)
+  case "$wrapper" in
+    llm-bridge-claudecode) source_dir="${LLM_BRIDGE_CLAUDECODE_SOURCE:-$PARENT_DIR/$wrapper}" ;;
+    llm-bridge-codex) source_dir="${LLM_BRIDGE_CODEX_SOURCE:-$PARENT_DIR/$wrapper}" ;;
+  esac
+  echo "==> Building $wrapper from $source_dir at $(git -C "$source_dir" rev-parse --short HEAD)..."
+  (cd "$source_dir" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$OUT/$wrapper" .)
 done
 
 

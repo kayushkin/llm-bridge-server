@@ -390,8 +390,13 @@ EOF
   if [ ! -f "$ROOT/env/runner.env" ]; then
     echo "# Variables for the test runner and the harnesses it starts. Restart $UNIT_PREFIX-runner after a change." > "$ROOT/env/runner.env"
   fi
+  # The runner's environment reaches every harness it starts. The codex
+  # wrapper sends its permission checks to LLMBRIDGE_SERVER_URL and, unset,
+  # to localhost:8160, which on a machine running a real runner is the tunnel
+  # to the real bridge: a test check reached it on 2026-11-25.
   write_unit "$UNIT_PREFIX-runner" "llm-bridge test instance: its runner" "llm-bridge-runner run" "$ROOT/env/runner.env" <<EOF
 Environment=LLMBRIDGE_RUNNER_CONFIG=$ROOT/runner/config.json
+Environment=LLMBRIDGE_SERVER_URL=$BASE
 EOF
   systemctl --user daemon-reload
 

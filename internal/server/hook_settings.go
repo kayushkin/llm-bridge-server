@@ -90,6 +90,7 @@ func (s *Server) startOnInstance(ctx context.Context, sess *store.Session, inst 
 		return nil, err
 	}
 	sessionEnvironment = append(sessionEnvironment, s.sessionPostingEnvironmentForInstance(sess, inst)...)
+	sessionEnvironment = append(sessionEnvironment, s.permissionGateEnvironment(sess)...)
 	return s.harness.StartOnInstance(ctx, sess, inst, credID, sessionEnvironment)
 }
 
@@ -241,7 +242,7 @@ func (s *Server) injectDevinHookSettings(sess *store.Session) error {
 	if _, ok := cfg["devin_hooks"]; ok {
 		return nil
 	}
-	tree, err := s.buildPrehookCommandHookTree(sess, msg.HarnessDevin, "devin-prehook")
+	tree, err := s.buildPrehookCommandHookTree(sess, msg.HarnessDevin)
 	if err != nil {
 		return fmt.Errorf("synthesize devin hooks for %s: %w", sess.SessionID, err)
 	}
@@ -253,7 +254,7 @@ func (s *Server) injectDevinHookSettings(sess *store.Session) error {
 		return fmt.Errorf("encode devin hooks for %s: %w", sess.SessionID, err)
 	}
 	cfg["devin_hooks"] = encoded
-	gateURL, err := json.Marshal(fmt.Sprintf("%s/permission/devin-prehook/%s", publicBaseURL(s.cfg.ListenAddr), escapePathSegment(sess.SessionID)))
+	gateURL, err := json.Marshal(s.permissionGateURL(sess, permissionGateRouteByHarness[msg.HarnessDevin]))
 	if err != nil {
 		return err
 	}
@@ -399,7 +400,7 @@ func (s *Server) collectApplicableHooks(sess *store.Session, harness msg.Harness
 //
 //	{
 //	  "PreToolUse": [
-//	    { "matcher": ".*", "hooks": [{"type":"command","command":"curl …/permission/codex-prehook/<id>","timeout":86400}] }
+//	    { "matcher": ".*", "hooks": [{"type":"command","command":"curl … \"$LLM_BRIDGE_PERMISSION_GATE_URL\" || …","timeout":86400}] }
 //	  ]
 //	}
 //
@@ -413,14 +414,25 @@ func (s *Server) collectApplicableHooks(sess *store.Session, harness msg.Harness
 // Returns nil when there's nothing to inject so the caller can skip the
 // HarnessConfig write entirely.
 func (s *Server) buildCodexHookConfig(sess *store.Session) (map[string][]any, error) {
-	return s.buildPrehookCommandHookTree(sess, msg.HarnessCodex, "codex-prehook")
+	return s.buildPrehookCommandHookTree(sess, msg.HarnessCodex)
 }
 
 // buildPrehookCommandHookTree builds the {event: [{matcher, hooks:[{type:
 // "command", command, timeout}]}]} tree codex and devin both read: the
-// permission gate at /permission/<gateRoute>/<session> first, then the
-// hook-store hooks scoped to harness.
-func (s *Server) buildPrehookCommandHookTree(sess *store.Session, harness msg.Harness, gateRoute string) (map[string][]any, error) {
+// permission gate first, then the hook-store hooks scoped to harness.
+//
+// The gate's command is the same in every session and on every machine: it
+// posts to "$LLM_BRIDGE_PERMISSION_GATE_URL", and the spawn puts this
+// session's gate address in that variable (permissionGateEnvironment). Codex
+// runs only a hook it trusts, and stores that trust in the user's config.toml
+// under the hook's position, as a hash of its command. A command that named
+// the session gave every session its own hash for the one position, so the
+// trust one session wrote turned every other running session's gate to
+// "modified", and codex stopped running it (measured on codex 0.171,
+// 2026-11-23). With one command there is one hash, which llm-bridge-codex
+// trusts before the session's first turn. An empty or missing variable makes
+// curl fail, and the command then blocks the call like any other failed post.
+func (s *Server) buildPrehookCommandHookTree(sess *store.Session, harness msg.Harness) (map[string][]any, error) {
 	base := publicBaseURL(s.cfg.ListenAddr)
 	byEvent := make(map[string][]any, 4)
 
@@ -434,7 +446,7 @@ func (s *Server) buildPrehookCommandHookTree(sess *store.Session, harness msg.Ha
 			"hooks": []map[string]any{
 				{
 					"type":    "command",
-					"command": permissionGateCommand(fmt.Sprintf("%s/permission/%s/%s", base, gateRoute, escapePathSegment(sess.SessionID))),
+					"command": permissionGateCommandPostingToTheURLInTheEnvironment(),
 					"timeout": permissionGateHookTimeoutSeconds,
 				},
 			},
@@ -467,6 +479,39 @@ func (s *Server) buildPrehookCommandHookTree(sess *store.Session, harness msg.Ha
 		return nil, nil
 	}
 	return byEvent, nil
+}
+
+// permissionGateURLEnvironmentVariable carries a codex or devin session's
+// permission gate address into its harness process, where the gate hook's
+// command reads it (buildPrehookCommandHookTree). llm-bridge-codex also posts
+// the approval requests codex sends to it.
+const permissionGateURLEnvironmentVariable = "LLM_BRIDGE_PERMISSION_GATE_URL"
+
+// permissionGateRouteByHarness names the /permission/<route>/<session> gate of
+// each harness whose gate hook reads its address from
+// permissionGateURLEnvironmentVariable.
+var permissionGateRouteByHarness = map[msg.Harness]string{
+	msg.HarnessCodex: "codex-prehook",
+	msg.HarnessDevin: "devin-prehook",
+}
+
+// permissionGateURL is the full address of sess's permission gate at route.
+func (s *Server) permissionGateURL(sess *store.Session, route string) string {
+	return fmt.Sprintf("%s/permission/%s/%s", publicBaseURL(s.cfg.ListenAddr), route, escapePathSegment(sess.SessionID))
+}
+
+// permissionGateEnvironment returns the variable that tells sess's gate hook
+// where to post, for a harness whose hook reads it; nothing for any other
+// harness. It goes into every spawn, local or runner, beside the session
+// posting variables. The ssh transport cannot deliver it, and
+// StartOnInstance refuses such a spawn rather than start a session whose
+// every tool call would be blocked.
+func (s *Server) permissionGateEnvironment(sess *store.Session) []string {
+	route, gated := permissionGateRouteByHarness[sess.Harness]
+	if !gated || sess.SessionID == "" {
+		return nil
+	}
+	return []string{permissionGateURLEnvironmentVariable + "=" + s.permissionGateURL(sess, route)}
 }
 
 // publicBaseURL converts a listen address (":8160", "0.0.0.0:8160", or a
@@ -524,7 +569,7 @@ const permissionGateCurlMaxTimeSeconds = permissionGateHookTimeoutSeconds - 300
 // command inside one.
 const permissionGateUnreachableMessage = "The bridge permission check could not be reached, so this tool call is blocked. Try again once the bridge answers."
 
-// permissionGateCommand is the command every harness runs as its permission
+// permissionGateCommand is the command Claude Code runs as its permission
 // gate: post the tool call to targetURL and print the gate's answer, and when
 // the post fails for any reason (no connection, a non-2xx answer, the time
 // limit) exit 2. Exit 2 is the one hook exit that blocks the tool call in
@@ -535,7 +580,24 @@ const permissionGateUnreachableMessage = "The bridge permission check could not 
 // When the post succeeds the command's output and exit are curl's own, so
 // a harness that reaches the gate sees exactly what it saw before.
 func permissionGateCommand(targetURL string) string {
-	return hookCurlCommand(targetURL, "--max-time", strconv.Itoa(permissionGateCurlMaxTimeSeconds)) +
+	return permissionGateCommandPostingTo(shellSingleQuote(targetURL))
+}
+
+// permissionGateCommandPostingToTheURLInTheEnvironment is permissionGateCommand
+// for codex and devin: the same post and the same blocking exit, to the
+// address in permissionGateURLEnvironmentVariable rather than one written into
+// the command, so the command never changes (see buildPrehookCommandHookTree).
+// The variable is double-quoted, so the shell expands it to exactly one word
+// whatever it holds; empty or unset, curl gets an empty URL, fails, and the
+// call is blocked.
+func permissionGateCommandPostingToTheURLInTheEnvironment() string {
+	return permissionGateCommandPostingTo(`"$` + permissionGateURLEnvironmentVariable + `"`)
+}
+
+// permissionGateCommandPostingTo builds the gate command around targetURLWord,
+// which must already be one shell word.
+func permissionGateCommandPostingTo(targetURLWord string) string {
+	return curlPostCommand(targetURLWord, "--max-time", strconv.Itoa(permissionGateCurlMaxTimeSeconds)) +
 		" || { printf '%s\\n' " + shellSingleQuote(permissionGateUnreachableMessage) + " >&2; exit 2; }"
 }
 
@@ -544,12 +606,18 @@ func permissionGateCommand(targetURL string) string {
 // one word here rather than at each call site -- the four sites that build
 // one of these are otherwise four copies of the same string.
 func hookCurlCommand(targetURL string, extraFlags ...string) string {
+	return curlPostCommand(shellSingleQuote(targetURL), extraFlags...)
+}
+
+// curlPostCommand posts the hook's stdin as JSON to targetURLWord, which must
+// already be one shell word.
+func curlPostCommand(targetURLWord string, extraFlags ...string) string {
 	flags := "-sfS"
 	if len(extraFlags) > 0 {
 		flags += " " + strings.Join(extraFlags, " ")
 	}
 	return fmt.Sprintf(
 		"curl %s -X POST -H 'Content-Type: application/json' --data-binary @- %s",
-		flags, shellSingleQuote(targetURL),
+		flags, targetURLWord,
 	)
 }
