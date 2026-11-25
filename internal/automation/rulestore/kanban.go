@@ -30,8 +30,8 @@ func NewKanbanStore(baseURL, serviceToken string) *KanbanStore {
 // column is read a page at a time.
 const kanbanResponseLimit = 8 << 20
 
-// errKanbanNotFound is a 404 from kanban-store.
-var errKanbanNotFound = errors.New("kanban-store: not found")
+// ErrKanbanNotFound is a 404 from kanban-store.
+var ErrKanbanNotFound = errors.New("kanban-store: not found")
 
 func (k *KanbanStore) getJSON(ctx context.Context, path string, target any) error {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, k.BaseURL+path, nil)
@@ -54,7 +54,7 @@ func (k *KanbanStore) getJSON(ctx context.Context, path string, target any) erro
 		return fmt.Errorf("kanban-store GET %s: response is larger than %d MB; read it in pages", path, kanbanResponseLimit>>20)
 	}
 	if response.StatusCode == http.StatusNotFound {
-		return fmt.Errorf("%w: GET %s: %.300s", errKanbanNotFound, path, body)
+		return fmt.Errorf("%w: GET %s: %.300s", ErrKanbanNotFound, path, body)
 	}
 	if response.StatusCode != http.StatusOK {
 		return fmt.Errorf("kanban-store GET %s: %d %.300s", path, response.StatusCode, body)
@@ -83,7 +83,7 @@ func (k *KanbanStore) LinkedCardPlacements(ctx context.Context, sessionID string
 		// kanban-store answers 404 for a card that is on no board: linked,
 		// but detached from every board. It sits in no column, so it has no
 		// placement, which is an answer, not a failure.
-		if errors.Is(err, errKanbanNotFound) {
+		if errors.Is(err, ErrKanbanNotFound) {
 			continue
 		}
 		if err != nil {
@@ -123,10 +123,13 @@ type CardPlacementDetail struct {
 // CardDetail is the part of GET /api/cards/{id} a comparison reads.
 type CardDetail struct {
 	Placements []CardPlacementDetail `json:"placements"`
-	Links      []struct {
-		EntityType string `json:"entity_type"`
-		EntityRef  string `json:"entity_ref"`
-	} `json:"links"`
+	Links      []CardLinkRef         `json:"links"`
+}
+
+// CardLinkRef is what one link on a card names.
+type CardLinkRef struct {
+	EntityType string `json:"entity_type"`
+	EntityRef  string `json:"entity_ref"`
 }
 
 // Card reads one card's placements and links.

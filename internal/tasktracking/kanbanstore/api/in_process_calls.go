@@ -245,3 +245,87 @@ func (a *API) Board(caller Caller, boardID string) (*model.Board, error) {
 	}
 	return board, nil
 }
+
+// EntityTags is GET /api/entities/{type}/{ref}/tags. Entity tags are one tag
+// space shared by every board and every kind of entity, so a principal is
+// refused them, as the route refuses one.
+func (a *API) EntityTags(caller Caller, entityType, entityRef string) ([]model.EntityTag, error) {
+	if _, err := a.authorizeCall(caller, func(*PrincipalBoardAccess) (*accessRefusal, error) {
+		return &accessRefusal{status: http.StatusForbidden, message: "entity tags are not available under principal enforcement"}, nil
+	}); err != nil {
+		return nil, err
+	}
+	tags, err := a.store.ListEntityTags(entityType, entityRef)
+	if err != nil {
+		return nil, &Refusal{Status: http.StatusInternalServerError, Message: err.Error()}
+	}
+	return tags, nil
+}
+
+// CardPlacementsAndLinks is the part of GET /api/cards/{id} that says where a
+// card sits and what it links: the placements the caller may see, and every
+// link. A noteboard item on no board is not a card (404).
+func (a *API) CardPlacementsAndLinks(caller Caller, cardID string) ([]*model.Placement, []model.CardLink, error) {
+	access, err := a.authorizeCall(caller, a.onCard(cardID, BoardAccessView, "GET /api/cards/"+cardID))
+	if err != nil {
+		return nil, nil, err
+	}
+	placements, err := a.store.ListPlacementsByCard(cardID)
+	if err != nil {
+		return nil, nil, &Refusal{Status: http.StatusInternalServerError, Message: err.Error()}
+	}
+	if len(placements) == 0 {
+		return nil, nil, &Refusal{Status: http.StatusNotFound, Message: "not found"}
+	}
+	visible := []*model.Placement{}
+	for _, placement := range placements {
+		if access == nil || access.LevelOn(placement.BoardID) >= BoardAccessView {
+			visible = append(visible, placement)
+		}
+	}
+	links, err := a.store.ListCardLinks(cardID)
+	if err != nil {
+		return nil, nil, &Refusal{Status: http.StatusInternalServerError, Message: err.Error()}
+	}
+	return visible, links, nil
+}
+
+// ColumnCard is one card of a column page: where it sits and what it links.
+type ColumnCard struct {
+	Placement *model.Placement
+	Links     []model.CardLink
+}
+
+// ColumnCardsAndLinks is one page of a column's cards in stored order, as GET
+// /api/columns/{id}/cards?limit=&offset= pages them with no filter: each
+// card's placement and links, the column's board and how many cards the
+// column holds.
+func (a *API) ColumnCardsAndLinks(caller Caller, columnID string, limit, offset int) (string, int, []ColumnCard, error) {
+	column, err := a.store.GetColumn(columnID)
+	if err != nil {
+		return "", 0, nil, dbRefusal(err)
+	}
+	if _, err := a.authorizeCall(caller, a.viewOnBoard(column.BoardID, "GET /api/columns/"+columnID+"/cards")); err != nil {
+		return "", 0, nil, err
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	placements, _, total, err := a.columnPage(columnID, db.CardFilter{}, cardContentQuery{}, limit, offset)
+	if err != nil {
+		return "", 0, nil, cardReadRefusal(err)
+	}
+	ids := make([]string, len(placements))
+	for i, placement := range placements {
+		ids[i] = placement.CardID
+	}
+	linksByCard, err := a.store.ListCardLinksForCards(ids)
+	if err != nil {
+		return "", 0, nil, &Refusal{Status: http.StatusInternalServerError, Message: err.Error()}
+	}
+	cards := make([]ColumnCard, len(placements))
+	for i, placement := range placements {
+		cards[i] = ColumnCard{Placement: placement, Links: linksByCard[placement.CardID]}
+	}
+	return column.BoardID, total, cards, nil
+}

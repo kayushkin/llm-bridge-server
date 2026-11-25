@@ -207,10 +207,6 @@ func importSchedulerCmd(args []string) {
 	fmt.Printf("numbering goes on after: job %d, run %d\n", counts.LastJobNumber, counts.LastRunNumber)
 }
 
-// ruleStoreSessionReadTimeout bounds a read of every session, as the
-// standalone rule-store bounded it.
-const ruleStoreSessionReadTimeout = 2 * time.Minute
-
 // ruleStoreEffectCallTimeout bounds one call a live rule makes to an owner.
 const ruleStoreEffectCallTimeout = 30 * time.Second
 
@@ -244,17 +240,24 @@ func enableRuleStore(ctx context.Context, cfg *config.Config, srv *server.Server
 	}
 	store := rulestore.New(pool)
 
-	bridgeBaseURL, bridgeClient := srv.HTTPClientToThisServer(ruleStoreSessionReadTimeout)
+	// Sessions, cards and entity tags are read through the stores' Go
+	// methods. The session feed is this server's /session-events, a stream
+	// read through its own handler, and a live rule's calls are HTTP-shaped
+	// by design (each names a method, a path and a body, and its run records
+	// the answer's status), so both still go through this server's and
+	// kanban-store's handlers in this process, as the internal service.
+	bridgeBaseURL, _ := srv.HTTPClientToThisServer(0)
 	_, bridgeStream := srv.HTTPClientToThisServer(0)
-	bridge := &rulestore.LLMBridge{BaseURL: bridgeBaseURL, Client: bridgeClient, Stream: bridgeStream}
-	kanban := &rulestore.KanbanStore{BaseURL: server.KanbanStoreInProcessBaseURL, Client: &http.Client{Transport: kanbanClient.Transport, Timeout: 20 * time.Second}}
+	feed := &rulestore.LLMBridge{BaseURL: bridgeBaseURL, Stream: bridgeStream}
+	sessions := srv.RuleStoreSessions(feed)
+	kanban := srv.RuleStoreKanban()
 	_, effectsOnThisServer := srv.HTTPClientToThisServer(0)
-	owners := rulestore.NewOwnerCalls(bridge, kanban)
+	owners := rulestore.NewOwnerCalls(feed, &rulestore.KanbanStore{BaseURL: server.KanbanStoreInProcessBaseURL})
 	owners.Client = &http.Client{Timeout: ruleStoreEffectCallTimeout, Transport: transportByHost{
 		hostOf(bridgeBaseURL):                      effectsOnThisServer.Transport,
 		hostOf(server.KanbanStoreInProcessBaseURL): kanbanClient.Transport,
 	}}
-	reactor := rulestore.NewReactor(store, bridge, kanban, owners, sweepInterval)
+	reactor := rulestore.NewReactor(store, sessions, kanban, owners, sweepInterval)
 
 	lifetime, stop := context.WithCancel(ctx)
 	if reactorEnabled {
