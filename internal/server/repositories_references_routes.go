@@ -105,6 +105,7 @@ func (s *Server) EnableFileStore(files *filestore.Store) error {
 	module := filestore.NewServer(files, s.fileStoreLimits)
 	handler := module.Handler()
 	s.fileStore = filestoreclient.New(handler)
+	s.fileStoreModule.Store(files)
 	s.fileStoreHandler.Store(&mountedStore{handler: handler})
 	return nil
 }
@@ -149,6 +150,8 @@ var InProcessReferenceServices = map[string]string{
 	"people-store":      peopleStoreMountPrefix,
 	"journal-store":     journalStoreMountPrefix,
 	"calendar-store":    calendarStoreMountPrefix,
+	"photo-store":       photoStoreMountPrefix,
+	"location-store":    locationStoreMountPrefix,
 }
 
 // EnableReferenceStore serves reference-store from resolver, and makes the

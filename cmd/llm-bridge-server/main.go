@@ -83,6 +83,12 @@ func main() {
 		case "import-people-store", "import-calendar-store", "import-journal-store":
 			importConnectedRecordsStoreCmd(os.Args[1], os.Args[2:])
 			return
+		case "import-photo-store":
+			importPhotoStoreCmd(os.Args[2:])
+			return
+		case "import-location-store":
+			importLocationStoreCmd(os.Args[2:])
+			return
 		case "import-mailstack":
 			importMailstackCmd(os.Args[2:])
 			return
@@ -93,7 +99,7 @@ func main() {
 			makeSignInLinkCmd(os.Args[2:])
 			return
 		case "-h", "--help":
-			fmt.Fprintln(os.Stderr, "usage: llm-bridge-server [mint-enroll [-ttl 15m] | import-prediction-store -sqlite <file> | import-principal-store|import-grant-store|import-sign-in-store|import-permission-store -sqlite <file> | make-sign-in-link <principal id> | import-noteboard -sqlite <file> | import-project-store -sqlite <file> | import-kanban-store -sqlite <file> | import-log-store -sqlite <file> | import-tool-store -sqlite <file> | import-skill-store -sqlite <file> | import-bundle-store -sqlite <file> | import-agent-store|import-memory-store|import-model-store -sqlite <file> | import-usage-store|import-eval-store -sqlite <file> | import-repo-store -sqlite <file> | import-work-graph-store -sqlite <file> | import-file-store -sqlite <file> -blobs <directory> [-carry copy|link] | import-people-store|import-calendar-store|import-journal-store -sqlite <file> -owner <principal id> | import-mailstack -accounts-sqlite <file> [-local-mail-sqlite <file>]]")
+			fmt.Fprintln(os.Stderr, "usage: llm-bridge-server [mint-enroll [-ttl 15m] | import-prediction-store -sqlite <file> | import-principal-store|import-grant-store|import-sign-in-store|import-permission-store -sqlite <file> | make-sign-in-link <principal id> | import-noteboard -sqlite <file> | import-project-store -sqlite <file> | import-kanban-store -sqlite <file> | import-log-store -sqlite <file> | import-tool-store -sqlite <file> | import-skill-store -sqlite <file> | import-bundle-store -sqlite <file> | import-agent-store|import-memory-store|import-model-store -sqlite <file> | import-usage-store|import-eval-store -sqlite <file> | import-repo-store -sqlite <file> | import-work-graph-store -sqlite <file> | import-file-store -sqlite <file> -blobs <directory> [-carry copy|link] | import-people-store|import-calendar-store|import-journal-store -sqlite <file> -owner <principal id> | import-mailstack -accounts-sqlite <file> [-local-mail-sqlite <file>] | import-photo-store -sqlite <file> -thumbnails <directory> -owner <principal id> [-carry copy|link] | import-location-store -sqlite <file> -owner <principal id>]")
 			os.Exit(0)
 		}
 	}
@@ -244,6 +250,11 @@ func main() {
 			log.Fatalf("%v", err)
 		}
 		defer closeConnectedRecords()
+		closePhotosAndLocations, err := enablePhotosAndLocations(context.Background(), cfg, srv)
+		if err != nil {
+			log.Fatalf("%v", err)
+		}
+		defer closePhotosAndLocations()
 		closeMail, err := enableMail(context.Background(), cfg, srv, accessStores)
 		if err != nil {
 			log.Fatalf("%v", err)

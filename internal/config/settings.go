@@ -286,6 +286,7 @@ func SettingDefinitions() []servicesettings.Definition {
 	definitions = append(definitions, kanbanStoreSettingDefinitions()...)
 	definitions = append(definitions, usageAndEvalSettingDefinitions()...)
 	definitions = append(definitions, mailSettingDefinitions()...)
+	definitions = append(definitions, photosAndLocationsSettingDefinitions()...)
 
 	// One proxy backend per known harness. The variable is per harness, so the
 	// declarations are read off the harness registry rather than listed.

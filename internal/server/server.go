@@ -23,6 +23,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore"
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
+	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
 	"github.com/kayushkin/llm-bridge-server/internal/filestoreclient"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
@@ -159,6 +160,13 @@ type Server struct {
 	// /journal-store/ once EnableConnectedRecords has run
 	// (connected_records_routes.go); nil answers them 503.
 	connectedRecords atomic.Pointer[connectedRecordsStores]
+	// photosAndLocations answers /photo-store/ and /location-store/ once
+	// EnablePhotosAndLocations has run (photos_locations_routes.go); nil
+	// answers them 503.
+	photosAndLocations atomic.Pointer[photosAndLocationsStores]
+	// fileStoreModule is the file-store module EnableFileStore was given:
+	// photo-store keeps its thumbnails' bytes there, called in Go.
+	fileStoreModule atomic.Pointer[filestore.Store]
 	// repoRegistryForDeploys is repo-store as a deploy action reads it; nil
 	// until EnableRepositories, which refuses deploy actions.
 	repoRegistryForDeploys repoRegistry
@@ -364,6 +372,7 @@ func (s *Server) routes() {
 	s.registerRepositoriesAndReferencesRoutes()
 	s.registerUsageAndEvalStoreRoutes()
 	s.registerConnectedRecordsRoutes()
+	s.registerPhotosAndLocationsRoutes()
 	// This server's own settings, served the way every service serves them.
 	serviceSettingsHandler := servicesettings.Handler(s.settings, "/settings")
 	s.mux.Handle("GET /settings", serviceSettingsHandler)
