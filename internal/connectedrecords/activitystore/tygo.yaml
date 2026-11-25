@@ -1,0 +1,15 @@
+# TypeScript types generated from this store's Go wire types. The Go structs
+# are the source of truth; ts/ is a render of them. Regenerate with
+# ./generate-ts.sh after changing a wire type. Only activity.go and
+# vocabulary.go hold wire types.
+packages:
+  - path: "github.com/kayushkin/activity-store"
+    output_path: "ts/model.ts"
+    exclude_files:
+      - "store.go"
+      - "store_imports.go"
+      - "attachments.go"
+      - "days.go"
+      - "server.go"
+      - "settings.go"
+      - "schema_embed.go"
