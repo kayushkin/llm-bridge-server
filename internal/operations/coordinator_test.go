@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +12,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/executors/executorstest"
 	"github.com/kayushkin/llm-bridge-server/internal/operations"
 	"github.com/kayushkin/llm-bridge-server/internal/operationstore"
+	"github.com/kayushkin/llm-bridge-server/internal/operationstore/operationstoretest"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -45,15 +45,9 @@ func (e *scriptedExecutor) Cancel(context.Context, msg.OperationReceipt) error {
 
 const scriptedType msg.OperationType = "test.scripted"
 
-func openStore(t *testing.T) (*operationstore.Store, string) {
+func openStore(t *testing.T) *operationstore.Store {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "operations.db")
-	store, err := operationstore.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { store.Close() })
-	return store, path
+	return operationstoretest.NewStore(t)
 }
 
 func newCoordinator(t *testing.T, store *operationstore.Store, owner string, executorList ...operations.Executor) *operations.Coordinator {
@@ -111,7 +105,7 @@ func get(t *testing.T, store *operationstore.Store, id string) msg.OperationRece
 }
 
 func TestClassificationRunsToSuccessWithValuesPerAxis(t *testing.T) {
-	store, _ := openStore(t)
+	store := openStore(t)
 	coordinator := newCoordinator(t, store, "owner-a", modelClassifier())
 	receipt, created, err := coordinator.Submit(classificationIntent("k1"))
 	if err != nil || !created || receipt.State != msg.OperationStateQueued || receipt.CorrelationID != receipt.ID {
@@ -150,7 +144,7 @@ func TestClassificationRunsToSuccessWithValuesPerAxis(t *testing.T) {
 }
 
 func TestSameKeySameIntentReturnsTheFirstReceiptAndDifferentIntentIsRefused(t *testing.T) {
-	store, _ := openStore(t)
+	store := openStore(t)
 	coordinator := newCoordinator(t, store, "owner-a", modelClassifier())
 	first, _, err := coordinator.Submit(classificationIntent("k1"))
 	if err != nil {
@@ -180,7 +174,7 @@ func TestSameKeySameIntentReturnsTheFirstReceiptAndDifferentIntentIsRefused(t *t
 }
 
 func TestIntentRefusals(t *testing.T) {
-	store, _ := openStore(t)
+	store := openStore(t)
 	coordinator := newCoordinator(t, store, "owner-a", modelClassifier())
 	cases := map[string]func(*msg.OperationIntent){
 		"unknown_operation_type":   func(i *msg.OperationIntent) { i.Type = "nope.run" },
@@ -204,7 +198,7 @@ func TestIntentRefusals(t *testing.T) {
 }
 
 func TestInputKeysLikeMaxTokensAreNotCredentials(t *testing.T) {
-	store, _ := openStore(t)
+	store := openStore(t)
 	coordinator := newCoordinator(t, store, "owner-a", &scriptedExecutor{operationType: scriptedType})
 	intent := msg.OperationIntent{Type: scriptedType, OrganizationID: "o", IdempotencyKey: "k",
 		Input: json.RawMessage(`{"max_tokens":10,"input_tokens":3,"keyword":"a","session_key":"b"}`)}
@@ -216,7 +210,7 @@ func TestInputKeysLikeMaxTokensAreNotCredentials(t *testing.T) {
 // A restart leaves an operation running under a lease nobody renews. The next
 // process reconciles it, and a classification is safe to run again.
 func TestRestartRequeuesAndFinishesAnAbandonedClassification(t *testing.T) {
-	store, _ := openStore(t)
+	store := openStore(t)
 	first := newCoordinator(t, store, "process-before-restart", modelClassifier())
 	receipt, _, err := first.Submit(classificationIntent("k1"))
 	if err != nil {
@@ -238,7 +232,7 @@ func TestRestartRequeuesAndFinishesAnAbandonedClassification(t *testing.T) {
 }
 
 func TestAWorkerThatLostItsLeaseCannotWrite(t *testing.T) {
-	store, _ := openStore(t)
+	store := openStore(t)
 	coordinator := newCoordinator(t, store, "owner-b", &scriptedExecutor{operationType: scriptedType})
 	receipt, _, _ := coordinator.Submit(msg.OperationIntent{Type: scriptedType, OrganizationID: "o", IdempotencyKey: "k"})
 	stale, _, _ := store.Claim("owner-a", time.Minute, time.Now())
@@ -256,7 +250,7 @@ func TestAWorkerThatLostItsLeaseCannotWrite(t *testing.T) {
 }
 
 func TestRetryableFailureRetriesThenFails(t *testing.T) {
-	store, _ := openStore(t)
+	store := openStore(t)
 	calls := 0
 	coordinator := newCoordinator(t, store, "owner-a", &scriptedExecutor{operationType: scriptedType, maximumAttempts: 2,
 		execute: func(context.Context, msg.OperationIntent, operations.ReceiptWriter) operations.Result {
@@ -276,7 +270,7 @@ func TestRetryableFailureRetriesThenFails(t *testing.T) {
 func TestAnEffectInDoubtMakesTheOperationUnknown(t *testing.T) {
 	for name, reported := range map[string]msg.OperationState{"failed": msg.OperationStateFailed, "succeeded": msg.OperationStateSucceeded, "retry": ""} {
 		t.Run(name, func(t *testing.T) {
-			store, _ := openStore(t)
+			store := openStore(t)
 			coordinator := newCoordinator(t, store, "owner-a", &scriptedExecutor{operationType: scriptedType,
 				execute: func(_ context.Context, _ msg.OperationIntent, receipt operations.ReceiptWriter) operations.Result {
 					number, err := receipt.RecordEffect(msg.OperationReference{EntityType: "card", EntityID: "card_1", Version: "4"}, "move")
@@ -301,7 +295,7 @@ func TestAnEffectInDoubtMakesTheOperationUnknown(t *testing.T) {
 }
 
 func TestReconcileNeverRunsAgainPastAnEffectInDoubt(t *testing.T) {
-	store, _ := openStore(t)
+	store := openStore(t)
 	executor := &scriptedExecutor{operationType: scriptedType}
 	coordinator := newCoordinator(t, store, "owner-b", executor)
 	receipt, _, _ := coordinator.Submit(msg.OperationIntent{Type: scriptedType, OrganizationID: "o", IdempotencyKey: "k"})
@@ -317,7 +311,7 @@ func TestReconcileNeverRunsAgainPastAnEffectInDoubt(t *testing.T) {
 }
 
 func TestCancel(t *testing.T) {
-	store, _ := openStore(t)
+	store := openStore(t)
 	started := make(chan struct{})
 	coordinator := newCoordinator(t, store, "owner-a", &scriptedExecutor{operationType: scriptedType,
 		execute: func(ctx context.Context, _ msg.OperationIntent, _ operations.ReceiptWriter) operations.Result {
@@ -353,7 +347,7 @@ func TestCancel(t *testing.T) {
 }
 
 func TestChildrenAreCountedOnTheParent(t *testing.T) {
-	store, _ := openStore(t)
+	store := openStore(t)
 	const childType msg.OperationType = "test.child"
 	parentExecutor := &scriptedExecutor{operationType: scriptedType,
 		execute: func(_ context.Context, _ msg.OperationIntent, receipt operations.ReceiptWriter) operations.Result {
@@ -389,7 +383,7 @@ func TestChildrenAreCountedOnTheParent(t *testing.T) {
 // A per-operation cap covers the whole tree: what a child spends comes out
 // of its root's allowance.
 func TestAChildsSpendingCountsAgainstItsRootsCap(t *testing.T) {
-	store, _ := openStore(t)
+	store := openStore(t)
 	const childType msg.OperationType = "test.child"
 	var allowanceSeenBySecondChild float64
 	var limitedForSecondChild bool

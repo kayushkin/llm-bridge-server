@@ -10,7 +10,7 @@ import (
 // CreateInstance registers a new harness instance bound to a machine.
 // MachineID must reference an existing machines row.
 func (s *Store) CreateInstance(inst *msg.Instance) error {
-	now := time.Now().UTC()
+	now := time.Now().UTC().Truncate(time.Microsecond)
 	inst.CreatedAt = now
 	inst.UpdatedAt = now
 	if inst.MaxConcurrentSessions == 0 {
@@ -18,7 +18,7 @@ func (s *Store) CreateInstance(inst *msg.Instance) error {
 	}
 	_, err := s.db.Exec(`
 		INSERT INTO instances (id, harness_type, name, machine_id, working_dir, max_concurrent_sessions, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
 		inst.ID, inst.HarnessType, inst.Name, inst.MachineID, inst.WorkingDir,
 		inst.MaxConcurrentSessions, inst.Enabled, inst.CreatedAt, inst.UpdatedAt,
 	)
@@ -31,12 +31,12 @@ const instanceRowCols = `id, harness_type, name, machine_id, working_dir, max_co
 
 func scanInstance(row interface{ Scan(dest ...any) error }) (*msg.Instance, error) {
 	var inst msg.Instance
-	var enabled int
 	if err := row.Scan(&inst.ID, &inst.HarnessType, &inst.Name, &inst.MachineID, &inst.WorkingDir,
-		&inst.MaxConcurrentSessions, &enabled, &inst.CreatedAt, &inst.UpdatedAt); err != nil {
+		&inst.MaxConcurrentSessions, &inst.Enabled, &inst.CreatedAt, &inst.UpdatedAt); err != nil {
 		return nil, err
 	}
-	inst.Enabled = enabled != 0
+	inUTC(&inst.CreatedAt)
+	inUTC(&inst.UpdatedAt)
 	return &inst, nil
 }
 
@@ -44,13 +44,13 @@ func scanInstance(row interface{ Scan(dest ...any) error }) (*msg.Instance, erro
 // callers that want it should call GetMachine separately or use
 // GetInstanceWithMachine.
 func (s *Store) GetInstance(id string) (*msg.Instance, error) {
-	row := s.db.QueryRow(`SELECT `+instanceRowCols+` FROM instances WHERE id = ?`, id)
+	row := s.db.QueryRow(`SELECT `+instanceRowCols+` FROM instances WHERE id = $1`, id)
 	return scanInstance(row)
 }
 
 // GetInstanceByName retrieves an instance by name.
 func (s *Store) GetInstanceByName(name string) (*msg.Instance, error) {
-	row := s.db.QueryRow(`SELECT `+instanceRowCols+` FROM instances WHERE name = ?`, name)
+	row := s.db.QueryRow(`SELECT `+instanceRowCols+` FROM instances WHERE name = $1`, name)
 	return scanInstance(row)
 }
 
@@ -96,20 +96,20 @@ func (s *Store) ListInstances() ([]msg.Instance, error) {
 
 // ListInstancesByHarness returns enabled instances for a specific harness type.
 func (s *Store) ListInstancesByHarness(harnessType msg.Harness) ([]msg.Instance, error) {
-	return s.listInstances(`SELECT `+instanceRowCols+` FROM instances WHERE harness_type = ? AND enabled = 1 ORDER BY name`, harnessType)
+	return s.listInstances(`SELECT `+instanceRowCols+` FROM instances WHERE harness_type = $1 AND enabled ORDER BY name`, harnessType)
 }
 
 // ListInstancesByMachine returns all instances bound to a machine.
 func (s *Store) ListInstancesByMachine(machineID string) ([]msg.Instance, error) {
-	return s.listInstances(`SELECT `+instanceRowCols+` FROM instances WHERE machine_id = ? ORDER BY name`, machineID)
+	return s.listInstances(`SELECT `+instanceRowCols+` FROM instances WHERE machine_id = $1 ORDER BY name`, machineID)
 }
 
 // UpdateInstance updates an instance's mutable fields.
 func (s *Store) UpdateInstance(inst *msg.Instance) error {
-	inst.UpdatedAt = time.Now().UTC()
+	inst.UpdatedAt = time.Now().UTC().Truncate(time.Microsecond)
 	res, err := s.db.Exec(`
-		UPDATE instances SET harness_type=?, name=?, machine_id=?, working_dir=?, max_concurrent_sessions=?, enabled=?, updated_at=?
-		WHERE id=?`,
+		UPDATE instances SET harness_type=$1, name=$2, machine_id=$3, working_dir=$4, max_concurrent_sessions=$5, enabled=$6, updated_at=$7
+		WHERE id=$8`,
 		inst.HarnessType, inst.Name, inst.MachineID, inst.WorkingDir,
 		inst.MaxConcurrentSessions, inst.Enabled, inst.UpdatedAt, inst.ID,
 	)
@@ -127,7 +127,7 @@ func (s *Store) UpdateInstance(inst *msg.Instance) error {
 // is not declared; callers that need that behavior should call
 // ClearInstanceCredentials first.
 func (s *Store) DeleteInstance(id string) error {
-	res, err := s.db.Exec(`DELETE FROM instances WHERE id = ?`, id)
+	res, err := s.db.Exec(`DELETE FROM instances WHERE id = $1`, id)
 	if err != nil {
 		return err
 	}
@@ -140,8 +140,8 @@ func (s *Store) DeleteInstance(id string) error {
 
 // SetInstanceEnabled enables or disables an instance.
 func (s *Store) SetInstanceEnabled(id string, enabled bool) error {
-	res, err := s.db.Exec(`UPDATE instances SET enabled = ?, updated_at = ? WHERE id = ?`,
-		enabled, time.Now().UTC(), id)
+	res, err := s.db.Exec(`UPDATE instances SET enabled = $1, updated_at = $2 WHERE id = $3`,
+		enabled, time.Now().UTC().Truncate(time.Microsecond), id)
 	if err != nil {
 		return err
 	}
@@ -162,6 +162,6 @@ func (s *Store) CountInstances() (int, error) {
 // CountEnabledInstances returns the number of enabled instances.
 func (s *Store) CountEnabledInstances() (int, error) {
 	var count int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM instances WHERE enabled = 1`).Scan(&count)
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM instances WHERE enabled`).Scan(&count)
 	return count, err
 }

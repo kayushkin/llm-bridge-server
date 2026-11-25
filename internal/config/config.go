@@ -20,8 +20,6 @@ type Config struct {
 	Settings   *servicesettings.Registry
 	ListenAddr string
 	DBPath     string
-	// OperationsDBPath is the operations database (internal/operationstore).
-	OperationsDBPath string
 	// OperationsWorkerCount and OperationsLeaseDuration bound the operations
 	// coordinator; see internal/operations.
 	OperationsWorkerCount   int
@@ -64,8 +62,6 @@ type Config struct {
 	// first start each key exists; the stored row decides after.
 	FileStoreMaximumFileBytes   int
 	FileStoreInlineContentTypes []string
-	HarnessStoreDB              string
-	HookStoreDB                 string
 	ImagesDir                   string
 	// SessionFilesDir is where a file shared into a session is copied for its
 	// agent to read: <dir>/<session id>/<file id>/<filename>.
@@ -120,7 +116,6 @@ type Config struct {
 	// list of services the Services page shows and the only source of their
 	// up/down state. Configured via LLMBRIDGE_HEALTHCHECK_URL.
 	HealthcheckURL   string
-	SnapshotStoreDB  string
 	SnapshotStoreGit string
 	// PurposeFolders maps CreateSessionRequest.Purpose values to the folder a
 	// newly created session should be auto-filed into. Defaults come from the
@@ -386,7 +381,6 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		Settings:                              settings,
 		ListenAddr:                            settings.String("listen_address"),
 		DBPath:                                settings.String("database.path"),
-		OperationsDBPath:                      settings.String("operations.database_path"),
 		OperationsWorkerCount:                 settings.Integer("operations.worker_count"),
 		OperationsLeaseDuration:               settings.Duration("operations.lease_duration"),
 		OneShotInstanceByProvider:             settings.StringMap(SettingOneShotInstanceByProvider),
@@ -403,8 +397,6 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		KeepAwakeGraceMinutes:                 settings.Integer(SettingKeepAwakeGraceMinutes),
 		SessionHostHoldSessions:               settings.Boolean(SettingSessionHostHoldSessions),
 		SessionHostHoldMinutes:                settings.Integer(SettingSessionHostHoldMinutes),
-		HarnessStoreDB:                        settings.String("harness_store.database_path"),
-		HookStoreDB:                           settings.String("hook_store.database_path"),
 		ImagesDir:                             settings.String("images.directory"),
 		SessionFilesDir:                       settings.String("session_files.directory"),
 		BridgePrefsPath:                       settings.String("bridge_preferences.path"),
@@ -428,7 +420,6 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		ChatLinksNATSURL:                      settings.String("chat_links.nats_url"),
 		MultichatURL:                          settings.String("multichat.url"),
 		HealthcheckURL:                        settings.String("healthcheck.url"),
-		SnapshotStoreDB:                       settings.String("snapshot_store.database_path"),
 		SnapshotStoreGit:                      settings.String("snapshot_store.git_path"),
 		PurposeFolders:                        purposeFoldersOver(settings.StringMap("session.purpose_folders")),
 		PTYRingBufferBytes:                    settings.Integer("pty.ring_buffer_bytes"),
@@ -469,14 +460,10 @@ func (c *Config) GuardedAddresses() map[string]string {
 	return map[string]string{
 		"ListenAddr":       c.ListenAddr,
 		"DBPath":           c.DBPath,
-		"HarnessStoreDB":   c.HarnessStoreDB,
-		"HookStoreDB":      c.HookStoreDB,
 		"BridgePrefsPath":  c.BridgePrefsPath,
 		"ConformancePath":  c.ConformancePath,
 		"HealthcheckURL":   c.HealthcheckURL,
-		"SnapshotStoreDB":  c.SnapshotStoreDB,
 		"SnapshotStoreGit": c.SnapshotStoreGit,
-		"OperationsDBPath": c.OperationsDBPath,
 	}
 }
 

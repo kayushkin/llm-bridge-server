@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/snapshotstore/snapshotstoretest"
+
 	snapshotstore "github.com/kayushkin/llm-bridge-server/internal/sessions/snapshotstore"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -27,24 +29,15 @@ const (
 	snapTestToolUseID = "toolu_0112jYRzLLLNvCzi9tV3mnha"
 )
 
-// snapshotTestServer returns a server wired to a real snapshot store on disk.
-// A real one rather than a stub: Capture writes a git blob and a row, and the
+// snapshotTestServer returns a server wired to a real snapshot store: rows in
+// a test Postgres, blobs in a git folder on disk. A real one rather than a stub: Capture writes a git blob and a row, and the
 // point of the test is the key those land under, which a stub would let the
 // test author choose.
 func snapshotTestServer(t *testing.T) (*Server, *store.Store) {
 	t.Helper()
 	srv, st, _ := testServerWithInstance(t, msg.HarnessClaudeCode)
 
-	dir := t.TempDir()
-	ss, err := snapshotstore.Open(snapshotstore.Config{
-		DBPath: filepath.Join(dir, "snapshots.db"),
-		GitDir: filepath.Join(dir, "blobs.git"),
-	})
-	if err != nil {
-		t.Fatalf("open snapshot store: %v", err)
-	}
-	t.Cleanup(func() { ss.Close() })
-	srv.snapshotStore = ss
+	srv.snapshotStore = snapshotstoretest.NewStore(t)
 	return srv, st
 }
 

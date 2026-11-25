@@ -1,29 +1,27 @@
 package harnessstore
 
 import (
-	"path/filepath"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// newTestStore opens a fresh harness-store backed by a throwaway on-disk
-// SQLite file under the test's temp dir. The file is removed automatically
-// when the test finishes. An on-disk path (not ":memory:") is used so the
-// WAL pragmas in Open behave the same way they do in production.
+// openTestStore gives the test a store on a Postgres database of its own, made
+// from a template with the module migrated (postgresstorage/postgrestest).
+func openTestStore(t testing.TB) *Store {
+	t.Helper()
+	module, err := Module()
+	if err != nil {
+		t.Fatalf("module: %v", err)
+	}
+	database := postgrestest.NewDatabase(t, module)
+	return New(database.Open(module))
+}
+
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
-	dbPath := filepath.Join(t.TempDir(), "harness-store.db")
-	s, err := Open(dbPath)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := s.Close(); err != nil {
-			t.Errorf("Close: %v", err)
-		}
-	})
-	return s
+	return openTestStore(t)
 }
 
 // mustCreateMachine inserts a minimal machine and returns its ID. Instances
@@ -38,34 +36,6 @@ func mustCreateMachine(t *testing.T, s *Store, id, name string) string {
 	return id
 }
 
-func TestOpenIsIdempotent(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "reopen.db")
-
-	s1, err := Open(dbPath)
-	if err != nil {
-		t.Fatalf("first Open: %v", err)
-	}
-	mustCreateMachine(t, s1, "m_a", "alpha")
-	if err := s1.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-
-	// Re-opening an existing DB must run migrations cleanly and preserve data.
-	s2, err := Open(dbPath)
-	if err != nil {
-		t.Fatalf("second Open: %v", err)
-	}
-	defer s2.Close()
-
-	got, err := s2.GetMachine("m_a")
-	if err != nil {
-		t.Fatalf("GetMachine after reopen: %v", err)
-	}
-	if got.Name != "alpha" {
-		t.Errorf("Name = %q, want alpha", got.Name)
-	}
-}
-
 func TestDBAccessor(t *testing.T) {
 	s := newTestStore(t)
 	if s.DB() == nil {
@@ -73,20 +43,5 @@ func TestDBAccessor(t *testing.T) {
 	}
 	if err := s.DB().Ping(); err != nil {
 		t.Errorf("Ping: %v", err)
-	}
-}
-
-func TestSafeID(t *testing.T) {
-	cases := map[string]string{
-		"linode":      "linode",
-		"WSL-Claude":  "wsl_claude",
-		"host.name:1": "host_name_1",
-		"":            "m",
-		"42abc":       "42abc",
-	}
-	for in, want := range cases {
-		if got := safeID(in); got != want {
-			t.Errorf("safeID(%q) = %q, want %q", in, got, want)
-		}
 	}
 }

@@ -1,30 +1,37 @@
 // Package operationstore persists operations: each one's intent, its current
 // receipt, the events that changed it, and the lease a worker holds on it.
 //
-// It keeps its own SQLite file, apart from the session database, so the
-// coordinator's writes never queue behind session writes and the store can
-// move out of this server without a data migration.
+// The records live in Postgres, in the schema of Module, through
+// postgresstorage. The server provisions, migrates and opens the module, then
+// hands the pool to New.
 //
 // Every change to a receipt goes through one transaction that raises the
 // receipt's revision by one and writes one event whose sequence is that
 // revision. A reader can therefore resume a stream from any revision, and
 // nothing changes a receipt without an event saying so.
+//
+// Writers run side by side, so each transaction locks the rows it changes:
+// Update and the parent refresh read their row FOR UPDATE, so two changes to
+// one receipt take turns and never write the same revision twice, and Claim
+// skips a queued row another worker is claiming, so two workers never take
+// one operation. Locks are always taken child first, then parent.
 package operationstore
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
+	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/oklog/ulid/v2"
-	_ "modernc.org/sqlite"
 )
 
 var (
@@ -39,7 +46,20 @@ var (
 	ErrTerminal = errors.New("operation already finished")
 )
 
-// Store is one operations database.
+//go:embed migrations/*.sql
+var migrationFiles embed.FS
+
+// Module is the Postgres schema and role the store keeps its records in, with
+// the migrations that build them.
+func Module() (postgresstorage.Module, error) {
+	migrations, err := postgresstorage.MigrationsFromFiles(migrationFiles, "migrations")
+	if err != nil {
+		return postgresstorage.Module{}, err
+	}
+	return postgresstorage.Module{Schema: "operations", Role: "operations_module", Migrations: migrations}, nil
+}
+
+// Store is the operations module.
 type Store struct {
 	db       *sql.DB
 	notifier func(msg.OperationEvent)
@@ -59,71 +79,12 @@ type Operation struct {
 	LeaseExpiresAt time.Time
 }
 
-// Open opens or creates the database at path.
-func Open(path string) (*Store, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, fmt.Errorf("create operations database directory: %w", err)
-	}
-	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
-	if err != nil {
-		return nil, fmt.Errorf("open operations database %s: %w", path, err)
-	}
-	// One connection: every write is a short transaction, and SQLite allows
-	// one writer at a time anyway. A single connection makes that queue
-	// visible in Go rather than as busy errors.
-	db.SetMaxOpenConns(1)
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("enable WAL on %s: %w", path, err)
-	}
-	if _, err := db.Exec(schema + spendSchema); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("create operations schema in %s: %w", path, err)
-	}
-	return &Store{db: db}, nil
-}
-
-// Close closes the database.
-func (s *Store) Close() error { return s.db.Close() }
+// New returns the store over db, the module's pool from postgresstorage.Open.
+func New(db *sql.DB) *Store { return &Store{db: db} }
 
 // SetNotifier registers a function called with every event after its
 // transaction commits. It must not block.
 func (s *Store) SetNotifier(notify func(msg.OperationEvent)) { s.notifier = notify }
-
-const schema = `
-CREATE TABLE IF NOT EXISTS operations (
-	id                   TEXT PRIMARY KEY,
-	type                 TEXT NOT NULL,
-	organization_id      TEXT NOT NULL,
-	principal_id         TEXT NOT NULL,
-	idempotency_key      TEXT NOT NULL,
-	intent_fingerprint   TEXT NOT NULL,
-	parent_operation_id  TEXT NOT NULL,
-	root_operation_id    TEXT NOT NULL,
-	state                TEXT NOT NULL,
-	revision             INTEGER NOT NULL,
-	intent_json          TEXT NOT NULL,
-	receipt_json         TEXT NOT NULL,
-	lease_owner          TEXT NOT NULL DEFAULT '',
-	lease_token          INTEGER NOT NULL DEFAULT 0,
-	lease_expires_at     INTEGER NOT NULL DEFAULT 0,
-	created_at           INTEGER NOT NULL,
-	updated_at           INTEGER NOT NULL
-);
-CREATE UNIQUE INDEX IF NOT EXISTS operations_idempotency
-	ON operations(principal_id, organization_id, type, idempotency_key);
-CREATE INDEX IF NOT EXISTS operations_state_created ON operations(state, created_at);
-CREATE INDEX IF NOT EXISTS operations_parent ON operations(parent_operation_id) WHERE parent_operation_id != '';
-CREATE INDEX IF NOT EXISTS operations_organization_created ON operations(organization_id, created_at);
-CREATE TABLE IF NOT EXISTS operation_events (
-	operation_id TEXT NOT NULL REFERENCES operations(id),
-	sequence     INTEGER NOT NULL,
-	kind         TEXT NOT NULL,
-	event_json   TEXT NOT NULL,
-	at           INTEGER NOT NULL,
-	PRIMARY KEY (operation_id, sequence)
-);
-`
 
 // NewOperationID returns a fresh operation_<ULID>.
 func NewOperationID(now time.Time) string {
@@ -136,16 +97,19 @@ func NewOperationID(now time.Time) string {
 func (s *Store) Create(intent msg.OperationIntent, fingerprint string, now time.Time) (receipt msg.OperationReceipt, created bool, err error) {
 	var events []msg.OperationEvent
 	err = s.inTransaction(func(tx *sql.Tx) error {
-		existing, found, err := findByIdempotencyKey(tx, intent)
-		if err != nil {
-			return err
-		}
-		if found {
+		answerWithStored := func(existing storedIdempotencyMatch) error {
 			if existing.fingerprint != fingerprint {
 				return fmt.Errorf("%w: key %q already names operation %s", ErrIdempotencyKeyReused, intent.IdempotencyKey, existing.operation.Receipt.ID)
 			}
 			receipt = existing.operation.Receipt
 			return nil
+		}
+		existing, found, err := findByIdempotencyKey(tx, intent)
+		if err != nil {
+			return err
+		}
+		if found {
+			return answerWithStored(existing)
 		}
 		operationID := NewOperationID(now)
 		if intent.CorrelationID == "" {
@@ -174,17 +138,34 @@ func (s *Store) Create(intent msg.OperationIntent, fingerprint string, now time.
 		}
 		rootOperationID := receipt.ID
 		if receipt.ParentOperationID != "" {
-			if err := tx.QueryRow(`SELECT root_operation_id FROM operations WHERE id = ?`, receipt.ParentOperationID).Scan(&rootOperationID); err != nil {
+			if err := tx.QueryRow(`SELECT root_operation_id FROM operations WHERE id = $1`, receipt.ParentOperationID).Scan(&rootOperationID); err != nil {
 				return fmt.Errorf("read root of parent %s: %w", receipt.ParentOperationID, err)
 			}
 		}
-		if _, err := tx.Exec(`INSERT INTO operations (id, type, organization_id, principal_id, idempotency_key,
+		// Another Create with the same key may have inserted since the read
+		// above. Then this insert waits for it to commit and inserts nothing,
+		// and the stored operation is the answer, as if it had been found.
+		inserted, err := tx.Exec(`INSERT INTO operations (id, type, organization_id, principal_id, idempotency_key,
 			intent_fingerprint, parent_operation_id, root_operation_id, state, revision, intent_json, receipt_json, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+			ON CONFLICT (principal_id, organization_id, type, idempotency_key) DO NOTHING`,
 			receipt.ID, receipt.Type, receipt.OrganizationID, receipt.PrincipalID, receipt.IdempotencyKey,
-			fingerprint, receipt.ParentOperationID, rootOperationID, receipt.State, receipt.Revision, intentJSON, receiptJSON,
-			now.UnixNano(), now.UnixNano()); err != nil {
+			fingerprint, receipt.ParentOperationID, rootOperationID, receipt.State, receipt.Revision, string(intentJSON), string(receiptJSON),
+			now.UnixNano(), now.UnixNano())
+		if err != nil {
 			return fmt.Errorf("insert operation: %w", err)
+		}
+		if insertedRows, err := inserted.RowsAffected(); err != nil {
+			return fmt.Errorf("insert operation: %w", err)
+		} else if insertedRows == 0 {
+			existing, found, err := findByIdempotencyKey(tx, intent)
+			if err != nil {
+				return err
+			}
+			if !found {
+				return fmt.Errorf("insert operation: key %q conflicted, and no operation holds it", intent.IdempotencyKey)
+			}
+			return answerWithStored(existing)
 		}
 		event, err := insertEvent(tx, receipt, msg.OperationEventAccepted, "", now)
 		if err != nil {
@@ -228,7 +209,7 @@ type storedIdempotencyMatch struct {
 
 func findByIdempotencyKey(tx *sql.Tx, intent msg.OperationIntent) (storedIdempotencyMatch, bool, error) {
 	row := tx.QueryRow(`SELECT `+operationColumns+`, intent_fingerprint FROM operations
-		WHERE principal_id = ? AND organization_id = ? AND type = ? AND idempotency_key = ?`,
+		WHERE principal_id = $1 AND organization_id = $2 AND type = $3 AND idempotency_key = $4`,
 		intent.PrincipalID, intent.OrganizationID, intent.Type, intent.IdempotencyKey)
 	var match storedIdempotencyMatch
 	operation, err := scanOperation(row, &match.fingerprint)
@@ -266,7 +247,7 @@ func scanOperation(row interface{ Scan(...any) error }, extra ...any) (Operation
 
 // Get returns one operation.
 func (s *Store) Get(operationID string) (Operation, error) {
-	operation, err := scanOperation(s.db.QueryRow(`SELECT `+operationColumns+` FROM operations WHERE id = ?`, operationID))
+	operation, err := scanOperation(s.db.QueryRow(`SELECT `+operationColumns+` FROM operations WHERE id = $1`, operationID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Operation{}, fmt.Errorf("%w: %s", ErrNotFound, operationID)
 	}
@@ -293,37 +274,37 @@ func (s *Store) List(filter Filter) ([]msg.OperationReceipt, error) {
 	}
 	var conditions []string
 	var arguments []any
-	add := func(condition string, value any) {
-		conditions = append(conditions, condition)
+	add := func(column string, comparison string, value any) {
 		arguments = append(arguments, value)
+		conditions = append(conditions, column+" "+comparison+" $"+strconv.Itoa(len(arguments)))
 	}
 	if filter.OrganizationID != "" {
-		add("organization_id = ?", filter.OrganizationID)
+		add("organization_id", "=", filter.OrganizationID)
 	}
 	if filter.PrincipalID != "" {
-		add("principal_id = ?", filter.PrincipalID)
+		add("principal_id", "=", filter.PrincipalID)
 	}
 	if filter.ParentOperationID != "" {
-		add("parent_operation_id = ?", filter.ParentOperationID)
+		add("parent_operation_id", "=", filter.ParentOperationID)
 	}
 	if filter.Type != "" {
-		add("type = ?", filter.Type)
+		add("type", "=", filter.Type)
 	}
 	if filter.State != "" {
-		add("state = ?", filter.State)
+		add("state", "=", filter.State)
 	}
 	if !filter.CreatedAfter.IsZero() {
-		add("created_at > ?", filter.CreatedAfter.UnixNano())
+		add("created_at", ">", filter.CreatedAfter.UnixNano())
 	}
 	if !filter.CreatedBefore.IsZero() {
-		add("created_at < ?", filter.CreatedBefore.UnixNano())
+		add("created_at", "<", filter.CreatedBefore.UnixNano())
 	}
 	query := `SELECT receipt_json FROM operations`
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
-	query += " ORDER BY created_at DESC, id DESC LIMIT ?"
 	arguments = append(arguments, filter.Limit)
+	query += " ORDER BY created_at DESC, id DESC LIMIT $" + strconv.Itoa(len(arguments))
 	rows, err := s.db.Query(query, arguments...)
 	if err != nil {
 		return nil, fmt.Errorf("list operations: %w", err)
@@ -347,7 +328,7 @@ func (s *Store) List(filter Filter) ([]msg.OperationReceipt, error) {
 // EventsAfter returns an operation's events with sequence above afterSequence,
 // in order.
 func (s *Store) EventsAfter(operationID string, afterSequence int64) ([]msg.OperationEvent, error) {
-	rows, err := s.db.Query(`SELECT event_json FROM operation_events WHERE operation_id = ? AND sequence > ? ORDER BY sequence`,
+	rows, err := s.db.Query(`SELECT event_json FROM operation_events WHERE operation_id = $1 AND sequence > $2 ORDER BY sequence`,
 		operationID, afterSequence)
 	if err != nil {
 		return nil, fmt.Errorf("read events of %s: %w", operationID, err)
@@ -373,7 +354,7 @@ func (s *Store) EventsAfter(operationID string, afterSequence int64) ([]msg.Oper
 func (s *Store) Claim(leaseOwner string, leaseDuration time.Duration, now time.Time) (operation Operation, found bool, err error) {
 	var events []msg.OperationEvent
 	err = s.inTransaction(func(tx *sql.Tx) error {
-		row := tx.QueryRow(`SELECT ` + operationColumns + ` FROM operations WHERE state = 'queued' ORDER BY created_at, id LIMIT 1`)
+		row := tx.QueryRow(`SELECT ` + operationColumns + ` FROM operations WHERE state = 'queued' ORDER BY created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED`)
 		operation, err = scanOperation(row)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
@@ -404,7 +385,7 @@ func (s *Store) Claim(leaseOwner string, leaseDuration time.Duration, now time.T
 
 // RenewLease extends a held lease. It changes no receipt and writes no event.
 func (s *Store) RenewLease(operationID string, leaseToken int64, expiresAt time.Time) error {
-	result, err := s.db.Exec(`UPDATE operations SET lease_expires_at = ? WHERE id = ? AND lease_token = ? AND state = 'running'`,
+	result, err := s.db.Exec(`UPDATE operations SET lease_expires_at = $1 WHERE id = $2 AND lease_token = $3 AND state = 'running'`,
 		expiresAt.UnixNano(), operationID, leaseToken)
 	if err != nil {
 		return fmt.Errorf("renew lease on %s: %w", operationID, err)
@@ -419,7 +400,7 @@ func (s *Store) RenewLease(operationID string, leaseToken int64, expiresAt time.
 // owner or has expired: the ones a restart or a dead worker left behind.
 func (s *Store) RunningNotHeldBy(leaseOwner string, now time.Time) ([]Operation, error) {
 	rows, err := s.db.Query(`SELECT `+operationColumns+` FROM operations
-		WHERE state = 'running' AND (lease_owner != ? OR lease_expires_at < ?) ORDER BY created_at`,
+		WHERE state = 'running' AND (lease_owner != $1 OR lease_expires_at < $2) ORDER BY created_at`,
 		leaseOwner, now.UnixNano())
 	if err != nil {
 		return nil, fmt.Errorf("list abandoned operations: %w", err)
@@ -458,7 +439,7 @@ func (s *Store) update(operationID string, leaseToken int64, now time.Time, chan
 	var events []msg.OperationEvent
 	var receipt msg.OperationReceipt
 	err := s.inTransaction(func(tx *sql.Tx) error {
-		operation, err := scanOperation(tx.QueryRow(`SELECT `+operationColumns+` FROM operations WHERE id = ?`, operationID))
+		operation, err := scanOperation(tx.QueryRow(`SELECT `+operationColumns+` FROM operations WHERE id = $1 FOR UPDATE`, operationID))
 		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("%w: %s", ErrNotFound, operationID)
 		}
@@ -519,9 +500,9 @@ func writeReceiptChange(tx *sql.Tx, operation *Operation, kind msg.OperationEven
 	if !operation.LeaseExpiresAt.IsZero() {
 		leaseExpiresAt = operation.LeaseExpiresAt.UnixNano()
 	}
-	if _, err := tx.Exec(`UPDATE operations SET state = ?, revision = ?, receipt_json = ?, lease_owner = ?,
-		lease_token = ?, lease_expires_at = ?, updated_at = ? WHERE id = ?`,
-		receipt.State, receipt.Revision, receiptJSON, operation.LeaseOwner, operation.LeaseToken, leaseExpiresAt,
+	if _, err := tx.Exec(`UPDATE operations SET state = $1, revision = $2, receipt_json = $3, lease_owner = $4,
+		lease_token = $5, lease_expires_at = $6, updated_at = $7 WHERE id = $8`,
+		receipt.State, receipt.Revision, string(receiptJSON), operation.LeaseOwner, operation.LeaseToken, leaseExpiresAt,
 		now.UnixNano(), receipt.ID); err != nil {
 		return nil, fmt.Errorf("update operation %s: %w", receipt.ID, err)
 	}
@@ -544,11 +525,13 @@ func writeReceiptChange(tx *sql.Tx, operation *Operation, kind msg.OperationEven
 // change on the parent as child_updated. A finished parent still gets the
 // count: a child may outlive the executor that started it.
 func refreshParentAfterChildChange(tx *sql.Tx, parentOperationID, childOperationID string, now time.Time) (msg.OperationEvent, error) {
-	parent, err := scanOperation(tx.QueryRow(`SELECT `+operationColumns+` FROM operations WHERE id = ?`, parentOperationID))
+	// The lock makes a second child's change wait until this one commits,
+	// so it counts this child's new state and raises the revision after it.
+	parent, err := scanOperation(tx.QueryRow(`SELECT `+operationColumns+` FROM operations WHERE id = $1 FOR UPDATE`, parentOperationID))
 	if err != nil {
 		return msg.OperationEvent{}, fmt.Errorf("read parent %s of %s: %w", parentOperationID, childOperationID, err)
 	}
-	rows, err := tx.Query(`SELECT id, state FROM operations WHERE parent_operation_id = ? ORDER BY created_at, id`, parentOperationID)
+	rows, err := tx.Query(`SELECT id, state FROM operations WHERE parent_operation_id = $1 ORDER BY created_at, id`, parentOperationID)
 	if err != nil {
 		return msg.OperationEvent{}, fmt.Errorf("count children of %s: %w", parentOperationID, err)
 	}
@@ -577,8 +560,8 @@ func refreshParentAfterChildChange(tx *sql.Tx, parentOperationID, childOperation
 	if err != nil {
 		return msg.OperationEvent{}, fmt.Errorf("encode receipt: %w", err)
 	}
-	if _, err := tx.Exec(`UPDATE operations SET revision = ?, receipt_json = ?, updated_at = ? WHERE id = ?`,
-		parent.Receipt.Revision, receiptJSON, now.UnixNano(), parentOperationID); err != nil {
+	if _, err := tx.Exec(`UPDATE operations SET revision = $1, receipt_json = $2, updated_at = $3 WHERE id = $4`,
+		parent.Receipt.Revision, string(receiptJSON), now.UnixNano(), parentOperationID); err != nil {
 		return msg.OperationEvent{}, fmt.Errorf("update parent %s: %w", parentOperationID, err)
 	}
 	return insertEvent(tx, parent.Receipt, msg.OperationEventChildUpdated, childOperationID, now)
@@ -597,26 +580,15 @@ func insertEvent(tx *sql.Tx, receipt msg.OperationReceipt, kind msg.OperationEve
 	if err != nil {
 		return msg.OperationEvent{}, fmt.Errorf("encode event: %w", err)
 	}
-	if _, err := tx.Exec(`INSERT INTO operation_events (operation_id, sequence, kind, event_json, at) VALUES (?, ?, ?, ?, ?)`,
-		event.OperationID, event.Sequence, event.Kind, eventJSON, now.UnixNano()); err != nil {
+	if _, err := tx.Exec(`INSERT INTO operation_events (operation_id, sequence, kind, event_json, at) VALUES ($1, $2, $3, $4, $5)`,
+		event.OperationID, event.Sequence, event.Kind, string(eventJSON), now.UnixNano()); err != nil {
 		return msg.OperationEvent{}, fmt.Errorf("insert event %d of %s: %w", event.Sequence, event.OperationID, err)
 	}
 	return event, nil
 }
 
 func (s *Store) inTransaction(work func(tx *sql.Tx) error) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("begin operations transaction: %w", err)
-	}
-	if err := work(tx); err != nil {
-		tx.Rollback()
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit operations transaction: %w", err)
-	}
-	return nil
+	return postgresstorage.InTransaction(context.Background(), s.db, work)
 }
 
 func (s *Store) notify(events []msg.OperationEvent) {

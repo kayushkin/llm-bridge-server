@@ -94,9 +94,6 @@ step "launch server on :$PORT (data dir: $DATA_DIR)"
 # but isolate every store to the temp directory.
 LLMBRIDGE_LISTEN_ADDR=":$PORT" \
 LLMBRIDGE_DB_PATH="$DATA_DIR/bridge.db" \
-LLMBRIDGE_HARNESS_DB="$DATA_DIR/harness.db" \
-LLMBRIDGE_HOOK_DB="$DATA_DIR/hooks.db" \
-LLMBRIDGE_SNAPSHOT_DB="$DATA_DIR/snapshots.db" \
 LLMBRIDGE_SNAPSHOT_GIT="$DATA_DIR/snapshots.git" \
 LLMBRIDGE_BRIDGE_PREFS="$DATA_DIR/bridge-prefs.json" \
 LLMBRIDGE_CONFORMANCE_PATH="$DATA_DIR/conformance.json" \

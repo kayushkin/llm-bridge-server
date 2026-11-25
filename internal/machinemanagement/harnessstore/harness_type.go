@@ -14,12 +14,12 @@ type HarnessType struct {
 func (s *Store) UpsertHarnessType(ht *HarnessType) error {
 	_, err := s.db.Exec(`
 		INSERT INTO harness_types (name, label, emoji, image, updated_at)
-		VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+		VALUES ($1, $2, $3, $4, now())
 		ON CONFLICT(name) DO UPDATE SET
 			label = excluded.label,
 			emoji = excluded.emoji,
 			image = excluded.image,
-			updated_at = CURRENT_TIMESTAMP`,
+			updated_at = now()`,
 		string(ht.Name), ht.Label, ht.Emoji, ht.Image,
 	)
 	return err
@@ -27,7 +27,7 @@ func (s *Store) UpsertHarnessType(ht *HarnessType) error {
 
 // GetHarnessType returns metadata for a single harness type.
 func (s *Store) GetHarnessType(name msg.Harness) (*HarnessType, error) {
-	row := s.db.QueryRow(`SELECT name, label, emoji, image FROM harness_types WHERE name = ?`, string(name))
+	row := s.db.QueryRow(`SELECT name, label, emoji, image FROM harness_types WHERE name = $1`, string(name))
 	var ht HarnessType
 	var n string
 	if err := row.Scan(&n, &ht.Label, &ht.Emoji, &ht.Image); err != nil {
@@ -60,6 +60,6 @@ func (s *Store) ListHarnessTypes() ([]HarnessType, error) {
 
 // DeleteHarnessType removes a harness type entry.
 func (s *Store) DeleteHarnessType(name msg.Harness) error {
-	_, err := s.db.Exec(`DELETE FROM harness_types WHERE name = ?`, string(name))
+	_, err := s.db.Exec(`DELETE FROM harness_types WHERE name = $1`, string(name))
 	return err
 }

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/agents/hookstore/hookstoretest"
+
 	hookstore "github.com/kayushkin/llm-bridge-server/internal/agents/hookstore"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -24,11 +26,7 @@ func testServerWithHookStore(t *testing.T) (*Server, *hookstore.Store) {
 	}
 	t.Cleanup(func() { st.Close() })
 
-	hks, err := hookstore.Open(filepath.Join(dir, "hooks.db"))
-	if err != nil {
-		t.Fatalf("open hook-store: %v", err)
-	}
-	t.Cleanup(func() { hks.Close() })
+	hks := hookstoretest.NewStore(t)
 
 	cfg := &config.Config{
 		ImagesDir:       filepath.Join(dir, "images"),

@@ -11,10 +11,10 @@ import (
 // SetHookEnabled had exactly one call site in the whole repo —
 // hook_test.go:137, passing false — so the enable direction had never run.
 //
-// The store spells "enabled" three different ways along one round trip: the
-// column is INTEGER, the writes bind a Go bool, and scanHook reads into an int
-// and compares `enabled != 0`. Two of those three conversions are the driver's
-// and nothing asserted either of them. Every existing test creates hooks with
+// When the store was SQLite it spelled "enabled" three ways along one round
+// trip: an INTEGER column, a Go bool bound on write, and an int compared with
+// 0 on read. The column is a Postgres boolean now, and the round trip is still
+// the driver's to get right, so it is still asserted here. Every existing test creates hooks with
 // Enabled: true and the one disable is only ever observed as an absence from a
 // filtered list, which a broken write would produce just as convincingly as a
 // working one.
@@ -22,9 +22,9 @@ import (
 // Filed by the 201st nightly pass, 2026-08-15, working step 2 of noteboard card
 // 25ac6a72-a5a0-4ada-b4a9-aeeb4e688177.
 
-// TestSetHookEnabledRoundTripsThroughTheIntegerColumn is the round trip
+// TestSetHookEnabledRoundTripsThroughTheEnabledColumn is the round trip
 // itself, read back through GetHook rather than inferred from a filtered list.
-func TestSetHookEnabledRoundTripsThroughTheIntegerColumn(t *testing.T) {
+func TestSetHookEnabledRoundTripsThroughTheEnabledColumn(t *testing.T) {
 	s := newStore(t)
 	mustCreate(t, s, "h", "PreToolUse", "Bash", "cmd", msg.HookScopeGlobal, "")
 
@@ -47,7 +47,7 @@ func TestSetHookEnabledRoundTripsThroughTheIntegerColumn(t *testing.T) {
 		t.Fatalf("get after re-enable: %v", err)
 	}
 	if !on.Enabled {
-		t.Error("hook still reads as disabled after SetHookEnabled(id, true) — a Go true did not survive the trip through an INTEGER column")
+		t.Error("hook still reads as disabled after SetHookEnabled(id, true) — a Go true did not survive the trip through the enabled column")
 	}
 }
 
@@ -85,11 +85,9 @@ func TestSetHookEnabledTrueReturnsAHookToListApplicable(t *testing.T) {
 // TestListHooksEnabledFilterMatchesBothValues is the first test of
 // ListFilter.EnabledSet at all. No test in this repo had ever set it.
 //
-// It is the one query that compares a Go bool against the INTEGER column
-// directly — `AND enabled = ?` with filter.Enabled bound straight in — so
-// unlike the writes, which at least round-trip through scanHook's `!= 0`,
-// nothing here would coerce a mismatched type into a plausible answer. It
-// would just silently match no rows.
+// It is the one query that compares a Go bool against the enabled column
+// directly, with filter.Enabled bound straight in, so a mismatched type would
+// not be caught on a read back: it would just silently match no rows.
 func TestListHooksEnabledFilterMatchesBothValues(t *testing.T) {
 	s := newStore(t)
 	mustCreate(t, s, "on1", "PreToolUse", "Bash", "c", msg.HookScopeGlobal, "")

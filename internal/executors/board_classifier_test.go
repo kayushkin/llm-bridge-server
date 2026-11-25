@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -13,7 +12,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/executors"
 	"github.com/kayushkin/llm-bridge-server/internal/executors/executorstest"
 	"github.com/kayushkin/llm-bridge-server/internal/operations"
-	"github.com/kayushkin/llm-bridge-server/internal/operationstore"
+	"github.com/kayushkin/llm-bridge-server/internal/operationstore/operationstoretest"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -54,11 +53,7 @@ func boardFixture() *decisionStore {
 }
 func runBoard(t *testing.T, s *decisionStore, organization string) (msg.OperationReceipt, *executorstest.FakeOneShot) {
 	t.Helper()
-	db, err := operationstore.Open(filepath.Join(t.TempDir(), "operations.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	db := operationstoretest.NewStore(t)
 	caller := &executorstest.FakeOneShot{InstanceID: "fake", DefaultModel: "test-model"}
 	coordinator, err := operations.NewCoordinator(db, operations.Config{WorkerCount: 1, LeaseDuration: 3 * time.Second, LeaseOwner: "test"}, executors.BoardClassifier{Caller: caller, Store: s})
 	if err != nil {

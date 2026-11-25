@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -13,6 +12,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/oneshotrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/operations"
 	"github.com/kayushkin/llm-bridge-server/internal/operationstore"
+	"github.com/kayushkin/llm-bridge-server/internal/operationstore/operationstoretest"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -74,11 +74,7 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	store, err := operationstore.Open(filepath.Join(t.TempDir(), "operations.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { store.Close() })
+	store := operationstoretest.NewStore(t)
 	caller := &fakeOneShot{instanceID: "inst-cc-local", defaultModel: "claude-haiku-4-5",
 		response: msg.OneShotResponse{Text: "hello", Model: "claude-haiku-4-5", StopReason: "end_turn",
 			Usage: msg.TokenUsage{InputTokens: 1000, OutputTokens: 200, CacheReadTokens: 1000}}}

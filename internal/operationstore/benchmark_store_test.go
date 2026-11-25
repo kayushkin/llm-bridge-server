@@ -1,17 +1,12 @@
 package operationstore_test
 
 import (
-	"path/filepath"
 	"testing"
 
 	"github.com/kayushkin/llm-bridge-server/internal/operationstore"
+	"github.com/kayushkin/llm-bridge-server/internal/operationstore/operationstoretest"
 )
 
 func openBenchmarkStore(b *testing.B) *operationstore.Store {
-	store, err := operationstore.Open(filepath.Join(b.TempDir(), "operations.db"))
-	if err != nil {
-		b.Fatal(err)
-	}
-	b.Cleanup(func() { store.Close() })
-	return store
+	return operationstoretest.NewStore(b)
 }
