@@ -1,0 +1,20 @@
+[Unit]
+Description=budget-store — the operator's finance ledger: accounts, cards, loans, transactions, categories and budgets
+After=network.target
+
+# A systemd user unit: install it to ~/.config/systemd/user/ and the binary to
+# ~/bin. %h is the user's home directory, so nothing here names a user.
+[Service]
+Type=simple
+ExecStart=%h/bin/budget-store
+
+# Loopback, deliberately. This service has no auth of its own and holds the
+# operator's finances; a wildcard bind would put them on the network.
+Environment=BUDGET_STORE_ADDR=127.0.0.1:8340
+
+WorkingDirectory=%h
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
