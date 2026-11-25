@@ -159,6 +159,10 @@ type Server struct {
 	// /journal-store/ once EnableConnectedRecords has run
 	// (connected_records_routes.go); nil answers them 503.
 	connectedRecords atomic.Pointer[connectedRecordsStores]
+	// messageActivityAndTimeLedger answers /message-store/, /activity-store/
+	// and /time-ledger-store/ once EnableMessageActivityAndTimeLedgerStores
+	// has run (message_activity_time_ledger_routes.go); nil answers them 503.
+	messageActivityAndTimeLedger atomic.Pointer[messageActivityAndTimeLedgerStores]
 	// repoRegistryForDeploys is repo-store as a deploy action reads it; nil
 	// until EnableRepositories, which refuses deploy actions.
 	repoRegistryForDeploys repoRegistry
@@ -364,6 +368,7 @@ func (s *Server) routes() {
 	s.registerRepositoriesAndReferencesRoutes()
 	s.registerUsageAndEvalStoreRoutes()
 	s.registerConnectedRecordsRoutes()
+	s.registerMessageActivityAndTimeLedgerRoutes()
 	// This server's own settings, served the way every service serves them.
 	serviceSettingsHandler := servicesettings.Handler(s.settings, "/settings")
 	s.mux.Handle("GET /settings", serviceSettingsHandler)
