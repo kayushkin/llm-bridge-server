@@ -511,18 +511,20 @@ func (s *Store) RecordAPISpendBreakdown(bridgeID string, detail SessionSpendDeta
 	return nil
 }
 
-// RecordSessionCost raises the session's recorded cost (spend_usd) to totalUSD
-// and its per-turn result total to turnResultUSD, and returns the cost now
-// stored, which is never lower than what was there.
+// RecordSessionCostReadingCeiling raises the session's recorded cost
+// (spend_usd) to totalUSD and its per-turn result total to turnResultUSD, and
+// returns the cost now stored, which is never lower than what was there, and
+// the session's spend ceiling (max_budget_usd, 0 for none), in one statement:
+// the budget check runs on every session_cost event, on the path that streams
+// it.
 //
 // spend_usd is the session cost estimate (msg.SessionCostEvent), the figure the
-// spend ceiling compares against. The MAX() is a backstop, not the mechanism:
-// the derivation seeds each harness process from the persisted row, and the
-// MAX() covers a failed seed read, which starts the estimate at zero.
-func (s *Store) RecordSessionCost(bridgeID string, totalUSD, turnResultUSD float64) (float64, error) {
+// spend ceiling compares against. The GREATEST() is a backstop, not the
+// mechanism: the derivation seeds each harness process from the persisted row,
+// and it covers a failed seed read, which starts the estimate at zero.
+func (s *Store) RecordSessionCostReadingCeiling(bridgeID string, totalUSD, turnResultUSD float64) (spendUSD, maxBudgetUSD float64, err error) {
 	now := time.Now().UTC()
-	var stored float64
-	err := s.db.QueryRow(`UPDATE sessions
+	err = s.db.QueryRow(`UPDATE sessions
 		SET spend_usd        = GREATEST(spend_usd, $1),
 		    api_spend_detail = CASE
 		        WHEN $2::double precision > COALESCE((COALESCE(NULLIF(api_spend_detail, ''), '{}')::jsonb ->> 'turn_result_usd')::double precision, 0)
@@ -530,12 +532,12 @@ func (s *Store) RecordSessionCost(bridgeID string, totalUSD, turnResultUSD float
 		        ELSE api_spend_detail END,
 		    updated_at       = $3
 		WHERE bridge_id = $4
-		RETURNING spend_usd`, totalUSD, turnResultUSD, now, bridgeID).Scan(&stored)
+		RETURNING spend_usd, max_budget_usd`, totalUSD, turnResultUSD, now, bridgeID).Scan(&spendUSD, &maxBudgetUSD)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	s.notifyChanged(bridgeID)
-	return stored, nil
+	return spendUSD, maxBudgetUSD, nil
 }
 
 // SessionSpend reads back the cumulative spend a session has already been

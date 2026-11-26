@@ -5,7 +5,7 @@
 // Until 2026-09-17 spend_usd was the per-call API sum alone, and before 2026-08-01
 // it was not recorded at all, so thousands of sessions read $0 or less than they
 // cost. The live derivation now keeps the estimate current; this computes it once
-// for history. It only ever RAISES a recorded cost (RecordSessionCost is a MAX).
+// for history. It only ever RAISES a recorded cost (its UPDATE is a MAX).
 //
 // -through-event-id is required: the last log-store event id recorded while
 // harnesses still reported cumulative result costs (the id current when the

@@ -72,22 +72,16 @@ func (m *Manager) enforceBudget(bridgeID string, ev *msg.Event) {
 		return
 	}
 
-	spendUSD, err := m.store.RecordSessionCost(bridgeID, ev.SessionCost.TotalUSD, ev.SessionCost.TurnResultUSD)
+	spendUSD, maxBudgetUSD, err := m.store.RecordSessionCostReadingCeiling(bridgeID, ev.SessionCost.TotalUSD, ev.SessionCost.TurnResultUSD)
 	if err != nil {
 		log.Printf("[harness] budget: failed to record cost for %s: %v", bridgeID, err)
 		return
 	}
-
-	sess, err := m.store.GetSession(bridgeID)
-	if err != nil {
-		log.Printf("[harness] budget: failed to read session %s: %v", bridgeID, err)
-		return
-	}
-	if sess == nil || sess.MaxBudgetUSD <= 0 {
+	if maxBudgetUSD <= 0 {
 		return
 	}
 
-	if spendUSD < sess.MaxBudgetUSD {
+	if spendUSD < maxBudgetUSD {
 		// Under the ceiling. Clear any earlier breach so that raising the
 		// ceiling genuinely revives the session: without this, a session
 		// halted at $5 and then raised to $50 would never announce the
@@ -99,7 +93,7 @@ func (m *Manager) enforceBudget(bridgeID string, ev *msg.Event) {
 		return
 	}
 
-	m.haltForBudget(bridgeID, spendUSD, sess.MaxBudgetUSD)
+	m.haltForBudget(bridgeID, spendUSD, maxBudgetUSD)
 }
 
 // haltForBudget announces the breach once and interrupts the session every

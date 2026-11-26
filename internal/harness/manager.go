@@ -1448,7 +1448,7 @@ func (m *Manager) persistedSessionStatus(bridgeID string) msg.SessionStatus {
 // Missing row (fresh session) reads as zero, which is the correct seed for
 // one. A real read error is logged loudly and also reads as zero: refusing to
 // derive at all would take the session's whole event stream down, and the
-// MAX() in RecordSessionCost is what stops a zero seed from walking the
+// GREATEST() in RecordSessionCostReadingCeiling is what stops a zero seed from walking the
 // recorded figure backwards.
 func (m *Manager) persistedSpend(bridgeID string) (float64, store.SessionSpendDetail) {
 	totalUSD, detail, err := m.store.SessionSpend(bridgeID)

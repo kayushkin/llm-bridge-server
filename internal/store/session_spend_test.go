@@ -33,7 +33,7 @@ func TestSessionSpend_RoundTripsCostAndBreakdown(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("record breakdown: %v", err)
 	}
-	if _, err := s.RecordSessionCost("br_spend_roundtrip", 3.45, 3.45); err != nil {
+	if _, _, err := s.RecordSessionCostReadingCeiling("br_spend_roundtrip", 3.45, 3.45); err != nil {
 		t.Fatalf("record cost: %v", err)
 	}
 
@@ -72,7 +72,7 @@ func TestRecordSpend_LowerReportsChangeNothing(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.RecordSessionCost("br_spend_backstop", 9.50, 9.50); err != nil {
+	if _, _, err := s.RecordSessionCostReadingCeiling("br_spend_backstop", 9.50, 9.50); err != nil {
 		t.Fatal(err)
 	}
 
@@ -81,7 +81,7 @@ func TestRecordSpend_LowerReportsChangeNothing(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	stored, err := s.RecordSessionCost("br_spend_backstop", 0.10, 0.10)
+	stored, _, err := s.RecordSessionCostReadingCeiling("br_spend_backstop", 0.10, 0.10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestRecordSpend_LowerReportsChangeNothing(t *testing.T) {
 // the recorded result total, which it does not carry.
 func TestRecordAPISpendBreakdown_AHigherTotalReplacesItAndKeepsTheResultTotal(t *testing.T) {
 	s := spendFixture(t, "br_spend_advance")
-	if _, err := s.RecordSessionCost("br_spend_advance", 1.20, 1.20); err != nil {
+	if _, _, err := s.RecordSessionCostReadingCeiling("br_spend_advance", 1.20, 1.20); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.RecordAPISpendBreakdown("br_spend_advance", SessionSpendDetail{
@@ -128,7 +128,7 @@ func TestRecordAPISpendBreakdown_AHigherTotalReplacesItAndKeepsTheResultTotal(t 
 
 func TestRecordSessionCost_UnknownSessionIsAnError(t *testing.T) {
 	s := testStore(t)
-	if _, err := s.RecordSessionCost("br_nope", 1, 1); err == nil {
+	if _, _, err := s.RecordSessionCostReadingCeiling("br_nope", 1, 1); err == nil {
 		t.Fatal("recording cost for a session with no row succeeded")
 	}
 }
