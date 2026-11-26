@@ -1,5 +1,6 @@
 import type { ComponentType, ReactNode } from 'react'
 import type { BridgeConfig, BridgeRoutes } from './context'
+import { BRIDGE_PAGE_AVAILABILITY } from './pageAvailability'
 import { BridgeChat } from './components/chat/BridgeChat'
 import { BridgeSignals } from './components/BridgeSignals'
 import { BridgeInstances } from './components/BridgeInstances'
@@ -113,57 +114,57 @@ export const BRIDGE_PAGES: readonly BridgePage[] = [
   // Routed, not listed: the chat sidebar's orchestrator row opens it.
   { route: 'signals', label: 'Signals', group: 'work', listed: false, component: BridgeSignals },
   { route: 'sessions', label: 'Sessions', group: 'work', listed: true, component: BridgeSessions },
-  { route: 'kanban', label: 'Kanban', group: 'work', listed: true, available: c => !!c.kanbanStoreBasePath, component: BridgeKanban },
+  { route: 'kanban', label: 'Kanban', group: 'work', listed: true, available: BRIDGE_PAGE_AVAILABILITY.kanban, component: BridgeKanban },
   { route: 'kanbanSettings', label: 'Board settings', group: 'work', listed: false, component: BridgeKanbanSettings },
   { route: 'card', label: 'Card', group: 'work', listed: false, routeSuffix: '/:cardId', component: BridgeCardPage },
-  { route: 'reference', label: 'Record', group: 'work', listed: false, routeSuffix: '/:refId', available: c => !!c.referenceStoreBasePath, component: BridgeReferencePage },
+  { route: 'reference', label: 'Record', group: 'work', listed: false, routeSuffix: '/:refId', available: BRIDGE_PAGE_AVAILABILITY.reference, component: BridgeReferencePage },
   // Each email ticket beside the message it came from. Needs mail as well as
   // kanban, since the log is half emails.
-  { route: 'emailTickets', label: 'Email tickets', group: 'work', listed: true, available: c => !!c.kanbanStoreBasePath && !!c.mailBasePath, component: BridgeEmailTickets },
+  { route: 'emailTickets', label: 'Email tickets', group: 'work', listed: true, available: BRIDGE_PAGE_AVAILABILITY.emailTickets, component: BridgeEmailTickets },
   // Routed, not listed: the gear on the chat sidebar's orchestrator row links to it.
-  { route: 'orchestrator', label: 'Orchestrator', group: 'work', listed: false, available: c => !!c.orchestratorBasePath, component: BridgeOrchestrator },
+  { route: 'orchestrator', label: 'Orchestrator', group: 'work', listed: false, available: BRIDGE_PAGE_AVAILABILITY.orchestrator, component: BridgeOrchestrator },
   // The dev servers agents are running. Only the host can see a machine's
   // listening ports, so a host that lists none gets no page.
-  { route: 'previews', label: 'Previews', group: 'work', listed: true, available: c => !!c.previewsBasePath, component: BridgePreviews },
+  { route: 'previews', label: 'Previews', group: 'work', listed: true, available: BRIDGE_PAGE_AVAILABILITY.previews, component: BridgePreviews },
   // The 3D models agents are making, found by the host from their tool calls
   // and the folders they work in.
-  { route: 'threeDimensionalModels', label: '3D models', group: 'work', listed: true, available: c => !!c.threeDimensionalModelsBasePath, component: BridgeThreeDimensionalModels },
+  { route: 'threeDimensionalModels', label: '3D models', group: 'work', listed: true, available: BRIDGE_PAGE_AVAILABILITY.threeDimensionalModels, component: BridgeThreeDimensionalModels },
   // Waiting on you comes first, so the Messages tab opens it: who wrote and
   // is waiting on a reply.
-  { route: 'messageWaiting', label: 'Waiting on you', group: 'messages', listed: true, available: c => !!c.multichatBasePath, component: BridgeMessagesWaiting, badge: AwaitingReplyCount },
+  { route: 'messageWaiting', label: 'Waiting on you', group: 'messages', listed: true, available: BRIDGE_PAGE_AVAILABILITY.messageWaiting, component: BridgeMessagesWaiting, badge: AwaitingReplyCount },
   // Messages — multichat's inbox. Conversations owns every path under
   // /messages that no sub-page claims: `/messages/kat` opens the chat
   // short-name-store calls messages/kat. React Router prefers a sub-page's
   // literal route to the splat, and `activeNavEntry` lights the longer tab.
-  { route: 'messageConversations', label: 'Conversations', group: 'messages', listed: true, routeSuffix: '/*', available: c => !!c.multichatBasePath, component: BridgeMessageConversations },
-  { route: 'messageSearch', label: 'Search', group: 'messages', listed: true, available: c => !!c.multichatBasePath, component: BridgeMessageSearch },
-  { route: 'messageContacts', label: 'Contacts', group: 'messages', listed: true, available: c => !!c.multichatBasePath, component: BridgeMessageContacts },
+  { route: 'messageConversations', label: 'Conversations', group: 'messages', listed: true, routeSuffix: '/*', available: BRIDGE_PAGE_AVAILABILITY.messageConversations, component: BridgeMessageConversations },
+  { route: 'messageSearch', label: 'Search', group: 'messages', listed: true, available: BRIDGE_PAGE_AVAILABILITY.messageSearch, component: BridgeMessageSearch },
+  { route: 'messageContacts', label: 'Contacts', group: 'messages', listed: true, available: BRIDGE_PAGE_AVAILABILITY.messageContacts, component: BridgeMessageContacts },
   // The Discord message log, deleted messages with their text, and the bridge's
   // status. Read-only: GET /message-log and GET /discord/status.
-  { route: 'discord', label: 'Discord', group: 'messages', listed: true, available: c => !!c.multichatBasePath, component: BridgeDiscord },
+  { route: 'discord', label: 'Discord', group: 'messages', listed: true, available: BRIDGE_PAGE_AVAILABILITY.discord, component: BridgeDiscord },
   // The emoji pickers' favorites and settings, and every bridged server's
   // custom emoji: GET /emoji and its writes.
-  { route: 'emoji', label: 'Emoji', group: 'messages', listed: true, available: c => !!c.multichatBasePath, component: BridgeEmoji },
+  { route: 'emoji', label: 'Emoji', group: 'messages', listed: true, available: BRIDGE_PAGE_AVAILABILITY.emoji, component: BridgeEmoji },
   // An emoji on everything one person sends: from the operator's own account
   // (multichat's rules), and from the Event-Manager Discord bot
   // (discord-signup-store's, shown when the host proxies it).
-  { route: 'autoReactions', label: 'Auto-reactions', group: 'messages', listed: true, available: c => !!c.multichatBasePath, component: BridgeAutoReactions },
+  { route: 'autoReactions', label: 'Auto-reactions', group: 'messages', listed: true, available: BRIDGE_PAGE_AVAILABILITY.autoReactions, component: BridgeAutoReactions },
   // Agents
   { route: 'instances', label: 'Instances', group: 'agents', listed: true, component: BridgeInstances },
   { route: 'agents', label: 'Agents', group: 'agents', listed: true, component: BridgeAgents },
   { route: 'files', label: 'Files', group: 'agents', listed: true, component: BridgeFiles },
-  { route: 'skills', label: 'Skills', group: 'agents', listed: true, available: c => !!c.skillStoreBasePath, component: BridgeSkills },
-  { route: 'tools', label: 'Tools', group: 'agents', listed: true, available: c => !!c.toolStoreBasePath, component: BridgeTools },
-  { route: 'bundles', label: 'Bundles', group: 'agents', listed: true, available: c => !!c.bundleStoreBasePath, component: BridgeBundles },
+  { route: 'skills', label: 'Skills', group: 'agents', listed: true, available: BRIDGE_PAGE_AVAILABILITY.skills, component: BridgeSkills },
+  { route: 'tools', label: 'Tools', group: 'agents', listed: true, available: BRIDGE_PAGE_AVAILABILITY.tools, component: BridgeTools },
+  { route: 'bundles', label: 'Bundles', group: 'agents', listed: true, available: BRIDGE_PAGE_AVAILABILITY.bundles, component: BridgeBundles },
   { route: 'hooks', label: 'Hooks', group: 'agents', listed: true, component: BridgeHooks },
   // Access
   // The directory the Kanban assignees resolve against. Same gate as the
   // assignee UI itself: a host that proxies no principal-store gets no page.
-  { route: 'principals', label: 'Principals', group: 'access', listed: true, available: c => !!c.principalStoreBasePath, component: BridgePrincipals },
+  { route: 'principals', label: 'Principals', group: 'access', listed: true, available: BRIDGE_PAGE_AVAILABILITY.principals, component: BridgePrincipals },
   // Who may use what. Its own page, because "who holds a grant on this tool"
   // is a question about a resource, not a principal.
-  { route: 'grants', label: 'Grants', group: 'access', listed: true, available: c => !!c.grantStoreBasePath, component: BridgeGrants },
-  { route: 'permissions', label: 'Permissions', group: 'access', listed: true, available: c => !!c.permissionStoreBasePath, component: BridgePermissions },
+  { route: 'grants', label: 'Grants', group: 'access', listed: true, available: BRIDGE_PAGE_AVAILABILITY.grants, component: BridgeGrants },
+  { route: 'permissions', label: 'Permissions', group: 'access', listed: true, available: BRIDGE_PAGE_AVAILABILITY.permissions, component: BridgePermissions },
   { route: 'auth', label: 'Auth', group: 'access', listed: true, component: BridgeAuth },
   // Other llm-bridge-servers: what this one may do there and they may do
   // here. Reads only the bridge server, so no store path gates it.
@@ -177,15 +178,15 @@ export const BRIDGE_PAGES: readonly BridgePage[] = [
   // Which model each background call uses: every model_role service setting,
   // and model-store's roles. The roles need model-store, so a host that does
   // not proxy it gets no tab.
-  { route: 'models', label: 'Models', group: 'system', listed: true, available: c => !!c.modelStoreBasePath, component: BridgeModels },
+  { route: 'models', label: 'Models', group: 'system', listed: true, available: BRIDGE_PAGE_AVAILABILITY.models, component: BridgeModels },
   // Reads the bridge server itself (`GET /services` on basePath), so no store
   // base path gates it; a host whose server lacks the route turns it off.
-  { route: 'serviceInventory', label: 'Service inventory', group: 'system', listed: true, available: (_, f) => f.showServiceInventory, component: BridgeServiceInventory },
+  { route: 'serviceInventory', label: 'Service inventory', group: 'system', listed: true, available: BRIDGE_PAGE_AVAILABILITY.serviceInventory, component: BridgeServiceInventory },
   // Every machine's health on this server and each connected one. Reads the
   // bridge server itself, so no store path gates it; a server built before
   // machine stats says so on the page.
   { route: 'machines', label: 'Machines', group: 'system', listed: true, component: BridgeMachines },
-  { route: 'conformance', label: 'Conformance', group: 'system', listed: true, available: (_, f) => f.showConformance, component: BridgeConformance },
+  { route: 'conformance', label: 'Conformance', group: 'system', listed: true, available: BRIDGE_PAGE_AVAILABILITY.conformance, component: BridgeConformance },
 ]
 
 /** A page the host brings into the same shell and navigation. `path` is

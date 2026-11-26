@@ -12,6 +12,8 @@ import {
   type HarnessInfo,
 } from '../types'
 import { SourceFoldersEditor } from './SourceFoldersEditor'
+import { PageLink } from './PageLink'
+import { bridgePageAvailableWithoutShellFlags } from '../pageAvailability'
 import { SETTINGS_SCOPE_INDEX, SETTINGS_SCOPE_LABEL, SettingsSection, saveResultOf, useSectionSave } from './settings/SettingsSection'
 
 interface ModelInfo {
@@ -36,7 +38,8 @@ const COMMON_TOOLS = [
  *  Every section is a SettingsSection: same frame, same scope and owner badges,
  *  same footer, and a refused save shown in the store's words. */
 export function BridgeSettings() {
-  const { fetch: apiFetch, basePath, renderHarnessExtension, routes } = useBridgeConfig()
+  const config = useBridgeConfig()
+  const { fetch: apiFetch, basePath, renderHarnessExtension, routes } = config
   const bridgePrefs = useBridgePrefs({ fetch: apiFetch, endpoint: `${basePath}/bridge-prefs` })
   const { harnesses } = useBridgeHarnesses()
   const [models, setModels] = useState<ModelInfo[]>([])
@@ -52,7 +55,12 @@ export function BridgeSettings() {
   const nameKey = harnessNameKey(harnesses)
   const harnessNames = useMemo(() => harnessNamesFromKey(nameKey), [nameKey])
 
-  const routeFor = (key: typeof SETTINGS_SCOPE_INDEX[number]['route']): string => routes[key]
+  // A row links to its page through the router, so a host that mounts the
+  // pages under a base (the bridge serves them at /ui/) keeps it, and only
+  // when the page can work here: a link to a page whose store this host does
+  // not carry would open a page that can only say so.
+  const routeFor = (key: typeof SETTINGS_SCOPE_INDEX[number]['route']): string =>
+    bridgePageAvailableWithoutShellFlags(key, config) ? routes[key] : ''
 
   return (
     <div className="bset-container bss-sections">
@@ -63,7 +71,7 @@ export function BridgeSettings() {
             {SETTINGS_SCOPE_INDEX.map(row => (
               <tr key={row.scope}>
                 <th scope="row">{SETTINGS_SCOPE_LABEL[row.scope]}</th>
-                <td>{row.where} {row.route !== 'settings' && routeFor(row.route) && <a href={routeFor(row.route)}>open</a>}</td>
+                <td>{row.where} {row.route !== 'settings' && routeFor(row.route) && <PageLink href={routeFor(row.route)}>open</PageLink>}</td>
               </tr>
             ))}
           </tbody>

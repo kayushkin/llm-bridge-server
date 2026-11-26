@@ -91,7 +91,11 @@ export function referenceChipLabel(match: ResolvedRefMatch, refId: string): stri
 }
 
 /** Where the chip's Open link goes: the record's own page, else the generic
- *  record page, else nowhere. */
+ *  record page, else nowhere. A page on this site comes back as reference-store
+ *  wrote it, from the root of the host's pages (`/principals?id=…`); draw it
+ *  with `PageLink`, which adds the router's base, never as a plain `<a href>`,
+ *  which loses it on a host that mounts its pages under one (the bridge's
+ *  `/ui/`). */
 export function referencePageHref(match: ResolvedRefMatch, refId: string, referenceRoute: string): string {
   if (match.page_url) return match.page_url
   if (referenceRoute) return `${referenceRoute}/${encodeURIComponent(refId)}`
