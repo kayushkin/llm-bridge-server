@@ -28,20 +28,6 @@ type RunnerSpawn struct {
 	Ended bool
 }
 
-func (s *Store) migrateRunnerSpawns() error {
-	_, err := s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS runner_spawns (
-			session_id    TEXT PRIMARY KEY,
-			spawn_id      TEXT NOT NULL,
-			machine_id    TEXT NOT NULL,
-			last_sequence INTEGER NOT NULL DEFAULT 0,
-			ended         INTEGER NOT NULL DEFAULT 0,
-			started_at    DATETIME NOT NULL
-		);
-	`)
-	return err
-}
-
 // RecordRunnerSpawn makes spawnID the session's current spawn, with nothing
 // stored yet.
 func (s *Store) RecordRunnerSpawn(sessionID, spawnID, machineID string) error {
@@ -49,9 +35,9 @@ func (s *Store) RecordRunnerSpawn(sessionID, spawnID, machineID string) error {
 		return errors.New("a runner spawn needs a session id, a spawn id and a machine id")
 	}
 	_, err := s.db.Exec(`
-		INSERT INTO runner_spawns (session_id, spawn_id, machine_id, last_sequence, ended, started_at) VALUES (?, ?, ?, 0, 0, ?)
+		INSERT INTO runner_spawns (session_id, spawn_id, machine_id, last_sequence, ended, started_at) VALUES ($1, $2, $3, 0, false, $4)
 		ON CONFLICT(session_id) DO UPDATE SET spawn_id = excluded.spawn_id, machine_id = excluded.machine_id,
-			last_sequence = 0, ended = 0, started_at = excluded.started_at`,
+			last_sequence = 0, ended = false, started_at = excluded.started_at`,
 		sessionID, spawnID, machineID, time.Now().UTC())
 	if err != nil {
 		return fmt.Errorf("record the runner spawn of session %s: %w", sessionID, err)
@@ -62,7 +48,7 @@ func (s *Store) RecordRunnerSpawn(sessionID, spawnID, machineID string) error {
 // RunnerSpawnOfSession is the session's current spawn, or nil when it has none.
 func (s *Store) RunnerSpawnOfSession(sessionID string) (*RunnerSpawn, error) {
 	spawn := RunnerSpawn{SessionID: sessionID}
-	err := s.db.QueryRow(`SELECT spawn_id, machine_id, last_sequence, ended FROM runner_spawns WHERE session_id = ?`, sessionID).
+	err := s.db.QueryRow(`SELECT spawn_id, machine_id, last_sequence, ended FROM runner_spawns WHERE session_id = $1`, sessionID).
 		Scan(&spawn.SpawnID, &spawn.MachineID, &spawn.LastSequence, &spawn.Ended)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -75,7 +61,7 @@ func (s *Store) RunnerSpawnOfSession(sessionID string) (*RunnerSpawn, error) {
 
 // OpenRunnerSpawnsOnMachine lists the spawns on one machine that have not ended.
 func (s *Store) OpenRunnerSpawnsOnMachine(machineID string) ([]RunnerSpawn, error) {
-	rows, err := s.db.Query(`SELECT session_id, spawn_id, last_sequence FROM runner_spawns WHERE machine_id = ? AND ended = 0`, machineID)
+	rows, err := s.db.Query(`SELECT session_id, spawn_id, last_sequence FROM runner_spawns WHERE machine_id = $1 AND NOT ended`, machineID)
 	if err != nil {
 		return nil, fmt.Errorf("list the open runner spawns on machine %s: %w", machineID, err)
 	}
@@ -95,7 +81,7 @@ func (s *Store) OpenRunnerSpawnsOnMachine(machineID string) ([]RunnerSpawn, erro
 // output through sequence. It never moves the mark back, and does nothing for
 // a spawn that is no longer the session's.
 func (s *Store) AdvanceRunnerSpawn(sessionID, spawnID string, sequence uint64) error {
-	_, err := s.db.Exec(`UPDATE runner_spawns SET last_sequence = ? WHERE session_id = ? AND spawn_id = ? AND last_sequence < ?`,
+	_, err := s.db.Exec(`UPDATE runner_spawns SET last_sequence = $1 WHERE session_id = $2 AND spawn_id = $3 AND last_sequence < $4`,
 		sequence, sessionID, spawnID, sequence)
 	if err != nil {
 		return fmt.Errorf("advance the runner spawn of session %s to %d: %w", sessionID, sequence, err)
@@ -105,39 +91,8 @@ func (s *Store) AdvanceRunnerSpawn(sessionID, spawnID string, sequence uint64) e
 
 // EndRunnerSpawn marks the spawn ended, if it is still the session's.
 func (s *Store) EndRunnerSpawn(sessionID, spawnID string) error {
-	if _, err := s.db.Exec(`UPDATE runner_spawns SET ended = 1 WHERE session_id = ? AND spawn_id = ?`, sessionID, spawnID); err != nil {
+	if _, err := s.db.Exec(`UPDATE runner_spawns SET ended = true WHERE session_id = $1 AND spawn_id = $2`, sessionID, spawnID); err != nil {
 		return fmt.Errorf("end the runner spawn of session %s: %w", sessionID, err)
 	}
 	return nil
-}
-
-// StoreEventAdvancingRunnerSpawn stores an event that came as entry sequence
-// of a runner spawn, and records the spawn as stored through that entry, in
-// one transaction. Either both are kept or neither, so a server that stops
-// between the two can never be sent the entry again and store it twice, nor
-// acknowledge an entry it did not keep. eventSessionID is the session the
-// event is filed under, which for a subagent's event is not the session whose
-// process produced it.
-func (s *Store) StoreEventAdvancingRunnerSpawn(eventSessionID, eventType, messageID, harnessMessageID string, data []byte, spawnSessionID, spawnID string, sequence uint64) (int64, error) {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback()
-	result, err := tx.Exec(
-		`INSERT INTO events (session_id, type, message_id, harness_message_id, data) VALUES (?,?,?,?,?)`,
-		eventSessionID, eventType, messageID, harnessMessageID, string(data),
-	)
-	if err != nil {
-		return 0, err
-	}
-	if _, err := tx.Exec(`UPDATE runner_spawns SET last_sequence = ? WHERE session_id = ? AND spawn_id = ? AND last_sequence < ?`,
-		sequence, spawnSessionID, spawnID, sequence); err != nil {
-		return 0, err
-	}
-	rowID, err := result.LastInsertId()
-	if err != nil {
-		return 0, err
-	}
-	return rowID, tx.Commit()
 }

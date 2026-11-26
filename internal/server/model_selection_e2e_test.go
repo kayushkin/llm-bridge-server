@@ -2,8 +2,6 @@ package server
 
 import (
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -18,18 +16,6 @@ import (
 // every layer was green, and the seam between them was where fable sessions
 // became opus. The mock echoes exactly what it was sent, so an empty or wrong
 // model here is a real gap, not a stand-in.
-
-// stubLogStore answers every request 200 so the /send path, which pushes the
-// user message to log-store before spawning, does not fail on a missing peer.
-func stubLogStore(t *testing.T) string {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{}`))
-	}))
-	t.Cleanup(srv.Close)
-	return srv.URL
-}
 
 // waitForReportedModel polls the row until the harness's session_info has
 // landed and names a model, then returns it.
@@ -55,7 +41,7 @@ func autoStartWithConfig(instID, cfg string) msg.CreateSessionRequest {
 
 func TestAutoStartSpawnsOnTheModelTheSessionWasGiven(t *testing.T) {
 	buildMockHarnessOnPath(t)
-	srv, st, instID := testServerWithInstanceAndLogStore(t, msg.HarnessMock, stubLogStore(t))
+	srv, st, instID := testServerWithInstance(t, msg.HarnessMock)
 	got := postCreateSession(t, srv, autoStartWithConfig(instID, `{"model":"mock-model-alt"}`))
 	t.Cleanup(func() { srv.harness.Kill(got.SessionID) })
 	if m := waitForReportedModel(t, st, got.SessionID, 5*time.Second); m != "mock-model-alt" {
@@ -65,7 +51,7 @@ func TestAutoStartSpawnsOnTheModelTheSessionWasGiven(t *testing.T) {
 
 func TestAutoStartWithNoModelSpawnsOnTheRegistryDefaultNotAnAccountDefault(t *testing.T) {
 	buildMockHarnessOnPath(t)
-	srv, st, instID := testServerWithInstanceAndLogStore(t, msg.HarnessMock, stubLogStore(t))
+	srv, st, instID := testServerWithInstance(t, msg.HarnessMock)
 	got := postCreateSession(t, srv, autoStartWithConfig(instID, ``))
 	t.Cleanup(func() { srv.harness.Kill(got.SessionID) })
 	// The defect: no model → no --model → whatever the harness's account default
@@ -77,7 +63,7 @@ func TestAutoStartWithNoModelSpawnsOnTheRegistryDefaultNotAnAccountDefault(t *te
 
 func TestPrefsDefaultReachesTheSpawn(t *testing.T) {
 	buildMockHarnessOnPath(t)
-	srv, st, instID := testServerWithInstanceAndLogStore(t, msg.HarnessMock, stubLogStore(t))
+	srv, st, instID := testServerWithInstance(t, msg.HarnessMock)
 	// The production shape: dash /settings writes bridge-prefs defaults[harness].model.
 	// This is the tier that ends the client race — the create itself answers.
 	srv.bridgePrefs.mu.Lock()
@@ -96,7 +82,7 @@ func TestPrefsDefaultReachesTheSpawn(t *testing.T) {
 
 func TestConfigThenSendSpawnsOnTheConfiguredModel(t *testing.T) {
 	buildMockHarnessOnPath(t)
-	srv, st, instID := testServerWithInstanceAndLogStore(t, msg.HarnessMock, stubLogStore(t))
+	srv, st, instID := testServerWithInstance(t, msg.HarnessMock)
 	// The browser's ordering: create, configure, then the SEND spawns the process.
 	req := autoStartRequest(instID)
 	req.AutoStart = false

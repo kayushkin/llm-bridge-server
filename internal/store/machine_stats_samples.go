@@ -15,21 +15,6 @@ import (
 // machineStatsTimeFormat is fixed-width so times compare as text in SQL.
 const machineStatsTimeFormat = "2006-01-02T15:04:05.000000000Z"
 
-// migrateMachineStatsSamples creates machine_stats_samples. Called from
-// migrate().
-func (s *Store) migrateMachineStatsSamples() error {
-	_, err := s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS machine_stats_samples (
-			machine_id   TEXT NOT NULL,
-			collected_at TEXT NOT NULL,
-			stats_json   TEXT NOT NULL,
-			PRIMARY KEY (machine_id, collected_at)
-		) WITHOUT ROWID;
-		CREATE INDEX IF NOT EXISTS idx_machine_stats_samples_collected_at ON machine_stats_samples(collected_at);
-	`)
-	return err
-}
-
 // RecordMachineStatsSample stores one reading of a machine. A second reading
 // with the same time replaces the first.
 func (s *Store) RecordMachineStatsSample(machineID string, stats msg.MachineStats) error {
@@ -44,7 +29,7 @@ func (s *Store) RecordMachineStatsSample(machineID string, stats msg.MachineStat
 		return fmt.Errorf("encode machine stats: %w", err)
 	}
 	_, err = s.db.Exec(`
-		INSERT INTO machine_stats_samples (machine_id, collected_at, stats_json) VALUES (?, ?, ?)
+		INSERT INTO machine_stats_samples (machine_id, collected_at, stats_json) VALUES ($1, $2, $3)
 		ON CONFLICT(machine_id, collected_at) DO UPDATE SET stats_json = excluded.stats_json`,
 		machineID, stats.CollectedAt.UTC().Format(machineStatsTimeFormat), string(encoded))
 	return err
@@ -81,7 +66,7 @@ func (s *Store) LatestMachineStats() (map[string]msg.MachineStats, error) {
 func (s *Store) MachineStatsSamplesBetween(machineID string, since, until time.Time) ([]msg.MachineStats, error) {
 	rows, err := s.db.Query(`
 		SELECT stats_json FROM machine_stats_samples
-		WHERE machine_id = ? AND collected_at >= ? AND collected_at < ?
+		WHERE machine_id = $1 AND collected_at >= $2 AND collected_at < $3
 		ORDER BY collected_at`,
 		machineID, since.UTC().Format(machineStatsTimeFormat), until.UTC().Format(machineStatsTimeFormat))
 	if err != nil {
@@ -106,7 +91,7 @@ func (s *Store) MachineStatsSamplesBetween(machineID string, since, until time.T
 // DeleteMachineStatsSamplesBefore deletes readings collected before cutoff
 // and returns how many it deleted.
 func (s *Store) DeleteMachineStatsSamplesBefore(cutoff time.Time) (int64, error) {
-	result, err := s.db.Exec(`DELETE FROM machine_stats_samples WHERE collected_at < ?`, cutoff.UTC().Format(machineStatsTimeFormat))
+	result, err := s.db.Exec(`DELETE FROM machine_stats_samples WHERE collected_at < $1`, cutoff.UTC().Format(machineStatsTimeFormat))
 	if err != nil {
 		return 0, err
 	}

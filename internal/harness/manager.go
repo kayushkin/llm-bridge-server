@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 	"log"
 	"os"
 	"os/exec"
@@ -17,6 +16,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 
 	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 	"github.com/kayushkin/llm-bridge-server/internal/ids"
@@ -78,7 +79,6 @@ type Manager struct {
 	store               *store.Store
 	logStore            atomic.Pointer[sessionEventLogHolder]   // the session event log (log-store); see SetSessionEventLog
 	sessionEventStore   atomic.Pointer[sessionEventStoreHolder] // where events are stored and read back; see SetSessionEventStore
-	logStoreWrites      *logStoreQueue                          // ordered per-session writer; keeps the log-store write off the SSE fan-out path
 	runners             *RunnerRegistry                         // optional; nil disables TransportRunner spawns
 	authClient          *authstoreclient.Client
 	publicServerURL     string                      // public bridge URL runners use for /api/runner/binary fetches
@@ -258,7 +258,6 @@ func NewManager(st *store.Store, publicServerURL, localBridgeURL string, ptyRing
 		localBridgeURL:        localBridgeURL,
 		ptyRingBytes:          ptyRingBytes,
 	}
-	m.logStoreWrites = newLogStoreQueue(func(ev msg.Event) (int64, error) { return m.sessionEventLog().PushEvent(ev) })
 	m.runners.SetHeldSessionsHandler(m.adoptHeldRunnerSessions)
 	return m
 }
@@ -843,14 +842,6 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 	harnessIDSet := false
 	subagents := newSubagentRouter(m, bridgeID)
 
-	// The session's log-store write queue lives exactly as long as this
-	// pump. Closed in the exit path below, which drains it, so a session
-	// whose process has gone is complete in log-store before its
-	// subscribers are told the stream ended.
-	if !m.singleCopy() {
-		m.logStoreWrites.Open(bridgeID)
-	}
-
 	for event := range proc.Events() {
 		// Drop harness-emitted EventSessionState entirely. SessionState
 		// is derived centrally from the raw event stream + server-only
@@ -914,10 +905,6 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 					if err != nil {
 						log.Printf("[harness] failed to store harness_id_set event for %s: %v", bridgeID, err)
 					}
-					// On the old path log-store keeps the durable copy of
-					// every event; it is queued ahead of the event that
-					// carried the id, the same order bridge.db holds them in.
-					m.mirrorToSessionLog(bridgeID, "event", idEvent)
 					stored := StoredEvent{Event: idEvent, RowID: rowID}
 					m.mu.RLock()
 					for _, ch := range m.subscribers[bridgeID] {
@@ -954,17 +941,6 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 				log.Printf("[harness] failed to store event: %v", err)
 			}
 		}
-
-		// Push to log-store (durable source of truth). Queued rather than
-		// written here: the POST used to sit in front of the fan-out
-		// below, so every token delta the browser was waiting on paid a
-		// round trip first. The queue keeps write order per session and
-		// blocks rather than drops when it fills; the read-back paths
-		// (RecoverInFlightTurn, InterruptedTurn, RecentTurnTexts,
-		// ListToolCallInputs) and the synchronous /send push drain it
-		// first, so nothing observes a half-written session. With the
-		// session log as the only copy, the write above was that write.
-		m.mirrorToSessionLog(bridgeID, "event", event)
 
 		// Update bookkeeping based on event type. SessionState row
 		// updates are owned by the derivation path (deriveAndBroadcast
@@ -1055,12 +1031,6 @@ func (m *Manager) readEvents(proc HarnessProcess) {
 			}
 		}
 		eventHandled(proc)
-	}
-
-	// Process exited — drain everything still queued for log-store before
-	// tearing the session down, so the durable history is complete.
-	if !m.singleCopy() {
-		m.logStoreWrites.Close(bridgeID)
 	}
 
 	// Close all subscriber channels. Subagent sessions live and die with the
@@ -1176,12 +1146,12 @@ func (m *Manager) ForceSessionStateWithDetail(bridgeID string, state msg.Session
 				status.ChangedAt = sess.Status.ChangedAt
 			}
 		}
-		err := m.storeAndFanOutDerived(bridgeID, &msg.Event{
+		err := m.broadcastDerived(bridgeID, &msg.Event{
 			Type:      msg.EventSessionStatus,
 			Harness:   harnessName,
 			Timestamp: now,
 			Status:    status,
-		}, true)
+		})
 		return err == nil, err
 	}
 
@@ -1401,15 +1371,6 @@ func (m *Manager) publishDerived(bridgeID string, derived []msg.Event) (emittedS
 // sessions.state — callers own the state write so the single-source-of-
 // truth update stays explicit at each call site.
 func (m *Manager) broadcastDerived(bridgeID string, ev *msg.Event) error {
-	return m.storeAndFanOutDerived(bridgeID, ev, false)
-}
-
-// storeAndFanOutDerived is broadcastDerived with a say over how log-store is
-// told. logStoreOffCallerGoroutine is for an event raised while the session
-// has no process: its log-store queue is closed then, and Enqueue falls back to
-// pushing on the caller's goroutine with up to 30s of retries — which would
-// put a spawn, a kill or the reaper behind a log-store outage.
-func (m *Manager) storeAndFanOutDerived(bridgeID string, ev *msg.Event, logStoreOffCallerGoroutine bool) error {
 	ev.BridgeSessionID = bridgeID
 
 	var rowID int64
@@ -1434,12 +1395,6 @@ func (m *Manager) storeAndFanOutDerived(bridgeID string, ev *msg.Event, logStore
 			log.Printf("[harness] failed to store derived event: %v", storeErr)
 		}
 	}
-	if logStoreOffCallerGoroutine {
-		go m.mirrorToSessionLog(bridgeID, "derived event", *ev)
-	} else {
-		m.mirrorToSessionLog(bridgeID, "derived event", *ev)
-	}
-
 	stored := StoredEvent{Event: *ev, RowID: rowID}
 	m.mu.RLock()
 	subs := make([]chan StoredEvent, len(m.subscribers[bridgeID]))
@@ -1493,7 +1448,7 @@ func (m *Manager) persistedSessionStatus(bridgeID string) msg.SessionStatus {
 // Missing row (fresh session) reads as zero, which is the correct seed for
 // one. A real read error is logged loudly and also reads as zero: refusing to
 // derive at all would take the session's whole event stream down, and the
-// MAX() in RecordSessionCost is what stops a zero seed from walking the
+// GREATEST() in RecordSessionCostReadingCeiling is what stops a zero seed from walking the
 // recorded figure backwards.
 func (m *Manager) persistedSpend(bridgeID string) (float64, store.SessionSpendDetail) {
 	totalUSD, detail, err := m.store.SessionSpend(bridgeID)
@@ -1589,22 +1544,6 @@ func (m *Manager) BroadcastEvent(ev *msg.Event) (int64, error) {
 		return 0, err
 	}
 
-	// Mirror readEvents: bridge-originated events are also durable in
-	// log-store. Without this, hook events / session-state / display-name
-	// events landed in bridge-server's local table but never reached
-	// log-store, causing II.A dual-write parity drift (see audit
-	// 2026-05-11). Errors are returned — callers that don't care wrap and
-	// log; callers that do care (e.g. /send) propagate.
-	// This one stays on the caller's goroutine because the error is
-	// returned, not logged: PushSync drains the session's write queue
-	// first so the event still lands after everything the pump queued
-	// before it, then writes it here and hands back the real failure.
-	if !m.singleCopy() {
-		if _, err := m.logStoreWrites.PushSync(bridgeID, *ev); err != nil {
-			return rowID, fmt.Errorf("push to log-store: %w", err)
-		}
-	}
-
 	// Mirror readEvents: hook events drive the awaiting_resolution →
 	// completed pending map so a freshly-connected client can hydrate the
 	// banner via /sessions/:id/hooks/pending. Required for bridge-emitted
@@ -1638,14 +1577,8 @@ func (m *Manager) BroadcastEvent(ev *msg.Event) (int64, error) {
 }
 
 // ReconcileStaleSessions resets every session a previous process left in an
-// active state to idle, and sends the status event each reset stored to
-// log-store as well, so both copies of the session's events hold it. It
+// active state to idle, storing each one's status event with its row, and
 // returns the sessions it reset.
-//
-// The log-store pushes run on one goroutine of their own, in order: a session
-// with no process has no open queue, so each push happens on the calling
-// goroutine with up to the queue's retry deadline, and startup must not wait
-// behind a log-store that is down.
 func (m *Manager) ReconcileStaleSessions() ([]store.Session, error) {
 	reconciled, err := m.SessionEvents().ReconcileSessions(msg.ActiveSessionStates()...)
 	if err != nil {
@@ -1655,24 +1588,7 @@ func (m *Manager) ReconcileStaleSessions() ([]store.Session, error) {
 	for i := range reconciled {
 		sessions[i] = reconciled[i].Session
 	}
-	if m.singleCopy() {
-		return sessions, nil
-	}
-	go func() {
-		for _, r := range reconciled {
-			m.logStoreWrites.Enqueue(r.SessionID, "startup reconcile status", r.Status)
-		}
-	}()
 	return sessions, nil
-}
-
-// FlushLogStoreWrites blocks until every event queued for bridgeID has
-// reached log-store. The manager's own read-backs call this internally;
-// it is exported for the HTTP layer, which proxies a session's message
-// history straight to log-store and would otherwise render a
-// conversation missing whatever the pump has queued but not yet written.
-func (m *Manager) FlushLogStoreWrites(bridgeID string) {
-	m.logStoreWrites.Flush(bridgeID)
 }
 
 // RecoverInFlightTurn reads log-store to reconstruct turn-level state for a
@@ -1680,12 +1596,6 @@ func (m *Manager) FlushLogStoreWrites(bridgeID string) {
 // store.RecoverInFlightTurn local-DB query as part of Phase II.A cutover.
 // Returns (nil, nil) when no turn is in flight; errors propagate.
 func (m *Manager) RecoverInFlightTurn(bridgeID string) (*store.InFlightTurnState, error) {
-	// Read-after-write: the pump writes to log-store through an ordered
-	// queue, so drain it before reading back or this can miss the turn it
-	// is trying to recover. Cheap on the path that matters — loadMsgState
-	// reaches here holding the manager lock, but only on a session's first
-	// event, when the queue the pump just opened is still empty.
-	m.logStoreWrites.Flush(bridgeID)
 	ts, err := m.sessionEventLog().GetTurnState(bridgeID)
 	if err != nil {
 		return nil, fmt.Errorf("turn-state: %w", err)
@@ -1737,7 +1647,6 @@ func (m *Manager) RecoverInFlightTurn(bridgeID string) (*store.InFlightTurnState
 // Returns nil when the last turn is balanced or when no user_message exists.
 // Replaces store.InterruptedTurn's local-DB query.
 func (m *Manager) InterruptedTurn(bridgeID string) (*store.InterruptedTurn, error) {
-	m.logStoreWrites.Flush(bridgeID)
 	ts, err := m.sessionEventLog().GetTurnState(bridgeID)
 	if err != nil {
 		return nil, fmt.Errorf("turn-state: %w", err)
@@ -1775,7 +1684,6 @@ func (m *Manager) InterruptedTurn(bridgeID string) (*store.InterruptedTurn, erro
 // produce up to limit recent (user, assistant) text pairs, oldest first.
 // Replaces store.RecentTurnTexts.
 func (m *Manager) RecentTurnTexts(bridgeID string, limit int) ([]store.TurnText, error) {
-	m.logStoreWrites.Flush(bridgeID)
 	events, err := m.sessionEventLog().ListEvents(bridgeID, 0, []string{"user_message", "result"})
 	if err != nil {
 		return nil, fmt.Errorf("events: %w", err)
@@ -1820,7 +1728,6 @@ func (m *Manager) RecentTurnTexts(bridgeID string, limit int) ([]store.TurnText,
 // in the session, oldest first. Empty/null inputs are skipped. Replaces
 // store.ListToolCallInputs.
 func (m *Manager) ListToolCallInputs(bridgeID string) ([]json.RawMessage, error) {
-	m.logStoreWrites.Flush(bridgeID)
 	events, err := m.sessionEventLog().ListEvents(bridgeID, 0, []string{"tool_call"})
 	if err != nil {
 		return nil, fmt.Errorf("tool_call events: %w", err)
@@ -1853,7 +1760,6 @@ type ToolEventInOrder struct {
 // ListToolEventsInOrder returns every tool_call and tool_result in the
 // session, oldest first, as log-store holds them.
 func (m *Manager) ListToolEventsInOrder(bridgeID string) ([]ToolEventInOrder, error) {
-	m.logStoreWrites.Flush(bridgeID)
 	events, err := m.sessionEventLog().ListEvents(bridgeID, 0, []string{"tool_call", "tool_result"})
 	if err != nil {
 		return nil, fmt.Errorf("tool events: %w", err)

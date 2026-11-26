@@ -12,17 +12,12 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// drainTestServer is a server with a mock harness and a log-store that takes
-// every event, since /send and every broadcast write to log-store.
+// drainTestServer is a server with a mock harness and the session log, since
+// /send and every broadcast store events.
 func drainTestServer(t *testing.T) (*Server, *store.Store, *store.Session) {
 	t.Helper()
 	buildMockHarnessOnPath(t)
-	logStore := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{}`))
-	}))
-	t.Cleanup(logStore.Close)
-	srv, st, instID := testServerWithInstanceAndLogStore(t, msg.HarnessMock, logStore.URL)
+	srv, st, instID := testServerWithInstance(t, msg.HarnessMock)
 	session := postCreateSession(t, srv, autoStartRequest(instID))
 	t.Cleanup(func() { srv.harness.Kill(session.SessionID) })
 	return srv, st, session
@@ -44,7 +39,7 @@ func sendThroughRoute(t *testing.T, srv *Server, sessionID, message string) (int
 // held-message system events stored for a session.
 func systemSubtypesAndUserMessages(t *testing.T, st *store.Store, sessionID string) []string {
 	t.Helper()
-	events, err := st.ListEventsSinceID(sessionID, 0)
+	events, err := testSessionEventsOf(t, st).ListEventsSinceID(sessionID, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -9,11 +9,11 @@ package harness
 //	export POSTGRESTEST_ADMINISTRATOR_URL="$(scripts/test-postgres.sh start)"
 //	go test ./internal/harness -run '^$' -bench BenchmarkSessionEventPaths -benchtime 1x -timeout 60m
 //
-// Each path is measured on a SQLite file in the test's temporary folder and a
-// database of its own on that Postgres. The shared test container keeps its
+// Each path is measured on a database of its own on that Postgres, holding the
+// bridge core module and the session log. The shared test container keeps its
 // data in memory with fsync and synchronous_commit off; point
-// POSTGRESTEST_ADMINISTRATOR_URL at a Postgres with the default durability on
-// the same disk as the SQLite file to compare like with like.
+// POSTGRESTEST_ADMINISTRATOR_URL at a Postgres with the default durability to
+// measure what a server sees.
 //
 // The event mix, sizes and pacing come from the live bridge database, read
 // only, on 2026-11-25: the 232,047 events of Claude Code sessions among its
@@ -27,7 +27,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -35,11 +34,9 @@ import (
 	"time"
 
 	logstoreserver "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/server"
-	logstorestore "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/store"
 	"github.com/kayushkin/llm-bridge-server/internal/sessionlog/sessionevents"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
-	"github.com/kayushkin/llm-bridge-server/postgresstorage"
-	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
+	"github.com/kayushkin/llm-bridge-server/internal/store/storetest"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -222,11 +219,10 @@ type sessionEventReads interface {
 
 // benchmarkBench is one path built on fresh stores.
 type benchmarkBench struct {
-	manager      *Manager
-	bridgeStore  *store.Store
-	reads        sessionEventReads
-	sessionLog   *logstoreserver.Server
-	databasePath string
+	manager     *Manager
+	bridgeStore *store.Store
+	reads       sessionEventReads
+	sessionLog  *logstoreserver.Server
 	// restart makes a new manager over the same stores, as a restarted
 	// server would have.
 	restart func() *Manager
@@ -238,67 +234,17 @@ type sessionEventPath struct {
 	build func(b *testing.B) *benchmarkBench
 }
 
-// openBenchmarkSessionLog opens the session_log module on a database of its
-// own, its writer with synchronous_commit off when asynchronousCommit.
-func openBenchmarkSessionLog(b *testing.B, asynchronousCommit bool) (*logstorestore.Store, *logstoreserver.Server) {
-	module, err := logstorestore.Module()
-	if err != nil {
-		b.Fatal(err)
-	}
-	database := postgrestest.NewDatabase(b, module)
-	writerURL, err := logstorestore.WriterURL(database.URL(), asynchronousCommit)
-	if err != nil {
-		b.Fatal(err)
-	}
-	writer, err := postgresstorage.Open(context.Background(), writerURL, module)
-	if err != nil {
-		b.Fatal(err)
-	}
-	b.Cleanup(func() { writer.Close() })
-	reader, err := logstorestore.OpenReader(context.Background(), database.URL(), module)
-	if err != nil {
-		b.Fatal(err)
-	}
-	b.Cleanup(func() { reader.Close() })
-	logStore := logstorestore.New(writer, reader)
-	return logStore, logstoreserver.New(logStore, nil)
-}
-
-// bridgeDatabasePath is the path as it is today: every event stored in the
-// bridge database's events table, which serves the stream, and queued to
-// session_log, which serves the reading page.
-var bridgeDatabasePath = sessionEventPath{
-	name: "bridge_database",
-	build: func(b *testing.B) *benchmarkBench {
-		databasePath := filepath.Join(b.TempDir(), "bridge.db")
-		bridgeStore, err := store.New(databasePath)
-		if err != nil {
-			b.Fatal(err)
-		}
-		b.Cleanup(func() { bridgeStore.Close() })
-		_, sessionLog := openBenchmarkSessionLog(b, false)
-		newManager := func() *Manager {
-			m := NewManager(bridgeStore, "http://127.0.0.1:0", "", 0, nil)
-			m.SetSessionEventLog(sessionLog)
-			return m
-		}
-		return &benchmarkBench{manager: newManager(), bridgeStore: bridgeStore, reads: sessionevents.BridgeDatabase{Store: bridgeStore}, sessionLog: sessionLog, databasePath: databasePath, restart: newManager}
-	},
-}
-
-// singleCopyPathWith is the merged path: session_log is the only copy,
-// written once per event in order, and serves every read.
+// singleCopyPathWith is the path: the bridge core module and the session log
+// in one Postgres database, session_log the only copy of events, written once
+// per event in order, with a status's session row and a runner entry's spawn
+// number in the event's transaction, and serving every read.
 func singleCopyPathWith(name string, asynchronousCommit bool) sessionEventPath {
 	return sessionEventPath{
 		name: name,
 		build: func(b *testing.B) *benchmarkBench {
-			databasePath := filepath.Join(b.TempDir(), "bridge.db")
-			bridgeStore, err := store.New(databasePath)
-			if err != nil {
-				b.Fatal(err)
-			}
-			b.Cleanup(func() { bridgeStore.Close() })
-			_, sessionLog := openBenchmarkSessionLog(b, asynchronousCommit)
+			database := storetest.NewDatabase(b)
+			bridgeStore := database.OpenStore()
+			sessionLog := database.OpenSessionLog(asynchronousCommit)
 			singleCopy, err := sessionevents.OpenSingleCopy(context.Background(), bridgeStore, sessionLog)
 			if err != nil {
 				b.Fatal(err)
@@ -306,17 +252,18 @@ func singleCopyPathWith(name string, asynchronousCommit bool) sessionEventPath {
 			newManager := func() *Manager {
 				m := NewManager(bridgeStore, "http://127.0.0.1:0", "", 0, nil)
 				m.SetSessionEventLog(sessionLog)
-				m.SetSessionEventStore(singleCopy, true)
+				m.SetSessionEventStore(singleCopy)
 				return m
 			}
-			return &benchmarkBench{manager: newManager(), bridgeStore: bridgeStore, reads: singleCopy, sessionLog: sessionLog, databasePath: databasePath, restart: newManager}
+			return &benchmarkBench{manager: newManager(), bridgeStore: bridgeStore, reads: singleCopy, sessionLog: sessionLog, restart: newManager}
 		},
 	}
 }
 
-// benchmarkSessionEventPaths lists the paths compared.
+// benchmarkSessionEventPaths lists the paths compared. The path before the
+// bridge's own records moved to Postgres (events in bridge.db, or the session
+// log beside a SQLite bridge.db) is measured from the build before it.
 var benchmarkSessionEventPaths = []sessionEventPath{
-	bridgeDatabasePath,
 	singleCopyPathWith("single_copy", false),
 	singleCopyPathWith("single_copy_asynchronous_commit", true),
 }
@@ -527,12 +474,10 @@ func benchmarkPacedIngest(b *testing.B, results *benchmarkResults, path sessionE
 	}
 	wait.Wait()
 	elapsed := time.Since(start)
-	// What the stream has is not yet all in session_log on the bridge
-	// database path: its queue writes behind. Time until it is.
+	// What the stream has is all in session_log already: each event is
+	// stored before it is streamed. The field stays, so the table reads as
+	// the earlier runs' did, where a queue wrote behind.
 	drainStart := time.Now()
-	for _, driver := range drivers {
-		bench.manager.FlushLogStoreWrites(driver.sessionID)
-	}
 	drained := time.Since(drainStart)
 	for _, driver := range drivers {
 		driver.stop(bench.manager)
@@ -566,9 +511,6 @@ func benchmarkUnpacedIngest(b *testing.B, results *benchmarkResults, path sessio
 	}
 	wait.Wait()
 	elapsed := time.Since(start)
-	for _, driver := range drivers {
-		bench.manager.FlushLogStoreWrites(driver.sessionID)
-	}
 	drainedElapsed := time.Since(start)
 	for _, driver := range drivers {
 		driver.stop(bench.manager)
@@ -602,7 +544,6 @@ func populateSession(b *testing.B, bench *benchmarkBench, sessionID string, turn
 		driver.runTurns(b, bench.manager, 1, false)
 	}
 	driver.waitFor(b, sent)
-	bench.manager.FlushLogStoreWrites(sessionID)
 	driver.stop(bench.manager)
 }
 
@@ -625,7 +566,6 @@ func readingPage(bench *benchmarkBench, sessionID string) error {
 	if _, err := bench.reads.MaxEventRowID(sessionID); err != nil {
 		return err
 	}
-	bench.manager.FlushLogStoreWrites(sessionID)
 	recorder := httptest.NewRecorder()
 	bench.sessionLog.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/sessions/"+sessionID+"/messages?limit=30", nil))
 	if recorder.Code != http.StatusOK {

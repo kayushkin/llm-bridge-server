@@ -366,7 +366,7 @@ func startEventPump(t *testing.T, m *Manager, proc HarnessProcess) (waitForPumpE
 // blockTexts returns every text block persisted against a session.
 func blockTexts(t *testing.T, m *Manager, sessionID string) []string {
 	t.Helper()
-	events, err := m.store.ListEventsSinceID(sessionID, 0)
+	events, err := m.SessionEvents().ListEventsSinceID(sessionID, 0)
 	if err != nil {
 		t.Fatalf("list events for %s: %v", sessionID, err)
 	}
@@ -388,7 +388,7 @@ func blockTexts(t *testing.T, m *Manager, sessionID string) []string {
 // is set after the marshal is invisible here — which is the point.
 func storedSystemEvents(t *testing.T, m *Manager, sessionID string) []msg.SystemEvent {
 	t.Helper()
-	events, err := m.store.ListEventsSinceID(sessionID, 0)
+	events, err := m.SessionEvents().ListEventsSinceID(sessionID, 0)
 	if err != nil {
 		t.Fatalf("list events for %s: %v", sessionID, err)
 	}

@@ -25,8 +25,10 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -73,9 +75,24 @@ func (module Module) check() error {
 // connection acts as the module's role and resolves a bare table name in the
 // module's schema and nowhere else, so a query cannot land in another module's
 // tables by leaving the schema off. The schema must exist: Provision makes it.
-func Open(ctx context.Context, url string, module Module) (*sql.DB, error) {
-	return OpenWithSessionSettings(ctx, url, module, nil)
+//
+// options go to the pool as it is made, for a module that needs its
+// connections set up beyond this (ScanTimestampsInUTC).
+func Open(ctx context.Context, url string, module Module, options ...stdlib.OptionOpenDB) (*sql.DB, error) {
+	return OpenWithSessionSettings(ctx, url, module, nil, options...)
 }
+
+// ScanTimestampsInUTC makes every connection of a pool read a timestamptz as a
+// time in UTC. pgx otherwise reads it in the process's local zone, so the same
+// stored instant would print with whatever offset the server runs under.
+var ScanTimestampsInUTC = stdlib.OptionAfterConnect(func(_ context.Context, connection *pgx.Conn) error {
+	connection.TypeMap().RegisterType(&pgtype.Type{
+		Name:  "timestamptz",
+		OID:   pgtype.TimestamptzOID,
+		Codec: &pgtype.TimestamptzCodec{ScanLocation: time.UTC},
+	})
+	return nil
+})
 
 // sessionSettingPattern is the name of a setting a module defines for its own
 // use: its schema's name, a dot and a plain name (possessions.owner_principal_id).
@@ -85,7 +102,7 @@ var sessionSettingPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}\.[a-z][a-z
 // starts with, each named after the module's schema (<schema>.<name>). A
 // module whose row-level security policies read current_setting opens one
 // pool per value, so a connection can never carry another pool's value.
-func OpenWithSessionSettings(ctx context.Context, url string, module Module, settings map[string]string) (*sql.DB, error) {
+func OpenWithSessionSettings(ctx context.Context, url string, module Module, settings map[string]string, options ...stdlib.OptionOpenDB) (*sql.DB, error) {
 	if err := module.check(); err != nil {
 		return nil, err
 	}
@@ -103,7 +120,7 @@ func OpenWithSessionSettings(ctx context.Context, url string, module Module, set
 	if module.Role != "" {
 		config.RuntimeParams["role"] = module.Role
 	}
-	db := stdlib.OpenDB(*config)
+	db := stdlib.OpenDB(*config, options...)
 	if err := db.PingContext(ctx); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("postgresstorage: opening module %s: %w", module.Schema, err)

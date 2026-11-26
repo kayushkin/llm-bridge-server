@@ -76,17 +76,14 @@ func assertIDsSurvivedIntact(t *testing.T, q url.Values, wantIDs string) {
 func serverWithLogStore(t *testing.T, logStoreURL string) (*Server, *store.Store) {
 	t.Helper()
 	dir := t.TempDir()
-	st, err := store.New(filepath.Join(dir, "test.db"))
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
-	t.Cleanup(func() { st.Close() })
+	st := newTestBridgeStore(t)
 	cfg := &config.Config{
 		ImagesDir:       filepath.Join(dir, "images"),
 		BridgePrefsPath: filepath.Join(dir, "prefs.json"),
 	}
 	testAuthorizationConfig(cfg)
 	srv := New(st, nil, nil, nil, nil, nil, nil, cfg)
+	enableTestSessionEvents(t, srv, st)
 	enableLogStoreAt(t, srv, logStoreURL)
 	return srv, st
 }

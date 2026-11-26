@@ -33,7 +33,7 @@ func TestSessionSpend_RoundTripsCostAndBreakdown(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("record breakdown: %v", err)
 	}
-	if _, err := s.RecordSessionCost("br_spend_roundtrip", 3.45, 3.45); err != nil {
+	if _, _, err := s.RecordSessionCostReadingCeiling("br_spend_roundtrip", 3.45, 3.45); err != nil {
 		t.Fatalf("record cost: %v", err)
 	}
 
@@ -72,7 +72,7 @@ func TestRecordSpend_LowerReportsChangeNothing(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.RecordSessionCost("br_spend_backstop", 9.50, 9.50); err != nil {
+	if _, _, err := s.RecordSessionCostReadingCeiling("br_spend_backstop", 9.50, 9.50); err != nil {
 		t.Fatal(err)
 	}
 
@@ -81,7 +81,7 @@ func TestRecordSpend_LowerReportsChangeNothing(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	stored, err := s.RecordSessionCost("br_spend_backstop", 0.10, 0.10)
+	stored, _, err := s.RecordSessionCostReadingCeiling("br_spend_backstop", 0.10, 0.10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestRecordSpend_LowerReportsChangeNothing(t *testing.T) {
 // the recorded result total, which it does not carry.
 func TestRecordAPISpendBreakdown_AHigherTotalReplacesItAndKeepsTheResultTotal(t *testing.T) {
 	s := spendFixture(t, "br_spend_advance")
-	if _, err := s.RecordSessionCost("br_spend_advance", 1.20, 1.20); err != nil {
+	if _, _, err := s.RecordSessionCostReadingCeiling("br_spend_advance", 1.20, 1.20); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.RecordAPISpendBreakdown("br_spend_advance", SessionSpendDetail{
@@ -128,26 +128,7 @@ func TestRecordAPISpendBreakdown_AHigherTotalReplacesItAndKeepsTheResultTotal(t 
 
 func TestRecordSessionCost_UnknownSessionIsAnError(t *testing.T) {
 	s := testStore(t)
-	if _, err := s.RecordSessionCost("br_nope", 1, 1); err == nil {
+	if _, _, err := s.RecordSessionCostReadingCeiling("br_nope", 1, 1); err == nil {
 		t.Fatal("recording cost for a session with no row succeeded")
-	}
-}
-
-// Rows written before the cost estimate carry the API sum only in spend_usd; the
-// migration copies it into the breakdown so api_spend_total continues from it.
-func TestMigration_CopiesTheOldAPISumIntoTheBreakdown(t *testing.T) {
-	s := spendFixture(t, "br_spend_legacy")
-	if _, err := s.db.Exec(`UPDATE sessions SET spend_usd=4.25, api_spend_detail='{"calls":3}' WHERE bridge_id='br_spend_legacy'`); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.migrate(); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-	totalUSD, detail, err := s.SessionSpend("br_spend_legacy")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if totalUSD != 4.25 || detail.APISpendUSD != 4.25 || detail.Calls != 3 {
-		t.Errorf("after migration: $%.2f %+v", totalUSD, detail)
 	}
 }

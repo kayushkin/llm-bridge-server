@@ -38,29 +38,6 @@ type MachineDiskDeletion struct {
 	RefusalReason          string                     `json:"refusal_reason,omitempty"`
 }
 
-func (s *Store) migrateMachineDiskDeletions() error {
-	_, err := s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS machine_disk_deletions (
-			number                    INTEGER PRIMARY KEY AUTOINCREMENT,
-			machine_id                TEXT NOT NULL,
-			path                      TEXT NOT NULL,
-			kind                      TEXT NOT NULL,
-			expected_size_bytes       INTEGER NOT NULL,
-			requested_by_principal_id TEXT NOT NULL DEFAULT '',
-			requested_at              TEXT NOT NULL,
-			state                     TEXT NOT NULL,
-			finished_at               TEXT,
-			deleted_bytes             INTEGER NOT NULL DEFAULT 0,
-			deleted_file_count        INTEGER NOT NULL DEFAULT 0,
-			failed_entry_count        INTEGER NOT NULL DEFAULT 0,
-			errors_json               TEXT NOT NULL DEFAULT '[]',
-			refusal_reason            TEXT NOT NULL DEFAULT ''
-		);
-		CREATE INDEX IF NOT EXISTS idx_machine_disk_deletions_machine ON machine_disk_deletions(machine_id, number);
-	`)
-	return err
-}
-
 func machineDiskDeletionID(number int64) string {
 	return fmt.Sprintf("%s%06d", MachineDiskDeletionIDPrefix, number)
 }
@@ -81,16 +58,12 @@ func (s *Store) RecordRequestedMachineDiskDeletion(deletion MachineDiskDeletion)
 	}
 	deletion.RequestedAt = time.Now().UTC()
 	deletion.State = msg.DiskUsageDeletionRequested
-	result, err := s.db.Exec(`
+	var number int64
+	if err := s.db.QueryRow(`
 		INSERT INTO machine_disk_deletions (machine_id, path, kind, expected_size_bytes, requested_by_principal_id, requested_at, state)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING number`,
 		deletion.MachineID, deletion.Path, string(deletion.Kind), int64(deletion.ExpectedSizeBytes),
-		deletion.RequestedByPrincipalID, deletion.RequestedAt.Format(machineStatsTimeFormat), string(deletion.State))
-	if err != nil {
-		return deletion, err
-	}
-	number, err := result.LastInsertId()
-	if err != nil {
+		deletion.RequestedByPrincipalID, deletion.RequestedAt.Format(machineStatsTimeFormat), string(deletion.State)).Scan(&number); err != nil {
 		return deletion, err
 	}
 	deletion.ID = machineDiskDeletionID(number)
@@ -118,8 +91,8 @@ func (s *Store) UpdateMachineDiskDeletion(machineID, id string, update msg.DiskU
 	}
 	result, err := s.db.Exec(`
 		UPDATE machine_disk_deletions
-		SET state = ?, finished_at = ?, deleted_bytes = ?, deleted_file_count = ?, failed_entry_count = ?, errors_json = ?, refusal_reason = ?
-		WHERE number = ? AND machine_id = ?`,
+		SET state = $1, finished_at = $2, deleted_bytes = $3, deleted_file_count = $4, failed_entry_count = $5, errors_json = $6, refusal_reason = $7
+		WHERE number = $8 AND machine_id = $9`,
 		string(update.State), finishedAt, int64(update.DeletedBytes), update.DeletedFileCount, update.FailedEntryCount,
 		string(errorsJSON), refusalReason, number, machineID)
 	if err != nil {
@@ -135,7 +108,7 @@ func (s *Store) UpdateMachineDiskDeletion(machineID, id string, update msg.DiskU
 // requested or running as lost, when its runner went away before saying
 // how they ended. A report that arrives later still settles them.
 func (s *Store) MarkUnfinishedMachineDiskDeletionsLost(machineID string) (int64, error) {
-	result, err := s.db.Exec(`UPDATE machine_disk_deletions SET state = ? WHERE machine_id = ? AND state IN (?, ?)`,
+	result, err := s.db.Exec(`UPDATE machine_disk_deletions SET state = $1 WHERE machine_id = $2 AND state IN ($3, $4)`,
 		string(msg.DiskUsageDeletionLost), machineID, string(msg.DiskUsageDeletionRequested), string(msg.DiskUsageDeletionRunning))
 	if err != nil {
 		return 0, err
@@ -148,7 +121,7 @@ func (s *Store) MachineDiskDeletions(machineID string, limit int) ([]MachineDisk
 	rows, err := s.db.Query(`
 		SELECT number, machine_id, path, kind, expected_size_bytes, requested_by_principal_id, requested_at, state,
 		       finished_at, deleted_bytes, deleted_file_count, failed_entry_count, errors_json, refusal_reason
-		FROM machine_disk_deletions WHERE machine_id = ? ORDER BY number DESC LIMIT ?`, machineID, limit)
+		FROM machine_disk_deletions WHERE machine_id = $1 ORDER BY number DESC LIMIT $2`, machineID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -194,7 +167,7 @@ func (s *Store) MarkMachineDiskDeletionRunning(machineID, id string) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`UPDATE machine_disk_deletions SET state = ? WHERE number = ? AND machine_id = ? AND state = ?`,
+	_, err = s.db.Exec(`UPDATE machine_disk_deletions SET state = $1 WHERE number = $2 AND machine_id = $3 AND state = $4`,
 		string(msg.DiskUsageDeletionRunning), number, machineID, string(msg.DiskUsageDeletionRequested))
 	return err
 }

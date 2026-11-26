@@ -80,23 +80,20 @@ func (sessionEventLogNotEnabled) SessionsHoldingHarnessSessionID(string) ([]logs
 	return nil, ErrSessionEventLogNotEnabled
 }
 
-// sessionEventStoreHolder is where the manager stores and reads back events,
-// and whether that store is the only copy.
+// sessionEventStoreHolder is where the manager stores and reads back events.
 type sessionEventStoreHolder struct {
-	events     sessionevents.Store
-	singleCopy bool
+	events sessionevents.Store
 }
 
-// SetSessionEventStore names where every event is stored and read back. With
-// singleCopy the store is the session log itself, and nothing is queued to
-// the session log beside it. Until it is called the manager stores events in
-// the bridge database's events table and queues each to the session log. The
-// server calls it once, before it starts or resumes any session.
-func (m *Manager) SetSessionEventStore(events sessionevents.Store, singleCopy bool) {
+// SetSessionEventStore names where every event is stored and read back: the
+// session log, the only copy. The server calls it once, before it starts or
+// resumes any session; until then every store and read of an event fails with
+// ErrSessionEventLogNotEnabled.
+func (m *Manager) SetSessionEventStore(events sessionevents.Store) {
 	if events == nil {
 		panic("harness: SetSessionEventStore needs a store")
 	}
-	m.sessionEventStore.Store(&sessionEventStoreHolder{events: events, singleCopy: singleCopy})
+	m.sessionEventStore.Store(&sessionEventStoreHolder{events: events})
 }
 
 // SessionEvents is where events are stored and read back.
@@ -104,23 +101,7 @@ func (m *Manager) SessionEvents() sessionevents.Store {
 	if holder := m.sessionEventStore.Load(); holder != nil {
 		return holder.events
 	}
-	return sessionevents.BridgeDatabase{Store: m.store}
-}
-
-// singleCopy says the session log is the only copy of session events.
-func (m *Manager) singleCopy() bool {
-	holder := m.sessionEventStore.Load()
-	return holder != nil && holder.singleCopy
-}
-
-// mirrorToSessionLog queues an event the bridge database already holds to
-// the session log, on the old path. With the session log as the only copy
-// the event is already there, and nothing is queued.
-func (m *Manager) mirrorToSessionLog(bridgeID, label string, ev msg.Event) {
-	if m.singleCopy() {
-		return
-	}
-	m.logStoreWrites.Enqueue(bridgeID, label, ev)
+	return sessionEventsNotEnabled{}
 }
 
 // sessionEventRecord is the record of one event of sessionID, stored with the

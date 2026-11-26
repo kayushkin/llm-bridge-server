@@ -39,9 +39,7 @@ func statusesAnswering(t *testing.T, server *peerTestServer, id string) []msg.Pe
 // its turn end sends nothing more, so the sender never reads "succeeded".
 func TestASessionsOwnFailedStatusAnswersTheRequestAndNoAutomaticOneFollows(t *testing.T) {
 	buildMockHarnessOnPath(t)
-	logStore := fakeLogStore(t).URL
 	accepting, initiating, acceptingID, initiatingID := connectedPairByDialingOut(t)
-	enableLogStoreAt(t, accepting.server, logStore)
 	sent, approved := approvedRequestOnAccepting(t, accepting, initiating, acceptingID, initiatingID)
 
 	own := decodeAnswer[msg.PeerMessage](t, accepting.requestAsAdministrator(t, "POST", "/peer-connections/"+acceptingID+"/messages",
@@ -64,9 +62,7 @@ func TestASessionsOwnFailedStatusAnswersTheRequestAndNoAutomaticOneFollows(t *te
 // answer for a request: the final reply, as succeeded.
 func TestARequestWhoseSessionSaysNothingStillReportsItsReply(t *testing.T) {
 	buildMockHarnessOnPath(t)
-	logStore := fakeLogStore(t).URL
 	accepting, initiating, acceptingID, initiatingID := connectedPairByDialingOut(t)
-	enableLogStoreAt(t, accepting.server, logStore)
 	sent, approved := approvedRequestOnAccepting(t, accepting, initiating, acceptingID, initiatingID)
 	frame := framedPeerRequestPrompt(approved, mustPeerConnection(t, accepting, acceptingID), approved.Body)
 	if !strings.Contains(frame, "bridge-peer status "+acceptingID+" --in-reply-to "+approved.ID+" --result failed") {

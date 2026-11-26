@@ -1,27 +1,26 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
 // SessionEventRecord is one session event as the harness manager stores it:
-// its body and the values a reader selects it by. The bridge database keeps
-// the message ids in columns of its own; the session log keeps those and the
-// tool use id.
+// its body and the values a reader selects it by, which the session log keeps
+// in columns beside the body.
 type SessionEventRecord struct {
 	SessionID        string
 	Type             string
 	MessageID        string
 	HarnessMessageID string
 	// ToolUseID is the tool call's id on a tool_call or tool_result event,
-	// and ToolName the tool's name on a tool_call; the bridge database reads
-	// both from the body instead.
+	// and ToolName the tool's name on a tool_call.
 	ToolUseID string
 	ToolName  string
 	Data      []byte
@@ -29,128 +28,138 @@ type SessionEventRecord struct {
 	Event *msg.Event
 }
 
-// StoreSessionEvent stores a record in the events table, as
-// StoreEventReturningID does.
-func (s *Store) StoreSessionEvent(record SessionEventRecord) (int64, error) {
-	return s.StoreEventReturningID(record.SessionID, record.Type, record.MessageID, record.HarnessMessageID, record.Data)
+// SessionLogStatement is one statement the session log runs in the
+// transaction that stores an event: a write of a row of this module that
+// belongs with the event.
+type SessionLogStatement struct {
+	Query     string
+	Arguments []any
 }
 
-// StoreSessionEventAdvancingRunnerSpawn stores a record that came as a
-// runner spawn's numbered entry, as StoreEventAdvancingRunnerSpawn does.
-func (s *Store) StoreSessionEventAdvancingRunnerSpawn(record SessionEventRecord, spawnSessionID, spawnID string, sequence uint64) (int64, error) {
-	return s.StoreEventAdvancingRunnerSpawn(record.SessionID, record.Type, record.MessageID, record.HarnessMessageID, record.Data, spawnSessionID, spawnID, sequence)
-}
-
-// SessionExists reports whether a session row exists.
-func (s *Store) SessionExists(bridgeID string) (bool, error) {
-	var exists bool
-	err := s.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM sessions WHERE bridge_id = ?)`, bridgeID).Scan(&exists)
-	return exists, err
-}
-
-// WriteSessionStatusRow writes a status onto its session row, unless the row
-// already holds a status as of a later event. It is the row half of a
-// status whose event the session log stored; written second, it can be
-// written again, and an older status never replaces a newer one.
+// Writes of this module's rows the session log makes in the transaction of
+// their event, so the two are kept together or not at all:
 //
-// It answers whether the row changed, and sql.ErrNoRows when no such session
-// exists.
-func (s *Store) WriteSessionStatusRow(bridgeID string, status *msg.SessionStatus, touchUpdatedAt bool) (bool, error) {
+//   - a status event and its session row (SessionRowLockForStatus, then
+//     SessionStatusRowWrite);
+//   - a runner spawn's numbered entry and the spawn's stored-through number
+//     (RunnerSpawnAdvance).
+//
+// The session log's writer connection acts as the session log's own role,
+// which may read and write only the columns these statements name: see
+// GrantSessionLogWrites. The table names carry the schema, since that
+// connection resolves bare names in the session log's schema.
+
+// SessionRowLockForStatus locks the session's row for the status the
+// transaction is about to write onto it. It answers one row when the session
+// exists and none when it does not; a session with no row gets no status
+// event. The lock keeps the row from being deleted between the event and the
+// write.
+func SessionRowLockForStatus(bridgeID string) SessionLogStatement {
+	return SessionLogStatement{
+		Query:     `SELECT bridge_id FROM ` + ModuleSchema + `.sessions WHERE bridge_id = $1 FOR NO KEY UPDATE`,
+		Arguments: []any{bridgeID},
+	}
+}
+
+// SessionStatusRowWrite writes status, whose AsOf is its event's id, and its
+// state onto the session row. updated_at moves to now unless touchUpdatedAt is
+// false: the startup reconcile leaves it, since FileInactive and ArchiveOld
+// read it as the row's last real change. A row holding a status as of a later
+// event keeps it, so an older status never replaces a newer one.
+func SessionStatusRowWrite(bridgeID string, status *msg.SessionStatus, touchUpdatedAt bool) (SessionLogStatement, error) {
 	data, err := json.Marshal(status)
 	if err != nil {
-		return false, fmt.Errorf("marshal session status: %w", err)
+		return SessionLogStatement{}, fmt.Errorf("marshal session status: %w", err)
 	}
-	set := `state = ?, status = ?`
-	args := []any{string(status.State), string(data)}
+	set := `state = $1, status = $2`
+	arguments := []any{string(status.State), string(data), bridgeID, status.AsOf}
 	if touchUpdatedAt {
-		set += `, updated_at = ?`
-		args = append(args, time.Now().UTC())
+		set += `, updated_at = $5`
+		arguments = append(arguments, time.Now().UTC())
 	}
-	args = append(args, bridgeID, status.AsOf)
-	result, err := s.db.Exec(`UPDATE sessions SET `+set+`
-		WHERE bridge_id = ? AND COALESCE(json_extract(NULLIF(status, ''), '$.as_of'), 0) < ?`, args...)
-	if err != nil {
-		return false, err
-	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return false, err
-	}
-	if changed == 0 {
-		exists, err := s.SessionExists(bridgeID)
-		if err != nil {
-			return false, err
-		}
-		if !exists {
-			return false, sql.ErrNoRows
-		}
-		return false, nil
-	}
-	s.notifyChanged(bridgeID)
-	return true, nil
+	return SessionLogStatement{
+		Query: `UPDATE ` + ModuleSchema + `.sessions SET ` + set + `
+			WHERE bridge_id = $3 AND COALESCE((NULLIF(status, '')::jsonb ->> 'as_of')::bigint, 0) < $4`,
+		Arguments: arguments,
+	}, nil
 }
 
-// HighestEventID is the highest id the events table ever handed out: its
-// AUTOINCREMENT counter, or the highest id present if that is higher.
-func (s *Store) HighestEventID() (int64, error) {
-	var highestPresent int64
-	if err := s.db.QueryRow(`SELECT COALESCE(MAX(id), 0) FROM events`).Scan(&highestPresent); err != nil {
-		return 0, err
+// RunnerSpawnAdvance records that the server stored a runner spawn's output
+// through sequence, as AdvanceRunnerSpawn does.
+func RunnerSpawnAdvance(sessionID, spawnID string, sequence uint64) SessionLogStatement {
+	return SessionLogStatement{
+		Query:     `UPDATE ` + ModuleSchema + `.runner_spawns SET last_sequence = $1 WHERE session_id = $2 AND spawn_id = $3 AND last_sequence < $1`,
+		Arguments: []any{int64(sequence), sessionID, spawnID},
 	}
-	var counter sql.NullInt64
-	err := s.db.QueryRow(`SELECT seq FROM sqlite_sequence WHERE name = 'events'`).Scan(&counter)
-	if err != nil && err != sql.ErrNoRows {
-		return 0, err
-	}
-	return max(highestPresent, counter.Int64), nil
 }
 
-// RaiseEventNumberingAbove makes the next id the events table hands out
-// larger than highest. The server calls it when it runs the old path after
-// the session log has been the only copy, so the statuses and cursors it
-// hands out stay above every id a client already holds. It changes the
-// table's AUTOINCREMENT counter only, never a row.
-func (s *Store) RaiseEventNumberingAbove(highest int64) error {
-	current, err := s.HighestEventID()
+// GrantSessionLogWrites lets role, the session log's own, run the statements
+// above and nothing more: read a session's id and status and write its state,
+// status and updated_at, and read and advance a runner spawn's number. It runs
+// on this module's writer, whose role owns the tables. Every grant is
+// idempotent, so every start runs it, after both modules are migrated.
+func (s *Store) GrantSessionLogWrites(ctx context.Context, role string) error {
+	for _, statement := range []string{
+		`GRANT USAGE ON SCHEMA ` + ModuleSchema + ` TO ` + role,
+		`GRANT SELECT (bridge_id, status), UPDATE (state, status, updated_at) ON ` + ModuleSchema + `.sessions TO ` + role,
+		`GRANT SELECT (session_id, spawn_id, last_sequence), UPDATE (last_sequence) ON ` + ModuleSchema + `.runner_spawns TO ` + role,
+	} {
+		if _, err := s.db.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("let the session log write the rows of its events (%s): %w", statement, err)
+		}
+	}
+	return nil
+}
+
+// ModuleHoldsRecords says whether the module at db holds this server's
+// records: whether a server has opened it, or an import copied a bridge
+// database into it. db is the module's writer pool, before New.
+func ModuleHoldsRecords(ctx context.Context, db *sql.DB) (bool, error) {
+	var holds bool
+	err := db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM server_identity)`).Scan(&holds)
+	return holds, err
+}
+
+// HighestArchivedEventID is the highest id the bridge's SQLite events table
+// handed out, as the import recorded it, and whether a number was recorded.
+// The session log numbers its own events above it.
+func (s *Store) HighestArchivedEventID() (int64, bool, error) {
+	var highest int64
+	err := s.dbRO.QueryRow(`SELECT highest_archived_event_id FROM archived_event_numbering WHERE only_row = 1`).Scan(&highest)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
 	if err != nil {
-		return err
+		return 0, false, err
 	}
-	if current >= highest {
-		return nil
-	}
-	result, err := s.db.Exec(`UPDATE sqlite_sequence SET seq = ? WHERE name = 'events'`, highest)
-	if err != nil {
-		return err
-	}
-	if n, _ := result.RowsAffected(); n == 0 {
-		_, err = s.db.Exec(`INSERT INTO sqlite_sequence (name, seq) VALUES ('events', ?)`, highest)
-	}
-	return err
+	return highest, true, nil
 }
 
 // ResetStaleSessions sets pid 0 on every session in one of states that no
 // runner may still be holding, and answers them as they were. It is the
-// first half of ReconcileSessions, for a caller that writes each session's
-// status itself.
+// first half of the startup reconcile; the session log writes each one's
+// status.
 func (s *Store) ResetStaleSessions(states ...msg.SessionState) ([]Session, error) {
 	if len(states) == 0 {
 		return nil, nil
 	}
-	placeholders := make([]string, len(states))
-	args := make([]any, len(states))
+	stateNames := make([]string, len(states))
 	for i, st := range states {
-		placeholders[i] = "?"
-		args[i] = string(st)
+		stateNames[i] = string(st)
 	}
-	in := strings.Join(placeholders, ",")
 	// A session whose process a runner may still be holding is left as it is:
 	// the runner says, when it reconnects, whether the process is alive. So
 	// is a harness subagent of such a session, which lives in that process.
 	// The watchdog deals with either if no runner ever claims it.
-	notHeld := ` AND session_id NOT IN (SELECT session_id FROM runner_spawns WHERE ended = 0)
-		AND NOT (controlled_by = '` + string(msg.ControlledByHarness) + `'
-			AND COALESCE(manager_session_id, '') IN (SELECT session_id FROM runner_spawns WHERE ended = 0))`
-	rows, err := s.db.Query(`SELECT `+sessionColumns+` FROM sessions WHERE state IN (`+in+`)`+notHeld, args...)
+	stale := ` state = ANY($1) AND session_id NOT IN (SELECT session_id FROM runner_spawns WHERE NOT ended)
+		AND NOT (controlled_by = $2
+			AND manager_session_id IN (SELECT session_id FROM runner_spawns WHERE NOT ended))`
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	rows, err := tx.Query(`SELECT `+sessionColumns+` FROM sessions WHERE`+stale+` FOR UPDATE`, stateNames, string(msg.ControlledByHarness))
 	if err != nil {
 		return nil, err
 	}
@@ -168,12 +177,12 @@ func (s *Store) ResetStaleSessions(states ...msg.SessionState) ([]Session, error
 		return nil, err
 	}
 	if len(sessions) == 0 {
-		return nil, nil
+		return nil, tx.Commit()
 	}
-	if _, err := s.db.Exec(`UPDATE sessions SET pid=0 WHERE state IN (`+in+`)`+notHeld, args...); err != nil {
+	if _, err := tx.Exec(`UPDATE sessions SET pid=0 WHERE`+stale, stateNames, string(msg.ControlledByHarness)); err != nil {
 		return nil, err
 	}
-	return sessions, nil
+	return sessions, tx.Commit()
 }
 
 // StartupReconcileStatus is the status the startup reconcile records for a

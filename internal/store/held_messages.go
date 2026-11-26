@@ -11,7 +11,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/kayushkin/llm-bridge/msg"
@@ -41,33 +40,6 @@ type HeldMessage struct {
 	HeldAt time.Time
 }
 
-func (s *Store) migrateHeldMessages() error {
-	_, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS held_messages (
-		held_message_id      TEXT PRIMARY KEY,
-		session_id           TEXT NOT NULL,
-		request_json         TEXT NOT NULL,
-		source               TEXT NOT NULL,
-		held_at              DATETIME NOT NULL,
-		delivery_claimed_at  DATETIME,
-		delivered_at         DATETIME,
-		delivery_outcome     TEXT NOT NULL DEFAULT '',
-		delivery_status_code INTEGER NOT NULL DEFAULT 0,
-		delivery_answer      TEXT NOT NULL DEFAULT ''
-	)`)
-	if err != nil {
-		return err
-	}
-	_, err = s.db.Exec(`CREATE INDEX IF NOT EXISTS held_messages_unclaimed ON held_messages (held_message_id) WHERE delivery_claimed_at IS NULL`)
-	if err != nil {
-		return err
-	}
-	// sender_principal_id came after the table; a store made before it gets it here.
-	if _, err := s.db.Exec(`ALTER TABLE held_messages ADD COLUMN sender_principal_id TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-		return fmt.Errorf("add held_messages.sender_principal_id: %w", err)
-	}
-	return nil
-}
-
 // HoldMessage records a message the server will send once its restart wait
 // ends.
 func (s *Store) HoldMessage(held HeldMessage) error {
@@ -75,7 +47,7 @@ func (s *Store) HoldMessage(held HeldMessage) error {
 	if err != nil {
 		return fmt.Errorf("encode held message %s: %w", held.HeldMessageID, err)
 	}
-	_, err = s.db.Exec(`INSERT INTO held_messages (held_message_id, session_id, request_json, sender_principal_id, source, held_at) VALUES (?, ?, ?, ?, ?, ?)`,
+	_, err = s.db.Exec(`INSERT INTO held_messages (held_message_id, session_id, request_json, sender_principal_id, source, held_at) VALUES ($1, $2, $3, $4, $5, $6)`,
 		held.HeldMessageID, held.SessionID, string(request), held.SenderPrincipalID, held.Source, held.HeldAt.UTC())
 	if err != nil {
 		return fmt.Errorf("hold message %s: %w", held.HeldMessageID, err)
@@ -110,7 +82,7 @@ func (s *Store) UnclaimedHeldMessages() ([]HeldMessage, error) {
 // ClaimHeldMessage marks a held message as being delivered, and reports false
 // when another delivery claimed it first.
 func (s *Store) ClaimHeldMessage(heldMessageID string) (bool, error) {
-	result, err := s.db.Exec(`UPDATE held_messages SET delivery_claimed_at = ? WHERE held_message_id = ? AND delivery_claimed_at IS NULL`,
+	result, err := s.db.Exec(`UPDATE held_messages SET delivery_claimed_at = $1 WHERE held_message_id = $2 AND delivery_claimed_at IS NULL`,
 		time.Now().UTC(), heldMessageID)
 	if err != nil {
 		return false, fmt.Errorf("claim held message %s: %w", heldMessageID, err)
@@ -125,8 +97,8 @@ func (s *Store) ClaimHeldMessage(heldMessageID string) (bool, error) {
 // RecordHeldMessageDelivery records how a claimed held message's delivery
 // went: the outcome, the status code the send answered and its body.
 func (s *Store) RecordHeldMessageDelivery(heldMessageID, outcome string, statusCode int, answer string) error {
-	result, err := s.db.Exec(`UPDATE held_messages SET delivered_at = ?, delivery_outcome = ?, delivery_status_code = ?, delivery_answer = ?
-		WHERE held_message_id = ? AND delivery_claimed_at IS NOT NULL`,
+	result, err := s.db.Exec(`UPDATE held_messages SET delivered_at = $1, delivery_outcome = $2, delivery_status_code = $3, delivery_answer = $4
+		WHERE held_message_id = $5 AND delivery_claimed_at IS NOT NULL`,
 		time.Now().UTC(), outcome, statusCode, answer, heldMessageID)
 	if err != nil {
 		return fmt.Errorf("record delivery of held message %s: %w", heldMessageID, err)

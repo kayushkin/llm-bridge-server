@@ -2,34 +2,23 @@ package harness
 
 import (
 	"encoding/json"
-	"net/http/httptest"
-	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// A Claude Code session the bridge did not start has hook events in bridge.db
-// and no sessions row, so every status derived for it fails its write and the
-// transaction rolls back. It still went to log-store and to subscribers,
-// stamped as of the rolled-back row id, which bridge.db then gave to the next
-// event (measured by cmd/event-copy-parity on 2026-09-25: six such sessions in
-// four hours, card 63fb5135). A status whose write failed now goes nowhere.
+// A Claude Code session the bridge did not start has hook events and no
+// sessions row, so every status derived for it fails its write. Until
+// 2026-09-25 it still went to log-store and to subscribers, stamped as of a
+// rolled-back row id (six such sessions in four hours, card 63fb5135). A
+// status whose write failed goes nowhere: not into the session log, not to a
+// subscriber.
 //
 // The error event sent after it is the control: it takes the same path and
-// must arrive, so an empty log-store cannot pass this test by being slow.
-func TestAStatusWhoseWriteRolledBackReachesNeitherLogStoreNorSubscribers(t *testing.T) {
-	st, err := store.New(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
-	t.Cleanup(func() { st.Close() })
-	logStore := newLogStoreStub()
-	logStoreServer := httptest.NewServer(logStore)
-	t.Cleanup(logStoreServer.Close)
-	m := newManagerOnLogStoreURL(st, logStoreServer.URL, "http://127.0.0.1:0", "", 0, nil)
+// must arrive.
+func TestAStatusWhoseWriteRolledBackReachesNeitherTheSessionLogNorSubscribers(t *testing.T) {
+	m, _, _ := newSingleCopyTestManager(t)
 
 	const hookOnlyID = "br_hook_only_no_sessions_row"
 	subscriber := m.Subscribe(hookOnlyID)
@@ -54,20 +43,20 @@ func TestAStatusWhoseWriteRolledBackReachesNeitherLogStoreNorSubscribers(t *test
 		t.Fatalf("control event: %v", controlErr)
 	}
 
-	var logStoreTypes []string
-	deadline := time.Now().Add(5 * time.Second)
-	for len(logStoreTypes) == 0 && time.Now().Before(deadline) {
-		logStore.mu.Lock()
-		for _, event := range logStore.events[hookOnlyID] {
-			logStoreTypes = append(logStoreTypes, event.typ)
-		}
-		logStore.mu.Unlock()
-		if len(logStoreTypes) == 0 {
-			time.Sleep(10 * time.Millisecond)
-		}
+	stored, err := m.SessionEvents().ListEventsSinceID(hookOnlyID, 0)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(logStoreTypes) != 1 || logStoreTypes[0] != string(msg.EventError) {
-		t.Fatalf("log-store got %v; want only the control %s", logStoreTypes, msg.EventError)
+	var storedTypes []msg.EventType
+	for _, row := range stored {
+		var ev msg.Event
+		if err := json.Unmarshal(row.Data, &ev); err != nil {
+			t.Fatal(err)
+		}
+		storedTypes = append(storedTypes, ev.Type)
+	}
+	if len(storedTypes) != 1 || storedTypes[0] != msg.EventError {
+		t.Fatalf("the session log holds %v; want only the control %s", storedTypes, msg.EventError)
 	}
 
 	var subscriberTypes []msg.EventType

@@ -55,9 +55,6 @@ func TestChatLinkLifecycle(t *testing.T) {
 	if pending[1].SenderPersonID != "" || pending[1].SenderResolvedAt.IsZero() {
 		t.Fatalf("a sender nobody owns: %+v", pending[1])
 	}
-	if err := s.addChatLinkMessageSenderColumns(); err != nil {
-		t.Fatalf("adding the columns again: %v", err)
-	}
 	if err := s.MarkChatLinkMessagesInSession([]string{pending[0].ID, pending[1].ID}, "chat-link:1", "msg_x", now); err != nil {
 		t.Fatal(err)
 	}

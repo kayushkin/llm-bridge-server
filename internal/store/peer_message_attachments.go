@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/kayushkin/llm-bridge/msg"
@@ -31,31 +32,6 @@ type PeerMessageAttachment = msg.PeerMessageAttachment
 // ErrPeerAttachmentNotFound is an attachment id this server has no row for.
 var ErrPeerAttachmentNotFound = errors.New("peer message attachment not found")
 
-func (s *Store) migratePeerMessageAttachments() error {
-	_, err := s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS peer_message_attachments (
-			id                   INTEGER PRIMARY KEY AUTOINCREMENT,
-			message_id           TEXT NOT NULL DEFAULT '',
-			direction            TEXT NOT NULL,
-			name                 TEXT NOT NULL,
-			media_type           TEXT NOT NULL,
-			size                 INTEGER NOT NULL,
-			sha256               TEXT NOT NULL,
-			state                TEXT NOT NULL,
-			remote_attachment_id TEXT NOT NULL DEFAULT '',
-			uploaded_by          TEXT NOT NULL DEFAULT '',
-			attempts             INTEGER NOT NULL DEFAULT 0,
-			last_error           TEXT NOT NULL DEFAULT '',
-			next_attempt_at      DATETIME,
-			fetched_at           DATETIME,
-			created_at           DATETIME NOT NULL
-		);
-		CREATE INDEX IF NOT EXISTS idx_peer_message_attachments_message ON peer_message_attachments(message_id, id);
-		CREATE INDEX IF NOT EXISTS idx_peer_message_attachments_state ON peer_message_attachments(direction, state);
-	`)
-	return err
-}
-
 const peerAttachmentSelect = `SELECT id, message_id, name, media_type, size, sha256, state, remote_attachment_id, attempts, last_error,
 	fetched_at, created_at FROM peer_message_attachments`
 
@@ -82,15 +58,11 @@ func (s *Store) InsertStagedPeerAttachment(attachment *PeerMessageAttachment, up
 	}
 	attachment.CreatedAt = time.Now().UTC()
 	attachment.State = msg.PeerMessageAttachmentStored
-	result, err := s.db.Exec(`INSERT INTO peer_message_attachments (direction, name, media_type, size, sha256, state, uploaded_by, created_at)
-		VALUES ('outgoing', ?, ?, ?, ?, ?, ?, ?)`, attachment.Name, attachment.MediaType, attachment.Size, attachment.SHA256,
-		string(attachment.State), uploadedBy, attachment.CreatedAt)
-	if err != nil {
+	var rowID int64
+	if err := s.db.QueryRow(`INSERT INTO peer_message_attachments (direction, name, media_type, size, sha256, state, uploaded_by, created_at)
+		VALUES ('outgoing', $1, $2, $3, $4, $5, $6, $7) RETURNING id`, attachment.Name, attachment.MediaType, attachment.Size, attachment.SHA256,
+		string(attachment.State), uploadedBy, attachment.CreatedAt).Scan(&rowID); err != nil {
 		return fmt.Errorf("insert staged attachment %s: %w", attachment.Name, err)
-	}
-	rowID, err := result.LastInsertId()
-	if err != nil {
-		return err
 	}
 	attachment.ID = prefixedIDOf(peerAttachmentIDPrefix, rowID)
 	return nil
@@ -110,7 +82,7 @@ func (s *Store) ClaimStagedPeerAttachments(ids []string, messageID, uploadedBy s
 		if !ok {
 			return fmt.Errorf("%q is not an attachment id", id)
 		}
-		result, err := tx.Exec(`UPDATE peer_message_attachments SET message_id = ? WHERE id = ? AND direction = 'outgoing' AND message_id = '' AND uploaded_by = ?`,
+		result, err := tx.Exec(`UPDATE peer_message_attachments SET message_id = $1 WHERE id = $2 AND direction = 'outgoing' AND message_id = '' AND uploaded_by = $3`,
 			messageID, rowID, uploadedBy)
 		if err != nil {
 			return err
@@ -129,7 +101,7 @@ func (s *Store) StagedPeerAttachment(id, uploadedBy string) (PeerMessageAttachme
 	if !ok {
 		return PeerMessageAttachment{}, ErrPeerAttachmentNotFound
 	}
-	found, err := scanPeerAttachment(s.db.QueryRow(peerAttachmentSelect+` WHERE id = ? AND direction = 'outgoing' AND message_id = '' AND uploaded_by = ?`,
+	found, err := scanPeerAttachment(s.db.QueryRow(peerAttachmentSelect+` WHERE id = $1 AND direction = 'outgoing' AND message_id = '' AND uploaded_by = $2`,
 		rowID, uploadedBy))
 	return notFoundAs(found, err, ErrPeerAttachmentNotFound)
 }
@@ -142,15 +114,11 @@ func (s *Store) InsertIncomingPeerAttachment(attachment *PeerMessageAttachment) 
 	}
 	attachment.CreatedAt = time.Now().UTC()
 	attachment.State = msg.PeerMessageAttachmentPending
-	result, err := s.db.Exec(`INSERT INTO peer_message_attachments (message_id, direction, name, media_type, size, sha256, state, remote_attachment_id, created_at)
-		VALUES (?, 'incoming', ?, ?, ?, ?, ?, ?, ?)`, attachment.MessageID, attachment.Name, attachment.MediaType, attachment.Size,
-		attachment.SHA256, string(attachment.State), attachment.RemoteAttachmentID, attachment.CreatedAt)
-	if err != nil {
+	var rowID int64
+	if err := s.db.QueryRow(`INSERT INTO peer_message_attachments (message_id, direction, name, media_type, size, sha256, state, remote_attachment_id, created_at)
+		VALUES ($1, 'incoming', $2, $3, $4, $5, $6, $7, $8) RETURNING id`, attachment.MessageID, attachment.Name, attachment.MediaType, attachment.Size,
+		attachment.SHA256, string(attachment.State), attachment.RemoteAttachmentID, attachment.CreatedAt).Scan(&rowID); err != nil {
 		return fmt.Errorf("insert incoming attachment %s: %w", attachment.Name, err)
-	}
-	rowID, err := result.LastInsertId()
-	if err != nil {
-		return err
 	}
 	attachment.ID = prefixedIDOf(peerAttachmentIDPrefix, rowID)
 	return nil
@@ -162,26 +130,26 @@ func (s *Store) GetPeerAttachment(id string) (PeerMessageAttachment, error) {
 	if !ok {
 		return PeerMessageAttachment{}, ErrPeerAttachmentNotFound
 	}
-	found, err := scanPeerAttachment(s.db.QueryRow(peerAttachmentSelect+` WHERE id = ?`, rowID))
+	found, err := scanPeerAttachment(s.db.QueryRow(peerAttachmentSelect+` WHERE id = $1`, rowID))
 	return notFoundAs(found, err, ErrPeerAttachmentNotFound)
 }
 
 // PeerAttachmentsOfMessage returns a message's attachments in the order they
 // were added.
 func (s *Store) PeerAttachmentsOfMessage(messageID string) ([]PeerMessageAttachment, error) {
-	return s.queryPeerAttachments(peerAttachmentSelect+` WHERE message_id = ? ORDER BY id`, messageID)
+	return s.queryPeerAttachments(peerAttachmentSelect+` WHERE message_id = $1 ORDER BY id`, messageID)
 }
 
 // PeerAttachmentsToFetch returns incoming attachments still pending whose
 // next try is due by now.
 func (s *Store) PeerAttachmentsToFetch(now time.Time) ([]PeerMessageAttachment, error) {
 	return s.queryPeerAttachments(peerAttachmentSelect+` WHERE direction = 'incoming' AND state = 'pending'
-		AND (next_attempt_at IS NULL OR next_attempt_at <= ?) ORDER BY id`, now.UTC())
+		AND (next_attempt_at IS NULL OR next_attempt_at <= $1) ORDER BY id`, now.UTC())
 }
 
 // StalePeerAttachmentUploads returns uploads no message claimed since before.
 func (s *Store) StalePeerAttachmentUploads(before time.Time) ([]PeerMessageAttachment, error) {
-	return s.queryPeerAttachments(peerAttachmentSelect+` WHERE direction = 'outgoing' AND message_id = '' AND created_at < ? ORDER BY id`, before.UTC())
+	return s.queryPeerAttachments(peerAttachmentSelect+` WHERE direction = 'outgoing' AND message_id = '' AND created_at < $1 ORDER BY id`, before.UTC())
 }
 
 func (s *Store) queryPeerAttachments(query string, arguments ...any) ([]PeerMessageAttachment, error) {
@@ -204,16 +172,16 @@ func (s *Store) queryPeerAttachments(query string, arguments ...any) ([]PeerMess
 // RecordPeerAttachmentFetched marks an incoming attachment's bytes as here
 // and verified.
 func (s *Store) RecordPeerAttachmentFetched(id string, at time.Time) error {
-	return s.updatePeerAttachment(id, `state = 'fetched', fetched_at = ?, last_error = '', next_attempt_at = NULL`, at.UTC())
+	return s.updatePeerAttachment(id, `state = 'fetched', fetched_at = $1, last_error = '', next_attempt_at = NULL`, at.UTC())
 }
 
 // RecordPeerAttachmentFetchFailed counts a failed fetch: tried again at next,
 // or failed for good when giveUp.
 func (s *Store) RecordPeerAttachmentFetchFailed(id, reason string, next time.Time, giveUp bool) error {
 	if giveUp {
-		return s.updatePeerAttachment(id, `state = 'failed', attempts = attempts + 1, last_error = ?, next_attempt_at = NULL`, reason)
+		return s.updatePeerAttachment(id, `state = 'failed', attempts = attempts + 1, last_error = $1, next_attempt_at = NULL`, reason)
 	}
-	return s.updatePeerAttachment(id, `attempts = attempts + 1, last_error = ?, next_attempt_at = ?`, reason, next.UTC())
+	return s.updatePeerAttachment(id, `attempts = attempts + 1, last_error = $1, next_attempt_at = $2`, reason, next.UTC())
 }
 
 // RetryPeerAttachment puts a failed incoming attachment back to pending, to
@@ -229,16 +197,19 @@ func (s *Store) DeletePeerAttachment(id string) error {
 	if !ok {
 		return ErrPeerAttachmentNotFound
 	}
-	_, err := s.db.Exec(`DELETE FROM peer_message_attachments WHERE id = ?`, rowID)
+	_, err := s.db.Exec(`DELETE FROM peer_message_attachments WHERE id = $1`, rowID)
 	return err
 }
 
+// updatePeerAttachment sets assignments on one attachment. assignments names
+// its arguments $1, $2, … in order, and the row id follows the last of them.
 func (s *Store) updatePeerAttachment(id, assignments string, arguments ...any) error {
 	rowID, ok := rowIDOfPrefixed(peerAttachmentIDPrefix, id)
 	if !ok {
 		return ErrPeerAttachmentNotFound
 	}
-	result, err := s.db.Exec(`UPDATE peer_message_attachments SET `+assignments+` WHERE id = ?`, append(arguments, rowID)...)
+	arguments = append(arguments, rowID)
+	result, err := s.db.Exec(`UPDATE peer_message_attachments SET `+assignments+` WHERE id = $`+strconv.Itoa(len(arguments)), arguments...)
 	if err != nil {
 		return fmt.Errorf("update attachment %s: %w", id, err)
 	}

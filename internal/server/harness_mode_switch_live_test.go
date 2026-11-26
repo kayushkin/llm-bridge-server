@@ -257,7 +257,10 @@ func TestHarnessExternalCLILive(t *testing.T) {
 			// stays, and its harness_session_id is what they resume.
 			env.stopSession(t, bridgeID)
 			stream := env.subscribeSessionEvents(t, bridgeID)
-			logStoreEventsBefore := env.logStore.count()
+			sessionLogHeadBefore, err := env.server.harness.SessionEvents().MaxEventRowID(bridgeID)
+			if err != nil {
+				t.Fatal(err)
+			}
 			before := env.getSession(t, bridgeID)
 
 			externalQuestion := fmt.Sprintf("What code word did I ask you to remember? Reply with only the word. (check %s)", liveCodeWord())
@@ -272,10 +275,21 @@ func TestHarnessExternalCLILive(t *testing.T) {
 			_, inStream := stream.waitFor(deadline, func(ev msg.Event) bool {
 				return ev.Type == msg.EventUserMessage && strings.Contains(eventText(ev), externalQuestion)
 			})
-			inLogStore := env.logStore.containsSince(logStoreEventsBefore, externalQuestion)
-			if !inStream && !inLogStore {
-				t.Errorf("after %s the dash shows nothing of the turn run outside the bridge: not on the session's event stream (%d events) and not sent to log-store (%d new posts)",
-					deadline, stream.count(), env.logStore.count()-logStoreEventsBefore)
+			newEvents, err := env.server.harness.SessionEvents().ListEventsSinceID(bridgeID, int(sessionLogHeadBefore))
+			if err != nil {
+				t.Fatal(err)
+			}
+			needle, _ := json.Marshal(externalQuestion) // match the text as JSON encodes it
+			needle = bytes.Trim(needle, `"`)
+			inSessionLog := false
+			for _, event := range newEvents {
+				if bytes.Contains(event.Data, needle) {
+					inSessionLog = true
+				}
+			}
+			if !inStream && !inSessionLog {
+				t.Errorf("after %s the dash shows nothing of the turn run outside the bridge: not on the session's event stream (%d events) and not in the session log (%d new events)",
+					deadline, stream.count(), len(newEvents))
 			}
 			after := env.getSession(t, bridgeID)
 			if !after.UpdatedAt.After(before.UpdatedAt) {
@@ -314,7 +328,6 @@ type liveBridge struct {
 	store      *store.Store
 	instanceID string
 	baseURL    string
-	logStore   *recordingLogStore
 	model      string
 }
 
@@ -330,11 +343,7 @@ func newLiveBridge(t *testing.T, h liveHarness) *liveBridge {
 	t.Helper()
 	harness := h.harness
 	dir := t.TempDir()
-	st, err := store.New(filepath.Join(dir, "test.db"))
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
-	t.Cleanup(func() { st.Close() })
+	st := newTestBridgeStore(t)
 
 	hs := harnessstoretest.NewStore(t)
 	mach := &msg.Machine{ID: "m_live", Name: "live-machine", Hostname: "localhost", Transport: msg.TransportLocal}
@@ -345,8 +354,6 @@ func newLiveBridge(t *testing.T, h liveHarness) *liveBridge {
 	if err := hs.CreateInstance(inst); err != nil {
 		t.Fatalf("seed instance: %v", err)
 	}
-
-	logStore := newRecordingLogStore(t)
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -362,7 +369,7 @@ func newLiveBridge(t *testing.T, h liveHarness) *liveBridge {
 	model := liveModelForHarness(t, models, h)
 	t.Logf("%s sessions run on %s", harness, model)
 	srv := New(st, nil, nil, hs, nil, models, nil, cfg)
-	enableLogStoreAt(t, srv, logStore.url)
+	enableTestSessionEvents(t, srv, st)
 
 	ts := httptest.NewUnstartedServer(asInternalService(srv))
 	ts.Listener.Close()
@@ -370,7 +377,7 @@ func newLiveBridge(t *testing.T, h liveHarness) *liveBridge {
 	ts.Start()
 	t.Cleanup(ts.Close)
 
-	env := &liveBridge{server: srv, store: st, instanceID: inst.ID, baseURL: ts.URL, logStore: logStore, model: model}
+	env := &liveBridge{server: srv, store: st, instanceID: inst.ID, baseURL: ts.URL, model: model}
 	// Kill whatever process the test left running, before the server closes.
 	t.Cleanup(func() {
 		for _, sess := range env.listSessionIDs() {
@@ -826,51 +833,6 @@ func eventText(ev msg.Event) string {
 
 func isAssistantText(ev msg.Event) bool {
 	return ev.Type == msg.EventResult || ev.Type == msg.EventBlock
-}
-
-// recordingLogStore stands in for log-store: it accepts every write and keeps
-// the raw request bodies so a test can ask whether a piece of text reached it.
-type recordingLogStore struct {
-	url   string
-	mu    sync.Mutex
-	posts [][]byte
-}
-
-func newRecordingLogStore(t *testing.T) *recordingLogStore {
-	t.Helper()
-	r := &recordingLogStore{}
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.Method == http.MethodPost {
-			body, _ := io.ReadAll(req.Body)
-			r.mu.Lock()
-			r.posts = append(r.posts, body)
-			r.mu.Unlock()
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{}`))
-	}))
-	t.Cleanup(ts.Close)
-	r.url = ts.URL
-	return r
-}
-
-func (r *recordingLogStore) count() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return len(r.posts)
-}
-
-func (r *recordingLogStore) containsSince(index int, text string) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	needle, _ := json.Marshal(text) // match the text as JSON encodes it
-	needle = bytes.Trim(needle, `"`)
-	for _, body := range r.posts[index:] {
-		if bytes.Contains(body, needle) {
-			return true
-		}
-	}
-	return false
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

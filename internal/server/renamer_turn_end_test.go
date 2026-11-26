@@ -3,11 +3,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
-	"net/http/httptest"
-	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -15,29 +11,6 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge/msg"
 )
-
-// transcriptLogStore keeps every event pushed to it and answers the events
-// read the renamer makes, so the title call sees the turns the test wrote.
-func transcriptLogStore(t *testing.T) *httptest.Server {
-	t.Helper()
-	var mu sync.Mutex
-	var events []json.RawMessage
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		defer mu.Unlock()
-		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/events") {
-			json.NewEncoder(w).Encode(events)
-			return
-		}
-		body, _ := io.ReadAll(r.Body)
-		if r.URL.Path == "/api/v1/events" && json.Valid(body) {
-			events = append(events, json.RawMessage(body))
-		}
-		w.Write([]byte(`{}`))
-	}))
-	t.Cleanup(server.Close)
-	return server
-}
 
 // storeTurn writes one turn the way a live session leaves it: the user
 // message twice under one turn id (once when the server takes it, once when
@@ -70,7 +43,7 @@ func TestAutoRenameRunsAfterTheFirstTurnForTitledPurposesOnly(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.purpose, func(t *testing.T) {
-			srv, st, instID := testServerWithInstanceAndLogStore(t, msg.HarnessClaudeCode, transcriptLogStore(t).URL)
+			srv, st, instID := testServerWithInstance(t, msg.HarnessClaudeCode)
 			resp := doJSON(t, srv, "POST", "/sessions", msg.CreateSessionRequest{
 				Type:       c.sessionType,
 				Purpose:    c.purpose,

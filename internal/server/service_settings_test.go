@@ -2,7 +2,6 @@ package server
 
 import (
 	"encoding/json"
-	modelstore "github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -10,8 +9,9 @@ import (
 	"testing"
 	"time"
 
+	modelstore "github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
+
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -92,11 +92,7 @@ func TestAStoredSettingIsSeededFromTheConfigAndReadWhenItIsUsed(t *testing.T) {
 // The stored rows of the retired model and instance keys are gone after a
 // start, and the provider-to-instance map keeps its value under its new key.
 func TestStoredSettingsMoveOffTheRetiredKeysAtStart(t *testing.T) {
-	st, err := store.New(filepath.Join(t.TempDir(), "bridge.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { st.Close() })
+	st := newTestBridgeStore(t)
 	for key, value := range map[string]string{
 		"operations.completion_instances": "anthropic:inst-a,openai:inst-b",
 		"signal_classifier.model":         "gpt-5.6-terra",

@@ -105,9 +105,7 @@ func sha256Of(data []byte) string {
 // landing steps.
 func TestAPatchTravelsAsVerifiedFilesAndItsApprovalLandsIt(t *testing.T) {
 	buildMockHarnessOnPath(t)
-	logStore := fakeLogStore(t).URL
 	accepting, initiating, acceptingID, initiatingID := connectedPairByDialingOut(t)
-	enableLogStoreAt(t, accepting.server, logStore)
 	grantPeerLevel(t, accepting, acceptingID, "messages")
 
 	if answer := sendPeerMessageWithAttachments(t, initiating, initiatingID, msg.PeerMessageKindPatch,

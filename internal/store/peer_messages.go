@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,58 +28,6 @@ var ErrPeerMessageNotFound = errors.New("peer message not found")
 // ErrPeerMessageNotPending is a decision on a message that is not waiting
 // for one.
 var ErrPeerMessageNotPending = errors.New("peer message is not pending")
-
-func (s *Store) migratePeerMessages() error {
-	_, err := s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS peer_messages (
-			id                 INTEGER PRIMARY KEY AUTOINCREMENT,
-			connection_id      TEXT NOT NULL,
-			direction          TEXT NOT NULL,
-			kind               TEXT NOT NULL,
-			body               TEXT NOT NULL,
-			in_reply_to        TEXT NOT NULL DEFAULT '',
-			remote_message_id  TEXT NOT NULL DEFAULT '',
-			state              TEXT NOT NULL,
-			created_by         TEXT NOT NULL DEFAULT '',
-			sender_server_name TEXT NOT NULL DEFAULT '',
-			created_at         DATETIME NOT NULL,
-			updated_at         DATETIME NOT NULL,
-			delivered_at       DATETIME,
-			attempts           INTEGER NOT NULL DEFAULT 0,
-			last_error         TEXT NOT NULL DEFAULT '',
-			next_attempt_at    DATETIME,
-			decided_by         TEXT NOT NULL DEFAULT '',
-			decided_at         DATETIME,
-			decision_reason    TEXT NOT NULL DEFAULT '',
-			session_id         TEXT NOT NULL DEFAULT '',
-			operation          TEXT NOT NULL DEFAULT '',
-			status_message_id  TEXT NOT NULL DEFAULT '',
-			signal_id          TEXT NOT NULL DEFAULT ''
-		);
-		CREATE INDEX IF NOT EXISTS idx_peer_messages_connection ON peer_messages(connection_id, id);
-		CREATE INDEX IF NOT EXISTS idx_peer_messages_state ON peer_messages(direction, state);
-		CREATE INDEX IF NOT EXISTS idx_peer_messages_session ON peer_messages(session_id) WHERE session_id != '';
-		CREATE UNIQUE INDEX IF NOT EXISTS idx_peer_messages_incoming ON peer_messages(connection_id, remote_message_id)
-			WHERE direction = 'incoming' AND remote_message_id != '';
-	`)
-	if err != nil {
-		return err
-	}
-	// supersedes holds a JSON array of this server's ids; superseded_by one id.
-	for _, column := range []string{
-		`ALTER TABLE peer_messages ADD COLUMN supersedes TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE peer_messages ADD COLUMN superseded_by TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE peer_messages ADD COLUMN placement_session_id TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE peer_messages ADD COLUMN placed_by TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE peer_messages ADD COLUMN placed_at DATETIME`,
-		`ALTER TABLE peer_messages ADD COLUMN placement_reason TEXT NOT NULL DEFAULT ''`,
-	} {
-		if _, err := s.db.Exec(column); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-			return fmt.Errorf("add a peer_messages column: %w", err)
-		}
-	}
-	return nil
-}
 
 const peerMessageSelect = `SELECT id, connection_id, direction, kind, body, in_reply_to, remote_message_id, state, created_by, sender_server_name,
 	created_at, updated_at, delivered_at, attempts, last_error, next_attempt_at, decided_by, decided_at, decision_reason,
@@ -152,16 +101,12 @@ func (s *Store) InsertPeerMessage(message *PeerMessage) error {
 		message.CreatedAt = now
 	}
 	message.UpdatedAt = now
-	result, err := s.db.Exec(`INSERT INTO peer_messages (connection_id, direction, kind, body, in_reply_to, remote_message_id, state, created_by,
-		sender_server_name, created_at, updated_at, next_attempt_at, supersedes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	var rowID int64
+	if err := s.db.QueryRow(`INSERT INTO peer_messages (connection_id, direction, kind, body, in_reply_to, remote_message_id, state, created_by,
+		sender_server_name, created_at, updated_at, next_attempt_at, supersedes) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING id`,
 		message.ConnectionID, string(message.Direction), string(message.Kind), string(body), message.InReplyTo, message.RemoteMessageID,
-		string(message.State), message.CreatedBy, message.SenderServerName, message.CreatedAt.UTC(), message.UpdatedAt, nullableTime(message.NextAttemptAt), supersedes)
-	if err != nil {
+		string(message.State), message.CreatedBy, message.SenderServerName, message.CreatedAt.UTC(), message.UpdatedAt, nullableTime(message.NextAttemptAt), supersedes).Scan(&rowID); err != nil {
 		return fmt.Errorf("insert peer message on %s: %w", message.ConnectionID, err)
-	}
-	rowID, err := result.LastInsertId()
-	if err != nil {
-		return err
 	}
 	message.ID = prefixedIDOf(peerMessageIDPrefix, rowID)
 	return nil
@@ -173,14 +118,14 @@ func (s *Store) GetPeerMessage(id string) (PeerMessage, error) {
 	if !ok {
 		return PeerMessage{}, ErrPeerMessageNotFound
 	}
-	found, err := scanPeerMessage(s.db.QueryRow(peerMessageSelect+` WHERE id = ?`, rowID))
+	found, err := scanPeerMessage(s.db.QueryRow(peerMessageSelect+` WHERE id = $1`, rowID))
 	return notFoundAs(found, err, ErrPeerMessageNotFound)
 }
 
 // IncomingPeerMessageBySenderID returns the incoming message a connection's
 // other server sent under its own id remoteID.
 func (s *Store) IncomingPeerMessageBySenderID(connectionID, remoteID string) (PeerMessage, error) {
-	found, err := scanPeerMessage(s.db.QueryRow(peerMessageSelect+` WHERE connection_id = ? AND direction = 'incoming' AND remote_message_id = ?`, connectionID, remoteID))
+	found, err := scanPeerMessage(s.db.QueryRow(peerMessageSelect+` WHERE connection_id = $1 AND direction = 'incoming' AND remote_message_id = $2`, connectionID, remoteID))
 	return notFoundAs(found, err, ErrPeerMessageNotFound)
 }
 
@@ -197,7 +142,7 @@ type PeerMessageFilter struct {
 // ListPeerMessages returns messages, newest first.
 func (s *Store) ListPeerMessages(filter PeerMessageFilter) ([]PeerMessage, error) {
 	var conditions []string
-	var arguments []any
+	var arguments queryArguments
 	for _, condition := range []struct {
 		column, value string
 	}{
@@ -205,8 +150,7 @@ func (s *Store) ListPeerMessages(filter PeerMessageFilter) ([]PeerMessage, error
 		{"kind", string(filter.Kind)}, {"session_id", filter.SessionID},
 	} {
 		if condition.value != "" {
-			conditions = append(conditions, condition.column+" = ?")
-			arguments = append(arguments, condition.value)
+			conditions = append(conditions, condition.column+" = "+arguments.add(condition.value))
 		}
 	}
 	query := peerMessageSelect
@@ -248,14 +192,12 @@ func (s *Store) QueuedPeerMessagesDue(connectionID string, now time.Time) ([]Pee
 
 func (s *Store) queuedPeerMessages(connectionID string, dueBy *time.Time) ([]PeerMessage, error) {
 	query := peerMessageSelect + ` WHERE direction = 'outgoing' AND state = 'queued'`
-	arguments := []any{}
+	arguments := queryArguments{}
 	if dueBy != nil {
-		query += ` AND (next_attempt_at IS NULL OR next_attempt_at <= ?)`
-		arguments = append(arguments, dueBy.UTC())
+		query += ` AND (next_attempt_at IS NULL OR next_attempt_at <= ` + arguments.add(dueBy.UTC()) + `)`
 	}
 	if connectionID != "" {
-		query += ` AND connection_id = ?`
-		arguments = append(arguments, connectionID)
+		query += ` AND connection_id = ` + arguments.add(connectionID)
 	}
 	rows, err := s.db.Query(query+` ORDER BY id`, arguments...)
 	if err != nil {
@@ -273,13 +215,16 @@ func (s *Store) queuedPeerMessages(connectionID string, dueBy *time.Time) ([]Pee
 	return messages, rows.Err()
 }
 
+// updatePeerMessage sets updated_at and assignments on one message.
+// assignments names its arguments $2, $3, … in order: $1 is updated_at, and
+// the message's row id follows the last of them.
 func (s *Store) updatePeerMessage(id, assignments string, arguments ...any) error {
 	rowID, ok := rowIDOfPrefixed(peerMessageIDPrefix, id)
 	if !ok {
 		return ErrPeerMessageNotFound
 	}
 	arguments = append(append([]any{time.Now().UTC()}, arguments...), rowID)
-	result, err := s.db.Exec(`UPDATE peer_messages SET updated_at = ?, `+assignments+` WHERE id = ?`, arguments...)
+	result, err := s.db.Exec(`UPDATE peer_messages SET updated_at = $1, `+assignments+` WHERE id = $`+strconv.Itoa(len(arguments)), arguments...)
 	if err != nil {
 		return err
 	}
@@ -292,19 +237,19 @@ func (s *Store) updatePeerMessage(id, assignments string, arguments ...any) erro
 // RecordPeerMessageDelivered marks an outgoing message delivered, with the
 // receiver's id for it.
 func (s *Store) RecordPeerMessageDelivered(id, remoteID string, at time.Time) error {
-	return s.updatePeerMessage(id, `state = 'delivered', remote_message_id = ?, delivered_at = ?, attempts = attempts + 1, last_error = '', next_attempt_at = NULL`,
+	return s.updatePeerMessage(id, `state = 'delivered', remote_message_id = $2, delivered_at = $3, attempts = attempts + 1, last_error = '', next_attempt_at = NULL`,
 		remoteID, at.UTC())
 }
 
 // RecordPeerMessageAttemptFailed keeps an outgoing message queued after a
 // failed attempt, to be tried again at next.
 func (s *Store) RecordPeerMessageAttemptFailed(id, reason string, next time.Time) error {
-	return s.updatePeerMessage(id, `attempts = attempts + 1, last_error = ?, next_attempt_at = ?`, reason, next.UTC())
+	return s.updatePeerMessage(id, `attempts = attempts + 1, last_error = $2, next_attempt_at = $3`, reason, next.UTC())
 }
 
 // MarkPeerMessageFailed ends an outgoing message the other server refused.
 func (s *Store) MarkPeerMessageFailed(id, reason string) error {
-	return s.updatePeerMessage(id, `state = 'failed', attempts = attempts + 1, last_error = ?, next_attempt_at = NULL`, reason)
+	return s.updatePeerMessage(id, `state = 'failed', attempts = attempts + 1, last_error = $2, next_attempt_at = NULL`, reason)
 }
 
 // DecidePeerMessage moves a pending incoming message to approved or
@@ -317,8 +262,8 @@ func (s *Store) DecidePeerMessage(id string, to msg.PeerMessageState, decidedBy,
 	if !ok {
 		return PeerMessage{}, ErrPeerMessageNotFound
 	}
-	result, err := s.db.Exec(`UPDATE peer_messages SET state = ?, decided_by = ?, decided_at = ?, decision_reason = ?, updated_at = ?
-		WHERE id = ? AND direction = 'incoming' AND state = 'pending'`, string(to), decidedBy, at.UTC(), reason, time.Now().UTC(), rowID)
+	result, err := s.db.Exec(`UPDATE peer_messages SET state = $1, decided_by = $2, decided_at = $3, decision_reason = $4, updated_at = $5
+		WHERE id = $6 AND direction = 'incoming' AND state = 'pending'`, string(to), decidedBy, at.UTC(), reason, time.Now().UTC(), rowID)
 	if err != nil {
 		return PeerMessage{}, err
 	}
@@ -339,13 +284,13 @@ func (s *Store) ReturnPeerMessageToPending(id string) error {
 
 // SetPeerMessageSession records the session an approved request started.
 func (s *Store) SetPeerMessageSession(id, sessionID string) error {
-	return s.updatePeerMessage(id, `session_id = ?`, sessionID)
+	return s.updatePeerMessage(id, `session_id = $2`, sessionID)
 }
 
 // SetPeerMessagePlacementSession records the orchestrator session an approved
 // request or patch was handed to, to choose its instance.
 func (s *Store) SetPeerMessagePlacementSession(id, sessionID string) error {
-	return s.updatePeerMessage(id, `placement_session_id = ?`, sessionID)
+	return s.updatePeerMessage(id, `placement_session_id = $2`, sessionID)
 }
 
 // ErrPeerMessageNotAwaitingPlacement is a placement of a message that is not
@@ -361,8 +306,8 @@ func (s *Store) ClaimPeerMessagePlacement(id, placedBy, reason string, at time.T
 	if !ok {
 		return PeerMessage{}, ErrPeerMessageNotFound
 	}
-	result, err := s.db.Exec(`UPDATE peer_messages SET placed_by = ?, placed_at = ?, placement_reason = ?, updated_at = ?
-		WHERE id = ? AND direction = 'incoming' AND state = 'approved' AND kind IN ('request', 'patch')
+	result, err := s.db.Exec(`UPDATE peer_messages SET placed_by = $1, placed_at = $2, placement_reason = $3, updated_at = $4
+		WHERE id = $5 AND direction = 'incoming' AND state = 'approved' AND kind IN ('request', 'patch')
 		AND placement_session_id != '' AND session_id = '' AND placed_by = ''`, placedBy, at.UTC(), reason, time.Now().UTC(), rowID)
 	if err != nil {
 		return PeerMessage{}, err
@@ -388,18 +333,18 @@ func (s *Store) SetPeerMessageOperation(id string, operation msg.PeerMessageOper
 	if err != nil {
 		return err
 	}
-	return s.updatePeerMessage(id, `operation = ?`, string(data))
+	return s.updatePeerMessage(id, `operation = $2`, string(data))
 }
 
 // SetPeerMessageSignal records the signal that shows an incoming message.
 func (s *Store) SetPeerMessageSignal(id, signalID string) error {
-	return s.updatePeerMessage(id, `signal_id = ?`, signalID)
+	return s.updatePeerMessage(id, `signal_id = $2`, signalID)
 }
 
 // FinishPeerMessage marks an incoming message done, naming the status this
 // server sent in answer, if any.
 func (s *Store) FinishPeerMessage(id, statusMessageID string) error {
-	return s.updatePeerMessage(id, `state = 'done', status_message_id = ?`, statusMessageID)
+	return s.updatePeerMessage(id, `state = 'done', status_message_id = $2`, statusMessageID)
 }
 
 // FinishApprovedPeerMessage marks an approved incoming request or patch done
@@ -410,8 +355,8 @@ func (s *Store) FinishApprovedPeerMessage(id, answerMessageID string) (bool, err
 	if !ok {
 		return false, ErrPeerMessageNotFound
 	}
-	result, err := s.db.Exec(`UPDATE peer_messages SET state = 'done', status_message_id = ?, updated_at = ?
-		WHERE id = ? AND direction = 'incoming' AND state = 'approved'`, answerMessageID, time.Now().UTC(), rowID)
+	result, err := s.db.Exec(`UPDATE peer_messages SET state = 'done', status_message_id = $1, updated_at = $2
+		WHERE id = $3 AND direction = 'incoming' AND state = 'approved'`, answerMessageID, time.Now().UTC(), rowID)
 	if err != nil {
 		return false, err
 	}
@@ -422,12 +367,12 @@ func (s *Store) FinishApprovedPeerMessage(id, answerMessageID string) (bool, err
 // SetPeerMessageStatusMessage names the status sent in answer without
 // changing the message's state (a declined one stays declined).
 func (s *Store) SetPeerMessageStatusMessage(id, statusMessageID string) error {
-	return s.updatePeerMessage(id, `status_message_id = ?`, statusMessageID)
+	return s.updatePeerMessage(id, `status_message_id = $2`, statusMessageID)
 }
 
 // MarkPeerMessageSuperseded records the later message that replaced this one.
 func (s *Store) MarkPeerMessageSuperseded(id, supersededBy string) error {
-	return s.updatePeerMessage(id, `superseded_by = ?`, supersededBy)
+	return s.updatePeerMessage(id, `superseded_by = $2`, supersededBy)
 }
 
 // CancelQueuedPeerMessageSuperseded stops an outgoing message that has not
@@ -438,8 +383,8 @@ func (s *Store) CancelQueuedPeerMessageSuperseded(id, supersededBy string) (bool
 	if !ok {
 		return false, ErrPeerMessageNotFound
 	}
-	result, err := s.db.Exec(`UPDATE peer_messages SET state = 'failed', superseded_by = ?, next_attempt_at = NULL,
-		last_error = ?, updated_at = ? WHERE id = ? AND direction = 'outgoing' AND state = 'queued'`,
+	result, err := s.db.Exec(`UPDATE peer_messages SET state = 'failed', superseded_by = $1, next_attempt_at = NULL,
+		last_error = $2, updated_at = $3 WHERE id = $4 AND direction = 'outgoing' AND state = 'queued'`,
 		supersededBy, "not sent: superseded by "+supersededBy+" before it was delivered", time.Now().UTC(), rowID)
 	if err != nil {
 		return false, err
@@ -456,10 +401,11 @@ func (s *Store) OpenOutgoingPeerMessages(connectionID string) ([]PeerMessage, er
 	query := peerMessageSelect + ` AS sent WHERE sent.direction = 'outgoing' AND sent.kind != 'status' AND sent.state != 'failed'
 		AND sent.superseded_by = ''
 		AND NOT EXISTS (SELECT 1 FROM peer_messages answer WHERE answer.direction = 'incoming' AND answer.kind = 'status'
-			AND answer.connection_id = sent.connection_id AND answer.in_reply_to = ? || printf('%06d', sent.id))`
+			AND answer.connection_id = sent.connection_id
+			AND answer.in_reply_to = $1::text || CASE WHEN sent.id < 1000000 THEN lpad(sent.id::text, 6, '0') ELSE sent.id::text END)`
 	arguments := []any{peerMessageIDPrefix}
 	if connectionID != "" {
-		query += ` AND sent.connection_id = ?`
+		query += ` AND sent.connection_id = $2`
 		arguments = append(arguments, connectionID)
 	}
 	rows, err := s.db.Query(query+` ORDER BY sent.id`, arguments...)

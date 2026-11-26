@@ -16,7 +16,6 @@ import (
 	harnessstore "github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore"
 	"github.com/kayushkin/llm-bridge-server/internal/operations"
 	"github.com/kayushkin/llm-bridge-server/internal/server"
-	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/predictionstore"
 )
 
@@ -107,6 +106,9 @@ func main() {
 		case "import-rule-store":
 			importRuleStoreCmd(os.Args[2:])
 			return
+		case "import-bridge-database":
+			importBridgeDatabaseCmd(os.Args[2:])
+			return
 		case "import-principal-store", "import-grant-store", "import-sign-in-store", "import-permission-store":
 			importAccessStoreCmd(os.Args[1], os.Args[2:])
 			return
@@ -114,7 +116,7 @@ func main() {
 			makeSignInLinkCmd(os.Args[2:])
 			return
 		case "-h", "--help":
-			fmt.Fprintln(os.Stderr, "usage: llm-bridge-server [mint-enroll [-ttl 15m] | import-prediction-store -sqlite <file> | import-principal-store|import-grant-store|import-sign-in-store|import-permission-store -sqlite <file> | make-sign-in-link <principal id> | import-noteboard -sqlite <file> | import-project-store -sqlite <file> | import-kanban-store -sqlite <file> | import-log-store -sqlite <file> | import-tool-store -sqlite <file> | import-skill-store -sqlite <file> | import-bundle-store -sqlite <file> | import-agent-store|import-memory-store|import-model-store -sqlite <file> | import-usage-store|import-eval-store -sqlite <file> | import-repo-store -sqlite <file> | import-work-graph-store -sqlite <file> | import-file-store -sqlite <file> -blobs <directory> [-carry copy|link] | import-people-store|import-calendar-store|import-journal-store|import-message-store|import-time-ledger-store -sqlite <file> -owner <principal id> | import-activity-store -sqlite <file> -attachments <directory> -owner <principal id> | import-mailstack -accounts-sqlite <file> [-local-mail-sqlite <file>] | import-scheduler -sqlite <file> [-newest-runs-per-job <n>] | import-rule-store -sqlite <file> | import-photo-store -sqlite <file> -thumbnails <directory> -owner <principal id> [-carry copy|link] | import-location-store -sqlite <file> -owner <principal id> | import-budget-store -sqlite <file> -owner <principal id> | import-possession-store -sqlite <file> -originals <directory> -owner <principal id> [-carry copy|link] | import-harness-store|import-hook-store|import-snapshot-store|import-operations -sqlite <file>]")
+			fmt.Fprintln(os.Stderr, "usage: llm-bridge-server [mint-enroll [-ttl 15m] | import-bridge-database -sqlite <file> | import-prediction-store -sqlite <file> | import-principal-store|import-grant-store|import-sign-in-store|import-permission-store -sqlite <file> | make-sign-in-link <principal id> | import-noteboard -sqlite <file> | import-project-store -sqlite <file> | import-kanban-store -sqlite <file> | import-log-store -sqlite <file> | import-tool-store -sqlite <file> | import-skill-store -sqlite <file> | import-bundle-store -sqlite <file> | import-agent-store|import-memory-store|import-model-store -sqlite <file> | import-usage-store|import-eval-store -sqlite <file> | import-repo-store -sqlite <file> | import-work-graph-store -sqlite <file> | import-file-store -sqlite <file> -blobs <directory> [-carry copy|link] | import-people-store|import-calendar-store|import-journal-store|import-message-store|import-time-ledger-store -sqlite <file> -owner <principal id> | import-activity-store -sqlite <file> -attachments <directory> -owner <principal id> | import-mailstack -accounts-sqlite <file> [-local-mail-sqlite <file>] | import-scheduler -sqlite <file> [-newest-runs-per-job <n>] | import-rule-store -sqlite <file> | import-photo-store -sqlite <file> -thumbnails <directory> -owner <principal id> [-carry copy|link] | import-location-store -sqlite <file> -owner <principal id> | import-budget-store -sqlite <file> -owner <principal id> | import-possession-store -sqlite <file> -originals <directory> -owner <principal id> [-carry copy|link] | import-harness-store|import-hook-store|import-snapshot-store|import-operations -sqlite <file>]")
 			os.Exit(0)
 		}
 	}
@@ -155,17 +157,17 @@ func main() {
 	}
 	log.Printf("every route is gated (service token or login session); principals, grants, sign-in and tool-call rules are the access stores in this process, and kanban-store is in this process too, at /kanban/ and /kanban-store/, all on Postgres")
 
-	// Say where the bridge database is before writing to it. The session
-	// event log (log-store) is the session_log module in Postgres, opened
-	// below; an instance that isolates LLMBRIDGE_DB_PATH and not
-	// LLMBRIDGE_POSTGRES_URL still writes into the shared event log, and
-	// AutoDiscover turns that into thousands of permanent writes seconds
-	// after boot.
-	log.Printf("bridge db %s | session event log: the session_log module in the Postgres of %s", cfg.DBPath, config.PostgresURLEnvironmentVariable)
+	// Say where the bridge's own records are before writing to them: the
+	// bridge_core module and the session event log (the session_log module),
+	// both in the Postgres the URL names. An instance that isolates its data
+	// folder and not LLMBRIDGE_POSTGRES_URL still writes into the shared
+	// records, and AutoDiscover turns that into thousands of permanent writes
+	// seconds after boot.
+	log.Printf("bridge records: the bridge_core module | session event log: the session_log module | both in the Postgres of %s", config.PostgresURLEnvironmentVariable)
 
-	st, err := store.New(cfg.DBPath)
+	st, err := openBridgeCoreStore(context.Background(), cfg.PostgresURL, cfg.DBPath)
 	if err != nil {
-		log.Fatalf("bridge db: %v", err)
+		log.Fatalf("bridge core: %v", err)
 	}
 	defer st.Close()
 

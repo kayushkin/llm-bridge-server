@@ -73,10 +73,9 @@ type SessionSummaryRow struct {
 // this compound cursor exists to close.
 const summarySessionIDExpression = `COALESCE(NULLIF(session_id, ''), bridge_id)`
 
-// summaryColumns are the projected columns, in scan order. The raw updated_at is
-// selected a second time (as text) as the timestamp half of the cursor; the id
-// half is the already-projected session id, assembled in Go.
-const summaryColumns = summarySessionIDExpression + `, state, harness, COALESCE(instance_id, ''), COALESCE(type, ''), COALESCE(purpose, ''), COALESCE(mode, ''), COALESCE(folder_name, ''), display_name, COALESCE(agent_id, ''), COALESCE(bundle_id, ''), updated_at, created_at, COALESCE(manager_session_id, ''), CAST(updated_at AS TEXT), COALESCE(spend_usd, 0), COALESCE(status, ''), COALESCE(working_dir, ''), COALESCE(principal_id, '')`
+// summaryColumns are the projected columns, in scan order. The cursor is made
+// in Go from the row's updated_at and its projected session id.
+const summaryColumns = summarySessionIDExpression + `, state, harness, instance_id, type, purpose, mode, folder_name, display_name, agent_id, bundle_id, updated_at, created_at, manager_session_id, spend_usd, status, working_dir, principal_id`
 
 // SessionSummaryFilter narrows ListSessionSummaries to the rows matching every
 // non-empty axis. An empty axis constrains nothing, and the values within one
@@ -150,18 +149,17 @@ type summaryFilterAxis struct {
 // decides both the SQL argument order and the response-cache key, and ranging a
 // map would let two identical requests build two different keys.
 //
-// Every column is COALESCEd to ” to match the projection in summaryColumns: a
-// row whose type is NULL has to compare as the empty string, rather than drop
-// out of the comparison the silent way SQL NULL does.
+// Every column is NOT NULL with ” as its empty value, so a row with no type
+// compares as the empty string.
 func (f SessionSummaryFilter) axes() []summaryFilterAxis {
 	return []summaryFilterAxis{
-		{`COALESCE(harness, '')`, f.Harnesses},
-		{`COALESCE(state, '')`, f.States},
-		{`COALESCE(type, '')`, f.Types},
-		{`COALESCE(purpose, '')`, f.Purposes},
-		{`COALESCE(mode, '')`, f.Modes},
-		{`COALESCE(instance_id, '')`, f.InstanceIDs},
-		{`COALESCE(principal_id, '')`, f.PrincipalIDs},
+		{`harness`, f.Harnesses},
+		{`state`, f.States},
+		{`type`, f.Types},
+		{`purpose`, f.Purposes},
+		{`mode`, f.Modes},
+		{`instance_id`, f.InstanceIDs},
+		{`principal_id`, f.PrincipalIDs},
 	}
 }
 
@@ -221,25 +219,6 @@ func (f SessionSummaryFilter) CacheKey() string {
 	return b.String()
 }
 
-// sqlPlaceholders renders n bound-parameter placeholders as "?, ?, ?".
-//
-// The values themselves are always bound, never interpolated: they arrive
-// straight from a URL query string, and an IN list built by string concatenation
-// is the textbook injection.
-func sqlPlaceholders(n int) string {
-	if n <= 0 {
-		return ""
-	}
-	b := make([]byte, 0, n*3)
-	for i := 0; i < n; i++ {
-		if i > 0 {
-			b = append(b, ',', ' ')
-		}
-		b = append(b, '?')
-	}
-	return string(b)
-}
-
 // ListSessionSummaries returns projected session rows newest-first, paginated by
 // (updated_at, session id) and narrowed by `filter`. `before` is the opaque
 // cursor returned as a prior page's last row's Cursor ("" for the first page).
@@ -260,24 +239,19 @@ func sqlPlaceholders(n int) string {
 // unreachable by paging entirely. Tie-breaking on the session id, which is
 // unique, gives every row a distinct position and closes the gap.
 //
-// Ordering still uses the already-indexed updated_at column directly
-// (idx_sessions_updated_at), so no full temp b-tree is built; SQLite satisfies
-// the leading term from the index and block-sorts only the right part of the
-// ORDER BY, i.e. within a tie group. Those groups hold at most 3 rows.
+// Ordering uses the indexed updated_at column directly (idx_sessions_updated_at),
+// and a filter rides along as a residual test during that same index scan. The
+// cost of a filter is that the scan walks further before it fills a page, which
+// is the point — those are the rows the client would otherwise have fetched and
+// thrown away.
 //
-// A filter rides along as a residual test during that same index scan — it needs
-// no index of its own and does not change the plan. Measured against the live
-// 3.1 GB bridge.db (8,845 sessions): the newest filtered 100 in 23ms, and 42ms a
-// thousand rows deep. The cost of a filter is that the scan walks further before
-// it fills a page, which is the point — those are the rows the client would
-// otherwise have fetched and thrown away.
-//
-// The cursor filter compares updated_at as TEXT: every row's timestamp is
-// written by the store as Go's uniform t.String() format, which is lexically
-// monotonic with time, so a TEXT comparison paginates correctly without
-// depending on the column's numeric affinity.
+// The cursor's timestamp half is the row's updated_at to the microsecond in UTC
+// (summaryCursorTimeLayout), compared as a time.
 func (s *Store) ListSessionSummaries(limit int, before string, filter SessionSummaryFilter) ([]SessionSummaryRow, error) {
-	q, args := sessionSummariesQuery(limit, before, filter)
+	q, args, err := sessionSummariesQuery(limit, before, filter)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := s.dbRO.Query(q, args...)
 	if err != nil {
 		return nil, err
@@ -286,33 +260,32 @@ func (s *Store) ListSessionSummaries(limit int, before string, filter SessionSum
 	var out []SessionSummaryRow
 	for rows.Next() {
 		var r SessionSummaryRow
-		var updatedAtText string
 		var statusJSON string
 		if err := rows.Scan(
 			&r.SessionID, &r.State, &r.Harness, &r.InstanceID, &r.Type, &r.Purpose,
 			&r.Mode, &r.FolderName, &r.DisplayName, &r.AgentID, &r.BundleID, &r.UpdatedAt, &r.CreatedAt,
-			&r.ManagerSessionID, &updatedAtText, &r.SpendUSD, &statusJSON, &r.WorkingDir, &r.PrincipalID,
+			&r.ManagerSessionID, &r.SpendUSD, &statusJSON, &r.WorkingDir, &r.PrincipalID,
 		); err != nil {
 			return nil, err
 		}
 		r.Status = sessionStatusFromColumns(r.State, statusJSON)
-		r.Cursor = encodeSummaryCursor(updatedAtText, r.SessionID)
+		r.Cursor = encodeSummaryCursor(r.UpdatedAt, r.SessionID)
 		out = append(out, r)
 	}
 	return out, rows.Err()
 }
 
 // sessionSummariesQuery builds the statement ListSessionSummaries runs. It is
-// its own function so a test can hand the exact statement to EXPLAIN QUERY
-// PLAN: a lookup that stops using its index still answers correctly, only
-// slowly, and no test of the rows would notice.
-func sessionSummariesQuery(limit int, before string, filter SessionSummaryFilter) (string, []any) {
+// its own function so a test can hand the exact statement to EXPLAIN: a lookup
+// that stops using its index still answers correctly, only slowly, and no test
+// of the rows would notice. A cursor that does not parse is an error.
+func sessionSummariesQuery(limit int, before string, filter SessionSummaryFilter) (string, []any, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	q := `SELECT ` + summaryColumns + ` FROM sessions`
 	conds := []string{}
-	args := []any{}
+	var args queryArguments
 	if before != "" {
 		// A cursor minted before the compound format existed carries no id half,
 		// and needs no special case: decodeSummaryCursor yields "" for it, no id
@@ -321,34 +294,31 @@ func sessionSummariesQuery(limit int, before string, filter SessionSummaryFilter
 		// was built for. Pinned by
 		// TestListSessionSummaries_LegacyTimestampOnlyCursor — the equivalence is
 		// the reason there is one branch here rather than two.
-		updatedAtText, sessionID := decodeSummaryCursor(before)
+		updatedAt, sessionID, err := decodeSummaryCursor(before)
+		if err != nil {
+			return "", nil, err
+		}
 		// Wrapped in its own parentheses as a whole. The cursor test is itself an
 		// OR, so leaving it bare and appending ` AND <axis>` would bind as
 		// `A OR (B AND C AND axis)` — every row newer than the cursor would come
 		// back regardless of the filter, and only on the SECOND page onwards, so
 		// page one would look perfectly correct.
-		conds = append(conds, `(CAST(updated_at AS TEXT) < ?`+
-			` OR (CAST(updated_at AS TEXT) = ? AND `+summarySessionIDExpression+` < ?))`)
-		args = append(args, updatedAtText, updatedAtText, sessionID)
+		updatedAtArgument := args.add(updatedAt)
+		conds = append(conds, `(updated_at < `+updatedAtArgument+
+			` OR (updated_at = `+updatedAtArgument+` AND `+summarySessionIDExpression+` < `+args.add(sessionID)+`))`)
 	}
 	for _, axis := range filter.axes() {
 		if len(axis.values) == 0 {
 			continue
 		}
-		conds = append(conds, axis.column+` IN (`+sqlPlaceholders(len(axis.values))+`)`)
-		for _, v := range axis.values {
-			args = append(args, v)
-		}
+		conds = append(conds, axis.column+` = ANY(`+args.add(axis.values)+`)`)
 	}
 	// Compared against the same projected expression the rows report and the
 	// cursor sorts on, never the bare session_id column — a legacy row whose id
 	// comes from bridge_id would otherwise be unfindable by the very id the
 	// caller was handed.
 	if len(filter.SessionIDs) > 0 {
-		conds = append(conds, summarySessionIDExpression+` IN (`+sqlPlaceholders(len(filter.SessionIDs))+`)`)
-		for _, v := range filter.SessionIDs {
-			args = append(args, v)
-		}
+		conds = append(conds, summarySessionIDExpression+` = ANY(`+args.add(filter.SessionIDs)+`)`)
 	}
 	// The parent pointer is stored as the parent's BRIDGE session id (see
 	// internal/store/subagent_test.go, which pins exactly that), so this compares
@@ -357,75 +327,85 @@ func sessionSummariesQuery(limit int, before string, filter SessionSummaryFilter
 	// the promoter writes one id into this column and it is the same id space.
 	if len(filter.ManagerSessionIDs) > 0 {
 		// The bare column beside the partial index's own predicate, so the
-		// planner may use idx_sessions_manager. Wrapped in COALESCE — which the
-		// NOT NULL column never needed — this was a scan of every session: 0.12s
-		// a call on 65,000 rows, from a sidebar that asks several times a second.
-		conds = append(conds, `manager_session_id != '' AND manager_session_id IN (`+sqlPlaceholders(len(filter.ManagerSessionIDs))+`)`)
-		for _, v := range filter.ManagerSessionIDs {
-			args = append(args, v)
-		}
+		// planner may use idx_sessions_manager. Wrapped in COALESCE this was a
+		// scan of every session: 0.12s a call on 65,000 rows, from a sidebar
+		// that asks several times a second.
+		conds = append(conds, `manager_session_id <> '' AND manager_session_id = ANY(`+args.add(filter.ManagerSessionIDs)+`)`)
 	}
 	if filter.OwnedByPrincipalID != "" {
-		conds = append(conds, `COALESCE(principal_id, '') = ?`)
-		args = append(args, filter.OwnedByPrincipalID)
+		conds = append(conds, `principal_id = `+args.add(filter.OwnedByPrincipalID))
 	}
 	if filter.OwnedThroughPeerPrincipalID != "" {
-		conds = append(conds, `COALESCE(NULLIF(session_id, ''), bridge_id) IN (SELECT session_id FROM session_peer_origins WHERE peer_principal_id = ?)`)
-		args = append(args, filter.OwnedThroughPeerPrincipalID)
+		conds = append(conds, summarySessionIDExpression+` IN (SELECT session_id FROM session_peer_origins WHERE peer_principal_id = `+args.add(filter.OwnedThroughPeerPrincipalID)+`)`)
 	}
 	if len(conds) > 0 {
 		q += ` WHERE ` + strings.Join(conds, ` AND `)
 	}
-	q += ` ORDER BY updated_at DESC, ` + summarySessionIDExpression + ` DESC LIMIT ?`
-	args = append(args, limit)
-	return q, args
+	q += ` ORDER BY updated_at DESC, ` + summarySessionIDExpression + ` DESC LIMIT ` + args.add(limit)
+	return q, args, nil
 }
 
 // summaryCursorSeparator joins the two halves of the compound cursor.
 //
-// It is safe as a separator because the timestamp half is always Go's
-// t.String() format, whose alphabet is digits, '-', ':', '.', '+' and spaces —
-// a vertical bar cannot occur in it. The id half is NOT constrained, so the
-// halves are split on the FIRST separator and everything after it is the id.
-// That way an id containing a bar round-trips intact instead of being truncated
-// into a cursor that points at a session which does not exist.
+// It is safe as a separator because the timestamp half never holds a vertical
+// bar. The id half is NOT constrained, so the halves are split on the FIRST
+// separator and everything after it is the id. That way an id containing a bar
+// round-trips intact instead of being truncated into a cursor that points at a
+// session which does not exist.
 const summaryCursorSeparator = "|"
+
+// summaryCursorTimeLayout writes the cursor's timestamp half: UTC to the
+// microsecond, the precision Postgres keeps, so the time read back from a
+// cursor equals the row's updated_at exactly.
+const summaryCursorTimeLayout = "2006-01-02T15:04:05.000000Z07:00"
+
+// sqliteTimeLayout is how the bridge's SQLite database wrote a time (Go's
+// time.String). A cursor a client holds from before the move to Postgres
+// carries it.
+const sqliteTimeLayout = "2006-01-02 15:04:05.999999999 -0700 MST"
 
 // encodeSummaryCursor builds the opaque pagination cursor from the two halves of
 // the sort key. Callers treat the result as opaque and hand it back verbatim.
-func encodeSummaryCursor(updatedAtText, sessionID string) string {
-	return updatedAtText + summaryCursorSeparator + sessionID
+func encodeSummaryCursor(updatedAt time.Time, sessionID string) string {
+	return formatSummaryTime(updatedAt) + summaryCursorSeparator + sessionID
+}
+
+func formatSummaryTime(updatedAt time.Time) string {
+	return updatedAt.UTC().Format(summaryCursorTimeLayout)
 }
 
 // decodeSummaryCursor splits a cursor back into its two halves. A cursor with no
 // separator — one minted before the compound format existed — yields the whole
 // string as the timestamp and "" as the id, which is the correct bound for it
 // rather than a fallback: "" is below every session id, so filtering on it
-// reproduces the old timestamp-only behavior exactly.
-func decodeSummaryCursor(cursor string) (updatedAtText, sessionID string) {
-	updatedAtText, sessionID, _ = strings.Cut(cursor, summaryCursorSeparator)
-	return updatedAtText, sessionID
+// reproduces the old timestamp-only behavior exactly. A timestamp in neither
+// layout is an error.
+func decodeSummaryCursor(cursor string) (time.Time, string, error) {
+	updatedAtText, sessionID, _ := strings.Cut(cursor, summaryCursorSeparator)
+	for _, layout := range []string{summaryCursorTimeLayout, sqliteTimeLayout} {
+		if updatedAt, err := time.Parse(layout, updatedAtText); err == nil {
+			return updatedAt, sessionID, nil
+		}
+	}
+	return time.Time{}, "", fmt.Errorf("the cursor's time %q is not one this server writes", updatedAtText)
 }
 
-// MaxSessionUpdatedAt returns the newest updated_at across the sessions table as
-// its raw stored string, used as the summary list's revision / ETag. Empty
-// string when the table has no rows. Uses the same ordering as
+// MaxSessionUpdatedAt returns the newest updated_at across the sessions table,
+// written as a cursor's timestamp half, used as the summary list's revision /
+// ETag. Empty string when the table has no rows. Uses the same ordering as
 // ListSessionSummaries so the revision is consistent with the first page.
 func (s *Store) MaxSessionUpdatedAt() (string, error) {
-	var v sql.NullString
+	var newest time.Time
 	err := s.dbRO.QueryRow(
-		`SELECT CAST(updated_at AS TEXT) FROM sessions ORDER BY updated_at DESC LIMIT 1`,
-	).Scan(&v)
+		`SELECT updated_at FROM sessions ORDER BY updated_at DESC LIMIT 1`,
+	).Scan(&newest)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
 	if err != nil {
 		return "", err
 	}
-	if !v.Valid {
-		return "", nil
-	}
-	return v.String, nil
+	return formatSummaryTime(newest), nil
 }
 
 // SessionCountOfPrincipal is how many sessions were started as one principal;
@@ -440,16 +420,14 @@ type SessionCountOfPrincipal struct {
 // it as they narrow the summary (SessionSummaryFilter); both empty counts every
 // session.
 func (s *Store) SessionCountsByPrincipal(ownedByPrincipalID, throughPeerPrincipalID string) ([]SessionCountOfPrincipal, error) {
-	query := `SELECT COALESCE(principal_id, ''), COUNT(*) FROM sessions`
+	query := `SELECT principal_id, COUNT(*) FROM sessions`
 	var conditions []string
-	var args []any
+	var args queryArguments
 	if ownedByPrincipalID != "" {
-		conditions = append(conditions, `principal_id = ?`)
-		args = append(args, ownedByPrincipalID)
+		conditions = append(conditions, `principal_id = `+args.add(ownedByPrincipalID))
 	}
 	if throughPeerPrincipalID != "" {
-		conditions = append(conditions, `COALESCE(NULLIF(session_id, ''), bridge_id) IN (SELECT session_id FROM session_peer_origins WHERE peer_principal_id = ?)`)
-		args = append(args, throughPeerPrincipalID)
+		conditions = append(conditions, summarySessionIDExpression+` IN (SELECT session_id FROM session_peer_origins WHERE peer_principal_id = `+args.add(throughPeerPrincipalID)+`)`)
 	}
 	if len(conditions) > 0 {
 		query += ` WHERE ` + strings.Join(conditions, ` AND `)

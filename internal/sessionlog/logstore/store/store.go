@@ -55,6 +55,10 @@ type Store struct {
 	// once. See turn_index.go.
 	turnIndexLocks sessionLocks
 
+	// appends is the goroutine that writes every appended event, in groups
+	// (group_commit.go).
+	appends *groupWriter
+
 	// dedupCandidateOf and turnIndexVersion come from the server through
 	// SetDedupCandidates. See turn_index.go.
 	dedupCandidateOf DedupCandidateFunc
@@ -67,7 +71,9 @@ type Store struct {
 func New(writer, reader *sql.DB) *Store {
 	writer.SetMaxOpenConns(1)
 	reader.SetMaxOpenConns(readerPoolSize)
-	return &Store{writer: writer, reader: reader, turnIndexVersion: turnIndexRulesVersion * 1000}
+	s := &Store{writer: writer, reader: reader, turnIndexVersion: turnIndexRulesVersion * 1000, appends: newGroupWriter()}
+	go s.writeAppendsInGroups()
+	return s
 }
 
 // OpenReader opens the module's read-only pool on the Postgres at url: the
@@ -112,6 +118,7 @@ func withRuntimeParameter(connectionString, name, value string) (string, error) 
 }
 
 func (s *Store) Close() error {
+	s.closeGroupWriter()
 	return errors.Join(s.reader.Close(), s.writer.Close())
 }
 

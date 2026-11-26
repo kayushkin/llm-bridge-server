@@ -8,17 +8,6 @@ import "fmt"
 // once, on the first start after a setting becomes editable; after that this
 // table is the only source for it.
 
-func (s *Store) migrateServiceSettings() error {
-	_, err := s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS service_settings (
-			key        TEXT PRIMARY KEY,
-			value      TEXT NOT NULL,
-			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-		);
-	`)
-	return err
-}
-
 // ServiceSettingValues is the servicesettings.StoredValues over this store.
 type ServiceSettingValues struct{ store *Store }
 
@@ -48,7 +37,7 @@ func (v ServiceSettingValues) Load() (map[string]string, error) {
 // Save writes one key, replacing what was there.
 func (v ServiceSettingValues) Save(key, value string) error {
 	_, err := v.store.db.Exec(`
-		INSERT INTO service_settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+		INSERT INTO service_settings (key, value, updated_at) VALUES ($1, $2, CURRENT_TIMESTAMP)
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`,
 		key, value)
 	if err != nil {
@@ -71,13 +60,13 @@ func (s *Store) MoveServiceSettingKeys(renamed map[string]string, retired []stri
 	for oldKey, newKey := range renamed {
 		if _, err := transaction.Exec(`
 			INSERT INTO service_settings (key, value, updated_at)
-			SELECT ?, value, CURRENT_TIMESTAMP FROM service_settings WHERE key = ?
+			SELECT $1, value, CURRENT_TIMESTAMP FROM service_settings WHERE key = $2
 			ON CONFLICT(key) DO NOTHING`, newKey, oldKey); err != nil {
 			return fmt.Errorf("move service_settings %s to %s: %w", oldKey, newKey, err)
 		}
 	}
 	for _, key := range retired {
-		if _, err := transaction.Exec(`DELETE FROM service_settings WHERE key = ?`, key); err != nil {
+		if _, err := transaction.Exec(`DELETE FROM service_settings WHERE key = $1`, key); err != nil {
 			return fmt.Errorf("delete retired service_settings %s: %w", key, err)
 		}
 	}

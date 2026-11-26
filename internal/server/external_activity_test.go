@@ -25,10 +25,8 @@ func TestExternalActivityStartingMark(t *testing.T) {
 	if err := st.CreateSession(&store.Session{SessionID: "br_events", Harness: "claude_code", State: "idle"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.StoreEventReturningID("br_events", "result", "", "", []byte(`{"type":"result"}`)); err != nil {
-		t.Fatal(err)
-	}
-	last, err := st.LastActivityAt("br_events")
+	storeTestEvent(t, st, "br_events", []byte(`{"type":"result"}`))
+	last, err := testSessionEventsOf(t, st).LastActivityAt("br_events")
 	if err != nil {
 		t.Fatal(err)
 	}

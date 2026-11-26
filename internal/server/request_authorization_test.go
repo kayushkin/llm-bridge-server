@@ -111,11 +111,7 @@ func newGatedTestServer(t *testing.T, grantsByPrincipal map[string]map[string][]
 func newGatedTestServerConfigured(t *testing.T, grantsByPrincipal map[string]map[string][]string, configure func(*config.Config)) *gatedTestServer {
 	t.Helper()
 	directory := t.TempDir()
-	bridgeStore, err := store.New(filepath.Join(directory, "test.db"))
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
-	t.Cleanup(func() { bridgeStore.Close() })
+	bridgeStore := newTestBridgeStore(t)
 	harnesses := harnessstoretest.NewStore(t)
 	for _, seed := range []struct{ machineID, instanceID string }{{"m_test", "inst_test"}, {"m_second", "inst_second"}} {
 		if err := harnesses.CreateMachine(&msg.Machine{ID: seed.machineID, Name: seed.machineID, Hostname: "secret-host.internal", SSHKeyPath: "/home/operator/.ssh/id", Transport: msg.TransportLocal}); err != nil {
@@ -156,6 +152,7 @@ func newGatedTestServerConfigured(t *testing.T, grantsByPrincipal map[string]map
 		principals: principals,
 		clock:      &testClock{now: time.Now()},
 	}
+	enableTestSessionEvents(t, gated.server, bridgeStore)
 	useFakePrincipalStore(gated.server, principals.server.URL)
 	gated.server.useKanbanStoreHandlerForTests(kanban.handler)
 	gated.server.grantClient = testGrantReaderAt(fakeGrantStoreForPrincipals(t, grantsByPrincipal).URL)

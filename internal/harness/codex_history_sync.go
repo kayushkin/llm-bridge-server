@@ -99,19 +99,6 @@ func (m *Manager) SyncCodexHistory(ctx context.Context, bridgeID string) (int, e
 		if err != nil {
 			return i, err
 		}
-		// On the old path the bridge database keeps its own copy, whose id
-		// the stream carries. With the session log as the only copy, the
-		// push was the one write.
-		if !m.singleCopy() {
-			data, err := json.Marshal(ev)
-			if err != nil {
-				return i + 1, err
-			}
-			rowID, err = m.store.StoreEventReturningID(bridgeID, string(ev.Type), ev.MessageID, ev.HarnessMessageID, data)
-			if err != nil {
-				return i + 1, err
-			}
-		}
 		// History must not trigger agents, tasks, status derivation or automation.
 		m.mu.RLock()
 		for _, ch := range m.subscribers[bridgeID] {

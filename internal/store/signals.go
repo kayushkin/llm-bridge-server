@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/kayushkin/llm-bridge/msg"
@@ -42,53 +41,6 @@ type SignalFilter struct {
 	SessionTypes []msg.SessionType
 	// Limit caps the returned rows. Zero means no cap.
 	Limit int
-}
-
-// migrateSignals creates the signal table. Called from migrate().
-func (s *Store) migrateSignals() error {
-	_, err := s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS signals (
-			id             TEXT PRIMARY KEY,
-			session_id     TEXT NOT NULL,
-			session_type   TEXT NOT NULL DEFAULT '',
-			kind           TEXT NOT NULL,
-			source         TEXT NOT NULL,
-			request_id     TEXT NOT NULL DEFAULT '',
-			surface        TEXT NOT NULL,
-			title          TEXT NOT NULL,
-			body           TEXT NOT NULL DEFAULT '',
-			options        TEXT NOT NULL DEFAULT '',
-			allow_freeform INTEGER NOT NULL DEFAULT 0,
-			allow_multiple_options INTEGER NOT NULL DEFAULT 0,
-			answer         TEXT NOT NULL DEFAULT '',
-			severity       TEXT NOT NULL DEFAULT '',
-			state          TEXT NOT NULL,
-			linked_todo_id TEXT NOT NULL DEFAULT '',
-			audience       TEXT NOT NULL DEFAULT '',
-			customer_reply_draft TEXT NOT NULL DEFAULT '',
-			created_at     DATETIME NOT NULL,
-			resolved_at    DATETIME
-		);
-		CREATE INDEX IF NOT EXISTS idx_signals_session ON signals(session_id);
-		CREATE INDEX IF NOT EXISTS idx_signals_state ON signals(state);
-		CREATE INDEX IF NOT EXISTS idx_signals_request ON signals(session_id, request_id) WHERE request_id != '';
-		CREATE INDEX IF NOT EXISTS idx_signals_todo ON signals(linked_todo_id) WHERE linked_todo_id != '';
-	`)
-	if err != nil {
-		return err
-	}
-	// Added after the table shipped, so the CREATE TABLE above never runs on the
-	// stores that need it. The error is dropped for the same reason every other
-	// ADD COLUMN in store.go drops it: on the second start the column is already
-	// there and SQLite says so, which is success, not a failure to migrate.
-	// Existing rows default to false, which is the truth about them — every one
-	// was minted before a question could say otherwise.
-	s.db.Exec(`ALTER TABLE signals ADD COLUMN allow_multiple_options INTEGER NOT NULL DEFAULT 0`)
-	// Same again for the two triage columns. Rows from before triage existed
-	// read back empty, which is the truth: nobody judged who they were for.
-	s.db.Exec(`ALTER TABLE signals ADD COLUMN audience TEXT NOT NULL DEFAULT ''`)
-	s.db.Exec(`ALTER TABLE signals ADD COLUMN customer_reply_draft TEXT NOT NULL DEFAULT ''`)
-	return nil
 }
 
 // signalColumns selects the fields scanSignal reads, in its order.
@@ -192,7 +144,7 @@ func (s *Store) CreateSignal(sig *Signal) error {
 		resolvedAt = *sig.ResolvedAt
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO signals (`+signalColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO signals (`+signalColumns+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
 		sig.ID, sig.SessionID, string(sig.SessionType), string(sig.Kind), string(sig.Source),
 		sig.RequestID, string(sig.Surface), sig.Title, sig.Body, options, sig.AllowFreeform,
 		sig.AllowMultipleOptions, answer, string(sig.Severity), string(sig.State),
@@ -207,55 +159,47 @@ func (s *Store) CreateSignal(sig *Signal) error {
 
 // GetSignal looks up one signal by id.
 func (s *Store) GetSignal(id string) (*Signal, error) {
-	return scanSignal(s.dbRO.QueryRow(`SELECT `+signalColumns+` FROM signals WHERE id=?`, id))
+	return scanSignal(s.dbRO.QueryRow(`SELECT `+signalColumns+` FROM signals WHERE id=$1`, id))
 }
 
 // ListSignals returns signals matching the filter, newest first.
 func (s *Store) ListSignals(filter SignalFilter) ([]Signal, error) {
 	query := `SELECT ` + signalColumns + ` FROM signals WHERE 1=1`
-	var args []any
+	var args queryArguments
 	if filter.SessionID != "" {
-		query += ` AND session_id=?`
-		args = append(args, filter.SessionID)
+		query += ` AND session_id=` + args.add(filter.SessionID)
 	}
 	if filter.State != "" {
-		query += ` AND state=?`
-		args = append(args, string(filter.State))
+		query += ` AND state=` + args.add(string(filter.State))
 	}
 	if filter.Surface != "" {
-		query += ` AND surface=?`
-		args = append(args, string(filter.Surface))
+		query += ` AND surface=` + args.add(string(filter.Surface))
 	}
 	if filter.Kind != "" {
-		query += ` AND kind=?`
-		args = append(args, string(filter.Kind))
+		query += ` AND kind=` + args.add(string(filter.Kind))
 	}
 	if filter.LinkedTodoID != "" {
-		query += ` AND linked_todo_id=?`
-		args = append(args, filter.LinkedTodoID)
+		query += ` AND linked_todo_id=` + args.add(filter.LinkedTodoID)
 	}
 	if filter.OwnedByPrincipalID != "" {
-		query += ` AND session_id IN (SELECT bridge_id FROM sessions WHERE principal_id=?)`
-		args = append(args, filter.OwnedByPrincipalID)
+		query += ` AND session_id IN (SELECT bridge_id FROM sessions WHERE principal_id=` + args.add(filter.OwnedByPrincipalID) + `)`
 	}
 	if filter.OwnedThroughPeerPrincipalID != "" {
-		query += ` AND session_id IN (SELECT session_id FROM session_peer_origins WHERE peer_principal_id=?)`
-		args = append(args, filter.OwnedThroughPeerPrincipalID)
+		query += ` AND session_id IN (SELECT session_id FROM session_peer_origins WHERE peer_principal_id=` + args.add(filter.OwnedThroughPeerPrincipalID) + `)`
 	}
 	if len(filter.SessionTypes) > 0 {
-		query += ` AND session_id IN (SELECT bridge_id FROM sessions WHERE type IN (` +
-			strings.TrimSuffix(strings.Repeat("?,", len(filter.SessionTypes)), ",") + `))`
-		for _, sessionType := range filter.SessionTypes {
-			args = append(args, string(sessionType))
+		sessionTypes := make([]string, len(filter.SessionTypes))
+		for index, sessionType := range filter.SessionTypes {
+			sessionTypes[index] = string(sessionType)
 		}
+		query += ` AND session_id IN (SELECT bridge_id FROM sessions WHERE type = ANY(` + args.add(sessionTypes) + `))`
 	}
 	// created_at ties are common (one AskUserQuestion mints a row per
 	// question in the same millisecond), so id breaks the tie — without it
-	// SQLite picks, and a LIMIT would drop arbitrary rows.
+	// the database picks, and a LIMIT would drop arbitrary rows.
 	query += ` ORDER BY created_at DESC, id`
 	if filter.Limit > 0 {
-		query += ` LIMIT ?`
-		args = append(args, filter.Limit)
+		query += ` LIMIT ` + args.add(filter.Limit)
 	}
 	rows, err := s.dbRO.Query(query, args...)
 	if err != nil {
@@ -281,7 +225,7 @@ func (s *Store) ListSignalsByRequestID(sessionID, requestID string) ([]Signal, e
 		return nil, nil
 	}
 	rows, err := s.dbRO.Query(
-		`SELECT `+signalColumns+` FROM signals WHERE session_id=? AND request_id=? ORDER BY created_at, id`,
+		`SELECT `+signalColumns+` FROM signals WHERE session_id=$1 AND request_id=$2 ORDER BY created_at, id`,
 		sessionID, requestID,
 	)
 	if err != nil {
@@ -324,7 +268,7 @@ func (s *Store) ResolveSignal(id string, state msg.SignalState, answer *msg.Sign
 		return err
 	}
 	res, err := s.db.Exec(
-		`UPDATE signals SET state=?, answer=?, resolved_at=? WHERE id=? AND state=?`,
+		`UPDATE signals SET state=$1, answer=$2, resolved_at=$3 WHERE id=$4 AND state=$5`,
 		string(state), payload, time.Now().UTC(), id, string(msg.SignalStateOpen),
 	)
 	if err != nil {

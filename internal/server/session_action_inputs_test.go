@@ -72,7 +72,7 @@ func TestTypedInputsReachTheCommandOnlyAndASecretIsKeptNowhere(t *testing.T) {
 	if strings.Contains(string(record), secret) {
 		t.Error("the stored action holds the secret")
 	}
-	events, err := st.ListEventsSinceID("br_inputs", 0)
+	events, err := testSessionEventsOf(t, st).ListEventsSinceID("br_inputs", 0)
 	if err != nil {
 		t.Fatal(err)
 	}

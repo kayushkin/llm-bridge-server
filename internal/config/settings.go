@@ -227,7 +227,7 @@ func SettingDefinitions() []servicesettings.Definition {
 		{Key: "skill_store.install_directory", EnvironmentVariable: "LLMBRIDGE_SKILL_STORE_INSTALL_DIRECTORY", Kind: path, ValueType: text, Default: productiondefaults.SkillStoreInstallDirectory(),
 			Description: "Where the skill-store module copies an installed skill, which is where Claude Code on this machine reads skills from. A local source may not overlap it."},
 		{Key: "database.path", EnvironmentVariable: "LLMBRIDGE_DB_PATH", Kind: path, ValueType: text, Default: productiondefaults.BridgeDatabasePath(),
-			Description: "This server's own database: sessions, folders, signals and the stored settings on this page."},
+			Description: "Where this server's SQLite database was before its records moved to the bridge_core module in Postgres. The server opens no database here: it refuses to start on an empty bridge_core module while a file is at this path (copy it in with import-bridge-database), and the path's folder holds peer message attachments and self-update logs."},
 		{Key: "snapshot_store.git_path", EnvironmentVariable: "LLMBRIDGE_SNAPSHOT_GIT", Kind: path, ValueType: text, Default: productiondefaults.SnapshotStoreGitPath(),
 			Description: "The bare git repository snapshot-store keeps file contents in."},
 		{Key: "images.directory", EnvironmentVariable: "LLMBRIDGE_IMAGES_DIR", Kind: path, ValueType: text, Default: "images",

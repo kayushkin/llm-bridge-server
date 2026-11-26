@@ -56,7 +56,8 @@
 # keeping every id), then removes the unit and leaves the file where it was,
 # unused. reference-store kept no records, so only its unit goes.
 # agent-store, memory-store, model-store, harness-store, hook-store,
-# snapshot-store and the operations queue ran inside the server with SQLite
+# snapshot-store, the operations queue and the bridge's own database
+# (bridge.db, every table but its events) ran inside the server with SQLite
 # files under data/; their files are imported the same way. snapshot-store's
 # blobs stay in data/snapshots.git.
 #
@@ -74,7 +75,7 @@ STORES=()
 RETIRED_STORES=(principal-store grant-store tool-store permission-store kanban-store reference-store log-store)
 # Stores the server embedded with a SQLite file of its own under data/, and
 # now keeps in Postgres. They had no unit, so there is none to remove.
-EMBEDDED_STORES=(agent-store memory-store model-store harness-store hook-store snapshot-store operations)
+EMBEDDED_STORES=(agent-store memory-store model-store harness-store hook-store snapshot-store operations bridge-database)
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 POSTGRES_BIN="${BRIDGE_TEST_POSTGRES_BIN:-/usr/lib/postgresql/18/bin}"
 # The login the server provisions its Postgres modules as, and its database.
@@ -226,6 +227,7 @@ retired_store_database() { # <store>
     hook-store)       echo "$ROOT/data/hooks.db" ;;
     snapshot-store)   echo "$ROOT/data/snapshots.db" ;;
     operations)       echo "$ROOT/data/operations.db" ;;
+    bridge-database)  echo "$ROOT/data/bridge.db" ;;
     *)                echo "$ROOT/home/.config/$1/$1.db" ;;
   esac
 }

@@ -24,84 +24,6 @@ var ErrSessionActionNotOffered = errors.New("session action is not waiting to be
 
 const sessionActionIDPrefix = "session_action_"
 
-// migrateSessionActions creates the table of actions agents offered in their
-// sessions and how each run went. Called from migrate().
-//
-// The row is the log of a button press: who confirmed it, when, what it ran,
-// and what came back. It is never deleted.
-func (s *Store) migrateSessionActions() error {
-	_, err := s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS session_actions (
-			id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-			session_id          TEXT NOT NULL,
-			label               TEXT NOT NULL,
-			type                TEXT NOT NULL,
-			repo_id             INTEGER NOT NULL DEFAULT 0,
-			scheduler_job_id    INTEGER NOT NULL DEFAULT 0,
-			message             TEXT NOT NULL DEFAULT '',
-			command             TEXT NOT NULL,
-			state               TEXT NOT NULL,
-			offered_at          DATETIME NOT NULL,
-			run_by_principal_id TEXT NOT NULL DEFAULT '',
-			started_at          DATETIME,
-			finished_at         DATETIME,
-			output              TEXT NOT NULL DEFAULT '',
-			error               TEXT NOT NULL DEFAULT '',
-			result_session_id   TEXT NOT NULL DEFAULT ''
-		);
-		CREATE INDEX IF NOT EXISTS idx_session_actions_session ON session_actions(session_id, id);
-	`)
-	if err != nil {
-		return err
-	}
-	// Columns added on 2026-09-29 for run_command, model_call and
-	// background_agent. Added only when missing, and any other failure is
-	// returned, not ignored.
-	existing := map[string]bool{}
-	rows, err := s.db.Query(`PRAGMA table_info(session_actions)`)
-	if err != nil {
-		return err
-	}
-	for rows.Next() {
-		var position, notNull, primaryKey int
-		var name, columnType string
-		var defaultValue sql.NullString
-		if err := rows.Scan(&position, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
-			rows.Close()
-			return err
-		}
-		existing[name] = true
-	}
-	rows.Close()
-	for _, column := range []struct{ name, definition string }{
-		{"shell_command", "TEXT NOT NULL DEFAULT ''"},
-		{"working_directory", "TEXT NOT NULL DEFAULT ''"},
-		{"result_format", "TEXT NOT NULL DEFAULT ''"},
-		{"model", "TEXT NOT NULL DEFAULT ''"},
-		{"maximum_cost_usd", "REAL NOT NULL DEFAULT 0"},
-		{"review", "TEXT NOT NULL DEFAULT ''"},
-		{"cost_usd", "REAL NOT NULL DEFAULT 0"},
-		// The offer's text boxes as JSON: names, labels, which are secret. What
-		// a person types into them is never stored.
-		{"inputs", "TEXT NOT NULL DEFAULT ''"},
-		// The session a send_to_session or stop_session acts on, added on
-		// 2026-10-15.
-		{"target_session_id", "TEXT NOT NULL DEFAULT ''"},
-		// Whether a successful press is reported to the agent, settled when the
-		// action is offered; added on 2026-10-21. NULL on older rows, which
-		// reported every press.
-		{"report_success", "INTEGER"},
-	} {
-		if existing[column.name] {
-			continue
-		}
-		if _, err := s.db.Exec(`ALTER TABLE session_actions ADD COLUMN ` + column.name + ` ` + column.definition); err != nil {
-			return fmt.Errorf("add session_actions.%s: %w", column.name, err)
-		}
-	}
-	return nil
-}
-
 // InsertSessionAction records an offered action and sets its ActionID.
 func (s *Store) InsertSessionAction(action *SessionAction) error {
 	review, err := encodeSessionActionReview(action.Review)
@@ -117,20 +39,16 @@ func (s *Store) InsertSessionAction(action *SessionAction) error {
 		}
 		inputs = string(encoded)
 	}
-	result, err := s.db.Exec(
+	var rowID int64
+	if err := s.db.QueryRow(
 		`INSERT INTO session_actions (session_id, label, type, repo_id, scheduler_job_id, message, shell_command, working_directory,
 		 result_format, model, maximum_cost_usd, command, state, offered_at, review, inputs, target_session_id, report_success)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) RETURNING id`,
 		action.SessionID, offer.Label, string(offer.Type), offer.RepoID, offer.SchedulerJobID, offer.Message, offer.ShellCommand,
 		offer.WorkingDirectory, string(offer.ResultFormat), offer.Model, offer.MaximumCostUSD,
 		action.Command, string(action.State), action.OfferedAt.UTC(), review, inputs, offer.TargetSessionID, offer.ReportSuccess,
-	)
-	if err != nil {
+	).Scan(&rowID); err != nil {
 		return fmt.Errorf("insert session action for %s: %w", action.SessionID, err)
-	}
-	rowID, err := result.LastInsertId()
-	if err != nil {
-		return fmt.Errorf("insert session action for %s: read its id: %w", action.SessionID, err)
 	}
 	action.ActionID = sessionActionIDOf(rowID)
 	return nil
@@ -138,7 +56,7 @@ func (s *Store) InsertSessionAction(action *SessionAction) error {
 
 // ListSessionActions returns every action offered in a session, oldest first.
 func (s *Store) ListSessionActions(sessionID string) ([]SessionAction, error) {
-	rows, err := s.db.Query(sessionActionSelect+` WHERE session_id = ? ORDER BY id`, sessionID)
+	rows, err := s.db.Query(sessionActionSelect+` WHERE session_id = $1 ORDER BY id`, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -162,7 +80,7 @@ func (s *Store) GetSessionAction(sessionID, actionID string) (SessionAction, err
 	if !ok {
 		return SessionAction{}, ErrSessionActionNotFound
 	}
-	action, err := scanSessionAction(s.db.QueryRow(sessionActionSelect+` WHERE session_id = ? AND id = ?`, sessionID, rowID))
+	action, err := scanSessionAction(s.db.QueryRow(sessionActionSelect+` WHERE session_id = $1 AND id = $2`, sessionID, rowID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return SessionAction{}, ErrSessionActionNotFound
 	}
@@ -179,8 +97,8 @@ func (s *Store) StartSessionAction(sessionID, actionID, runByPrincipalID string,
 		return SessionAction{}, ErrSessionActionNotFound
 	}
 	result, err := s.db.Exec(
-		`UPDATE session_actions SET state = ?, run_by_principal_id = ?, started_at = ?
-		 WHERE session_id = ? AND id = ? AND state = ?`,
+		`UPDATE session_actions SET state = $1, run_by_principal_id = $2, started_at = $3
+		 WHERE session_id = $4 AND id = $5 AND state = $6`,
 		string(msg.SessionActionRunning), runByPrincipalID, startedAt.UTC(), sessionID, rowID, string(msg.SessionActionOffered))
 	if err != nil {
 		return SessionAction{}, fmt.Errorf("start session action %s: %w", actionID, err)
@@ -215,8 +133,8 @@ func (s *Store) FinishSessionAction(sessionID, actionID string, end SessionActio
 		return SessionAction{}, ErrSessionActionNotFound
 	}
 	result, err := s.db.Exec(
-		`UPDATE session_actions SET state = ?, output = ?, error = ?, result_session_id = ?, cost_usd = ?, finished_at = ?
-		 WHERE session_id = ? AND id = ? AND state = ?`,
+		`UPDATE session_actions SET state = $1, output = $2, error = $3, result_session_id = $4, cost_usd = $5, finished_at = $6
+		 WHERE session_id = $7 AND id = $8 AND state = $9`,
 		string(end.State), end.Output, end.Error, end.ResultSessionID, end.CostUSD, finishedAt.UTC(), sessionID, rowID, string(msg.SessionActionRunning))
 	if err != nil {
 		return SessionAction{}, fmt.Errorf("finish session action %s: %w", actionID, err)
@@ -234,7 +152,7 @@ func (s *Store) SetSessionActionResultSession(sessionID, actionID, resultSession
 	if !ok {
 		return SessionAction{}, ErrSessionActionNotFound
 	}
-	result, err := s.db.Exec(`UPDATE session_actions SET result_session_id = ? WHERE session_id = ? AND id = ? AND state = ?`,
+	result, err := s.db.Exec(`UPDATE session_actions SET result_session_id = $1 WHERE session_id = $2 AND id = $3 AND state = $4`,
 		resultSessionID, sessionID, rowID, string(msg.SessionActionRunning))
 	if err != nil {
 		return SessionAction{}, fmt.Errorf("record the session %s started: %w", actionID, err)
@@ -249,7 +167,7 @@ func (s *Store) SetSessionActionResultSession(sessionID, actionID, resultSession
 // which, called at startup, means one whose run this process's predecessor
 // never saw end — as outcome_unknown, and returns them as they now are.
 func (s *Store) MarkRunningSessionActionsOutcomeUnknown(explanation string, now time.Time) ([]SessionAction, error) {
-	rows, err := s.db.Query(sessionActionSelect+` WHERE state = ? ORDER BY id`, string(msg.SessionActionRunning))
+	rows, err := s.db.Query(sessionActionSelect+` WHERE state = $1 ORDER BY id`, string(msg.SessionActionRunning))
 	if err != nil {
 		return nil, err
 	}
@@ -361,7 +279,7 @@ func encodeSessionActionReview(review *msg.SessionActionReview) (string, error) 
 // session's posting token.
 func (s *Store) SessionHasRunningCommandAction(sessionID string) (bool, error) {
 	var running bool
-	err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM session_actions WHERE session_id = ? AND type = ? AND state = ?)`,
+	err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM session_actions WHERE session_id = $1 AND type = $2 AND state = $3)`,
 		sessionID, string(msg.SessionActionRunCommand), string(msg.SessionActionRunning)).Scan(&running)
 	return running, err
 }

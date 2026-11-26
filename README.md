@@ -22,7 +22,7 @@ For the whole system — which repo owns what, and how the pieces talk — read 
   the agent: claude, codex, a hermes server, …
 ```
 
-**It owns** these records, in its own SQLite database (`~/.llm-bridge/bridge.db`): sessions, signals, folders, bridge preferences and its stored settings. Change them only through this server's routes.
+**It owns** these records, in Postgres, in its own module `bridge_core` (`internal/store`, the setting `database.postgres_url`): sessions, signals, folders, briefs, buttons, sign-ins, peers and their messages, machine readings and its stored settings; bridge preferences stay in their file. Every session event is in the `session_log` module, the only copy. Change them only through this server's routes. `llm-bridge-server import-bridge-database -sqlite <file>` copies the SQLite database these records were kept in until 2026-11 (`~/.llm-bridge/bridge.db`) into the module, every table but `events`, which stays in the archived file.
 
 **It embeds** six stores as Go libraries. Each keeps its own database and lives in its own repo, so a change to what they store is made there:
 

@@ -301,15 +301,7 @@ func TestHandleListSignalsRejectsUnknownFilterValues(t *testing.T) {
 // hook through the public verb answers it. Unit tests on the two halves
 // can both pass while the wiring between them is missing.
 func TestAskUserQuestionPrehookRecordsAndResolvesSignal(t *testing.T) {
-	// Parking broadcasts an awaiting_resolution event, and the broadcast
-	// path pushes through log-store. Without a reachable one the broadcast
-	// errors, the park is canceled, and nothing is recorded — so stub it.
-	logStore := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(logStore.Close)
-
-	srv, st, _ := testServerWithInstanceAndLogStore(t, msg.HarnessClaudeCode, logStore.URL)
+	srv, st, _ := testServerWithInstance(t, msg.HarnessClaudeCode)
 	newSessionForSignals(t, st, "br_1", msg.SessionTypeInteractive)
 
 	prehookBody := `{"session_id":"cc-1","hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_input":` + askUserQuestionToolInput + `}`

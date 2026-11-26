@@ -23,7 +23,6 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/operations"
 	"github.com/kayushkin/llm-bridge-server/internal/operationstore"
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/snapshotstore"
-	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 	_ "modernc.org/sqlite"
 )
@@ -117,11 +116,7 @@ func TestTheImportedBridgeOwnStoresAnswerAsTheLiveServer(t *testing.T) {
 	}
 
 	directory := t.TempDir()
-	bridgeStore, err := store.New(filepath.Join(directory, "bridge.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { bridgeStore.Close() })
+	bridgeStore := newTestBridgeStore(t)
 	snapshots, err := snapshotstore.New(snapshotDB, snapshotstore.Config{GitDir: filepath.Join(directory, "snapshots.git")})
 	if err != nil {
 		t.Fatal(err)

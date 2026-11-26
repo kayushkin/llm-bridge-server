@@ -3,19 +3,18 @@ package harness
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
 // The pump announces a session's harness id with a system/harness_id_set
-// event. It went to bridge.db and to live subscribers but never to
-// log-store, so the two event copies disagreed by one row per session —
-// the largest class in the 2026-09-16 parity count (135 of 174 sessions).
-// log-store is the durable copy; it must hold the event too, and ahead of
-// the event that carried the id, as bridge.db does.
-func TestHarnessIDSetReachesLogStoreAheadOfTheEventThatCarriedIt(t *testing.T) {
-	m, _ := newSlowLogStoreManager(t, 0)
+// event. Until 2026-09-16 it never reached log-store (135 of 174 sessions in
+// that day's parity count). The session log is the only copy now; it must
+// hold the event, ahead of the event that carried the id.
+func TestHarnessIDSetIsStoredAheadOfTheEventThatCarriedIt(t *testing.T) {
+	m := newTestManager(t)
 	const bridgeID = "br-harness-id-set-parity"
 	const harnessID = "cc-harness-uuid-1"
 	if err := m.store.CreateSession(&store.Session{
@@ -72,4 +71,22 @@ func indexOf(values []string, want string) int {
 		}
 	}
 	return -1
+}
+
+// drainUntilClosed reads a subscriber channel until readEvents closes it,
+// which it does once the process's events are all handled. Gives a test a
+// definite "the pump is finished" point.
+func drainUntilClosed(t *testing.T, sub chan StoredEvent) {
+	t.Helper()
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case _, ok := <-sub:
+			if !ok {
+				return
+			}
+		case <-deadline:
+			t.Fatal("pump never closed its subscriber channel")
+		}
+	}
 }

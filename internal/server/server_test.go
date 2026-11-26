@@ -23,68 +23,57 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// testServer creates a test server with an in-memory SQLite store.
-// Optional stores (agent, memory, harness) are nil; the model registry is
-// seeded, because the server's model resolution requires one — see testModelStore.
+// testServer creates a test server over the bridge's own records and the
+// session log, in a Postgres database of the test's own, with the session log
+// as the only copy of events, as main wires it. Optional stores (agent,
+// memory, harness) are nil; the model registry is seeded, because the
+// server's model resolution requires one — see testModelStore.
 func testServer(t *testing.T) (*Server, *store.Store) {
 	t.Helper()
 	return testServerWithLogStore(t, "http://localhost:0")
 }
 
-// testServerWithLogStore is testServer with a log-store the caller supplies.
-// A test that drives a live harness process needs one that answers: with the
-// unreachable default every event push is refused and retried, and the send
-// path waits out logStoreDrainTimeout (10s) for that session's queue under the
-// manager lock, so a state the test waits for arrives 10s late or not before
-// its deadline. Measured 2026-10-31: on one CPU 4 runs in 10 of
-// TestInterruptSession_LiveProcessDuringToolRunning reached tool_running only
-// after exactly 10.0s, the rest after 20ms.
-func testServerWithLogStore(t *testing.T, logStoreURL string) (*Server, *store.Store) {
+// testServerWithoutSessionLog is testServer before main enables the session
+// log: its log-store routes answer 503 and the harness stores no event.
+func testServerWithoutSessionLog(t *testing.T) (*Server, *store.Store) {
 	t.Helper()
 	dir := t.TempDir()
-	st, err := store.New(filepath.Join(dir, "test.db"))
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
-	t.Cleanup(func() { st.Close() })
-
+	st := newTestBridgeStore(t)
 	cfg := &config.Config{
 		ImagesDir:       filepath.Join(dir, "images"),
 		BridgePrefsPath: filepath.Join(dir, "prefs.json"),
 	}
 	testAuthorizationConfig(cfg)
+	return New(st, nil, nil, nil, nil, testModelStore(t), nil, cfg), st
+}
 
-	srv := New(st, nil, nil, nil, nil, testModelStore(t), nil, cfg)
+// testServerWithLogStore is testServer with the session log's routes and the
+// harness manager's reads of it served by a fake log-store at logStoreURL
+// (enableLogStoreAt). Events are still stored in the real session log.
+func testServerWithLogStore(t *testing.T, logStoreURL string) (*Server, *store.Store) {
+	t.Helper()
+	srv, st := testServerWithoutSessionLog(t)
+	enableTestSessionEvents(t, srv, st)
 	enableLogStoreAt(t, srv, logStoreURL)
 	return srv, st
 }
 
 // testServerWithInstance returns a server wired to a harness-store that
-// already contains one enabled instance of the given harness type. The
-// instance id is returned so tests can reference it in create requests.
-//
-// LogStoreURL is set to a deliberately broken `http://localhost:0` — fine
-// for unit tests that never exercise the /send path. Build-tagged
-// integration tests that DO go through /send (which pushes user_message
-// to log-store before broadcasting) should call
-// testServerWithInstanceAndLogStore instead.
+// already contains one enabled instance of the given harness type, with the
+// session log in this process. The instance id is returned so tests can
+// reference it in create requests.
 func testServerWithInstance(t *testing.T, harness msg.Harness) (*Server, *store.Store, string) {
 	return testServerWithInstanceAndLogStore(t, harness, "http://localhost:0")
 }
 
-// testServerWithInstanceAndLogStore is the same as testServerWithInstance
-// but lets the caller supply a log-store base URL. Integration tests
-// typically pass an httptest server URL whose handler 200s on
-// `POST /api/v1/events`, so the production /send path can push the
-// user_message without erroring out.
+// testServerWithInstanceAndLogStore is testServerWithInstance with the
+// session log's routes and the harness manager's reads of it served by a fake
+// log-store at logStoreURL (enableLogStoreAt), for a test of what the server
+// sends there.
 func testServerWithInstanceAndLogStore(t *testing.T, harness msg.Harness, logStoreURL string) (*Server, *store.Store, string) {
 	t.Helper()
 	dir := t.TempDir()
-	st, err := store.New(filepath.Join(dir, "test.db"))
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
-	t.Cleanup(func() { st.Close() })
+	st := newTestBridgeStore(t)
 
 	hs := harnessstoretest.NewStore(t)
 
@@ -115,15 +104,15 @@ func testServerWithInstanceAndLogStore(t *testing.T, harness msg.Harness, logSto
 	testAuthorizationConfig(cfg)
 
 	srv := New(st, nil, nil, hs, nil, testModelStore(t), nil, cfg)
+	enableTestSessionEvents(t, srv, st)
 	enableLogStoreAt(t, srv, logStoreURL)
 	return srv, st, inst.ID
 }
 
-// enableLogStoreAt serves the server's session log from the log-store at
-// logStoreURL, a fake a test runs: its routes through a reverse proxy, and the
-// harness manager's writes and reads through the log-store HTTP client. The
-// deliberately unreachable "http://localhost:0" leaves the server with none,
-// so every write is refused at once.
+// enableLogStoreAt serves the server's session log routes, and the harness
+// manager's reads of the session log, from the log-store at logStoreURL, a
+// fake a test runs, in place of the real one; events are still stored in the
+// real session log, the only copy. "http://localhost:0" changes nothing.
 func enableLogStoreAt(t *testing.T, srv *Server, logStoreURL string) {
 	t.Helper()
 	if logStoreURL == "http://localhost:0" {
@@ -877,14 +866,11 @@ func TestModels_NotRegistered(t *testing.T) {
 	// this pins — no registry, no /models route — is reachable only by
 	// constructing a Server without a model-store by hand.
 	dir := t.TempDir()
-	st, err := store.New(filepath.Join(dir, "test.db"))
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
-	t.Cleanup(func() { st.Close() })
+	st := newTestBridgeStore(t)
 	cfg := &config.Config{ImagesDir: filepath.Join(dir, "images"), BridgePrefsPath: filepath.Join(dir, "prefs.json")}
 	testAuthorizationConfig(cfg)
 	srv := New(st, nil, nil, nil, nil, nil, nil, cfg)
+	enableTestSessionEvents(t, srv, st)
 
 	resp := doJSON(t, srv, "GET", "/models", nil)
 	if resp.StatusCode != 404 && resp.StatusCode != 405 {
@@ -1025,11 +1011,7 @@ func TestDiscoverySourceFolder(t *testing.T) {
 
 func TestNew_ReconcilesFolderRegistryFromSourceMappings(t *testing.T) {
 	dir := t.TempDir()
-	st, err := store.New(filepath.Join(dir, "test.db"))
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
-	t.Cleanup(func() { st.Close() })
+	st := newTestBridgeStore(t)
 
 	if err := st.CreateFolder("Existing"); err != nil {
 		t.Fatalf("seed existing folder: %v", err)

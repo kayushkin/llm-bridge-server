@@ -95,52 +95,71 @@ The `client` package is the HTTP client of the standalone service's routes and t
 types the bridge's in-process calls share with it (`TurnState`, `HeldSession`,
 `EventRejectedError`). The bridge's tests use it against fake log-stores.
 
-## The only copy of session events (`session_log.single_copy`)
+## The only copy of session events
 
-Until the setting is on, every event is written twice: to the bridge database's
-`events` table (SQLite), which serves the live stream and the reads listed below, and,
-through a queue per session, to this module. With `session_log.single_copy`
-(`LLMBRIDGE_SESSION_LOG_SINGLE_COPY`, read at start, **off by default**) this module is
-the only copy: the harness manager writes each event once, synchronously and in order,
-and the id that write answers is the SSE event id. `internal/sessionlog/sessionevents`
-holds both ways behind one interface: `BridgeDatabase` (the old path) and `SingleCopy`.
+This module is the only copy of session events: the harness manager writes each event
+once, synchronously and in order, and the id that write answers is the SSE event id
+(`internal/sessionlog/sessionevents`, `SingleCopy`). Until the bridge's own records
+moved to Postgres (the `bridge_core` module, `internal/store`) every event was also
+kept in SQLite, in `bridge.db`'s `events` table, behind the setting
+`session_log.single_copy`; that table, that path and the setting are gone, and the
+table is archived history in the old file.
 
-**The readers that moved,** each held to the old one's answer by
-`TestSingleCopyReadersAnswerWhatTheBridgeDatabaseAnswered`: the stream's replay after
-`Last-Event-ID` and on connect, the stream head (`/messages` and the recent bundle),
-the message id maps a respawn loads, the renamer's turn count, the brief pass's
-current-turn text and first message, last activity (startup resume, the reaper, the
-external activity watcher), the reaper's and wakeup redelivery's ScheduleWakeup
-lookup, wakeup redelivery's "did it fire", restart readiness's background tasks, and
-the startup reconcile. Crash recovery's turn state, the renamer's turn texts and git
-discovery's tool inputs already read this module.
+**The readers** (`TestSingleCopyReadersAnswerWhatTheConversationHolds`): the stream's
+replay after `Last-Event-ID` and on connect, the stream head (`/messages` and the
+recent bundle), the message id maps a respawn loads, the renamer's turn count and turn
+texts, the brief pass's current-turn text and first message, last activity (startup
+resume, the reaper, the external activity watcher), the reaper's and wakeup
+redelivery's ScheduleWakeup lookup, wakeup redelivery's "did it fire", restart
+readiness's background tasks, crash recovery's turn state, git discovery's tool
+inputs, and the startup reconcile.
 
-**One write per event, in two round trips.** `AppendEvent` reads the event's id, its
-session's turn index state and any row its idempotency key names, then sends the
-insert, its turn and its totals as one pgx batch, which Postgres runs as one implicit
-transaction. The writer is one connection, held for both, so ids commit in order. The
-message ids, tool use id and tool name are kept in columns beside the body, filled by
-the writer and by the import.
+**One write per event, in two round trips, and one commit for every session's
+waiting events.** `AppendEvent` reads the event's id, its session's turn index state
+and any row its idempotency key names, then sends the insert, its turn and its totals
+as one pgx batch. The writer is one goroutine on one connection, so ids commit in
+order, and it writes every event waiting when it starts a write together, at most one
+per session and 64 in all (`group_commit.go`): `BEGIN` and their first reads in one
+round trip, their writes and `COMMIT` in the second, so with default durability the
+sessions share one flush to disk instead of each waiting behind the others'. Events of
+one session keep their order, each written after the one before committed. A group
+that fails is rolled back and its events written one by one. The message ids, tool use
+id and tool name are kept in columns beside the body, filled by the writer and by the
+import.
 
-**Two writes across two databases** that were one SQLite transaction write the event
-first, under an idempotency key, and the bridge database's row second:
+**The rows written with their events.** Two events describe a row of the
+`bridge_core` module, and each is written in the event's transaction, on this
+module's writer connection, so the two commit together or not at all:
 
-- a runner's numbered entry (key `runner_entry:<spawn>:<sequence>`) and its spawn's
-  stored-through number: an entry the runner sends again after a stop between the two
-  is found stored, not stored twice, and only the number is written;
-- a session status (a key drawn per write, so a retried write stores one event) and
-  its session row: the row write is conditional on `as_of`, so an older status never
-  replaces a newer one, and at start `RepairSessionStatusRows` copies onto each row a
-  newer status event among the newest 20,000 that a stop left unwritten, before the
-  startup reconcile reads the rows.
+- a session status and its session row: `RequiredRow` locks the row
+  (`SELECT … FOR NO KEY UPDATE`) in the same round trip as the event's first read,
+  inside an explicit transaction whose `BEGIN` rides with that read and whose
+  `COMMIT` rides with the batch, so it costs no round trip more; a session with no
+  row gets no event (`ErrRequiredRowMissing`, `sql.ErrNoRows` to the caller), and the
+  row write in the batch (`AlsoWrite`) carries the event's id as the status's `as_of`;
+- a runner's numbered entry and its spawn's stored-through number, in the batch.
 
-**Numbering.** The first start with the setting on moves this module's numbering above
-the highest id the bridge database's `events` table handed out and records where it
-starts (`single_copy_numbering`), so no `Last-Event-ID` or status `as_of` a client
-holds names an event here; a `Last-Event-ID` below that replays the current turn, as a
-new connection does. A start with the setting off after it was on moves the bridge
-database's counter above this module's highest id, so the old path's ids outrank what
-clients hold.
+The statements come from the core module (`store.SessionRowLockForStatus`,
+`store.SessionStatusRowWrite`, `store.RunnerSpawnAdvance`), which owns the tables,
+and this module's role may run them and nothing more: at every start the core module
+grants `session_log_module` `USAGE` on its schema, `SELECT (bridge_id, status)` and
+`UPDATE (state, status, updated_at)` on `sessions`, and `SELECT (session_id,
+spawn_id, last_sequence)` and `UPDATE (last_sequence)` on `runner_spawns`
+(`store.GrantSessionLogWrites`). Both modules must be in one Postgres database.
+
+**Retries.** A write is retried with backoff for up to 30 s while Postgres restarts.
+Each status and runner entry still carries an idempotency key (a status's drawn per
+write, a runner entry's `runner_entry:<spawn>:<sequence>`), so a retry after a commit
+that was cut off finds the stored event, whose row committed with it, instead of
+storing a second one. A write Postgres refused (a constraint, a permission) is not
+retried.
+
+**Numbering.** `import-bridge-database` records the highest id the archived `events`
+table handed out (`archived_event_numbering` in `bridge_core`), and every start moves
+this module's numbering above it once and records where it starts
+(`single_copy_numbering`), so no `Last-Event-ID` or status `as_of` a client holds
+names an event here; a `Last-Event-ID` below that replays the current turn, as a new
+connection does.
 
 **Durability.** `session_log.asynchronous_commit` (off by default) opens the writer
 pool with `synchronous_commit` off: a crash of the server then loses nothing, and a
@@ -149,16 +168,13 @@ default) of events the stream may already have sent.
 
 ### Landing day
 
-1. Import log-store into the module (`llm-bridge-server import-log-store`), which
-   fills the field columns from each body, before the first start with the setting on.
-2. Soak first with the setting off: `cmd/event-copy-parity` should find the two copies
-   equal for a week of deploys (the shutdown gap in note 4a89979f aside).
-3. Start with `session_log.single_copy` on. From then on the bridge database's
-   `events` table is not written.
-4. Archive the bridge database's `events` table: take a copy of the file with
-   `sqlite3 bridge.db ".backup <archive>"` once the server runs with the setting on,
-   and leave the table in place, unwritten. Never drop or rewrite it without the
-   operator's word: the history stays, and `OpenSingleCopy` reads its highest id at
-   every start, so removing the table needs a change there first. With the setting on,
-   the server reads it nowhere else; `cmd/event-copy-parity` and
-   `cmd/backfill-session-cost` still read it, as tools.
+1. Stop the server, copy `bridge.db` (`sqlite3 bridge.db ".backup <archive>"`, or a
+   copy without its `events` table that keeps `sqlite_sequence`), and keep the archive:
+   it is the only copy of the events stored before.
+2. Import log-store into this module (`llm-bridge-server import-log-store`) and the
+   copy into `bridge_core` (`llm-bridge-server import-bridge-database -sqlite <copy>`),
+   before the first start. The server refuses to start on an empty `bridge_core`
+   while a file is at `database.path`.
+3. Start. Never drop or rewrite the archived `events` table without the operator's
+   word; `cmd/event-copy-parity` and `cmd/backfill-session-cost` still read the file,
+   as tools.

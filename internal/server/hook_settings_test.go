@@ -215,11 +215,7 @@ func TestInjectHookSettings_WritesSettingsStringForStartParams(t *testing.T) {
 func testServerWithoutHookStore(t *testing.T) *Server {
 	t.Helper()
 	dir := t.TempDir()
-	st, err := store.New(filepath.Join(dir, "test.db"))
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
-	t.Cleanup(func() { st.Close() })
+	st := newTestBridgeStore(t)
 
 	cfg := &config.Config{
 		ImagesDir:       filepath.Join(dir, "images"),
@@ -227,6 +223,7 @@ func testServerWithoutHookStore(t *testing.T) *Server {
 	}
 	testAuthorizationConfig(cfg)
 	srv := New(st, nil, nil, nil, nil, nil, nil, cfg)
+	enableTestSessionEvents(t, srv, st)
 	if srv.hookStore != nil {
 		t.Fatalf("precondition: hookStore should be nil")
 	}

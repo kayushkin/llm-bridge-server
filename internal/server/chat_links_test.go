@@ -161,7 +161,7 @@ func (c *chatLinkTest) createLink(t *testing.T) store.ChatLink {
 
 func (c *chatLinkTest) setState(t *testing.T, state msg.SessionState) {
 	t.Helper()
-	if _, err := c.st.WriteSessionStatus("br_linked", &msg.Event{Type: msg.EventSessionStatus, Status: &msg.SessionStatus{State: state, Reason: msg.ReasonLifecycle}}); err != nil {
+	if _, err := testSessionEventsOf(t, c.st).WriteSessionStatus("br_linked", &msg.Event{Type: msg.EventSessionStatus, Status: &msg.SessionStatus{State: state, Reason: msg.ReasonLifecycle}}); err != nil {
 		t.Fatal(err)
 	}
 }

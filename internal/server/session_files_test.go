@@ -70,25 +70,10 @@ func (fake *fakeFileStore) ServeContentOf(w http.ResponseWriter, _ *http.Request
 	w.Write(body)
 }
 
-// fakeLogStore takes every event push, as log-store does.
-func fakeLogStore(t *testing.T) *httptest.Server {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.Copy(io.Discard, r.Body)
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{}`))
-	}))
-	t.Cleanup(server.Close)
-	return server
-}
-
 func testServerWithFileStore(t *testing.T) (*Server, *store.Store, *fakeFileStore, string) {
 	t.Helper()
 	dir := t.TempDir()
-	st, err := store.New(filepath.Join(dir, "test.db"))
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
-	t.Cleanup(func() { st.Close() })
+	st := newTestBridgeStore(t)
 	fake := newFakeFileStore()
 	sessionFilesDir := filepath.Join(dir, "session-files")
 	cfg := &config.Config{
@@ -99,7 +84,7 @@ func testServerWithFileStore(t *testing.T) (*Server, *store.Store, *fakeFileStor
 	}
 	testAuthorizationConfig(cfg)
 	srv := New(st, nil, nil, nil, nil, testModelStore(t), nil, cfg)
-	enableLogStoreAt(t, srv, fakeLogStore(t).URL)
+	enableTestSessionEvents(t, srv, st)
 	srv.fileStore = fake
 	return srv, st, fake, sessionFilesDir
 }

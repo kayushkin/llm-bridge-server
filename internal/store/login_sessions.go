@@ -67,48 +67,19 @@ type LoginSession struct {
 	RemoteAddress     string             `json:"remote_address"`
 }
 
-// migrateLoginSessions creates login_sessions. Called from migrate().
-func (s *Store) migrateLoginSessions() error {
-	_, err := s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS login_sessions (
-			id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-			token_hash          TEXT NOT NULL UNIQUE,
-			csrf_token          TEXT NOT NULL,
-			principal_id        TEXT NOT NULL,
-			method              TEXT NOT NULL,
-			identity_binding_id TEXT NOT NULL DEFAULT '',
-			created_at          DATETIME NOT NULL,
-			expires_at          DATETIME NOT NULL,
-			last_seen_at        DATETIME NOT NULL,
-			revoked_at          DATETIME,
-			revoked_by          TEXT NOT NULL DEFAULT '',
-			revoke_reason       TEXT NOT NULL DEFAULT '',
-			user_agent          TEXT NOT NULL DEFAULT '',
-			remote_address      TEXT NOT NULL DEFAULT ''
-		);
-		CREATE INDEX IF NOT EXISTS idx_login_sessions_principal ON login_sessions(principal_id, id);
-		CREATE INDEX IF NOT EXISTS idx_login_sessions_identity_binding ON login_sessions(identity_binding_id) WHERE identity_binding_id != '';
-	`)
-	return err
-}
-
 // InsertLoginSession records a new login session and sets its ID.
 func (s *Store) InsertLoginSession(session *LoginSession) error {
 	if session.TokenHash == "" || session.CSRFToken == "" || session.PrincipalID == "" || session.Method == "" {
 		return fmt.Errorf("insert login session: token hash, CSRF token, principal and method are all required")
 	}
-	result, err := s.db.Exec(
+	var rowID int64
+	if err := s.db.QueryRow(
 		`INSERT INTO login_sessions (token_hash, csrf_token, principal_id, method, identity_binding_id, created_at, expires_at, last_seen_at, user_agent, remote_address)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
 		session.TokenHash, session.CSRFToken, session.PrincipalID, string(session.Method), session.IdentityBindingID,
 		session.CreatedAt.UTC(), session.ExpiresAt.UTC(), session.LastSeenAt.UTC(), session.UserAgent, session.RemoteAddress,
-	)
-	if err != nil {
+	).Scan(&rowID); err != nil {
 		return fmt.Errorf("insert login session for %s: %w", session.PrincipalID, err)
-	}
-	rowID, err := result.LastInsertId()
-	if err != nil {
-		return fmt.Errorf("insert login session for %s: read its id: %w", session.PrincipalID, err)
 	}
 	session.ID = loginSessionIDOf(rowID)
 	return nil
@@ -118,7 +89,7 @@ func (s *Store) InsertLoginSession(session *LoginSession) error {
 // tokenHash, whatever its state; the caller decides what expired and revoked
 // mean.
 func (s *Store) GetLoginSessionByTokenHash(tokenHash string) (LoginSession, error) {
-	session, err := scanLoginSession(s.db.QueryRow(loginSessionSelect+` WHERE token_hash = ?`, tokenHash))
+	session, err := scanLoginSession(s.db.QueryRow(loginSessionSelect+` WHERE token_hash = $1`, tokenHash))
 	if errors.Is(err, sql.ErrNoRows) {
 		return LoginSession{}, ErrLoginSessionNotFound
 	}
@@ -131,7 +102,7 @@ func (s *Store) GetLoginSession(id string) (LoginSession, error) {
 	if !ok {
 		return LoginSession{}, ErrLoginSessionNotFound
 	}
-	session, err := scanLoginSession(s.db.QueryRow(loginSessionSelect+` WHERE id = ?`, rowID))
+	session, err := scanLoginSession(s.db.QueryRow(loginSessionSelect+` WHERE id = $1`, rowID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return LoginSession{}, ErrLoginSessionNotFound
 	}
@@ -141,7 +112,7 @@ func (s *Store) GetLoginSession(id string) (LoginSession, error) {
 // ListLoginSessionsOfPrincipal returns every login session of one principal,
 // newest first, live or not.
 func (s *Store) ListLoginSessionsOfPrincipal(principalID string) ([]LoginSession, error) {
-	rows, err := s.db.Query(loginSessionSelect+` WHERE principal_id = ? ORDER BY id DESC`, principalID)
+	rows, err := s.db.Query(loginSessionSelect+` WHERE principal_id = $1 ORDER BY id DESC`, principalID)
 	if err != nil {
 		return nil, err
 	}
@@ -164,7 +135,7 @@ func (s *Store) TouchLoginSession(id string, seenAt time.Time) error {
 	if !ok {
 		return ErrLoginSessionNotFound
 	}
-	_, err := s.db.Exec(`UPDATE login_sessions SET last_seen_at = ? WHERE id = ?`, seenAt.UTC(), rowID)
+	_, err := s.db.Exec(`UPDATE login_sessions SET last_seen_at = $1 WHERE id = $2`, seenAt.UTC(), rowID)
 	return err
 }
 
@@ -178,7 +149,7 @@ func (s *Store) RevokeLoginSession(id, revokedBy, reason string, revokedAt time.
 		return LoginSession{}, ErrLoginSessionNotFound
 	}
 	result, err := s.db.Exec(
-		`UPDATE login_sessions SET revoked_at = ?, revoked_by = ?, revoke_reason = ? WHERE id = ? AND revoked_at IS NULL`,
+		`UPDATE login_sessions SET revoked_at = $1, revoked_by = $2, revoke_reason = $3 WHERE id = $4 AND revoked_at IS NULL`,
 		revokedAt.UTC(), revokedBy, reason, rowID)
 	if err != nil {
 		return LoginSession{}, fmt.Errorf("revoke login session %s: %w", id, err)
@@ -210,7 +181,7 @@ func (s *Store) RevokeLiveLoginSessionsOfIdentityBinding(identityBindingID, revo
 	}
 	defer transaction.Rollback()
 	rows, err := transaction.Query(
-		`SELECT id FROM login_sessions WHERE identity_binding_id = ? AND revoked_at IS NULL AND expires_at > ?`,
+		`SELECT id FROM login_sessions WHERE identity_binding_id = $1 AND revoked_at IS NULL AND expires_at > $2`,
 		identityBindingID, revokedAt.UTC())
 	if err != nil {
 		return nil, fmt.Errorf("find login sessions of identity binding %s: %w", identityBindingID, err)
@@ -230,7 +201,7 @@ func (s *Store) RevokeLiveLoginSessionsOfIdentityBinding(identityBindingID, revo
 	revokedIDs := []string{}
 	for _, rowID := range rowIDs {
 		if _, err := transaction.Exec(
-			`UPDATE login_sessions SET revoked_at = ?, revoked_by = ?, revoke_reason = ? WHERE id = ? AND revoked_at IS NULL`,
+			`UPDATE login_sessions SET revoked_at = $1, revoked_by = $2, revoke_reason = $3 WHERE id = $4 AND revoked_at IS NULL`,
 			revokedAt.UTC(), revokedBy, reason, rowID); err != nil {
 			return nil, fmt.Errorf("revoke login session %s: %w", loginSessionIDOf(rowID), err)
 		}

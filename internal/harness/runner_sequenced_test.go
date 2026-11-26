@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -25,19 +24,12 @@ var testRunnerMachine = &msg.Machine{ID: "m_remote", Name: "remote", Transport: 
 // database is kept and everything in memory is new.
 func managerOver(t *testing.T, st *store.Store) *Manager {
 	t.Helper()
-	logStore := httptest.NewServer(newLogStoreStub())
-	t.Cleanup(logStore.Close)
-	return newManagerOnLogStoreURL(st, logStore.URL, "http://127.0.0.1:0", "", 0, nil)
+	return singleCopyStoresOf(t, st).attach(NewManager(st, "http://127.0.0.1:0", "", 0, nil))
 }
 
 func storeForRunnerTests(t *testing.T) *store.Store {
 	t.Helper()
-	st, err := store.New(filepath.Join(t.TempDir(), "bridge.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { st.Close() })
-	return st
+	return newSingleCopyTestStores(t).bridge
 }
 
 // standInRunner is the runner's end of the connection, driven by the test.
@@ -149,7 +141,7 @@ func startSessionOnRunner(t *testing.T, manager *Manager, runner *standInRunner,
 // storedTestLines lists the texts of the session's stored test lines, in order.
 func storedTestLines(t *testing.T, st *store.Store, sessionID string) []string {
 	t.Helper()
-	events, err := st.ListEventsSinceID(sessionID, 0)
+	events, err := singleCopyStoresOf(t, st).singleCopy.ListEventsSinceID(sessionID, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

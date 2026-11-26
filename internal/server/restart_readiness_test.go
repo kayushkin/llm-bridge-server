@@ -49,9 +49,7 @@ func TestSessionsARestartWouldCutOffAreBusyAndHaveARunningProcess(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.StoreEventReturningID("br_background_agents", string(msg.EventSystem), "", "", data); err != nil {
-		t.Fatal(err)
-	}
+	storeTestEvent(t, st, "br_background_agents", data)
 	withProcess := map[string]bool{"br_running_a_tool": true, "br_background_agents": true, "br_idle_with_a_process": true}
 
 	busy, err := srv.sessionsARestartWouldCutOff(func(sessionID string) bool { return withProcess[sessionID] })

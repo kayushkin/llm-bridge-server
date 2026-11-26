@@ -13,18 +13,13 @@ import (
 
 	hookstore "github.com/kayushkin/llm-bridge-server/internal/agents/hookstore"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
 func testServerWithHookStore(t *testing.T) (*Server, *hookstore.Store) {
 	t.Helper()
 	dir := t.TempDir()
-	st, err := store.New(filepath.Join(dir, "test.db"))
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
-	t.Cleanup(func() { st.Close() })
+	st := newTestBridgeStore(t)
 
 	hks := hookstoretest.NewStore(t)
 
@@ -34,6 +29,7 @@ func testServerWithHookStore(t *testing.T) (*Server, *hookstore.Store) {
 	}
 	testAuthorizationConfig(cfg)
 	srv := New(st, nil, nil, nil, hks, nil, nil, cfg)
+	enableTestSessionEvents(t, srv, st)
 	return srv, hks
 }
 

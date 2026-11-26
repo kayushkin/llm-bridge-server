@@ -93,7 +93,7 @@ func spend(t *testing.T, m *Manager, bridgeID string, costUSD float64) {
 // budgetErrors returns the budget_exceeded errors persisted for a session.
 func budgetErrors(t *testing.T, m *Manager, bridgeID string) []msg.Event {
 	t.Helper()
-	rows, err := m.store.ListEventsSinceID(bridgeID, 0)
+	rows, err := m.SessionEvents().ListEventsSinceID(bridgeID, 0)
 	if err != nil {
 		t.Fatalf("get events: %v", err)
 	}

@@ -110,15 +110,18 @@ func TestListSessionSummaries_CursorPagination(t *testing.T) {
 	}
 }
 
-// forceUpdatedAt pins a session's updated_at to an exact stored string, which is
-// how a tie group is built deliberately. The literal shape is Go's t.String()
-// format because that is what a bound time.Time writes through this driver, and
-// what every row in the live table actually holds.
+// forceUpdatedAt pins a session's updated_at to an exact time, written in Go's
+// t.String() format as the SQLite database held it, which is how a tie group is
+// built deliberately.
 func forceUpdatedAt(t *testing.T, s *Store, sessionID, updatedAtText string) {
 	t.Helper()
+	updatedAt, err := time.Parse(sqliteTimeLayout, updatedAtText)
+	if err != nil {
+		t.Fatal(err)
+	}
 	res, err := s.db.Exec(
-		`UPDATE sessions SET updated_at = ? WHERE COALESCE(NULLIF(session_id, ''), bridge_id) = ?`,
-		updatedAtText, sessionID)
+		`UPDATE sessions SET updated_at = $1 WHERE COALESCE(NULLIF(session_id, ''), bridge_id) = $2`,
+		updatedAt, sessionID)
 	if err != nil {
 		t.Fatalf("force updated_at for %s: %v", sessionID, err)
 	}
@@ -202,15 +205,18 @@ func TestSummaryCursor_CarriesBothHalves(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	updatedAtText, sessionID := decodeSummaryCursor(rows[0].Cursor)
+	updatedAt, sessionID, err := decodeSummaryCursor(rows[0].Cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if sessionID == "" {
 		t.Fatalf("cursor %q carries no session id half", rows[0].Cursor)
 	}
 	if sessionID != "only" {
 		t.Errorf("cursor id half = %q, want %q", sessionID, "only")
 	}
-	if updatedAtText == "" || !strings.Contains(updatedAtText, "UTC") {
-		t.Errorf("cursor timestamp half = %q, want a stored t.String() timestamp", updatedAtText)
+	if !updatedAt.Equal(rows[0].UpdatedAt) {
+		t.Errorf("cursor timestamp half = %v, want the row's updated_at %v", updatedAt, rows[0].UpdatedAt)
 	}
 }
 
@@ -220,13 +226,16 @@ func TestSummaryCursor_CarriesBothHalves(t *testing.T) {
 // in the wrong place.
 func TestSummaryCursor_IDContainingSeparatorRoundTrips(t *testing.T) {
 	const awkward = "sess|with|bars"
-	updatedAtText, sessionID := decodeSummaryCursor(
-		encodeSummaryCursor("2026-05-02 20:55:35.222618512 +0000 UTC", awkward))
+	when := time.Date(2026, 5, 2, 20, 55, 35, 222618000, time.UTC)
+	updatedAt, sessionID, err := decodeSummaryCursor(encodeSummaryCursor(when, awkward))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if sessionID != awkward {
 		t.Errorf("id half = %q, want %q", sessionID, awkward)
 	}
-	if updatedAtText != "2026-05-02 20:55:35.222618512 +0000 UTC" {
-		t.Errorf("timestamp half = %q", updatedAtText)
+	if !updatedAt.Equal(when) {
+		t.Errorf("timestamp half = %v, want %v", updatedAt, when)
 	}
 }
 
@@ -236,7 +245,7 @@ func TestSummaryCursor_IDContainingSeparatorRoundTrips(t *testing.T) {
 // bare session_id column.
 func blankSessionID(t *testing.T, s *Store, bridgeID string) {
 	t.Helper()
-	res, err := s.db.Exec(`UPDATE sessions SET session_id = '' WHERE bridge_id = ?`, bridgeID)
+	res, err := s.db.Exec(`UPDATE sessions SET session_id = '' WHERE bridge_id = $1`, bridgeID)
 	if err != nil {
 		t.Fatalf("blank session_id for %s: %v", bridgeID, err)
 	}
@@ -748,30 +757,44 @@ func TestManagerLookupRidesTheCacheKey(t *testing.T) {
 // that loses its index still answers correctly, so only the plan can fail here.
 func TestSessionSummaryIDLookupsSearchAnIndex(t *testing.T) {
 	s := testStore(t)
+	// Enough rows, with statistics, that the planner prefers an index to a
+	// scan wherever one serves, as it does on the live table.
+	if _, err := s.db.Exec(`INSERT INTO sessions (bridge_id, session_id, harness, state, manager_session_id, updated_at)
+		SELECT 'br_' || g, 'br_' || g, 'claude_code', 'idle',
+		       CASE WHEN g % 500 = 0 THEN 'br_parent_' || g ELSE '' END,
+		       now() - g * interval '1 second'
+		FROM generate_series(1, 50000) AS g`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`ANALYZE sessions`); err != nil {
+		t.Fatal(err)
+	}
 	for name, check := range map[string]struct {
 		filter    SessionSummaryFilter
 		wantIndex string
 	}{
-		"manager_session_ids": {SessionSummaryFilter{ManagerSessionIDs: []string{"br_parent_a", "br_parent_b"}}, "idx_sessions_manager"},
-		"session_ids":         {SessionSummaryFilter{SessionIDs: []string{"br_a", "br_b"}}, "idx_sessions_summary_session_id"},
+		"manager_session_ids": {SessionSummaryFilter{ManagerSessionIDs: []string{"br_parent_500", "br_parent_1000"}}, "idx_sessions_manager"},
+		"session_ids":         {SessionSummaryFilter{SessionIDs: []string{"br_10", "br_20"}}, "idx_sessions_summary_session_id"},
 	} {
-		query, args := sessionSummariesQuery(100, "", check.filter)
-		rows, err := s.dbRO.Query("EXPLAIN QUERY PLAN "+query, args...)
+		query, args, err := sessionSummariesQuery(100, "", check.filter)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows, err := s.dbRO.Query("EXPLAIN "+query, args...)
 		if err != nil {
 			t.Fatalf("%s: explain: %v", name, err)
 		}
 		plan := ""
 		for rows.Next() {
-			var id, parent, notUsed int
-			var detail string
-			if err := rows.Scan(&id, &parent, &notUsed, &detail); err != nil {
+			var line string
+			if err := rows.Scan(&line); err != nil {
 				t.Fatal(err)
 			}
-			plan += detail + "\n"
+			plan += line + "\n"
 		}
 		rows.Close()
-		if !strings.Contains(plan, "SEARCH sessions USING INDEX "+check.wantIndex) {
-			t.Errorf("%s lookup does not search %s; plan:\n%s", name, check.wantIndex, plan)
+		if !strings.Contains(plan, check.wantIndex) {
+			t.Errorf("%s lookup does not use %s; plan:\n%s", name, check.wantIndex, plan)
 		}
 	}
 }

@@ -81,54 +81,19 @@ type LoginAttemptEnd struct {
 	LoginSessionID    string
 }
 
-// migrateLoginAttempts creates login_attempts. Called from migrate().
-func (s *Store) migrateLoginAttempts() error {
-	_, err := s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS login_attempts (
-			id                   INTEGER PRIMARY KEY AUTOINCREMENT,
-			provider             TEXT NOT NULL,
-			state_hash           TEXT NOT NULL UNIQUE,
-			nonce_hash           TEXT NOT NULL,
-			code_verifier        TEXT NOT NULL,
-			browser_binding_hash TEXT NOT NULL,
-			return_to            TEXT NOT NULL,
-			created_at           DATETIME NOT NULL,
-			expires_at           DATETIME NOT NULL,
-			consumed_at          DATETIME,
-			outcome              TEXT NOT NULL DEFAULT '',
-			outcome_detail       TEXT NOT NULL DEFAULT '',
-			tenant_id            TEXT NOT NULL DEFAULT '',
-			subject              TEXT NOT NULL DEFAULT '',
-			preferred_username   TEXT NOT NULL DEFAULT '',
-			display_name         TEXT NOT NULL DEFAULT '',
-			identity_binding_id  TEXT NOT NULL DEFAULT '',
-			principal_id         TEXT NOT NULL DEFAULT '',
-			login_session_id     TEXT NOT NULL DEFAULT '',
-			user_agent           TEXT NOT NULL DEFAULT '',
-			remote_address       TEXT NOT NULL DEFAULT ''
-		);
-		CREATE INDEX IF NOT EXISTS idx_login_attempts_outcome ON login_attempts(outcome, id);
-	`)
-	return err
-}
-
 // InsertLoginAttempt records a started attempt and sets its ID.
 func (s *Store) InsertLoginAttempt(attempt *LoginAttempt) error {
 	if attempt.Provider == "" || attempt.StateHash == "" || attempt.NonceHash == "" || attempt.CodeVerifier == "" || attempt.BrowserBindingHash == "" {
 		return fmt.Errorf("insert login attempt: provider, state hash, nonce hash, code verifier and browser binding are all required")
 	}
-	result, err := s.db.Exec(
+	var rowID int64
+	if err := s.db.QueryRow(
 		`INSERT INTO login_attempts (provider, state_hash, nonce_hash, code_verifier, browser_binding_hash, return_to, created_at, expires_at, user_agent, remote_address)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
 		attempt.Provider, attempt.StateHash, attempt.NonceHash, attempt.CodeVerifier, attempt.BrowserBindingHash, attempt.ReturnTo,
 		attempt.CreatedAt.UTC(), attempt.ExpiresAt.UTC(), attempt.UserAgent, attempt.RemoteAddress,
-	)
-	if err != nil {
+	).Scan(&rowID); err != nil {
 		return fmt.Errorf("insert login attempt: %w", err)
-	}
-	rowID, err := result.LastInsertId()
-	if err != nil {
-		return fmt.Errorf("insert login attempt: read its id: %w", err)
 	}
 	attempt.ID = loginAttemptIDOf(rowID)
 	return nil
@@ -140,7 +105,7 @@ func (s *Store) InsertLoginAttempt(attempt *LoginAttempt) error {
 // now is. The verifier is blanked in the row, since nothing may use it again.
 // Expiry is the caller's to judge from ExpiresAt.
 func (s *Store) ConsumeLoginAttemptByStateHash(stateHash string, consumedAt time.Time) (LoginAttempt, error) {
-	attempt, err := scanLoginAttempt(s.db.QueryRow(loginAttemptSelect+` WHERE state_hash = ?`, stateHash))
+	attempt, err := scanLoginAttempt(s.db.QueryRow(loginAttemptSelect+` WHERE state_hash = $1`, stateHash))
 	if errors.Is(err, sql.ErrNoRows) {
 		return LoginAttempt{}, ErrLoginAttemptNotFound
 	}
@@ -148,7 +113,7 @@ func (s *Store) ConsumeLoginAttemptByStateHash(stateHash string, consumedAt time
 		return LoginAttempt{}, err
 	}
 	rowID, _ := loginAttemptRowIDOf(attempt.ID)
-	result, err := s.db.Exec(`UPDATE login_attempts SET consumed_at = ?, code_verifier = '' WHERE id = ? AND consumed_at IS NULL`,
+	result, err := s.db.Exec(`UPDATE login_attempts SET consumed_at = $1, code_verifier = '' WHERE id = $2 AND consumed_at IS NULL`,
 		consumedAt.UTC(), rowID)
 	if err != nil {
 		return LoginAttempt{}, fmt.Errorf("consume login attempt %s: %w", attempt.ID, err)
@@ -181,8 +146,8 @@ func (s *Store) FinishLoginAttempt(id string, end LoginAttemptEnd) (LoginAttempt
 		return LoginAttempt{}, fmt.Errorf("finish login attempt %s: the outcome is empty", id)
 	}
 	result, err := s.db.Exec(
-		`UPDATE login_attempts SET outcome = ?, outcome_detail = ?, tenant_id = ?, subject = ?, preferred_username = ?, display_name = ?,
-		 identity_binding_id = ?, principal_id = ?, login_session_id = ? WHERE id = ? AND outcome = ''`,
+		`UPDATE login_attempts SET outcome = $1, outcome_detail = $2, tenant_id = $3, subject = $4, preferred_username = $5, display_name = $6,
+		 identity_binding_id = $7, principal_id = $8, login_session_id = $9 WHERE id = $10 AND outcome = ''`,
 		end.Outcome, end.OutcomeDetail, end.TenantID, end.Subject, end.PreferredUsername, end.DisplayName,
 		end.IdentityBindingID, end.PrincipalID, end.LoginSessionID, rowID)
 	if err != nil {
@@ -204,7 +169,7 @@ func (s *Store) GetLoginAttempt(id string) (LoginAttempt, error) {
 	if !ok {
 		return LoginAttempt{}, ErrLoginAttemptNotFound
 	}
-	attempt, err := scanLoginAttempt(s.db.QueryRow(loginAttemptSelect+` WHERE id = ?`, rowID))
+	attempt, err := scanLoginAttempt(s.db.QueryRow(loginAttemptSelect+` WHERE id = $1`, rowID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return LoginAttempt{}, ErrLoginAttemptNotFound
 	}
@@ -215,13 +180,11 @@ func (s *Store) GetLoginAttempt(id string) (LoginAttempt, error) {
 // outcome when outcome is not empty, at most limit of them.
 func (s *Store) ListLoginAttempts(outcome string, limit int) ([]LoginAttempt, error) {
 	query := loginAttemptSelect
-	var arguments []any
+	var arguments queryArguments
 	if outcome != "" {
-		query += ` WHERE outcome = ?`
-		arguments = append(arguments, outcome)
+		query += ` WHERE outcome = ` + arguments.add(outcome)
 	}
-	query += ` ORDER BY id DESC LIMIT ?`
-	arguments = append(arguments, limit)
+	query += ` ORDER BY id DESC LIMIT ` + arguments.add(limit)
 	rows, err := s.db.Query(query, arguments...)
 	if err != nil {
 		return nil, err

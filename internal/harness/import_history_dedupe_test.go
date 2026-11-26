@@ -7,15 +7,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 
-	logstoreserver "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/server"
-	logstorestore "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/store"
-	"github.com/kayushkin/llm-bridge-server/internal/store"
-	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -107,12 +102,7 @@ func TestImportHistoryStillRequiresABridgeSessionID(t *testing.T) {
 // Fail open, not closed. log-store being down must cost duplicates, never a
 // transcript: nothing ever comes back for a history that was skipped.
 func TestLogStoreUnreachableFailsOpen(t *testing.T) {
-	dir := t.TempDir()
-	st, err := store.New(filepath.Join(dir, "test.db"))
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
-	t.Cleanup(func() { st.Close() })
+	st := temporaryStore(t)
 
 	// A server that refuses every request the way a broken log-store would.
 	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -129,12 +119,7 @@ func TestLogStoreUnreachableFailsOpen(t *testing.T) {
 // A projection row with no events behind it is not a transcript. Treating it
 // as one would suppress a real import on the strength of an empty row.
 func TestSessionRowWithNoEventsIsNotHeld(t *testing.T) {
-	dir := t.TempDir()
-	st, err := store.New(filepath.Join(dir, "test.db"))
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
-	t.Cleanup(func() { st.Close() })
+	st := temporaryStore(t)
 
 	empty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{
@@ -156,12 +141,7 @@ func TestSessionRowWithNoEventsIsNotHeld(t *testing.T) {
 // the bridge id would make the check answer "no" every time — discovery mints
 // a fresh bridge id on every import, which is the mechanism being fixed here.
 func TestGuardAsksAboutTheHarnessID(t *testing.T) {
-	dir := t.TempDir()
-	st, err := store.New(filepath.Join(dir, "test.db"))
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
-	t.Cleanup(func() { st.Close() })
+	st := temporaryStore(t)
 
 	asked := make(chan string, 4)
 	spy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -189,12 +169,7 @@ func TestGuardAsksAboutTheHarnessID(t *testing.T) {
 // failed request and a "could not ask log-store" line in the gateway log,
 // which reads as an outage. Discovery finds 1,675 such sessions on this host.
 func TestGuardDoesNotAskAboutAnEmptyHarnessID(t *testing.T) {
-	dir := t.TempDir()
-	st, err := store.New(filepath.Join(dir, "test.db"))
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
-	t.Cleanup(func() { st.Close() })
+	st := temporaryStore(t)
 
 	var requests atomic.Int64
 	spy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -212,32 +187,14 @@ func TestGuardDoesNotAskAboutAnEmptyHarnessID(t *testing.T) {
 	}
 }
 
-// Every other test here talks to logStoreStub, a hand-written mirror of
+// The tests above talk to hand-written HTTP servers that mirror
 // log-store's HTTP surface. A mirror agrees with itself forever: if log-store
 // renames the field or changes what an unknown id returns, the stub keeps
 // answering the old way and the guard keeps passing while the gateway
 // re-imports everything on disk. This test drives the guard against the real
 // log-store module, in this process, on a Postgres database of its own.
 func TestImportHistoryAgainstRealLogStore(t *testing.T) {
-	module, err := logstorestore.Module()
-	if err != nil {
-		t.Fatal(err)
-	}
-	database := postgrestest.NewDatabase(t, module)
-	reader, err := logstorestore.OpenReader(context.Background(), database.URL(), module)
-	if err != nil {
-		t.Fatal(err)
-	}
-	logStore := logstorestore.New(database.Open(module), reader)
-	t.Cleanup(func() { logStore.Close() })
-
-	st, err := store.New(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
-	t.Cleanup(func() { st.Close() })
-	m := NewManager(st, "http://127.0.0.1:0", "", 0, nil)
-	m.SetSessionEventLog(logstoreserver.New(logStore, nil))
+	m, _, _ := newSingleCopyTestManager(t)
 
 	harnessSessionID := fmt.Sprintf("canary-harness-%d", os.Getpid())
 	seedTranscript(t, m, "br_canary_first_import", harnessSessionID)

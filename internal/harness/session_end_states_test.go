@@ -275,7 +275,7 @@ func waitForEventType(t *testing.T, m *Manager, bridgeID string, eventType msg.E
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		events, err := m.store.ListEventsSinceID(bridgeID, 0)
+		events, err := m.SessionEvents().ListEventsSinceID(bridgeID, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
