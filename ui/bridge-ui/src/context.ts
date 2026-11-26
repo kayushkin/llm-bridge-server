@@ -299,6 +299,14 @@ export interface BridgeConfig {
    * (`multichatBasePath` + `/message-store`), so the host's front end calls
    * multichat alone for messages. */
   messageStoreBasePath: string
+  /** The base path fields whose service answers `{base}/settings`, which the
+   * Service settings and Models pages ask. Null means every base path the host
+   * set: dash proxies each service whole, so each answers there. A host that
+   * mounts stores without their settings route names the ones that have it —
+   * llm-bridge-server serves its stores in process, and only its own
+   * `/settings` and the scheduler's `/scheduler/settings` exist, so asking the
+   * rest only adds a 404 for each. */
+  serviceSettingsSourceKeys: readonly (keyof BridgeConfig)[] | null
   /** Optional render hook called per harness in the Settings tab. Hosts can
    * use this to inject harness-specific configuration UI keyed on harness
    * name. Return null for harnesses without an extension. */

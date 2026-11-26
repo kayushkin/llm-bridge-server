@@ -7,7 +7,7 @@ import {
   BridgeThemeProvider,
   ShellBrand,
   ShellControls,
-  type BridgeConfig,
+  type BridgeProps,
 } from '@kayushkin/bridge-ui'
 
 // Default theme (CSS variables) + component styles. The theme import is what
@@ -36,7 +36,7 @@ const ROUTER_BASENAME = import.meta.env.BASE_URL === '/' ? undefined : import.me
 
 /** Stores reached through the bridge's own gateway, as the signed-in person:
  *  every host that runs the bridge carries these. */
-const BRIDGE_GATEWAY_PATHS: Partial<BridgeConfig> = {
+const BRIDGE_GATEWAY_PATHS: Partial<BridgeProps> = {
   kanbanStoreBasePath: `${BASE}/kanban-store`,
   grantStoreBasePath: `${BASE}/grant-store`,
   referenceStoreBasePath: `${BASE}/reference-store`,
@@ -46,7 +46,7 @@ const BRIDGE_GATEWAY_PATHS: Partial<BridgeConfig> = {
  *  own origin. The dev server proxies them (vite.config.ts); a build gets them
  *  only when VITE_HOST_PROXIES_STORES=true says whatever serves it forwards
  *  them too. Left out, bridge-ui hides their pages rather than erroring. */
-const HOST_STORE_PATHS: Partial<BridgeConfig> = {
+const HOST_STORE_PATHS: Partial<BridgeProps> = {
   skillStoreBasePath: '/api/skill-store',
   toolStoreBasePath: '/api/tool-store',
   principalStoreBasePath: '/api/principals',
@@ -57,11 +57,39 @@ const HOST_STORE_PATHS: Partial<BridgeConfig> = {
   modelStoreBasePath: '/api/model-store',
 }
 
-const hostProxiesStores = import.meta.env.DEV || import.meta.env.VITE_HOST_PROXIES_STORES === 'true'
-const STORE_PATHS: Partial<BridgeConfig> = {
-  ...BRIDGE_GATEWAY_PATHS,
-  ...(hostProxiesStores ? HOST_STORE_PATHS : {}),
+/** Stores the bridge serves in its own process, at the prefixes it mounts
+ *  them under (each client's paths checked against the server's route table).
+ *  Only the build the bridge serves uses these: there the page is on the
+ *  bridge's own origin, so every prefix is reachable as the signed-in person.
+ *  multichat is not one of them, so the Messages pages stay hidden. */
+const STORES_THE_BRIDGE_SERVES: Partial<BridgeProps> = {
+  toolStoreBasePath: '/tool-store',
+  skillStoreBasePath: '/skill-store',
+  bundleStoreBasePath: '/bundle-store',
+  principalStoreBasePath: '/principal-store',
+  permissionStoreBasePath: '/permission-store',
+  modelStoreBasePath: '/model-store',
+  repoStoreBasePath: '/repo-store',
+  workGraphStoreBasePath: '/work-graph-store',
+  projectStoreBasePath: '/project-store',
+  noteboardBasePath: '/noteboard',
+  schedulerBasePath: '/scheduler',
+  photoStoreBasePath: '/photo-store',
+  // usage-store roots its routes at /api/usage; the Usage page asks
+  // `{base}/limits`, `{base}/spend/keys` and so on.
+  usageStoreBasePath: '/usage-store/api/usage',
+  // mailstack roots its routes at /api; the card drawer asks `{base}/accounts`
+  // and `{base}/messages/{id}`.
+  mailBasePath: '/mailstack/api',
+  // Of the stores above, only the scheduler serves `/settings` in process;
+  // the bridge's own `/settings` describes the rest of the server.
+  serviceSettingsSourceKeys: ['basePath', 'schedulerBasePath'],
 }
+
+const hostProxiesStores = import.meta.env.DEV || import.meta.env.VITE_HOST_PROXIES_STORES === 'true'
+const STORE_PATHS: Partial<BridgeProps> = SERVED_BY_THE_BRIDGE
+  ? { ...BRIDGE_GATEWAY_PATHS, ...STORES_THE_BRIDGE_SERVES }
+  : { ...BRIDGE_GATEWAY_PATHS, ...(hostProxiesStores ? HOST_STORE_PATHS : {}) }
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

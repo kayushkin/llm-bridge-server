@@ -50,13 +50,21 @@ const SOURCE_FIELDS: ReadonlyArray<{ configKey: keyof BridgeConfig; serviceName:
   { configKey: 'hostBasePath', serviceName: 'the host' },
 ]
 
-/** The backends this host proxies, which are the ones the page can ask. A
- *  base path the host left empty is a service it does not carry. */
+/** The backends this host proxies that describe their settings, which are the
+ *  ones the page can ask. A base path the host left empty is a service it does
+ *  not carry; one outside `serviceSettingsSourceKeys`, when the host names
+ *  them, is a service it carries without its settings route. */
 export function serviceSettingsSourcesOf(config: BridgeConfig): ServiceSettingsSource[] {
   const sources: ServiceSettingsSource[] = []
+  const servesSettings = config.serviceSettingsSourceKeys
   for (const field of SOURCE_FIELDS) {
+    if (servesSettings && !servesSettings.includes(field.configKey)) continue
     const basePath = config[field.configKey]
-    if (typeof basePath === 'string' && basePath !== '') sources.push({ ...field, basePath })
+    // The bridge is always there. Its base is empty when the bridge serves the
+    // page itself (its routes sit at the root of the page's origin), and that
+    // still means `/settings`, not a service the host does not carry.
+    const carried = field.configKey === 'basePath' || basePath !== ''
+    if (typeof basePath === 'string' && carried) sources.push({ ...field, basePath })
   }
   return sources
 }

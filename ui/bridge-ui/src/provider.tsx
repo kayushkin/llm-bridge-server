@@ -64,6 +64,9 @@ export interface BridgeProviderProps {
   journalStoreBasePath?: string
   photoStoreBasePath?: string
   messageStoreBasePath?: string
+  /** The base path fields whose service answers `{base}/settings` (see
+   * BridgeConfig). Omitted: every base path set. */
+  serviceSettingsSourceKeys?: readonly (keyof BridgeConfig)[]
   /** Base path for usage-store API. If omitted, spend/limits sections of the
    * Usage tab are hidden and only per-session aggregates are shown. */
   usageStoreBasePath?: string
@@ -126,6 +129,7 @@ export function BridgeProvider({
   journalStoreBasePath = '',
   photoStoreBasePath = '',
   messageStoreBasePath = '',
+  serviceSettingsSourceKeys,
   noteboardBasePath = '',
   referenceStoreBasePath = '',
   bridgeAdapterBasePath = '',
@@ -168,6 +172,7 @@ export function BridgeProvider({
     journalStoreBasePath,
     photoStoreBasePath,
     messageStoreBasePath,
+    serviceSettingsSourceKeys: serviceSettingsSourceKeys ?? null,
     noteboardBasePath,
     referenceStoreBasePath,
     bridgeAdapterBasePath,
@@ -189,7 +194,7 @@ export function BridgeProvider({
     renderHarnessExtension: renderHarnessExtension ?? null,
     renderReferenceChip: renderReferenceChip ?? null,
     routes: { ...DEFAULT_BRIDGE_ROUTES, ...routes },
-  }), [fetchFn, basePath, skillStoreBasePath, toolStoreBasePath, permissionStoreBasePath, kanbanStoreBasePath, principalStoreBasePath, grantStoreBasePath, bundleStoreBasePath, repoStoreBasePath, mailBasePath, multichatBasePath, libraryInvitationsPath, mailPagePath, peopleStoreBasePath, journalStoreBasePath, photoStoreBasePath, messageStoreBasePath, noteboardBasePath, referenceStoreBasePath, bridgeAdapterBasePath, orchestratorBasePath, usageStoreBasePath, schedulerBasePath, logStoreBasePath, jobStoreBasePath, quoteStoreBasePath, predictionStoreBasePath, eventStoreBasePath, authStoreBasePath, hostBasePath, previewsBasePath, threeDimensionalModelsBasePath, workGraphStoreBasePath, projectStoreBasePath, modelStoreBasePath, renderHarnessExtension, renderReferenceChip, routes])
+  }), [fetchFn, basePath, skillStoreBasePath, toolStoreBasePath, permissionStoreBasePath, kanbanStoreBasePath, principalStoreBasePath, grantStoreBasePath, bundleStoreBasePath, repoStoreBasePath, mailBasePath, multichatBasePath, libraryInvitationsPath, mailPagePath, peopleStoreBasePath, journalStoreBasePath, photoStoreBasePath, messageStoreBasePath, serviceSettingsSourceKeys, noteboardBasePath, referenceStoreBasePath, bridgeAdapterBasePath, orchestratorBasePath, usageStoreBasePath, schedulerBasePath, logStoreBasePath, jobStoreBasePath, quoteStoreBasePath, predictionStoreBasePath, eventStoreBasePath, authStoreBasePath, hostBasePath, previewsBasePath, threeDimensionalModelsBasePath, workGraphStoreBasePath, projectStoreBasePath, modelStoreBasePath, renderHarnessExtension, renderReferenceChip, routes])
 
   return (
     <BridgeContext value={config}>
