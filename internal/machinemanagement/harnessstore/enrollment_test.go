@@ -32,7 +32,7 @@ func TestMintEnrollment(t *testing.T) {
 
 	// Plaintext must not be recoverable from the table — only the hash is stored.
 	var stored string
-	if err := s.DB().QueryRow(`SELECT passphrase_hash FROM runner_enrollments WHERE id = ?`, enr.ID).Scan(&stored); err != nil {
+	if err := s.DB().QueryRow(`SELECT passphrase_hash FROM runner_enrollments WHERE id = $1`, enr.ID).Scan(&stored); err != nil {
 		t.Fatalf("read hash: %v", err)
 	}
 	if stored == passphrase {
@@ -72,7 +72,7 @@ func TestConsumeEnrollmentHappyPath(t *testing.T) {
 	// used_at + consumed_machine_id are now set.
 	var usedAt sql.NullTime
 	var machineID sql.NullString
-	if err := s.DB().QueryRow(`SELECT used_at, consumed_machine_id FROM runner_enrollments WHERE id = ?`, enr.ID).
+	if err := s.DB().QueryRow(`SELECT used_at, consumed_machine_id FROM runner_enrollments WHERE id = $1`, enr.ID).
 		Scan(&usedAt, &machineID); err != nil {
 		t.Fatalf("read consumed row: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestConsumeEnrollmentExpired(t *testing.T) {
 		t.Fatalf("MintEnrollment: %v", err)
 	}
 	// Backdate expiry so the row is past its TTL.
-	if _, err := s.DB().Exec(`UPDATE runner_enrollments SET expires_at = ? WHERE id = ?`,
+	if _, err := s.DB().Exec(`UPDATE runner_enrollments SET expires_at = $1 WHERE id = $2`,
 		time.Now().UTC().Add(-time.Minute), enr.ID); err != nil {
 		t.Fatalf("backdate expiry: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestPurgeExpiredEnrollments(t *testing.T) {
 
 	past := time.Now().UTC().Add(-time.Minute)
 	for _, id := range []string{expired.ID, used.ID} {
-		if _, err := s.DB().Exec(`UPDATE runner_enrollments SET expires_at = ? WHERE id = ?`, past, id); err != nil {
+		if _, err := s.DB().Exec(`UPDATE runner_enrollments SET expires_at = $1 WHERE id = $2`, past, id); err != nil {
 			t.Fatalf("backdate %s: %v", id, err)
 		}
 	}

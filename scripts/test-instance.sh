@@ -55,8 +55,11 @@
 # copies each one's SQLite file into the server's module, once (import-<store>,
 # keeping every id), then removes the unit and leaves the file where it was,
 # unused. reference-store kept no records, so only its unit goes.
-# agent-store, memory-store and model-store ran inside the server with SQLite
-# files under data/; their files are imported the same way.
+# agent-store, memory-store, model-store, harness-store, hook-store,
+# snapshot-store, the operations queue and the bridge's own database
+# (bridge.db, every table but its events) ran inside the server with SQLite
+# files under data/; their files are imported the same way. snapshot-store's
+# blobs stay in data/snapshots.git.
 #
 # Demo login lets anyone who can reach the server sign in as any person, with
 # no password. That is acceptable here only because the server listens on
@@ -72,7 +75,7 @@ STORES=()
 RETIRED_STORES=(principal-store grant-store tool-store permission-store kanban-store reference-store log-store)
 # Stores the server embedded with a SQLite file of its own under data/, and
 # now keeps in Postgres. They had no unit, so there is none to remove.
-EMBEDDED_STORES=(agent-store memory-store model-store)
+EMBEDDED_STORES=(agent-store memory-store model-store harness-store hook-store snapshot-store operations bridge-database)
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 POSTGRES_BIN="${BRIDGE_TEST_POSTGRES_BIN:-/usr/lib/postgresql/18/bin}"
 # The login the server provisions its Postgres modules as, and its database.
@@ -220,6 +223,11 @@ retired_store_database() { # <store>
     agent-store)      echo "$ROOT/data/agents.db" ;;
     memory-store)     echo "$ROOT/data/memory.db" ;;
     model-store)      echo "$ROOT/data/models.db" ;;
+    harness-store)    echo "$ROOT/data/harness.db" ;;
+    hook-store)       echo "$ROOT/data/hooks.db" ;;
+    snapshot-store)   echo "$ROOT/data/snapshots.db" ;;
+    operations)       echo "$ROOT/data/operations.db" ;;
+    bridge-database)  echo "$ROOT/data/bridge.db" ;;
     *)                echo "$ROOT/home/.config/$1/$1.db" ;;
   esac
 }
@@ -319,11 +327,7 @@ EOF
 LLMBRIDGE_LISTEN_ADDR=127.0.0.1:$BRIDGE_PORT
 LLMBRIDGE_DEMO_LOGIN_ENABLED=true
 LLMBRIDGE_DB_PATH=$ROOT/data/bridge.db
-LLMBRIDGE_HARNESS_DB=$ROOT/data/harness.db
-LLMBRIDGE_HOOK_DB=$ROOT/data/hooks.db
-LLMBRIDGE_SNAPSHOT_DB=$ROOT/data/snapshots.db
 LLMBRIDGE_SNAPSHOT_GIT=$ROOT/data/snapshots.git
-LLMBRIDGE_OPERATIONS_DB=$ROOT/data/operations.db
 LLMBRIDGE_BRIDGE_PREFS=$ROOT/data/bridge-prefs.json
 LLMBRIDGE_CONFORMANCE_PATH=$ROOT/data/conformance.json
 LLMBRIDGE_IMAGES_DIR=$ROOT/data/images

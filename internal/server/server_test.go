@@ -5,6 +5,8 @@ import (
 	"net/http/httputil"
 	"net/url"
 
+	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore/harnessstoretest"
+
 	"encoding/json"
 	"io"
 	"net/http"
@@ -17,7 +19,6 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	harnessstore "github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -74,11 +75,7 @@ func testServerWithInstanceAndLogStore(t *testing.T, harness msg.Harness, logSto
 	dir := t.TempDir()
 	st := newTestBridgeStore(t)
 
-	hs, err := harnessstore.Open(filepath.Join(dir, "harness.db"))
-	if err != nil {
-		t.Fatalf("open harness-store: %v", err)
-	}
-	t.Cleanup(func() { hs.Close() })
+	hs := harnessstoretest.NewStore(t)
 
 	mach := &msg.Machine{
 		ID:        "m_test",

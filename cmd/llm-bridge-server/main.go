@@ -12,13 +12,10 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access"
-	hookstore "github.com/kayushkin/llm-bridge-server/internal/agents/hookstore"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	harnessstore "github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore"
 	"github.com/kayushkin/llm-bridge-server/internal/operations"
-	"github.com/kayushkin/llm-bridge-server/internal/operationstore"
 	"github.com/kayushkin/llm-bridge-server/internal/server"
-	snapshotstore "github.com/kayushkin/llm-bridge-server/internal/sessions/snapshotstore"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/predictionstore"
 )
 
@@ -27,6 +24,9 @@ func main() {
 	// long-running server. Subcommands let admins do quick one-shot
 	// operations against the local databases without going through HTTP.
 	if len(os.Args) > 1 {
+		if runBridgeOwnStoreImportCommand(os.Args[1], os.Args[2:]) {
+			return
+		}
 		switch os.Args[1] {
 		case "mint-enroll":
 			mintEnrollCmd(os.Args[2:])
@@ -116,7 +116,7 @@ func main() {
 			makeSignInLinkCmd(os.Args[2:])
 			return
 		case "-h", "--help":
-			fmt.Fprintln(os.Stderr, "usage: llm-bridge-server [mint-enroll [-ttl 15m] | import-bridge-database -sqlite <file> | import-prediction-store -sqlite <file> | import-principal-store|import-grant-store|import-sign-in-store|import-permission-store -sqlite <file> | make-sign-in-link <principal id> | import-noteboard -sqlite <file> | import-project-store -sqlite <file> | import-kanban-store -sqlite <file> | import-log-store -sqlite <file> | import-tool-store -sqlite <file> | import-skill-store -sqlite <file> | import-bundle-store -sqlite <file> | import-agent-store|import-memory-store|import-model-store -sqlite <file> | import-usage-store|import-eval-store -sqlite <file> | import-repo-store -sqlite <file> | import-work-graph-store -sqlite <file> | import-file-store -sqlite <file> -blobs <directory> [-carry copy|link] | import-people-store|import-calendar-store|import-journal-store|import-message-store|import-time-ledger-store -sqlite <file> -owner <principal id> | import-activity-store -sqlite <file> -attachments <directory> -owner <principal id> | import-mailstack -accounts-sqlite <file> [-local-mail-sqlite <file>] | import-scheduler -sqlite <file> [-newest-runs-per-job <n>] | import-rule-store -sqlite <file> | import-photo-store -sqlite <file> -thumbnails <directory> -owner <principal id> [-carry copy|link] | import-location-store -sqlite <file> -owner <principal id> | import-budget-store -sqlite <file> -owner <principal id> | import-possession-store -sqlite <file> -originals <directory> -owner <principal id> [-carry copy|link]]")
+			fmt.Fprintln(os.Stderr, "usage: llm-bridge-server [mint-enroll [-ttl 15m] | import-bridge-database -sqlite <file> | import-prediction-store -sqlite <file> | import-principal-store|import-grant-store|import-sign-in-store|import-permission-store -sqlite <file> | make-sign-in-link <principal id> | import-noteboard -sqlite <file> | import-project-store -sqlite <file> | import-kanban-store -sqlite <file> | import-log-store -sqlite <file> | import-tool-store -sqlite <file> | import-skill-store -sqlite <file> | import-bundle-store -sqlite <file> | import-agent-store|import-memory-store|import-model-store -sqlite <file> | import-usage-store|import-eval-store -sqlite <file> | import-repo-store -sqlite <file> | import-work-graph-store -sqlite <file> | import-file-store -sqlite <file> -blobs <directory> [-carry copy|link] | import-people-store|import-calendar-store|import-journal-store|import-message-store|import-time-ledger-store -sqlite <file> -owner <principal id> | import-activity-store -sqlite <file> -attachments <directory> -owner <principal id> | import-mailstack -accounts-sqlite <file> [-local-mail-sqlite <file>] | import-scheduler -sqlite <file> [-newest-runs-per-job <n>] | import-rule-store -sqlite <file> | import-photo-store -sqlite <file> -thumbnails <directory> -owner <principal id> [-carry copy|link] | import-location-store -sqlite <file> -owner <principal id> | import-budget-store -sqlite <file> -owner <principal id> | import-possession-store -sqlite <file> -originals <directory> -owner <principal id> [-carry copy|link] | import-harness-store|import-hook-store|import-snapshot-store|import-operations -sqlite <file>]")
 			os.Exit(0)
 		}
 	}
@@ -176,47 +176,11 @@ func main() {
 	defer agentsRegistry.close()
 	as, ms, mds := agentsRegistry.agents, agentsRegistry.memories, agentsRegistry.models
 
-	// Initialize harness-store (optional)
-	var hs *harnessstore.Store
-	if cfg.HarnessStoreDB != "" {
-		hs, err = harnessstore.Open(cfg.HarnessStoreDB)
-		if err != nil {
-			log.Printf("harness-store: %v (continuing without instance data)", err)
-			hs = nil
-		} else {
-			defer hs.Close()
-			log.Printf("harness-store loaded from %s", cfg.HarnessStoreDB)
-		}
-	}
-
-	// Initialize hook-store (optional)
-	var hks *hookstore.Store
-	if cfg.HookStoreDB != "" {
-		hks, err = hookstore.Open(cfg.HookStoreDB)
-		if err != nil {
-			log.Printf("hook-store: %v (continuing without hook registry)", err)
-			hks = nil
-		} else {
-			defer hks.Close()
-			log.Printf("hook-store loaded from %s", cfg.HookStoreDB)
-		}
-	}
-
-	// Initialize snapshot-store (optional)
-	var ss *snapshotstore.Store
-	if cfg.SnapshotStoreDB != "" && cfg.SnapshotStoreGit != "" {
-		ss, err = snapshotstore.Open(snapshotstore.Config{
-			DBPath: cfg.SnapshotStoreDB,
-			GitDir: cfg.SnapshotStoreGit,
-		})
-		if err != nil {
-			log.Printf("snapshot-store: %v (continuing without tool-call snapshots)", err)
-			ss = nil
-		} else {
-			defer ss.Close()
-			log.Printf("snapshot-store loaded from %s (git %s)", cfg.SnapshotStoreDB, cfg.SnapshotStoreGit)
-		}
-	}
+	// harness-store, hook-store, snapshot-store and operations, in Postgres.
+	// Each is required.
+	bridgeOwn := openBridgeOwnStoreModules(context.Background(), cfg)
+	defer bridgeOwn.close()
+	hs, hks, ss := bridgeOwn.harnesses, bridgeOwn.hooks, bridgeOwn.snapshots
 
 	srv := server.New(st, as, ms, hs, hks, mds, ss, cfg)
 
@@ -316,12 +280,7 @@ func main() {
 	}
 	defer closePossessions()
 
-	operationStore, err := operationstore.Open(cfg.OperationsDBPath)
-	if err != nil {
-		log.Fatalf("operations db: %v", err)
-	}
-	defer operationStore.Close()
-	coordinator, err := operations.NewCoordinator(operationStore, operations.Config{
+	coordinator, err := operations.NewCoordinator(bridgeOwn.operations, operations.Config{
 		WorkerCount:   cfg.OperationsWorkerCount,
 		LeaseDuration: cfg.OperationsLeaseDuration,
 		// Unique per process, so a restart finds every operation the last
@@ -336,7 +295,7 @@ func main() {
 	operationsContext, stopOperations := context.WithCancel(context.Background())
 	defer stopOperations()
 	go coordinator.Run(operationsContext)
-	log.Printf("operations db %s | %d workers | lease %s", cfg.OperationsDBPath, cfg.OperationsWorkerCount, cfg.OperationsLeaseDuration)
+	log.Printf("operations: %d workers | lease %s", cfg.OperationsWorkerCount, cfg.OperationsLeaseDuration)
 	srv.ReconcileAndResume() // Clean up stale running-state and resume recently-active sessions
 	srv.RedeliverWakeupsLostInRestart()
 	srv.DeliverMessagesHeldBeforeRestart()                    // Send what the previous process held while it drained for this restart
@@ -385,16 +344,22 @@ func mintEnrollCmd(args []string) {
 		os.Exit(2)
 	}
 	cfg := config.Load()
-	if cfg.HarnessStoreDB == "" {
-		fmt.Fprintln(os.Stderr, "error: harness-store database not configured (set LLMBRIDGE_HARNESS_DB)")
+	if cfg.PostgresURL == "" {
+		fmt.Fprintf(os.Stderr, "error: %s is not set, so there is no harness-store to keep the enrollment in\n", config.PostgresURLEnvironmentVariable)
 		os.Exit(1)
 	}
-	hs, err := harnessstore.Open(cfg.HarnessStoreDB)
+	harnessStoreModule, err := harnessstore.Module()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "harness-store: %v\n", err)
+		os.Exit(1)
+	}
+	harnessStoreDB, err := openPostgresModule(context.Background(), cfg.PostgresURL, harnessStoreModule)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "open harness-store: %v\n", err)
 		os.Exit(1)
 	}
-	defer hs.Close()
+	defer harnessStoreDB.Close()
+	hs := harnessstore.New(harnessStoreDB)
 
 	passphrase, enr, err := hs.MintEnrollment(*ttl)
 	if err != nil {

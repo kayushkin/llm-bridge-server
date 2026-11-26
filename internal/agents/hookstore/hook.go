@@ -2,6 +2,7 @@ package hookstore
 
 import (
 	"database/sql"
+	"strconv"
 	"time"
 
 	"github.com/kayushkin/llm-bridge/msg"
@@ -9,13 +10,16 @@ import (
 
 // CreateHook inserts a new hook row. Caller supplies ID (ULID recommended).
 // CreatedAt/UpdatedAt are overwritten with the current UTC time.
+//
+// Times are cut to the microsecond Postgres keeps, so a record handed back
+// from a write equals the one read later.
 func (s *Store) CreateHook(h *msg.Hook) error {
-	now := time.Now().UTC()
+	now := time.Now().UTC().Truncate(time.Microsecond)
 	h.CreatedAt = now
 	h.UpdatedAt = now
 	_, err := s.db.Exec(`
 		INSERT INTO hooks (id, harness, event, matcher, command, scope_kind, scope_id, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 		h.ID, h.Harness, h.Event, h.Matcher, h.Command,
 		h.ScopeKind, h.ScopeID, h.Enabled, h.CreatedAt, h.UpdatedAt,
 	)
@@ -26,17 +30,17 @@ func (s *Store) CreateHook(h *msg.Hook) error {
 func (s *Store) GetHook(id string) (*msg.Hook, error) {
 	row := s.db.QueryRow(`
 		SELECT id, harness, event, matcher, command, scope_kind, scope_id, enabled, created_at, updated_at
-		FROM hooks WHERE id = ?`, id)
+		FROM hooks WHERE id = $1`, id)
 	return scanHook(row)
 }
 
 // UpdateHook overwrites a hook's mutable fields. ID, CreatedAt are not
 // touched; UpdatedAt is refreshed.
 func (s *Store) UpdateHook(h *msg.Hook) error {
-	h.UpdatedAt = time.Now().UTC()
+	h.UpdatedAt = time.Now().UTC().Truncate(time.Microsecond)
 	res, err := s.db.Exec(`
-		UPDATE hooks SET harness=?, event=?, matcher=?, command=?, scope_kind=?, scope_id=?, enabled=?, updated_at=?
-		WHERE id=?`,
+		UPDATE hooks SET harness=$1, event=$2, matcher=$3, command=$4, scope_kind=$5, scope_id=$6, enabled=$7, updated_at=$8
+		WHERE id=$9`,
 		h.Harness, h.Event, h.Matcher, h.Command,
 		h.ScopeKind, h.ScopeID, h.Enabled, h.UpdatedAt, h.ID,
 	)
@@ -52,8 +56,8 @@ func (s *Store) UpdateHook(h *msg.Hook) error {
 
 // SetHookEnabled toggles the enabled flag without rewriting other fields.
 func (s *Store) SetHookEnabled(id string, enabled bool) error {
-	res, err := s.db.Exec(`UPDATE hooks SET enabled = ?, updated_at = ? WHERE id = ?`,
-		enabled, time.Now().UTC(), id)
+	res, err := s.db.Exec(`UPDATE hooks SET enabled = $1, updated_at = $2 WHERE id = $3`,
+		enabled, time.Now().UTC().Truncate(time.Microsecond), id)
 	if err != nil {
 		return err
 	}
@@ -66,7 +70,7 @@ func (s *Store) SetHookEnabled(id string, enabled bool) error {
 
 // DeleteHook removes a hook row.
 func (s *Store) DeleteHook(id string) error {
-	res, err := s.db.Exec(`DELETE FROM hooks WHERE id = ?`, id)
+	res, err := s.db.Exec(`DELETE FROM hooks WHERE id = $1`, id)
 	if err != nil {
 		return err
 	}
@@ -91,27 +95,26 @@ type ListFilter struct {
 func (s *Store) ListHooks(filter ListFilter) ([]msg.Hook, error) {
 	query := `SELECT id, harness, event, matcher, command, scope_kind, scope_id, enabled, created_at, updated_at FROM hooks WHERE 1=1`
 	var args []any
+	placeholder := func(value any) string {
+		args = append(args, value)
+		return "$" + strconv.Itoa(len(args))
+	}
 	if filter.Harness != "" {
-		query += ` AND harness = ?`
-		args = append(args, filter.Harness)
+		query += ` AND harness = ` + placeholder(filter.Harness)
 	}
 	if filter.Event != "" {
-		query += ` AND event = ?`
-		args = append(args, filter.Event)
+		query += ` AND event = ` + placeholder(filter.Event)
 	}
 	if filter.ScopeKind != "" {
-		query += ` AND scope_kind = ?`
-		args = append(args, filter.ScopeKind)
+		query += ` AND scope_kind = ` + placeholder(filter.ScopeKind)
 	}
 	if filter.ScopeID != "" {
-		query += ` AND scope_id = ?`
-		args = append(args, filter.ScopeID)
+		query += ` AND scope_id = ` + placeholder(filter.ScopeID)
 	}
 	if filter.EnabledSet {
-		query += ` AND enabled = ?`
-		args = append(args, filter.Enabled)
+		query += ` AND enabled = ` + placeholder(filter.Enabled)
 	}
-	query += ` ORDER BY created_at`
+	query += ` ORDER BY created_at, id`
 
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
@@ -139,12 +142,12 @@ func (s *Store) ListApplicable(harness msg.Harness, instanceID, sessionID string
 	query := `
 		SELECT id, harness, event, matcher, command, scope_kind, scope_id, enabled, created_at, updated_at
 		FROM hooks
-		WHERE enabled = 1
-		  AND harness = ?
+		WHERE enabled
+		  AND harness = $1
 		  AND (
 		    scope_kind = 'global'
-		    OR (scope_kind = 'instance' AND scope_id = ?)
-		    OR (scope_kind = 'session'  AND scope_id = ?)
+		    OR (scope_kind = 'instance' AND scope_id = $2)
+		    OR (scope_kind = 'session'  AND scope_id = $3)
 		  )`
 	rows, err := s.db.Query(query, harness, instanceID, sessionID)
 	if err != nil {
@@ -199,11 +202,13 @@ type rowScanner interface {
 
 func scanHook(r rowScanner) (*msg.Hook, error) {
 	var h msg.Hook
-	var enabled int
 	if err := r.Scan(&h.ID, &h.Harness, &h.Event, &h.Matcher, &h.Command,
-		&h.ScopeKind, &h.ScopeID, &enabled, &h.CreatedAt, &h.UpdatedAt); err != nil {
+		&h.ScopeKind, &h.ScopeID, &h.Enabled, &h.CreatedAt, &h.UpdatedAt); err != nil {
 		return nil, err
 	}
-	h.Enabled = enabled != 0
+	// The driver gives timestamptz values in the process's local zone; the
+	// SQLite store handed them back in UTC.
+	h.CreatedAt = h.CreatedAt.UTC()
+	h.UpdatedAt = h.UpdatedAt.UTC()
 	return &h, nil
 }

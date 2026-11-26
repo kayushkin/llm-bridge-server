@@ -90,7 +90,7 @@ func (s *Store) Get(sessionID, toolUseID string) ([]Snapshot, error) {
 	rows, err := s.db.Query(`
 		SELECT session_id, tool_use_id, phase, file_path, blob_sha, size,
 		       is_binary, too_large, missing, created_at
-		FROM snapshots WHERE session_id = ? AND tool_use_id = ?`,
+		FROM snapshots WHERE session_id = $1 AND tool_use_id = $2`,
 		sessionID, toolUseID,
 	)
 	if err != nil {
@@ -112,21 +112,26 @@ func (s *Store) Get(sessionID, toolUseID string) ([]Snapshot, error) {
 // number of rows removed. Callers should run GC() afterwards to reclaim
 // disk from blobs left unreferenced.
 func (s *Store) PurgeOlderThan(cutoff time.Time) (int64, error) {
-	res, err := s.db.Exec(`DELETE FROM snapshots WHERE created_at < ?`, cutoff.UTC())
+	res, err := s.db.Exec(`DELETE FROM snapshots WHERE created_at < $1`, cutoff.UTC())
 	if err != nil {
 		return 0, err
 	}
 	return res.RowsAffected()
 }
 
+// Times are cut to the microsecond Postgres keeps, so a record handed back
+// from a write equals the one read later.
 func (s *Store) insert(snap *Snapshot) error {
-	now := time.Now().UTC()
+	now := time.Now().UTC().Truncate(time.Microsecond)
 	snap.CreatedAt = now
 	_, err := s.db.Exec(`
-		INSERT OR REPLACE INTO snapshots
+		INSERT INTO snapshots
 		(session_id, tool_use_id, phase, file_path, blob_sha, size,
 		 is_binary, too_large, missing, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		ON CONFLICT (session_id, tool_use_id, phase, file_path) DO UPDATE SET
+		 blob_sha = excluded.blob_sha, size = excluded.size, is_binary = excluded.is_binary,
+		 too_large = excluded.too_large, missing = excluded.missing, created_at = excluded.created_at`,
 		snap.SessionID, snap.ToolUseID, string(snap.Phase), snap.FilePath,
 		snap.BlobSHA, snap.Size, snap.IsBinary, snap.TooLarge, snap.Missing, now,
 	)
@@ -144,6 +149,9 @@ func scanSnapshot(rows *sql.Rows) (*Snapshot, error) {
 		return nil, err
 	}
 	snap.Phase = Phase(phase)
+	// The driver gives timestamptz values in the process's local zone; the
+	// SQLite store handed them back in UTC.
+	snap.CreatedAt = snap.CreatedAt.UTC()
 	return &snap, nil
 }
 

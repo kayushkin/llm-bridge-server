@@ -1,21 +1,22 @@
 package hookstore
 
 import (
-	"path/filepath"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
+// newStore gives the test a store on a Postgres database of its own, made
+// from a template with the module migrated (postgresstorage/postgrestest).
 func newStore(t *testing.T) *Store {
 	t.Helper()
-	dir := t.TempDir()
-	s, err := Open(filepath.Join(dir, "hooks.db"))
+	module, err := Module()
 	if err != nil {
-		t.Fatalf("open: %v", err)
+		t.Fatalf("module: %v", err)
 	}
-	t.Cleanup(func() { s.Close() })
-	return s
+	database := postgrestest.NewDatabase(t, module)
+	return New(database.Open(module))
 }
 
 func mustCreate(t *testing.T, s *Store, id, event, matcher, cmd string, scope msg.HookScope, scopeID string) {

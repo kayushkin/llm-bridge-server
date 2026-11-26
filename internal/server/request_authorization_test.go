@@ -17,8 +17,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore/harnessstoretest"
+
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	harnessstore "github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -111,11 +112,7 @@ func newGatedTestServerConfigured(t *testing.T, grantsByPrincipal map[string]map
 	t.Helper()
 	directory := t.TempDir()
 	bridgeStore := newTestBridgeStore(t)
-	harnesses, err := harnessstore.Open(filepath.Join(directory, "harness.db"))
-	if err != nil {
-		t.Fatalf("open harness-store: %v", err)
-	}
-	t.Cleanup(func() { harnesses.Close() })
+	harnesses := harnessstoretest.NewStore(t)
 	for _, seed := range []struct{ machineID, instanceID string }{{"m_test", "inst_test"}, {"m_second", "inst_second"}} {
 		if err := harnesses.CreateMachine(&msg.Machine{ID: seed.machineID, Name: seed.machineID, Hostname: "secret-host.internal", SSHKeyPath: "/home/operator/.ssh/id", Transport: msg.TransportLocal}); err != nil {
 			t.Fatalf("seed machine: %v", err)

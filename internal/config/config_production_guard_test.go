@@ -149,8 +149,12 @@ func TestGuardedFieldSetsAgree(t *testing.T) {
 // fields, and a test reaches those stores only through postgrestest's
 // throwaway databases. It went from 12 to 10 when usage-store and mailstack
 // moved into this process: the bridge reads both in process, and their URLs
-// are gone.
-const guardedFieldFloor = 10
+// are gone. It went from 10 to 6 when harness-store, hook-store,
+// snapshot-store and the operations queue moved into Postgres modules: their
+// four SQLite paths are gone, and a test reaches them only through
+// postgrestest's throwaway databases. snapshot-store's git folder is still
+// guarded.
+const guardedFieldFloor = 6
 
 // TestEveryGuardedVariableIsReadByLoad proves the override named in the panic
 // message actually works. A guard that recommends a variable Load never reads

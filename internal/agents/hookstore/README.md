@@ -1,6 +1,6 @@
 # hook-store
 
-SQLite registry for bridge-managed harness hooks in the [llm-bridge](https://github.com/kayushkin/llm-bridge) ecosystem.
+Registry for bridge-managed harness hooks, kept in the Postgres module `hooks` (schema and role `hooks_module`, migrations in `migrations/`), in the [llm-bridge](https://github.com/kayushkin/llm-bridge) ecosystem.
 
 Each row is a hook handler (harness, event, matcher, shell command) bound to a scope (`global`, `instance`, or `session`). The llm-bridge server queries this store at session spawn to decide which hooks to wire into the harness's native hook mechanism — for Claude Code, hooks are synthesized into a settings JSON passed via `--settings`.
 
@@ -14,9 +14,9 @@ import (
     hookstore "github.com/kayushkin/llm-bridge-server/internal/agents/hookstore"
 )
 
-s, err := hookstore.Open("~/.llm-bridge/hooks.db")
-if err != nil { /* ... */ }
-defer s.Close()
+// db is the module's pool: the server provisions, migrates and opens the
+// module (cmd/llm-bridge-server), then hands it here.
+s := hookstore.New(db)
 
 // Register a global PreToolUse hook for Claude Code that blocks `rm -rf /`.
 s.CreateHook(&msg.Hook{
@@ -44,3 +44,7 @@ Single `hooks` table with indexes on `(harness, event)`, `(scope_kind, scope_id)
 ## Relationship to the ecosystem
 
 This store is one component of the [llm-bridge](https://github.com/kayushkin/llm-bridge) ecosystem. When used with [llm-bridge-server](https://github.com/kayushkin/llm-bridge-server), hook-store is loaded automatically and its endpoints are mounted on the server.
+
+## Moving the SQLite file in
+
+`llm-bridge-server import-hook-store -sqlite <copy of hooks.db>` copies every hook of the SQLite file the server kept until the move into the module, with its id, and refuses a module that already holds one.

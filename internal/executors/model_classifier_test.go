@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +14,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/oneshotrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/operations"
 	"github.com/kayushkin/llm-bridge-server/internal/operationstore"
+	"github.com/kayushkin/llm-bridge-server/internal/operationstore/operationstoretest"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -31,11 +31,7 @@ type classifierHarness struct {
 
 func newClassifierHarness(t *testing.T, caller executors.OneShotCaller, taxonomies executors.TaxonomyReader) *classifierHarness {
 	t.Helper()
-	store, err := operationstore.Open(filepath.Join(t.TempDir(), "operations.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { store.Close() })
+	store := operationstoretest.NewStore(t)
 	coordinator, err := operations.NewCoordinator(store, operations.Config{WorkerCount: 1, LeaseDuration: 3 * time.Second, LeaseOwner: "test",
 		ModelListPrice: listPrice}, executors.ModelClassifier{Caller: caller, Taxonomies: taxonomies})
 	if err != nil {

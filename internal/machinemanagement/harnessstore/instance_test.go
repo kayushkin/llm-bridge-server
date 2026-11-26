@@ -207,3 +207,23 @@ func TestInstanceCountsAndEnable(t *testing.T) {
 		t.Error("i_b still enabled after SetInstanceEnabled(false)")
 	}
 }
+
+// No foreign key ties an instance to its machine, so a machine can be deleted
+// from under one. Reading such an instance with its machine is then
+// sql.ErrNoRows, as it was when the read took two queries.
+func TestGetInstanceWithMachineOfADeletedMachine(t *testing.T) {
+	s := newTestStore(t)
+	mid := mustCreateMachine(t, s, "m_gone", "gone")
+	if err := s.CreateInstance(&msg.Instance{ID: "inst_orphan", HarnessType: msg.HarnessClaudeCode, Name: "orphan", MachineID: mid, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteMachine(mid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetInstance("inst_orphan"); err != nil {
+		t.Fatalf("the instance should stay when its machine goes: %v", err)
+	}
+	if _, err := s.GetInstanceWithMachine("inst_orphan"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("GetInstanceWithMachine of an instance whose machine is gone: %v, want sql.ErrNoRows", err)
+	}
+}

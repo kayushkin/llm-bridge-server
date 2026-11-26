@@ -7,7 +7,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -18,7 +17,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/executors/executorstest"
 	"github.com/kayushkin/llm-bridge-server/internal/oneshotrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/operations"
-	"github.com/kayushkin/llm-bridge-server/internal/operationstore"
+	"github.com/kayushkin/llm-bridge-server/internal/operationstore/operationstoretest"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -47,11 +46,7 @@ func newOperationsTestServerWithGrants(t *testing.T, classifier executors.ModelC
 	gated.principals.mutex.Lock()
 	gated.principals.groupIDsByMember = map[string][]string{firstTestPrincipalID: {groupTestPrincipalID}}
 	gated.principals.mutex.Unlock()
-	operationStore, err := operationstore.Open(filepath.Join(t.TempDir(), "operations.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { operationStore.Close() })
+	operationStore := operationstoretest.NewStore(t)
 	coordinator, err := operations.NewCoordinator(operationStore,
 		operations.Config{WorkerCount: 1, LeaseDuration: 3 * time.Second, LeaseOwner: "test"}, classifier)
 	if err != nil {

@@ -8,20 +8,33 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 )
+
+// newStoreWithConfig gives the test a store on a Postgres database of its
+// own, made from a template with the module migrated
+// (postgresstorage/postgrestest), with its blobs under the test's temp dir
+// unless cfg names a folder.
+func newStoreWithConfig(t *testing.T, cfg Config) *Store {
+	t.Helper()
+	module, err := Module()
+	if err != nil {
+		t.Fatalf("module: %v", err)
+	}
+	if cfg.GitDir == "" {
+		cfg.GitDir = filepath.Join(t.TempDir(), "snapshots.git")
+	}
+	s, err := New(postgrestest.NewDatabase(t, module).Open(module), cfg)
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	return s
+}
 
 func newStore(t *testing.T) *Store {
 	t.Helper()
-	dir := t.TempDir()
-	s, err := Open(Config{
-		DBPath: filepath.Join(dir, "snapshots.db"),
-		GitDir: filepath.Join(dir, "snapshots.git"),
-	})
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(func() { s.Close() })
-	return s
+	return newStoreWithConfig(t, Config{})
 }
 
 func writeFile(t *testing.T, path string, content []byte) {
@@ -145,15 +158,7 @@ func TestCaptureMissingFile(t *testing.T) {
 
 func TestCaptureTooLarge(t *testing.T) {
 	dir := t.TempDir()
-	s, err := Open(Config{
-		DBPath:  filepath.Join(dir, "db"),
-		GitDir:  filepath.Join(dir, "git"),
-		MaxSize: 16,
-	})
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer s.Close()
+	s := newStoreWithConfig(t, Config{GitDir: filepath.Join(dir, "git"), MaxSize: 16})
 
 	path := filepath.Join(dir, "big.txt")
 	writeFile(t, path, bytes.Repeat([]byte("x"), 100))
@@ -226,7 +231,7 @@ func TestPurgeOlderThan(t *testing.T) {
 		t.Fatalf("capture old: %v", err)
 	}
 	// Age the row.
-	if _, err := s.db.Exec(`UPDATE snapshots SET created_at = ? WHERE tool_use_id = 'tool-old'`,
+	if _, err := s.db.Exec(`UPDATE snapshots SET created_at = $1 WHERE tool_use_id = 'tool-old'`,
 		time.Now().Add(-48*time.Hour).UTC()); err != nil {
 		t.Fatalf("age row: %v", err)
 	}
@@ -283,91 +288,6 @@ func TestGCRuns(t *testing.T) {
 	}
 	if err := s.GC(); err != nil {
 		t.Fatalf("gc: %v", err)
-	}
-}
-
-// TestMigrateV2FromV1 verifies an existing v1 database (PK without
-// file_path) is rewritten into the v2 shape on Open without losing rows.
-func TestMigrateV2FromV1(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "snapshots.db")
-	gitDir := filepath.Join(dir, "snapshots.git")
-
-	// Hand-roll a v1 schema and seed a row.
-	{
-		s, err := Open(Config{DBPath: dbPath, GitDir: gitDir})
-		if err != nil {
-			t.Fatalf("open initial: %v", err)
-		}
-		if _, err := s.db.Exec(`PRAGMA user_version = 0`); err != nil {
-			t.Fatalf("reset version: %v", err)
-		}
-		if _, err := s.db.Exec(`DROP TABLE snapshots`); err != nil {
-			t.Fatalf("drop: %v", err)
-		}
-		if _, err := s.db.Exec(`
-			CREATE TABLE snapshots (
-				session_id   TEXT NOT NULL,
-				tool_use_id  TEXT NOT NULL,
-				phase        TEXT NOT NULL,
-				file_path    TEXT NOT NULL,
-				blob_sha     TEXT NOT NULL DEFAULT '',
-				size         INTEGER NOT NULL DEFAULT 0,
-				is_binary    INTEGER NOT NULL DEFAULT 0,
-				too_large    INTEGER NOT NULL DEFAULT 0,
-				missing      INTEGER NOT NULL DEFAULT 0,
-				created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-				PRIMARY KEY (session_id, tool_use_id, phase),
-				CHECK (phase IN ('before','after'))
-			)`); err != nil {
-			t.Fatalf("create v1: %v", err)
-		}
-		if _, err := s.db.Exec(`INSERT INTO snapshots
-			(session_id, tool_use_id, phase, file_path, blob_sha, size)
-			VALUES ('sess', 'tool', 'before', '/tmp/x', 'deadbeef', 5)`); err != nil {
-			t.Fatalf("seed: %v", err)
-		}
-		s.Close()
-	}
-
-	// Re-open: migrate v2 should run.
-	s, err := Open(Config{DBPath: dbPath, GitDir: gitDir})
-	if err != nil {
-		t.Fatalf("reopen: %v", err)
-	}
-	defer s.Close()
-
-	var version int
-	if err := s.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
-		t.Fatalf("read version: %v", err)
-	}
-	if version != 2 {
-		t.Fatalf("expected user_version=2 after migrate, got %d", version)
-	}
-
-	snaps, err := s.Get("sess", "tool")
-	if err != nil {
-		t.Fatalf("get migrated: %v", err)
-	}
-	if len(snaps) != 1 || snaps[0].FilePath != "/tmp/x" || snaps[0].BlobSHA != "deadbeef" {
-		t.Fatalf("v1 row not preserved: %+v", snaps)
-	}
-
-	// Verify multi-file insert now works.
-	dir2 := t.TempDir()
-	pathA := filepath.Join(dir2, "a.txt")
-	pathB := filepath.Join(dir2, "b.txt")
-	writeFile(t, pathA, []byte("a"))
-	writeFile(t, pathB, []byte("b"))
-	if _, err := s.Capture("sess", "tool2", PhaseBefore, pathA); err != nil {
-		t.Fatalf("capture A: %v", err)
-	}
-	if _, err := s.Capture("sess", "tool2", PhaseBefore, pathB); err != nil {
-		t.Fatalf("capture B: %v", err)
-	}
-	snaps, err = s.Get("sess", "tool2")
-	if err != nil || len(snaps) != 2 {
-		t.Fatalf("expected 2 snaps, got %d (%v)", len(snaps), err)
 	}
 }
 

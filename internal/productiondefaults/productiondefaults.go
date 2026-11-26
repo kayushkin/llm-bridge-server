@@ -74,11 +74,6 @@ func SessionFilesDirectory() string {
 	return filepath.Join(homeDirectory(), ".llm-bridge", "session-files")
 }
 
-// OperationsDatabasePath is where operations, their events and leases are kept.
-func OperationsDatabasePath() string {
-	return filepath.Join(homeDirectory(), ".llm-bridge", "operations.db")
-}
-
 // SkillStoreDataDirectory is where the skill-store module keeps skill files
 // and cloned sources. It is under this server's own folder, not the standalone
 // store's ~/.config/skill-store, so the module and a standalone store still
@@ -125,23 +120,11 @@ func SkillStoreInstallDirectory() string {
 	return filepath.Join(homeDirectory(), ".claude", "skills")
 }
 
-func HarnessStoreDatabasePath() string {
-	return filepath.Join(homeDirectory(), ".config", "harness-store", "harness.db")
-}
-
-func HookStoreDatabasePath() string {
-	return filepath.Join(homeDirectory(), ".config", "hook-store", "hooks.db")
-}
-
 // StandaloneModelStoreDatabasePath is the standalone model-store's SQLite
 // file, which this server read until the registry moved into Postgres. Only
 // the live harness test reads it now, to import a copy.
 func StandaloneModelStoreDatabasePath() string {
 	return filepath.Join(homeDirectory(), ".config", "model-store", "store.db")
-}
-
-func SnapshotStoreDatabasePath() string {
-	return filepath.Join(homeDirectory(), ".config", "snapshot-store", "snapshots.db")
 }
 
 func SnapshotStoreGitPath() string {
@@ -162,14 +145,10 @@ func ConformancePath() string {
 var EnvironmentVariableByConfigField = map[string]string{
 	"ListenAddr":       "LLMBRIDGE_LISTEN_ADDR",
 	"DBPath":           "LLMBRIDGE_DB_PATH",
-	"HarnessStoreDB":   "LLMBRIDGE_HARNESS_DB",
-	"HookStoreDB":      "LLMBRIDGE_HOOK_DB",
 	"BridgePrefsPath":  "LLMBRIDGE_BRIDGE_PREFS",
 	"ConformancePath":  "LLMBRIDGE_CONFORMANCE_PATH",
 	"HealthcheckURL":   "LLMBRIDGE_HEALTHCHECK_URL",
-	"SnapshotStoreDB":  "LLMBRIDGE_SNAPSHOT_DB",
 	"SnapshotStoreGit": "LLMBRIDGE_SNAPSHOT_GIT",
-	"OperationsDBPath": "LLMBRIDGE_OPERATIONS_DB",
 }
 
 // AddressByConfigField returns the production address each guarded config
@@ -178,14 +157,10 @@ func AddressByConfigField() map[string]string {
 	return map[string]string{
 		"ListenAddr":       ListenAddr,
 		"DBPath":           BridgeDatabasePath(),
-		"HarnessStoreDB":   HarnessStoreDatabasePath(),
-		"HookStoreDB":      HookStoreDatabasePath(),
 		"BridgePrefsPath":  BridgePreferencesPath(),
 		"ConformancePath":  ConformancePath(),
 		"HealthcheckURL":   HealthcheckURL,
-		"SnapshotStoreDB":  SnapshotStoreDatabasePath(),
 		"SnapshotStoreGit": SnapshotStoreGitPath(),
-		"OperationsDBPath": OperationsDatabasePath(),
 	}
 }
 

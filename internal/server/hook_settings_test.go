@@ -208,10 +208,10 @@ func TestInjectHookSettings_WritesSettingsStringForStartParams(t *testing.T) {
 	}
 }
 
-// testServerWithoutHookStore builds a Server whose hookStore is nil — the
-// state main() leaves behind when hookstore.Open fails and it logs
-// "continuing without hook registry", and the state an empty
-// LLMBRIDGE_HOOK_DB produces.
+// testServerWithoutHookStore builds a Server whose hookStore is nil. main()
+// no longer starts that way (the hook-store module is required), but
+// server.New still takes a nil store, and the permission gate must not depend
+// on it.
 func testServerWithoutHookStore(t *testing.T) *Server {
 	t.Helper()
 	dir := t.TempDir()
