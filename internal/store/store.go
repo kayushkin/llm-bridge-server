@@ -476,35 +476,39 @@ type SessionSpendDetail struct {
 // turn_result_usd. It never replaces a breakdown with one describing less API
 // spend: a derivation seeded from a failed read restarts at zero, and its
 // breakdown would erase earlier runs' attribution.
+//
+// It is one statement, one round trip: it runs for every api_call event a
+// harness reports, on the path that streams the event.
 func (s *Store) RecordAPISpendBreakdown(bridgeID string, detail SessionSpendDetail) error {
-	now := time.Now().UTC()
-	var current SessionSpendDetail
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	var encoded string
-	if err := tx.QueryRow(`SELECT COALESCE(api_spend_detail, '') FROM sessions WHERE bridge_id=$1`, bridgeID).Scan(&encoded); err != nil {
-		return err
-	}
-	if encoded != "" {
-		if err := json.Unmarshal([]byte(encoded), &current); err != nil {
-			return fmt.Errorf("unmarshal spend detail for %s: %w", bridgeID, err)
-		}
-	}
-	if detail.APISpendUSD < current.APISpendUSD {
-		return tx.Commit()
-	}
-	detail.TurnResultUSD = current.TurnResultUSD
+	// The recorded turn_result_usd is kept; the statement writes it over
+	// whatever the new breakdown says.
+	detail.TurnResultUSD = 0
 	next, err := json.Marshal(detail)
 	if err != nil {
 		return fmt.Errorf("marshal spend detail for %s: %w", bridgeID, err)
 	}
-	if _, err := tx.Exec(`UPDATE sessions SET api_spend_detail=$1, updated_at=$2 WHERE bridge_id=$3`, string(next), now, bridgeID); err != nil {
+	var sessions, updated int
+	err = s.db.QueryRow(`
+		WITH current AS (
+			SELECT COALESCE(NULLIF(api_spend_detail, ''), '{}')::jsonb AS detail FROM sessions WHERE bridge_id = $1
+		), updated AS (
+			UPDATE sessions
+			   SET api_spend_detail = jsonb_set($2::jsonb, '{turn_result_usd}',
+			           to_jsonb(COALESCE((SELECT (detail ->> 'turn_result_usd')::double precision FROM current), 0)))::text,
+			       updated_at = $3
+			 WHERE bridge_id = $1
+			   AND $4::double precision >= COALESCE((SELECT (detail ->> 'api_spend_usd')::double precision FROM current), 0)
+			RETURNING 1
+		)
+		SELECT (SELECT COUNT(*) FROM current), (SELECT COUNT(*) FROM updated)`,
+		bridgeID, string(next), time.Now().UTC(), detail.APISpendUSD).Scan(&sessions, &updated)
+	if err != nil {
 		return err
 	}
-	return tx.Commit()
+	if sessions == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 // RecordSessionCost raises the session's recorded cost (spend_usd) to totalUSD
@@ -517,22 +521,17 @@ func (s *Store) RecordAPISpendBreakdown(bridgeID string, detail SessionSpendDeta
 // MAX() covers a failed seed read, which starts the estimate at zero.
 func (s *Store) RecordSessionCost(bridgeID string, totalUSD, turnResultUSD float64) (float64, error) {
 	now := time.Now().UTC()
-	res, err := s.db.Exec(`UPDATE sessions
+	var stored float64
+	err := s.db.QueryRow(`UPDATE sessions
 		SET spend_usd        = GREATEST(spend_usd, $1),
 		    api_spend_detail = CASE
 		        WHEN $2::double precision > COALESCE((COALESCE(NULLIF(api_spend_detail, ''), '{}')::jsonb ->> 'turn_result_usd')::double precision, 0)
 		        THEN jsonb_set(COALESCE(NULLIF(api_spend_detail, ''), '{}')::jsonb, '{turn_result_usd}', to_jsonb($2::double precision))::text
 		        ELSE api_spend_detail END,
 		    updated_at       = $3
-		WHERE bridge_id = $4`, totalUSD, turnResultUSD, now, bridgeID)
+		WHERE bridge_id = $4
+		RETURNING spend_usd`, totalUSD, turnResultUSD, now, bridgeID).Scan(&stored)
 	if err != nil {
-		return 0, err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return 0, sql.ErrNoRows
-	}
-	var stored float64
-	if err := s.dbRO.QueryRow(`SELECT COALESCE(spend_usd, 0) FROM sessions WHERE bridge_id=$1`, bridgeID).Scan(&stored); err != nil {
 		return 0, err
 	}
 	s.notifyChanged(bridgeID)

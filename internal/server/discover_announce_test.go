@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	"github.com/kayushkin/llm-bridge-server/internal/store"
 )
 
 // Discovery decides a session is "new" by asking THIS instance's DB, then
@@ -47,11 +46,7 @@ func TestDiscoverAnnouncesLogStoreBeforeImporting(t *testing.T) {
 	fixtureSessionID := isolateHarnessSessionDiscovery(t)
 
 	dir := t.TempDir()
-	st, err := store.New(filepath.Join(dir, "test.db"))
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
-	t.Cleanup(func() { st.Close() })
+	st := newTestBridgeStore(t)
 
 	// Unreachable on purpose: port 1 refuses immediately, so ImportHistory's
 	// pushes fail at connect and no event reaches any real store.
@@ -61,6 +56,7 @@ func TestDiscoverAnnouncesLogStoreBeforeImporting(t *testing.T) {
 	}
 	testAuthorizationConfig(cfg)
 	srv := New(st, nil, nil, nil, nil, nil, nil, cfg)
+	enableTestSessionEvents(t, srv, st)
 
 	// Discovery's imports go on logging from their own goroutine after the
 	// response returns, so the capture is shared and has to be locked.

@@ -15,12 +15,8 @@ func storeScheduledWakeup(t *testing.T, st *store.Store, sessionID, toolID strin
 	t.Helper()
 	call := fmt.Sprintf(`{"type":"tool_call","tool_call":{"tool_id":%q,"name":"ScheduleWakeup","input":{"delaySeconds":1200,"prompt":"check the backfill"}}}`, toolID)
 	result := fmt.Sprintf(`{"type":"tool_result","tool_result":{"tool_id":%q},"raw":{"tool_use_result":{"scheduledFor":%d}}}`, toolID, dueAt.UnixMilli())
-	if err := st.StoreEvent(sessionID, "tool_call", "", "", []byte(call)); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.StoreEvent(sessionID, "tool_result", "", "", []byte(result)); err != nil {
-		t.Fatal(err)
-	}
+	storeTestEvent(t, st, sessionID, []byte(call))
+	storeTestEvent(t, st, sessionID, []byte(result))
 }
 
 func TestLostWakeup(t *testing.T) {
@@ -40,9 +36,7 @@ func TestLostWakeup(t *testing.T) {
 		srv, st := testServer(t)
 		st.CreateSession(&store.Session{SessionID: "br_w", Harness: "claude_code", State: string(msg.SessionIdle)})
 		storeScheduledWakeup(t, st, "br_w", "toolu_a", time.Now().Add(-time.Minute))
-		if err := st.StoreEvent("br_w", "user_message", "", "", []byte(`{"type":"user_message"}`)); err != nil {
-			t.Fatal(err)
-		}
+		storeTestEvent(t, st, "br_w", []byte(`{"type":"user_message"}`))
 		wakeup, err := srv.lostWakeup("br_w", oldestCallToRead)
 		if err != nil || wakeup != nil {
 			t.Fatalf("got %+v, %v; want none", wakeup, err)
@@ -78,7 +72,7 @@ func TestLostWakeup(t *testing.T) {
 		srv, st := testServer(t)
 		st.CreateSession(&store.Session{SessionID: "br_w", Harness: "claude_code", State: string(msg.SessionAwaitingUser)})
 		storeScheduledWakeup(t, st, "br_w", "toolu_a", time.Now().Add(-10*time.Minute))
-		if _, err := st.WriteSessionStatus("br_w", &msg.Event{Type: msg.EventSessionStatus,
+		if _, err := testSessionEventsOf(t, st).WriteSessionStatus("br_w", &msg.Event{Type: msg.EventSessionStatus,
 			Status: &msg.SessionStatus{State: msg.SessionAwaitingUser, Reason: msg.ReasonIdleReaped}}); err != nil {
 			t.Fatal(err)
 		}

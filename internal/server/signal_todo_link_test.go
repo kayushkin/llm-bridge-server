@@ -22,11 +22,7 @@ import (
 func testServerWithKanban(t *testing.T, kanban *kanbanclienttest.Store) (*Server, *store.Store) {
 	t.Helper()
 	dir := t.TempDir()
-	st, err := store.New(filepath.Join(dir, "test.db"))
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
-	t.Cleanup(func() { st.Close() })
+	st := newTestBridgeStore(t)
 
 	if kanban == nil {
 		kanban = &kanbanclienttest.Store{EntityCardsAnswer: func(string, string) ([]kanbanmodel.EntityCardView, error) {
@@ -40,6 +36,7 @@ func testServerWithKanban(t *testing.T, kanban *kanbanclienttest.Store) (*Server
 	}
 	testAuthorizationConfig(cfg)
 	srv := New(st, nil, nil, nil, nil, nil, nil, cfg)
+	enableTestSessionEvents(t, srv, st)
 	srv.kanbanClient = kanbanclient.New(kanban)
 	return srv, st
 }

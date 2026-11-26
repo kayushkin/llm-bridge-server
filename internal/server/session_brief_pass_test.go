@@ -37,9 +37,7 @@ func storeChatTurn(t *testing.T, st *store.Store, sessionID, userMessage string,
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := st.StoreEvent(sessionID, string(event.Type), "", "", data); err != nil {
-			t.Fatalf("store event: %v", err)
-		}
+		storeTestEvent(t, st, sessionID, data)
 	}
 	write(msg.Event{Type: msg.EventUserMessage, BridgeSessionID: sessionID, Result: &msg.ResultEvent{Text: userMessage}})
 	for _, text := range assistantTexts {

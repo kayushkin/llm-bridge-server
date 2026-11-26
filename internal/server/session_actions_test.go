@@ -74,11 +74,7 @@ func (fake *fakeSessionActionStores) GetRepo(id int64) (*repostore.Repo, error) 
 func testServerForSessionActions(t *testing.T) (*Server, *store.Store, *fakeSessionActionStores) {
 	t.Helper()
 	dir := t.TempDir()
-	st, err := store.New(filepath.Join(dir, "test.db"))
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
-	t.Cleanup(func() { st.Close() })
+	st := newTestBridgeStore(t)
 	fake := newFakeSessionActionStores()
 	cfg := &config.Config{
 		ImagesDir:       filepath.Join(dir, "images"),
@@ -87,7 +83,7 @@ func testServerForSessionActions(t *testing.T) (*Server, *store.Store, *fakeSess
 	}
 	testAuthorizationConfig(cfg)
 	srv := New(st, nil, nil, nil, nil, testModelStore(t), nil, cfg)
-	enableLogStoreAt(t, srv, fakeLogStore(t).URL)
+	enableTestSessionEvents(t, srv, st)
 	srv.repoRegistryForDeploys = fake
 	// The scheduler runs in this process; the fake stands in for its jobs.
 	srv.enableSchedulerParts(http.NotFoundHandler(), fake)

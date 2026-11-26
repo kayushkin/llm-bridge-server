@@ -15,7 +15,6 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient/kanbanclienttest"
-	"github.com/kayushkin/llm-bridge-server/internal/store"
 	kanbanapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/api"
 )
 
@@ -205,17 +204,14 @@ func (fake *fakeKanbanStore) recorded() []recordedKanbanRequest {
 func demoLoginTestServer(t *testing.T, principalStoreURL string, kanban *fakeKanbanStore) *Server {
 	t.Helper()
 	directory := t.TempDir()
-	bridgeStore, err := store.New(filepath.Join(directory, "test.db"))
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
-	t.Cleanup(func() { bridgeStore.Close() })
+	bridgeStore := newTestBridgeStore(t)
 	cfg := &config.Config{
 		ImagesDir:       filepath.Join(directory, "images"),
 		BridgePrefsPath: filepath.Join(directory, "prefs.json"),
 	}
 	testAuthorizationConfig(cfg)
 	server := New(bridgeStore, nil, nil, nil, nil, testModelStore(t), nil, cfg)
+	enableTestSessionEvents(t, server, bridgeStore)
 	useFakePrincipalStore(server, principalStoreURL)
 	if kanban != nil {
 		server.useKanbanStoreHandlerForTests(kanban.handler)
@@ -583,11 +579,7 @@ func TestNewRefusesAServerThatCouldNotIdentifyACaller(t *testing.T) {
 				}
 			}()
 			directory := t.TempDir()
-			bridgeStore, err := store.New(filepath.Join(directory, "test.db"))
-			if err != nil {
-				t.Fatalf("new store: %v", err)
-			}
-			t.Cleanup(func() { bridgeStore.Close() })
+			bridgeStore := newTestBridgeStore(t)
 			New(bridgeStore, nil, nil, nil, nil, testModelStore(t), nil, &config.Config{
 				ImagesDir:           filepath.Join(directory, "images"),
 				BridgePrefsPath:     filepath.Join(directory, "prefs.json"),

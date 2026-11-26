@@ -12,7 +12,6 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/serviceinventory"
-	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -22,11 +21,7 @@ import (
 func servicesTestServer(t *testing.T) (*Server, string, string) {
 	t.Helper()
 	dir := t.TempDir()
-	st, err := store.New(filepath.Join(dir, "test.db"))
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
-	t.Cleanup(func() { st.Close() })
+	st := newTestBridgeStore(t)
 
 	openDB := filepath.Join(dir, "quote-store.db")
 	db, err := sql.Open("sqlite", openDB)
@@ -77,7 +72,9 @@ func servicesTestServer(t *testing.T) (*Server, string, string) {
 		HealthcheckURL:  healthcheck.URL,
 	}
 	testAuthorizationConfig(cfg)
-	return New(st, nil, nil, nil, nil, nil, nil, cfg), openDB, closedDB
+	srv := New(st, nil, nil, nil, nil, nil, nil, cfg)
+	enableTestSessionEvents(t, srv, st)
+	return srv, openDB, closedDB
 }
 
 func getJSON(t *testing.T, srv *Server, target string, into any) int {

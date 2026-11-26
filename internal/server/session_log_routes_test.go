@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -9,33 +8,15 @@ import (
 	"testing"
 	"time"
 
-	logstoreserver "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/server"
-	logstorestore "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/store"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
-	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// testServerWithSessionLog is testServer with log-store in this process, on a
+// testServerWithSessionLog is testServer: log-store in this process, on a
 // Postgres database of the test's own, as main wires it.
 func testServerWithSessionLog(t *testing.T) (*Server, *store.Store) {
 	t.Helper()
-	srv, st := testServer(t)
-	module, err := logstorestore.Module()
-	if err != nil {
-		t.Fatal(err)
-	}
-	database := postgrestest.NewDatabase(t, module)
-	writer := database.Open(module)
-	reader, err := logstorestore.OpenReader(context.Background(), database.URL(), module)
-	if err != nil {
-		t.Fatal(err)
-	}
-	logStore := logstorestore.New(writer, reader)
-	t.Cleanup(func() { logStore.Close() })
-	logServer := logstoreserver.New(logStore, nil)
-	srv.EnableSessionLog(logServer, logServer)
-	return srv, st
+	return testServer(t)
 }
 
 // An event the bridge writes reaches log-store in this process, and every
@@ -130,7 +111,7 @@ func TestTheBridgeWritesAndReadsTheSessionLogInProcess(t *testing.T) {
 // Before EnableSessionLog the bridge's log-store routes answer an error rather
 // than reach anything.
 func TestLogStoreRoutesAnswer503BeforeTheSessionLogIsEnabled(t *testing.T) {
-	srv, _ := testServer(t)
+	srv, _ := testServerWithoutSessionLog(t)
 	resp := doJSON(t, srv, http.MethodGet, "/log-store/health", nil)
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("GET /log-store/health = %d, want 503", resp.StatusCode)

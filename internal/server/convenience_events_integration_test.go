@@ -56,18 +56,7 @@ func TestConvenienceEventsIntegration_ClaudeCode_TurnSequence(t *testing.T) {
 		t.Skipf("%s not in PATH: %v", convClaudeBin, err)
 	}
 
-	// /send pushes the user_message to log-store before broadcasting on
-	// SSE; without a reachable log-store the call 500s and the SSE feed
-	// never sees the user_message echo (or any derived events for the
-	// turn). Stub it with an httptest 200-on-everything server so the
-	// production push path is exercised end-to-end without hitting a
-	// real log-store backend.
-	logStore := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(logStore.Close)
-
-	srv, _, instID := testServerWithInstanceAndLogStore(t, msg.HarnessClaudeCode, logStore.URL)
+	srv, _, instID := testServerWithInstance(t, msg.HarnessClaudeCode)
 	ts := httptest.NewServer(asInternalService(srv))
 	t.Cleanup(ts.Close)
 

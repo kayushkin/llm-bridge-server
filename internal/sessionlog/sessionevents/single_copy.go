@@ -121,7 +121,7 @@ func (c *SingleCopy) append(ev *msg.Event, event logstorestore.EventToAppend) (l
 		if errors.As(err, &rejected) || errors.Is(err, logstorestore.ErrRequiredRowMissing) || errors.Is(err, errBuildingCompanionWrite) {
 			return appended, err
 		}
-		retryable := !refusedByPostgres(err) && (event.IdempotencyKey != "" || pgconn.SafeToRetry(err))
+		retryable := !refusedByPostgres(err) && !poolClosed(err) && (event.IdempotencyKey != "" || pgconn.SafeToRetry(err))
 		if !retryable || c.downSince.Load() != 0 {
 			return appended, fmt.Errorf("store %s event of %s: %w", event.Type, event.SessionID, err)
 		}
@@ -153,6 +153,13 @@ func refusedByPostgres(err error) bool {
 		return false
 	}
 	return true
+}
+
+// poolClosed says the session log's pool was closed, as at shutdown: no retry
+// can succeed. database/sql keeps its error for this unexported, so it is
+// known by its text.
+func poolClosed(err error) bool {
+	return errors.Is(err, sql.ErrConnDone) || strings.Contains(err.Error(), "sql: database is closed")
 }
 
 func eventToAppend(record store.SessionEventRecord) logstorestore.EventToAppend {

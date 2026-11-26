@@ -52,7 +52,7 @@ func TestAMessageFromNoPrincipalHasNoSender(t *testing.T) {
 // senderOfUserMessage is the server's own user_message event with this text.
 func senderOfUserMessage(t *testing.T, st *store.Store, sessionID, text string) msg.Event {
 	t.Helper()
-	events, err := st.ListEventsSinceID(sessionID, 0)
+	events, err := testSessionEventsOf(t, st).ListEventsSinceID(sessionID, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

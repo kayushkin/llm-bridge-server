@@ -281,11 +281,7 @@ func TestGetAuthPrincipalGivesAReloadedPageItsCSRFToken(t *testing.T) {
 
 func TestDemoLoginSwitchedOffIs404AndSetsNoCookie(t *testing.T) {
 	directory := t.TempDir()
-	bridgeStore, err := store.New(filepath.Join(directory, "test.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { bridgeStore.Close() })
+	bridgeStore := newTestBridgeStore(t)
 	cfg := &config.Config{
 		ImagesDir:       filepath.Join(directory, "images"),
 		BridgePrefsPath: filepath.Join(directory, "prefs.json"),
@@ -293,6 +289,7 @@ func TestDemoLoginSwitchedOffIs404AndSetsNoCookie(t *testing.T) {
 	testAuthorizationConfig(cfg)
 	cfg.DemoLoginEnabled = false
 	server := New(bridgeStore, nil, nil, nil, nil, testModelStore(t), nil, cfg)
+	enableTestSessionEvents(t, server, bridgeStore)
 	useFakePrincipalStore(server, standardPrincipalDirectory(t).server.URL)
 
 	response := demoLogin(t, server, "principal_000001")

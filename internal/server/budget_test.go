@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -16,25 +15,14 @@ import (
 func float64Ptr(v float64) *float64 { return &v }
 
 // sendableTestServer returns a server a /send can actually complete against:
-// the mock harness rather than a real claude_code binary, and a log-store that
-// answers 200.
-//
-// Both halves are needed and each was measured. /send pushes the user_message
-// to log-store before forwarding, so on the default unreachable
-// "http://localhost:0" it returns 500 "persist user_message: connection
-// refused" — testServerWithInstance's own doc says it is only for tests that
-// never exercise /send. Swapping in just the log-store is not enough: the send
-// then really does forward, spawning a claude_code subprocess that outlives the
-// test and fails the whole package with "Test I/O incomplete 1m0s after
-// exiting". The mock harness is what makes the forward survivable.
+// the mock harness rather than a real claude_code binary. With a claude_code
+// instance the send really does forward, spawning a claude_code subprocess that
+// outlives the test and fails the whole package with "Test I/O incomplete 1m0s
+// after exiting". The mock harness is what makes the forward survivable.
 func sendableTestServer(t *testing.T) (*Server, *store.Store, string) {
 	t.Helper()
 	buildMockHarnessOnPath(t)
-	logStore := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(logStore.Close)
-	return testServerWithInstanceAndLogStore(t, msg.HarnessMock, logStore.URL)
+	return testServerWithInstance(t, msg.HarnessMock)
 }
 
 func TestCreateSession_StoresTheSpendCeiling(t *testing.T) {

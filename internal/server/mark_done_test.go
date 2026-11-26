@@ -2,26 +2,19 @@ package server
 
 import (
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// markDoneTestServer returns a server whose log-store push succeeds.
-// handleMarkSessionDone goes through Manager.BroadcastEvent, which pushes
-// the injected session_state event to log-store synchronously and returns
-// the real error — so with the default unreachable "http://localhost:0"
-// the handler 500s before it ever reaches the derivation this file is
-// about, and every assertion below would be measuring the stub instead.
+// markDoneTestServer returns a server whose event writes succeed: a
+// claude_code instance and the session log in this process.
+// handleMarkSessionDone goes through Manager.BroadcastEvent, which stores the
+// injected event and returns the real error.
 func markDoneTestServer(t *testing.T) (*Server, *store.Store, string) {
 	t.Helper()
-	logStore := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(logStore.Close)
-	return testServerWithInstanceAndLogStore(t, msg.HarnessClaudeCode, logStore.URL)
+	return testServerWithInstance(t, msg.HarnessClaudeCode)
 }
 
 func seedMarkDoneSession(t *testing.T, st *store.Store, instanceID, id string) {

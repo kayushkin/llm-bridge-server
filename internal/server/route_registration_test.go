@@ -12,7 +12,6 @@ import (
 	snapshotstore "github.com/kayushkin/llm-bridge-server/internal/sessions/snapshotstore"
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	"github.com/kayushkin/llm-bridge-server/internal/store"
 )
 
 // TestRoutesRegisterWithEveryStoreMounted builds the real root mux with every
@@ -113,11 +112,7 @@ func newServerWithAllStoresConfigured(t *testing.T, adjustConfig func(*config.Co
 	t.Helper()
 	dir := t.TempDir()
 
-	st, err := store.New(filepath.Join(dir, "bridge.db"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	t.Cleanup(func() { st.Close() })
+	st := newTestBridgeStore(t)
 
 	as := openTestAgentStore(t)
 	ms := openTestMemoryStore(t)
@@ -159,5 +154,7 @@ func newServerWithAllStoresConfigured(t *testing.T, adjustConfig func(*config.Co
 	// New() calls routes(), which is where a conflicting pattern panics.
 	// A panic here fails the test with the conflict named, which is the
 	// whole point: it fails at `go test` instead of at boot.
-	return New(st, as, ms, hs, hks, mds, ss, cfg)
+	srv := New(st, as, ms, hs, hks, mds, ss, cfg)
+	enableTestSessionEvents(t, srv, st)
+	return srv
 }
