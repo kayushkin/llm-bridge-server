@@ -114,12 +114,18 @@ redelivery's ScheduleWakeup lookup, wakeup redelivery's "did it fire", restart
 readiness's background tasks, crash recovery's turn state, git discovery's tool
 inputs, and the startup reconcile.
 
-**One write per event, in two round trips.** `AppendEvent` reads the event's id, its
-session's turn index state and any row its idempotency key names, then sends the
-insert, its turn and its totals as one pgx batch, which Postgres runs as one implicit
-transaction. The writer is one connection, held for both, so ids commit in order. The
-message ids, tool use id and tool name are kept in columns beside the body, filled by
-the writer and by the import.
+**One write per event, in two round trips, and one commit for every session's
+waiting events.** `AppendEvent` reads the event's id, its session's turn index state
+and any row its idempotency key names, then sends the insert, its turn and its totals
+as one pgx batch. The writer is one goroutine on one connection, so ids commit in
+order, and it writes every event waiting when it starts a write together, at most one
+per session and 64 in all (`group_commit.go`): `BEGIN` and their first reads in one
+round trip, their writes and `COMMIT` in the second, so with default durability the
+sessions share one flush to disk instead of each waiting behind the others'. Events of
+one session keep their order, each written after the one before committed. A group
+that fails is rolled back and its events written one by one. The message ids, tool use
+id and tool name are kept in columns beside the body, filled by the writer and by the
+import.
 
 **The rows written with their events.** Two events describe a row of the
 `bridge_core` module, and each is written in the event's transaction, on this
