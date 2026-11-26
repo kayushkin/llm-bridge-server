@@ -84,22 +84,32 @@ export function serverBoardsKey(server: KanbanServer): string {
   return server.connectionId ?? 'this-server'
 }
 
-/** Every listed server's boards, each read once through that server's config:
- *  this server's kanban-store, or a connected server's `/kanban-store/`
- *  gateway through the connection's proxy. A server that cannot be read is
- *  not asked. Read again when the list of servers or their reasons change. */
-export function useBoardsOnServers(servers: readonly KanbanServer[], config: BridgeConfig): ReadonlyMap<string, ServerBoards> {
+/** Every listed server's boards but the shown one's, each read once through
+ *  that server's config: this server's kanban-store, or a connected server's
+ *  `/kanban-store/` gateway through the connection's proxy. The shown server's
+ *  boards are the board page's own read (`useKanban`), which keeps them current
+ *  as boards are made and deleted, so reading them here too would only repeat
+ *  that request. A server that cannot be read is not asked.
+ *
+ *  Read again when the connections, their reasons, or the shown server change —
+ *  not when a server's id arrives: this server's id is empty until `GET /server`
+ *  answers, and keying on it read every server's boards a second time. */
+export function useBoardsOnServers(servers: readonly KanbanServer[], config: BridgeConfig, shownServerKey: string | null): ReadonlyMap<string, ServerBoards> {
   const [boards, setBoards] = useState<ReadonlyMap<string, ServerBoards>>(new Map())
-  const serversKey = servers.map(server => `${serverBoardsKey(server)}=${server.serverId}:${server.blockedReason ?? ''}`).join('\n')
+  const serversKey = servers
+    .filter(server => serverBoardsKey(server) !== shownServerKey)
+    .map(server => `${serverBoardsKey(server)}:${server.blockedReason ?? ''}`)
+    .join('\n')
 
   useEffect(() => {
     let canceled = false
     const initial = new Map<string, ServerBoards>()
-    for (const server of servers) {
+    const asked = servers.filter(server => serverBoardsKey(server) !== shownServerKey)
+    for (const server of asked) {
       initial.set(serverBoardsKey(server), server.blockedReason ? { state: 'blocked', reason: server.blockedReason } : { state: 'loading' })
     }
     setBoards(initial)
-    for (const server of servers) {
+    for (const server of asked) {
       if (server.blockedReason) continue
       const serverConfig = server.connectionId ? peerConnectionBridgeConfig(config, server.connectionId) : config
       const key = serverBoardsKey(server)
@@ -118,7 +128,7 @@ export function useBoardsOnServers(servers: readonly KanbanServer[], config: Bri
     }
     return () => { canceled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [serversKey, config])
+  }, [serversKey, shownServerKey, config])
 
   return boards
 }

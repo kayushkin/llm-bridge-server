@@ -98,7 +98,6 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
   const [boards, setBoards] = useState<Board[]>([])
   const [view, setView] = useState<BoardView | null>(null)
   const [entityTypes, setEntityTypes] = useState<ReferenceType[]>([])
-  const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const lastViewJSON = useRef('')
   // How many cards the user has asked to see in each column. A column the user
@@ -109,7 +108,7 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
   const [columnLimits, setColumnLimits] = useState<Record<string, number>>({})
 
   const fetchBoards = useCallback(async () => {
-    if (!enabled || !loadBoards) { setLoading(false); return }
+    if (!enabled || !loadBoards) return
     try {
       const res = await fetchFn(`${kanbanStoreBasePath}/api/boards`)
       if (!res.ok) throw new Error(`/api/boards HTTP ${res.status}`)
@@ -163,27 +162,49 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
     } catch {/* non-fatal */}
   }, [fetchFn, kanbanStoreBasePath, enabled, loadEntityTypes])
 
+  // Two effects, not one: the board list does not depend on which board is
+  // open, so picking a board (the page picks one as soon as the list arrives)
+  // must not read the list again. In one effect keyed on both, every load read
+  // `/api/boards` twice.
+  //
+  // Each timer runs only when its call can actually fetch. The chat pane's
+  // LinkedKanbanPanel constructs this hook with loadBoards false and no board
+  // id, and both callbacks then return at their first line — so a shared
+  // interval fired every 15 seconds, per open chat pane, and issued no request
+  // at all. The cards that panel shows come from listCardsForEntity and
+  // listEntityTags, which these timers have never called; the panel runs its
+  // own refresh over those two, at the same cadence.
+  const [boardsLoading, setBoardsLoading] = useState(true)
+  const [viewLoading, setViewLoading] = useState(true)
   useEffect(() => {
     let canceled = false
     const run = async () => {
-      setLoading(true)
-      await Promise.all([fetchBoards(), fetchView(), fetchEntityTypes()])
-      if (!canceled) setLoading(false)
+      setBoardsLoading(true)
+      await Promise.all([fetchBoards(), fetchEntityTypes()])
+      if (!canceled) setBoardsLoading(false)
     }
     run()
-    // Only run the timer when one of the two calls it makes can actually fetch.
-    // The chat pane's LinkedKanbanPanel constructs this hook with loadBoards
-    // false and no board id, and both callbacks then return at their first line
-    // — so the interval fired every 15 seconds, per open chat pane, and issued no
-    // request at all. The cards that panel shows come from listCardsForEntity
-    // and listEntityTags, which this timer has never called; the panel runs its
-    // own refresh over those two, at the same cadence.
-    if (!kanbanPollWouldFetch(enabled, loadBoards, boardID)) {
+    if (!kanbanPollWouldFetch(enabled, loadBoards, null)) {
       return () => { canceled = true }
     }
-    const t = setInterval(() => { fetchBoards(); fetchView() }, 15000)
+    const t = setInterval(() => { fetchBoards() }, 15000)
     return () => { canceled = true; clearInterval(t) }
-  }, [fetchBoards, fetchView, fetchEntityTypes, enabled, loadBoards, boardID])
+  }, [fetchBoards, fetchEntityTypes, enabled, loadBoards])
+  useEffect(() => {
+    let canceled = false
+    const run = async () => {
+      setViewLoading(true)
+      await fetchView()
+      if (!canceled) setViewLoading(false)
+    }
+    run()
+    if (!kanbanPollWouldFetch(enabled, false, boardID)) {
+      return () => { canceled = true }
+    }
+    const t = setInterval(() => { fetchView() }, 15000)
+    return () => { canceled = true; clearInterval(t) }
+  }, [fetchView, enabled, boardID])
+  const loading = boardsLoading || viewLoading
 
   const createBoard = useCallback(async (args: CreateBoardArgs): Promise<Board | null> => {
     if (!enabled) return null
