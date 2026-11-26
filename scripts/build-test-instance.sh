@@ -50,6 +50,9 @@ for wrapper in llm-bridge-claudecode llm-bridge-codex; do
   (cd "$source_dir" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$OUT/$wrapper" .)
 done
 
+# The harness logos the server serves at /images/harnesses/. One archive rather
+# than a folder, so the folder still copies with a plain `scp <folder>/*`.
+tar -C "$REPO_DIR/images" -cf "$OUT/harness-images.tar" harnesses
 
 cp "$REPO_DIR/scripts/test-instance.sh" "$OUT/test-instance.sh"
 echo "==> Built into $OUT:"

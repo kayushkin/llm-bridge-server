@@ -47,7 +47,7 @@ func (s *Server) handleCredentialsList(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	creds, err := s.authClient.List(ctx, authstoreclient.ListFilter{})
 	if err != nil {
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadGateway)
+		writeJSONError(w, http.StatusBadGateway, "auth_store_unavailable", err.Error())
 		return
 	}
 	writeJSON(w, toCredResponses(creds))
@@ -105,7 +105,7 @@ func (s *Server) handleCredentialCreate(w http.ResponseWriter, r *http.Request) 
 	defer cancel()
 	c, err := s.authClient.Create(ctx, in)
 	if err != nil {
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadGateway)
+		writeJSONError(w, http.StatusBadGateway, "auth_store_unavailable", err.Error())
 		return
 	}
 
@@ -123,7 +123,7 @@ func (s *Server) handleCredentialDelete(w http.ResponseWriter, r *http.Request) 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	if err := s.authClient.Delete(ctx, id); err != nil {
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadGateway)
+		writeJSONError(w, http.StatusBadGateway, "auth_store_unavailable", err.Error())
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
