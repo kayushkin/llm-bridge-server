@@ -9,11 +9,12 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/stdlib"
 )
 
 // AppendEvent stores one event, places it in its turn and adds it to the
-// session's totals, in two round trips to Postgres on the single writer:
+// session's totals, in two round trips to Postgres on the single writer,
+// together with the events of other sessions waiting at the same moment
+// (group_commit.go):
 //
 //  1. one read: the event's id, the session's turn index state, and the row
 //     an idempotency key already names;
@@ -40,18 +41,7 @@ func (s *Store) AppendEvent(ctx context.Context, event EventToAppend) (AppendedE
 	if (event.Data == nil) == (event.DataForID == nil) {
 		return AppendedEvent{}, ErrEventBodyMissing
 	}
-	connection, err := s.writer.Conn(ctx)
-	if err != nil {
-		return AppendedEvent{}, err
-	}
-	defer connection.Close()
-	var appended AppendedEvent
-	err = connection.Raw(func(driverConnection any) error {
-		var err error
-		appended, err = s.appendEventOnConnection(ctx, driverConnection.(*stdlib.Conn).Conn(), event)
-		return err
-	})
-	return appended, err
+	return s.submitAppend(ctx, event)
 }
 
 // appendState is what step 1 reads.
@@ -127,15 +117,34 @@ func (s *Store) appendEventOnConnection(ctx context.Context, connection *pgx.Con
 		return AppendedEvent{ID: state.existingID.Int64, Data: []byte(state.existingData.String), AlreadyStored: true}, nil
 	}
 
-	appended = AppendedEvent{ID: state.id, Data: event.Data}
+	batch := &statementBatch{}
+	appended, err = s.queueEventWrites(batch, state, event)
+	if err != nil {
+		return AppendedEvent{}, err
+	}
+	if explicit {
+		batch.Exec("COMMIT")
+	}
+	if err := batch.send(ctx, connection); err != nil {
+		return AppendedEvent{}, err
+	}
+	return appended, nil
+}
+
+// queueEventWrites queues the writes of one event, given step 1's state: the
+// event, its turn, its totals and the rows it describes (AlsoWrite).
+func (s *Store) queueEventWrites(batch *statementBatch, state appendState, event EventToAppend) (AppendedEvent, error) {
+	var key any
+	if event.IdempotencyKey != "" {
+		key = event.IdempotencyKey
+	}
+	appended := AppendedEvent{ID: state.id, Data: event.Data}
 	if event.DataForID != nil {
 		var err error
 		if appended.Data, err = event.DataForID(state.id); err != nil {
 			return AppendedEvent{}, err
 		}
 	}
-
-	batch := &statementBatch{}
 	batch.Exec(`INSERT INTO events (id, session_id, type, data, created_at, message_id, harness_message_id, tool_use_id, tool_name, idempotency_key)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 		appended.ID, event.SessionID, event.Type, string(appended.Data), state.createdAt,
@@ -157,12 +166,6 @@ func (s *Store) appendEventOnConnection(ctx context.Context, connection *pgx.Con
 		for _, statement := range statements {
 			batch.Exec(statement.Query, statement.Arguments...)
 		}
-	}
-	if explicit {
-		batch.Exec("COMMIT")
-	}
-	if err := batch.send(ctx, connection); err != nil {
-		return AppendedEvent{}, err
 	}
 	return appended, nil
 }
