@@ -9,8 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore/harnessstoretest"
+
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	harnessstore "github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -23,11 +24,7 @@ func testServerForImages(t *testing.T, harnessAnswer string, harnessExitCode int
 	t.Helper()
 	srv, _, _, _ = testServerWithFileStore(t)
 	dir := t.TempDir()
-	harnesses, err := harnessstore.Open(filepath.Join(dir, "harness.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { harnesses.Close() })
+	harnesses := harnessstoretest.NewStore(t)
 	if err := harnesses.CreateMachine(&msg.Machine{ID: "m_images", Name: "images", Hostname: "localhost", Transport: msg.TransportLocal}); err != nil {
 		t.Fatal(err)
 	}

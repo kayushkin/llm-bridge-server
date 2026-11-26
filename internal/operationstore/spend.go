@@ -15,30 +15,6 @@ import (
 // without reading every receipt. RecordModelCall writes both in one
 // transaction, so they cannot disagree.
 
-const spendSchema = `
-CREATE TABLE IF NOT EXISTS operation_spend (
-	operation_id      TEXT NOT NULL REFERENCES operations(id),
-	root_operation_id TEXT NOT NULL,
-	organization_id   TEXT NOT NULL,
-	model             TEXT NOT NULL,
-	input_tokens      INTEGER NOT NULL,
-	output_tokens     INTEGER NOT NULL,
-	cache_read_tokens INTEGER NOT NULL,
-	cache_write_tokens INTEGER NOT NULL,
-	cost_usd          REAL NOT NULL,
-	cost_known        INTEGER NOT NULL,
-	at                INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS operation_spend_organization_at ON operation_spend(organization_id, at);
-CREATE INDEX IF NOT EXISTS operation_spend_root ON operation_spend(root_operation_id);
-CREATE TABLE IF NOT EXISTS organization_budgets (
-	organization_id   TEXT PRIMARY KEY,
-	monthly_limit_usd REAL NOT NULL,
-	updated_by        TEXT NOT NULL,
-	updated_at        INTEGER NOT NULL
-);
-`
-
 // ModelCall is one model call's usage, and its list-price cost when known.
 type ModelCall struct {
 	Model   string
@@ -67,11 +43,11 @@ func (s *Store) RecordModelCall(operationID string, leaseToken int64, now time.T
 		return msg.OperationEventProgress, nil
 	}, func(tx *sql.Tx, operation Operation) error {
 		var rootOperationID string
-		if err := tx.QueryRow(`SELECT root_operation_id FROM operations WHERE id = ?`, operationID).Scan(&rootOperationID); err != nil {
+		if err := tx.QueryRow(`SELECT root_operation_id FROM operations WHERE id = $1`, operationID).Scan(&rootOperationID); err != nil {
 			return fmt.Errorf("read root of %s: %w", operationID, err)
 		}
 		_, err := tx.Exec(`INSERT INTO operation_spend (operation_id, root_operation_id, organization_id, model, input_tokens,
-			output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, cost_known, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, cost_known, at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
 			operationID, rootOperationID, operation.Receipt.OrganizationID, call.Model, call.Tokens.InputTokens, call.Tokens.OutputTokens,
 			call.Tokens.CacheReadTokens, call.Tokens.CacheWriteTokens, call.CostUSD, call.CostKnown, now.UnixNano())
 		if err != nil {
@@ -90,7 +66,7 @@ func MonthStart(at time.Time) time.Time {
 // OrganizationSpentUSD sums an organization's list-price spend since from.
 func (s *Store) OrganizationSpentUSD(organizationID string, from time.Time) (float64, error) {
 	var spent float64
-	err := s.db.QueryRow(`SELECT COALESCE(SUM(cost_usd), 0) FROM operation_spend WHERE organization_id = ? AND at >= ?`,
+	err := s.db.QueryRow(`SELECT COALESCE(SUM(cost_usd), 0) FROM operation_spend WHERE organization_id = $1 AND at >= $2`,
 		organizationID, from.UnixNano()).Scan(&spent)
 	if err != nil {
 		return 0, fmt.Errorf("sum spend of %s: %w", organizationID, err)
@@ -101,7 +77,7 @@ func (s *Store) OrganizationSpentUSD(organizationID string, from time.Time) (flo
 // TreeSpentUSD sums the spend of an operation and every descendant.
 func (s *Store) TreeSpentUSD(rootOperationID string) (float64, error) {
 	var spent float64
-	err := s.db.QueryRow(`SELECT COALESCE(SUM(cost_usd), 0) FROM operation_spend WHERE root_operation_id = ?`, rootOperationID).Scan(&spent)
+	err := s.db.QueryRow(`SELECT COALESCE(SUM(cost_usd), 0) FROM operation_spend WHERE root_operation_id = $1`, rootOperationID).Scan(&spent)
 	if err != nil {
 		return 0, fmt.Errorf("sum spend under %s: %w", rootOperationID, err)
 	}
@@ -112,7 +88,7 @@ func (s *Store) TreeSpentUSD(rootOperationID string) (float64, error) {
 // which carries the per-operation cost cap.
 func (s *Store) RootOf(operationID string) (Operation, error) {
 	var rootOperationID string
-	if err := s.db.QueryRow(`SELECT root_operation_id FROM operations WHERE id = ?`, operationID).Scan(&rootOperationID); err != nil {
+	if err := s.db.QueryRow(`SELECT root_operation_id FROM operations WHERE id = $1`, operationID).Scan(&rootOperationID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Operation{}, fmt.Errorf("%w: %s", ErrNotFound, operationID)
 		}
@@ -126,7 +102,7 @@ func (s *Store) SetOrganizationBudget(organizationID string, monthlyLimitUSD flo
 	if monthlyLimitUSD < 0 {
 		return fmt.Errorf("monthly limit must not be negative, got %v", monthlyLimitUSD)
 	}
-	_, err := s.db.Exec(`INSERT INTO organization_budgets (organization_id, monthly_limit_usd, updated_by, updated_at) VALUES (?, ?, ?, ?)
+	_, err := s.db.Exec(`INSERT INTO organization_budgets (organization_id, monthly_limit_usd, updated_by, updated_at) VALUES ($1, $2, $3, $4)
 		ON CONFLICT(organization_id) DO UPDATE SET monthly_limit_usd = excluded.monthly_limit_usd,
 		updated_by = excluded.updated_by, updated_at = excluded.updated_at`,
 		organizationID, monthlyLimitUSD, updatedBy, now.UnixNano())
@@ -139,7 +115,7 @@ func (s *Store) SetOrganizationBudget(organizationID string, monthlyLimitUSD flo
 // DeleteOrganizationBudget removes an organization's limit; ErrNotFound when
 // it had none.
 func (s *Store) DeleteOrganizationBudget(organizationID string) error {
-	result, err := s.db.Exec(`DELETE FROM organization_budgets WHERE organization_id = ?`, organizationID)
+	result, err := s.db.Exec(`DELETE FROM organization_budgets WHERE organization_id = $1`, organizationID)
 	if err != nil {
 		return fmt.Errorf("delete budget of %s: %w", organizationID, err)
 	}
@@ -153,7 +129,7 @@ func (s *Store) DeleteOrganizationBudget(organizationID string) error {
 // found is false when it has no limit.
 func (s *Store) OrganizationBudget(organizationID string, now time.Time) (budget msg.OrganizationBudget, found bool, err error) {
 	var updatedAt int64
-	err = s.db.QueryRow(`SELECT monthly_limit_usd, updated_by, updated_at FROM organization_budgets WHERE organization_id = ?`, organizationID).
+	err = s.db.QueryRow(`SELECT monthly_limit_usd, updated_by, updated_at FROM organization_budgets WHERE organization_id = $1`, organizationID).
 		Scan(&budget.MonthlyLimitUSD, &budget.UpdatedBy, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return msg.OrganizationBudget{}, false, nil

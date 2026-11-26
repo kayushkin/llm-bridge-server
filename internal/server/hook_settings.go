@@ -112,8 +112,8 @@ func (s *Server) startOnInstance(ctx context.Context, sess *store.Session, inst 
 // only the user-hook section does, and both builders guard hookStore
 // separately where they need it (buildClaudeCodeSettings, buildCodexHookConfig).
 // Returning early here would turn a hook-registry outage into a silent
-// permission-gate outage — main() sets the store to nil and continues when
-// hookstore.Open fails, so that path is reachable in production.
+// permission-gate outage. main() no longer starts without the hook-store
+// module, but a server built without one (as tests build it) must still gate.
 // hookConfigKeyByHarness names the harnesses this server wires hooks into and
 // the harness_config key each one's synthesized block is written under. It is
 // what GET /hook-options serves, and TestEveryHarnessInTheHookOptionsIsWired

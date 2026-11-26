@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -15,7 +14,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/executors"
 	"github.com/kayushkin/llm-bridge-server/internal/oneshotrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/operations"
-	"github.com/kayushkin/llm-bridge-server/internal/operationstore"
+	"github.com/kayushkin/llm-bridge-server/internal/operationstore/operationstoretest"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -206,11 +205,7 @@ func createSyntheticEvalRun(t *testing.T, gated *gatedTestServer) string {
 // answers and verdicts carry the operations' ids.
 func TestAnEvalStoreRunMakesItsCallsAsOperationsInProcess(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
-	operationStore, err := operationstore.Open(filepath.Join(t.TempDir(), "operations.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { operationStore.Close() })
+	operationStore := operationstoretest.NewStore(t)
 	coordinator, err := operations.NewCoordinator(operationStore, operations.Config{WorkerCount: 2, LeaseDuration: 3 * time.Second, LeaseOwner: "test"},
 		executors.LLMCompletion{Caller: answerEveryCallWith{parsed: json.RawMessage(`{"made_up":true}`)}})
 	if err != nil {

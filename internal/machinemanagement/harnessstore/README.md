@@ -1,6 +1,6 @@
 # harness-store
 
-SQLite registry for harness instances and credential bindings. Part of the [llm-bridge](https://github.com/kayushkin/llm-bridge) ecosystem.
+Registry for harness instances, machines and credential bindings, kept in the Postgres module `harnesses` (role `harnesses_module`, migrations in `migrations/`). Part of the [llm-bridge](https://github.com/kayushkin/llm-bridge) ecosystem.
 
 Tracks which harness instances are deployed across machines (local or SSH), which credentials are bound to each instance, and display metadata for harness types. This is configuration storage only -- runtime state (active sessions, credential slot occupancy) lives in [llm-bridge-server](https://github.com/kayushkin/llm-bridge-server).
 
@@ -13,9 +13,9 @@ This package is internal to llm-bridge-server, so only code in this repo can imp
 ```go
 import store "github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore"
 
-// Open (creates DB and runs migrations if needed)
-s, err := store.Open("~/.config/harness-store/harness.db")
-defer s.Close()
+// db is the module's pool: the server provisions, migrates and opens the
+// module (cmd/llm-bridge-server), then hands it here.
+s := store.New(db)
 
 // Register the machine the harness runs on (local or SSH)
 s.CreateMachine(&msg.Machine{
@@ -46,79 +46,12 @@ creds, _ := s.ListInstanceCredentials("laptop-cc")
 
 ## Schema
 
-### `machines`
+`migrations/0001_create_machines_instances_credentials_enrollments_and_harness_types.sql` is the schema: `machines`, `instances`, `instance_credentials`, `runner_enrollments` and `harness_types`, with times as `timestamptz` (kept to the microsecond, handed back in UTC) and switches as `boolean`. Two things differ from the SQLite file it came from:
 
-Hosts that harness instances run on. SSH/transport config lives here (it was
-lifted out of `instances` in the machine-split migration).
+- `machines.user` is `operating_system_user`, since Postgres reserves `user`. `msg.Machine.User` is unchanged.
+- No table declares a foreign key. SQLite never enforced the ones its file declared, and the live file holds rows that break them, so deleting a machine leaves its instances, and deleting an instance leaves its bindings, as before. Card 882d977a-dfaf-47da-9857-205285dba647 holds the decision to change that.
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | TEXT PK | Unique machine identifier |
-| `name` | TEXT | Unique human-readable name |
-| `emoji` | TEXT | Optional UI accent |
-| `hostname` | TEXT | Network address (Tailscale name, IP, …) |
-| `os` | TEXT | `GOOS` (e.g. `linux`, `darwin`) |
-| `arch` | TEXT | `GOARCH` (e.g. `amd64`, `arm64`) |
-| `transport` | TEXT | `local` or `ssh` (default: `local`) |
-| `ssh_user` | TEXT | SSH username |
-| `ssh_key_path` | TEXT | Path to SSH private key |
-| `ssh_port` | INTEGER | SSH port (default: 22) |
-| `default_working_dir` | TEXT | Default working directory for instances |
-| `user` | TEXT | Runner-side OS user (display only) |
-| `notes` | TEXT | Free-form notes |
-| `runner_token_hash` | TEXT | Hashed runner auth token |
-| `last_seen_at` | DATETIME | Last runner check-in |
-
-### `instances`
-
-Harness deployments on a machine.
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | TEXT PK | Unique instance identifier |
-| `harness_type` | TEXT | Harness type (e.g. `claude_code`, `codex`) |
-| `name` | TEXT | Human-readable name |
-| `machine_id` | TEXT | References `machines.id` (cascade delete) |
-| `working_dir` | TEXT | Working directory (overrides machine default) |
-| `max_concurrent_sessions` | INTEGER | Max concurrent sessions (default: 1) |
-| `enabled` | INTEGER | 0/1 flag (default: 1) |
-
-### `instance_credentials`
-
-Binds credentials to instances with priority ordering.
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `instance_id` | TEXT | References `instances.id` (cascade delete) |
-| `credential_id` | TEXT | Credential identifier |
-| `priority` | INTEGER | Priority order (0 = primary, 1+ = fallbacks) |
-| `enabled` | INTEGER | 0/1 flag (default: 1) |
-
-Primary key is `(instance_id, credential_id)`.
-
-### `runner_enrollments`
-
-One-time-use tokens that let a runner self-register a machine.
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | TEXT PK | Enrollment identifier |
-| `passphrase_hash` | TEXT | Hashed one-time passphrase (unique) |
-| `expires_at` | DATETIME | Expiry time |
-| `used_at` | DATETIME | When redeemed (null until consumed) |
-| `consumed_machine_id` | TEXT | Machine that redeemed it (FK, set null on delete) |
-
-### `harness_types`
-
-Display metadata for each harness type.
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `name` | TEXT PK | Harness type identifier |
-| `label` | TEXT | Human-readable label |
-| `emoji` | TEXT | Unicode emoji |
-| `image` | TEXT | Image URL or path |
-| `updated_at` | DATETIME | Last update time |
+`llm-bridge-server import-harness-store -sqlite <copy of harness.db>` copies every row of the SQLite file into the module, keeping every id (`m_…`, `inst_…`, `enr_…`), and refuses a module that already holds one.
 
 ## API
 
@@ -126,9 +59,9 @@ Display metadata for each harness type.
 
 | Function | Description |
 |----------|-------------|
-| `Open(dbPath)` | Open or create database, apply WAL mode, run migrations |
-| `Close()` | Close database connection |
-| `DB()` | Access underlying `*sql.DB` |
+| `Module()` | The schema, role and migrations the server provisions and migrates |
+| `New(db)` | The store over the module's pool |
+| `DB()` | The module's pool, for tests |
 
 ### Instance operations
 
@@ -142,7 +75,7 @@ Display metadata for each harness type.
 | `ListInstancesByHarness(type)` | Enabled instances for a harness type |
 | `ListInstancesByMachine(machineID)` | Instances on a specific machine |
 | `UpdateInstance(inst)` | Update configuration |
-| `DeleteInstance(id)` | Remove instance (cascades to credentials) |
+| `DeleteInstance(id)` | Remove instance (its bindings stay; call `ClearInstanceCredentials` first) |
 | `SetInstanceEnabled(id, enabled)` | Toggle enabled status |
 | `CountInstances()` | Total count |
 | `CountEnabledInstances()` | Enabled count |
@@ -170,7 +103,7 @@ Display metadata for each harness type.
 | `GetMachineByName(name)` | Get by name |
 | `ListMachines()` | All machines, ordered by name |
 | `UpdateMachine(m)` | Update configuration |
-| `DeleteMachine(id)` | Remove machine (cascades to instances) |
+| `DeleteMachine(id)` | Remove machine (its instances stay) |
 | `SetMachineRunnerTokenHash(id, hash)` | Set the runner auth token hash |
 | `GetMachineByRunnerTokenHash(hash)` | Look up a machine by runner token hash |
 | `TouchMachineLastSeen(id)` | Update `last_seen_at` to now |
@@ -195,8 +128,8 @@ Display metadata for each harness type.
 ## Dependencies
 
 - [`llm-bridge`](https://github.com/kayushkin/llm-bridge) -- canonical types (`msg.Instance`, `msg.InstanceCredential`, `msg.Harness`, `msg.Transport`)
-- [`modernc.org/sqlite`](https://pkg.go.dev/modernc.org/sqlite) -- pure-Go SQLite driver (no CGO)
+- `postgresstorage` -- the module's schema, role and migrations; `modernc.org/sqlite` only to read the SQLite file an import copies
 
 ## Part of the llm-bridge ecosystem
 
-This store is one of several optional SQLite-backed libraries that [llm-bridge-server](https://github.com/kayushkin/llm-bridge-server) can compose. See the [llm-bridge README](https://github.com/kayushkin/llm-bridge) for the full picture.
+This store is one of the Postgres modules that [llm-bridge-server](https://github.com/kayushkin/llm-bridge-server) can compose. See the [llm-bridge README](https://github.com/kayushkin/llm-bridge) for the full picture.

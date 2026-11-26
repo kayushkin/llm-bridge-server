@@ -57,38 +57,38 @@ CASES = [
     {
         "name": "SetHookEnabled deletes the row instead of flagging it",
         "file": "hook.go",
-        "find": "\tres, err := s.db.Exec(`UPDATE hooks SET enabled = ?, updated_at = ? WHERE id = ?`,\n\t\tenabled, time.Now().UTC(), id)",
-        "replace": "\tres, err := s.db.Exec(`DELETE FROM hooks WHERE id = ?`, id)\n\t_ = enabled"
+        "find": "\tres, err := s.db.Exec(`UPDATE hooks SET enabled = $1, updated_at = $2 WHERE id = $3`,\n\t\tenabled, time.Now().UTC(), id)",
+        "replace": "\tres, err := s.db.Exec(`DELETE FROM hooks WHERE id = $1`, id)\n\t_ = enabled"
     },
     {
         "name": "SetHookEnabled narrows its WHERE so a no-op write reads as not-found",
         "file": "hook.go",
-        "find": "`UPDATE hooks SET enabled = ?, updated_at = ? WHERE id = ?`",
-        "replace": "`UPDATE hooks SET enabled = ?, updated_at = ? WHERE id = ? AND enabled != ?`"
+        "find": "`UPDATE hooks SET enabled = $1, updated_at = $2 WHERE id = $3`",
+        "replace": "`UPDATE hooks SET enabled = $1, updated_at = $2 WHERE id = $3 AND enabled != $1`"
     },
     {
-        "name": "scanHook reads the INTEGER column backwards",
+        "name": "scanHook reads the enabled column backwards",
         "file": "hook.go",
-        "find": "\th.Enabled = enabled != 0",
-        "replace": "\th.Enabled = enabled == 0"
+        "find": "\th.CreatedAt = h.CreatedAt.UTC()",
+        "replace": "\th.Enabled = !h.Enabled\n\th.CreatedAt = h.CreatedAt.UTC()"
     },
     {
         "name": "ListHooks applies the enabled filter even when EnabledSet is false",
         "file": "hook.go",
-        "find": "\tif filter.EnabledSet {\n\t\tquery += ` AND enabled = ?`",
-        "replace": "\tif true {\n\t\tquery += ` AND enabled = ?`"
+        "find": "\tif filter.EnabledSet {\n\t\tquery += ` AND enabled = ` + placeholder(filter.Enabled)",
+        "replace": "\tif true {\n\t\tquery += ` AND enabled = ` + placeholder(filter.Enabled)"
     },
     {
         "name": "ListHooks ignores the enabled filter entirely",
         "file": "hook.go",
-        "find": "\tif filter.EnabledSet {\n\t\tquery += ` AND enabled = ?`\n\t\targs = append(args, filter.Enabled)\n\t}",
-        "replace": "\tif false {\n\t\tquery += ` AND enabled = ?`\n\t\targs = append(args, filter.Enabled)\n\t}"
+        "find": "\tif filter.EnabledSet {\n\t\tquery += ` AND enabled = ` + placeholder(filter.Enabled)\n\t}",
+        "replace": "\tif false {\n\t\tquery += ` AND enabled = ` + placeholder(filter.Enabled)\n\t}"
     },
     {
         "name": "ListApplicable stops filtering on enabled",
         "file": "hook.go",
-        "find": "\t\tWHERE enabled = 1\n\t\t  AND harness = ?",
-        "replace": "\t\tWHERE harness = ?"
+        "find": "\t\tWHERE enabled\n\t\t  AND harness = $1",
+        "replace": "\t\tWHERE harness = $1"
     }
 ]
 
