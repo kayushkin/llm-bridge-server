@@ -313,6 +313,12 @@ export interface Entry {
 
   // Rendered payload (kind-dependent; unused fields omitted):
   text?: string;
+  /** Live-folded text entries only: the part of `text` made of whole content
+   *  blocks (`block` events). A harness streams a block's text as deltas and
+   *  then sends the block whole, so the whole block replaces the deltas built
+   *  since the previous one rather than being added after them. Absent until a
+   *  delta or a block arrives, and never on a page's entries. */
+  wholeBlocksText?: string;
   toolName?: string;
   toolInput?: unknown;
   toolResult?: unknown;

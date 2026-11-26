@@ -581,7 +581,7 @@ export function useComposer(sessionId: string | null): {
         actions.appendOptimisticUser(targetId, message, clientId);
         actions.setSending(targetId, true);
         try {
-          const result = await api.send(targetId, message);
+          const result = await api.send(targetId, message, clientId);
           // A held message is drawn from its `message_held_for_restart` event,
           // which survives a reload; the optimistic row would show it twice and
           // never reconcile until the restart.

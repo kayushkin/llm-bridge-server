@@ -598,10 +598,16 @@ export class ApiClient {
     return createdSessionFromWire(wire);
   }
 
-  async send(id: string, text: string): Promise<SendResult> {
+  /**
+   * Send a message. `clientRequestId` is the id the chat drew its optimistic row
+   * under; the server keeps it on the `user_message` event it records
+   * (`client_request_id`), so the row and the server's copy are matched by id
+   * rather than by their text, which cannot tell two identical prompts apart.
+   */
+  async send(id: string, text: string, clientRequestId?: string): Promise<SendResult> {
     const wire = await this.postJSON<{ status: 'sent' | 'held'; message_id?: string; held_message_id?: string }>(
       `/sessions/${id}/send`,
-      { message: text },
+      { message: text, ...(clientRequestId ? { client_request_id: clientRequestId } : {}) },
     );
     return { status: wire.status, messageId: wire.message_id, heldMessageId: wire.held_message_id };
   }

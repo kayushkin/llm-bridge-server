@@ -192,17 +192,13 @@ func main() {
 
 			emitState(msg.SessionRunning)
 
-			// Echo the user's message as an EventUserMessage so consumers
-			// that want a single source of truth for "what did the user
-			// send?" can listen on the event stream rather than tracking
-			// stdin separately.
-			emit(msg.Event{
-				Type:            msg.EventUserMessage,
-				Harness:         msg.Harness(harnessName),
-				BridgeSessionID: sessionID,
-				Timestamp:       time.Now(),
-				Result:          &msg.ResultEvent{Text: mp.Content},
-			})
+			// No echo of the message as an EventUserMessage. The server
+			// records the message itself when POST /sessions/{id}/send takes
+			// it, so an echo was a second copy with an id of its own, and the
+			// chat drew the prompt twice. No real harness echoes it either:
+			// llm-bridge-claudecode skips Claude Code's echo of the operator's
+			// text (its OTel copy is marked and paired with the server's), and
+			// llm-bridge-codex emits none.
 
 			emitResult(emit, harnessName, sessionID, mp.Content)
 
