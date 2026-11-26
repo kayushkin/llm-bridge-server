@@ -1182,7 +1182,7 @@ console.log('\nBridgePrincipals — the directory editor')
     h(MemoryRouter, { initialEntries: ['/principals'] },
       h(BridgeContext.Provider, { value: bridgeConfig(principalStoreBasePath) }, h(BridgePrincipals))))
 
-  check('no principal-store path renders nothing', mountPage('') === '', JSON.stringify(mountPage('')))
+  check('no principal-store path says it is not configured', mountPage('').includes('principal-store is not configured'), JSON.stringify(mountPage('')))
   const page = mountPage('/api/principals')
   check('a configured host gets the page', page.includes('bp-container') && page.includes('>Principals<'), page.slice(0, 300))
   check('the kind filter offers All / People / Groups', ['>All<', '>People<', '>Groups<'].every(t => page.includes(t)), page.slice(0, 600))
@@ -1276,7 +1276,7 @@ console.log('\nBridgeBundles — bundle-store bundles and the resolve preview')
     h(MemoryRouter, { initialEntries: ['/bundles'] },
       h(BridgeContext.Provider, { value: bundlesConfig(bundleStoreBasePath, repoStoreBasePath) }, h(BridgeBundles))))
 
-  check('no bundle-store path renders nothing', mountPage('') === '', JSON.stringify(mountPage('')))
+  check('no bundle-store path says it is not configured', mountPage('').includes('bundle-store is not configured'), JSON.stringify(mountPage('')))
   const withRepos = mountPage('/api/bundle-store', '/api/repo-store')
   check('the page draws its three columns',
     withRepos.includes('aria-label="Bundles"') && withRepos.includes('aria-label="Repos"') && withRepos.includes('aria-label="Resolve preview"'), withRepos)

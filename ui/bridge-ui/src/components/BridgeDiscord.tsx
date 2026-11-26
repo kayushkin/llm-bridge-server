@@ -12,6 +12,7 @@ import { reactionsOfLoggedMessage } from '../messageReactions'
 import { MessageContent, ReactionChips } from './messages/MessageContent'
 import styles from './BridgeDiscord.module.css'
 import { useDailyNitroCheck } from './messages/useEmojiCatalog'
+import { MultichatNotConfigured } from './messages/messagesShared'
 
 /**
  * Discord, as multichat sees it through the mautrix-discord bridge.
@@ -20,11 +21,19 @@ import { useDailyNitroCheck } from './messages/useEmojiCatalog'
  * which keeps every bridged message as it arrives, so a message deleted on
  * Discord keeps its text here. Bridge status reads `GET /discord/status`: the
  * bridge's own database, which rooms @admin has joined, and the log's counts.
- * Nothing here calls Discord, and nothing writes.
+ * Nothing here calls Discord, and nothing writes. A host that does not proxy
+ * multichat gets the same "not configured" line as the other message pages,
+ * and no request.
  */
 export function BridgeDiscord() {
+  const { multichatBasePath } = useBridgeConfig()
+  if (!multichatBasePath) return <MultichatNotConfigured page="Discord" />
+  return <DiscordPage multichatBasePath={multichatBasePath} />
+}
+
+function DiscordPage({ multichatBasePath }: { multichatBasePath: string }) {
   useDailyNitroCheck()
-  const { fetch: apiFetch, multichatBasePath } = useBridgeConfig()
+  const { fetch: apiFetch } = useBridgeConfig()
   const [searchParams, setSearchParams] = useSearchParams()
   const tab = discordTabOf(searchParams.get('tab'))
   const [status, setStatus] = useState<DiscordBridgeStatus | null>(null)

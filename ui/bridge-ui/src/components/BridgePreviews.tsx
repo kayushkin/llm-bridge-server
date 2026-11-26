@@ -11,9 +11,12 @@ import styles from './BridgePreviews.module.css'
  * on, found from the operating system, never a service of the host) and gives
  * each a public port on its own hostname; this page only draws the list and
  * frames the one picked. `?port=<n>` picks by the port the dev server listens
- * on, which is what a Bash call's View button links to.
+ * on, which is what a Bash call's View button links to. A host that carries
+ * no preview list (`previewsBasePath` empty) gets a line saying so, because the
+ * hook then asks nothing and would never finish loading.
  */
 export function BridgePreviews() {
+  const { previewsBasePath } = useBridgeConfig()
   const { previews, unreadableProcessIds, error, loaded } = useDevServerPreviews()
   const [searchParams, setSearchParams] = useSearchParams()
   const pickedPort = Number(searchParams.get('port')) || null
@@ -34,6 +37,11 @@ export function BridgePreviews() {
           list when it stops. Services of this host are never listed here.
         </p>
       </header>
+      {!previewsBasePath && (
+        <div className={styles.empty}>
+          This host does not list previews (<code>previewsBasePath</code> is empty), so there is nothing to show.
+        </div>
+      )}
       {error && <pre className={styles.error}>{error}</pre>}
       {unreadableProcessIds.length > 0 && (
         <div className={styles.muted}>

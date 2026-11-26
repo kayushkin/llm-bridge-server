@@ -29,9 +29,12 @@ import styles from './BridgeThreeDimensionalModels.module.css'
  * and delegates sit under the session that started them.
  *
  * `?session=<id>` picks a session, `?repository=<folder>` a repository's
- * committed models, and `&model=<path>` the model in the view.
+ * committed models, and `&model=<path>` the model in the view. A host that
+ * carries no model list (`threeDimensionalModelsBasePath` empty) gets a line
+ * saying so, because the hook then asks nothing and would never finish loading.
  */
 export function BridgeThreeDimensionalModels() {
+  const { threeDimensionalModelsBasePath } = useBridgeConfig()
   const { answer, error, loaded } = useThreeDimensionalModels()
   const [searchParams, setSearchParams] = useSearchParams()
   const sessions = answer?.sessions ?? []
@@ -64,7 +67,12 @@ export function BridgeThreeDimensionalModels() {
           <ul>{answer.problems.map(problem => <li key={problem}><code>{problem}</code></li>)}</ul>
         </details>
       )}
-      {!loaded && <div className={styles.empty}>Loading…</div>}
+      {!threeDimensionalModelsBasePath && (
+        <div className={styles.empty}>
+          This host does not list 3D models (<code>threeDimensionalModelsBasePath</code> is empty), so there is nothing to show.
+        </div>
+      )}
+      {threeDimensionalModelsBasePath && !loaded && <div className={styles.empty}>Loading…</div>}
       {loaded && answer && sessions.length === 0 && repositories.length === 0 && (
         <div className={styles.empty}>No agent has made a model in the last {answer.window}.</div>
       )}
