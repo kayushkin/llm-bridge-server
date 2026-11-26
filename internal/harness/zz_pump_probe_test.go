@@ -37,7 +37,7 @@ func BenchmarkPumpProbe(b *testing.B) {
 	for _, path := range benchmarkSessionEventPaths[:2] {
 		bench := path.build(b)
 		timed := &timedEvents{Store: bench.manager.SessionEvents(), spent: map[string]time.Duration{}, count: map[string]int{}}
-		bench.manager.SetSessionEventStore(timed, path.name != "bridge_database")
+		bench.manager.SetSessionEventStore(timed)
 		ingest, send := &latencies{}, &latencies{}
 		driver := startSessionDriver(b, bench.manager, bench.bridgeStore, "br_probe", 1, ingest, send)
 		start := time.Now()

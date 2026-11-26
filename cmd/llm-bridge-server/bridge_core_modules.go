@@ -93,6 +93,9 @@ func importBridgeDatabaseCmd(args []string) {
 	for _, table := range tables {
 		fmt.Printf("%-28s %d\n", table+":", counts.RowsByTable[table])
 	}
+	for _, value := range counts.TextMadeValidUTF8 {
+		fmt.Printf("not valid UTF-8, each broken sequence made U+FFFD: %s\n", value)
+	}
 	for _, table := range counts.TablesNotInTheFile {
 		fmt.Printf("%-28s not in the file; left empty\n", table+":")
 	}

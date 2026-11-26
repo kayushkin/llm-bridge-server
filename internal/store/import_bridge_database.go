@@ -45,6 +45,16 @@ var (
 	sqliteBookkeepingTable = "sqlite_sequence"
 )
 
+// retiredEmptyColumns are columns older builds left on a bridge.db's tables
+// that nothing has written since: SQLite could not drop or rename them when
+// their data moved (source became purpose, session_type became type,
+// client_request_id and spawner_id were retired). The import leaves them out,
+// and refuses a file where one holds anything but the empty string, since
+// that value would be lost.
+var retiredEmptyColumns = map[string][]string{
+	"sessions": {"source", "session_type", "client_request_id", "spawner_id"},
+}
+
 // BridgeDatabaseImportCounts says what an import copied.
 type BridgeDatabaseImportCounts struct {
 	// RowsByTable is how many rows each table received.
@@ -52,6 +62,11 @@ type BridgeDatabaseImportCounts struct {
 	// TablesNotInTheFile are tables of this module the file did not have
 	// (one written by an older build); they stay empty.
 	TablesNotInTheFile []string
+	// TextMadeValidUTF8 names each value that was not valid UTF-8, which
+	// Postgres text cannot hold, as table.column and its row's key. Each
+	// broken byte sequence became U+FFFD, the character every JSON answer of
+	// the old server already showed in its place.
+	TextMadeValidUTF8 []string
 	// NumberingContinuesAfter is, for each identity column, the number the
 	// next row takes the one after.
 	NumberingContinuesAfter map[string]int64
@@ -149,7 +164,7 @@ func ImportBridgeDatabase(ctx context.Context, db *sql.DB, sqlitePath string, so
 				if !slices.Contains(fileTables, table) {
 					counts.TablesNotInTheFile = append(counts.TablesNotInTheFile, table)
 				} else {
-					copied, err := copyBridgeTable(ctx, source, tx, table, columns)
+					copied, err := copyBridgeTable(ctx, source, tx, table, columns, &counts.TextMadeValidUTF8)
 					if err != nil {
 						return err
 					}
@@ -292,7 +307,7 @@ func sqliteColumnsOf(ctx context.Context, source *sql.DB, table string) ([]strin
 // copyBridgeTable streams one table of the file into the module with COPY.
 // Every column the file has must be a column of the module's table; a column
 // only the module has (one a later build added) takes its default.
-func copyBridgeTable(ctx context.Context, source *sql.DB, tx pgx.Tx, table string, destination []postgresColumn) (int64, error) {
+func copyBridgeTable(ctx context.Context, source *sql.DB, tx pgx.Tx, table string, destination []postgresColumn, textMadeValidUTF8 *[]string) (int64, error) {
 	fileColumns, err := sqliteColumnsOf(ctx, source, table)
 	if err != nil {
 		return 0, err
@@ -301,14 +316,30 @@ func copyBridgeTable(ctx context.Context, source *sql.DB, tx pgx.Tx, table strin
 	for _, column := range destination {
 		byName[column.name] = column
 	}
-	columns := make([]postgresColumn, len(fileColumns))
-	for index, name := range fileColumns {
+	var copiedColumns []string
+	var columns []postgresColumn
+	for _, name := range fileColumns {
+		if slices.Contains(retiredEmptyColumns[table], name) {
+			if _, kept := byName[name]; kept {
+				return 0, fmt.Errorf("%s.%s is listed as retired and is a column of this module's table too", table, name)
+			}
+			var holding int64
+			if err := source.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table+` WHERE COALESCE(`+name+`, '') <> ''`).Scan(&holding); err != nil {
+				return 0, fmt.Errorf("reading %s.%s: %w", table, name, err)
+			}
+			if holding > 0 {
+				return 0, fmt.Errorf("%s.%s is a retired column, and %d rows hold a value in it, which the import would lose", table, name, holding)
+			}
+			continue
+		}
 		column, ok := byName[name]
 		if !ok {
 			return 0, fmt.Errorf("table %s of the file has a column %s this module's table lacks; the import copies only a table it can copy whole", table, name)
 		}
-		columns[index] = column
+		copiedColumns = append(copiedColumns, name)
+		columns = append(columns, column)
 	}
+	fileColumns = copiedColumns
 	rows, err := source.QueryContext(ctx, `SELECT `+strings.Join(fileColumns, ", ")+` FROM `+table+` ORDER BY rowid`)
 	if err != nil && strings.Contains(err.Error(), "no such column: rowid") {
 		// A WITHOUT ROWID table orders by its key.
@@ -331,9 +362,13 @@ func copyBridgeTable(ctx context.Context, source *sql.DB, tx pgx.Tx, table strin
 		read++
 		converted := make([]any, len(values))
 		for index, value := range values {
-			converted[index], err = convertBridgeValue(columns[index], value)
+			var madeValid bool
+			converted[index], madeValid, err = convertBridgeValue(columns[index], value)
 			if err != nil {
 				return nil, fmt.Errorf("%s row %d (%s=%v): %w", table, read, fileColumns[0], values[0], err)
+			}
+			if madeValid {
+				*textMadeValidUTF8 = append(*textMadeValidUTF8, fmt.Sprintf("%s.%s of %s=%v", table, fileColumns[index], fileColumns[0], values[0]))
 			}
 		}
 		return converted, nil
@@ -379,13 +414,14 @@ func (s *bridgeRowsSource) Err() error {
 var sqliteTimeLayouts = []string{sqliteTimeLayout, "2006-01-02 15:04:05", time.RFC3339Nano, "2006-01-02 15:04:05.999999999-07:00"}
 
 // convertBridgeValue turns one SQLite value into what the module's column
-// holds, refusing any it cannot store as it is.
-func convertBridgeValue(column postgresColumn, value any) (any, error) {
+// holds, refusing any it cannot store as it is, and says whether it made text
+// valid UTF-8.
+func convertBridgeValue(column postgresColumn, value any) (any, bool, error) {
 	if value == nil {
 		if !column.nullable {
-			return nil, fmt.Errorf("%s is NULL, and the module's column takes no NULL", column.name)
+			return nil, false, fmt.Errorf("%s is NULL, and the module's column takes no NULL", column.name)
 		}
-		return nil, nil
+		return nil, false, nil
 	}
 	switch column.dataType {
 	case "text":
@@ -396,43 +432,45 @@ func convertBridgeValue(column postgresColumn, value any) (any, error) {
 		case []byte:
 			text = string(typed)
 		default:
-			return nil, fmt.Errorf("%s is %T %v, not text", column.name, value, value)
-		}
-		if !utf8.ValidString(text) {
-			return nil, fmt.Errorf("%s is not UTF-8", column.name)
+			return nil, false, fmt.Errorf("%s is %T %v, not text", column.name, value, value)
 		}
 		if strings.ContainsRune(text, 0) {
-			return nil, fmt.Errorf("%s holds a NUL character, which Postgres text cannot", column.name)
+			return nil, false, fmt.Errorf("%s holds a NUL character, which Postgres text cannot", column.name)
 		}
-		return text, nil
+		if !utf8.ValidString(text) {
+			return strings.ToValidUTF8(text, string(utf8.RuneError)), true, nil
+		}
+		return text, false, nil
 	case "bigint":
-		return standalonesqlite.Integer(column.name, value)
+		number, err := standalonesqlite.Integer(column.name, value)
+		return number, false, err
 	case "boolean":
-		return standalonesqlite.Boolean(column.name, value)
+		flag, err := standalonesqlite.Boolean(column.name, value)
+		return flag, false, err
 	case "double precision":
 		switch number := value.(type) {
 		case float64:
-			return number, nil
+			return number, false, nil
 		case int64:
-			return float64(number), nil
+			return float64(number), false, nil
 		}
-		return nil, fmt.Errorf("%s is %T %v, not a number", column.name, value, value)
+		return nil, false, fmt.Errorf("%s is %T %v, not a number", column.name, value, value)
 	case "timestamp with time zone":
 		switch moment := value.(type) {
 		case time.Time:
-			return moment.UTC(), nil
+			return moment.UTC(), false, nil
 		case string:
 			// time.String adds the monotonic clock reading when the time
 			// had one; it says nothing of the instant.
 			text, _, _ := strings.Cut(moment, " m=")
 			for _, layout := range sqliteTimeLayouts {
 				if parsed, err := time.Parse(layout, text); err == nil {
-					return parsed.UTC(), nil
+					return parsed.UTC(), false, nil
 				}
 			}
-			return nil, fmt.Errorf("%s is %q, a time in no layout the bridge wrote", column.name, moment)
+			return nil, false, fmt.Errorf("%s is %q, a time in no layout the bridge wrote", column.name, moment)
 		}
-		return nil, fmt.Errorf("%s is %T %v, not a time", column.name, value, value)
+		return nil, false, fmt.Errorf("%s is %T %v, not a time", column.name, value, value)
 	}
-	return nil, fmt.Errorf("%s: the import has no conversion to %s", column.name, column.dataType)
+	return nil, false, fmt.Errorf("%s: the import has no conversion to %s", column.name, column.dataType)
 }

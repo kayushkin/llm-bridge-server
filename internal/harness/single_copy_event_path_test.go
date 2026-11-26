@@ -1,46 +1,19 @@
 package harness
 
 import (
-	"context"
-	"path/filepath"
 	"testing"
 	"time"
 
-	logstoreserver "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/server"
-	logstorestore "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/store"
-	"github.com/kayushkin/llm-bridge-server/internal/sessionlog/sessionevents"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
-	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
 // With the session log as the only copy, every event the stream carries is
-// numbered by the session log, the bridge database's events table is never
-// written, and the session row's status is as of a session log event.
+// numbered by the session log, and the session row's status is as of a session
+// log event.
 func TestSingleCopyStreamsTheSessionLogsIDs(t *testing.T) {
-	bridge, err := store.New(filepath.Join(t.TempDir(), "bridge.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { bridge.Close() })
-	module, err := logstorestore.Module()
-	if err != nil {
-		t.Fatal(err)
-	}
-	database := postgrestest.NewDatabase(t, module)
-	reader, err := logstorestore.OpenReader(context.Background(), database.URL(), module)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { reader.Close() })
-	sessionLog := logstoreserver.New(logstorestore.New(database.Open(module), reader), nil)
-	singleCopy, err := sessionevents.OpenSingleCopy(context.Background(), bridge, sessionLog)
-	if err != nil {
-		t.Fatal(err)
-	}
-	m := NewManager(bridge, "http://127.0.0.1:0", "", 0, nil)
-	m.SetSessionEventLog(sessionLog)
-	m.SetSessionEventStore(singleCopy, true)
+	m, bridge, stores := newSingleCopyTestManager(t)
+	singleCopy := stores.singleCopy
 
 	const sessionID = "br_single_copy"
 	if err := bridge.CreateSession(&store.Session{SessionID: sessionID, Harness: msg.HarnessClaudeCode, State: string(msg.SessionIdle)}); err != nil {
@@ -90,9 +63,6 @@ func TestSingleCopyStreamsTheSessionLogsIDs(t *testing.T) {
 		if id < singleCopy.Numbering().FirstEventID {
 			t.Errorf("id %d is below the single copy's first id %d", id, singleCopy.Numbering().FirstEventID)
 		}
-	}
-	if head, err := bridge.MaxEventRowID(sessionID); err != nil || head != 0 {
-		t.Errorf("the bridge database's events table holds events up to %d (%v); want none", head, err)
 	}
 	row, err := bridge.GetSession(sessionID)
 	if err != nil {

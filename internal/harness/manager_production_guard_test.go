@@ -2,12 +2,12 @@ package harness
 
 import (
 	"errors"
-	"path/filepath"
 	"testing"
 
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 	logstore "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/client"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
+	"github.com/kayushkin/llm-bridge-server/internal/store/storetest"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -22,11 +22,9 @@ func newManagerOnLogStoreURL(st *store.Store, logStoreURL, publicServerURL, loca
 	return m
 }
 
-// A manager the server has not yet given a session event log refuses every
-// read of it, and its writes are not retried: nothing will name a log under a
-// running queue, so retrying would only hold the session's events for the
-// retry deadline.
-func TestAManagerWithNoSessionEventLogRefusesAndDoesNotRetry(t *testing.T) {
+// A manager the server has not yet given a session event log or event store
+// refuses every write and read of either.
+func TestAManagerWithNoSessionEventLogRefuses(t *testing.T) {
 	m := NewManager(temporaryStore(t), "", "", 0, nil)
 	if _, err := m.sessionEventLog().GetTurnState("br_test"); !errors.Is(err, ErrSessionEventLogNotEnabled) {
 		t.Fatalf("GetTurnState error = %v, want ErrSessionEventLogNotEnabled", err)
@@ -34,18 +32,18 @@ func TestAManagerWithNoSessionEventLogRefusesAndDoesNotRetry(t *testing.T) {
 	if _, err := m.SessionsHoldingHarnessSessionID("cc-uuid"); !errors.Is(err, ErrSessionEventLogNotEnabled) {
 		t.Fatalf("SessionsHoldingHarnessSessionID error = %v, want ErrSessionEventLogNotEnabled", err)
 	}
-	_, err := m.sessionEventLog().PushEvent(msg.Event{BridgeSessionID: "br_test", Type: msg.EventUserMessage})
-	if why := whyNotToRetryLogStorePush(err); why == "" {
-		t.Fatalf("a push with no session event log would be retried: %v", err)
+	if _, err := m.sessionEventLog().PushEvent(msg.Event{BridgeSessionID: "br_test", Type: msg.EventUserMessage}); !errors.Is(err, ErrSessionEventLogNotEnabled) {
+		t.Fatalf("PushEvent error = %v, want ErrSessionEventLogNotEnabled", err)
+	}
+	if _, err := m.SessionEvents().StoreSessionEvent(store.SessionEventRecord{SessionID: "br_test", Type: string(msg.EventUserMessage)}); !errors.Is(err, ErrSessionEventLogNotEnabled) {
+		t.Fatalf("StoreSessionEvent error = %v, want ErrSessionEventLogNotEnabled", err)
+	}
+	if _, err := m.SessionEvents().MaxEventRowID("br_test"); !errors.Is(err, ErrSessionEventLogNotEnabled) {
+		t.Fatalf("MaxEventRowID error = %v, want ErrSessionEventLogNotEnabled", err)
 	}
 }
 
 func temporaryStore(t *testing.T) *store.Store {
 	t.Helper()
-	st, err := store.New(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
-	t.Cleanup(func() { st.Close() })
-	return st
+	return storetest.New(t)
 }

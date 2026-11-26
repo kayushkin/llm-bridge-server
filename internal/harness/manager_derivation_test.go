@@ -2,14 +2,6 @@ package harness
 
 import (
 	"encoding/json"
-	"fmt"
-	"io"
-	"net/http"
-	"net/http/httptest"
-	"path/filepath"
-	"strconv"
-	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -34,169 +26,13 @@ func (f *fakeProcess) SendJSONRPC(method string, params json.RawMessage) error {
 func (f *fakeProcess) Interrupt() error                                        { return nil }
 func (f *fakeProcess) Kill() error                                             { return nil }
 
-// newTestManager returns a Manager backed by a temp SQLite store and an
-// in-process log-store stub served via httptest. RecoverInFlightTurn /
-// InterruptedTurn / RecentTurnTexts / ListToolCallInputs all read from
-// log-store post-II.A-cutover, so unit tests need a live log-store
-// backend. The stub keeps events in memory keyed by session_id and
-// implements just the three endpoints the cutover read paths use:
-// POST /api/v1/events, GET /api/v1/sessions/{id}/turn-state, and
-// GET /api/v1/sessions/{id}/events.
+// newTestManager returns a Manager on the bridge core store and the session
+// log in a Postgres database of the test's own, the session log the only copy
+// of events, as the server wires them.
 func newTestManager(t *testing.T) *Manager {
 	t.Helper()
-	dir := t.TempDir()
-	st, err := store.New(filepath.Join(dir, "test.db"))
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
-	t.Cleanup(func() { st.Close() })
-
-	ls := httptest.NewServer(newLogStoreStub())
-	t.Cleanup(ls.Close)
-
-	return newManagerOnLogStoreURL(st, ls.URL, "http://127.0.0.1:0", "", 0, nil)
-}
-
-// logStoreStub is a minimal in-memory implementation of the log-store HTTP
-// surface bridge-server's read paths depend on. Not safe for production —
-// strictly a unit-test fixture.
-type logStoreStub struct {
-	mu     sync.Mutex
-	events map[string][]storedStubEvent // session_id → events in insertion order
-	nextID int64
-}
-
-type storedStubEvent struct {
-	id   int64
-	typ  string
-	data []byte
-}
-
-func newLogStoreStub() *logStoreStub {
-	return &logStoreStub{events: map[string][]storedStubEvent{}}
-}
-
-func (s *logStoreStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	switch {
-	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/events":
-		s.handleIngest(w, r)
-	case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/turn-state"):
-		s.handleTurnState(w, r)
-	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions/by-harness-id":
-		s.handleSessionsByHarnessID(w, r)
-	case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/events"):
-		s.handleEvents(w, r)
-	default:
-		http.NotFound(w, r)
-	}
-}
-
-func (s *logStoreStub) handleIngest(w http.ResponseWriter, r *http.Request) {
-	body, _ := io.ReadAll(r.Body)
-	var probe struct {
-		Type            string `json:"type"`
-		BridgeSessionID string `json:"bridge_session_id"`
-	}
-	if err := json.Unmarshal(body, &probe); err != nil || probe.BridgeSessionID == "" {
-		http.Error(w, "bad event", http.StatusBadRequest)
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.nextID++
-	s.events[probe.BridgeSessionID] = append(s.events[probe.BridgeSessionID], storedStubEvent{
-		id: s.nextID, typ: probe.Type, data: body,
-	})
-	json.NewEncoder(w).Encode(map[string]int64{"id": s.nextID})
-}
-
-func (s *logStoreStub) handleTurnState(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/api/v1/sessions/")
-	id = strings.TrimSuffix(id, "/turn-state")
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var lastUser, lastTerm int64
-	for _, e := range s.events[id] {
-		switch e.typ {
-		case "user_message":
-			if e.id > lastUser {
-				lastUser = e.id
-			}
-		case "result", "error":
-			if e.id > lastTerm {
-				lastTerm = e.id
-			}
-		}
-	}
-	json.NewEncoder(w).Encode(map[string]any{
-		"last_user_message_event_id": lastUser,
-		"last_terminator_event_id":   lastTerm,
-		"in_flight":                  lastUser > lastTerm && lastUser > 0,
-	})
-}
-
-func (s *logStoreStub) handleEvents(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/api/v1/sessions/")
-	id = strings.TrimSuffix(id, "/events")
-	after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
-	typeFilter := map[string]bool{}
-	if raw := r.URL.Query().Get("types"); raw != "" {
-		for _, t := range strings.Split(raw, ",") {
-			typeFilter[strings.TrimSpace(t)] = true
-		}
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := []json.RawMessage{}
-	for _, e := range s.events[id] {
-		if e.id <= after {
-			continue
-		}
-		if len(typeFilter) > 0 && !typeFilter[e.typ] {
-			continue
-		}
-		// Splice event_id in like the real log-store does.
-		spliced := []byte(fmt.Sprintf(`{"event_id":%d,%s`, e.id, e.data[1:]))
-		out = append(out, spliced)
-	}
-	json.NewEncoder(w).Encode(out)
-}
-
-// handleSessionsByHarnessID mirrors log-store's dedupe lookup. Latest wins,
-// exactly as the real projection does: a resumed session reports a new harness
-// uuid partway through its stream and log-store rolls the column forward, so a
-// stub that took the FIRST id would answer a question the real store does not.
-func (s *logStoreStub) handleSessionsByHarnessID(w http.ResponseWriter, r *http.Request) {
-	harnessSessionID := r.URL.Query().Get("harness_session_id")
-	if harnessSessionID == "" {
-		http.Error(w, `{"error":"harness_session_id is required"}`, http.StatusBadRequest)
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	sessions := []map[string]any{}
-	for sessionID, evs := range s.events {
-		latest := ""
-		for _, e := range evs {
-			var probe struct {
-				HarnessSessionID string `json:"harness_session_id"`
-			}
-			if json.Unmarshal(e.data, &probe) == nil && probe.HarnessSessionID != "" {
-				latest = probe.HarnessSessionID
-			}
-		}
-		if latest == harnessSessionID {
-			sessions = append(sessions, map[string]any{
-				"session_id":  sessionID,
-				"event_count": len(evs),
-				"last_active": "",
-			})
-		}
-	}
-	json.NewEncoder(w).Encode(map[string]any{
-		"harness_session_id": harnessSessionID,
-		"sessions":           sessions,
-	})
+	m, _, _ := newSingleCopyTestManager(t)
+	return m
 }
 
 // recvWithin reads up to want events from ch, failing the test if
@@ -647,7 +483,7 @@ func TestManager_RecoversTurnIDAfterProcessRestart(t *testing.T) {
 
 	// The recovered TurnID must match the one stamped on the
 	// pre-restart block — same logical turn, same id.
-	pre, err := m.store.ListEventsSinceID(bridgeID, 0)
+	pre, err := m.SessionEvents().ListEventsSinceID(bridgeID, 0)
 	if err != nil {
 		t.Fatalf("list events: %v", err)
 	}
@@ -909,7 +745,7 @@ func TestManager_ForceSessionStateBroadcastsAndPersists(t *testing.T) {
 // writeStaleSessionState puts a state on the session row behind the
 // derivation's back, which is what the settle reconcile exists to correct.
 func writeStaleSessionState(m *Manager, bridgeID string, state msg.SessionState) error {
-	_, err := m.store.WriteSessionStatus(bridgeID, &msg.Event{
+	_, err := m.SessionEvents().WriteSessionStatus(bridgeID, &msg.Event{
 		Type:      msg.EventSessionStatus,
 		Timestamp: time.Now(),
 		Status:    &msg.SessionStatus{State: state},

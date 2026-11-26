@@ -240,12 +240,8 @@ func TestStartOnInstanceRunsAPTYHarnessInTheInstanceWorkingDirectory(t *testing.
 
 func newManagerForWorkingDirTest(t *testing.T) *Manager {
 	t.Helper()
-	st, err := store.New(filepath.Join(t.TempDir(), "bridge.db"))
-	if err != nil {
-		t.Fatalf("store.New: %v", err)
-	}
-	t.Cleanup(func() { st.Close() })
-	return newManagerOnLogStoreURL(st, "", "", "", 0, nil)
+	m, _, _ := newSingleCopyTestManager(t)
+	return m
 }
 
 // installFakeHarnessOnPath puts a stand-in wrapper binary under the name the

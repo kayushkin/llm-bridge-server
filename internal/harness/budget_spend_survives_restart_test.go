@@ -25,7 +25,7 @@ func restartProcess(m *Manager, bridgeID string) {
 // emitted — the number the gate reads and the UI's top-line cost displays.
 func lastSpendTotal(t *testing.T, m *Manager, bridgeID string) *msg.APISpendTotalEvent {
 	t.Helper()
-	rows, err := m.store.ListEventsSinceID(bridgeID, 0)
+	rows, err := m.SessionEvents().ListEventsSinceID(bridgeID, 0)
 	if err != nil {
 		t.Fatalf("get events: %v", err)
 	}
