@@ -45,6 +45,14 @@ func TestSingleCopyStreamsTheSessionLogsIDs(t *testing.T) {
 	}
 	close(process.ch)
 
+	// Read the row before the events. The idle status that follows the
+	// result is written after the stream shows the result, and its event
+	// and its row commit together; read the events first and a status that
+	// commits in between leaves the row naming an event the list never saw.
+	row, err := bridge.GetSession(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	stored, err := singleCopy.ListEventsSinceID(sessionID, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -63,10 +71,6 @@ func TestSingleCopyStreamsTheSessionLogsIDs(t *testing.T) {
 		if id < singleCopy.Numbering().FirstEventID {
 			t.Errorf("id %d is below the single copy's first id %d", id, singleCopy.Numbering().FirstEventID)
 		}
-	}
-	row, err := bridge.GetSession(sessionID)
-	if err != nil {
-		t.Fatal(err)
 	}
 	if row.Status == nil || !storedIDs[row.Status.AsOf] {
 		t.Errorf("the session row's status %+v is not as of a session log event", row.Status)
