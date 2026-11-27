@@ -11,7 +11,7 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessionstore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessions"
 	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
 	"github.com/kayushkin/llm-bridge-server/internal/server"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage"
@@ -20,8 +20,8 @@ import (
 // openPossessionStore provisions and migrates the possessions module on the
 // Postgres at url and answers the store over it, which opens one pool per
 // scope it is narrowed to.
-func openPossessionStore(ctx context.Context, url string) (possessionstore.PoolOpener, error) {
-	module, err := possessionstore.Module()
+func openPossessionStore(ctx context.Context, url string) (possessions.PoolOpener, error) {
+	module, err := possessions.Module()
 	if err != nil {
 		return nil, err
 	}
@@ -123,12 +123,12 @@ func importPossessionStoreCmd(args []string) {
 	}
 	// The import checks no reference: every id it copies was checked when
 	// the standalone store wrote it.
-	root, err := possessionstore.New(open, possessionstore.ServiceReferences{}, server.PossessionOriginalFilesCarrying(files, limits, filestore.BlobCarry(*carry)))
+	root, err := possessions.New(open, possessions.ServiceReferences{}, server.PossessionOriginalFilesCarrying(files, limits, filestore.BlobCarry(*carry)))
 	if err != nil {
 		importFailed(err)
 	}
 	defer root.Close()
-	counts, err := possessionstore.ImportStandaloneDatabase(ctx, root, *sqlitePath, *originals, *owner)
+	counts, err := possessions.ImportStandaloneDatabase(ctx, root, *sqlitePath, *originals, *owner)
 	if err != nil {
 		importFailed(fmt.Errorf("nothing was imported: %w", err))
 	}

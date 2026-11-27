@@ -27,10 +27,10 @@ import (
 	"strings"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/signin"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/calendarstore"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/journalstore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/calendar"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/journal"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/peoplestore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/people"
 	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	noteboardapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/api"
@@ -46,10 +46,10 @@ const (
 
 // connectedRecordsStores is the three stores as this server serves them.
 type connectedRecordsStores struct {
-	people          *peoplestore.Store
+	people          *people.Store
 	peopleHandler   http.Handler
 	calendarHandler http.Handler
-	journal         *journalstore.Store
+	journal         *journal.Store
 	journalHandler  http.Handler
 }
 
@@ -80,29 +80,29 @@ func (s *Server) EnableConnectedRecords(ctx context.Context, modules ConnectedRe
 		return errors.New("connected records: EnableNoteboard must run first, since journal-store's promote-todo makes its todo in noteboard")
 	}
 
-	people := peoplestore.New(modules.People, peoplePrincipalChecker{principals: s.principalClient})
+	peopleStore := people.New(modules.People, peoplePrincipalChecker{principals: s.principalClient})
 	peopleMux := http.NewServeMux()
-	peoplestore.RegisterHandlers(peopleMux, people)
+	people.RegisterHandlers(peopleMux, peopleStore)
 
-	calendar := calendarstore.New(modules.Calendar, calendarPeople{people: people})
-	s.referenceReadable.calendar.Store(calendar)
+	calendarStore := calendar.New(modules.Calendar, calendarPeople{people: peopleStore})
+	s.referenceReadable.calendar.Store(calendarStore)
 	calendarMux := http.NewServeMux()
-	calendarstore.RegisterHandlers(calendarMux, calendar)
+	calendar.RegisterHandlers(calendarMux, calendarStore)
 
 	// reference-store's list is compiled into this binary, so it cannot
 	// change while the process runs: one read at start types every mention.
-	registry := journalstore.NewEntityTypeRegistry(func(context.Context) ([]journalstore.EntityTypeRow, error) {
-		rows := make([]journalstore.EntityTypeRow, 0, len(resolver.Types))
+	registry := journal.NewEntityTypeRegistry(func(context.Context) ([]journal.EntityTypeRow, error) {
+		rows := make([]journal.EntityTypeRow, 0, len(resolver.Types))
 		for _, row := range resolver.Types {
-			rows = append(rows, journalstore.EntityTypeRow{Type: row.Type, Service: row.Service, Get: row.Get, IDPatterns: row.IDPatterns})
+			rows = append(rows, journal.EntityTypeRow{Type: row.Type, Service: row.Service, Get: row.Get, IDPatterns: row.IDPatterns})
 		}
 		return rows, nil
 	})
 	if err := registry.Refresh(ctx); err != nil {
 		return fmt.Errorf("journal-store: reading reference-store's list of types: %w", err)
 	}
-	journal := journalstore.New(modules.Journal, registry, journalNoteboard{notes: noteboard})
-	typed, err := journal.BackfillMentionTypes(ctx)
+	journalStore := journal.New(modules.Journal, registry, journalNoteboard{notes: noteboard})
+	typed, err := journalStore.BackfillMentionTypes(ctx)
 	if err != nil {
 		return fmt.Errorf("journal-store: typing the mentions stored untyped: %w", err)
 	}
@@ -110,12 +110,12 @@ func (s *Server) EnableConnectedRecords(ctx context.Context, modules ConnectedRe
 		log.Printf("journal-store: typed %d mentions stored before the list of types could classify them", typed)
 	}
 	journalMux := http.NewServeMux()
-	journalstore.RegisterHandlers(journalMux, journal)
+	journal.RegisterHandlers(journalMux, journalStore)
 
 	s.connectedRecords.Store(&connectedRecordsStores{
-		people: people, peopleHandler: peopleMux,
+		people: peopleStore, peopleHandler: peopleMux,
 		calendarHandler: calendarMux,
-		journal:         journal, journalHandler: journalMux,
+		journal:         journalStore, journalHandler: journalMux,
 	})
 	return nil
 }
@@ -189,10 +189,10 @@ type peoplePrincipalChecker struct {
 func (checker peoplePrincipalChecker) CheckPrincipal(ctx context.Context, id string) error {
 	err := checker.principals.CheckExists(ctx, id)
 	if errors.Is(err, principalclient.ErrNotFound) {
-		return fmt.Errorf("%w: principal-store holds no principal %s", peoplestore.ErrInvalid, id)
+		return fmt.Errorf("%w: principal-store holds no principal %s", people.ErrInvalid, id)
 	}
 	if err != nil {
-		return fmt.Errorf("%w: %v", peoplestore.ErrPrincipalStoreUnavailable, err)
+		return fmt.Errorf("%w: %v", people.ErrPrincipalStoreUnavailable, err)
 	}
 	return nil
 }
@@ -200,12 +200,12 @@ func (checker peoplePrincipalChecker) CheckPrincipal(ctx context.Context, id str
 // calendarPeople is people-store as calendar-store reads it: one owner's
 // records, the owner of the event being read or written.
 type calendarPeople struct {
-	people *peoplestore.Store
+	people *people.Store
 }
 
 func (lookup calendarPeople) PersonByEmail(ctx context.Context, ownerPrincipalID, email string) (string, error) {
 	resolved, err := lookup.people.ResolveIdentity(ctx, ownership.OwnedBy(ownerPrincipalID), "email", email)
-	if errors.Is(err, peoplestore.ErrNotFound) {
+	if errors.Is(err, people.ErrNotFound) {
 		return "", nil
 	}
 	if err != nil {
@@ -216,7 +216,7 @@ func (lookup calendarPeople) PersonByEmail(ctx context.Context, ownerPrincipalID
 
 func (lookup calendarPeople) PersonExists(ctx context.Context, ownerPrincipalID, personID string) (bool, error) {
 	person, err := lookup.people.GetPerson(ctx, ownership.OwnedBy(ownerPrincipalID), personID)
-	if errors.Is(err, peoplestore.ErrNotFound) {
+	if errors.Is(err, people.ErrNotFound) {
 		return false, nil
 	}
 	if err != nil {
@@ -236,7 +236,7 @@ func (senders chatLinkSendersInPeopleStore) SenderOfAccount(ctx context.Context,
 		return store.ChatLinkMessageSender{}, errConnectedRecordsOff
 	}
 	resolved, err := stores.people.ResolveIdentity(ctx, ownership.OwnedBy(ownerPrincipalID), kind, value)
-	if errors.Is(err, peoplestore.ErrNotFound) {
+	if errors.Is(err, people.ErrNotFound) {
 		return store.ChatLinkMessageSender{}, nil
 	}
 	if err != nil {
@@ -291,8 +291,8 @@ func (people signInPeople) trustedPerson(ctx context.Context, stores *connectedR
 	return person, nil
 }
 
-func (people signInPeople) PersonOwningHandle(ctx context.Context, kind, value string) (*signin.Person, error) {
-	stores, err := people.stores()
+func (directory signInPeople) PersonOwningHandle(ctx context.Context, kind, value string) (*signin.Person, error) {
+	stores, err := directory.stores()
 	if err != nil {
 		return nil, err
 	}
@@ -300,9 +300,9 @@ func (people signInPeople) PersonOwningHandle(ctx context.Context, kind, value s
 	if err != nil {
 		return nil, err
 	}
-	var trusted []peoplestore.IdentityResolution
+	var trusted []people.IdentityResolution
 	for _, match := range matches {
-		administrator, err := people.ownerIsAnAdministrator(ctx, match.Person.OwnerPrincipalID)
+		administrator, err := directory.ownerIsAnAdministrator(ctx, match.Person.OwnerPrincipalID)
 		if err != nil {
 			return nil, err
 		}
@@ -314,23 +314,23 @@ func (people signInPeople) PersonOwningHandle(ctx context.Context, kind, value s
 	case 0:
 		return nil, nil
 	case 1:
-		return people.trustedPerson(ctx, stores, trusted[0].Person.OwnerPrincipalID, trusted[0].Person.ID)
+		return directory.trustedPerson(ctx, stores, trusted[0].Person.OwnerPrincipalID, trusted[0].Person.ID)
 	}
 	return nil, fmt.Errorf("the records of %d administrators hold this %s handle, so sign-in cannot tell whose it is", len(trusted), kind)
 }
 
-func (people signInPeople) PersonPointingAtPrincipal(ctx context.Context, principalID string) (*signin.Person, error) {
-	stores, err := people.stores()
+func (directory signInPeople) PersonPointingAtPrincipal(ctx context.Context, principalID string) (*signin.Person, error) {
+	stores, err := directory.stores()
 	if err != nil {
 		return nil, err
 	}
-	listed, err := stores.people.ListPersons(ctx, ownership.EveryOwner(), peoplestore.PersonFilter{PrincipalID: principalID})
+	listed, err := stores.people.ListPersons(ctx, ownership.EveryOwner(), people.PersonFilter{PrincipalID: principalID})
 	if err != nil {
 		return nil, err
 	}
-	var trusted []peoplestore.Person
+	var trusted []people.Person
 	for _, person := range listed {
-		administrator, err := people.ownerIsAnAdministrator(ctx, person.OwnerPrincipalID)
+		administrator, err := directory.ownerIsAnAdministrator(ctx, person.OwnerPrincipalID)
 		if err != nil {
 			return nil, err
 		}
@@ -342,7 +342,7 @@ func (people signInPeople) PersonPointingAtPrincipal(ctx context.Context, princi
 	case 0:
 		return nil, nil
 	case 1:
-		return people.trustedPerson(ctx, stores, trusted[0].OwnerPrincipalID, trusted[0].ID)
+		return directory.trustedPerson(ctx, stores, trusted[0].OwnerPrincipalID, trusted[0].ID)
 	}
 	return nil, fmt.Errorf("%d people in administrators' records point at %s", len(trusted), principalID)
 }
@@ -358,10 +358,10 @@ func (noteboard journalNoteboard) CreateTodo(_ context.Context, title, body stri
 	item, err := noteboard.notes.Create(&noteboardmodel.CreateItemRequest{Type: "todo", Title: title, Body: &body, Tags: tags, Links: links})
 	var refusal *noteboardapi.RequestRefusal
 	if errors.As(err, &refusal) {
-		return "", fmt.Errorf("%w: noteboard answered 400: %v", journalstore.ErrUpstream, refusal)
+		return "", fmt.Errorf("%w: noteboard answered 400: %v", journal.ErrUpstream, refusal)
 	}
 	if err != nil {
-		return "", fmt.Errorf("%w: noteboard: %v", journalstore.ErrUpstream, err)
+		return "", fmt.Errorf("%w: noteboard: %v", journal.ErrUpstream, err)
 	}
 	return item.ID, nil
 }

@@ -6,13 +6,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/budgetstore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/budget"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 )
 
 // enableBudgetStoreOnTestDatabase serves budget-store from a Postgres
 // database of the test's own.
-func enableBudgetStoreOnTestDatabase(t *testing.T, gated *gatedTestServer) *budgetstore.Store {
+func enableBudgetStoreOnTestDatabase(t *testing.T, gated *gatedTestServer) *budget.Store {
 	t.Helper()
 	enableConnectedRecordsOnTestDatabase(t, gated)
 	return enableBudgetStoreModuleOnTestDatabase(t, gated)
@@ -20,14 +20,14 @@ func enableBudgetStoreOnTestDatabase(t *testing.T, gated *gatedTestServer) *budg
 
 // enableBudgetStoreModuleOnTestDatabase is enableBudgetStoreOnTestDatabase
 // for a server whose connected records stores are already open.
-func enableBudgetStoreModuleOnTestDatabase(t *testing.T, gated *gatedTestServer) *budgetstore.Store {
+func enableBudgetStoreModuleOnTestDatabase(t *testing.T, gated *gatedTestServer) *budget.Store {
 	t.Helper()
-	module, err := budgetstore.Module()
+	module, err := budget.Module()
 	if err != nil {
 		t.Fatal(err)
 	}
 	database := postgrestest.NewDatabase(t, module)
-	store := budgetstore.New(database.Open(module))
+	store := budget.New(database.Open(module))
 	if err := gated.server.EnableBudgetStore(store); err != nil {
 		t.Fatal(err)
 	}

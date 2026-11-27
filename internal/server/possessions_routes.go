@@ -5,7 +5,7 @@ package server
 // connected records stores, every record has an owner and the store narrows
 // every read to the caller's own, or every owner's for an administrator and
 // for this server's own service acting as itself, and every write and pass to
-// one owner (internal/connectedrecords/possessionstore/server_scope.go). The
+// one owner (internal/connectedrecords/possessions/server_scope.go). The
 // caller reaches the store in the request context, set by
 // connectedRecordsRoute from the credential request authorization verified.
 //
@@ -37,7 +37,7 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessionstore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessions"
 	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
 )
 
@@ -46,8 +46,8 @@ const possessionStoreMountPrefix = "/possession-store"
 
 // possessionStores is possession-store as this server serves it.
 type possessionStores struct {
-	store    *possessionstore.Store
-	reviewer *possessionstore.Reviewer
+	store    *possessions.Store
+	reviewer *possessions.Reviewer
 	handler  http.Handler
 	patterns []string
 }
@@ -55,7 +55,7 @@ type possessionStores struct {
 // PossessionsModule is what EnablePossessions needs that this server does not
 // already hold: the way to open the module's pools, and the store's settings.
 type PossessionsModule struct {
-	Open                   possessionstore.PoolOpener
+	Open                   possessions.PoolOpener
 	FirstReaderRole        string
 	SecondReaderRole       string
 	OwnerLocation          *time.Location
@@ -90,7 +90,7 @@ func (s *Server) EnablePossessions(module PossessionsModule) error {
 	}
 	photos := possessionPhotoStore{server: s}
 	budget := possessionBudgetStore{server: s}
-	references := possessionstore.ServiceReferences{
+	references := possessions.ServiceReferences{
 		Photos:          photos,
 		Places:          possessionPlaces{server: s},
 		Transactions:    budget,
@@ -100,22 +100,22 @@ func (s *Server) EnablePossessions(module PossessionsModule) error {
 		HTTPClient: &http.Client{Timeout: 15 * time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
 		Machines:   possessionHarnessMachines{server: s},
 	}
-	store, err := possessionstore.New(module.Open, references, PossessionOriginalFiles(files, s.fileStoreLimits))
+	store, err := possessions.New(module.Open, references, PossessionOriginalFiles(files, s.fileStoreLimits))
 	if err != nil {
 		return err
 	}
 	store.UseBudgetStore(budget)
-	reviewer := &possessionstore.Reviewer{
+	reviewer := &possessions.Reviewer{
 		Store:  store,
-		Models: possessionstore.OneShotModelCaller{RunRole: s.oneShotRouter.RunRole, ListPrice: s.possessionModelPrice},
-		Photos: possessionstore.PhotoStoreSource{
+		Models: possessions.OneShotModelCaller{RunRole: s.oneShotRouter.RunRole, ListPrice: s.possessionModelPrice},
+		Photos: possessions.PhotoStoreSource{
 			PhotoStore:  photos,
 			Originals:   store,
 			LongestSide: module.ReviewImageLongestSide,
 		},
 		FirstReaderRole:  module.FirstReaderRole,
 		SecondReaderRole: module.SecondReaderRole,
-		Articles:         possessionstore.ArticleStore{URL: strings.TrimRight(module.ArticleStoreURL, "/"), HTTPClient: &http.Client{Timeout: time.Minute}},
+		Articles:         possessions.ArticleStore{URL: strings.TrimRight(module.ArticleStoreURL, "/"), HTTPClient: &http.Client{Timeout: time.Minute}},
 		Budget:           budget,
 		Mail:             possessionMail{server: s},
 		OwnerLocation:    module.OwnerLocation,
@@ -125,7 +125,7 @@ func (s *Server) EnablePossessions(module PossessionsModule) error {
 		CoverImagesDirectory: module.CoverCacheDirectory,
 	}
 	mux := http.NewServeMux()
-	possessionServer := &possessionstore.Server{Store: store, Reviewer: reviewer, LocalMachine: s.possessionLocalMachine}
+	possessionServer := &possessions.Server{Store: store, Reviewer: reviewer, LocalMachine: s.possessionLocalMachine}
 	patterns := possessionServer.RegisterHandlers(mux)
 	s.referenceReadable.possessionsAt.Store(possessionServer)
 	s.possessions.Store(&possessionStores{store: store, reviewer: reviewer, handler: mux, patterns: patterns})
@@ -134,12 +134,12 @@ func (s *Server) EnablePossessions(module PossessionsModule) error {
 
 // possessionModelPrice is model-store's list price for a model, from the
 // module in this process.
-func (s *Server) possessionModelPrice(modelID string) (possessionstore.ModelPrice, error) {
+func (s *Server) possessionModelPrice(modelID string) (possessions.ModelPrice, error) {
 	input, output, known := s.ModelListPrice(modelID)
 	if !known {
-		return possessionstore.ModelPrice{}, fmt.Errorf("model-store has no price for %s", modelID)
+		return possessions.ModelPrice{}, fmt.Errorf("model-store has no price for %s", modelID)
 	}
-	return possessionstore.ModelPrice{InputCost: input, OutputCost: output}, nil
+	return possessions.ModelPrice{InputCost: input, OutputCost: output}, nil
 }
 
 // possessionLocalMachine is the name of the one machine harness-store records
@@ -181,14 +181,14 @@ func (machines possessionHarnessMachines) MachineExists(_ context.Context, machi
 // PossessionOriginalFiles is file-store, in this process, as possession-store
 // keeps originals: one file per original an owner keeps, owner service
 // possession-store, owner ref the original's sha256, uploaded by the owner.
-func PossessionOriginalFiles(files *filestore.Store, limits func() filestore.Limits) possessionstore.OriginalFiles {
+func PossessionOriginalFiles(files *filestore.Store, limits func() filestore.Limits) possessions.OriginalFiles {
 	return possessionOriginalFiles{files: files, limits: limits, carry: filestore.CopyBlobs}
 }
 
 // PossessionOriginalFilesCarrying is PossessionOriginalFiles with KeepCopyOf
 // putting each file in by carry: an import passes filestore.LinkBlobs to bring
 // a standalone store's originals in as hard links, which take no room.
-func PossessionOriginalFilesCarrying(files *filestore.Store, limits func() filestore.Limits, carry filestore.BlobCarry) possessionstore.OriginalFiles {
+func PossessionOriginalFilesCarrying(files *filestore.Store, limits func() filestore.Limits, carry filestore.BlobCarry) possessions.OriginalFiles {
 	return possessionOriginalFiles{files: files, limits: limits, carry: carry}
 }
 

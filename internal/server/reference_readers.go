@@ -30,17 +30,17 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 	schedulerapi "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/api"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/activitystore"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/budgetstore"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/calendarstore"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/journalstore"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locationstore"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messagestore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/budget"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/calendar"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/journal"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locations"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messages"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/onlineactivity"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/peoplestore"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessionstore"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/timeledgerstore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/people"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photos"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessions"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/timeledger"
 	"github.com/kayushkin/llm-bridge-server/internal/references/referencestore"
 	"github.com/kayushkin/llm-bridge-server/internal/repositories/repostore"
 	"github.com/kayushkin/llm-bridge-server/internal/repositories/workgraphstore"
@@ -86,11 +86,11 @@ type referenceReadableStores struct {
 	repos         atomic.Pointer[repostore.Store]
 	workGraph     atomic.Pointer[workgraphstore.Store]
 	scheduler     atomic.Pointer[schedulerapi.Server]
-	calendar      atomic.Pointer[calendarstore.Store]
-	messages      atomic.Pointer[messagestore.Store]
-	activities    atomic.Pointer[activitystore.Store]
-	timeLedger    atomic.Pointer[timeledgerstore.Store]
-	possessionsAt atomic.Pointer[possessionstore.Server]
+	calendar      atomic.Pointer[calendar.Store]
+	messages      atomic.Pointer[messages.Store]
+	activities    atomic.Pointer[onlineactivity.Store]
+	timeLedger    atomic.Pointer[timeledger.Store]
+	possessionsAt atomic.Pointer[possessions.Server]
 }
 
 // EnableSchedulerJobReferences lets reference-store read scheduler jobs by
@@ -221,14 +221,14 @@ func (s *Server) InProcessReferenceReaders() referencestore.InProcessServices {
 		"scheduler_job": {Record: s.readSchedulerJobForReference},
 	}
 
-	people := func() (*peoplestore.Store, error) {
+	loadPeople := func() (*people.Store, error) {
 		stores := s.connectedRecords.Load()
 		if stores == nil {
 			return nil, errConnectedRecordsOff
 		}
 		return stores.people, nil
 	}
-	journal := func() (*journalstore.Store, error) {
+	loadJournal := func() (*journal.Store, error) {
 		stores := s.connectedRecords.Load()
 		if stores == nil {
 			return nil, errors.New("journal-store is not open on this server")
@@ -236,39 +236,39 @@ func (s *Server) InProcessReferenceReaders() referencestore.InProcessServices {
 		return stores.journal, nil
 	}
 	readers["person"] = referencestore.InProcessReader{
-		Record: s.ownedRecordReader("people-store", false, peoplestore.ErrNotFound, func(ctx context.Context, scope ownership.Scope, id string) (any, error) {
-			store, err := people()
+		Record: s.ownedRecordReader("people-store", false, people.ErrNotFound, func(ctx context.Context, scope ownership.Scope, id string) (any, error) {
+			store, err := loadPeople()
 			if err != nil {
 				return nil, err
 			}
 			return store.GetPerson(ctx, scope, id)
 		}),
 		Search: s.ownedRecordSearch("people-store", false, func(ctx context.Context, scope ownership.Scope, query string) (any, error) {
-			store, err := people()
+			store, err := loadPeople()
 			if err != nil {
 				return nil, err
 			}
-			return store.ListPersons(ctx, scope, peoplestore.PersonFilter{Query: query})
+			return store.ListPersons(ctx, scope, people.PersonFilter{Query: query})
 		}),
 	}
 	readers["entry"] = referencestore.InProcessReader{
-		Record: s.ownedRecordReader("journal-store", true, journalstore.ErrNotFound, func(ctx context.Context, scope ownership.Scope, id string) (any, error) {
-			store, err := journal()
+		Record: s.ownedRecordReader("journal-store", true, journal.ErrNotFound, func(ctx context.Context, scope ownership.Scope, id string) (any, error) {
+			store, err := loadJournal()
 			if err != nil {
 				return nil, err
 			}
 			return store.Get(ctx, scope, id, false)
 		}),
 		Search: s.ownedRecordSearch("journal-store", true, func(ctx context.Context, scope ownership.Scope, query string) (any, error) {
-			store, err := journal()
+			store, err := loadJournal()
 			if err != nil {
 				return nil, err
 			}
-			return store.List(ctx, scope, journalstore.Filter{Query: query})
+			return store.List(ctx, scope, journal.Filter{Query: query})
 		}),
 	}
 	readers["calendar_event"] = referencestore.InProcessReader{
-		Record: s.ownedRecordReader("calendar-store", false, calendarstore.ErrNotFound, func(ctx context.Context, scope ownership.Scope, id string) (any, error) {
+		Record: s.ownedRecordReader("calendar-store", false, calendar.ErrNotFound, func(ctx context.Context, scope ownership.Scope, id string) (any, error) {
 			store, err := loaded(&s.referenceReadable.calendar, "calendar-store")
 			if err != nil {
 				return nil, err
@@ -277,7 +277,7 @@ func (s *Server) InProcessReferenceReaders() referencestore.InProcessServices {
 		}),
 	}
 
-	photos := func() (*photosAndLocationsStores, error) {
+	loadPhotosAndLocations := func() (*photosAndLocationsStores, error) {
 		stores := s.photosAndLocations.Load()
 		if stores == nil {
 			return nil, errors.New("photo-store and location-store are not open on this server")
@@ -285,15 +285,15 @@ func (s *Server) InProcessReferenceReaders() referencestore.InProcessServices {
 		return stores, nil
 	}
 	readers["photo"] = referencestore.InProcessReader{
-		Record: s.ownedRecordReader("photo-store", false, photostore.ErrNotFound, func(ctx context.Context, scope ownership.Scope, id string) (any, error) {
-			stores, err := photos()
+		Record: s.ownedRecordReader("photo-store", false, photos.ErrNotFound, func(ctx context.Context, scope ownership.Scope, id string) (any, error) {
+			stores, err := loadPhotosAndLocations()
 			if err != nil {
 				return nil, err
 			}
 			return stores.photos.Get(ctx, scope, id, false)
 		}),
 		Attachment: ownedImageReader(func(ctx context.Context, scope ownership.Scope, id string) ([]byte, error) {
-			stores, err := photos()
+			stores, err := loadPhotosAndLocations()
 			if err != nil {
 				return nil, err
 			}
@@ -303,21 +303,21 @@ func (s *Server) InProcessReferenceReaders() referencestore.InProcessServices {
 			}
 			defer content.Close()
 			return io.ReadAll(io.LimitReader(content, referencestore.MaximumAttachmentBytes+1))
-		}, photostore.ErrNotFound),
+		}, photos.ErrNotFound),
 	}
 	readers["face_group"] = referencestore.InProcessReader{
-		Record: s.ownedRecordReader("photo-store", false, photostore.ErrNotFound, func(ctx context.Context, scope ownership.Scope, id string) (any, error) {
-			stores, err := photos()
+		Record: s.ownedRecordReader("photo-store", false, photos.ErrNotFound, func(ctx context.Context, scope ownership.Scope, id string) (any, error) {
+			stores, err := loadPhotosAndLocations()
 			if err != nil {
 				return nil, err
 			}
 			return stores.photos.FaceGroupByID(ctx, scope, id, true)
 		}),
 	}
-	locationReader := func(read func(store *locationstore.Store, ctx context.Context, scope ownership.Scope, id string) (any, error)) referencestore.InProcessReader {
+	locationReader := func(read func(store *locations.Store, ctx context.Context, scope ownership.Scope, id string) (any, error)) referencestore.InProcessReader {
 		return referencestore.InProcessReader{
-			Record: s.ownedRecordReader("location-store", false, locationstore.ErrNotFound, func(ctx context.Context, scope ownership.Scope, id string) (any, error) {
-				stores, err := photos()
+			Record: s.ownedRecordReader("location-store", false, locations.ErrNotFound, func(ctx context.Context, scope ownership.Scope, id string) (any, error) {
+				stores, err := loadPhotosAndLocations()
 				if err != nil {
 					return nil, err
 				}
@@ -325,19 +325,19 @@ func (s *Server) InProcessReferenceReaders() referencestore.InProcessServices {
 			}),
 		}
 	}
-	readers["place"] = locationReader(func(store *locationstore.Store, ctx context.Context, scope ownership.Scope, id string) (any, error) {
+	readers["place"] = locationReader(func(store *locations.Store, ctx context.Context, scope ownership.Scope, id string) (any, error) {
 		return store.GetPlace(ctx, scope, id, false)
 	})
-	readers["visit"] = locationReader(func(store *locationstore.Store, ctx context.Context, scope ownership.Scope, id string) (any, error) {
+	readers["visit"] = locationReader(func(store *locations.Store, ctx context.Context, scope ownership.Scope, id string) (any, error) {
 		return store.GetVisitWithCalendarEventLinks(ctx, scope, id, false)
 	})
-	readers["trip"] = locationReader(func(store *locationstore.Store, ctx context.Context, scope ownership.Scope, id string) (any, error) {
+	readers["trip"] = locationReader(func(store *locations.Store, ctx context.Context, scope ownership.Scope, id string) (any, error) {
 		return store.GetTripWithCalendarEventLinks(ctx, scope, id, false)
 	})
 
-	messageReader := func(read func(store *messagestore.Store, ctx context.Context, scope ownership.Scope, id string) (any, error)) referencestore.InProcessReader {
+	messageReader := func(read func(store *messages.Store, ctx context.Context, scope ownership.Scope, id string) (any, error)) referencestore.InProcessReader {
 		return referencestore.InProcessReader{
-			Record: s.ownedRecordReader("message-store", false, messagestore.ErrNotFound, func(ctx context.Context, scope ownership.Scope, id string) (any, error) {
+			Record: s.ownedRecordReader("message-store", false, messages.ErrNotFound, func(ctx context.Context, scope ownership.Scope, id string) (any, error) {
 				store, err := loaded(&s.referenceReadable.messages, "message-store")
 				if err != nil {
 					return nil, err
@@ -349,17 +349,17 @@ func (s *Server) InProcessReferenceReaders() referencestore.InProcessServices {
 	// A retired message or a merged conversation answers its route with a
 	// redirect to the record that replaced it, which reference-store never
 	// followed: it is an error here as it was there.
-	readers["conversation"] = messageReader(func(store *messagestore.Store, ctx context.Context, scope ownership.Scope, id string) (any, error) {
+	readers["conversation"] = messageReader(func(store *messages.Store, ctx context.Context, scope ownership.Scope, id string) (any, error) {
 		return store.GetConversation(ctx, scope, id)
 	})
-	readers["chat_message"] = messageReader(func(store *messagestore.Store, ctx context.Context, scope ownership.Scope, id string) (any, error) {
+	readers["chat_message"] = messageReader(func(store *messages.Store, ctx context.Context, scope ownership.Scope, id string) (any, error) {
 		return store.GetMessage(ctx, scope, id)
 	})
-	readers["conversation_day"] = messageReader(func(store *messagestore.Store, ctx context.Context, scope ownership.Scope, id string) (any, error) {
+	readers["conversation_day"] = messageReader(func(store *messages.Store, ctx context.Context, scope ownership.Scope, id string) (any, error) {
 		return store.GetConversationDay(ctx, scope, id)
 	})
 	readers["activity"] = referencestore.InProcessReader{
-		Record: s.ownedRecordReader("activity-store", false, activitystore.ErrNotFound, func(ctx context.Context, scope ownership.Scope, id string) (any, error) {
+		Record: s.ownedRecordReader("activity-store", false, onlineactivity.ErrNotFound, func(ctx context.Context, scope ownership.Scope, id string) (any, error) {
 			store, err := loaded(&s.referenceReadable.activities, "activity-store")
 			if err != nil {
 				return nil, err
@@ -367,9 +367,9 @@ func (s *Server) InProcessReferenceReaders() referencestore.InProcessServices {
 			return store.GetActivity(ctx, scope, id, false)
 		}),
 	}
-	timeLedgerReader := func(read func(store *timeledgerstore.Store, ctx context.Context, scope ownership.Scope, id string) (any, error)) referencestore.InProcessReader {
+	timeLedgerReader := func(read func(store *timeledger.Store, ctx context.Context, scope ownership.Scope, id string) (any, error)) referencestore.InProcessReader {
 		return referencestore.InProcessReader{
-			Record: s.ownedRecordReader("time-ledger-store", false, timeledgerstore.ErrNotFound, func(ctx context.Context, scope ownership.Scope, id string) (any, error) {
+			Record: s.ownedRecordReader("time-ledger-store", false, timeledger.ErrNotFound, func(ctx context.Context, scope ownership.Scope, id string) (any, error) {
 				store, err := loaded(&s.referenceReadable.timeLedger, "time-ledger-store")
 				if err != nil {
 					return nil, err
@@ -378,13 +378,13 @@ func (s *Server) InProcessReferenceReaders() referencestore.InProcessServices {
 			}),
 		}
 	}
-	readers["time_entry"] = timeLedgerReader(func(store *timeledgerstore.Store, ctx context.Context, scope ownership.Scope, id string) (any, error) {
+	readers["time_entry"] = timeLedgerReader(func(store *timeledger.Store, ctx context.Context, scope ownership.Scope, id string) (any, error) {
 		return store.Entry(ctx, scope, id, true)
 	})
-	readers["time_entry_kind"] = timeLedgerReader(func(store *timeledgerstore.Store, ctx context.Context, scope ownership.Scope, id string) (any, error) {
+	readers["time_entry_kind"] = timeLedgerReader(func(store *timeledger.Store, ctx context.Context, scope ownership.Scope, id string) (any, error) {
 		return store.Kind(ctx, scope, id)
 	})
-	readers["time_entry_review"] = timeLedgerReader(func(store *timeledgerstore.Store, ctx context.Context, scope ownership.Scope, id string) (any, error) {
+	readers["time_entry_review"] = timeLedgerReader(func(store *timeledger.Store, ctx context.Context, scope ownership.Scope, id string) (any, error) {
 		return store.Review(ctx, scope, id)
 	})
 
@@ -395,9 +395,9 @@ func (s *Server) InProcessReferenceReaders() referencestore.InProcessServices {
 		route := firstPathSegment(row.Get)
 		switch row.Service {
 		case "budget-store":
-			kind := budgetstore.RecordKind(route)
+			kind := budget.RecordKind(route)
 			readers[row.Type] = referencestore.InProcessReader{
-				Record: s.ownedRecordReader("budget-store", false, budgetstore.ErrNotFound, func(ctx context.Context, scope ownership.Scope, id string) (any, error) {
+				Record: s.ownedRecordReader("budget-store", false, budget.ErrNotFound, func(ctx context.Context, scope ownership.Scope, id string) (any, error) {
 					module := s.budgetStore.Load()
 					if module == nil {
 						return nil, errors.New("budget-store is not open on this server")
@@ -407,7 +407,7 @@ func (s *Server) InProcessReferenceReaders() referencestore.InProcessServices {
 			}
 		case "possession-store":
 			readers[row.Type] = referencestore.InProcessReader{
-				Record: s.ownedRecordReader("possession-store", false, possessionstore.ErrNotFound, func(ctx context.Context, scope ownership.Scope, id string) (any, error) {
+				Record: s.ownedRecordReader("possession-store", false, possessions.ErrNotFound, func(ctx context.Context, scope ownership.Scope, id string) (any, error) {
 					server, err := loaded(&s.referenceReadable.possessionsAt, "possession-store")
 					if err != nil {
 						return nil, err
@@ -420,7 +420,7 @@ func (s *Server) InProcessReferenceReaders() referencestore.InProcessServices {
 						return nil, err
 					}
 					return server.ImageInScope(ctx, scope, route, id)
-				}, possessionstore.ErrNotFound),
+				}, possessions.ErrNotFound),
 			}
 		}
 	}

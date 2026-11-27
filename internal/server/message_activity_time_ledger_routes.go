@@ -26,9 +26,9 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/activitystore"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messagestore"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/timeledgerstore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messages"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/onlineactivity"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/timeledger"
 	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
 )
 
@@ -67,16 +67,16 @@ func (s *Server) EnableMessageActivityAndTimeLedgerStores(modules MessageActivit
 	if files == nil {
 		return errors.New("activity-store: EnableFileStore must run first, since activity-store keeps its attachments' bytes in file-store")
 	}
-	messages := messagestore.New(modules.Messages)
-	activities := activitystore.New(modules.Activity, ActivityAttachmentFilesIn(files))
-	timeLedger := timeledgerstore.New(modules.TimeLedger)
+	messageStore := messages.New(modules.Messages)
+	activities := onlineactivity.New(modules.Activity, ActivityAttachmentFilesIn(files))
+	timeLedger := timeledger.New(modules.TimeLedger)
 	messageMux := http.NewServeMux()
-	messagestore.RegisterHandlers(messageMux, messages)
+	messages.RegisterHandlers(messageMux, messageStore)
 	activityMux := http.NewServeMux()
-	activitystore.RegisterHandlers(activityMux, activities)
+	onlineactivity.RegisterHandlers(activityMux, activities)
 	timeLedgerMux := http.NewServeMux()
-	timeledgerstore.RegisterHandlers(timeLedgerMux, timeLedger)
-	s.referenceReadable.messages.Store(messages)
+	timeledger.RegisterHandlers(timeLedgerMux, timeLedger)
+	s.referenceReadable.messages.Store(messageStore)
 	s.referenceReadable.activities.Store(activities)
 	s.referenceReadable.timeLedger.Store(timeLedger)
 	s.messageActivityAndTimeLedger.Store(&messageActivityAndTimeLedgerStores{
@@ -123,7 +123,7 @@ const activityAttachmentOwnerService = "activity-store"
 // in Go, as activity-store keeps attachment bytes: each file is owned by
 // activity-store and the activity it came with. Each call goes through the
 // same checks and size limit as file-store's own routes.
-func ActivityAttachmentFilesIn(files *filestore.Server) activitystore.AttachmentFiles {
+func ActivityAttachmentFilesIn(files *filestore.Server) onlineactivity.AttachmentFiles {
 	return activityAttachmentFiles{files: files}
 }
 
@@ -131,7 +131,7 @@ type activityAttachmentFiles struct {
 	files *filestore.Server
 }
 
-func (attachments activityAttachmentFiles) Put(_ context.Context, content io.Reader, file activitystore.AttachmentFile) (string, error) {
+func (attachments activityAttachmentFiles) Put(_ context.Context, content io.Reader, file onlineactivity.AttachmentFile) (string, error) {
 	// file-store refuses an upload over its limit by its declared length, so
 	// the length is given; attachments are voice clips and small pictures.
 	body, err := io.ReadAll(content)

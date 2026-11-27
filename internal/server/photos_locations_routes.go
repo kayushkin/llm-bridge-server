@@ -22,8 +22,8 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locationstore"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locations"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photos"
 	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
 )
 
@@ -35,9 +35,9 @@ const (
 
 // photosAndLocationsStores is the two stores as this server serves them.
 type photosAndLocationsStores struct {
-	photos          *photostore.Store
+	photos          *photos.Store
 	photoHandler    http.Handler
-	locations       *locationstore.Store
+	locations       *locations.Store
 	locationHandler http.Handler
 }
 
@@ -69,17 +69,17 @@ func (s *Server) EnablePhotosAndLocations(modules PhotosAndLocationsModules) err
 	if modules.GeonamesDirectory == "" {
 		return errors.New("location-store: the GeoNames directory is required")
 	}
-	photos := photostore.New(modules.Photos, PhotoThumbnailFiles(files, s.fileStoreLimits), calendarPeople{people: connected.people})
+	photoStore := photos.New(modules.Photos, PhotoThumbnailFiles(files, s.fileStoreLimits), calendarPeople{people: connected.people})
 	photoMux := http.NewServeMux()
-	photostore.RegisterHandlers(photoMux, photos)
+	photos.RegisterHandlers(photoMux, photoStore)
 
-	locations := locationstore.New(modules.Locations, modules.GeonamesDirectory)
+	locationStore := locations.New(modules.Locations, modules.GeonamesDirectory)
 	locationMux := http.NewServeMux()
-	locationstore.RegisterHandlers(locationMux, locations)
+	locations.RegisterHandlers(locationMux, locationStore)
 
 	s.photosAndLocations.Store(&photosAndLocationsStores{
-		photos: photos, photoHandler: photoMux,
-		locations: locations, locationHandler: locationMux,
+		photos: photoStore, photoHandler: photoMux,
+		locations: locationStore, locationHandler: locationMux,
 	})
 	return nil
 }
@@ -88,14 +88,14 @@ func (s *Server) EnablePhotosAndLocations(modules PhotosAndLocationsModules) err
 // its thumbnails: one file per photo, owner service photo-store, owner ref
 // the photo's id, uploaded by the photo's owner. limits is file-store's size
 // limit in force.
-func PhotoThumbnailFiles(files *filestore.Store, limits func() filestore.Limits) photostore.ThumbnailFiles {
+func PhotoThumbnailFiles(files *filestore.Store, limits func() filestore.Limits) photos.ThumbnailFiles {
 	return photoThumbnailFiles{files: files, limits: limits, carry: filestore.CopyBlobs}
 }
 
 // PhotoThumbnailFilesCarrying is PhotoThumbnailFiles with KeepCopyOf putting
 // each file in by carry: an import passes filestore.LinkBlobs to bring a
 // standalone store's thumbnails in as hard links, which take no room.
-func PhotoThumbnailFilesCarrying(files *filestore.Store, limits func() filestore.Limits, carry filestore.BlobCarry) photostore.ThumbnailFiles {
+func PhotoThumbnailFilesCarrying(files *filestore.Store, limits func() filestore.Limits, carry filestore.BlobCarry) photos.ThumbnailFiles {
 	return photoThumbnailFiles{files: files, limits: limits, carry: carry}
 }
 

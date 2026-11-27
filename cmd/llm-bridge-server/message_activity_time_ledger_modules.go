@@ -10,28 +10,28 @@ import (
 	"os"
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/activitystore"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messagestore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messages"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/onlineactivity"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/timeledgerstore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/timeledger"
 	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
 	"github.com/kayushkin/llm-bridge-server/internal/server"
 )
 
 var (
-	messageStoreModule = connectedRecordsModule{"message-store", messagestore.Module,
+	messageStoreModule = connectedRecordsModule{"message-store", messages.Module,
 		func(ctx context.Context, db *sql.DB, path, owner string) (string, error) {
-			counts, err := messagestore.ImportStandaloneDatabase(ctx, db, path, owner)
+			counts, err := messages.ImportStandaloneDatabase(ctx, db, path, owner)
 			return counts.Summary(), err
 		}}
-	timeLedgerStoreModule = connectedRecordsModule{"time-ledger-store", timeledgerstore.Module,
+	timeLedgerStoreModule = connectedRecordsModule{"time-ledger-store", timeledger.Module,
 		func(ctx context.Context, db *sql.DB, path, owner string) (string, error) {
-			counts, err := timeledgerstore.ImportStandaloneDatabase(ctx, db, path, owner)
+			counts, err := timeledger.ImportStandaloneDatabase(ctx, db, path, owner)
 			return counts.Summary(), err
 		}}
 	// activity-store's import also carries attachment bytes into file-store,
 	// so it has a command of its own (importActivityStoreCmd); run is unused.
-	activityStoreModule = connectedRecordsModule{"activity-store", activitystore.Module, nil}
+	activityStoreModule = connectedRecordsModule{"activity-store", onlineactivity.Module, nil}
 )
 
 // message-store and time-ledger-store import as the other connected_records
@@ -130,7 +130,7 @@ func importActivityStoreCmd(args []string) {
 		importFailed(err)
 	}
 	defer db.Close()
-	counts, err := activitystore.ImportStandaloneDatabase(ctx, db, server.ActivityAttachmentFilesIn(fileStoreCalls), *sqlitePath, *attachments, *owner)
+	counts, err := onlineactivity.ImportStandaloneDatabase(ctx, db, server.ActivityAttachmentFilesIn(fileStoreCalls), *sqlitePath, *attachments, *owner)
 	if err != nil {
 		importFailed(fmt.Errorf("nothing was imported: %w", err))
 	}

@@ -11,10 +11,10 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/calendarstore"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/journalstore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/calendar"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/journal"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/peoplestore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/people"
 	"github.com/kayushkin/llm-bridge-server/internal/server"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 )
@@ -28,19 +28,19 @@ type connectedRecordsModule struct {
 }
 
 var (
-	peopleStoreModule = connectedRecordsModule{"people-store", peoplestore.Module,
+	peopleStoreModule = connectedRecordsModule{"people-store", people.Module,
 		func(ctx context.Context, db *sql.DB, path, owner string) (string, error) {
-			counts, err := peoplestore.ImportStandaloneDatabase(ctx, db, path, owner)
+			counts, err := people.ImportStandaloneDatabase(ctx, db, path, owner)
 			return counts.Summary(), err
 		}}
-	calendarStoreModule = connectedRecordsModule{"calendar-store", calendarstore.Module,
+	calendarStoreModule = connectedRecordsModule{"calendar-store", calendar.Module,
 		func(ctx context.Context, db *sql.DB, path, owner string) (string, error) {
-			counts, err := calendarstore.ImportStandaloneDatabase(ctx, db, path, owner)
+			counts, err := calendar.ImportStandaloneDatabase(ctx, db, path, owner)
 			return counts.Summary(), err
 		}}
-	journalStoreModule = connectedRecordsModule{"journal-store", journalstore.Module,
+	journalStoreModule = connectedRecordsModule{"journal-store", journal.Module,
 		func(ctx context.Context, db *sql.DB, path, owner string) (string, error) {
-			counts, err := journalstore.ImportStandaloneDatabase(ctx, db, path, owner)
+			counts, err := journal.ImportStandaloneDatabase(ctx, db, path, owner)
 			return counts.Summary(), err
 		}}
 )

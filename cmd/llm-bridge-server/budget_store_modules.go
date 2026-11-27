@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/budgetstore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/budget"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 	"github.com/kayushkin/llm-bridge-server/internal/server"
 )
@@ -20,7 +20,7 @@ import (
 // location-store is enabled, since trip matching reads its journeys. The
 // returned function closes the pool.
 func enableBudgetStore(ctx context.Context, cfg *config.Config, srv *server.Server) (func(), error) {
-	db, err := openModuleDescribedBy(ctx, cfg.PostgresURL, budgetstore.Module)
+	db, err := openModuleDescribedBy(ctx, cfg.PostgresURL, budget.Module)
 	if err != nil {
 		return nil, fmt.Errorf("budget-store: %w", err)
 	}
@@ -29,14 +29,14 @@ func enableBudgetStore(ctx context.Context, cfg *config.Config, srv *server.Serv
 			log.Printf("postgres: closing budget-store: %v", err)
 		}
 	}
-	store := budgetstore.New(db)
+	store := budget.New(db)
 	if environment := cfg.Settings.String(config.SettingBudgetStorePlaidEnvironment); environment != "" {
 		if cfg.AuthStoreURL == "" || cfg.AuthStoreToken == "" {
 			closePool()
 			return nil, fmt.Errorf("budget-store: %s is %q, and auth_store.url or auth_store.token is empty: Plaid's keys and every bank's access token live in auth-store",
 				config.SettingBudgetStorePlaidEnvironment, environment)
 		}
-		store.SetPlaidVault(budgetstore.AuthStoreVault{BaseURL: cfg.AuthStoreURL, Token: cfg.AuthStoreToken, PlaidEnvironment: environment,
+		store.SetPlaidVault(budget.AuthStoreVault{BaseURL: cfg.AuthStoreURL, Token: cfg.AuthStoreToken, PlaidEnvironment: environment,
 			Client: &http.Client{Timeout: 30 * time.Second}})
 		log.Printf("budget-store: Plaid on, environment %s", environment)
 	}
@@ -73,12 +73,12 @@ func importBudgetStoreCmd(args []string) {
 	if err := checkOwnerIsAPerson(ctx, url, *owner); err != nil {
 		importFailed(err)
 	}
-	db, err := openModuleDescribedBy(ctx, url, budgetstore.Module)
+	db, err := openModuleDescribedBy(ctx, url, budget.Module)
 	if err != nil {
 		importFailed(err)
 	}
 	defer db.Close()
-	counts, err := budgetstore.ImportStandaloneDatabase(ctx, db, *sqlitePath, *owner)
+	counts, err := budget.ImportStandaloneDatabase(ctx, db, *sqlitePath, *owner)
 	if err != nil {
 		importFailed(fmt.Errorf("nothing was imported: %w", err))
 	}

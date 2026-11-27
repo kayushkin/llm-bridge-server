@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore/facepasses"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photos/facepasses"
 	"github.com/kayushkin/llm-bridge-server/internal/productiondefaults"
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"

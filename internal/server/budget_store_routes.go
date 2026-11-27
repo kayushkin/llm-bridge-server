@@ -14,7 +14,7 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/budgetstore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/budget"
 )
 
 // budgetStoreMountPrefix is where budget-store is mounted.
@@ -22,19 +22,19 @@ const budgetStoreMountPrefix = "/budget-store"
 
 // budgetStoreModule is budget-store as this server serves it.
 type budgetStoreModule struct {
-	store   *budgetstore.Store
+	store   *budget.Store
 	handler http.Handler
 }
 
 // EnableBudgetStore serves budget-store from store. main calls it once,
 // after EnablePhotosAndLocations (trip matching reads location-store's
 // journeys) and before the server listens. Until then its routes answer 503.
-func (s *Server) EnableBudgetStore(store *budgetstore.Store) error {
+func (s *Server) EnableBudgetStore(store *budget.Store) error {
 	if store == nil {
 		return errors.New("budget-store: the store is required")
 	}
 	mux := http.NewServeMux()
-	budgetstore.RegisterHandlers(mux, store)
+	budget.RegisterHandlers(mux, store)
 	s.budgetStore.Store(&budgetStoreModule{store: store, handler: mux})
 	return nil
 }

@@ -16,11 +16,11 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/budgetstore"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locationstore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/budget"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locations"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessionstore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photos"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessions"
 	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack"
 )
 
@@ -55,11 +55,11 @@ type possessionPhotoStore struct {
 }
 
 var (
-	_ possessionstore.PhotoStoreReads = possessionPhotoStore{}
-	_ possessionstore.RecordFinder    = possessionPhotoStore{}
+	_ possessions.PhotoStoreReads = possessionPhotoStore{}
+	_ possessions.RecordFinder    = possessionPhotoStore{}
 )
 
-func (photos possessionPhotoStore) store(ctx context.Context) (*photostore.Store, ownership.Scope, error) {
+func (photos possessionPhotoStore) store(ctx context.Context) (*photos.Store, ownership.Scope, error) {
 	stores := photos.server.photosAndLocations.Load()
 	if stores == nil {
 		return nil, ownership.Scope{}, errors.New("photo-store is not open on this server")
@@ -69,28 +69,28 @@ func (photos possessionPhotoStore) store(ctx context.Context) (*photostore.Store
 }
 
 // RecordExists is GET /photos/{id} answering 200 rather than 404.
-func (photos possessionPhotoStore) RecordExists(ctx context.Context, id string) (bool, error) {
-	store, scope, err := photos.store(ctx)
+func (photoStore possessionPhotoStore) RecordExists(ctx context.Context, id string) (bool, error) {
+	store, scope, err := photoStore.store(ctx)
 	if err != nil {
 		return false, err
 	}
 	_, err = store.Get(ctx, scope, id, false)
-	if errors.Is(err, photostore.ErrNotFound) {
+	if errors.Is(err, photos.ErrNotFound) {
 		return false, nil
 	}
 	return err == nil, err
 }
 
-func (photos possessionPhotoStore) Photo(ctx context.Context, photoID string) (possessionstore.PhotoFacts, error) {
+func (photos possessionPhotoStore) Photo(ctx context.Context, photoID string) (possessions.PhotoFacts, error) {
 	store, scope, err := photos.store(ctx)
 	if err != nil {
-		return possessionstore.PhotoFacts{}, err
+		return possessions.PhotoFacts{}, err
 	}
 	photo, err := store.Get(ctx, scope, photoID, false)
 	if err != nil {
-		return possessionstore.PhotoFacts{}, fmt.Errorf("photo-store, reading %s: %w", photoID, err)
+		return possessions.PhotoFacts{}, fmt.Errorf("photo-store, reading %s: %w", photoID, err)
 	}
-	return possessionstore.PhotoFacts{OwnerPrincipalID: photo.OwnerPrincipalID, Sha256: photo.Sha256, TakenAt: photo.TakenAt,
+	return possessions.PhotoFacts{OwnerPrincipalID: photo.OwnerPrincipalID, Sha256: photo.Sha256, TakenAt: photo.TakenAt,
 		SourcePath: photo.SourcePath, Tags: photo.Tags}, nil
 }
 
@@ -111,12 +111,12 @@ func (photos possessionPhotoStore) Thumbnail(ctx context.Context, photoID string
 	return thumbnail, nil
 }
 
-func (photos possessionPhotoStore) ConfirmedFacesOfPerson(ctx context.Context, photoID, personID string) ([]string, error) {
-	store, scope, err := photos.store(ctx)
+func (photoStore possessionPhotoStore) ConfirmedFacesOfPerson(ctx context.Context, photoID, personID string) ([]string, error) {
+	store, scope, err := photoStore.store(ctx)
 	if err != nil {
 		return nil, err
 	}
-	links, err := store.PhotoPeople(ctx, scope, photostore.PhotoPersonFilter{PhotoID: photoID, PersonID: personID, Status: "confirmed"})
+	links, err := store.PhotoPeople(ctx, scope, photos.PhotoPersonFilter{PhotoID: photoID, PersonID: personID, Status: "confirmed"})
 	if err != nil {
 		return nil, fmt.Errorf("photo-store, the people on %s: %w", photoID, err)
 	}
@@ -127,19 +127,19 @@ func (photos possessionPhotoStore) ConfirmedFacesOfPerson(ctx context.Context, p
 	return faceIDs, nil
 }
 
-func (photos possessionPhotoStore) Faces(ctx context.Context, photoID string) ([]possessionstore.PhotoFace, error) {
-	store, scope, err := photos.store(ctx)
+func (photoStore possessionPhotoStore) Faces(ctx context.Context, photoID string) ([]possessions.PhotoFace, error) {
+	store, scope, err := photoStore.store(ctx)
 	if err != nil {
 		return nil, err
 	}
-	found, err := store.Faces(ctx, scope, photostore.FaceFilter{PhotoID: photoID})
+	found, err := store.Faces(ctx, scope, photos.FaceFilter{PhotoID: photoID})
 	if err != nil {
 		return nil, fmt.Errorf("photo-store, the faces on %s: %w", photoID, err)
 	}
-	faces := make([]possessionstore.PhotoFace, 0, len(found))
+	faces := make([]possessions.PhotoFace, 0, len(found))
 	for _, face := range found {
-		faces = append(faces, possessionstore.PhotoFace{ID: face.ID,
-			Box: possessionstore.Box{Left: face.Box.Left, Top: face.Box.Top, Right: face.Box.Right, Bottom: face.Box.Bottom}})
+		faces = append(faces, possessions.PhotoFace{ID: face.ID,
+			Box: possessions.Box{Left: face.Box.Left, Top: face.Box.Top, Right: face.Box.Right, Bottom: face.Box.Bottom}})
 	}
 	return faces, nil
 }
@@ -150,7 +150,7 @@ type possessionPlaces struct {
 	server *Server
 }
 
-var _ possessionstore.RecordFinder = possessionPlaces{}
+var _ possessions.RecordFinder = possessionPlaces{}
 
 // RecordExists is GET /places/{id} answering 200 rather than 404.
 func (places possessionPlaces) RecordExists(ctx context.Context, id string) (bool, error) {
@@ -163,7 +163,7 @@ func (places possessionPlaces) RecordExists(ctx context.Context, id string) (boo
 		return false, err
 	}
 	_, err = stores.locations.GetPlace(ctx, scope, id, false)
-	if errors.Is(err, locationstore.ErrNotFound) {
+	if errors.Is(err, locations.ErrNotFound) {
 		return false, nil
 	}
 	return err == nil, err
@@ -176,12 +176,12 @@ type possessionBudgetStore struct {
 }
 
 var (
-	_ possessionstore.RecordFinder = possessionBudgetStore{}
-	_ possessionstore.BudgetOrders = possessionBudgetStore{}
+	_ possessions.RecordFinder = possessionBudgetStore{}
+	_ possessions.BudgetOrders = possessionBudgetStore{}
 )
 
 // inOwnersBooks runs work on the ledger of the owner ctx names.
-func (budget possessionBudgetStore) inOwnersBooks(ctx context.Context, work func(*budgetstore.Ledger) error) error {
+func (budget possessionBudgetStore) inOwnersBooks(ctx context.Context, work func(*budget.Ledger) error) error {
 	module := budget.server.budgetStore.Load()
 	if module == nil {
 		return errors.New("budget-store is not open on this server: EnableBudgetStore was never called")
@@ -203,8 +203,8 @@ func (budget possessionBudgetStore) inOwnersBooks(ctx context.Context, work func
 
 // RecordExists is GET /transactions/{id} in the owner's books answering 200
 // rather than 404.
-func (budget possessionBudgetStore) RecordExists(ctx context.Context, id string) (bool, error) {
-	module := budget.server.budgetStore.Load()
+func (budgetStore possessionBudgetStore) RecordExists(ctx context.Context, id string) (bool, error) {
+	module := budgetStore.server.budgetStore.Load()
 	if module == nil {
 		return false, errors.New("budget-store is not open on this server: EnableBudgetStore was never called")
 	}
@@ -212,8 +212,8 @@ func (budget possessionBudgetStore) RecordExists(ctx context.Context, id string)
 	if err != nil {
 		return false, err
 	}
-	_, err = module.store.RecordInScope(ctx, ownership.OwnedBy(owner), budgetstore.RecordKindTransaction, id)
-	if errors.Is(err, budgetstore.ErrNotFound) {
+	_, err = module.store.RecordInScope(ctx, ownership.OwnedBy(owner), budget.RecordKindTransaction, id)
+	if errors.Is(err, budget.ErrNotFound) {
 		return false, nil
 	}
 	return err == nil, err
@@ -222,36 +222,36 @@ func (budget possessionBudgetStore) RecordExists(ctx context.Context, id string)
 // budgetStoreError marks a budget-store conflict as possession-store's, as
 // the HTTP path marked a 409.
 func budgetStoreError(call string, err error) error {
-	if errors.Is(err, budgetstore.ErrConflict) {
-		return fmt.Errorf("%w: budget-store %s: %v", possessionstore.ErrConflict, call, err)
+	if errors.Is(err, budget.ErrConflict) {
+		return fmt.Errorf("%w: budget-store %s: %v", possessions.ErrConflict, call, err)
 	}
 	return fmt.Errorf("budget-store %s: %w", call, err)
 }
 
-func budgetOrderOf(order budgetstore.MarketplaceOrder) possessionstore.BudgetOrder {
-	read := possessionstore.BudgetOrder{ID: order.ID, Marketplace: order.Marketplace, OrderNumber: order.OrderNumber, Seller: order.Seller,
+func budgetOrderOf(order budget.MarketplaceOrder) possessions.BudgetOrder {
+	read := possessions.BudgetOrder{ID: order.ID, Marketplace: order.Marketplace, OrderNumber: order.OrderNumber, Seller: order.Seller,
 		OrderedAt: order.OrderedAt, TotalCents: order.TotalCents, Currency: order.Currency, TransactionID: order.TransactionID,
 		MatchedBy: order.MatchedBy, MailAccountID: order.MailAccountID, MailMessageID: order.MailMessageID, ExtractedBy: order.ExtractedBy,
-		CreatedBy: order.CreatedBy, Lines: make([]possessionstore.BudgetOrderLine, 0, len(order.Lines))}
+		CreatedBy: order.CreatedBy, Lines: make([]possessions.BudgetOrderLine, 0, len(order.Lines))}
 	for _, line := range order.Lines {
 		read.Lines = append(read.Lines, budgetOrderLineOf(line))
 	}
 	return read
 }
 
-func budgetOrderLineOf(line budgetstore.MarketplaceOrderLine) possessionstore.BudgetOrderLine {
-	return possessionstore.BudgetOrderLine{ID: line.ID, OrderID: line.OrderID, Title: line.Title, ItemNumber: line.ItemNumber,
+func budgetOrderLineOf(line budget.MarketplaceOrderLine) possessions.BudgetOrderLine {
+	return possessions.BudgetOrderLine{ID: line.ID, OrderID: line.OrderID, Title: line.Title, ItemNumber: line.ItemNumber,
 		ListingURL: line.ListingURL, Quantity: line.Quantity, UnitPriceCents: line.UnitPriceCents, Disposition: line.Disposition,
 		PossessionIDs: line.PossessionIDs}
 }
 
-func marketplaceOrderOf(order possessionstore.BudgetOrder) budgetstore.MarketplaceOrder {
-	written := budgetstore.MarketplaceOrder{ID: order.ID, Marketplace: order.Marketplace, OrderNumber: order.OrderNumber, Seller: order.Seller,
+func marketplaceOrderOf(order possessions.BudgetOrder) budget.MarketplaceOrder {
+	written := budget.MarketplaceOrder{ID: order.ID, Marketplace: order.Marketplace, OrderNumber: order.OrderNumber, Seller: order.Seller,
 		OrderedAt: order.OrderedAt, TotalCents: order.TotalCents, Currency: order.Currency, TransactionID: order.TransactionID,
 		MatchedBy: order.MatchedBy, MailAccountID: order.MailAccountID, MailMessageID: order.MailMessageID, ExtractedBy: order.ExtractedBy,
 		CreatedBy: order.CreatedBy}
 	for _, line := range order.Lines {
-		written.Lines = append(written.Lines, budgetstore.MarketplaceOrderLine{ID: line.ID, OrderID: line.OrderID, Title: line.Title,
+		written.Lines = append(written.Lines, budget.MarketplaceOrderLine{ID: line.ID, OrderID: line.OrderID, Title: line.Title,
 			ItemNumber: line.ItemNumber, ListingURL: line.ListingURL, Quantity: line.Quantity, UnitPriceCents: line.UnitPriceCents,
 			Disposition: line.Disposition, PossessionIDs: line.PossessionIDs})
 	}
@@ -261,11 +261,11 @@ func marketplaceOrderOf(order possessionstore.BudgetOrder) budgetstore.Marketpla
 // budgetOrderPage is how many orders one read takes, as the HTTP pages did.
 const budgetOrderPage = 1000
 
-func (budget possessionBudgetStore) ListOrders(ctx context.Context) ([]possessionstore.BudgetOrder, error) {
-	orders := []possessionstore.BudgetOrder{}
-	err := budget.inOwnersBooks(ctx, func(ledger *budgetstore.Ledger) error {
+func (budgetStore possessionBudgetStore) ListOrders(ctx context.Context) ([]possessions.BudgetOrder, error) {
+	orders := []possessions.BudgetOrder{}
+	err := budgetStore.inOwnersBooks(ctx, func(ledger *budget.Ledger) error {
 		for offset := 0; ; offset += budgetOrderPage {
-			page, err := ledger.ListMarketplaceOrders(budgetstore.MarketplaceOrderFilter{Limit: budgetOrderPage, Offset: offset})
+			page, err := ledger.ListMarketplaceOrders(budget.MarketplaceOrderFilter{Limit: budgetOrderPage, Offset: offset})
 			if err != nil {
 				return budgetStoreError("listing marketplace orders", err)
 			}
@@ -283,9 +283,9 @@ func (budget possessionBudgetStore) ListOrders(ctx context.Context) ([]possessio
 	return orders, nil
 }
 
-func (budget possessionBudgetStore) CreateOrder(ctx context.Context, order possessionstore.BudgetOrder) (possessionstore.BudgetOrder, error) {
-	var created possessionstore.BudgetOrder
-	err := budget.inOwnersBooks(ctx, func(ledger *budgetstore.Ledger) error {
+func (budgetStore possessionBudgetStore) CreateOrder(ctx context.Context, order possessions.BudgetOrder) (possessions.BudgetOrder, error) {
+	var created possessions.BudgetOrder
+	err := budgetStore.inOwnersBooks(ctx, func(ledger *budget.Ledger) error {
 		recorded, err := ledger.CreateMarketplaceOrder(marketplaceOrderOf(order))
 		if err != nil {
 			return budgetStoreError("recording a marketplace order", err)
@@ -296,10 +296,10 @@ func (budget possessionBudgetStore) CreateOrder(ctx context.Context, order posse
 	return created, err
 }
 
-func (budget possessionBudgetStore) LinkPossession(ctx context.Context, lineID, possessionID, note string) error {
-	return budget.inOwnersBooks(ctx, func(ledger *budgetstore.Ledger) error {
-		if _, err := ledger.CreateLink(budgetstore.Link{FromID: lineID, EntityType: "possession", EntityRef: possessionID, Note: note}); err != nil &&
-			!errors.Is(err, budgetstore.ErrConflict) {
+func (budgetStore possessionBudgetStore) LinkPossession(ctx context.Context, lineID, possessionID, note string) error {
+	return budgetStore.inOwnersBooks(ctx, func(ledger *budget.Ledger) error {
+		if _, err := ledger.CreateLink(budget.Link{FromID: lineID, EntityType: "possession", EntityRef: possessionID, Note: note}); err != nil &&
+			!errors.Is(err, budget.ErrConflict) {
 			return budgetStoreError("linking "+lineID+" to "+possessionID, err)
 		}
 		if _, err := ledger.SetOrderLineDisposition(lineID, "possession"); err != nil {
@@ -309,13 +309,13 @@ func (budget possessionBudgetStore) LinkPossession(ctx context.Context, lineID, 
 	})
 }
 
-func (budget possessionBudgetStore) OrderOfLine(ctx context.Context, lineID string) (possessionstore.BudgetOrder, possessionstore.BudgetOrderLine, error) {
-	var order possessionstore.BudgetOrder
-	var line possessionstore.BudgetOrderLine
-	err := budget.inOwnersBooks(ctx, func(ledger *budgetstore.Ledger) error {
+func (budgetStore possessionBudgetStore) OrderOfLine(ctx context.Context, lineID string) (possessions.BudgetOrder, possessions.BudgetOrderLine, error) {
+	var order possessions.BudgetOrder
+	var line possessions.BudgetOrderLine
+	err := budgetStore.inOwnersBooks(ctx, func(ledger *budget.Ledger) error {
 		readLine, err := ledger.GetMarketplaceOrderLine(lineID)
-		if errors.Is(err, budgetstore.ErrNotFound) {
-			return fmt.Errorf("%w: budget-store has no order line %s", possessionstore.ErrInvalid, lineID)
+		if errors.Is(err, budget.ErrNotFound) {
+			return fmt.Errorf("%w: budget-store has no order line %s", possessions.ErrInvalid, lineID)
 		}
 		if err != nil {
 			return budgetStoreError("reading order line "+lineID, err)
@@ -336,7 +336,7 @@ type possessionMail struct {
 	server *Server
 }
 
-var _ possessionstore.MailSource = possessionMail{}
+var _ possessions.MailSource = possessionMail{}
 
 // mailSearchPage is how many ids one search page asks for, as the HTTP
 // search did.
@@ -370,15 +370,15 @@ func (mail possessionMail) Search(ctx context.Context, account, query, cursor st
 	return ids, next, nil
 }
 
-func (mail possessionMail) Message(ctx context.Context, account, id string) (possessionstore.MailMessage, error) {
+func (mail possessionMail) Message(ctx context.Context, account, id string) (possessions.MailMessage, error) {
 	module, caller, err := mail.caller(ctx)
 	if err != nil {
-		return possessionstore.MailMessage{}, err
+		return possessions.MailMessage{}, err
 	}
 	message, err := module.ReadMessageAs(ctx, caller, account, "", id)
 	if err != nil {
-		return possessionstore.MailMessage{}, fmt.Errorf("mailstack, reading %s: %w", id, err)
+		return possessions.MailMessage{}, fmt.Errorf("mailstack, reading %s: %w", id, err)
 	}
-	return possessionstore.MailMessageOf(message.Meta.ID, message.Meta.Subject, message.Meta.From.Email, message.Meta.Date,
+	return possessions.MailMessageOf(message.Meta.ID, message.Meta.Subject, message.Meta.From.Email, message.Meta.Date,
 		message.BodyText, message.BodyHTML), nil
 }

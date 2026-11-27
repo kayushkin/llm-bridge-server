@@ -27,8 +27,8 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/peoplestore"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore/facepasses"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/people"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photos/facepasses"
 	"github.com/kayushkin/llm-bridge-server/internal/inprocesshttp"
 )
 
@@ -269,7 +269,7 @@ func (s *Server) photoFacePassOperator(ctx context.Context, owner string) (strin
 	if connected == nil {
 		return "", errConnectedRecordsOff
 	}
-	persons, err := connected.people.ListPersons(ctx, ownership.OwnedBy(owner), peoplestore.PersonFilter{PrincipalID: owner})
+	persons, err := connected.people.ListPersons(ctx, ownership.OwnedBy(owner), people.PersonFilter{PrincipalID: owner})
 	if err != nil {
 		return "", fmt.Errorf("people-store, finding the owner's own person: %w", err)
 	}
@@ -315,7 +315,7 @@ func (s *Server) photoFacePassClient(owner string) (*http.Client, error) {
 	}
 	return &http.Client{
 		Transport: photoFacePassTransport{
-			byHost: byHost,
+			byHost:  byHost,
 			network: http.DefaultTransport,
 		},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },

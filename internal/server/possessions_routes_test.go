@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessionstore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessions"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 )
@@ -27,7 +27,7 @@ func enablePossessionsOnTestDatabase(t *testing.T, gated *gatedTestServer) {
 	t.Helper()
 	enablePhotosAndLocationsOnTestDatabase(t, gated)
 	enableBudgetStoreModuleOnTestDatabase(t, gated)
-	module, err := possessionstore.Module()
+	module, err := possessions.Module()
 	if err != nil {
 		t.Fatal(err)
 	}

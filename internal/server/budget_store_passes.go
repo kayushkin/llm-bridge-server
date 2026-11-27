@@ -23,8 +23,8 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/budgetstore"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locationstore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/budget"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locations"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 )
 
@@ -151,7 +151,7 @@ func (s *Server) StartBudgetStorePasses(ctx context.Context) error {
 // runBudgetStorePassRound runs every pass that is on for every owner. A pass
 // that fails is logged and the round goes on: one owner's failure must not
 // stop another's work, and the next round tries again.
-func (s *Server) runBudgetStorePassRound(ctx context.Context, store *budgetstore.Store, settings budgetStorePassSettings) {
+func (s *Server) runBudgetStorePassRound(ctx context.Context, store *budget.Store, settings budgetStorePassSettings) {
 	for _, owner := range settings.owners {
 		if ctx.Err() != nil {
 			return
@@ -165,7 +165,7 @@ func (s *Server) runBudgetStorePassRound(ctx context.Context, store *budgetstore
 // runBudgetStorePassesForOwner runs, in owner's books, each pass that is on,
 // in the order the standalone store's scheduler jobs ran them: the bank sync
 // first, so the others see the new transactions.
-func (s *Server) runBudgetStorePassesForOwner(ctx context.Context, store *budgetstore.Store, settings budgetStorePassSettings, owner string) error {
+func (s *Server) runBudgetStorePassesForOwner(ctx context.Context, store *budget.Store, settings budgetStorePassSettings, owner string) error {
 	books, err := store.OpenLedger(ctx, owner)
 	if err != nil {
 		return err
@@ -213,7 +213,7 @@ func (s *Server) runBudgetStorePassesForOwner(ctx context.Context, store *budget
 // applies payee rules, as the standalone store's scheduler job did. A bank
 // that failed is kept as its item's last_error, which GET
 // /budget-store/plaid/items shows; the log names only how many failed.
-func runBudgetBankSync(ctx context.Context, books *budgetstore.Ledger, prefix string) error {
+func runBudgetBankSync(ctx context.Context, books *budget.Ledger, prefix string) error {
 	synced, err := books.SyncPlaid(ctx)
 	if err != nil {
 		return err
@@ -244,24 +244,24 @@ const budgetTripJourneyPage = 1000
 // from location-store, narrowed to owner, and suggests the spending dated
 // during each. Answers how many links it suggested and how many journeys it
 // read.
-func (s *Server) runBudgetTripMatching(ctx context.Context, books *budgetstore.Ledger, settings budgetStorePassSettings, owner string) (int, int, error) {
-	locations := s.photosAndLocations.Load()
-	if locations == nil {
+func (s *Server) runBudgetTripMatching(ctx context.Context, books *budget.Ledger, settings budgetStorePassSettings, owner string) (int, int, error) {
+	photosAndLocations := s.photosAndLocations.Load()
+	if photosAndLocations == nil {
 		return 0, 0, errors.New("location-store is not served here")
 	}
 	since := time.Now().In(settings.tripTimeZone).AddDate(0, 0, -settings.tripLookbackDays)
 	sinceDay := time.Date(since.Year(), since.Month(), since.Day(), 0, 0, 0, 0, settings.tripTimeZone)
-	var journeys []budgetstore.TripJourney
+	var journeys []budget.TripJourney
 	for offset := 0; ; offset += budgetTripJourneyPage {
-		page, err := locations.locations.ListTrips(ctx, ownership.OwnedBy(owner), locationstore.TripFilter{
-			TimeFilter: locationstore.TimeFilter{From: sinceDay.Unix(), Limit: budgetTripJourneyPage, Offset: offset},
-			Kind:       locationstore.TripKindJourney,
+		page, err := photosAndLocations.locations.ListTrips(ctx, ownership.OwnedBy(owner), locations.TripFilter{
+			TimeFilter: locations.TimeFilter{From: sinceDay.Unix(), Limit: budgetTripJourneyPage, Offset: offset},
+			Kind:       locations.TripKindJourney,
 		})
 		if err != nil {
 			return 0, 0, fmt.Errorf("reading journeys from location-store: %w", err)
 		}
 		for _, trip := range page {
-			journeys = append(journeys, budgetstore.TripJourney{ID: trip.ID, StartedAt: trip.StartedAt, EndedAt: trip.EndedAt})
+			journeys = append(journeys, budget.TripJourney{ID: trip.ID, StartedAt: trip.StartedAt, EndedAt: trip.EndedAt})
 		}
 		if len(page) < budgetTripJourneyPage {
 			break

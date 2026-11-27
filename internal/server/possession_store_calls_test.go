@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessionstore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessions"
 	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack"
 )
 
@@ -39,7 +39,7 @@ func TestPossessionStoresCallsReachOnlyTheirOwnersRecords(t *testing.T) {
 	if _, err := photos.RecordExists(context.Background(), photoID); err == nil {
 		t.Error("a photo check with no caller was answered")
 	}
-	source := possessionstore.PhotoStoreSource{PhotoStore: photos}
+	source := possessions.PhotoStoreSource{PhotoStore: photos}
 	if taken, err := source.TakenAt(owner, photoID); err != nil || taken != 1700000000 {
 		t.Errorf("the owner's TakenAt = %d, %v", taken, err)
 	}
@@ -55,7 +55,7 @@ func TestPossessionStoresCallsReachOnlyTheirOwnersRecords(t *testing.T) {
 	if _, err := source.TakenAt(other, photoID); err == nil {
 		t.Error("another owner read the photo")
 	}
-	if _, err := source.WearerFace(owner, photoID, "person_000001"); !errors.Is(err, possessionstore.ErrInvalid) {
+	if _, err := source.WearerFace(owner, photoID, "person_000001"); !errors.Is(err, possessions.ErrInvalid) {
 		t.Errorf("a wearer with no confirmed face = %v, want ErrInvalid", err)
 	}
 
@@ -72,15 +72,15 @@ func TestPossessionStoresCallsReachOnlyTheirOwnersRecords(t *testing.T) {
 
 	budget := possessionBudgetStore{server: gated.server}
 	total := int64(2500)
-	created, err := budget.CreateOrder(owner, possessionstore.BudgetOrder{Marketplace: "ebay", OrderNumber: "19-00000-00001", Seller: "seller_one",
+	created, err := budget.CreateOrder(owner, possessions.BudgetOrder{Marketplace: "ebay", OrderNumber: "19-00000-00001", Seller: "seller_one",
 		OrderedAt: 1700000000, TotalCents: &total, Currency: "USD", MailAccountID: "desk", MailMessageID: "m1", ExtractedBy: "model",
-		CreatedBy: firstTestPrincipalID, Lines: []possessionstore.BudgetOrderLine{{Title: "desk lamp", Quantity: 1, UnitPriceCents: &total}}})
+		CreatedBy: firstTestPrincipalID, Lines: []possessions.BudgetOrderLine{{Title: "desk lamp", Quantity: 1, UnitPriceCents: &total}}})
 	if err != nil || created.ID == "" || len(created.Lines) != 1 {
 		t.Fatalf("the owner's order = %+v, %v", created, err)
 	}
 	lineID := created.Lines[0].ID
-	if _, err := budget.CreateOrder(owner, possessionstore.BudgetOrder{Marketplace: "ebay", OrderNumber: "19-00000-00001", OrderedAt: 1700000000,
-		Currency: "USD", CreatedBy: firstTestPrincipalID, Lines: []possessionstore.BudgetOrderLine{{Title: "desk lamp"}}}); !errors.Is(err, possessionstore.ErrConflict) {
+	if _, err := budget.CreateOrder(owner, possessions.BudgetOrder{Marketplace: "ebay", OrderNumber: "19-00000-00001", OrderedAt: 1700000000,
+		Currency: "USD", CreatedBy: firstTestPrincipalID, Lines: []possessions.BudgetOrderLine{{Title: "desk lamp"}}}); !errors.Is(err, possessions.ErrConflict) {
 		t.Errorf("the same order again = %v, want ErrConflict", err)
 	}
 	if orders, err := budget.ListOrders(owner); err != nil || len(orders) != 1 {
@@ -92,7 +92,7 @@ func TestPossessionStoresCallsReachOnlyTheirOwnersRecords(t *testing.T) {
 	if order, line, err := budget.OrderOfLine(owner, lineID); err != nil || order.ID != created.ID || line.ID != lineID {
 		t.Errorf("the owner's line = %+v %+v %v", order, line, err)
 	}
-	if _, _, err := budget.OrderOfLine(other, lineID); !errors.Is(err, possessionstore.ErrInvalid) {
+	if _, _, err := budget.OrderOfLine(other, lineID); !errors.Is(err, possessions.ErrInvalid) {
 		t.Errorf("another owner's line = %v, want ErrInvalid", err)
 	}
 	if err := budget.LinkPossession(other, lineID, "possession_000001", "test"); err == nil {

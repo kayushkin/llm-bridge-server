@@ -9,9 +9,9 @@ import (
 	"os"
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locationstore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locations"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photos"
 	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
 	"github.com/kayushkin/llm-bridge-server/internal/server"
 )
@@ -21,11 +21,11 @@ import (
 // settings turn any on. It runs after file-store and the connected records
 // stores are enabled. The returned function closes the pools.
 func enablePhotosAndLocations(ctx context.Context, cfg *config.Config, srv *server.Server) (func(), error) {
-	photos, err := openModuleDescribedBy(ctx, cfg.PostgresURL, photostore.Module)
+	photos, err := openModuleDescribedBy(ctx, cfg.PostgresURL, photos.Module)
 	if err != nil {
 		return nil, fmt.Errorf("photo-store: %w", err)
 	}
-	locations, err := openModuleDescribedBy(ctx, cfg.PostgresURL, locationstore.Module)
+	locations, err := openModuleDescribedBy(ctx, cfg.PostgresURL, locations.Module)
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("location-store: %w", err), photos.Close())
 	}
@@ -87,12 +87,12 @@ func importPhotoStoreCmd(args []string) {
 	limits := func() filestore.Limits {
 		return filestore.Limits{MaximumFileBytes: int64(cfg.Settings.Integer(config.SettingFileStoreMaximumFileBytes))}
 	}
-	db, err := openModuleDescribedBy(ctx, url, photostore.Module)
+	db, err := openModuleDescribedBy(ctx, url, photos.Module)
 	if err != nil {
 		importFailed(err)
 	}
 	defer db.Close()
-	counts, err := photostore.ImportStandaloneDatabase(ctx, db, server.PhotoThumbnailFilesCarrying(files, limits, filestore.BlobCarry(*carry)), *sqlitePath, *thumbnails, *owner)
+	counts, err := photos.ImportStandaloneDatabase(ctx, db, server.PhotoThumbnailFilesCarrying(files, limits, filestore.BlobCarry(*carry)), *sqlitePath, *thumbnails, *owner)
 	if err != nil {
 		importFailed(fmt.Errorf("nothing was imported: %w", err))
 	}
@@ -121,12 +121,12 @@ func importLocationStoreCmd(args []string) {
 	if err := checkOwnerIsAPerson(ctx, url, *owner); err != nil {
 		importFailed(err)
 	}
-	db, err := openModuleDescribedBy(ctx, url, locationstore.Module)
+	db, err := openModuleDescribedBy(ctx, url, locations.Module)
 	if err != nil {
 		importFailed(err)
 	}
 	defer db.Close()
-	counts, err := locationstore.ImportStandaloneDatabase(ctx, db, *sqlitePath, *owner)
+	counts, err := locations.ImportStandaloneDatabase(ctx, db, *sqlitePath, *owner)
 	if err != nil {
 		importFailed(fmt.Errorf("nothing was imported: %w", err))
 	}

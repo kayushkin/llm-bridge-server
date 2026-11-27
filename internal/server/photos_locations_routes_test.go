@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locationstore"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photostore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locations"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photos"
 	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 )
@@ -21,11 +21,11 @@ import (
 func enablePhotosAndLocationsOnTestDatabase(t *testing.T, gated *gatedTestServer) {
 	t.Helper()
 	enableConnectedRecordsOnTestDatabase(t, gated)
-	photoModule, err := photostore.Module()
+	photoModule, err := photos.Module()
 	if err != nil {
 		t.Fatal(err)
 	}
-	locationModule, err := locationstore.Module()
+	locationModule, err := locations.Module()
 	if err != nil {
 		t.Fatal(err)
 	}

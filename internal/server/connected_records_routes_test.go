@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/calendarstore"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/journalstore"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/peoplestore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/calendar"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/journal"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/people"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/items"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/model"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
@@ -23,15 +23,15 @@ func enableConnectedRecordsOnTestDatabase(t *testing.T, gated *gatedTestServer) 
 	t.Helper()
 	noteboard, _ := enableTaskTrackingOnTestDatabase(t, gated.server)
 	enableRepositoriesAndReferencesOnTestDatabase(t, gated.server)
-	peopleModule, err := peoplestore.Module()
+	peopleModule, err := people.Module()
 	if err != nil {
 		t.Fatal(err)
 	}
-	calendarModule, err := calendarstore.Module()
+	calendarModule, err := calendar.Module()
 	if err != nil {
 		t.Fatal(err)
 	}
-	journalModule, err := journalstore.Module()
+	journalModule, err := journal.Module()
 	if err != nil {
 		t.Fatal(err)
 	}

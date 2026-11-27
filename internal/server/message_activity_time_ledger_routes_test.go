@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/activitystore"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messagestore"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/timeledgerstore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messages"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/onlineactivity"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/timeledger"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 )
 
@@ -27,15 +27,15 @@ func enableMessageActivityAndTimeLedgerOnTestDatabase(t *testing.T, gated *gated
 // connected records stores are already open.
 func enableMessageActivityAndTimeLedgerModulesOnTestDatabase(t *testing.T, gated *gatedTestServer) {
 	t.Helper()
-	messageModule, err := messagestore.Module()
+	messageModule, err := messages.Module()
 	if err != nil {
 		t.Fatal(err)
 	}
-	activityModule, err := activitystore.Module()
+	activityModule, err := onlineactivity.Module()
 	if err != nil {
 		t.Fatal(err)
 	}
-	timeLedgerModule, err := timeledgerstore.Module()
+	timeLedgerModule, err := timeledger.Module()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestAnActivityAttachmentIsKeptInFileStore(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
 	enableMessageActivityAndTimeLedgerOnTestDatabase(t, gated)
 	files := ActivityAttachmentFilesIn(gated.server.fileStoreCalls.Load())
-	fileID, err := files.Put(t.Context(), strings.NewReader("made-up recording"), activitystore.AttachmentFile{ActivityID: "activity_000001", FileName: "clip.mp3", ContentType: "audio/mpeg"})
+	fileID, err := files.Put(t.Context(), strings.NewReader("made-up recording"), onlineactivity.AttachmentFile{ActivityID: "activity_000001", FileName: "clip.mp3", ContentType: "audio/mpeg"})
 	if err != nil {
 		t.Fatal(err)
 	}

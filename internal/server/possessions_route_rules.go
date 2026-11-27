@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessionstore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessions"
 )
 
 // The rules and descriptions of the possession-store routes
@@ -101,7 +101,7 @@ func possessionStoreRouteDescriptions() map[string]routeDescription {
 	for pattern, description := range possessionStoreFixedRouteDescriptions {
 		descriptions[pattern] = routeDescription{routeGroupPossessionStore, description}
 	}
-	for _, kind := range possessionstore.KindTypes {
+	for _, kind := range possessions.KindTypes {
 		name := strings.ReplaceAll(kind.Name, "_", " ")
 		descriptions["GET /possession-store/"+kind.Route] = routeDescription{routeGroupPossessionStore, fmt.Sprintf("The caller's possessions of kind %s, by the possession filters", name)}
 		descriptions["GET /possession-store/"+kind.Route+"/{id}"] = routeDescription{routeGroupPossessionStore, fmt.Sprintf("The possession a %s record (`%s_…`) belongs to", name, kind.Prefix)}

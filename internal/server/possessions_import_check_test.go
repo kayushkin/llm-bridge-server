@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
-	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessionstore"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessions"
 	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
@@ -100,7 +100,7 @@ func TestAnImportedPossessionStoreAnswersAsTheStandaloneOne(t *testing.T) {
 		t.Skip("no -standalone-possession-store-copy and -live-possession-store-url given")
 	}
 	ctx := context.Background()
-	possessionModule, err := possessionstore.Module()
+	possessionModule, err := possessions.Module()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,25 +114,25 @@ func TestAnImportedPossessionStoreAnswersAsTheStandaloneOne(t *testing.T) {
 		t.Fatal(err)
 	}
 	limits := func() filestore.Limits { return filestore.Limits{MaximumFileBytes: 1 << 30} }
-	root, err := possessionstore.New(func(ctx context.Context, settings map[string]string) (*sql.DB, error) {
+	root, err := possessions.New(func(ctx context.Context, settings map[string]string) (*sql.DB, error) {
 		return postgresstorage.OpenWithSessionSettings(ctx, database.URL(), possessionModule, settings)
-	}, possessionstore.ServiceReferences{}, PossessionOriginalFilesCarrying(files, limits, filestore.LinkBlobs))
+	}, possessions.ServiceReferences{}, PossessionOriginalFilesCarrying(files, limits, filestore.LinkBlobs))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer root.Close()
 	started := time.Now()
-	counts, err := possessionstore.ImportStandaloneDatabase(ctx, root, *standalonePossessionStoreCopy, *standalonePossessionStoreOriginals, *possessionImportOwner)
+	counts, err := possessions.ImportStandaloneDatabase(ctx, root, *standalonePossessionStoreCopy, *standalonePossessionStoreOriginals, *possessionImportOwner)
 	if err != nil {
 		t.Fatalf("import: %v", err)
 	}
 	t.Logf("imported in %s: %s", time.Since(started).Round(time.Millisecond), counts.Summary())
 
 	plain := &http.Client{Timeout: time.Minute}
-	reviewer := &possessionstore.Reviewer{Store: root, CoverImagesDirectory: t.TempDir(),
-		Photos: possessionstore.PhotoStoreSource{PhotoStore: possessionstore.PhotoStoreOverHTTP{URL: *livePhotoStoreURL, HTTPClient: plain}, Originals: root, LongestSide: 2048}}
+	reviewer := &possessions.Reviewer{Store: root, CoverImagesDirectory: t.TempDir(),
+		Photos: possessions.PhotoStoreSource{PhotoStore: possessions.PhotoStoreOverHTTP{URL: *livePhotoStoreURL, HTTPClient: plain}, Originals: root, LongestSide: 2048}}
 	mux := http.NewServeMux()
-	(&possessionstore.Server{Store: root, Reviewer: reviewer}).RegisterHandlers(mux)
+	(&possessions.Server{Store: root, Reviewer: reviewer}).RegisterHandlers(mux)
 	caller := ownership.Caller{PrincipalID: *possessionImportOwner}
 
 	source, err := sql.Open("sqlite", "file:"+*standalonePossessionStoreCopy+"?mode=ro")
@@ -162,7 +162,7 @@ func TestAnImportedPossessionStoreAnswersAsTheStandaloneOne(t *testing.T) {
 	for offset := 0; offset < 800; offset += 200 {
 		paths = append(paths, fmt.Sprintf("/possessions?include_deleted=true&limit=200&offset=%d", offset))
 	}
-	for _, kind := range possessionstore.KindTypes {
+	for _, kind := range possessions.KindTypes {
 		paths = append(paths, "/"+kind.Route+"?limit=1000&include_deleted=true")
 	}
 	for _, id := range ids(`SELECT id FROM possessions ORDER BY seq`) {
