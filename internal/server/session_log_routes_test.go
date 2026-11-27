@@ -22,7 +22,7 @@ func testServerWithSessionLog(t *testing.T) (*Server, *store.Store) {
 // An event the bridge writes reaches log-store in this process, and every
 // route the bridge answers from log-store reads it back: the reading page, the
 // entry, the validators, the search, the aggregates and log-store's own
-// routes under /log-store/.
+// routes under /session-log/.
 func TestTheBridgeWritesAndReadsTheSessionLogInProcess(t *testing.T) {
 	srv, st := testServerWithSessionLog(t)
 	const sessionID = "br_session_log_test"
@@ -85,11 +85,11 @@ func TestTheBridgeWritesAndReadsTheSessionLogInProcess(t *testing.T) {
 	if !strings.Contains(read("/sessions/aggregates"), `"input_tokens":7`) {
 		t.Errorf("aggregates do not carry the result's tokens")
 	}
-	if !strings.Contains(read("/log-store/api/v1/sessions/by-harness-id?harness_session_id=cc-uuid-session-log"), sessionID) {
-		t.Errorf("log-store's own route under /log-store/ does not find the session")
+	if !strings.Contains(read("/session-log/api/v1/sessions/by-harness-id?harness_session_id=cc-uuid-session-log"), sessionID) {
+		t.Errorf("log-store's own route under /session-log/ does not find the session")
 	}
 	var events []json.RawMessage
-	if err := json.Unmarshal([]byte(read("/log-store/api/v1/sessions/"+sessionID+"/events?after=0")), &events); err != nil {
+	if err := json.Unmarshal([]byte(read("/session-log/api/v1/sessions/"+sessionID+"/events?after=0")), &events); err != nil {
 		t.Fatal(err)
 	}
 	// The two events and the ones the bridge derives from them, such as the
@@ -112,9 +112,9 @@ func TestTheBridgeWritesAndReadsTheSessionLogInProcess(t *testing.T) {
 // than reach anything.
 func TestLogStoreRoutesAnswer503BeforeTheSessionLogIsEnabled(t *testing.T) {
 	srv, _ := testServerWithoutSessionLog(t)
-	resp := doJSON(t, srv, http.MethodGet, "/log-store/health", nil)
+	resp := doJSON(t, srv, http.MethodGet, "/session-log/health", nil)
 	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("GET /log-store/health = %d, want 503", resp.StatusCode)
+		t.Fatalf("GET /session-log/health = %d, want 503", resp.StatusCode)
 	}
 }
 

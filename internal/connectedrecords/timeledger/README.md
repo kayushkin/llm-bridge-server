@@ -10,7 +10,7 @@ An account of what someone did, when and where: time entries over spans of time,
 
 - Every record has an owner (`owner_principal_id`), and a caller reaches only its own unless it sees every owner.
 
-It runs inside llm-bridge-server, at `/time-ledger-store/`, on Postgres (schema `time_ledger`). `CONTRACT.md` is the route table and the owner rules. The server builds the store with `New(db)` and mounts it with `RegisterHandlers`. Three commands talk to it over HTTP: `time-ledger-import` (makes entries from the sources), `time-ledger-gather-evidence` (links visits and photos) and `time-ledger-review` (asks a model whether each entry happened).
+It runs inside llm-bridge-server, at `/time-ledger/`, on Postgres (schema `time_ledger`). `CONTRACT.md` is the route table and the owner rules. The server builds the store with `New(db)` and mounts it with `RegisterHandlers`. Three commands talk to it over HTTP: `time-ledger-import` (makes entries from the sources), `time-ledger-gather-evidence` (links visits and photos) and `time-ledger-review` (asks a model whether each entry happened).
 
 ```bash
 POSTGRESTEST_ADMINISTRATOR_URL="$(scripts/test-postgres.sh url)" go test ./internal/connectedrecords/timeledger/...

@@ -96,11 +96,11 @@ func TestTheSchedulerClientReachesTheSchedulerInProcess(t *testing.T) {
 	}
 }
 
-// rule-store answers under /rule-store/ to the operator only, and with its
+// rule-store answers under /rules/ to the operator only, and with its
 // reactor switched off an activation decides nothing.
 func TestRuleStoreRoutesAnswerAndDecideNothingWhileTheReactorIsOff(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
-	if off := gated.requestAsService(t, "GET", "/rule-store/rules"); off.Code != http.StatusServiceUnavailable || !strings.Contains(off.Body.String(), "rule_store_off") {
+	if off := gated.requestAsService(t, "GET", "/rules/rules"); off.Code != http.StatusServiceUnavailable || !strings.Contains(off.Body.String(), "rule_store_off") {
 		t.Fatalf("before the module opens = %d %s, want 503 rule_store_off", off.Code, off.Body)
 	}
 	module, err := rules.Module()
@@ -120,23 +120,23 @@ func TestRuleStoreRoutesAnswerAndDecideNothingWhileTheReactorIsOff(t *testing.T)
 	rules.RegisterHandlers(context.Background(), routes, store, reactor, kanban)
 	gated.server.EnableRuleStore(routes)
 
-	created := gated.requestAsServiceWithJSON(t, "POST", "/rule-store/rules", map[string]any{"name": "completed sessions", "source": rules.SourceSession, "created_by": "principal_000001"})
+	created := gated.requestAsServiceWithJSON(t, "POST", "/rules/rules", map[string]any{"name": "completed sessions", "source": rules.SourceSession, "created_by": "principal_000001"})
 	if created.Code != http.StatusCreated || !strings.Contains(created.Body.String(), `"id":"rule_000001"`) {
 		t.Fatalf("POST a rule = %d %s", created.Code, created.Body)
 	}
 	definition := map[string]any{"conditions": []any{map[string]any{"kind": "field_in", "field": "state", "values": []string{"completed"}}},
 		"effects": []any{map[string]any{"kind": "add_session_tag", "tag": "done"}}}
-	if revision := gated.requestAsServiceWithJSON(t, "POST", "/rule-store/rules/rule_000001/revisions", map[string]any{"definition": definition, "created_by": "principal_000001"}); revision.Code != http.StatusCreated {
+	if revision := gated.requestAsServiceWithJSON(t, "POST", "/rules/rules/rule_000001/revisions", map[string]any{"definition": definition, "created_by": "principal_000001"}); revision.Code != http.StatusCreated {
 		t.Fatalf("POST a revision = %d %s", revision.Code, revision.Body)
 	}
-	if activated := gated.requestAsServiceWithJSON(t, "POST", "/rule-store/rules/rule_000001/activate", map[string]any{"revision": 1, "mode": "shadow", "acted_by": "principal_000001", "reason": "test"}); activated.Code != http.StatusOK {
+	if activated := gated.requestAsServiceWithJSON(t, "POST", "/rules/rules/rule_000001/activate", map[string]any{"revision": 1, "mode": "shadow", "acted_by": "principal_000001", "reason": "test"}); activated.Code != http.StatusOK {
 		t.Fatalf("activate = %d %s", activated.Code, activated.Body)
 	}
-	health := gated.requestAsService(t, "GET", "/rule-store/health")
+	health := gated.requestAsService(t, "GET", "/rules/health")
 	if health.Code != http.StatusOK || !strings.Contains(health.Body.String(), `"switched_off_because":"the reactor is off in this test"`) || !strings.Contains(health.Body.String(), `"runs":0`) {
-		t.Errorf("GET /rule-store/health = %d %s, want the reactor switched off and no run", health.Code, health.Body)
+		t.Errorf("GET /rules/health = %d %s, want the reactor switched off and no run", health.Code, health.Body)
 	}
-	if refused := gated.requestAsPrincipal(t, firstTestPrincipalID, "GET", "/rule-store/rules", nil); refused.Code != http.StatusForbidden || !strings.Contains(refused.Body.String(), "operator_route") {
+	if refused := gated.requestAsPrincipal(t, firstTestPrincipalID, "GET", "/rules/rules", nil); refused.Code != http.StatusForbidden || !strings.Contains(refused.Body.String(), "operator_route") {
 		t.Errorf("a principal who is not an administrator = %d %s, want 403 operator_route", refused.Code, refused.Body)
 	}
 }

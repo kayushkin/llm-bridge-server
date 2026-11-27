@@ -13,7 +13,7 @@ import (
 // Postgres modules. agent-store's and memory-store's routes stay where the
 // embedded copies always served them, at the root. What only the standalone
 // services served is mounted here: model-store's registry routes under
-// /model-store/, and agent-store's four seed routes for runners under
+// /models/, and agent-store's four seed routes for runners under
 // /api/agent-store/, which until the move forwarded any path to the
 // standalone agent-store.
 
@@ -68,13 +68,13 @@ func (s *Server) agentStoreRunnerSeedRoute(agentStoreRoutes http.Handler) http.H
 // written out, because the route classification test reads them from string
 // literals.
 func (s *Server) registerAgentsRegistryRoutes() {
-	s.mux.HandleFunc("GET /model-store/api/models", s.modelStoreRoute((*models.Handlers).ListModels))
-	s.mux.HandleFunc("POST /model-store/api/models/toggle", s.modelStoreRoute((*models.Handlers).ToggleModel))
-	s.mux.HandleFunc("GET /model-store/api/roles", s.modelStoreRoute((*models.Handlers).ListRoles))
-	s.mux.HandleFunc("POST /model-store/api/roles", s.modelStoreRoute((*models.Handlers).SetRole))
-	s.mux.HandleFunc("GET /model-store/api/roles/{role}", s.modelStoreRoute((*models.Handlers).GetRole))
-	s.mux.HandleFunc("GET /model-store/api/roles/{role}/models", s.modelStoreRoute((*models.Handlers).GetRoleModels))
-	s.mux.HandleFunc("GET /model-store/api/health", s.modelStoreRoute((*models.Handlers).Health))
+	s.mux.HandleFunc("GET /models/api/models", s.modelStoreRoute((*models.Handlers).ListModels))
+	s.mux.HandleFunc("POST /models/api/models/toggle", s.modelStoreRoute((*models.Handlers).ToggleModel))
+	s.mux.HandleFunc("GET /models/api/roles", s.modelStoreRoute((*models.Handlers).ListRoles))
+	s.mux.HandleFunc("POST /models/api/roles", s.modelStoreRoute((*models.Handlers).SetRole))
+	s.mux.HandleFunc("GET /models/api/roles/{role}", s.modelStoreRoute((*models.Handlers).GetRole))
+	s.mux.HandleFunc("GET /models/api/roles/{role}/models", s.modelStoreRoute((*models.Handlers).GetRoleModels))
+	s.mux.HandleFunc("GET /models/api/health", s.modelStoreRoute((*models.Handlers).Health))
 
 	// The four routes a runner's agent seed reconciler calls (runner/seed.go).
 	var agentStoreRoutes http.Handler

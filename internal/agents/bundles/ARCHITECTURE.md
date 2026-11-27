@@ -114,5 +114,5 @@ emits tags; skill-store needs tag filtering exposed.
 ## Status
 
 bundle-store is now a module of llm-bridge-server, kept in Postgres and mounted at
-`/bundle-store/`; the server resolves a session's `bundle_id` in process when it starts
+`/bundles/`; the server resolves a session's `bundle_id` in process when it starts
 the session, and applies the result. Selection by repo and task tags at session start is not wired yet.

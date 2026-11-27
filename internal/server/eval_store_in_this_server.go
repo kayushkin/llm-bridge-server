@@ -103,7 +103,7 @@ func (thisServer evalStoreInThisServer) ReadOperationIntent(context.Context, str
 }
 
 // Models reads every model's provider and list price from model-store, the
-// records GET /model-store/api/models answers.
+// records GET /models/api/models answers.
 func (thisServer evalStoreInThisServer) Models(context.Context) (map[string]evaluations.ModelPrice, error) {
 	if thisServer.server.modelStore == nil {
 		return nil, errors.New("model-store: this server was built without a model registry")

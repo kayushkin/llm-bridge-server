@@ -17,7 +17,7 @@ be checked against its statement. Amounts are integer cents everywhere.
 
 ## Where it runs
 
-budget-store runs inside llm-bridge-server, at `/budget-store/`, with the
+budget-store runs inside llm-bridge-server, at `/budget/`, with the
 paths it served as a standalone service on `:8340`. Its books are in
 Postgres, in the schema `budget` owned by the role `budget_module`
 (`Module()`, `migrations/`); the server provisions and migrates it and hands

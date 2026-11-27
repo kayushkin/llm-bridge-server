@@ -13,26 +13,21 @@ package server
 // request.
 
 const (
-	// kanbanProxyMountPrefix is where kanban-store is mounted; the remainder of
-	// the path is answered by kanban-store's /api/. kanban-store runs in this
-	// process (kanban_store_routes.go), so it is not proxied: the caller
-	// reaches it through the request context, not a header.
-	kanbanProxyMountPrefix = "/kanban"
-	// kanbanStoreProxyMountPrefix also reaches kanban-store, with the remainder
-	// answered at its root, unchanged: /kanban-store/api/… reaches /api/….
-	// A client that treats a base path as kanban-store itself, as bridge-ui
-	// does through a connected server, uses this one; /kanban/ stays for the
-	// agents that call it.
-	kanbanStoreProxyMountPrefix = "/kanban-store"
-	// grantStoreProxyMountPrefix is where grant-store's routes are mounted.
+	// issuesMountPrefix is where kanban-store is mounted, with the remainder
+	// answered at its root, unchanged: /issues/api/… reaches /api/….
+	// kanban-store runs in this process (kanban_store_routes.go), so it is
+	// not proxied: the caller reaches it through the request context, not a
+	// header.
+	issuesMountPrefix = "/issues"
+	// grantsMountPrefix is where grant-store's routes are mounted.
 	// grant-store runs in this process (access_routes.go), so they are not
 	// proxied: the caller reaches it through the request context, not a header.
-	grantStoreProxyMountPrefix = "/grant-store"
-	// mailstackProxyMountPrefix is where mailstack's routes are mounted: the
+	grantsMountPrefix = "/grants"
+	// mailMountPrefix is where mailstack's routes are mounted: the
 	// remainder of the path is answered at mailstack's root, where /api/…
 	// lives. mailstack runs in this process (mailstack_routes.go), so it is
 	// not proxied: the caller reaches it through the request context.
-	mailstackProxyMountPrefix = "/mailstack"
+	mailMountPrefix = "/mail"
 )
 
 // principalIdentityHeader is the header the internal service names a person

@@ -8,7 +8,7 @@ describe('page availability', () => {
     for (const page of BRIDGE_PAGES) expect(page.available).toBe(BRIDGE_PAGE_AVAILABILITY[page.route])
   })
   it('counts a page whose store the host does not carry as unavailable', () => {
-    const config = { kanbanStoreBasePath: '/kanban-store', principalStoreBasePath: '', multichatBasePath: '' } as BridgeConfig
+    const config = { kanbanStoreBasePath: '/issues', principalStoreBasePath: '', multichatBasePath: '' } as BridgeConfig
     expect(bridgePageAvailableWithoutShellFlags('kanban', config)).toBe(true)
     expect(bridgePageAvailableWithoutShellFlags('principals', config)).toBe(false)
     expect(bridgePageAvailableWithoutShellFlags('messageWaiting', config)).toBe(false)

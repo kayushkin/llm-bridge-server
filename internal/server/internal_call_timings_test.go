@@ -111,7 +111,7 @@ func TestInternalCallTimings(t *testing.T) {
 	t.Run("chat-link sender lookup", func(t *testing.T) {
 		gated := newGatedTestServer(t, nil)
 		enableConnectedRecordsOnTestDatabase(t, gated)
-		if response := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/people-store/persons", map[string]any{"display_name": "Sender",
+		if response := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/people/persons", map[string]any{"display_name": "Sender",
 			"identities": []map[string]any{{"kind": "discord", "value": "sender_handle", "linked_by": "operator"}}}); response.Code != http.StatusCreated {
 			t.Fatalf("create = %d %s", response.Code, response.Body)
 		}

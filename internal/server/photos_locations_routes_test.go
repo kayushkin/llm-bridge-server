@@ -43,7 +43,7 @@ var testThumbnail = []byte{0xFF, 0xD8, 0xFF, 0xE0, 't', 'e', 's', 't', ' ', 't',
 // importTestPhoto imports one made-up photo as principalID and answers its id.
 func importTestPhoto(t *testing.T, gated *gatedTestServer, principalID, sha string) string {
 	t.Helper()
-	response := gated.requestAsPrincipal(t, principalID, "POST", "/photo-store/imports", map[string]any{"photos": []map[string]any{{
+	response := gated.requestAsPrincipal(t, principalID, "POST", "/photos/imports", map[string]any{"photos": []map[string]any{{
 		"sha256": sha, "source_machine": "laptop", "source_path": "Pictures/Camera/one.jpg", "folder": "Pictures/Camera",
 		"media_type": "image/jpeg", "taken_at": 1700000000, "date_source": "exif", "width": 4000, "height": 3000,
 		"thumbnail_jpeg": testThumbnail,
@@ -63,7 +63,7 @@ func importTestPhoto(t *testing.T, gated *gatedTestServer, principalID, sha stri
 func TestPhotoStoreAndLocationStoreAnswer503WithNoModule(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
 	enableConnectedRecordsOnTestDatabase(t, gated)
-	for path, code := range map[string]string{"/photo-store/photos": "photo_store_off", "/location-store/places": "location_store_off"} {
+	for path, code := range map[string]string{"/photos/photos": "photo_store_off", "/locations/places": "location_store_off"} {
 		if response := gated.requestAsPrincipal(t, firstTestPrincipalID, "GET", path, nil); response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), code) {
 			t.Errorf("GET %s = %d %s, want 503 %s", path, response.Code, response.Body, code)
 		}
@@ -76,7 +76,7 @@ func TestAPhotoAndItsThumbnailAreReachedOnlyByItsOwnerAndAnAdministrator(t *test
 	gated := newGatedTestServer(t, nil)
 	enablePhotosAndLocationsOnTestDatabase(t, gated)
 	id := importTestPhoto(t, gated, firstTestPrincipalID, strings.Repeat("a", 64))
-	path := "/photo-store/photos/" + id
+	path := "/photos/photos/" + id
 
 	owner := gated.requestAsPrincipal(t, firstTestPrincipalID, "GET", path, nil)
 	if owner.Code != http.StatusOK || decodeRecord(t, owner)["owner_principal_id"] != firstTestPrincipalID {
@@ -96,7 +96,7 @@ func TestAPhotoAndItsThumbnailAreReachedOnlyByItsOwnerAndAnAdministrator(t *test
 			t.Errorf("another principal's GET %s = %d, want 404", denied, response.Code)
 		}
 	}
-	if response := gated.requestAsPrincipal(t, secondTestPrincipalID, "GET", "/photo-store/photos", nil); response.Code != http.StatusOK || strings.Contains(response.Body.String(), id) {
+	if response := gated.requestAsPrincipal(t, secondTestPrincipalID, "GET", "/photos/photos", nil); response.Code != http.StatusOK || strings.Contains(response.Body.String(), id) {
 		t.Errorf("another principal's list = %d %s, want none of the owner's photos", response.Code, response.Body)
 	}
 	if response := gated.requestAsPrincipal(t, administratorTestPrincipalID, "GET", path, nil); response.Code != http.StatusOK {
@@ -112,28 +112,28 @@ func TestAPhotoAndItsThumbnailAreReachedOnlyByItsOwnerAndAnAdministrator(t *test
 	// reference-store asks photo-store in this process: the administrator's
 	// chip resolves and its picture is the thumbnail; another principal is
 	// told of nothing.
-	resolve := gated.requestAsPrincipal(t, administratorTestPrincipalID, "POST", "/reference-store/resolve", map[string]any{"ids": []string{id}})
+	resolve := gated.requestAsPrincipal(t, administratorTestPrincipalID, "POST", "/references/resolve", map[string]any{"ids": []string{id}})
 	if resolve.Code != http.StatusOK || !strings.Contains(resolve.Body.String(), `"type":"photo"`) {
 		t.Errorf("the administrator's resolve = %d %s", resolve.Code, resolve.Body)
 	}
-	attachment := gated.requestAsPrincipal(t, administratorTestPrincipalID, "GET", "/reference-store/attachments/"+id, nil)
+	attachment := gated.requestAsPrincipal(t, administratorTestPrincipalID, "GET", "/references/attachments/"+id, nil)
 	if attachment.Code != http.StatusOK || !bytes.Equal(attachment.Body.Bytes(), testThumbnail) {
 		t.Errorf("the administrator's attachment = %d, %d bytes", attachment.Code, attachment.Body.Len())
 	}
-	if response := gated.requestAsPrincipal(t, secondTestPrincipalID, "POST", "/reference-store/resolve", map[string]any{"ids": []string{id}}); response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"type":"photo"`) {
+	if response := gated.requestAsPrincipal(t, secondTestPrincipalID, "POST", "/references/resolve", map[string]any{"ids": []string{id}}); response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"type":"photo"`) {
 		t.Errorf("another principal's resolve = %d %s", response.Code, response.Body)
 	}
 
 	// A person on a photo must be one the photo's owner keeps.
-	someoneElses := gated.requestAsPrincipal(t, secondTestPrincipalID, "POST", "/people-store/persons", map[string]any{"display_name": "Bob"})
+	someoneElses := gated.requestAsPrincipal(t, secondTestPrincipalID, "POST", "/people/persons", map[string]any{"display_name": "Bob"})
 	bobID, _ := decodeRecord(t, someoneElses)["id"].(string)
 	proposal := map[string]any{"photo_id": id, "person_id": bobID, "status": "suggested", "confidence": 0.5, "evidence": "test", "proposed_by": "test"}
-	if response := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/photo-store/photo-people", proposal); response.Code != http.StatusBadRequest {
+	if response := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/photos/photo-people", proposal); response.Code != http.StatusBadRequest {
 		t.Errorf("naming another owner's person on a photo = %d %s, want 400", response.Code, response.Body)
 	}
-	ownPerson := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/people-store/persons", map[string]any{"display_name": "Alice"})
+	ownPerson := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/people/persons", map[string]any{"display_name": "Alice"})
 	proposal["person_id"], _ = decodeRecord(t, ownPerson)["id"].(string)
-	if response := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/photo-store/photo-people", proposal); response.Code != http.StatusCreated {
+	if response := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/photos/photo-people", proposal); response.Code != http.StatusCreated {
 		t.Errorf("naming the owner's own person on a photo = %d %s, want 201", response.Code, response.Body)
 	}
 
@@ -150,7 +150,7 @@ func TestAPhotoAndItsThumbnailAreReachedOnlyByItsOwnerAndAnAdministrator(t *test
 func TestAPlaceIsReachedOnlyByItsOwnerAndAnAdministrator(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
 	enablePhotosAndLocationsOnTestDatabase(t, gated)
-	created := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/location-store/places",
+	created := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/locations/places",
 		map[string]any{"name": "Example home", "latitude": 10.0, "longitude": 20.0, "kind": "home"})
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create = %d %s", created.Code, created.Body)
@@ -160,14 +160,14 @@ func TestAPlaceIsReachedOnlyByItsOwnerAndAnAdministrator(t *testing.T) {
 	if place["owner_principal_id"] != firstTestPrincipalID || id == "" {
 		t.Fatalf("the new place's id %q and owner %v", id, place["owner_principal_id"])
 	}
-	path := "/location-store/places/" + id
+	path := "/locations/places/" + id
 	if response := gated.requestAsPrincipal(t, secondTestPrincipalID, "GET", path, nil); response.Code != http.StatusNotFound {
 		t.Errorf("another principal's GET = %d, want 404", response.Code)
 	}
 	if response := gated.requestAsPrincipal(t, secondTestPrincipalID, "PATCH", path, map[string]any{"name": "Elsewhere"}); response.Code != http.StatusNotFound {
 		t.Errorf("another principal's PATCH = %d, want 404", response.Code)
 	}
-	if response := gated.requestAsPrincipal(t, secondTestPrincipalID, "GET", "/location-store/places", nil); response.Code != http.StatusOK || strings.Contains(response.Body.String(), id) {
+	if response := gated.requestAsPrincipal(t, secondTestPrincipalID, "GET", "/locations/places", nil); response.Code != http.StatusOK || strings.Contains(response.Body.String(), id) {
 		t.Errorf("another principal's list = %d %s", response.Code, response.Body)
 	}
 	if response := gated.requestAsPrincipal(t, administratorTestPrincipalID, "GET", path, nil); response.Code != http.StatusOK {
@@ -241,7 +241,7 @@ func TestAFacePassReadsOnlyItsOwnersMessages(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
 	enablePhotosAndLocationsOnTestDatabase(t, gated)
 	enableMessageActivityAndTimeLedgerModulesOnTestDatabase(t, gated)
-	started := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/message-store/imports", map[string]any{"importer": "test", "description": "made up"})
+	started := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/messages/imports", map[string]any{"importer": "test", "description": "made up"})
 	if started.Code != http.StatusCreated && started.Code != http.StatusOK {
 		t.Fatalf("start = %d %s", started.Code, started.Body)
 	}
@@ -252,7 +252,7 @@ func TestAFacePassReadsOnlyItsOwnersMessages(t *testing.T) {
 		"messages": []map[string]any{{"conversation_source": "discord", "conversation_source_ref": "channel-1", "sent_at": 1710100800000,
 			"sender_handle": "carol", "kind": "text", "body": "hello there", "body_source": "platform", "source": "discord", "source_ref": "m-1", "source_hash": "h1"}},
 	}
-	if response := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/message-store/imports/"+importID+"/batches", batch); response.Code != http.StatusOK && response.Code != http.StatusCreated {
+	if response := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/messages/imports/"+importID+"/batches", batch); response.Code != http.StatusOK && response.Code != http.StatusCreated {
 		t.Fatalf("batch = %d %s", response.Code, response.Body)
 	}
 	messagesSeenBy := func(owner string) int {

@@ -21,7 +21,7 @@ const (
 func AddPhotosSettingDefinitions() []servicesettings.Definition {
 	return []servicesettings.Definition{
 		{Key: SettingBridgeURL, EnvironmentVariable: "LLM_BRIDGE_GATEWAY_URL", Kind: msg.ServiceSettingKindWiring, ValueType: msg.ServiceSettingValueTypeString, Required: true,
-			Description: "Where llm-bridge-server answers: the original is kept at its /possession-store/, the photo added at its /photo-store/, and the review queued at its /possession-store/."},
+			Description: "Where llm-bridge-server answers: the original is kept at its /possessions/, the photo added at its /photos/, and the review queued at its /possessions/."},
 		{Key: SettingPrincipalToken, EnvironmentVariable: "LLM_BRIDGE_PRINCIPAL_TOKEN", Kind: msg.ServiceSettingKindSecret, ValueType: msg.ServiceSettingValueTypeString, Required: true,
 			Description: "The session agent token the bridge gives a session started as a principal. The photos, originals and reviews are that principal's."},
 	}

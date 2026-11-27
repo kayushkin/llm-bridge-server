@@ -8,7 +8,7 @@ import (
 )
 
 // The registry of tools a harness can be given, moved in from the standalone
-// tool-store: the same routes under /tool-store/, answered from the Postgres
+// tool-store: the same routes under /tools/, answered from the Postgres
 // module, and the questions session creation and spawn ask it, answered in
 // process through toolRegistry.
 
@@ -51,23 +51,23 @@ func (s *Server) toolStoreRoute(route func(*tools.Handlers, http.ResponseWriter,
 // registerToolStoreRoutes mounts the store. The patterns are written out,
 // because the route classification test reads them from string literals.
 func (s *Server) registerToolStoreRoutes() {
-	s.mux.HandleFunc("GET /tool-store/health", s.toolStoreRoute((*tools.Handlers).Health))
-	s.mux.HandleFunc("GET /tool-store/kinds", s.toolStoreRoute((*tools.Handlers).ListKinds))
-	s.mux.HandleFunc("GET /tool-store/tools", s.toolStoreRoute((*tools.Handlers).ListTools))
-	s.mux.HandleFunc("POST /tool-store/tools", s.toolStoreRoute((*tools.Handlers).UpsertTool))
-	s.mux.HandleFunc("GET /tool-store/tools/{id}", s.toolStoreRoute((*tools.Handlers).GetTool))
-	s.mux.HandleFunc("PATCH /tool-store/tools/{id}", s.toolStoreRoute((*tools.Handlers).PatchTool))
-	s.mux.HandleFunc("DELETE /tool-store/tools/{id}", s.toolStoreRoute((*tools.Handlers).DeleteTool))
-	s.mux.HandleFunc("POST /tool-store/tools/{id}/enable", s.toolStoreRoute((*tools.Handlers).EnableTool))
-	s.mux.HandleFunc("POST /tool-store/tools/{id}/disable", s.toolStoreRoute((*tools.Handlers).DisableTool))
-	s.mux.HandleFunc("GET /tool-store/tools/by-name/{name}", s.toolStoreRoute((*tools.Handlers).GetToolByName))
-	s.mux.HandleFunc("GET /tool-store/tools/by-name/{name}/spec", s.toolStoreRoute((*tools.Handlers).SpecByName))
-	s.mux.HandleFunc("POST /tool-store/tools/by-name/{name}/invoke", s.toolStoreRoute((*tools.Handlers).InvokeByName))
-	s.mux.HandleFunc("GET /tool-store/tools/by-name/{name}/instances", s.toolStoreRoute((*tools.Handlers).ListInstancesForTool))
-	s.mux.HandleFunc("POST /tool-store/harness-tools/observed", s.toolStoreRoute((*tools.Handlers).RecordObservedHarnessTools))
-	s.mux.HandleFunc("GET /tool-store/locals", s.toolStoreRoute((*tools.Handlers).ListLocals))
-	s.mux.HandleFunc("POST /tool-store/provision", s.toolStoreRoute((*tools.Handlers).Provision))
-	s.mux.HandleFunc("GET /tool-store/instances/{id}/tools", s.toolStoreRoute((*tools.Handlers).ListInstanceTools))
-	s.mux.HandleFunc("POST /tool-store/instances/{id}/tools/by-name/{name}", s.toolStoreRoute((*tools.Handlers).EnableForInstance))
-	s.mux.HandleFunc("DELETE /tool-store/instances/{id}/tools/by-name/{name}", s.toolStoreRoute((*tools.Handlers).DisableForInstance))
+	s.mux.HandleFunc("GET /tools/health", s.toolStoreRoute((*tools.Handlers).Health))
+	s.mux.HandleFunc("GET /tools/kinds", s.toolStoreRoute((*tools.Handlers).ListKinds))
+	s.mux.HandleFunc("GET /tools/tools", s.toolStoreRoute((*tools.Handlers).ListTools))
+	s.mux.HandleFunc("POST /tools/tools", s.toolStoreRoute((*tools.Handlers).UpsertTool))
+	s.mux.HandleFunc("GET /tools/tools/{id}", s.toolStoreRoute((*tools.Handlers).GetTool))
+	s.mux.HandleFunc("PATCH /tools/tools/{id}", s.toolStoreRoute((*tools.Handlers).PatchTool))
+	s.mux.HandleFunc("DELETE /tools/tools/{id}", s.toolStoreRoute((*tools.Handlers).DeleteTool))
+	s.mux.HandleFunc("POST /tools/tools/{id}/enable", s.toolStoreRoute((*tools.Handlers).EnableTool))
+	s.mux.HandleFunc("POST /tools/tools/{id}/disable", s.toolStoreRoute((*tools.Handlers).DisableTool))
+	s.mux.HandleFunc("GET /tools/tools/by-name/{name}", s.toolStoreRoute((*tools.Handlers).GetToolByName))
+	s.mux.HandleFunc("GET /tools/tools/by-name/{name}/spec", s.toolStoreRoute((*tools.Handlers).SpecByName))
+	s.mux.HandleFunc("POST /tools/tools/by-name/{name}/invoke", s.toolStoreRoute((*tools.Handlers).InvokeByName))
+	s.mux.HandleFunc("GET /tools/tools/by-name/{name}/instances", s.toolStoreRoute((*tools.Handlers).ListInstancesForTool))
+	s.mux.HandleFunc("POST /tools/harness-tools/observed", s.toolStoreRoute((*tools.Handlers).RecordObservedHarnessTools))
+	s.mux.HandleFunc("GET /tools/locals", s.toolStoreRoute((*tools.Handlers).ListLocals))
+	s.mux.HandleFunc("POST /tools/provision", s.toolStoreRoute((*tools.Handlers).Provision))
+	s.mux.HandleFunc("GET /tools/instances/{id}/tools", s.toolStoreRoute((*tools.Handlers).ListInstanceTools))
+	s.mux.HandleFunc("POST /tools/instances/{id}/tools/by-name/{name}", s.toolStoreRoute((*tools.Handlers).EnableForInstance))
+	s.mux.HandleFunc("DELETE /tools/instances/{id}/tools/by-name/{name}", s.toolStoreRoute((*tools.Handlers).DisableForInstance))
 }

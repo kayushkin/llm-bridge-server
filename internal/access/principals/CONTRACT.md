@@ -5,8 +5,8 @@ to and a card can be assigned to. This store hands out the id everything else
 joins on.
 
 Package `internal/access/principals` of llm-bridge-server. The bridge
-mounts every route below under `/principal-store/` (so `GET /principals/{id}`
-is `GET /principal-store/principals/{id}`), decides who may call each one, and
+mounts every route below under `/principals/` (so `GET /principals/{id}`
+is `GET /principals/principals/{id}`), decides who may call each one, and
 keeps the records in the Postgres module `principals` (role
 `principals_module`). Until the landing day the standalone service answers the
 same routes at the root of `127.0.0.1:8314` from its SQLite file, with no auth

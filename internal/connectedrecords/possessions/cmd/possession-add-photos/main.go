@@ -115,7 +115,7 @@ func (a adder) add(path string) (string, string, error) {
 	} else if info, err := os.Stat(path); err == nil {
 		takenAt, dateSource = info.ModTime().Unix(), "mtime"
 	}
-	kept, err := a.call(http.MethodPut, "/possession-store/originals/"+hash+"?"+url.Values{"extension": {extension}, "added_by": {a.queuedBy}}.Encode(), mediaType, original)
+	kept, err := a.call(http.MethodPut, "/possessions/originals/"+hash+"?"+url.Values{"extension": {extension}, "added_by": {a.queuedBy}}.Encode(), mediaType, original)
 	if err != nil {
 		return "", "", err
 	}
@@ -134,10 +134,10 @@ func (a adder) add(path string) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	if _, err := a.call(http.MethodPost, "/photo-store/imports", "application/json", body); err != nil {
+	if _, err := a.call(http.MethodPost, "/photos/imports", "application/json", body); err != nil {
 		return "", "", err
 	}
-	found, err := a.call(http.MethodGet, "/photo-store/photos?sha256="+url.QueryEscape(hash), "", nil)
+	found, err := a.call(http.MethodGet, "/photos/photos?sha256="+url.QueryEscape(hash), "", nil)
 	if err != nil {
 		return "", "", err
 	}
@@ -148,7 +148,7 @@ func (a adder) add(path string) (string, string, error) {
 		return "", "", fmt.Errorf("photo-store does not answer one photo for sha256 %s: %s", hash, found)
 	}
 	reviewBody, _ := json.Marshal(map[string]string{"photo_id": photos[0].ID, "queued_by": a.queuedBy, "reading": "inventory"})
-	queued, err := a.call(http.MethodPost, "/possession-store/photo-reviews", "application/json", reviewBody)
+	queued, err := a.call(http.MethodPost, "/possessions/photo-reviews", "application/json", reviewBody)
 	if err != nil {
 		return photos[0].ID, "", err
 	}

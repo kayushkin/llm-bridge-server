@@ -1,6 +1,6 @@
 # mailstack
 
-Read and write email across Gmail, Outlook (Microsoft Graph) and IMAP accounts, plus local accounts this module owns outright. It runs inside llm-bridge-server, mounted at `/mailstack/` with its own paths behind the prefix, and keeps its records in the Postgres module `mail` (role `mail_module`, migrations in `mailmodule/migrations`).
+Read and write email across Gmail, Outlook (Microsoft Graph) and IMAP accounts, plus local accounts this module owns outright. It runs inside llm-bridge-server, mounted at `/mail/` with its own paths behind the prefix, and keeps its records in the Postgres module `mail` (role `mail_module`, migrations in `mailmodule/migrations`).
 
 Until the move it was a service of its own on `:8195` with two SQLite files, `accounts.db` and `local-mail.db`. `llm-bridge-server import-mailstack -accounts-sqlite <file> [-local-mail-sqlite <file>]` copies both into the module, keeping every row and number.
 

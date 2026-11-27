@@ -4,7 +4,7 @@ package server
 //
 // ⚠️ Demo login is a stand-in for real login. A caller names a principal-store
 // principal and is signed in as it — no password, no second factor — and every
-// request it then sends through /kanban/ reaches kanban-store carrying that
+// request it then sends through /issues/ reaches kanban-store carrying that
 // principal's id in X-Principal-Id, which kanban-store trusts and filters
 // boards by. Entra ID sign-in (entra_sign_in.go) is the real login; a
 // deployment that uses it switches demo login off with
@@ -111,9 +111,8 @@ func (s *Server) registerLoginAndStoreProxyRoutes() {
 	s.mux.HandleFunc("GET /restart-readiness", s.handleRestartReadiness)
 	s.mux.HandleFunc("POST /restart-drain", s.handleStartRestartDrain)
 	s.mux.HandleFunc("DELETE /restart-drain", s.handleEndRestartDrain)
-	s.mux.HandleFunc(kanbanProxyMountPrefix+"/", s.handleKanbanStoreAsCaller)
-	s.mux.HandleFunc(kanbanStoreProxyMountPrefix+"/", s.handleKanbanStoreRootAsCaller)
-	s.mux.HandleFunc(mailstackProxyMountPrefix+"/", s.handleMailstackAsCaller)
+	s.mux.HandleFunc(issuesMountPrefix+"/", s.handleIssuesAsCaller)
+	s.mux.HandleFunc(mailMountPrefix+"/", s.handleMailstackAsCaller)
 	s.mux.HandleFunc(mailstackIngressDeliveryPattern, s.handleMailstackIngressDelivery)
 }
 

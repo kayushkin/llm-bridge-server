@@ -37,8 +37,8 @@ func enableBudgetStoreModuleOnTestDatabase(t *testing.T, gated *gatedTestServer)
 func TestBudgetStoreAnswers503WithNoModule(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
 	enableConnectedRecordsOnTestDatabase(t, gated)
-	if response := gated.requestAsPrincipal(t, firstTestPrincipalID, "GET", "/budget-store/accounts", nil); response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "budget_store_off") {
-		t.Errorf("GET /budget-store/accounts = %d %s, want 503 budget_store_off", response.Code, response.Body)
+	if response := gated.requestAsPrincipal(t, firstTestPrincipalID, "GET", "/budget/accounts", nil); response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "budget_store_off") {
+		t.Errorf("GET /budget/accounts = %d %s, want 503 budget_store_off", response.Code, response.Body)
 	}
 }
 
@@ -48,7 +48,7 @@ func TestBudgetStoreAnswers503WithNoModule(t *testing.T) {
 func TestABudgetAccountIsReachedOnlyByItsOwnerAndAnAdministrator(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
 	enableBudgetStoreOnTestDatabase(t, gated)
-	created := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/budget-store/accounts", map[string]any{"name": "Checking", "kind": "checking"})
+	created := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/budget/accounts", map[string]any{"name": "Checking", "kind": "checking"})
 	if created.Code != http.StatusCreated {
 		t.Fatalf("the owner's POST = %d %s", created.Code, created.Body)
 	}
@@ -58,14 +58,14 @@ func TestABudgetAccountIsReachedOnlyByItsOwnerAndAnAdministrator(t *testing.T) {
 	if err := json.Unmarshal(created.Body.Bytes(), &account); err != nil || account.ID == "" {
 		t.Fatalf("created %s: %v", created.Body, err)
 	}
-	path := "/budget-store/accounts/" + account.ID
+	path := "/budget/accounts/" + account.ID
 	if response := gated.requestAsPrincipal(t, firstTestPrincipalID, "GET", path, nil); response.Code != http.StatusOK {
 		t.Errorf("the owner's GET = %d %s", response.Code, response.Body)
 	}
 	if response := gated.requestAsPrincipal(t, secondTestPrincipalID, "GET", path, nil); response.Code != http.StatusNotFound {
 		t.Errorf("another principal's GET = %d, want 404", response.Code)
 	}
-	if response := gated.requestAsPrincipal(t, secondTestPrincipalID, "GET", "/budget-store/accounts", nil); response.Code != http.StatusOK || strings.Contains(response.Body.String(), account.ID) {
+	if response := gated.requestAsPrincipal(t, secondTestPrincipalID, "GET", "/budget/accounts", nil); response.Code != http.StatusOK || strings.Contains(response.Body.String(), account.ID) {
 		t.Errorf("another principal's list = %d %s, want none of the owner's accounts", response.Code, response.Body)
 	}
 	if response := gated.requestAsPrincipal(t, administratorTestPrincipalID, "GET", path, nil); response.Code != http.StatusOK {
@@ -74,10 +74,10 @@ func TestABudgetAccountIsReachedOnlyByItsOwnerAndAnAdministrator(t *testing.T) {
 	if response := gated.requestAsService(t, "GET", path); response.Code != http.StatusOK {
 		t.Errorf("the internal service's GET = %d %s", response.Code, response.Body)
 	}
-	if response := gated.requestAsService(t, "GET", "/budget-store/accounts"); response.Code != http.StatusForbidden {
+	if response := gated.requestAsService(t, "GET", "/budget/accounts"); response.Code != http.StatusForbidden {
 		t.Errorf("the internal service's list naming no owner = %d, want 403", response.Code)
 	}
-	if response := gated.requestAsService(t, "GET", "/budget-store/accounts?owner_principal_id="+firstTestPrincipalID); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), account.ID) {
+	if response := gated.requestAsService(t, "GET", "/budget/accounts?owner_principal_id="+firstTestPrincipalID); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), account.ID) {
 		t.Errorf("the internal service's list of the owner's books = %d %s", response.Code, response.Body)
 	}
 	if response := gated.requestAs(t, nil, "GET", path, nil); response.Code != http.StatusUnauthorized {
@@ -86,11 +86,11 @@ func TestABudgetAccountIsReachedOnlyByItsOwnerAndAnAdministrator(t *testing.T) {
 
 	// reference-store asks budget-store in this process as the caller: the
 	// owner's chip resolves, and another principal is told of nothing.
-	resolve := gated.requestAsPrincipal(t, administratorTestPrincipalID, "POST", "/reference-store/resolve", map[string]any{"ids": []string{account.ID}})
+	resolve := gated.requestAsPrincipal(t, administratorTestPrincipalID, "POST", "/references/resolve", map[string]any{"ids": []string{account.ID}})
 	if resolve.Code != http.StatusOK || !strings.Contains(resolve.Body.String(), `"type":"budget_account"`) {
 		t.Errorf("the administrator's resolve = %d %s", resolve.Code, resolve.Body)
 	}
-	other := gated.requestAsPrincipal(t, secondTestPrincipalID, "POST", "/reference-store/resolve", map[string]any{"ids": []string{account.ID}})
+	other := gated.requestAsPrincipal(t, secondTestPrincipalID, "POST", "/references/resolve", map[string]any{"ids": []string{account.ID}})
 	if other.Code != http.StatusOK || strings.Contains(other.Body.String(), "Checking") {
 		t.Errorf("another principal's resolve = %d %s, want nothing of the account", other.Code, other.Body)
 	}

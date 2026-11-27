@@ -3,7 +3,7 @@
 A personal finance ledger: accounts, cards, loans, retirement accounts, every
 transaction, categories and budgets.
 
-It runs inside llm-bridge-server, at `/budget-store/`, with the same paths
+It runs inside llm-bridge-server, at `/budget/`, with the same paths
 the standalone service served on `:8340` behind that prefix. Package
 `internal/connectedrecords/budget`; the books are in Postgres, in the
 schema `budget`, which the role `budget_module` owns (`Module()`); the server

@@ -37,7 +37,7 @@ func enableTaskTrackingOnTestDatabase(t *testing.T, server *Server) (*items.Stor
 
 func TestTaskTrackingRoutesAnswer503WithNoPostgres(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
-	for path, code := range map[string]string{"/noteboard/api/items": "noteboard_off", "/project-store/projects": "project_store_off"} {
+	for path, code := range map[string]string{"/noteboard/api/items": "noteboard_off", "/projects/projects": "project_store_off"} {
 		response := gated.requestAsService(t, "GET", path)
 		if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), code) {
 			t.Errorf("GET %s with no module = %d %s, want 503 %s", path, response.Code, response.Body, code)
@@ -75,11 +75,11 @@ func TestTaskTrackingRoutesServeTheStoresUnderTheirPrefixes(t *testing.T) {
 		t.Fatalf("include_held=true did not list the held item: %s", listed.Body)
 	}
 
-	project := gated.requestAsServiceWithJSON(t, "POST", "/project-store/projects", map[string]any{"name": "Inbox", "goal": "One inbox."})
+	project := gated.requestAsServiceWithJSON(t, "POST", "/projects/projects", map[string]any{"name": "Inbox", "goal": "One inbox."})
 	if project.Code != http.StatusCreated || !strings.Contains(project.Body.String(), `"id":"project_000001"`) {
 		t.Fatalf("create project = %d %s", project.Code, project.Body)
 	}
-	step := gated.requestAsServiceWithJSON(t, "POST", "/project-store/projects/project_000001/next-steps", map[string]any{"title": "Merge the branch"})
+	step := gated.requestAsServiceWithJSON(t, "POST", "/projects/projects/project_000001/next-steps", map[string]any{"title": "Merge the branch"})
 	var note struct {
 		NoteID string `json:"note_id"`
 	}
@@ -89,16 +89,16 @@ func TestTaskTrackingRoutesServeTheStoresUnderTheirPrefixes(t *testing.T) {
 	if todo, err := noteboard.GetItem(note.NoteID); err != nil || todo.Title != "Merge the branch" {
 		t.Fatalf("the next step in noteboard is %+v (%v)", todo, err)
 	}
-	if links := gated.requestAsService(t, "GET", "/project-store/links?entity_type=note&entity_ref="+note.NoteID); !strings.Contains(links.Body.String(), "project_000001") {
+	if links := gated.requestAsService(t, "GET", "/projects/links?entity_type=note&entity_ref="+note.NoteID); !strings.Contains(links.Body.String(), "project_000001") {
 		t.Fatalf("reverse lookup = %d %s", links.Code, links.Body)
 	}
-	if goal := gated.requestAsServiceWithJSON(t, "POST", "/project-store/projects/project_000001/goals", map[string]any{"statement": "Every chat in one list"}); goal.Code != http.StatusCreated || !strings.Contains(goal.Body.String(), `"id":"goal_000001"`) {
+	if goal := gated.requestAsServiceWithJSON(t, "POST", "/projects/projects/project_000001/goals", map[string]any{"statement": "Every chat in one list"}); goal.Code != http.StatusCreated || !strings.Contains(goal.Body.String(), `"id":"goal_000001"`) {
 		t.Fatalf("create goal = %d %s", goal.Code, goal.Body)
 	}
-	if linked := gated.requestAsServiceWithJSON(t, "POST", "/project-store/goals/goal_000001/links", map[string]any{"entity_type": "note", "entity_ref": note.NoteID}); linked.Code != http.StatusCreated {
+	if linked := gated.requestAsServiceWithJSON(t, "POST", "/projects/goals/goal_000001/links", map[string]any{"entity_type": "note", "entity_ref": note.NoteID}); linked.Code != http.StatusCreated {
 		t.Fatalf("link a goal to the next step = %d %s", linked.Code, linked.Body)
 	}
-	if missing := gated.requestAsService(t, "GET", "/project-store/projects/project_0000001"); missing.Code != http.StatusNotFound {
+	if missing := gated.requestAsService(t, "GET", "/projects/projects/project_0000001"); missing.Code != http.StatusNotFound {
 		t.Fatalf("an id of the wrong form = %d %s, want 404", missing.Code, missing.Body)
 	}
 }
@@ -109,7 +109,7 @@ func TestTaskTrackingRoutesAreTheOperators(t *testing.T) {
 	enableTaskTrackingOnTestDatabase(t, gated.server)
 	person := gated.loginAs(t, firstTestPrincipalID)
 	administrator := gated.loginAs(t, administratorTestPrincipalID)
-	for _, path := range []string{"/noteboard/api/items", "/noteboard/api/search?q=x", "/project-store/projects", "/project-store/session-filings"} {
+	for _, path := range []string{"/noteboard/api/items", "/noteboard/api/search?q=x", "/projects/projects", "/projects/session-filings"} {
 		if response := gated.requestAs(t, nil, "GET", path, nil); response.Code != http.StatusUnauthorized {
 			t.Errorf("GET %s with no credential = %d, want 401", path, response.Code)
 		}

@@ -1,8 +1,8 @@
 package server
 
 // The connected_records stores moved in from the standalone people-store,
-// calendar-store and journal-store: the same routes under /people-store/,
-// /calendar-store/ and /journal-store/, answered from this process.
+// calendar-store and journal-store: the same routes under /people/,
+// /calendar/ and /journal/, answered from this process.
 //
 // Every record in them has an owner, and each store narrows every read and
 // write to the records the caller owns, or every owner's for an
@@ -39,9 +39,9 @@ import (
 
 // Where each store is mounted.
 const (
-	peopleStoreMountPrefix   = "/people-store"
-	calendarStoreMountPrefix = "/calendar-store"
-	journalStoreMountPrefix  = "/journal-store"
+	peopleMountPrefix   = "/people"
+	calendarMountPrefix = "/calendar"
+	journalMountPrefix  = "/journal"
 )
 
 // connectedRecordsStores is the three stores as this server serves them.
@@ -166,17 +166,17 @@ func (s *Server) connectedRecordsRoute(mountPrefix, storeName, offCode string, h
 }
 
 func (s *Server) peopleStoreRoute() http.HandlerFunc {
-	return s.connectedRecordsRoute(peopleStoreMountPrefix, "people-store", "people_store_off",
+	return s.connectedRecordsRoute(peopleMountPrefix, "people-store", "people_store_off",
 		func(stores *connectedRecordsStores) http.Handler { return stores.peopleHandler }, false)
 }
 
 func (s *Server) calendarStoreRoute() http.HandlerFunc {
-	return s.connectedRecordsRoute(calendarStoreMountPrefix, "calendar-store", "calendar_store_off",
+	return s.connectedRecordsRoute(calendarMountPrefix, "calendar-store", "calendar_store_off",
 		func(stores *connectedRecordsStores) http.Handler { return stores.calendarHandler }, false)
 }
 
 func (s *Server) journalStoreRoute() http.HandlerFunc {
-	return s.connectedRecordsRoute(journalStoreMountPrefix, "journal-store", "journal_store_off",
+	return s.connectedRecordsRoute(journalMountPrefix, "journal-store", "journal_store_off",
 		func(stores *connectedRecordsStores) http.Handler { return stores.journalHandler }, true)
 }
 
@@ -369,71 +369,71 @@ func (noteboard journalNoteboard) CreateTodo(_ context.Context, title, body stri
 // registerConnectedRecordsRoutes mounts the three stores.
 func (s *Server) registerConnectedRecordsRoutes() {
 	people := s.peopleStoreRoute()
-	s.mux.HandleFunc("GET /people-store/health", people)
-	s.mux.HandleFunc("GET /people-store/identity-kinds", people)
-	s.mux.HandleFunc("GET /people-store/relationship-kinds", people)
-	s.mux.HandleFunc("GET /people-store/link-sources", people)
-	s.mux.HandleFunc("GET /people-store/persons", people)
-	s.mux.HandleFunc("POST /people-store/persons", people)
-	s.mux.HandleFunc("GET /people-store/persons/{id}", people)
-	s.mux.HandleFunc("PATCH /people-store/persons/{id}", people)
-	s.mux.HandleFunc("DELETE /people-store/persons/{id}", people)
-	s.mux.HandleFunc("POST /people-store/persons/{id}/restore", people)
-	s.mux.HandleFunc("GET /people-store/persons/{id}/revisions", people)
-	s.mux.HandleFunc("POST /people-store/persons/{id}/identities", people)
-	s.mux.HandleFunc("POST /people-store/persons/{id}/relationships", people)
-	s.mux.HandleFunc("GET /people-store/identities", people)
-	s.mux.HandleFunc("GET /people-store/identities/resolve", people)
-	s.mux.HandleFunc("GET /people-store/refusals", people)
-	s.mux.HandleFunc("DELETE /people-store/identities/{id}", people)
-	s.mux.HandleFunc("DELETE /people-store/relationships/{id}", people)
-	s.mux.HandleFunc("GET /people-store/suggestions", people)
-	s.mux.HandleFunc("POST /people-store/suggestions", people)
-	s.mux.HandleFunc("GET /people-store/suggestions/{id}", people)
-	s.mux.HandleFunc("POST /people-store/suggestions/{id}/accept", people)
-	s.mux.HandleFunc("POST /people-store/suggestions/{id}/reject", people)
-	s.mux.HandleFunc("PUT /people-store/handle-activity", people)
-	s.mux.HandleFunc("GET /people-store/reviews/pending", people)
-	s.mux.HandleFunc("POST /people-store/reviews/claim", people)
-	s.mux.HandleFunc("POST /people-store/reviews", people)
+	s.mux.HandleFunc("GET /people/health", people)
+	s.mux.HandleFunc("GET /people/identity-kinds", people)
+	s.mux.HandleFunc("GET /people/relationship-kinds", people)
+	s.mux.HandleFunc("GET /people/link-sources", people)
+	s.mux.HandleFunc("GET /people/persons", people)
+	s.mux.HandleFunc("POST /people/persons", people)
+	s.mux.HandleFunc("GET /people/persons/{id}", people)
+	s.mux.HandleFunc("PATCH /people/persons/{id}", people)
+	s.mux.HandleFunc("DELETE /people/persons/{id}", people)
+	s.mux.HandleFunc("POST /people/persons/{id}/restore", people)
+	s.mux.HandleFunc("GET /people/persons/{id}/revisions", people)
+	s.mux.HandleFunc("POST /people/persons/{id}/identities", people)
+	s.mux.HandleFunc("POST /people/persons/{id}/relationships", people)
+	s.mux.HandleFunc("GET /people/identities", people)
+	s.mux.HandleFunc("GET /people/identities/resolve", people)
+	s.mux.HandleFunc("GET /people/refusals", people)
+	s.mux.HandleFunc("DELETE /people/identities/{id}", people)
+	s.mux.HandleFunc("DELETE /people/relationships/{id}", people)
+	s.mux.HandleFunc("GET /people/suggestions", people)
+	s.mux.HandleFunc("POST /people/suggestions", people)
+	s.mux.HandleFunc("GET /people/suggestions/{id}", people)
+	s.mux.HandleFunc("POST /people/suggestions/{id}/accept", people)
+	s.mux.HandleFunc("POST /people/suggestions/{id}/reject", people)
+	s.mux.HandleFunc("PUT /people/handle-activity", people)
+	s.mux.HandleFunc("GET /people/reviews/pending", people)
+	s.mux.HandleFunc("POST /people/reviews/claim", people)
+	s.mux.HandleFunc("POST /people/reviews", people)
 
 	calendar := s.calendarStoreRoute()
-	s.mux.HandleFunc("GET /calendar-store/health", calendar)
-	s.mux.HandleFunc("GET /calendar-store/vocabularies", calendar)
-	s.mux.HandleFunc("GET /calendar-store/calendars", calendar)
-	s.mux.HandleFunc("POST /calendar-store/calendars", calendar)
-	s.mux.HandleFunc("POST /calendar-store/calendars/{id}/imports", calendar)
-	s.mux.HandleFunc("POST /calendar-store/calendars/{id}/google-event-imports", calendar)
-	s.mux.HandleFunc("GET /calendar-store/imports", calendar)
-	s.mux.HandleFunc("GET /calendar-store/events", calendar)
-	s.mux.HandleFunc("GET /calendar-store/events/{id}", calendar)
-	s.mux.HandleFunc("GET /calendar-store/events/{id}/revisions", calendar)
-	s.mux.HandleFunc("POST /calendar-store/events/{id}/people", calendar)
-	s.mux.HandleFunc("DELETE /calendar-store/events/{id}/people/{person_id}", calendar)
+	s.mux.HandleFunc("GET /calendar/health", calendar)
+	s.mux.HandleFunc("GET /calendar/vocabularies", calendar)
+	s.mux.HandleFunc("GET /calendar/calendars", calendar)
+	s.mux.HandleFunc("POST /calendar/calendars", calendar)
+	s.mux.HandleFunc("POST /calendar/calendars/{id}/imports", calendar)
+	s.mux.HandleFunc("POST /calendar/calendars/{id}/google-event-imports", calendar)
+	s.mux.HandleFunc("GET /calendar/imports", calendar)
+	s.mux.HandleFunc("GET /calendar/events", calendar)
+	s.mux.HandleFunc("GET /calendar/events/{id}", calendar)
+	s.mux.HandleFunc("GET /calendar/events/{id}/revisions", calendar)
+	s.mux.HandleFunc("POST /calendar/events/{id}/people", calendar)
+	s.mux.HandleFunc("DELETE /calendar/events/{id}/people/{person_id}", calendar)
 
 	journal := s.journalStoreRoute()
-	s.mux.HandleFunc("GET /journal-store/health", journal)
-	s.mux.HandleFunc("GET /journal-store/entry-kinds", journal)
-	s.mux.HandleFunc("GET /journal-store/visibilities", journal)
-	s.mux.HandleFunc("GET /journal-store/entries", journal)
-	s.mux.HandleFunc("POST /journal-store/entries", journal)
-	s.mux.HandleFunc("GET /journal-store/entries/{id}", journal)
-	s.mux.HandleFunc("PATCH /journal-store/entries/{id}", journal)
-	s.mux.HandleFunc("DELETE /journal-store/entries/{id}", journal)
-	s.mux.HandleFunc("POST /journal-store/entries/{id}/restore", journal)
-	s.mux.HandleFunc("GET /journal-store/entries/{id}/revisions", journal)
-	s.mux.HandleFunc("POST /journal-store/entries/{id}/promote-todo", journal)
-	s.mux.HandleFunc("GET /journal-store/mentions", journal)
-	s.mux.HandleFunc("GET /journal-store/published", journal)
-	s.mux.HandleFunc("GET /journal-store/published/{slug}", journal)
-	s.mux.HandleFunc("POST /journal-store/imports", journal)
-	s.mux.HandleFunc("GET /journal-store/time-precisions", journal)
-	s.mux.HandleFunc("GET /journal-store/timelines/{id}/items", journal)
-	s.mux.HandleFunc("POST /journal-store/timelines/{id}/items", journal)
-	s.mux.HandleFunc("GET /journal-store/timeline-items", journal)
-	s.mux.HandleFunc("GET /journal-store/timeline-items/{id}", journal)
-	s.mux.HandleFunc("PATCH /journal-store/timeline-items/{id}", journal)
-	s.mux.HandleFunc("DELETE /journal-store/timeline-items/{id}", journal)
-	s.mux.HandleFunc("POST /journal-store/timeline-items/{id}/restore", journal)
-	s.mux.HandleFunc("GET /journal-store/timeline-items/{id}/revisions", journal)
+	s.mux.HandleFunc("GET /journal/health", journal)
+	s.mux.HandleFunc("GET /journal/entry-kinds", journal)
+	s.mux.HandleFunc("GET /journal/visibilities", journal)
+	s.mux.HandleFunc("GET /journal/entries", journal)
+	s.mux.HandleFunc("POST /journal/entries", journal)
+	s.mux.HandleFunc("GET /journal/entries/{id}", journal)
+	s.mux.HandleFunc("PATCH /journal/entries/{id}", journal)
+	s.mux.HandleFunc("DELETE /journal/entries/{id}", journal)
+	s.mux.HandleFunc("POST /journal/entries/{id}/restore", journal)
+	s.mux.HandleFunc("GET /journal/entries/{id}/revisions", journal)
+	s.mux.HandleFunc("POST /journal/entries/{id}/promote-todo", journal)
+	s.mux.HandleFunc("GET /journal/mentions", journal)
+	s.mux.HandleFunc("GET /journal/published", journal)
+	s.mux.HandleFunc("GET /journal/published/{slug}", journal)
+	s.mux.HandleFunc("POST /journal/imports", journal)
+	s.mux.HandleFunc("GET /journal/time-precisions", journal)
+	s.mux.HandleFunc("GET /journal/timelines/{id}/items", journal)
+	s.mux.HandleFunc("POST /journal/timelines/{id}/items", journal)
+	s.mux.HandleFunc("GET /journal/timeline-items", journal)
+	s.mux.HandleFunc("GET /journal/timeline-items/{id}", journal)
+	s.mux.HandleFunc("PATCH /journal/timeline-items/{id}", journal)
+	s.mux.HandleFunc("DELETE /journal/timeline-items/{id}", journal)
+	s.mux.HandleFunc("POST /journal/timeline-items/{id}/restore", journal)
+	s.mux.HandleFunc("GET /journal/timeline-items/{id}/revisions", journal)
 }

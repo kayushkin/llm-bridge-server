@@ -41,9 +41,9 @@ func repositoriesAndReferencesSettingDefinitions() []servicesettings.Definition 
 	)
 	return []servicesettings.Definition{
 		{Key: SettingRepoStorePullRequestSyncEnabled, EnvironmentVariable: "LLMBRIDGE_REPO_STORE_PULL_REQUEST_SYNC_ENABLED", Kind: behavior, ValueType: boolean, Default: "false",
-			Description: "Read every repo's GitHub pull requests into repo-store in this server, every repo_store.pull_request_sync.interval. Off by default, while the standalone repo-store still runs the sync; POST /repo-store/repos/{id}/pull-requests/sync syncs one repo either way. Read at start."},
+			Description: "Read every repo's GitHub pull requests into repo-store in this server, every repo_store.pull_request_sync.interval. Off by default, while the standalone repo-store still runs the sync; POST /repos/repos/{id}/pull-requests/sync syncs one repo either way. Read at start."},
 		{Key: SettingRepoStorePullRequestSyncInterval, EnvironmentVariable: "LLMBRIDGE_REPO_STORE_PULL_REQUEST_SYNC_INTERVAL", Kind: behavior, ValueType: msg.ServiceSettingValueTypeDuration, Default: "10m",
-			Description: "How long the pull-request sync waits between passes when it is on. Shorter makes GET /repo-store/pull-requests fresher and spends more of the GitHub account's hourly allowance: each pass makes at least one request per repo with a github_url. Read at start."},
+			Description: "How long the pull-request sync waits between passes when it is on. Shorter makes GET /repos/pull-requests fresher and spends more of the GitHub account's hourly allowance: each pass makes at least one request per repo with a github_url. Read at start."},
 		{Key: SettingRepoStoreGitHubCommandLine, EnvironmentVariable: "LLMBRIDGE_REPO_STORE_GITHUB_CLI", Kind: path, ValueType: text, Default: "gh",
 			Description: "The gh program repo-store runs (`gh api …`) to read pull requests, as whatever account gh is logged in to under this server's HOME. A full path, or a name on PATH; the server will not start if it cannot find it. Changing it may change which GitHub account the pull requests are read as."},
 		{Key: SettingWorkGraphStoreIngestEnabled, EnvironmentVariable: "LLMBRIDGE_WORK_GRAPH_STORE_INGEST_ENABLED", Kind: behavior, ValueType: boolean, Default: "false",
@@ -71,6 +71,6 @@ func repositoriesAndReferencesSettingDefinitions() []servicesettings.Definition 
 		{Key: SettingReferenceStoreLookupTimeout, EnvironmentVariable: "LLMBRIDGE_REFERENCE_STORE_LOOKUP_TIMEOUT_SECONDS", Kind: behavior, ValueType: integer, Default: "5",
 			Description: "How long one store is given to answer for one id. Read at start."},
 		{Key: SettingReferenceStoreLookupConcurrency, EnvironmentVariable: "LLMBRIDGE_REFERENCE_STORE_LOOKUP_CONCURRENCY_PER_ASK", Kind: behavior, ValueType: integer, Default: "8",
-			Description: "How many stores one POST /reference-store/resolve asks at once. Read at start."},
+			Description: "How many stores one POST /references/resolve asks at once. Read at start."},
 	}
 }

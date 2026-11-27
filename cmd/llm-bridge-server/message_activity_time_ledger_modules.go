@@ -80,7 +80,7 @@ func enableMessageActivityAndTimeLedgerStores(ctx context.Context, cfg *config.C
 		closePools()
 		return nil, err
 	}
-	log.Printf("postgres: message-store, activity-store and time-ledger-store open, served at /message-store/, /activity-store/ and /time-ledger-store/")
+	log.Printf("postgres: message-store, activity-store and time-ledger-store open, served at /messages/, /online-activity/ and /time-ledger/")
 	return closePools, nil
 }
 

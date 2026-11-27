@@ -1,7 +1,7 @@
 package server
 
 // possession-store moved in from the standalone service: the same routes
-// under /possession-store/, answered from this process. Like the other
+// under /possessions/, answered from this process. Like the other
 // connected records stores, every record has an owner and the store narrows
 // every read to the caller's own, or every owner's for an administrator and
 // for this server's own service acting as itself, and every write and pass to
@@ -41,8 +41,8 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/filestorage/files"
 )
 
-// possessionStoreMountPrefix is where possession-store is mounted.
-const possessionStoreMountPrefix = "/possession-store"
+// possessionsMountPrefix is where possession-store is mounted.
+const possessionsMountPrefix = "/possessions"
 
 // possessionStores is possession-store as this server serves it.
 type possessionStores struct {
@@ -245,7 +245,7 @@ func (originals possessionOriginalFiles) Destroy(_ context.Context, fileID strin
 }
 
 func (s *Server) possessionStoreRoute() http.HandlerFunc {
-	return s.connectedRecordsRoute(possessionStoreMountPrefix, "possession-store", "possession_store_off",
+	return s.connectedRecordsRoute(possessionsMountPrefix, "possession-store", "possession_store_off",
 		func(*connectedRecordsStores) http.Handler {
 			stores := s.possessions.Load()
 			if stores == nil {

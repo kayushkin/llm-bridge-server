@@ -1,7 +1,7 @@
 # project-store routes
 
-Mounted in llm-bridge-server under `/project-store/`, so `GET /projects` is
-`GET /project-store/projects`; every route is an operator route. JSON in and
+Mounted in llm-bridge-server under `/projects/`, so `GET /projects` is
+`GET /projects/projects`; every route is an operator route. JSON in and
 out unless a route says otherwise. Ids are
 `project_000001` and `goal_000001`, handed out once and never reused. A request body or query
 with a field the route does not take is 400. Times are unix seconds.

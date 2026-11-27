@@ -1,6 +1,6 @@
 # work-graph-store routes
 
-> In llm-bridge-server these routes are under `/work-graph-store/`, for the operator only; `GET /settings` is the bridge's.
+> In llm-bridge-server these routes are under `/git-activity/`, for the operator only; `GET /settings` is the bridge's.
 
 Rooted at `/`, JSON unless a route says otherwise. A repo is named by
 repo-store's numeric id. Times ending `_unix_nano` are nanoseconds; `committed_at`

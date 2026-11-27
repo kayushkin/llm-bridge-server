@@ -72,7 +72,7 @@ func checkReachedOnlyByOwnerAndAdministrator(t *testing.T, gated *gatedTestServe
 func TestMessageActivityAndTimeLedgerStoresAnswer503WithNoModule(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
 	enableConnectedRecordsOnTestDatabase(t, gated)
-	for path, code := range map[string]string{"/message-store/messages": "message_store_off", "/activity-store/activities": "activity_store_off", "/time-ledger-store/time-entries": "time_ledger_store_off"} {
+	for path, code := range map[string]string{"/messages/messages": "message_store_off", "/online-activity/activities": "activity_store_off", "/time-ledger/time-entries": "time_ledger_store_off"} {
 		if response := gated.requestAsPrincipal(t, firstTestPrincipalID, "GET", path, nil); response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), code) {
 			t.Errorf("GET %s = %d %s, want 503 %s", path, response.Code, response.Body, code)
 		}
@@ -85,10 +85,10 @@ func TestMessageActivityAndTimeLedgerStoresAnswer503WithNoModule(t *testing.T) {
 func TestAMessageIsReachedOnlyByItsOwnerAndAnAdministrator(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
 	enableMessageActivityAndTimeLedgerOnTestDatabase(t, gated)
-	if response := gated.requestAsServiceWithJSON(t, "POST", "/message-store/imports", map[string]any{"importer": "test", "description": "made up"}); response.Code != http.StatusForbidden {
+	if response := gated.requestAsServiceWithJSON(t, "POST", "/messages/imports", map[string]any{"importer": "test", "description": "made up"}); response.Code != http.StatusForbidden {
 		t.Errorf("the internal service starting an import = %d %s, want 403", response.Code, response.Body)
 	}
-	started := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/message-store/imports", map[string]any{"importer": "test", "description": "made up"})
+	started := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/messages/imports", map[string]any{"importer": "test", "description": "made up"})
 	if started.Code != http.StatusCreated && started.Code != http.StatusOK {
 		t.Fatalf("start = %d %s", started.Code, started.Body)
 	}
@@ -100,10 +100,10 @@ func TestAMessageIsReachedOnlyByItsOwnerAndAnAdministrator(t *testing.T) {
 			"sender_handle": "carol", "kind": "text", "body": "hello there", "body_source": "platform", "source": "discord", "source_ref": "m-1", "source_hash": "h1"}},
 		"conversation_days": []map[string]any{{"conversation_source": "discord", "conversation_source_ref": "channel-1", "day": "2024-03-10", "time_zone": "Europe/Lisbon"}},
 	}
-	if response := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/message-store/imports/"+importID+"/batches", batch); response.Code != http.StatusOK && response.Code != http.StatusCreated {
+	if response := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/messages/imports/"+importID+"/batches", batch); response.Code != http.StatusOK && response.Code != http.StatusCreated {
 		t.Fatalf("batch = %d %s", response.Code, response.Body)
 	}
-	listed := gated.requestAsPrincipal(t, firstTestPrincipalID, "GET", "/message-store/messages", nil)
+	listed := gated.requestAsPrincipal(t, firstTestPrincipalID, "GET", "/messages/messages", nil)
 	var page struct {
 		Messages []struct {
 			ID             string `json:"id"`
@@ -113,7 +113,7 @@ func TestAMessageIsReachedOnlyByItsOwnerAndAnAdministrator(t *testing.T) {
 	if err := json.Unmarshal(listed.Body.Bytes(), &page); err != nil || len(page.Messages) != 1 {
 		t.Fatalf("the owner's messages = %d %s (%v)", listed.Code, listed.Body, err)
 	}
-	days := gated.requestAsPrincipal(t, firstTestPrincipalID, "GET", "/message-store/conversation-days", nil)
+	days := gated.requestAsPrincipal(t, firstTestPrincipalID, "GET", "/messages/conversation-days", nil)
 	var dayList []struct {
 		ID string `json:"id"`
 	}
@@ -121,10 +121,10 @@ func TestAMessageIsReachedOnlyByItsOwnerAndAnAdministrator(t *testing.T) {
 		t.Fatalf("the owner's days = %d %s (%v)", days.Code, days.Body, err)
 	}
 	messageID := page.Messages[0].ID
-	checkReachedOnlyByOwnerAndAdministrator(t, gated, "/message-store/messages/"+messageID)
-	checkReachedOnlyByOwnerAndAdministrator(t, gated, "/message-store/conversations/"+page.Messages[0].ConversationID)
-	checkReachedOnlyByOwnerAndAdministrator(t, gated, "/message-store/conversation-days/"+dayList[0].ID)
-	other := gated.requestAsPrincipal(t, secondTestPrincipalID, "GET", "/message-store/messages", nil)
+	checkReachedOnlyByOwnerAndAdministrator(t, gated, "/messages/messages/"+messageID)
+	checkReachedOnlyByOwnerAndAdministrator(t, gated, "/messages/conversations/"+page.Messages[0].ConversationID)
+	checkReachedOnlyByOwnerAndAdministrator(t, gated, "/messages/conversation-days/"+dayList[0].ID)
+	other := gated.requestAsPrincipal(t, secondTestPrincipalID, "GET", "/messages/messages", nil)
 	var otherPage struct {
 		Messages []any `json:"messages"`
 	}
@@ -133,11 +133,11 @@ func TestAMessageIsReachedOnlyByItsOwnerAndAnAdministrator(t *testing.T) {
 	}
 
 	// A chip of the message needs the grant and the owner, asked in process.
-	resolved := gated.requestAsPrincipal(t, administratorTestPrincipalID, "POST", "/reference-store/resolve", map[string]any{"ids": []string{messageID}})
+	resolved := gated.requestAsPrincipal(t, administratorTestPrincipalID, "POST", "/references/resolve", map[string]any{"ids": []string{messageID}})
 	if !strings.Contains(resolved.Body.String(), "hello there") {
 		t.Errorf("the administrator resolving the message = %d %s", resolved.Code, resolved.Body)
 	}
-	if hidden := gated.requestAsPrincipal(t, secondTestPrincipalID, "POST", "/reference-store/resolve", map[string]any{"ids": []string{messageID}}); strings.Contains(hidden.Body.String(), "hello there") {
+	if hidden := gated.requestAsPrincipal(t, secondTestPrincipalID, "POST", "/references/resolve", map[string]any{"ids": []string{messageID}}); strings.Contains(hidden.Body.String(), "hello there") {
 		t.Errorf("another principal resolving the message = %d %s", hidden.Code, hidden.Body)
 	}
 }
@@ -164,7 +164,7 @@ func TestAnActivityAttachmentIsKeptInFileStore(t *testing.T) {
 	if err != nil || string(read) != "made-up recording" {
 		t.Fatalf("read back %q, %v", read, err)
 	}
-	record := gated.requestAsService(t, "GET", "/file-store/files/"+fileID)
+	record := gated.requestAsService(t, "GET", "/file-storage/files/"+fileID)
 	if !strings.Contains(record.Body.String(), `"owner_service":"activity-store"`) || !strings.Contains(record.Body.String(), `"owner_ref":"activity_000001"`) {
 		t.Errorf("the file-store record = %d %s", record.Code, record.Body)
 	}
@@ -181,10 +181,10 @@ func TestATimeEntryIsReachedOnlyByItsOwnerAndAnAdministrator(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
 	enableMessageActivityAndTimeLedgerOnTestDatabase(t, gated)
 	entry := map[string]any{"title": "Lunch", "starts_at": 1710100800, "ends_at": 1710104400, "by": "test", "by_kind": "operator", "reason": "made up for a test", "time_zone": "Europe/Lisbon"}
-	if response := gated.requestAsServiceWithJSON(t, "POST", "/time-ledger-store/time-entries", entry); response.Code != http.StatusForbidden {
+	if response := gated.requestAsServiceWithJSON(t, "POST", "/time-ledger/time-entries", entry); response.Code != http.StatusForbidden {
 		t.Errorf("the internal service making an entry = %d %s, want 403", response.Code, response.Body)
 	}
-	created := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/time-ledger-store/time-entries", entry)
+	created := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/time-ledger/time-entries", entry)
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create = %d %s", created.Code, created.Body)
 	}
@@ -193,8 +193,8 @@ func TestATimeEntryIsReachedOnlyByItsOwnerAndAnAdministrator(t *testing.T) {
 	if record["owner_principal_id"] != firstTestPrincipalID {
 		t.Errorf("the entry's owner is %v", record["owner_principal_id"])
 	}
-	checkReachedOnlyByOwnerAndAdministrator(t, gated, "/time-ledger-store/time-entries/"+id)
-	if response := gated.requestAsPrincipal(t, secondTestPrincipalID, "GET", "/time-ledger-store/time-entries", nil); response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != "[]" {
+	checkReachedOnlyByOwnerAndAdministrator(t, gated, "/time-ledger/time-entries/"+id)
+	if response := gated.requestAsPrincipal(t, secondTestPrincipalID, "GET", "/time-ledger/time-entries", nil); response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != "[]" {
 		t.Errorf("another principal's list = %d %s, want an empty list", response.Code, response.Body)
 	}
 }

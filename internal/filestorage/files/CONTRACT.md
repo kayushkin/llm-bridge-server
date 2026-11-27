@@ -1,6 +1,6 @@
 # file-store contract
 
-> In llm-bridge-server these routes are under `/file-store/`, for the service token and administrators only; no `X-File-Store-Service-Token`, and `/settings` is the bridge's (`file_store.maximum_file_bytes`, `file_store.inline_content_types`).
+> In llm-bridge-server these routes are under `/file-storage/`, for the service token and administrators only; no `X-File-Store-Service-Token`, and `/settings` is the bridge's (`file_store.maximum_file_bytes`, `file_store.inline_content_types`).
 
 `127.0.0.1:8317`. Routes are rooted at `/`. Every route but `GET /health` needs
 `X-File-Store-Service-Token`; without it, or with a wrong one, the answer is

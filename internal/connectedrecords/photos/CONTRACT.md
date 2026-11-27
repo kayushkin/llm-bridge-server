@@ -1,6 +1,6 @@
 # photo-store — API contract
 
-photo-store runs inside llm-bridge-server, at `/photo-store/` with the paths below, and keeps its records in Postgres (schema `photos`, role `photos_module`). It answers only a request carrying the caller the server verified; one with none is 401. What is known about each owner's own photos and videos. The originals stay on the machine they were found on (`source_machine`, `source_path`); this store keeps the facts, and file-store, in the same process, keeps one thumbnail file for each photo (`photos.thumbnail_file_id`, never in an answer).
+photo-store runs inside llm-bridge-server, at `/photos/` with the paths below, and keeps its records in Postgres (schema `photos`, role `photos_module`). It answers only a request carrying the caller the server verified; one with none is 401. What is known about each owner's own photos and videos. The originals stay on the machine they were found on (`source_machine`, `source_path`); this store keeps the facts, and file-store, in the same process, keeps one thumbnail file for each photo (`photos.thumbnail_file_id`, never in an answer).
 
 ## Owners
 

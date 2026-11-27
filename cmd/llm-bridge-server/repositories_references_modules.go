@@ -166,7 +166,7 @@ func enableRepositoriesAndReferences(ctx context.Context, cfg *config.Config, sr
 		return fail(err)
 	}
 	inProcess := slices.Sorted(slices.Values(server.InProcessReferenceServices))
-	log.Printf("postgres: repo-store, work-graph-store and file-store open, served at /repo-store/, /work-graph-store/ and /file-store/ (file bytes in %s); reference-store served at /reference-store/, reading %v in this process by Go calls and asking %d services over HTTP",
+	log.Printf("postgres: repo-store, work-graph-store and file-store open, served at /repos/, /git-activity/ and /file-storage/ (file bytes in %s); reference-store served at /references/, reading %v in this process by Go calls and asking %d services over HTTP",
 		dataDirectory, inProcess, len(serviceURLs))
 	return closeAll, nil
 }

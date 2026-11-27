@@ -25,14 +25,14 @@ var (
 	standaloneKanbanStoreCopy    = flag.String("standalone-kanban-store-copy-for-routes", "", "a copy of a standalone kanban-store database to import and serve")
 	standalonePrincipalStoreCopy = flag.String("standalone-principal-store-copy", "", "a copy of a standalone principal-store database to import beside it")
 	standaloneGrantStoreCopy     = flag.String("standalone-grant-store-copy", "", "a copy of a standalone grant-store database to import beside it")
-	kanbanComparisonRequests     = flag.String("kanban-comparison-requests", "", `a file of "<principal id or -> <path>" lines to ask /kanban-store/ as`)
+	kanbanComparisonRequests     = flag.String("kanban-comparison-requests", "", `a file of "<principal id or -> <path>" lines to ask /issues/ as`)
 	kanbanComparisonOutput       = flag.String("kanban-comparison-output", "", "where to write the answers, one JSON object a line")
 )
 
 // TestImportedStandaloneKanbanStoreAnswers imports copies of a standalone
 // kanban-store, the noteboard it read card content from, and the
 // principal-store and grant-store it read callers from, serves them as main
-// does, and writes what /kanban-store/<path> answers each caller, for a
+// does, and writes what /issues/<path> answers each caller, for a
 // comparison with the standalone service's own answers to the same requests.
 // A principal is asked as dash asks for one of its users (the service token
 // and X-Principal-Id); "-" is the service token alone, the internal service.
@@ -111,7 +111,7 @@ func TestImportedStandaloneKanbanStoreAnswers(t *testing.T) {
 		if !found {
 			continue
 		}
-		request := httptest.NewRequest("GET", "/kanban-store"+path, nil)
+		request := httptest.NewRequest("GET", "/issues"+path, nil)
 		request.Header.Set(serviceTokenHeader, testServiceToken)
 		if principalID != "-" {
 			request.Header.Set(principalIdentityHeader, principalID)

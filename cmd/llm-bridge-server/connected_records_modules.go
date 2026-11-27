@@ -95,7 +95,7 @@ func enableConnectedRecords(ctx context.Context, cfg *config.Config, srv *server
 		closePools()
 		return nil, err
 	}
-	log.Printf("postgres: people-store, calendar-store and journal-store open, served at /people-store/, /calendar-store/ and /journal-store/")
+	log.Printf("postgres: people-store, calendar-store and journal-store open, served at /people/, /calendar/ and /journal/")
 	return closePools, nil
 }
 

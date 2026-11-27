@@ -8,7 +8,7 @@ import (
 )
 
 // The registry of SKILL.md skills, moved in from the standalone skill-store:
-// the same routes under /skill-store/, answered from the Postgres module and
+// the same routes under /skills/, answered from the Postgres module and
 // the data directory that holds each skill's files, and the four seed routes
 // runners call under /api/skill-store/.
 
@@ -49,26 +49,26 @@ func (s *Server) skillStoreRunnerSeedRoute(route func(*skills.Handlers, http.Res
 // registerSkillStoreRoutes mounts the store. The patterns are written out,
 // because the route classification test reads them from string literals.
 func (s *Server) registerSkillStoreRoutes() {
-	s.mux.HandleFunc("GET /skill-store/health", s.skillStoreRoute((*skills.Handlers).Health))
-	s.mux.HandleFunc("GET /skill-store/sources", s.skillStoreRoute((*skills.Handlers).ListSources))
-	s.mux.HandleFunc("POST /skill-store/sources", s.skillStoreRoute((*skills.Handlers).CreateSource))
-	s.mux.HandleFunc("GET /skill-store/sources/{id}", s.skillStoreRoute((*skills.Handlers).GetSource))
-	s.mux.HandleFunc("DELETE /skill-store/sources/{id}", s.skillStoreRoute((*skills.Handlers).DeleteSource))
-	s.mux.HandleFunc("POST /skill-store/sources/{id}/sync", s.skillStoreRoute((*skills.Handlers).SyncSource))
-	s.mux.HandleFunc("GET /skill-store/skills", s.skillStoreRoute((*skills.Handlers).ListSkills))
-	s.mux.HandleFunc("GET /skill-store/skills/{id}", s.skillStoreRoute((*skills.Handlers).GetSkill))
-	s.mux.HandleFunc("DELETE /skill-store/skills/{id}", s.skillStoreRoute((*skills.Handlers).DeleteSkill))
-	s.mux.HandleFunc("GET /skill-store/skills/{id}/files", s.skillStoreRoute((*skills.Handlers).ListSkillFiles))
-	s.mux.HandleFunc("GET /skill-store/skills/{id}/files/{path...}", s.skillStoreRoute((*skills.Handlers).GetSkillFile))
-	s.mux.HandleFunc("POST /skill-store/skills/{id}/install", s.skillStoreRoute((*skills.Handlers).InstallSkill))
-	s.mux.HandleFunc("POST /skill-store/skills/{id}/uninstall", s.skillStoreRoute((*skills.Handlers).UninstallSkill))
-	s.mux.HandleFunc("GET /skill-store/installations", s.skillStoreRoute((*skills.Handlers).ListInstallations))
-	s.mux.HandleFunc("GET /skill-store/seed/profile", s.skillStoreRoute((*skills.Handlers).GetSeedProfile))
-	s.mux.HandleFunc("PUT /skill-store/seed/profile", s.skillStoreRoute((*skills.Handlers).PutSeedProfile))
-	s.mux.HandleFunc("GET /skill-store/seed/manifest", s.skillStoreRoute((*skills.Handlers).GetSeedManifest))
-	s.mux.HandleFunc("GET /skill-store/versions/{vid}/content", s.skillStoreRoute((*skills.Handlers).GetVersionContent))
-	s.mux.HandleFunc("POST /skill-store/seed/observe", s.skillStoreRoute((*skills.Handlers).PostSeedObserve))
-	s.mux.HandleFunc("POST /skill-store/seed/drift", s.skillStoreRoute((*skills.Handlers).PostSeedDrift))
+	s.mux.HandleFunc("GET /skills/health", s.skillStoreRoute((*skills.Handlers).Health))
+	s.mux.HandleFunc("GET /skills/sources", s.skillStoreRoute((*skills.Handlers).ListSources))
+	s.mux.HandleFunc("POST /skills/sources", s.skillStoreRoute((*skills.Handlers).CreateSource))
+	s.mux.HandleFunc("GET /skills/sources/{id}", s.skillStoreRoute((*skills.Handlers).GetSource))
+	s.mux.HandleFunc("DELETE /skills/sources/{id}", s.skillStoreRoute((*skills.Handlers).DeleteSource))
+	s.mux.HandleFunc("POST /skills/sources/{id}/sync", s.skillStoreRoute((*skills.Handlers).SyncSource))
+	s.mux.HandleFunc("GET /skills/skills", s.skillStoreRoute((*skills.Handlers).ListSkills))
+	s.mux.HandleFunc("GET /skills/skills/{id}", s.skillStoreRoute((*skills.Handlers).GetSkill))
+	s.mux.HandleFunc("DELETE /skills/skills/{id}", s.skillStoreRoute((*skills.Handlers).DeleteSkill))
+	s.mux.HandleFunc("GET /skills/skills/{id}/files", s.skillStoreRoute((*skills.Handlers).ListSkillFiles))
+	s.mux.HandleFunc("GET /skills/skills/{id}/files/{path...}", s.skillStoreRoute((*skills.Handlers).GetSkillFile))
+	s.mux.HandleFunc("POST /skills/skills/{id}/install", s.skillStoreRoute((*skills.Handlers).InstallSkill))
+	s.mux.HandleFunc("POST /skills/skills/{id}/uninstall", s.skillStoreRoute((*skills.Handlers).UninstallSkill))
+	s.mux.HandleFunc("GET /skills/installations", s.skillStoreRoute((*skills.Handlers).ListInstallations))
+	s.mux.HandleFunc("GET /skills/seed/profile", s.skillStoreRoute((*skills.Handlers).GetSeedProfile))
+	s.mux.HandleFunc("PUT /skills/seed/profile", s.skillStoreRoute((*skills.Handlers).PutSeedProfile))
+	s.mux.HandleFunc("GET /skills/seed/manifest", s.skillStoreRoute((*skills.Handlers).GetSeedManifest))
+	s.mux.HandleFunc("GET /skills/versions/{vid}/content", s.skillStoreRoute((*skills.Handlers).GetVersionContent))
+	s.mux.HandleFunc("POST /skills/seed/observe", s.skillStoreRoute((*skills.Handlers).PostSeedObserve))
+	s.mux.HandleFunc("POST /skills/seed/drift", s.skillStoreRoute((*skills.Handlers).PostSeedDrift))
 
 	// The four routes a runner's skill reconciler calls (runner/seed.go). Until
 	// the move, /api/skill-store/ forwarded any path to the standalone store,

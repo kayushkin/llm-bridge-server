@@ -41,7 +41,7 @@ func openSessionLogStore(ctx context.Context, url string, asynchronousCommit boo
 
 // enableSessionLog opens log-store in Postgres and makes it this server's
 // session event log, and the only copy of session events: its routes at
-// /log-store/, the bridge's session routes answered from it, and every event
+// /session-log/, the bridge's session routes answered from it, and every event
 // the harness manager writes stored in it, in this process, with the
 // session row or runner spawn the event describes written in the same
 // transaction. It must run before any session starts or resumes. Result
@@ -72,7 +72,7 @@ func enableSessionLog(ctx context.Context, cfg *config.Config, srv *server.Serve
 	}
 	logServer := sessionlogserver.New(sessionLogStore, forwarder)
 	srv.EnableSessionLog(logServer, logServer)
-	log.Printf("postgres: log-store open, served at /log-store/ and as the session event log")
+	log.Printf("postgres: log-store open, served at /session-log/ and as the session event log")
 	singleCopy, err := sessionlog.OpenSingleCopy(ctx, bridge, logServer)
 	if err != nil {
 		sessionLogStore.Close()

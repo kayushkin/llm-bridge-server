@@ -11,8 +11,8 @@ store never copies a principal's name or email.
 ## Where it runs
 
 Inside llm-bridge-server, as package
-`internal/connectedrecords/people`, mounted at `/people-store/` with the
-same paths as the standalone service had (so `GET /people-store/persons`).
+`internal/connectedrecords/people`, mounted at `/people/` with the
+same paths as the standalone service had (so `GET /people/persons`).
 The records are in Postgres, schema `people`, role `people_module`, through
 `postgresstorage`; the migrations are in `migrations/`. The server provisions,
 migrates and opens the module and checks every `principal_id` against

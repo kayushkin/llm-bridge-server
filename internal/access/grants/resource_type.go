@@ -134,7 +134,7 @@ var resourceTypeDefinitions = []resourceTypeDefinition{
 	{
 		name:          ResourceTypeMailAccount,
 		owner:         "mailstack",
-		idDescription: "a mailstack account id as GET /mailstack/api/accounts lists it",
+		idDescription: "a mailstack account id as GET /mail/api/accounts lists it",
 		nameIsNotAnID: "the account's label or address is not accepted: an account's id is what mailstack keys its mail by",
 	},
 }

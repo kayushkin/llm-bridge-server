@@ -11,7 +11,7 @@ a chip, using the TypeScript types in `ts/`.
 
 ## Where it runs
 
-location-store runs inside llm-bridge-server, at `/location-store/`, with
+location-store runs inside llm-bridge-server, at `/locations/`, with
 the same paths it served as a standalone service on `:8333`. Its records
 are in Postgres, in the schema `locations`, which the role
 `locations_module` owns (`Module()`); the server provisions and migrates it

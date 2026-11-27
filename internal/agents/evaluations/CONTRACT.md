@@ -1,7 +1,7 @@
 # eval-store — API contract
 
 Judged runs of several models on a fixed set of real model calls. It runs
-inside llm-bridge-server, mounted at `/eval-store/` with the paths below behind
+inside llm-bridge-server, mounted at `/evaluations/` with the paths below behind
 the prefix, as operator routes: the service token, an administrator, or an
 administrator's session agent token.
 
@@ -101,8 +101,8 @@ Every candidate and judge call is an `llm.completion` operation on the
 llm-bridge-server it runs in, made in process as the internal service, as no
 principal, as scheduler's calls with the service token are: each intent bills
 the run's `organization_id`. Prices come from model-store's
-`/model-store/api/models` and usage from usage-store's
-`/usage-store/api/usage/limits`, both in process too. The operation's
+`/models/api/models` and usage from usage-store's
+`/usage/api/usage/limits`, both in process too. The operation's
 `model` is the model-store id. Idempotency key:
 `eval-store:<run>:<case>:<answer|judge>:<model>:<attempt>`; correlation id: the
 run id. A resumed run sends the same keys and is handed the first receipts.

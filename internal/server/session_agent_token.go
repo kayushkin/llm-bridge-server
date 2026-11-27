@@ -7,7 +7,7 @@ package server
 // given LLM_BRIDGE_GATEWAY_URL and
 // LLM_BRIDGE_PRINCIPAL_TOKEN. An MCP server or a shell command the agent runs
 // sends the token as "Authorization: Bearer <token>" to the gateway's
-// identity-carrying store proxies (/kanban/ and /grant-store/), and the
+// identity-carrying store proxies (/issues/ and /grants/), and the
 // request reaches the store as the session's principal, exactly as a login
 // cookie would. The token is accepted nowhere else.
 //

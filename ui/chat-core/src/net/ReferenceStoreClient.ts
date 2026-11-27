@@ -1,7 +1,7 @@
 import { ApiError } from './ApiClient.js';
 
 // reference-store, reached through llm-bridge-server's gateway at
-// `<bridge>/reference-store`: the one list of reference types (what each kind
+// `<bridge>/references`: the one list of reference types (what each kind
 // of record a chip can name looks like, which field names it, what to show
 // under the name, where its page is) and the lookup of ids for the signed-in
 // person, narrowed to what they may see. One reference-store per bridge

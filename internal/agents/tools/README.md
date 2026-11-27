@@ -1,10 +1,10 @@
 # tool-store
 
-A registry of tools that can be seeded into AI coding agents and harnesses. It is a module of [llm-bridge-server](https://github.com/kayushkin/llm-bridge-server): the server keeps its records in Postgres and serves its routes at `/tool-store/`, the same paths the standalone service served on `:8302`, behind the prefix. They are operator routes: the service token, an administrator, or an administrator's session agent token.
+A registry of tools that can be seeded into AI coding agents and harnesses. It is a module of [llm-bridge-server](https://github.com/kayushkin/llm-bridge-server): the server keeps its records in Postgres and serves its routes at `/tools/`, the same paths the standalone service served on `:8302`, behind the prefix. They are operator routes: the service token, an administrator, or an administrator's session agent token.
 
 AI agents need tools — shell, file editing, search, browsers, custom CLIs, MCP servers. Each harness (Claude Code, Codex, Aider, etc.) configures these differently. tool-store provides one place to register what's available, what each tool's input schema is, and how it's invoked. Harnesses and orchestrators read from tool-store on session bring-up and provision themselves.
 
-Every component is part of the [llm-bridge](https://github.com/kayushkin/llm-bridge) ecosystem. Until a host cuts over, the standalone tool-store from the original repository keeps serving `:8302`; the curl examples below use that address, and the same paths work under `/tool-store/` on the server with credentials.
+Every component is part of the [llm-bridge](https://github.com/kayushkin/llm-bridge) ecosystem. Until a host cuts over, the standalone tool-store from the original repository keeps serving `:8302`; the curl examples below use that address, and the same paths work under `/tools/` on the server with credentials.
 
 ## How it works
 
@@ -17,7 +17,7 @@ Every component is part of the [llm-bridge](https://github.com/kayushkin/llm-bri
   ║                  tool-store                           ║
   ║                         │                             ║
   ║   ┌─────────────────────▼───────────────────────┐     ║
-  ║   │   llm-bridge-server routes (/tool-store/)   │     ║
+  ║   │   llm-bridge-server routes (/tools/)   │     ║
   ║   │                                             │     ║
   ║   │  Registry: list, upsert, enable/disable,    │     ║
   ║   │    fetch by id or name, fetch spec          │     ║

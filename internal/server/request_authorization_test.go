@@ -349,8 +349,8 @@ func TestAnAdministratorReachesTheOperatorRoutesAndTheStoreProxies(t *testing.T)
 		t.Errorf("an administrator GET /sessions/aggregates = 403 %s, want the route to answer", response.Body.String())
 	}
 
-	if response := gated.requestAs(t, administratorCookie, "GET", "/kanban/boards", nil); response.Code != http.StatusOK {
-		t.Fatalf("an administrator GET /kanban/boards = %d %s, want 200", response.Code, response.Body.String())
+	if response := gated.requestAs(t, administratorCookie, "GET", "/issues/api/boards", nil); response.Code != http.StatusOK {
+		t.Fatalf("an administrator GET /issues/api/boards = %d %s, want 200", response.Code, response.Body.String())
 	}
 	recorded := gated.kanban.recorded()
 	if len(recorded) != 1 {
@@ -519,8 +519,8 @@ func TestATrustedCallerMayAssertWhichPrincipalARequestIsFor(t *testing.T) {
 	}
 
 	// The proxy forwards the asserted principal and nothing the client sent.
-	if response := gated.requestAsServiceAssertingPrincipal(t, secondTestPrincipalID, "GET", "/kanban/boards"); response.Code != http.StatusOK {
-		t.Fatalf("asserted %s on /kanban/boards = %d %s, want 200", secondTestPrincipalID, response.Code, response.Body.String())
+	if response := gated.requestAsServiceAssertingPrincipal(t, secondTestPrincipalID, "GET", "/issues/api/boards"); response.Code != http.StatusOK {
+		t.Fatalf("asserted %s on /issues/api/boards = %d %s, want 200", secondTestPrincipalID, response.Code, response.Body.String())
 	}
 	recorded := gated.kanban.recorded()
 	if len(recorded) != 1 {
@@ -614,7 +614,7 @@ func TestGatedServerRefusesAnonymousOperatorAndUnclassifiedRequests(t *testing.T
 
 	for _, route := range []struct{ method, path string }{
 		{"GET", "/sessions"}, {"POST", "/sessions"}, {"GET", "/sessions/br_x"}, {"GET", "/signals"},
-		{"GET", "/bridge-prefs"}, {"GET", "/instances"}, {"GET", "/kanban/boards"},
+		{"GET", "/bridge-prefs"}, {"GET", "/instances"}, {"GET", "/issues/api/boards"},
 	} {
 		if response := gated.requestAs(t, nil, route.method, route.path, nil); response.Code != http.StatusUnauthorized {
 			t.Errorf("anonymous %s %s = %d, want 401", route.method, route.path, response.Code)
@@ -818,7 +818,7 @@ func TestPathValueForPatternReadsTheNamedSegment(t *testing.T) {
 // agent-store's and memory-store's routes are registered by those libraries;
 // TestEveryAccessRuleNamesARegisteredRoute covers them from the other side.
 func TestEveryRegisteredRouteIsClassified(t *testing.T) {
-	registration := regexp.MustCompile(`\.(?:HandleFunc|Handle)\(\s*("[^"]+"|kanbanProxyMountPrefix\s*\+\s*"/"|kanbanStoreProxyMountPrefix\s*\+\s*"/"|grantStoreProxyMountPrefix\s*\+\s*"/"|mailstackProxyMountPrefix\s*\+\s*"/")`)
+	registration := regexp.MustCompile(`\.(?:HandleFunc|Handle)\(\s*("[^"]+"|issuesMountPrefix\s*\+\s*"/"|grantsMountPrefix\s*\+\s*"/"|mailMountPrefix\s*\+\s*"/")`)
 	sourceFiles, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
@@ -835,14 +835,12 @@ func TestEveryRegisteredRouteIsClassified(t *testing.T) {
 		for _, match := range registration.FindAllStringSubmatch(string(source), -1) {
 			pattern := match[1]
 			switch {
-			case strings.HasPrefix(pattern, "kanbanStoreProxyMountPrefix"):
-				pattern = kanbanStoreProxyMountPrefix + "/"
-			case strings.HasPrefix(pattern, "kanbanProxyMountPrefix"):
-				pattern = kanbanProxyMountPrefix + "/"
-			case strings.HasPrefix(pattern, "grantStoreProxyMountPrefix"):
-				pattern = grantStoreProxyMountPrefix + "/"
-			case strings.HasPrefix(pattern, "mailstackProxyMountPrefix"):
-				pattern = mailstackProxyMountPrefix + "/"
+			case strings.HasPrefix(pattern, "issuesMountPrefix"):
+				pattern = issuesMountPrefix + "/"
+			case strings.HasPrefix(pattern, "grantsMountPrefix"):
+				pattern = grantsMountPrefix + "/"
+			case strings.HasPrefix(pattern, "mailMountPrefix"):
+				pattern = mailMountPrefix + "/"
 			default:
 				pattern = strings.Trim(pattern, `"`)
 			}

@@ -7,7 +7,7 @@ copies its sibling files into the store's data directory. It installs a skill
 by copying it into the install directory, and seeds installed skills to
 runners.
 
-It is a module of llm-bridge-server, mounted at `/skill-store/`: the same paths
+It is a module of llm-bridge-server, mounted at `/skills/`: the same paths
 as the standalone service had, behind that prefix, as operator routes. Runners
 reach the four seed routes (`GET /seed/manifest`, `GET /versions/{vid}/content`,
 `POST /seed/observe`, `POST /seed/drift`) through `/api/skill-store/` with their
@@ -45,11 +45,11 @@ the standalone store's folders so the imported rows find their files.
 | `anthropics`  | `anthropics/skills`                               | official   | —       |
 | `antigravity` | `sickn33/antigravity-awesome-skills`              | community  | MIT     |
 
-Add more with `POST /skill-store/sources`.
+Add more with `POST /skills/sources`.
 
 ## API
 
-Relative to the `/skill-store/` prefix:
+Relative to the `/skills/` prefix:
 
 ```
 GET    /health

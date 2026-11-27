@@ -5,7 +5,7 @@ granted to and a card can be assigned to — as a package of llm-bridge-server,
 `internal/access/principals`. It came in with its history from the
 standalone `principal-store` repository, which served the same routes at the
 root of `127.0.0.1:8314` from a SQLite file. The bridge mounts every route
-under `/principal-store/` with the same paths behind the prefix, and decides
+under `/principals/` with the same paths behind the prefix, and decides
 who may call each one; this package checks no caller.
 
 ## Why it exists

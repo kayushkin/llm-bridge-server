@@ -61,7 +61,7 @@ func (s *Server) getFromLogStore(target string) (*http.Response, error) {
 // written. No request leaves the process, so it names nothing on the network.
 const logStoreBaseURL = inprocesshttp.BaseURL
 
-// serveLogStoreMount answers /log-store/<rest> with log-store's own route
+// serveLogStoreMount answers /session-log/<rest> with log-store's own route
 // /<rest>, unchanged, for a caller written against the standalone service.
 func (s *Server) serveLogStoreMount(w http.ResponseWriter, r *http.Request) {
 	module := s.sessionLog.Load()
@@ -69,12 +69,12 @@ func (s *Server) serveLogStoreMount(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusServiceUnavailable, "log_store_off", errSessionLogOff.Error())
 		return
 	}
-	http.StripPrefix("/log-store", module.handler).ServeHTTP(w, r)
+	http.StripPrefix("/session-log", module.handler).ServeHTTP(w, r)
 }
 
 // registerSessionLogRoutes mounts log-store's own routes. The pattern is
 // written out, because the route classification test reads it from a string
 // literal.
 func (s *Server) registerSessionLogRoutes() {
-	s.mux.HandleFunc("/log-store/", s.serveLogStoreMount)
+	s.mux.HandleFunc("/session-log/", s.serveLogStoreMount)
 }

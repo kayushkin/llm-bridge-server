@@ -26,7 +26,7 @@ import (
 //	  -imported-answers-paths=/tmp/paths.txt -imported-answers-output=/tmp/answers.json
 //
 // The paths file holds one route per line, with its store's prefix
-// (/repo-store/repos); a POST /reference-store/resolve line carries its ids
+// (/repos/repos); a POST /references/resolve line carries its ids
 // after the path, comma separated, asked as the internal service.
 var (
 	standaloneRepoStoreCopy      = flag.String("standalone-repo-store-copy", "", "a copy of a standalone repo-store database to import")

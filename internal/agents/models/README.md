@@ -2,7 +2,7 @@
 
 Centralized model registry for AI agents. Tracks providers, models, aliases, pricing, and health — shared across the [llm-bridge](https://github.com/kayushkin/llm-bridge) ecosystem and any other consumer.
 
-It is a module of llm-bridge-server: its records live in Postgres (schema `models`, role `models_module`, built by `migrations/`), the server uses the library in process, and the HTTP routes the standalone `ms serve` answered on `:8155` are mounted at `/model-store/`, the same paths behind that prefix (`/model-store/api/models`, `/model-store/api/roles`…). `llm-bridge-server import-model-store -sqlite <file>` copies a standalone store's SQLite file into the module. The `ms` command line opens the module directly and needs `--postgres-url`, the bridge's `database.postgres_url`; the bridge must have started on it once, since that is what makes and migrates the module.
+It is a module of llm-bridge-server: its records live in Postgres (schema `models`, role `models_module`, built by `migrations/`), the server uses the library in process, and the HTTP routes the standalone `ms serve` answered on `:8155` are mounted at `/models/`, the same paths behind that prefix (`/models/api/models`, `/models/api/roles`…). `llm-bridge-server import-model-store -sqlite <file>` copies a standalone store's SQLite file into the module. The `ms` command line opens the module directly and needs `--postgres-url`, the bridge's `database.postgres_url`; the bridge must have started on it once, since that is what makes and migrates the module.
 
 ## Features
 

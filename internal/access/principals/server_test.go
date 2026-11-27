@@ -11,7 +11,7 @@ import (
 )
 
 // registerTestRoutes mounts the handlers at the paths the bridge serves them
-// under /principal-store/, without the prefix.
+// under /principals/, without the prefix.
 func registerTestRoutes(mux *http.ServeMux, s *Store) {
 	h := NewHandlers(s)
 	mux.HandleFunc("GET /health", h.Health)

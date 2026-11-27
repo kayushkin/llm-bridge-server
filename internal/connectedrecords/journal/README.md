@@ -5,7 +5,7 @@ person or thing, timelines, and transcripts of conversations you took part in.
 Everything is private by default.
 
 It runs inside [llm-bridge-server](https://github.com/kayushkin/llm-bridge-server),
-which serves its routes at `/journal-store/` and keeps its records in Postgres
+which serves its routes at `/journal/` and keeps its records in Postgres
 (schema `journal`, role `journal_module`). Until then it was a service of its
 own over SQLite; `ImportStandaloneDatabase` moves such a database in. Each
 entry has an id like `entry_000001`, so an agent's note, a timeline or another
@@ -47,7 +47,7 @@ their own records; an administrator reaches everyone's, or one person's with
 ## Use it
 
 Through llm-bridge-server, as a signed-in person (the server decides who the
-request acts as; `$B` is the server's address plus `/journal-store`):
+request acts as; `$B` is the server's address plus `/journal`):
 
 ```sh
 curl -s -X POST $B/entries -H 'Content-Type: application/json' \

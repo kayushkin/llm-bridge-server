@@ -2,7 +2,7 @@ package server
 
 // access: principal-store, grant-store, sign-in-store and permission-store,
 // run in this process (internal/access). This file mounts their routes under
-// /principal-store/, /grant-store/, /sign-in-store/ and /permission-store/,
+// /principals/, /grants/, /sign-in/ and /permissions/,
 // the same paths behind each prefix as the standalone store's, and joins the
 // stores to the rest of the server: the principal behind every request, the
 // grants a session is held to, and the verdict on a tool call are now calls
@@ -248,71 +248,71 @@ func (s *Server) permissionStoreRoute(route func(*permissions.Handlers, http.Res
 // because the route classification test reads them from string literals.
 func (s *Server) registerAccessRoutes() {
 	// principal-store.
-	s.mux.HandleFunc("GET /principal-store/health", s.principalStoreRoute((*principals.Handlers).Health))
-	s.mux.HandleFunc("GET /principal-store/kinds", s.principalStoreRoute((*principals.Handlers).Kinds))
-	s.mux.HandleFunc("GET /principal-store/kind-definitions", s.principalStoreRoute((*principals.Handlers).KindDefinitions))
-	s.mux.HandleFunc("GET /principal-store/availability-reasons", s.principalStoreRoute((*principals.Handlers).AvailabilityReasons))
-	s.mux.HandleFunc("GET /principal-store/weekday-codes", s.principalStoreRoute((*principals.Handlers).WeekdayCodes))
-	s.mux.HandleFunc("GET /principal-store/principals", s.principalStoreRoute((*principals.Handlers).ListPrincipals))
-	s.mux.HandleFunc("POST /principal-store/principals", s.principalStoreRoute((*principals.Handlers).CreatePrincipal))
-	s.mux.HandleFunc("POST /principal-store/contacts/resolve", s.principalStoreRoute((*principals.Handlers).ResolveContact))
-	s.mux.HandleFunc("GET /principal-store/principals/{id}", s.principalStoreRoute((*principals.Handlers).GetPrincipal))
-	s.mux.HandleFunc("PATCH /principal-store/principals/{id}", s.principalStoreRoute((*principals.Handlers).PatchPrincipal))
-	s.mux.HandleFunc("POST /principal-store/principals/{id}/disable", s.principalStoreRoute((*principals.Handlers).DisablePrincipal))
-	s.mux.HandleFunc("POST /principal-store/principals/{id}/enable", s.principalStoreRoute((*principals.Handlers).EnablePrincipal))
-	s.mux.HandleFunc("GET /principal-store/principals/{id}/members", s.principalStoreRoute((*principals.Handlers).ListMembers))
-	s.mux.HandleFunc("PUT /principal-store/principals/{group}/members/{member}", s.principalStoreRoute((*principals.Handlers).PutMember))
-	s.mux.HandleFunc("DELETE /principal-store/principals/{group}/members/{member}", s.principalStoreRoute((*principals.Handlers).DeleteMember))
-	s.mux.HandleFunc("GET /principal-store/principals/{id}/groups", s.principalStoreRoute((*principals.Handlers).ListGroups))
-	s.mux.HandleFunc("GET /principal-store/principals/{id}/availability", s.principalStoreRoute((*principals.Handlers).Availability))
-	s.mux.HandleFunc("GET /principal-store/principals/{id}/time-off", s.principalStoreRoute((*principals.Handlers).ListTimeOff))
-	s.mux.HandleFunc("POST /principal-store/principals/{id}/time-off", s.principalStoreRoute((*principals.Handlers).AddTimeOff))
-	s.mux.HandleFunc("DELETE /principal-store/principals/{id}/time-off/{timeOffID}", s.principalStoreRoute((*principals.Handlers).DeleteTimeOff))
-	s.mux.HandleFunc("GET /principal-store/identity-providers", s.principalStoreRoute((*principals.Handlers).IdentityProviders))
-	s.mux.HandleFunc("GET /principal-store/identity-bindings", s.principalStoreRoute((*principals.Handlers).ListIdentityBindings))
-	s.mux.HandleFunc("GET /principal-store/identity-bindings/resolve", s.principalStoreRoute((*principals.Handlers).ResolveIdentity))
-	s.mux.HandleFunc("GET /principal-store/identity-bindings/{id}", s.principalStoreRoute((*principals.Handlers).GetIdentityBinding))
+	s.mux.HandleFunc("GET /principals/health", s.principalStoreRoute((*principals.Handlers).Health))
+	s.mux.HandleFunc("GET /principals/kinds", s.principalStoreRoute((*principals.Handlers).Kinds))
+	s.mux.HandleFunc("GET /principals/kind-definitions", s.principalStoreRoute((*principals.Handlers).KindDefinitions))
+	s.mux.HandleFunc("GET /principals/availability-reasons", s.principalStoreRoute((*principals.Handlers).AvailabilityReasons))
+	s.mux.HandleFunc("GET /principals/weekday-codes", s.principalStoreRoute((*principals.Handlers).WeekdayCodes))
+	s.mux.HandleFunc("GET /principals/principals", s.principalStoreRoute((*principals.Handlers).ListPrincipals))
+	s.mux.HandleFunc("POST /principals/principals", s.principalStoreRoute((*principals.Handlers).CreatePrincipal))
+	s.mux.HandleFunc("POST /principals/contacts/resolve", s.principalStoreRoute((*principals.Handlers).ResolveContact))
+	s.mux.HandleFunc("GET /principals/principals/{id}", s.principalStoreRoute((*principals.Handlers).GetPrincipal))
+	s.mux.HandleFunc("PATCH /principals/principals/{id}", s.principalStoreRoute((*principals.Handlers).PatchPrincipal))
+	s.mux.HandleFunc("POST /principals/principals/{id}/disable", s.principalStoreRoute((*principals.Handlers).DisablePrincipal))
+	s.mux.HandleFunc("POST /principals/principals/{id}/enable", s.principalStoreRoute((*principals.Handlers).EnablePrincipal))
+	s.mux.HandleFunc("GET /principals/principals/{id}/members", s.principalStoreRoute((*principals.Handlers).ListMembers))
+	s.mux.HandleFunc("PUT /principals/principals/{group}/members/{member}", s.principalStoreRoute((*principals.Handlers).PutMember))
+	s.mux.HandleFunc("DELETE /principals/principals/{group}/members/{member}", s.principalStoreRoute((*principals.Handlers).DeleteMember))
+	s.mux.HandleFunc("GET /principals/principals/{id}/groups", s.principalStoreRoute((*principals.Handlers).ListGroups))
+	s.mux.HandleFunc("GET /principals/principals/{id}/availability", s.principalStoreRoute((*principals.Handlers).Availability))
+	s.mux.HandleFunc("GET /principals/principals/{id}/time-off", s.principalStoreRoute((*principals.Handlers).ListTimeOff))
+	s.mux.HandleFunc("POST /principals/principals/{id}/time-off", s.principalStoreRoute((*principals.Handlers).AddTimeOff))
+	s.mux.HandleFunc("DELETE /principals/principals/{id}/time-off/{timeOffID}", s.principalStoreRoute((*principals.Handlers).DeleteTimeOff))
+	s.mux.HandleFunc("GET /principals/identity-providers", s.principalStoreRoute((*principals.Handlers).IdentityProviders))
+	s.mux.HandleFunc("GET /principals/identity-bindings", s.principalStoreRoute((*principals.Handlers).ListIdentityBindings))
+	s.mux.HandleFunc("GET /principals/identity-bindings/resolve", s.principalStoreRoute((*principals.Handlers).ResolveIdentity))
+	s.mux.HandleFunc("GET /principals/identity-bindings/{id}", s.principalStoreRoute((*principals.Handlers).GetIdentityBinding))
 	// Linking and unlinking go through the administration handlers, which
 	// stamp linked_by and unlinked_by with the caller rather than the body,
 	// and end the login sessions of an unlinked identity. Mounted straight,
 	// these two would let an administrator record another as the linker and
 	// leave an unlinked identity's sessions signed in.
-	s.mux.HandleFunc("POST /principal-store/identity-bindings", s.handleLinkIdentityBinding)
-	s.mux.HandleFunc("POST /principal-store/identity-bindings/{id}/unlink", s.handleUnlinkIdentityBinding)
+	s.mux.HandleFunc("POST /principals/identity-bindings", s.handleLinkIdentityBinding)
+	s.mux.HandleFunc("POST /principals/identity-bindings/{id}/unlink", s.handleUnlinkIdentityBinding)
 
 	// grant-store.
-	s.mux.HandleFunc("GET /grant-store/health", s.grantStoreRoute((*grants.Handlers).Health))
-	s.mux.HandleFunc("GET /grant-store/relations", s.grantStoreRoute((*grants.Handlers).Relations))
-	s.mux.HandleFunc("GET /grant-store/resource-types", s.grantStoreRoute((*grants.Handlers).ResourceTypes))
-	s.mux.HandleFunc("GET /grant-store/grants", s.grantStoreRoute((*grants.Handlers).ListGrants))
-	s.mux.HandleFunc("POST /grant-store/grants", s.grantStoreRoute((*grants.Handlers).CreateGrant))
-	s.mux.HandleFunc("GET /grant-store/grants/{id}", s.grantStoreRoute((*grants.Handlers).GetGrant))
-	s.mux.HandleFunc("POST /grant-store/grants/{id}/revoke", s.grantStoreRoute((*grants.Handlers).RevokeGrant))
-	s.mux.HandleFunc("GET /grant-store/principals/{id}/effective", s.grantStoreRoute((*grants.Handlers).Effective))
+	s.mux.HandleFunc("GET /grants/health", s.grantStoreRoute((*grants.Handlers).Health))
+	s.mux.HandleFunc("GET /grants/relations", s.grantStoreRoute((*grants.Handlers).Relations))
+	s.mux.HandleFunc("GET /grants/resource-types", s.grantStoreRoute((*grants.Handlers).ResourceTypes))
+	s.mux.HandleFunc("GET /grants/grants", s.grantStoreRoute((*grants.Handlers).ListGrants))
+	s.mux.HandleFunc("POST /grants/grants", s.grantStoreRoute((*grants.Handlers).CreateGrant))
+	s.mux.HandleFunc("GET /grants/grants/{id}", s.grantStoreRoute((*grants.Handlers).GetGrant))
+	s.mux.HandleFunc("POST /grants/grants/{id}/revoke", s.grantStoreRoute((*grants.Handlers).RevokeGrant))
+	s.mux.HandleFunc("GET /grants/principals/{id}/effective", s.grantStoreRoute((*grants.Handlers).Effective))
 
 	// sign-in-store.
-	s.mux.HandleFunc("GET /sign-in-store/health", s.signInStoreRoute((*signin.Handlers).Health))
-	s.mux.HandleFunc("POST /sign-in-store/link-requests", s.signInStoreRoute((*signin.Handlers).RequestLink))
-	s.mux.HandleFunc("POST /sign-in-store/redeem", s.signInStoreRoute((*signin.Handlers).Redeem))
-	s.mux.HandleFunc("GET /sign-in-store/session", s.signInStoreRoute((*signin.Handlers).CurrentSession))
-	s.mux.HandleFunc("POST /sign-in-store/sign-out", s.signInStoreRoute((*signin.Handlers).SignOut))
-	s.mux.HandleFunc("GET /sign-in-store/discord/start", s.signInStoreRoute((*signin.Handlers).StartDiscord))
-	s.mux.HandleFunc("GET /sign-in-store/discord/callback", s.signInStoreRoute((*signin.Handlers).FinishDiscord))
-	s.mux.HandleFunc("POST /sign-in-store/sign-in-links", s.signInStoreAdministratorRoute((*signin.Handlers).MakeLink))
-	s.mux.HandleFunc("GET /sign-in-store/sign-in-links", s.signInStoreAdministratorRoute((*signin.Handlers).ListLinks))
-	s.mux.HandleFunc("GET /sign-in-store/sessions", s.signInStoreAdministratorRoute((*signin.Handlers).ListSessions))
-	s.mux.HandleFunc("POST /sign-in-store/sessions/{id}/revoke", s.signInStoreAdministratorRoute((*signin.Handlers).RevokeSession))
-	s.mux.HandleFunc("POST /sign-in-store/principals/{id}/discord-messages", s.signInStoreAdministratorRoute((*signin.Handlers).SendDiscordMessage))
+	s.mux.HandleFunc("GET /sign-in/health", s.signInStoreRoute((*signin.Handlers).Health))
+	s.mux.HandleFunc("POST /sign-in/link-requests", s.signInStoreRoute((*signin.Handlers).RequestLink))
+	s.mux.HandleFunc("POST /sign-in/redeem", s.signInStoreRoute((*signin.Handlers).Redeem))
+	s.mux.HandleFunc("GET /sign-in/session", s.signInStoreRoute((*signin.Handlers).CurrentSession))
+	s.mux.HandleFunc("POST /sign-in/sign-out", s.signInStoreRoute((*signin.Handlers).SignOut))
+	s.mux.HandleFunc("GET /sign-in/discord/start", s.signInStoreRoute((*signin.Handlers).StartDiscord))
+	s.mux.HandleFunc("GET /sign-in/discord/callback", s.signInStoreRoute((*signin.Handlers).FinishDiscord))
+	s.mux.HandleFunc("POST /sign-in/sign-in-links", s.signInStoreAdministratorRoute((*signin.Handlers).MakeLink))
+	s.mux.HandleFunc("GET /sign-in/sign-in-links", s.signInStoreAdministratorRoute((*signin.Handlers).ListLinks))
+	s.mux.HandleFunc("GET /sign-in/sessions", s.signInStoreAdministratorRoute((*signin.Handlers).ListSessions))
+	s.mux.HandleFunc("POST /sign-in/sessions/{id}/revoke", s.signInStoreAdministratorRoute((*signin.Handlers).RevokeSession))
+	s.mux.HandleFunc("POST /sign-in/principals/{id}/discord-messages", s.signInStoreAdministratorRoute((*signin.Handlers).SendDiscordMessage))
 
 	// permission-store.
-	s.mux.HandleFunc("GET /permission-store/healthz", s.permissionStoreRoute((*permissions.Handlers).Health))
-	s.mux.HandleFunc("GET /permission-store/rules", s.permissionStoreRoute((*permissions.Handlers).ListRules))
-	s.mux.HandleFunc("POST /permission-store/rules", s.permissionStoreRoute((*permissions.Handlers).CreateRule))
-	s.mux.HandleFunc("GET /permission-store/rules/{id}", s.permissionStoreRoute((*permissions.Handlers).GetRule))
-	s.mux.HandleFunc("PATCH /permission-store/rules/{id}", s.permissionStoreRoute((*permissions.Handlers).UpdateRule))
-	s.mux.HandleFunc("DELETE /permission-store/rules/{id}", s.permissionStoreRoute((*permissions.Handlers).DeleteRule))
-	s.mux.HandleFunc("POST /permission-store/evaluate", s.permissionStoreRoute((*permissions.Handlers).Evaluate))
-	s.mux.HandleFunc("GET /permission-store/audit", s.permissionStoreRoute((*permissions.Handlers).ListAudit))
+	s.mux.HandleFunc("GET /permissions/healthz", s.permissionStoreRoute((*permissions.Handlers).Health))
+	s.mux.HandleFunc("GET /permissions/rules", s.permissionStoreRoute((*permissions.Handlers).ListRules))
+	s.mux.HandleFunc("POST /permissions/rules", s.permissionStoreRoute((*permissions.Handlers).CreateRule))
+	s.mux.HandleFunc("GET /permissions/rules/{id}", s.permissionStoreRoute((*permissions.Handlers).GetRule))
+	s.mux.HandleFunc("PATCH /permissions/rules/{id}", s.permissionStoreRoute((*permissions.Handlers).UpdateRule))
+	s.mux.HandleFunc("DELETE /permissions/rules/{id}", s.permissionStoreRoute((*permissions.Handlers).DeleteRule))
+	s.mux.HandleFunc("POST /permissions/evaluate", s.permissionStoreRoute((*permissions.Handlers).Evaluate))
+	s.mux.HandleFunc("GET /permissions/audit", s.permissionStoreRoute((*permissions.Handlers).ListAudit))
 }
 
 // writePrincipalStoreCallError answers a call into principal-store that did not

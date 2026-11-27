@@ -1,6 +1,6 @@
 # prediction-store
 
-The calibration ledger, mounted in llm-bridge-server at `/prediction-store/`:
+The calibration ledger, mounted in llm-bridge-server at `/predictions/`:
 resolvable claims (`predictions`), every revision of the odds on them
 (`estimates`), and what they are about (`links`).
 

@@ -195,7 +195,7 @@ describe('peerConnectionBridgeConfig', () => {
     expect(peer.renderHarnessExtension).toBeNull()
   })
 
-  it("reaches kanban-store through the other server's rooted /kanban-store/ gateway", () => {
+  it("reaches kanban-store through the other server's rooted /issues/ gateway", () => {
     const peer = peerConnectionBridgeConfig(local, 'peer_connection_000001')
     expect(peer.kanbanStoreBasePath).toBe('/api/bridge/peer-connections/peer_connection_000001/proxy/kanban-store')
   })

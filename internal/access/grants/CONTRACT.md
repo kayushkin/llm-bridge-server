@@ -6,8 +6,8 @@ agent, harness instance, machine, skill, tool, board and the rest of
 `GET /resource-types`. "Who may use what" lives here and nowhere else.
 
 Package `internal/access/grants` of llm-bridge-server, mounted by that
-server under `/grant-store/`: every route below is served at
-`/grant-store<route>`, with the same paths and answers the standalone service
+server under `/grants/`: every route below is served at
+`/grants<route>`, with the same paths and answers the standalone service
 on `127.0.0.1:8315` gave. The grants live in Postgres, in the module `grants`
 (role `grants_module`), built by `migrations/*.sql`. All timestamps are epoch
 seconds (`bigint`, 0 = unset).
@@ -193,7 +193,7 @@ would start a session with nothing offered and no explanation.
 | `instance`, `machine` | the mounting server's harness-store, in its own process | harness-store's instance id (`inst-cc-local`) or machine id (`m_localhost`) |
 | `peer_connection`, `operation_type` | the mounting server, in its own process | its peer connection id; the operation type's name |
 | `principal` | principal-store, in the same process | `principal_000001` |
-| `mail_account` | mailstack, in the same process | the account id `GET /mailstack/api/accounts` lists |
+| `mail_account` | mailstack, in the same process | the account id `GET /mail/api/accounts` lists |
 | `skill` | skill-store `GET /skills/{id}` | skill-store's numeric `skills.id` |
 | `tool` | tool-store `GET /tools/{id}` | tool-store's numeric `tools.id` |
 | `board` | kanban-store `GET /api/boards/{id}`, sending `X-Kanban-Store-Service-Token` when set | kanban-store's board id (a uuid) |

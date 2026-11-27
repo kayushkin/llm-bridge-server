@@ -155,7 +155,7 @@ func main() {
 	} else {
 		log.Printf("Entra ID sign-in is OFF: no LLMBRIDGE_ENTRA_* settings")
 	}
-	log.Printf("every route is gated (service token or login session); principals, grants, sign-in and tool-call rules are the access stores in this process, and kanban-store is in this process too, at /kanban/ and /kanban-store/, all on Postgres")
+	log.Printf("every route is gated (service token or login session); principals, grants, sign-in and tool-call rules are the access stores in this process, and kanban-store is in this process too, at /issues/, all on Postgres")
 
 	// Say where the bridge's own records are before writing to them: the
 	// bridge_core module and the session event log (the session_log module),
@@ -193,7 +193,7 @@ func main() {
 	}
 	defer accessStores.Close()
 	srv.EnableAccess(accessStores)
-	log.Printf("postgres: access open, served at /principal-store/, /grant-store/, /sign-in-store/ and /permission-store/")
+	log.Printf("postgres: access open, served at /principals/, /grants/, /sign-in/ and /permissions/")
 
 	// log-store: every session event. Nothing below may start or resume a
 	// session before it is the harness manager's session event log.
@@ -215,7 +215,7 @@ func main() {
 		}
 		defer predictionStoreDB.Close()
 		srv.EnablePredictionStore(predictions.New(predictionStoreDB))
-		log.Printf("postgres: prediction-store open, served at /prediction-store/")
+		log.Printf("postgres: prediction-store open, served at /predictions/")
 		closeTaskTrackingModules, err := enableTaskTrackingModules(context.Background(), cfg, srv, accessStores)
 		if err != nil {
 			log.Fatalf("%v", err)

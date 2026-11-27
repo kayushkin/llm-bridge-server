@@ -21,8 +21,8 @@ log-store (github.com/kayushkin/log-store) and runs inside the bridge, as the
   `/messages/raw`, `/entries/{eventId}`, `/entries/{eventId}/images/{index}`,
   `/sessions/search`, `/sessions/aggregates`, `/sessions/validators`,
   `/sessions/recent-bundle`) answer from its handler in process.
-- **Its own routes** are mounted at `/log-store/` with the same paths behind the
-  prefix (`/log-store/api/v1/events`, `/log-store/health`, …), operator only:
+- **Its own routes** are mounted at `/session-log/` with the same paths behind the
+  prefix (`/session-log/api/v1/events`, `/session-log/health`, …), operator only:
   every session's events, with no owner on a row, and an ingest route that
   writes into any session.
 - **Import:** `llm-bridge-server import-log-store -sqlite <copy of events.db>`

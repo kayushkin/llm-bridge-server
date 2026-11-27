@@ -86,10 +86,10 @@ func TestTheLoginAndStoreProxyRoutesAreMountedAndGated(t *testing.T) {
 	srv := newServerWithAllStoresConfigured(t, nil)
 	for _, route := range []struct{ method, path string }{
 		{"GET", "/auth/principal"},
-		{"GET", "/kanban/boards"},
-		{"GET", "/grant-store/relations"},
-		{"GET", "/mailstack/api/accounts"},
-		{"POST", "/reference-store/resolve"},
+		{"GET", "/issues/api/boards"},
+		{"GET", "/grants/relations"},
+		{"GET", "/mail/api/accounts"},
+		{"POST", "/references/resolve"},
 	} {
 		// Through ServeHTTP, not the bare mux: the request authorization in
 		// front of the mux is part of the route.

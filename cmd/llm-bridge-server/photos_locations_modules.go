@@ -44,7 +44,7 @@ func enablePhotosAndLocations(ctx context.Context, cfg *config.Config, srv *serv
 		closePools()
 		return nil, err
 	}
-	log.Printf("postgres: photo-store and location-store open, served at /photo-store/ and /location-store/")
+	log.Printf("postgres: photo-store and location-store open, served at /photos/ and /locations/")
 	return closePools, nil
 }
 

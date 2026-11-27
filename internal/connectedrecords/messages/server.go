@@ -15,7 +15,7 @@ import (
 )
 
 // RegisterHandlers mounts the API on mux, rooted at /; the server mounts it
-// under /message-store/. Every request must carry the ownership.Caller the
+// under /messages/. Every request must carry the ownership.Caller the
 // server verified; one without is 401. CONTRACT.md is the route table.
 func RegisterHandlers(mux *http.ServeMux, s *Store) {
 	h := &handler{s: s}

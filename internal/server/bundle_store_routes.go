@@ -9,7 +9,7 @@ import (
 )
 
 // The registry of session bundles, moved in from the standalone bundle-store:
-// the same routes under /bundle-store/, answered from the Postgres module, and
+// the same routes under /bundles/, answered from the Postgres module, and
 // the two questions session creation and spawn ask it, answered in process.
 
 // bundleResolver is what session creation and spawn ask about a bundle.
@@ -48,14 +48,14 @@ func (s *Server) bundleStoreRoute(route func(*bundles.Handlers, http.ResponseWri
 // registerBundleStoreRoutes mounts the store. The patterns are written out,
 // because the route classification test reads them from string literals.
 func (s *Server) registerBundleStoreRoutes() {
-	s.mux.HandleFunc("GET /bundle-store/health", s.bundleStoreRoute((*bundles.Handlers).Health))
-	s.mux.HandleFunc("GET /bundle-store/member-effects", s.bundleStoreRoute((*bundles.Handlers).MemberEffects))
-	s.mux.HandleFunc("GET /bundle-store/bundles", s.bundleStoreRoute((*bundles.Handlers).ListBundles))
-	s.mux.HandleFunc("POST /bundle-store/bundles", s.bundleStoreRoute((*bundles.Handlers).UpsertBundle))
-	s.mux.HandleFunc("GET /bundle-store/bundles/{id}", s.bundleStoreRoute((*bundles.Handlers).GetBundle))
-	s.mux.HandleFunc("DELETE /bundle-store/bundles/{id}", s.bundleStoreRoute((*bundles.Handlers).DeleteBundle))
-	s.mux.HandleFunc("POST /bundle-store/bundles/{id}/enable", s.bundleStoreRoute((*bundles.Handlers).EnableBundle))
-	s.mux.HandleFunc("POST /bundle-store/bundles/{id}/disable", s.bundleStoreRoute((*bundles.Handlers).DisableBundle))
-	s.mux.HandleFunc("GET /bundle-store/bundles/by-name/{name}", s.bundleStoreRoute((*bundles.Handlers).GetBundleByName))
-	s.mux.HandleFunc("POST /bundle-store/resolve", s.bundleStoreRoute((*bundles.Handlers).Resolve))
+	s.mux.HandleFunc("GET /bundles/health", s.bundleStoreRoute((*bundles.Handlers).Health))
+	s.mux.HandleFunc("GET /bundles/member-effects", s.bundleStoreRoute((*bundles.Handlers).MemberEffects))
+	s.mux.HandleFunc("GET /bundles/bundles", s.bundleStoreRoute((*bundles.Handlers).ListBundles))
+	s.mux.HandleFunc("POST /bundles/bundles", s.bundleStoreRoute((*bundles.Handlers).UpsertBundle))
+	s.mux.HandleFunc("GET /bundles/bundles/{id}", s.bundleStoreRoute((*bundles.Handlers).GetBundle))
+	s.mux.HandleFunc("DELETE /bundles/bundles/{id}", s.bundleStoreRoute((*bundles.Handlers).DeleteBundle))
+	s.mux.HandleFunc("POST /bundles/bundles/{id}/enable", s.bundleStoreRoute((*bundles.Handlers).EnableBundle))
+	s.mux.HandleFunc("POST /bundles/bundles/{id}/disable", s.bundleStoreRoute((*bundles.Handlers).DisableBundle))
+	s.mux.HandleFunc("GET /bundles/bundles/by-name/{name}", s.bundleStoreRoute((*bundles.Handlers).GetBundleByName))
+	s.mux.HandleFunc("POST /bundles/resolve", s.bundleStoreRoute((*bundles.Handlers).Resolve))
 }

@@ -55,7 +55,7 @@ describe('serviceSettingsSourcesOf', () => {
   })
   it('asks only the services the host names as serving settings', () => {
     const sources = serviceSettingsSourcesOf({
-      basePath: '', kanbanStoreBasePath: '/kanban-store', grantStoreBasePath: '/grant-store', schedulerBasePath: '/scheduler',
+      basePath: '', kanbanStoreBasePath: '/issues', grantStoreBasePath: '/grants', schedulerBasePath: '/scheduler',
       serviceSettingsSourceKeys: ['basePath', 'schedulerBasePath'],
     } as unknown as BridgeConfig)
     // The bridge's own base is empty when it serves the page itself, and its

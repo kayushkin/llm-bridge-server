@@ -24,7 +24,7 @@ func TestPossessionStoresCallsReachOnlyTheirOwnersRecords(t *testing.T) {
 	enablePossessionsOnTestDatabase(t, gated)
 	owner, other := asPossessionOwner(firstTestPrincipalID), asPossessionOwner(secondTestPrincipalID)
 
-	imported := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/photo-store/imports", map[string]any{"photos": []map[string]any{{
+	imported := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/photos/imports", map[string]any{"photos": []map[string]any{{
 		"sha256": strings.Repeat("d", 64), "source_machine": "laptop", "source_path": "Pictures/Camera/Screenshot desk.png", "folder": "Pictures/Camera",
 		"media_type": "image/jpeg", "taken_at": 1700000000, "date_source": "exif", "width": 40, "height": 30, "thumbnail_jpeg": testPhotoJPEG(t),
 	}}})
@@ -59,7 +59,7 @@ func TestPossessionStoresCallsReachOnlyTheirOwnersRecords(t *testing.T) {
 		t.Errorf("a wearer with no confirmed face = %v, want ErrInvalid", err)
 	}
 
-	place := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/location-store/places",
+	place := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/locations/places",
 		map[string]any{"name": "Example home", "latitude": 10.0, "longitude": 20.0, "kind": "home"})
 	placeID, _ := decodeRecord(t, place)["id"].(string)
 	places := possessionPlaces{server: gated.server}

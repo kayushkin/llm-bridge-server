@@ -93,8 +93,8 @@ func enableRepositoryModulesOnTestDatabase(t *testing.T, server *Server) testRep
 
 func TestTheMovedStoresAnswer503WithNoModule(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
-	for path, code := range map[string]string{"/repo-store/repos": "repo_store_off", "/work-graph-store/activity": "work_graph_store_off",
-		"/file-store/limits": "file_store_off", "/reference-store/types": "reference_store_off"} {
+	for path, code := range map[string]string{"/repos/repos": "repo_store_off", "/git-activity/activity": "work_graph_store_off",
+		"/file-storage/limits": "file_store_off", "/references/types": "reference_store_off"} {
 		if response := gated.requestAsService(t, "GET", path); response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), code) {
 			t.Errorf("GET %s = %d %s, want 503 %s", path, response.Code, response.Body, code)
 		}
@@ -106,12 +106,12 @@ func TestTheMovedStoresAnswer503WithNoModule(t *testing.T) {
 func TestRepoStoreWorkGraphStoreAndFileStoreAreTheOperators(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
 	enableRepositoriesAndReferencesOnTestDatabase(t, gated.server)
-	if created := gated.requestAsServiceWithJSON(t, "POST", "/repo-store/repos", map[string]any{"name": "webapp"}); created.Code != http.StatusCreated {
+	if created := gated.requestAsServiceWithJSON(t, "POST", "/repos/repos", map[string]any{"name": "webapp"}); created.Code != http.StatusCreated {
 		t.Fatalf("create = %d %s", created.Code, created.Body)
 	}
 	person := gated.loginAs(t, firstTestPrincipalID)
 	administrator := gated.loginAs(t, administratorTestPrincipalID)
-	for _, path := range []string{"/repo-store/repos/by-name/webapp", "/work-graph-store/session-repos?since_unix_nano=1", "/file-store/limits"} {
+	for _, path := range []string{"/repos/repos/by-name/webapp", "/git-activity/session-repos?since_unix_nano=1", "/file-storage/limits"} {
 		if response := gated.requestAs(t, nil, "GET", path, nil); response.Code != http.StatusUnauthorized {
 			t.Errorf("GET %s with no credential = %d, want 401", path, response.Code)
 		}
@@ -122,7 +122,7 @@ func TestRepoStoreWorkGraphStoreAndFileStoreAreTheOperators(t *testing.T) {
 			t.Errorf("GET %s as an administrator = %d %s, want 200", path, response.Code, response.Body)
 		}
 	}
-	if response := gated.requestAsService(t, "POST", "/repo-store/repos/1/pull-requests/sync"); response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "no gh in tests") {
+	if response := gated.requestAsService(t, "POST", "/repos/repos/1/pull-requests/sync"); response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "no gh in tests") {
 		t.Errorf("a sync with no gh = %d %s, want 503", response.Code, response.Body)
 	}
 }
@@ -162,7 +162,7 @@ func TestSessionFilesGoToTheFileStoreModule(t *testing.T) {
 	if _, err := gated.server.fileStore.Accept(strings.NewReader("x"), 26*1024*1024, "text/plain", files.NewFile{Filename: "big", OwnerService: sessionFileOwnerService, OwnerRef: "br_files"}); !errors.As(err, &refusal) || refusal.Status != http.StatusRequestEntityTooLarge {
 		t.Fatalf("a file over the limit: %v", err)
 	}
-	listed := gated.requestAsService(t, "GET", "/file-store/files?owner_service=llm-bridge-server&owner_ref=br_files")
+	listed := gated.requestAsService(t, "GET", "/file-storage/files?owner_service=llm-bridge-server&owner_ref=br_files")
 	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), `"id":"file_000001"`) {
 		t.Fatalf("listed = %d %s", listed.Code, listed.Body)
 	}
@@ -174,7 +174,7 @@ func TestSessionFilesGoToTheFileStoreModule(t *testing.T) {
 func resolveThroughTheServer(t *testing.T, gated *gatedTestServer, principalID string, ids ...string) (int, map[string][]references.Match) {
 	t.Helper()
 	body, _ := json.Marshal(map[string][]string{"ids": ids})
-	request := httptest.NewRequest(http.MethodPost, "/reference-store/resolve", strings.NewReader(string(body)))
+	request := httptest.NewRequest(http.MethodPost, "/references/resolve", strings.NewReader(string(body)))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set(serviceTokenHeader, testServiceToken)
 	if principalID != "" {
@@ -206,10 +206,10 @@ func TestReferenceStoreResolvesInProcessAsTheCaller(t *testing.T) {
 	if _, err := repoStore.UpsertRepo(&repos.Repo{Name: "webapp", GitRemote: "git@github.com:example-owner/webapp.git"}); err != nil {
 		t.Fatal(err)
 	}
-	if response := gated.requestAs(t, nil, "GET", "/reference-store/types/repo", nil); response.Code != http.StatusOK {
+	if response := gated.requestAs(t, nil, "GET", "/references/types/repo", nil); response.Code != http.StatusOK {
 		t.Errorf("the catalog with no credential = %d %s, want 200", response.Code, response.Body)
 	}
-	if response := gated.requestAs(t, nil, "POST", "/reference-store/resolve", map[string]any{"ids": []string{"repo:webapp"}}); response.Code != http.StatusUnauthorized {
+	if response := gated.requestAs(t, nil, "POST", "/references/resolve", map[string]any{"ids": []string{"repo:webapp"}}); response.Code != http.StatusUnauthorized {
 		t.Errorf("a lookup with no credential = %d, want 401", response.Code)
 	}
 

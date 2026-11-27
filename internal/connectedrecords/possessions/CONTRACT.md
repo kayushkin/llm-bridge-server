@@ -1,7 +1,7 @@
 # possession-store — API contract
 
 An inventory of the things a person owns, served by llm-bridge-server at
-`/possession-store/` with these paths behind the prefix. Timestamps are epoch
+`/possessions/` with these paths behind the prefix. Timestamps are epoch
 seconds. Money is integer cents with an ISO 4217 code.
 
 The records live in Postgres, in the module `possessions` (role
@@ -273,7 +273,7 @@ or the pick has no photo to ask on: the line stays `unreviewed`. Counts:
 
 `possession-add-photos -queued-by principal_… [-folder possessions]
 [-time-zone America/Los_Angeles] photo.jpg…` keeps each original through
-`PUT /possession-store/originals/{sha256}`, adds the photo to photo-store
+`PUT /possessions/originals/{sha256}`, adds the photo to photo-store
 (upright, with its EXIF date and GPS, at the `source_machine` and
 `source_path` that answer names), and queues it, all through the bridge at
 `LLM_BRIDGE_GATEWAY_URL` with `LLM_BRIDGE_PRINCIPAL_TOKEN`, so everything is

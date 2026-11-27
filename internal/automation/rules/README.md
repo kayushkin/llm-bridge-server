@@ -2,7 +2,7 @@
 
 > **In llm-bridge-server.** This copy runs inside llm-bridge-server on a
 > Postgres module (`rules`), not as a service of its own: its routes are the
-> server's `/rule-store/<path>` (`CONTRACT.md`'s `<path>`), operator only. It
+> server's `/rules/<path>` (`CONTRACT.md`'s `<path>`), operator only. It
 > reads sessions and their feed from the server and cards and entity tags from
 > kanban-store, both in process as the internal service, so it has no address
 > or token of its own and `GET /settings` is gone (the server's own settings

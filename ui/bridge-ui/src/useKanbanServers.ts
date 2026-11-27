@@ -86,7 +86,7 @@ export function serverBoardsKey(server: KanbanServer): string {
 
 /** Every listed server's boards but the shown one's, each read once through
  *  that server's config: this server's kanban-store, or a connected server's
- *  `/kanban-store/` gateway through the connection's proxy. The shown server's
+ *  `/issues/` gateway through the connection's proxy. The shown server's
  *  boards are the board page's own read (`useKanban`), which keeps them current
  *  as boards are made and deleted, so reading them here too would only repeat
  *  that request. A server that cannot be read is not asked.

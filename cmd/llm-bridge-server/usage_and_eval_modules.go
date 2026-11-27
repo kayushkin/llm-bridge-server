@@ -179,7 +179,7 @@ func enableUsageAndEvalStores(ctx context.Context, cfg *config.Config, srv *serv
 	} else {
 		log.Printf("eval-store: %s is off, so runs cannot start or resume here", config.SettingEvalStoreRunsEnabled)
 	}
-	log.Printf("postgres: usage-store and eval-store open, served at /usage-store/ and /eval-store/")
+	log.Printf("postgres: usage-store and eval-store open, served at /usage/ and /evaluations/")
 	return closeAll, nil
 }
 

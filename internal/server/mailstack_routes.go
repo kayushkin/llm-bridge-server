@@ -1,7 +1,7 @@
 package server
 
 // mailstack, run in this process (internal/mail). Its routes stay
-// where the identity-carrying proxy put them: /mailstack/<rest> answers
+// where the identity-carrying proxy put them: /mail/<rest> answers
 // mailstack's /<rest>.
 //
 // The standalone service took one bearer token from every caller and
@@ -32,14 +32,14 @@ import (
 
 // mailstackIngressDeliveryPattern is pushed delivery, answered by mailstack
 // against the ingress credential the sender presents.
-const mailstackIngressDeliveryPattern = "POST " + mailstackProxyMountPrefix + "/api/ingress/deliveries"
+const mailstackIngressDeliveryPattern = "POST " + mailMountPrefix + "/api/ingress/deliveries"
 
 // errMailstackOff is a use of mailstack on a server that never enabled it.
 var errMailstackOff = errors.New("mailstack is off: EnableMailstack was never called on this server")
 
 // EnableMailstack serves mailstack from mail. main calls it once, after
 // EnableAccess and EnableKanbanStore and before the server listens; until
-// then, and in a test that never calls it, /mailstack/ answers 503 and
+// then, and in a test that never calls it, /mail/ answers 503 and
 // triage's sender lookup is off.
 func (s *Server) EnableMailstack(mail *mail.Server) {
 	s.mailstack.Store(mail)
@@ -61,7 +61,7 @@ func (s *Server) MailstackFileStore() mailfilestore.Files {
 	return mailstackFileStore{server: s}
 }
 
-// serveMailstack answers /mailstack/<rest> with mailstack's /<rest>, as
+// serveMailstack answers /mail/<rest> with mailstack's /<rest>, as
 // caller.
 func (s *Server) serveMailstack(w http.ResponseWriter, r *http.Request, caller *mail.Caller) {
 	mailServer := s.mailstack.Load()
@@ -69,9 +69,9 @@ func (s *Server) serveMailstack(w http.ResponseWriter, r *http.Request, caller *
 		writeJSONError(w, http.StatusServiceUnavailable, "mailstack_off", errMailstackOff.Error())
 		return
 	}
-	storePath, err := url.Parse(escapedPathAfterPrefix(r.URL, mailstackProxyMountPrefix))
+	storePath, err := url.Parse(escapedPathAfterPrefix(r.URL, mailMountPrefix))
 	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_path", fmt.Sprintf("the path after %s/ is not one mailstack can read: %v", mailstackProxyMountPrefix, err))
+		writeJSONError(w, http.StatusBadRequest, "invalid_path", fmt.Sprintf("the path after %s/ is not one mailstack can read: %v", mailMountPrefix, err))
 		return
 	}
 	ctx := r.Context()
@@ -95,7 +95,7 @@ func (s *Server) serveMailstack(w http.ResponseWriter, r *http.Request, caller *
 	mailServer.Handler().ServeHTTP(w, served)
 }
 
-// handleMailstackAsCaller answers /mailstack/<rest> as the verified caller.
+// handleMailstackAsCaller answers /mail/<rest> as the verified caller.
 func (s *Server) handleMailstackAsCaller(w http.ResponseWriter, r *http.Request) {
 	var caller mail.Caller
 	if principalID, identified := principalIdentityOfRequest(r); identified {
@@ -105,7 +105,7 @@ func (s *Server) handleMailstackAsCaller(w http.ResponseWriter, r *http.Request)
 	} else {
 		// Request authorization lets nothing else through to a store route.
 		writeJSONError(w, http.StatusUnauthorized, "mailstack_requires_a_caller",
-			mailstackProxyMountPrefix+"/ answers a principal or this server's service token")
+			mailMountPrefix+"/ answers a principal or this server's service token")
 		return
 	}
 	s.serveMailstack(w, r, &caller)

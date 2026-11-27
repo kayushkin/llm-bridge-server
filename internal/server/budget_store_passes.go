@@ -212,7 +212,7 @@ func (s *Server) runBudgetStorePassesForOwner(ctx context.Context, store *budget
 // runBudgetBankSync syncs every linked bank, then pairs transfers and
 // applies payee rules, as the standalone store's scheduler job did. A bank
 // that failed is kept as its item's last_error, which GET
-// /budget-store/plaid/items shows; the log names only how many failed.
+// /budget/plaid/items shows; the log names only how many failed.
 func runBudgetBankSync(ctx context.Context, books *budget.Ledger, prefix string) error {
 	synced, err := books.SyncPlaid(ctx)
 	if err != nil {
@@ -231,7 +231,7 @@ func runBudgetBankSync(ctx context.Context, books *budget.Ledger, prefix string)
 	}
 	log.Printf("%s payee rules: %d payees set, %d categories changed", prefix, payees.PayeesSet, payees.CategoriesChanged)
 	if len(synced.Errors) > 0 {
-		return fmt.Errorf("%d linked banks did not sync; GET /budget-store/plaid/items shows each one's last_error", len(synced.Errors))
+		return fmt.Errorf("%d linked banks did not sync; GET /budget/plaid/items shows each one's last_error", len(synced.Errors))
 	}
 	return nil
 }

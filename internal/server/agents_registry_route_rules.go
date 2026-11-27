@@ -16,13 +16,13 @@ var modelStoreRouteRule = operatorRoute("model-store is one registry with no own
 var agentStoreRunnerSeedRouteRule = runnerRoute("agent-store seed route for runners; the handler authenticates the runner's bearer token")
 
 var agentsRegistryRouteAccessRules = map[string]routeAccessRule{
-	"GET /model-store/api/models":              modelStoreRouteRule,
-	"POST /model-store/api/models/toggle":      modelStoreRouteRule,
-	"GET /model-store/api/roles":               modelStoreRouteRule,
-	"POST /model-store/api/roles":              modelStoreRouteRule,
-	"GET /model-store/api/roles/{role}":        modelStoreRouteRule,
-	"GET /model-store/api/roles/{role}/models": modelStoreRouteRule,
-	"GET /model-store/api/health":              modelStoreRouteRule,
+	"GET /models/api/models":              modelStoreRouteRule,
+	"POST /models/api/models/toggle":      modelStoreRouteRule,
+	"GET /models/api/roles":               modelStoreRouteRule,
+	"POST /models/api/roles":              modelStoreRouteRule,
+	"GET /models/api/roles/{role}":        modelStoreRouteRule,
+	"GET /models/api/roles/{role}/models": modelStoreRouteRule,
+	"GET /models/api/health":              modelStoreRouteRule,
 
 	"GET /api/agent-store/seed/manifest":          agentStoreRunnerSeedRouteRule,
 	"GET /api/agent-store/versions/{vid}/content": agentStoreRunnerSeedRouteRule,
@@ -33,13 +33,13 @@ var agentsRegistryRouteAccessRules = map[string]routeAccessRule{
 const routeGroupModelStore routeGroup = "model-store, mounted in this process"
 
 var agentsRegistryRouteDescriptions = map[string]routeDescription{
-	"GET /model-store/api/models":              {routeGroupModelStore, "Every model with its health and aliases, by priority then id"},
-	"POST /model-store/api/models/toggle":      {routeGroupModelStore, "Switch a model on or off: `{\"model\",\"enabled\"}`"},
-	"GET /model-store/api/roles":               {routeGroupModelStore, "Each role's first model, each role's list, and the canonical roles"},
-	"POST /model-store/api/roles":              {routeGroupModelStore, "Set a role's first model (`model`) or its whole list (`models`)"},
-	"GET /model-store/api/roles/{role}":        {routeGroupModelStore, "A role's first model, resolved"},
-	"GET /model-store/api/roles/{role}/models": {routeGroupModelStore, "Every model in a role's list, in the order to try them"},
-	"GET /model-store/api/health":              {routeGroupModelStore, "`{\"ok\":true}`"},
+	"GET /models/api/models":              {routeGroupModelStore, "Every model with its health and aliases, by priority then id"},
+	"POST /models/api/models/toggle":      {routeGroupModelStore, "Switch a model on or off: `{\"model\",\"enabled\"}`"},
+	"GET /models/api/roles":               {routeGroupModelStore, "Each role's first model, each role's list, and the canonical roles"},
+	"POST /models/api/roles":              {routeGroupModelStore, "Set a role's first model (`model`) or its whole list (`models`)"},
+	"GET /models/api/roles/{role}":        {routeGroupModelStore, "A role's first model, resolved"},
+	"GET /models/api/roles/{role}/models": {routeGroupModelStore, "Every model in a role's list, in the order to try them"},
+	"GET /models/api/health":              {routeGroupModelStore, "`{\"ok\":true}`"},
 
 	"GET /api/agent-store/seed/manifest":          {routeGroupRunners, "A runner's agent file seed manifest"},
 	"GET /api/agent-store/versions/{vid}/content": {routeGroupRunners, "A runner fetches one agent file version"},

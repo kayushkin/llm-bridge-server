@@ -1,6 +1,6 @@
 # calendar-store contract
 
-calendar-store runs inside llm-bridge-server, at `/calendar-store/` with the paths below, and keeps its records in Postgres (schema `calendar`, role `calendar_module`). It answers only a request carrying the caller the server verified; one with none is 401. JSON everywhere except the body of an .ics import, which is the iCalendar file itself.
+calendar-store runs inside llm-bridge-server, at `/calendar/` with the paths below, and keeps its records in Postgres (schema `calendar`, role `calendar_module`). It answers only a request carrying the caller the server verified; one with none is 401. JSON everywhere except the body of an .ics import, which is the iCalendar file itself.
 
 ## Owners
 

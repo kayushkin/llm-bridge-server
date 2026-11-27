@@ -11,7 +11,7 @@ import (
 )
 
 // The scheduler and rule-store run in this process from their Postgres
-// modules. Their routes are mounted under /scheduler/ and /rule-store/ with
+// modules. Their routes are mounted under /scheduler/ and /rules/ with
 // the paths the standalone services answered, and each request reaches the
 // store's own handler with the prefix taken off. This server's scheduler job
 // actions, tool-store's scheduler tool, project-store's job links and
@@ -27,7 +27,7 @@ type automationStores struct {
 
 const (
 	schedulerMountPrefix = "/scheduler"
-	ruleStoreMountPrefix = "/rule-store"
+	rulesMountPrefix     = "/rules"
 )
 
 // schedulerJobs is the scheduler's jobs as this server reads and runs them,
@@ -60,7 +60,7 @@ func (s *Server) schedulerJobsInProcess() schedulerJobs {
 }
 
 // EnableRuleStore serves rule-store's routes from routes, which answer the
-// paths without the /rule-store prefix.
+// paths without the /rules prefix.
 func (s *Server) EnableRuleStore(routes http.Handler) {
 	s.automationStores.ruleStore.Store(&routes)
 }
@@ -107,7 +107,7 @@ func (s *Server) schedulerRoute() http.HandlerFunc {
 }
 
 func (s *Server) ruleStoreRoute() http.HandlerFunc {
-	return storeRouteWithoutPrefix(ruleStoreMountPrefix, s.ruleStoreHandler)
+	return storeRouteWithoutPrefix(rulesMountPrefix, s.ruleStoreHandler)
 }
 
 // registerAutomationRoutes mounts the two stores. The patterns are written
@@ -133,21 +133,21 @@ func (s *Server) registerAutomationRoutes() {
 }
 
 func (s *Server) registerRuleStoreRoutes() {
-	s.mux.HandleFunc("GET /rule-store/health", s.ruleStoreRoute())
-	s.mux.HandleFunc("GET /rule-store/vocabulary", s.ruleStoreRoute())
-	s.mux.HandleFunc("GET /rule-store/rules", s.ruleStoreRoute())
-	s.mux.HandleFunc("POST /rule-store/rules", s.ruleStoreRoute())
-	s.mux.HandleFunc("GET /rule-store/rules/{id}", s.ruleStoreRoute())
-	s.mux.HandleFunc("POST /rule-store/rules/{id}/revisions", s.ruleStoreRoute())
-	s.mux.HandleFunc("POST /rule-store/rules/{id}/activate", s.ruleStoreRoute())
-	s.mux.HandleFunc("POST /rule-store/rules/{id}/pause", s.ruleStoreRoute())
-	s.mux.HandleFunc("POST /rule-store/rules/{id}/retire", s.ruleStoreRoute())
-	s.mux.HandleFunc("POST /rule-store/rules/{id}/preview", s.ruleStoreRoute())
-	s.mux.HandleFunc("GET /rule-store/rules/{id}/comparison", s.ruleStoreRoute())
-	s.mux.HandleFunc("GET /rule-store/runs", s.ruleStoreRoute())
-	s.mux.HandleFunc("GET /rule-store/subjects/{type}/{id}", s.ruleStoreRoute())
-	s.mux.HandleFunc("GET /rule-store/activity", s.ruleStoreRoute())
-	s.mux.HandleFunc("GET /rule-store/summary", s.ruleStoreRoute())
+	s.mux.HandleFunc("GET /rules/health", s.ruleStoreRoute())
+	s.mux.HandleFunc("GET /rules/vocabulary", s.ruleStoreRoute())
+	s.mux.HandleFunc("GET /rules/rules", s.ruleStoreRoute())
+	s.mux.HandleFunc("POST /rules/rules", s.ruleStoreRoute())
+	s.mux.HandleFunc("GET /rules/rules/{id}", s.ruleStoreRoute())
+	s.mux.HandleFunc("POST /rules/rules/{id}/revisions", s.ruleStoreRoute())
+	s.mux.HandleFunc("POST /rules/rules/{id}/activate", s.ruleStoreRoute())
+	s.mux.HandleFunc("POST /rules/rules/{id}/pause", s.ruleStoreRoute())
+	s.mux.HandleFunc("POST /rules/rules/{id}/retire", s.ruleStoreRoute())
+	s.mux.HandleFunc("POST /rules/rules/{id}/preview", s.ruleStoreRoute())
+	s.mux.HandleFunc("GET /rules/rules/{id}/comparison", s.ruleStoreRoute())
+	s.mux.HandleFunc("GET /rules/runs", s.ruleStoreRoute())
+	s.mux.HandleFunc("GET /rules/subjects/{type}/{id}", s.ruleStoreRoute())
+	s.mux.HandleFunc("GET /rules/activity", s.ruleStoreRoute())
+	s.mux.HandleFunc("GET /rules/summary", s.ruleStoreRoute())
 }
 
 // HTTPClientToThisServer answers a client that carries a call to any route

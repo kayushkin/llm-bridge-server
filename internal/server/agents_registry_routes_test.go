@@ -11,34 +11,34 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// model-store's routes answer from the registry under /model-store/, with
+// model-store's routes answer from the registry under /models/, with
 // the paths the standalone `ms serve` had, to the operator only.
 func TestModelStoreRoutesServeTheRegistryUnderThePrefix(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
 
-	models := gated.requestAsService(t, "GET", "/model-store/api/models")
+	models := gated.requestAsService(t, "GET", "/models/api/models")
 	if models.Code != http.StatusOK || !strings.Contains(models.Body.String(), `"id":"mock-model"`) {
-		t.Fatalf("GET /model-store/api/models = %d %s", models.Code, models.Body)
+		t.Fatalf("GET /models/api/models = %d %s", models.Code, models.Body)
 	}
-	resolved := gated.requestAsService(t, "GET", "/model-store/api/roles/default")
+	resolved := gated.requestAsService(t, "GET", "/models/api/roles/default")
 	var model struct {
 		ID string `json:"id"`
 	}
 	if err := json.Unmarshal(resolved.Body.Bytes(), &model); resolved.Code != http.StatusOK || err != nil || model.ID != "mock-model" {
-		t.Fatalf("GET /model-store/api/roles/default = %d %s", resolved.Code, resolved.Body)
+		t.Fatalf("GET /models/api/roles/default = %d %s", resolved.Code, resolved.Body)
 	}
-	set := gated.requestAsServiceWithJSON(t, "POST", "/model-store/api/roles", map[string]any{"role": "best", "models": []string{"mock-model-alt", "mock-model"}})
+	set := gated.requestAsServiceWithJSON(t, "POST", "/models/api/roles", map[string]any{"role": "best", "models": []string{"mock-model-alt", "mock-model"}})
 	if set.Code != http.StatusOK {
-		t.Fatalf("POST /model-store/api/roles = %d %s", set.Code, set.Body)
+		t.Fatalf("POST /models/api/roles = %d %s", set.Code, set.Body)
 	}
-	if list := gated.requestAsService(t, "GET", "/model-store/api/roles/best/models"); !strings.Contains(list.Body.String(), `"id":"mock-model-alt"`) {
-		t.Fatalf("GET /model-store/api/roles/best/models = %d %s", list.Code, list.Body)
+	if list := gated.requestAsService(t, "GET", "/models/api/roles/best/models"); !strings.Contains(list.Body.String(), `"id":"mock-model-alt"`) {
+		t.Fatalf("GET /models/api/roles/best/models = %d %s", list.Code, list.Body)
 	}
-	if unknown := gated.requestAsService(t, "GET", "/model-store/api/roles/nonexistent"); unknown.Code != http.StatusNotFound {
+	if unknown := gated.requestAsService(t, "GET", "/models/api/roles/nonexistent"); unknown.Code != http.StatusNotFound {
 		t.Errorf("an unknown role = %d %s, want 404", unknown.Code, unknown.Body)
 	}
 
-	if response := gated.requestAsPrincipal(t, firstTestPrincipalID, "GET", "/model-store/api/models", nil); response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "operator_route") {
+	if response := gated.requestAsPrincipal(t, firstTestPrincipalID, "GET", "/models/api/models", nil); response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "operator_route") {
 		t.Errorf("a principal who is not an administrator = %d %s, want 403 operator_route", response.Code, response.Body)
 	}
 }

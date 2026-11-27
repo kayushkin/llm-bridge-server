@@ -1,7 +1,7 @@
 # usage-store
 
 How much of each subscription's limit is used, and what each Anthropic API key
-has cost. It runs inside llm-bridge-server, mounted at `/usage-store/` with the
+has cost. It runs inside llm-bridge-server, mounted at `/usage/` with the
 paths below behind the prefix, as operator routes. The server's one-shot router
 reads `GET /api/usage/limits` in process before each routed call, and skips a
 model whose subscription has a fresh window at 100%.

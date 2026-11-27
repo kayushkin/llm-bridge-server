@@ -12,7 +12,7 @@ import (
 )
 
 // Handlers answers the store's routes. The bridge mounts each method under
-// /principal-store/ with the paths the standalone store served at its root, so
+// /principals/ with the paths the standalone store served at its root, so
 // every route reads its path values by the same names ({id}, {group},
 // {member}, {timeOffID}). Who may call which route is the bridge's decision;
 // nothing here checks a caller.

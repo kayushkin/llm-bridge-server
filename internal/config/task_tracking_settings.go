@@ -28,9 +28,9 @@ func taskTrackingSettingDefinitions() []servicesettings.Definition {
 	)
 	return []servicesettings.Definition{
 		{Key: SettingProjectStoreSuggestionModelRole, EnvironmentVariable: "LLMBRIDGE_PROJECT_STORE_SUGGESTION_MODEL_ROLE", Kind: behavior, ValueType: text, Default: "balanced",
-			Description: "The model-store role this server's one-shot router asks for a project's suggested next steps (POST /project-store/projects/{id}/suggestions). Empty refuses suggestions. Read at start."},
+			Description: "The model-store role this server's one-shot router asks for a project's suggested next steps (POST /projects/projects/{id}/suggestions). Empty refuses suggestions. Read at start."},
 		{Key: SettingProjectStoreSessionFilerEnabled, EnvironmentVariable: "LLMBRIDGE_PROJECT_STORE_SESSION_FILER_ENABLED", Kind: behavior, ValueType: msg.ServiceSettingValueTypeBoolean, Default: "false",
-			Description: "Run project-store's session filer in this server: a filing pass every project_store.session_filer.interval, each filing chats under projects as POST /project-store/session-filings/run does. Off by default, while the standalone project-store's scheduler job still runs the passes; the passes belong to bridge-worker once it exists. Read at start."},
+			Description: "Run project-store's session filer in this server: a filing pass every project_store.session_filer.interval, each filing chats under projects as POST /projects/session-filings/run does. Off by default, while the standalone project-store's scheduler job still runs the passes; the passes belong to bridge-worker once it exists. Read at start."},
 		{Key: SettingProjectStoreSessionFilerInterval, EnvironmentVariable: "LLMBRIDGE_PROJECT_STORE_SESSION_FILER_INTERVAL", Kind: behavior, ValueType: msg.ServiceSettingValueTypeDuration, Default: "5m",
 			Description: "How long the session filer waits between passes when project_store.session_filer.enabled is on, counted from the end of the last one. Read at start."},
 		{Key: SettingProjectStoreSessionFilerModelRole, EnvironmentVariable: "LLMBRIDGE_PROJECT_STORE_SESSION_FILER_MODEL_ROLE", Kind: behavior, ValueType: text, Default: "balanced",

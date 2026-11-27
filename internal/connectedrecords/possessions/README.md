@@ -2,7 +2,7 @@
 
 An inventory of the things a person owns: clothes, computers, audio gear,
 instruments, vehicles and everything else, with photos, prices and where each
-thing is kept. It runs inside llm-bridge-server, at `/possession-store/`, and
+thing is kept. It runs inside llm-bridge-server, at `/possessions/`, and
 keeps its records in Postgres, each owned by one person.
 
 - **Kinds.** Every possession has the same core record. Each kind (clothes,

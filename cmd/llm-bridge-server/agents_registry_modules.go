@@ -62,7 +62,7 @@ func openAgentsRegistryModules(ctx context.Context, cfg *config.Config) *agentsR
 	}
 	stores.memories = memories.New(open("memory-store", memories.Module))
 	stores.models = models.New(open("model-store", models.Module))
-	log.Printf("postgres: agent-store (prompt files under %s), memory-store and model-store open; model-store's own routes at /model-store/", homeDirectory)
+	log.Printf("postgres: agent-store (prompt files under %s), memory-store and model-store open; model-store's own routes at /models/", homeDirectory)
 	return stores
 }
 

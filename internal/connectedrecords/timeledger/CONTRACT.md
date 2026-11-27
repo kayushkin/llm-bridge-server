@@ -1,6 +1,6 @@
 # time-ledger-store contract
 
-time-ledger-store runs inside llm-bridge-server, at `/time-ledger-store/` with the paths below, and keeps its records in Postgres (schema `time_ledger`, role `time_ledger_module`). It answers only a request carrying the caller the server verified; one with none is 401. JSON everywhere. Times are epoch seconds.
+time-ledger-store runs inside llm-bridge-server, at `/time-ledger/` with the paths below, and keeps its records in Postgres (schema `time_ledger`, role `time_ledger_module`). It answers only a request carrying the caller the server verified; one with none is 401. JSON everywhere. Times are epoch seconds.
 
 ## Owners
 

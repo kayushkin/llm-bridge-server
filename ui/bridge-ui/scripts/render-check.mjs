@@ -2198,7 +2198,7 @@ console.log('A connected server’s session gets the full thread view')
   check('the remote config sends llm-bridge-server’s routes through the proxy and nothing to this host’s stores',
     remote.basePath === '/api/bridge/peer-connections/peer_connection_000001/proxy' &&
     remote.grantStoreBasePath === '/api/bridge/peer-connections/peer_connection_000001/proxy/grant-store' &&
-    remote.noteboardBasePath === '' && remote.kanbanStoreBasePath === remote.basePath + '/kanban-store' && remote.projectStoreBasePath === '' &&
+    remote.noteboardBasePath === '' && remote.kanbanStoreBasePath === remote.basePath + '/issues' && remote.projectStoreBasePath === '' &&
     remote.routes.effectiveConfig === '' && remote.routes.chat === DEFAULT_BRIDGE_ROUTES.chat,
     JSON.stringify({ basePath: remote.basePath, grant: remote.grantStoreBasePath }))
 }

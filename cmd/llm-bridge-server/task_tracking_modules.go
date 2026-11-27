@@ -110,7 +110,7 @@ func enableTaskTrackingModules(ctx context.Context, cfg *config.Config, srv *ser
 		return nil, fmt.Errorf("project-store: %w", err)
 	}
 	srv.EnableProjectStore(&projects.Handlers{Store: projectStore, Owners: owners, SessionFiler: filer})
-	log.Printf("postgres: noteboard open, served at /noteboard/; kanban-store open, served at /kanban/ and /kanban-store/ (%s); project-store open, served at /project-store/", srv.KanbanStoreDescription())
+	log.Printf("postgres: noteboard open, served at /noteboard/; kanban-store open, served at /issues/ (%s); project-store open, served at /projects/", srv.KanbanStoreDescription())
 
 	if settings.Boolean(config.SettingProjectStoreSessionFilerEnabled) {
 		interval := settings.Duration(config.SettingProjectStoreSessionFilerInterval)
@@ -121,7 +121,7 @@ func enableTaskTrackingModules(ctx context.Context, cfg *config.Config, srv *ser
 		go srv.RunProjectStoreSessionFiler(ctx, interval)
 		log.Printf("project-store: the session filer runs a pass every %s", interval)
 	} else {
-		log.Printf("project-store: the session filer runs no passes here (%s is off); POST /project-store/session-filings/run runs one", config.SettingProjectStoreSessionFilerEnabled)
+		log.Printf("project-store: the session filer runs no passes here (%s is off); POST /projects/session-filings/run runs one", config.SettingProjectStoreSessionFilerEnabled)
 	}
 	return closeModules, nil
 }

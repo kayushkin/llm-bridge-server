@@ -2,7 +2,7 @@
 
 Where the user has been: named places, visits to them, trips between them,
 the raw location points underneath, and the imports that brought them in.
-location-store runs inside llm-bridge-server, at `/location-store/` with the
+location-store runs inside llm-bridge-server, at `/locations/` with the
 paths below, and keeps its records in Postgres, in the schema `locations`
 (role `locations_module`). It was a standalone SQLite service on `:8333`
 until it moved; `llm-bridge-server` copies a standalone file in with

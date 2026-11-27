@@ -6,7 +6,7 @@ start sessions on which harness instance or machine, and see or change which
 board.
 
 A package of llm-bridge-server, `internal/access/grants`, which that server
-mounts under `/grant-store/` with the paths the standalone service on `:8315`
+mounts under `/grants/` with the paths the standalone service on `:8315`
 served. One record type, ids handed out here (`grant_000001`) and joined on
 everywhere else, kept in the Postgres module `grants`.
 

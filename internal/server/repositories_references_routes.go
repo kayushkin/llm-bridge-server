@@ -2,8 +2,8 @@ package server
 
 // The repositories, file_storage and references modules, moved in from the
 // standalone repo-store, work-graph-store, file-store and reference-store:
-// the same routes under /repo-store/, /work-graph-store/, /file-store/ and
-// /reference-store/, answered from this process.
+// the same routes under /repos/, /git-activity/, /file-storage/ and
+// /references/, answered from this process.
 //
 // Each store's own mux answers its routes at the paths it always had; the
 // patterns below are written out, because the route classification test
@@ -29,13 +29,13 @@ import (
 
 // Where each store is mounted.
 const (
-	repoStoreMountPrefix      = "/repo-store"
-	workGraphStoreMountPrefix = "/work-graph-store"
-	fileStoreMountPrefix      = "/file-store"
-	// referenceStoreMountPrefix is where reference-store is mounted. Its
+	reposMountPrefix       = "/repos"
+	gitActivityMountPrefix = "/git-activity"
+	fileStorageMountPrefix = "/file-storage"
+	// referencesMountPrefix is where reference-store is mounted. Its
 	// lookups run as the caller, so the session agent token is accepted on
 	// it, as on the store proxies.
-	referenceStoreMountPrefix = "/reference-store"
+	referencesMountPrefix = "/references"
 )
 
 // mountedStore answers one store's routes, or why it is off.
@@ -77,7 +77,7 @@ type repoRegistry interface {
 
 // EnableRepositories serves repo-store and work-graph-store from their
 // modules. syncer is nil when this server cannot run gh, and then
-// POST /repo-store/repos/{id}/pull-requests/sync answers 503 with
+// POST /repos/repos/{id}/pull-requests/sync answers 503 with
 // syncerOffReason. main calls it once, before the server listens.
 func (s *Server) EnableRepositories(repoStore *repos.Store, syncer *repos.PullRequestSyncer, syncerOffReason string, workGraph *gitactivity.Store) {
 	repoStoreMux := http.NewServeMux()
@@ -206,11 +206,11 @@ func (s *Server) referenceStoreRoute(w http.ResponseWriter, r *http.Request) {
 	} else if s.requestIsTheInternalServiceActingAsItself(r) {
 		ctx = references.ContextWithCaller(ctx, references.Caller{Unchecked: true})
 	}
-	http.StripPrefix(referenceStoreMountPrefix, store.handler).ServeHTTP(w, r.WithContext(ctx))
+	http.StripPrefix(referencesMountPrefix, store.handler).ServeHTTP(w, r.WithContext(ctx))
 }
 
 func (s *Server) repoStoreRoute() http.HandlerFunc {
-	return mountedStoreRoute(repoStoreMountPrefix, func() *mountedStore {
+	return mountedStoreRoute(reposMountPrefix, func() *mountedStore {
 		stores := s.repositories.Load()
 		if stores == nil {
 			return nil
@@ -220,7 +220,7 @@ func (s *Server) repoStoreRoute() http.HandlerFunc {
 }
 
 func (s *Server) workGraphStoreRoute() http.HandlerFunc {
-	return mountedStoreRoute(workGraphStoreMountPrefix, func() *mountedStore {
+	return mountedStoreRoute(gitActivityMountPrefix, func() *mountedStore {
 		stores := s.repositories.Load()
 		if stores == nil {
 			return nil
@@ -230,54 +230,54 @@ func (s *Server) workGraphStoreRoute() http.HandlerFunc {
 }
 
 func (s *Server) fileStoreRoute() http.HandlerFunc {
-	return mountedStoreRoute(fileStoreMountPrefix, s.fileStoreHandler.Load, "file_store_off",
+	return mountedStoreRoute(fileStorageMountPrefix, s.fileStoreHandler.Load, "file_store_off",
 		config.PostgresURLEnvironmentVariable+" is not set, so this server keeps no files")
 }
 
 // registerRepositoriesAndReferencesRoutes mounts the four stores.
 func (s *Server) registerRepositoriesAndReferencesRoutes() {
 	repoStore := s.repoStoreRoute()
-	s.mux.HandleFunc("GET /repo-store/health", repoStore)
-	s.mux.HandleFunc("GET /repo-store/repos", repoStore)
-	s.mux.HandleFunc("POST /repo-store/repos", repoStore)
-	s.mux.HandleFunc("GET /repo-store/repos/{id}", repoStore)
-	s.mux.HandleFunc("DELETE /repo-store/repos/{id}", repoStore)
-	s.mux.HandleFunc("POST /repo-store/repos/{id}/detect", repoStore)
-	s.mux.HandleFunc("PUT /repo-store/repos/{id}/provenance", repoStore)
-	s.mux.HandleFunc("PUT /repo-store/repos/{id}/identity", repoStore)
-	s.mux.HandleFunc("GET /repo-store/repos/by-name/{name}", repoStore)
-	s.mux.HandleFunc("GET /repo-store/repos/by-mention/{mention}", repoStore)
-	s.mux.HandleFunc("GET /repo-store/by-path", repoStore)
-	s.mux.HandleFunc("POST /repo-store/detect", repoStore)
-	s.mux.HandleFunc("POST /repo-store/repos/{id}/deployments", repoStore)
-	s.mux.HandleFunc("GET /repo-store/deployments", repoStore)
-	s.mux.HandleFunc("GET /repo-store/deployments/latest", repoStore)
-	s.mux.HandleFunc("GET /repo-store/pull-requests", repoStore)
-	s.mux.HandleFunc("POST /repo-store/repos/{id}/pull-requests/sync", repoStore)
+	s.mux.HandleFunc("GET /repos/health", repoStore)
+	s.mux.HandleFunc("GET /repos/repos", repoStore)
+	s.mux.HandleFunc("POST /repos/repos", repoStore)
+	s.mux.HandleFunc("GET /repos/repos/{id}", repoStore)
+	s.mux.HandleFunc("DELETE /repos/repos/{id}", repoStore)
+	s.mux.HandleFunc("POST /repos/repos/{id}/detect", repoStore)
+	s.mux.HandleFunc("PUT /repos/repos/{id}/provenance", repoStore)
+	s.mux.HandleFunc("PUT /repos/repos/{id}/identity", repoStore)
+	s.mux.HandleFunc("GET /repos/repos/by-name/{name}", repoStore)
+	s.mux.HandleFunc("GET /repos/repos/by-mention/{mention}", repoStore)
+	s.mux.HandleFunc("GET /repos/by-path", repoStore)
+	s.mux.HandleFunc("POST /repos/detect", repoStore)
+	s.mux.HandleFunc("POST /repos/repos/{id}/deployments", repoStore)
+	s.mux.HandleFunc("GET /repos/deployments", repoStore)
+	s.mux.HandleFunc("GET /repos/deployments/latest", repoStore)
+	s.mux.HandleFunc("GET /repos/pull-requests", repoStore)
+	s.mux.HandleFunc("POST /repos/repos/{id}/pull-requests/sync", repoStore)
 
 	workGraphStore := s.workGraphStoreRoute()
-	s.mux.HandleFunc("GET /work-graph-store/health", workGraphStore)
-	s.mux.HandleFunc("GET /work-graph-store/ref-updates", workGraphStore)
-	s.mux.HandleFunc("GET /work-graph-store/repos/{repo_store_id}/graph", workGraphStore)
-	s.mux.HandleFunc("GET /work-graph-store/activity", workGraphStore)
-	s.mux.HandleFunc("GET /work-graph-store/session-repos", workGraphStore)
-	s.mux.HandleFunc("GET /work-graph-store/commits/{mention...}", workGraphStore)
+	s.mux.HandleFunc("GET /git-activity/health", workGraphStore)
+	s.mux.HandleFunc("GET /git-activity/ref-updates", workGraphStore)
+	s.mux.HandleFunc("GET /git-activity/repos/{repo_store_id}/graph", workGraphStore)
+	s.mux.HandleFunc("GET /git-activity/activity", workGraphStore)
+	s.mux.HandleFunc("GET /git-activity/session-repos", workGraphStore)
+	s.mux.HandleFunc("GET /git-activity/commits/{mention...}", workGraphStore)
 
 	fileStore := s.fileStoreRoute()
-	s.mux.HandleFunc("GET /file-store/health", fileStore)
-	s.mux.HandleFunc("GET /file-store/limits", fileStore)
-	s.mux.HandleFunc("POST /file-store/files", fileStore)
-	s.mux.HandleFunc("GET /file-store/files", fileStore)
-	s.mux.HandleFunc("GET /file-store/files/{id}", fileStore)
-	s.mux.HandleFunc("GET /file-store/files/{id}/content", fileStore)
-	s.mux.HandleFunc("DELETE /file-store/files/{id}", fileStore)
-	s.mux.HandleFunc("POST /file-store/files/{id}/restore", fileStore)
+	s.mux.HandleFunc("GET /file-storage/health", fileStore)
+	s.mux.HandleFunc("GET /file-storage/limits", fileStore)
+	s.mux.HandleFunc("POST /file-storage/files", fileStore)
+	s.mux.HandleFunc("GET /file-storage/files", fileStore)
+	s.mux.HandleFunc("GET /file-storage/files/{id}", fileStore)
+	s.mux.HandleFunc("GET /file-storage/files/{id}/content", fileStore)
+	s.mux.HandleFunc("DELETE /file-storage/files/{id}", fileStore)
+	s.mux.HandleFunc("POST /file-storage/files/{id}/restore", fileStore)
 
-	s.mux.HandleFunc("GET /reference-store/health", s.referenceStoreRoute)
-	s.mux.HandleFunc("GET /reference-store/types", s.referenceStoreRoute)
-	s.mux.HandleFunc("GET /reference-store/types/{type}", s.referenceStoreRoute)
-	s.mux.HandleFunc("GET /reference-store/vocabulary", s.referenceStoreRoute)
-	s.mux.HandleFunc("POST /reference-store/resolve", s.referenceStoreRoute)
-	s.mux.HandleFunc("GET /reference-store/search", s.referenceStoreRoute)
-	s.mux.HandleFunc("GET /reference-store/attachments/{id}", s.referenceStoreRoute)
+	s.mux.HandleFunc("GET /references/health", s.referenceStoreRoute)
+	s.mux.HandleFunc("GET /references/types", s.referenceStoreRoute)
+	s.mux.HandleFunc("GET /references/types/{type}", s.referenceStoreRoute)
+	s.mux.HandleFunc("GET /references/vocabulary", s.referenceStoreRoute)
+	s.mux.HandleFunc("POST /references/resolve", s.referenceStoreRoute)
+	s.mux.HandleFunc("GET /references/search", s.referenceStoreRoute)
+	s.mux.HandleFunc("GET /references/attachments/{id}", s.referenceStoreRoute)
 }

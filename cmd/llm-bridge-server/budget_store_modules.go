@@ -48,7 +48,7 @@ func enableBudgetStore(ctx context.Context, cfg *config.Config, srv *server.Serv
 		closePool()
 		return nil, err
 	}
-	log.Printf("postgres: budget-store open, served at /budget-store/")
+	log.Printf("postgres: budget-store open, served at /budget/")
 	return closePool, nil
 }
 

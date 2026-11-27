@@ -16,7 +16,7 @@ import (
 // it: the instances and sessions an agent job follows, model-store's roles,
 // and the providers each harness runs. Each read calls what the route that
 // answered it before calls (GET /instances, GET /sessions/{id},
-// GET /model-store/api/roles and …/roles/{role}, GET /harnesses), as the
+// GET /models/api/roles and …/roles/{role}, GET /harnesses), as the
 // internal service, which none of those routes narrowed.
 type schedulerReadsThisServer struct {
 	server *Server

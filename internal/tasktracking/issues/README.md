@@ -3,7 +3,7 @@
 > **In llm-bridge-server.** This copy runs inside llm-bridge-server on a
 > Postgres module (`kanban`), not as a service of its own. Its routes are the
 > server's `/kanban/<rest>` (this store's `/api/<rest>`) and
-> `/kanban-store/<rest>` (its `/<rest>`). The server names the caller in the
+> `/issues/<rest>` (its `/<rest>`). The server names the caller in the
 > request context from the credential it verified, so `X-Principal-Id` and
 > `X-Kanban-Store-Service-Token` below name nobody: a principal comes from a
 > login or a session agent token, and the internal service is the server's own

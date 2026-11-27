@@ -16,7 +16,7 @@ import (
 )
 
 // usage-store and eval-store run in this process from their Postgres modules.
-// Their routes are mounted under /usage-store/ and /eval-store/ with the paths
+// Their routes are mounted under /usage/ and /evaluations/ with the paths
 // the standalone services answered, and each request reaches the store's own
 // handler with the prefix taken off. The one-shot router reads usage-store's
 // limits in process, and eval-store calls this server's operations,
@@ -30,8 +30,8 @@ type usageAndEvalStores struct {
 }
 
 const (
-	usageStoreRoutePrefix = "/usage-store"
-	evalStoreRoutePrefix  = "/eval-store"
+	usageRoutePrefix       = "/usage"
+	evaluationsRoutePrefix = "/evaluations"
 )
 
 // EnableUsageStore serves usage-store's routes from handlers, and from then on
@@ -40,7 +40,7 @@ func (s *Server) EnableUsageStore(handlers *usagestorehttpapi.Server) {
 	s.usageAndEvalStores.usage.Store(handlers)
 }
 
-// usageStoreHandler answers a request whose path has no /usage-store prefix,
+// usageStoreHandler answers a request whose path has no /usage prefix,
 // or 503 while the module is not open.
 func (s *Server) usageStoreHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -129,11 +129,11 @@ func storeRouteWithoutPrefix(prefix string, handler func() http.Handler) http.Ha
 }
 
 func (s *Server) usageStoreRoute() http.HandlerFunc {
-	return storeRouteWithoutPrefix(usageStoreRoutePrefix, s.usageStoreHandler)
+	return storeRouteWithoutPrefix(usageRoutePrefix, s.usageStoreHandler)
 }
 
 func (s *Server) evalStoreRoute() http.HandlerFunc {
-	return storeRouteWithoutPrefix(evalStoreRoutePrefix, func() http.Handler {
+	return storeRouteWithoutPrefix(evaluationsRoutePrefix, func() http.Handler {
 		routes := s.usageAndEvalStores.eval.Load()
 		if routes == nil {
 			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -148,44 +148,44 @@ func (s *Server) evalStoreRoute() http.HandlerFunc {
 // written out, because the route classification test reads them from string
 // literals.
 func (s *Server) registerUsageAndEvalStoreRoutes() {
-	s.mux.HandleFunc("GET /usage-store/api/usage", s.usageStoreRoute())
-	s.mux.HandleFunc("GET /usage-store/api/usage/limits", s.usageStoreRoute())
-	s.mux.HandleFunc("GET /usage-store/api/usage/limits/{provider}", s.usageStoreRoute())
-	s.mux.HandleFunc("GET /usage-store/api/usage/limits/{provider}/history", s.usageStoreRoute())
-	s.mux.HandleFunc("POST /usage-store/api/usage/limits/refresh", s.usageStoreRoute())
-	s.mux.HandleFunc("POST /usage-store/api/usage/limits/watch", s.usageStoreRoute())
-	s.mux.HandleFunc("GET /usage-store/api/usage/spend/keys", s.usageStoreRoute())
-	s.mux.HandleFunc("GET /usage-store/api/usage/spend/keys/{provider}/{api_key_id}/raw", s.usageStoreRoute())
-	s.mux.HandleFunc("POST /usage-store/api/usage/spend/refresh", s.usageStoreRoute())
-	s.mux.HandleFunc("GET /usage-store/api/usage/spend/topups", s.usageStoreRoute())
-	s.mux.HandleFunc("POST /usage-store/api/usage/spend/topups", s.usageStoreRoute())
-	s.mux.HandleFunc("DELETE /usage-store/api/usage/spend/topups/{id}", s.usageStoreRoute())
-	s.mux.HandleFunc("GET /usage-store/health", s.usageStoreRoute())
+	s.mux.HandleFunc("GET /usage/api/usage", s.usageStoreRoute())
+	s.mux.HandleFunc("GET /usage/api/usage/limits", s.usageStoreRoute())
+	s.mux.HandleFunc("GET /usage/api/usage/limits/{provider}", s.usageStoreRoute())
+	s.mux.HandleFunc("GET /usage/api/usage/limits/{provider}/history", s.usageStoreRoute())
+	s.mux.HandleFunc("POST /usage/api/usage/limits/refresh", s.usageStoreRoute())
+	s.mux.HandleFunc("POST /usage/api/usage/limits/watch", s.usageStoreRoute())
+	s.mux.HandleFunc("GET /usage/api/usage/spend/keys", s.usageStoreRoute())
+	s.mux.HandleFunc("GET /usage/api/usage/spend/keys/{provider}/{api_key_id}/raw", s.usageStoreRoute())
+	s.mux.HandleFunc("POST /usage/api/usage/spend/refresh", s.usageStoreRoute())
+	s.mux.HandleFunc("GET /usage/api/usage/spend/topups", s.usageStoreRoute())
+	s.mux.HandleFunc("POST /usage/api/usage/spend/topups", s.usageStoreRoute())
+	s.mux.HandleFunc("DELETE /usage/api/usage/spend/topups/{id}", s.usageStoreRoute())
+	s.mux.HandleFunc("GET /usage/health", s.usageStoreRoute())
 
-	s.mux.HandleFunc("GET /eval-store/health", s.evalStoreRoute())
-	s.mux.HandleFunc("GET /eval-store/vocabulary", s.evalStoreRoute())
-	s.mux.HandleFunc("GET /eval-store/suites", s.evalStoreRoute())
-	s.mux.HandleFunc("POST /eval-store/suites", s.evalStoreRoute())
-	s.mux.HandleFunc("GET /eval-store/suites/{id}", s.evalStoreRoute())
-	s.mux.HandleFunc("PATCH /eval-store/suites/{id}", s.evalStoreRoute())
-	s.mux.HandleFunc("DELETE /eval-store/suites/{id}", s.evalStoreRoute())
-	s.mux.HandleFunc("GET /eval-store/suites/{id}/cases", s.evalStoreRoute())
-	s.mux.HandleFunc("POST /eval-store/suites/{id}/cases", s.evalStoreRoute())
-	s.mux.HandleFunc("POST /eval-store/suites/{id}/cases/import-operations", s.evalStoreRoute())
-	s.mux.HandleFunc("GET /eval-store/cases/{id}", s.evalStoreRoute())
-	s.mux.HandleFunc("PATCH /eval-store/cases/{id}", s.evalStoreRoute())
-	s.mux.HandleFunc("GET /eval-store/runs", s.evalStoreRoute())
-	s.mux.HandleFunc("POST /eval-store/runs", s.evalStoreRoute())
-	s.mux.HandleFunc("GET /eval-store/runs/{id}", s.evalStoreRoute())
-	s.mux.HandleFunc("PATCH /eval-store/runs/{id}", s.evalStoreRoute())
-	s.mux.HandleFunc("DELETE /eval-store/runs/{id}", s.evalStoreRoute())
-	s.mux.HandleFunc("POST /eval-store/runs/{id}/start", s.evalStoreRoute())
-	s.mux.HandleFunc("POST /eval-store/runs/{id}/resume", s.evalStoreRoute())
-	s.mux.HandleFunc("POST /eval-store/runs/{id}/stop", s.evalStoreRoute())
-	s.mux.HandleFunc("GET /eval-store/runs/{id}/answers", s.evalStoreRoute())
-	s.mux.HandleFunc("GET /eval-store/runs/{id}/verdicts", s.evalStoreRoute())
-	s.mux.HandleFunc("GET /eval-store/runs/{id}/checks", s.evalStoreRoute())
-	s.mux.HandleFunc("POST /eval-store/runs/{id}/checks", s.evalStoreRoute())
-	s.mux.HandleFunc("GET /eval-store/runs/{id}/report", s.evalStoreRoute())
-	s.mux.HandleFunc("GET /eval-store/runs/{id}/cost-projection", s.evalStoreRoute())
+	s.mux.HandleFunc("GET /evaluations/health", s.evalStoreRoute())
+	s.mux.HandleFunc("GET /evaluations/vocabulary", s.evalStoreRoute())
+	s.mux.HandleFunc("GET /evaluations/suites", s.evalStoreRoute())
+	s.mux.HandleFunc("POST /evaluations/suites", s.evalStoreRoute())
+	s.mux.HandleFunc("GET /evaluations/suites/{id}", s.evalStoreRoute())
+	s.mux.HandleFunc("PATCH /evaluations/suites/{id}", s.evalStoreRoute())
+	s.mux.HandleFunc("DELETE /evaluations/suites/{id}", s.evalStoreRoute())
+	s.mux.HandleFunc("GET /evaluations/suites/{id}/cases", s.evalStoreRoute())
+	s.mux.HandleFunc("POST /evaluations/suites/{id}/cases", s.evalStoreRoute())
+	s.mux.HandleFunc("POST /evaluations/suites/{id}/cases/import-operations", s.evalStoreRoute())
+	s.mux.HandleFunc("GET /evaluations/cases/{id}", s.evalStoreRoute())
+	s.mux.HandleFunc("PATCH /evaluations/cases/{id}", s.evalStoreRoute())
+	s.mux.HandleFunc("GET /evaluations/runs", s.evalStoreRoute())
+	s.mux.HandleFunc("POST /evaluations/runs", s.evalStoreRoute())
+	s.mux.HandleFunc("GET /evaluations/runs/{id}", s.evalStoreRoute())
+	s.mux.HandleFunc("PATCH /evaluations/runs/{id}", s.evalStoreRoute())
+	s.mux.HandleFunc("DELETE /evaluations/runs/{id}", s.evalStoreRoute())
+	s.mux.HandleFunc("POST /evaluations/runs/{id}/start", s.evalStoreRoute())
+	s.mux.HandleFunc("POST /evaluations/runs/{id}/resume", s.evalStoreRoute())
+	s.mux.HandleFunc("POST /evaluations/runs/{id}/stop", s.evalStoreRoute())
+	s.mux.HandleFunc("GET /evaluations/runs/{id}/answers", s.evalStoreRoute())
+	s.mux.HandleFunc("GET /evaluations/runs/{id}/verdicts", s.evalStoreRoute())
+	s.mux.HandleFunc("GET /evaluations/runs/{id}/checks", s.evalStoreRoute())
+	s.mux.HandleFunc("POST /evaluations/runs/{id}/checks", s.evalStoreRoute())
+	s.mux.HandleFunc("GET /evaluations/runs/{id}/report", s.evalStoreRoute())
+	s.mux.HandleFunc("GET /evaluations/runs/{id}/cost-projection", s.evalStoreRoute())
 }

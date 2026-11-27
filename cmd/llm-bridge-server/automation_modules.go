@@ -41,7 +41,7 @@ func openSchedulerModule(ctx context.Context, url string) (*sql.DB, error) {
 }
 
 // enableAutomation opens the scheduler's and rule-store's modules in Postgres
-// and serves them from srv at /scheduler/ and /rule-store/. Neither acts on
+// and serves them from srv at /scheduler/ and /rules/. Neither acts on
 // its own unless its setting says so: scheduler.runs.enabled starts the cron
 // ticker, run now, the bus commands and event triggers, and
 // rule_store.reactor.enabled starts the reactor. While the standalone
@@ -213,7 +213,7 @@ func openRuleStoreModule(ctx context.Context, url string) (*sql.DB, error) {
 	return openPostgresModule(ctx, url, module)
 }
 
-// enableRuleStore opens rule-store's module and serves it at /rule-store/. It
+// enableRuleStore opens rule-store's module and serves it at /rules/. It
 // reads sessions from this server and cards and entity tags from kanban-store,
 // both in this process as the internal service, as the standalone rule-store
 // read them with the two service tokens; so it runs after kanban-store is
@@ -273,9 +273,9 @@ func enableRuleStore(ctx context.Context, cfg *config.Config, srv *server.Server
 	rules.RegisterHandlers(lifetime, routes, store, reactor, kanban)
 	srv.EnableRuleStore(routes)
 	if reactorEnabled {
-		log.Printf("postgres: rule-store open, served at /rule-store/; its reactor runs here")
+		log.Printf("postgres: rule-store open, served at /rules/; its reactor runs here")
 	} else {
-		log.Printf("postgres: rule-store open, served at /rule-store/; %s is off, so no rule decides here", config.SettingRuleStoreReactorEnabled)
+		log.Printf("postgres: rule-store open, served at /rules/; %s is off, so no rule decides here", config.SettingRuleStoreReactorEnabled)
 	}
 	return func() {
 		stop()

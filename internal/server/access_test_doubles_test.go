@@ -388,7 +388,7 @@ func (c *httpPermissionEvaluatorForTests) Evaluate(ctx context.Context, req perm
 // useFakePrincipalStore points server's principal reads, and the identity
 // binding routes it passes through to principal-store, at the HTTP fake at
 // base. Only the pass-through handler is set on the mounted routes, so a test
-// that calls /principal-store/ itself uses the real stores instead.
+// that calls /principals/ itself uses the real stores instead.
 func useFakePrincipalStore(server *Server, base string) {
 	server.principalStore = testPrincipalDirectoryAt(base)
 	server.access.Store(&accessRouteHandlers{principalStoreRoot: reverseProxyTo(base)})

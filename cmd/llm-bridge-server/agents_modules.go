@@ -37,7 +37,7 @@ func openAgentsModule(ctx context.Context, url string, describe func() (postgres
 // the pools.
 func enableAgentsStoreModules(ctx context.Context, srv *server.Server, cfg *config.Config) func() {
 	if cfg.PostgresURL == "" {
-		log.Printf("postgres: %s is not set, so tool-store, skill-store and bundle-store are off and /tool-store/, /skill-store/ and /bundle-store/ answer 503", config.PostgresURLEnvironmentVariable)
+		log.Printf("postgres: %s is not set, so tool-store, skill-store and bundle-store are off and /tools/, /skills/ and /bundles/ answer 503", config.PostgresURLEnvironmentVariable)
 		return func() {}
 	}
 	var pools []*sql.DB
@@ -80,7 +80,7 @@ func enableAgentsStoreModules(ctx context.Context, srv *server.Server, cfg *conf
 
 	srv.EnableBundleStore(bundles.New(open("bundle-store", bundles.Module)))
 
-	log.Printf("postgres: tool-store, skill-store and bundle-store open, served at /tool-store/, /skill-store/ and /bundle-store/ (skill files in %s)", cfg.SkillStoreDataDirectory)
+	log.Printf("postgres: tool-store, skill-store and bundle-store open, served at /tools/, /skills/ and /bundles/ (skill files in %s)", cfg.SkillStoreDataDirectory)
 	return closeAll
 }
 

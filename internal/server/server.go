@@ -71,7 +71,7 @@ type Server struct {
 	hookStore      *hooks.Store
 	modelStore     *models.Store
 	snapshotStore  *snapshots.Store
-	// predictionStore answers /prediction-store/ once the Postgres module is
+	// predictionStore answers /predictions/ once the Postgres module is
 	// open (prediction_store_routes.go); nil answers those routes 503.
 	predictionStore atomic.Pointer[predictions.Handlers]
 	// sessionLog is log-store in this process; see EnableSessionLog.
@@ -79,7 +79,7 @@ type Server struct {
 	// noteboard answers /noteboard/ once its Postgres module is open
 	// (noteboard_routes.go); nil answers those routes 503.
 	noteboard atomic.Pointer[noteboardapi.API]
-	// projectStore answers /project-store/ once its Postgres module is open
+	// projectStore answers /projects/ once its Postgres module is open
 	// (project_store_routes.go); nil answers those routes 503.
 	projectStore atomic.Pointer[projects.Handlers]
 	// userInterfaceBuild is the built front end served at /ui/ (user_interface.go).
@@ -102,8 +102,8 @@ type Server struct {
 	// grants, as grant-store's own routes do.
 	grantsPrincipalDirectory grants.PrincipalDirectory
 	grantsResourceChecker    grants.ResourceChecker
-	// access answers /principal-store/, /grant-store/, /sign-in-store/ and
-	// /permission-store/ once EnableAccess has run; nil answers them 503.
+	// access answers /principals/, /grants/, /sign-in/ and
+	// /permissions/ once EnableAccess has run; nil answers them 503.
 	access atomic.Pointer[accessRouteHandlers]
 	// peerSockets holds every open peer socket and every dialer (peer_socket.go).
 	peerSockets *peerSocketRegistry
@@ -135,10 +135,10 @@ type Server struct {
 	toolStoreForResourceChecks  atomic.Pointer[tools.Store]
 	skillStoreForResourceChecks atomic.Pointer[skills.Store]
 	bundleStoreHandlers         atomic.Pointer[bundles.Handlers]
-	// usageAndEvalStores answers /usage-store/ and /eval-store/ once their
+	// usageAndEvalStores answers /usage/ and /evaluations/ once their
 	// Postgres modules are open (usage_and_eval_store_routes.go).
 	usageAndEvalStores usageAndEvalStores
-	// automationStores answers /scheduler/ and /rule-store/ once their
+	// automationStores answers /scheduler/ and /rules/ once their
 	// Postgres modules are open (automation_routes.go).
 	automationStores automationStores
 	// referenceReadable are the stores reference-store's readers call
@@ -149,11 +149,11 @@ type Server struct {
 	// kanban-store. EnableKanbanStore sets it; nil until then, which leaves
 	// every signal unlinked rather than guessing.
 	issueReads *issueReader
-	// kanbanStore answers /kanban/ and /kanban-store/ once EnableKanbanStore
+	// kanbanStore answers /issues/ once EnableKanbanStore
 	// has run (kanban_store_routes.go); nil answers them 503.
 	kanbanStore atomic.Pointer[kanbanStoreHandlers]
 
-	// mailstack answers /mailstack/ once EnableMailstack has run.
+	// mailstack answers /mail/ once EnableMailstack has run.
 	mailstack atomic.Pointer[mail.Server]
 	// fileStore keeps the bytes of files shared into sessions: the file-store
 	// module in this process, called in Go. Nil until EnableFileStore, which
@@ -169,22 +169,22 @@ type Server struct {
 	fileStoreHandler      atomic.Pointer[mountedStore]
 	referenceStoreHandler atomic.Pointer[mountedStore]
 	referenceResolver     atomic.Pointer[references.Resolver]
-	// connectedRecords answers /people-store/, /calendar-store/ and
-	// /journal-store/ once EnableConnectedRecords has run
+	// connectedRecords answers /people/, /calendar/ and
+	// /journal/ once EnableConnectedRecords has run
 	// (connected_records_routes.go); nil answers them 503.
 	connectedRecords atomic.Pointer[connectedRecordsStores]
-	// messageActivityAndTimeLedger answers /message-store/, /activity-store/
-	// and /time-ledger-store/ once EnableMessageActivityAndTimeLedgerStores
+	// messageActivityAndTimeLedger answers /messages/, /online-activity/
+	// and /time-ledger/ once EnableMessageActivityAndTimeLedgerStores
 	// has run (message_activity_time_ledger_routes.go); nil answers them 503.
 	messageActivityAndTimeLedger atomic.Pointer[messageActivityAndTimeLedgerStores]
-	// photosAndLocations answers /photo-store/ and /location-store/ once
+	// photosAndLocations answers /photos/ and /locations/ once
 	// EnablePhotosAndLocations has run (photos_locations_routes.go); nil
 	// answers them 503.
 	photosAndLocations atomic.Pointer[photosAndLocationsStores]
-	// budgetStore answers /budget-store/ once EnableBudgetStore has run
+	// budgetStore answers /budget/ once EnableBudgetStore has run
 	// (budget_store_routes.go); nil answers it 503.
 	budgetStore atomic.Pointer[budgetStoreModule]
-	// possessions answers /possession-store/ once EnablePossessions has run
+	// possessions answers /possessions/ once EnablePossessions has run
 	// (possessions_routes.go); nil answers it 503.
 	possessions atomic.Pointer[possessionStores]
 	// fileStoreModule is the file-store module EnableFileStore was given:

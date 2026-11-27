@@ -6,7 +6,7 @@ open to every agent on the host.
 
 It runs inside llm-bridge-server, package
 `internal/connectedrecords/journal`, and the server mounts these routes at
-`/journal-store/` with the paths below. The records live in Postgres, schema
+`/journal/` with the paths below. The records live in Postgres, schema
 `journal`, which the module's own role `journal_module` owns; the migrations
 are in `migrations/`. All timestamps are epoch seconds (`bigint`, 0 = unset).
 Until it moved, it was a service of its own on `127.0.0.1:8322` over SQLite

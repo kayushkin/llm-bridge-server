@@ -37,7 +37,7 @@ For the whole system — which repo owns what, and how the pieces talk — read 
 
 A store that will not open is logged and its routes are not mounted.
 
-**It keeps every session event** in log-store, which runs in this process as the `session_log` module in Postgres (`internal/sessionlog`; its README says how). The harness manager writes and reads it in process, the session routes answer from it, and its own routes are under `/log-store/`.
+**It keeps every session event** in log-store, which runs in this process as the `session_log` module in Postgres (`internal/sessionlog`; its README says how). The harness manager writes and reads it in process, the session routes answer from it, and its own routes are under `/session-log/`.
 
 **It asks** these services over HTTP and keeps none of their data:
 
@@ -174,13 +174,13 @@ curl -s -c jar -X POST localhost:8160/auth/demo-login -H 'Content-Type: applicat
 
 ### Store proxies
 
-`/kanban/<rest>` is kanban-store's `/api/<rest>` and `/kanban-store/<rest>` its `/<rest>`. kanban-store runs in this process on its Postgres module (`internal/tasktracking/issues`), and reads its caller from the request context: the verified principal, narrowed by its board grants, or the internal service (this server's service token naming nobody), unrestricted. No header names the caller, so a forged `X-Principal-Id` or kanban-store service token names nobody. `llm-bridge-server import-kanban-store -sqlite <file>` copies a standalone kanban-store's database into the module. `/grant-store/<rest>` is grant-store's `/<rest>`, in this process the same way. `/mailstack/<rest>` is mailstack's `/<rest>`, in this process on its Postgres module (`internal/mail`, module `mail`) the same way: the internal service unrestricted, a principal narrowed to its `can_read_mail` and `can_import_mail` grants and the messages its viewable cards link, and `POST /mailstack/api/ingress/deliveries` open to a sender with an ingress credential. Gmail, Outlook and IMAP accounts reach their providers only while `mailstack.provider_connections.enabled` is on. `llm-bridge-server import-mailstack -accounts-sqlite <file> [-local-mail-sqlite <file>]` copies a standalone mailstack in. `/reference-store/<rest>` runs in this process too.
+`/kanban/<rest>` is kanban-store's `/api/<rest>` and `/issues/<rest>` its `/<rest>`. kanban-store runs in this process on its Postgres module (`internal/tasktracking/issues`), and reads its caller from the request context: the verified principal, narrowed by its board grants, or the internal service (this server's service token naming nobody), unrestricted. No header names the caller, so a forged `X-Principal-Id` or kanban-store service token names nobody. `llm-bridge-server import-kanban-store -sqlite <file>` copies a standalone kanban-store's database into the module. `/grants/<rest>` is grant-store's `/<rest>`, in this process the same way. `/mail/<rest>` is mailstack's `/<rest>`, in this process on its Postgres module (`internal/mail`, module `mail`) the same way: the internal service unrestricted, a principal narrowed to its `can_read_mail` and `can_import_mail` grants and the messages its viewable cards link, and `POST /mail/api/ingress/deliveries` open to a sender with an ingress credential. Gmail, Outlook and IMAP accounts reach their providers only while `mailstack.provider_connections.enabled` is on. `llm-bridge-server import-mailstack -accounts-sqlite <file> [-local-mail-sqlite <file>]` copies a standalone mailstack in. `/references/<rest>` runs in this process too.
 
-`/scheduler/<rest>` is the scheduler's `/<rest>` and `/rule-store/<rest>` rule-store's `/<rest>`, both in this process on their Postgres modules (`internal/automation/scheduler`, module `scheduler`; `internal/automation/rules`, module `rules`), operator only. Neither acts on its own unless a setting says so: `scheduler.runs.enabled` (off) starts the cron ticker, run now, the bus commands and event triggers, and `rule_store.reactor.enabled` (off) starts the reactor; off, their records are read and written and run now answers 503. `llm-bridge-server import-scheduler -sqlite <file> [-newest-runs-per-job <n>]` and `import-rule-store -sqlite <file>` copy the standalone files in.
+`/scheduler/<rest>` is the scheduler's `/<rest>` and `/rules/<rest>` rule-store's `/<rest>`, both in this process on their Postgres modules (`internal/automation/scheduler`, module `scheduler`; `internal/automation/rules`, module `rules`), operator only. Neither acts on its own unless a setting says so: `scheduler.runs.enabled` (off) starts the cron ticker, run now, the bus commands and event triggers, and `rule_store.reactor.enabled` (off) starts the reactor; off, their records are read and written and run now answers 503. `llm-bridge-server import-scheduler -sqlite <file> [-newest-runs-per-job <n>]` and `import-rule-store -sqlite <file>` copy the standalone files in.
 
-`/people-store/`, `/calendar-store/` and `/journal-store/` are the connected records stores, on their Postgres modules (`internal/connectedrecords/`), with their own paths behind the prefix. Every record carries `owner_principal_id`, the principal-store id of the person who keeps it, and each store narrows every read and write to the caller's own records: another person's record is 404, as a missing one is, and a list holds only the caller's. An administrator sees every owner's records and may narrow to one with `?owner_principal_id=`. The service token acting as nobody sees every owner's in people-store and calendar-store and cannot make a record; journal-store refuses it outright (403 `journal_store_requires_a_principal`), so it answers only its owner's or an administrator's principal. `llm-bridge-server import-people-store|import-calendar-store|import-journal-store -sqlite <file> -owner <principal id>` copies a standalone store into its module, every record owned by `-owner`, which is required and must be a person principal-store holds.
+`/people/`, `/calendar/` and `/journal/` are the connected records stores, on their Postgres modules (`internal/connectedrecords/`), with their own paths behind the prefix. Every record carries `owner_principal_id`, the principal-store id of the person who keeps it, and each store narrows every read and write to the caller's own records: another person's record is 404, as a missing one is, and a list holds only the caller's. An administrator sees every owner's records and may narrow to one with `?owner_principal_id=`. The service token acting as nobody sees every owner's in people-store and calendar-store and cannot make a record; journal-store refuses it outright (403 `journal_store_requires_a_principal`), so it answers only its owner's or an administrator's principal. `llm-bridge-server import-people-store|import-calendar-store|import-journal-store -sqlite <file> -owner <principal id>` copies a standalone store into its module, every record owned by `-owner`, which is required and must be a person principal-store holds.
 
-`/message-store/`, `/activity-store/` and `/time-ledger-store/` are connected records stores too (`internal/connectedrecords/messages`, `activitystore`, `timeledgerstore`; modules `messages`, `activity`, `time_ledger`), under the same owner rule. The service token acting as nobody sees every owner's records in all three and cannot make one; an importer sends it beside the `X-Principal-Id` of the person it files for. activity-store keeps its attachments' bytes in file-store, as files owned by `activity-store` and the activity. None runs a loop of its own: the importers (`message-import-*`, `activity-import-google`, `time-ledger-import` and the rest) are separate commands that call these routes. `llm-bridge-server import-message-store|import-time-ledger-store -sqlite <file> -owner <principal id>` and `import-activity-store -sqlite <file> -attachments <directory> -owner <principal id>` copy a standalone store into its module; the activity import carries each attachment into file-store after checking its SHA-256.
+`/messages/`, `/online-activity/` and `/time-ledger/` are connected records stores too (`internal/connectedrecords/messages`, `activitystore`, `timeledgerstore`; modules `messages`, `activity`, `time_ledger`), under the same owner rule. The service token acting as nobody sees every owner's records in all three and cannot make one; an importer sends it beside the `X-Principal-Id` of the person it files for. activity-store keeps its attachments' bytes in file-store, as files owned by `activity-store` and the activity. None runs a loop of its own: the importers (`message-import-*`, `activity-import-google`, `time-ledger-import` and the rest) are separate commands that call these routes. `llm-bridge-server import-message-store|import-time-ledger-store -sqlite <file> -owner <principal id>` and `import-activity-store -sqlite <file> -attachments <directory> -owner <principal id>` copy a standalone store into its module; the activity import carries each attachment into file-store after checking its SHA-256.
 
 ### Session agent tokens
 
@@ -210,8 +210,8 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | Method | Route | What it does | Who may call |
 |---|---|---|---|
 | `GET` | `/effective-config` | Every setting a session would get, and which layer decides it, before it exists | operator |
-| `*` | `/log-store/` | log-store's own routes (`/log-store/api/v1/…`, `/log-store/health`), answered in this process, for callers written against the standalone service | operator |
 | `GET` | `/session-events` | SSE stream of changes to the session list | principal, own sessions only |
+| `*` | `/session-log/` | log-store's own routes (`/session-log/api/v1/…`, `/session-log/health`), answered in this process, for callers written against the standalone service | operator |
 | `GET` | `/sessions` | List sessions | principal, own sessions only |
 | `POST` | `/sessions` | Create a session; `auto_start` starts it | principal, as itself |
 | `GET` | `/sessions/aggregates` | Totals across sessions, answered by log-store | operator |
@@ -412,10 +412,9 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `GET` | `/auth/principal` | Who the login cookie names, and the session's CSRF token | anyone |
 | `GET` | `/auth/sessions` | The caller's login sessions; an administrator names anyone's with principal_id | principal, own logins only |
 | `POST` | `/auth/sessions/{id}/revoke` | End a login session, with a reason | principal, own logins only |
-| `*` | `/kanban-store/` | kanban-store at its root (`/api/…`, `/health`), as the caller | principal or session agent |
-| `*` | `/kanban/` | kanban-store `/api/…`, as the caller | principal or session agent |
-| `*` | `/mailstack/` | mailstack `/…`, in this process, as the caller, checked against their mail grants and tickets | principal or session agent |
-| `POST` | `/mailstack/api/ingress/deliveries` | Pushed mail delivery into mailstack's local accounts, with an ingress credential and no login | anyone |
+| `*` | `/issues/` | kanban-store at its root (`/api/…`, `/health`), as the caller | principal or session agent |
+| `*` | `/mail/` | mailstack `/…`, in this process, as the caller, checked against their mail grants and tickets | principal or session agent |
+| `POST` | `/mail/api/ingress/deliveries` | Pushed mail delivery into mailstack's local accounts, with an ingress credential and no login | anyone |
 | `GET` | `/self` | Who the request acts as: its principal and whether it is an administrator, or the internal service | principal |
 | `GET` | `/service-principal-tokens` | Every service principal token's record, revoked or not; never a token | operator |
 | `POST` | `/service-principal-tokens` | Issue a token for a service principal (principal-store kind `service`); the token is answered once and kept as its SHA-256 | operator |
@@ -564,88 +563,88 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 
 | Method | Route | What it does | Who may call |
 |---|---|---|---|
-| `GET` | `/prediction-store/base-rates` | How often claims of a kind came true, by `group_by` (default `category`) | operator |
-| `GET` | `/prediction-store/calibration` | Brier, log score, overconfidence and Murphy decomposition of resolved predictions, by `group_by` | operator |
-| `GET` | `/prediction-store/categories` | The same as `/prediction-store/vocabulary` | operator |
-| `GET` | `/prediction-store/health` | `{"status":"ok","counts":{predictions,open,overdue}}` | operator |
-| `DELETE` | `/prediction-store/links/{id}` | Remove one link by its number | operator |
-| `GET` | `/prediction-store/predictions` | List predictions, newest first, by status, category, tag, author, provenance, outcome, link, `q`, `overdue`, dates | operator |
-| `POST` | `/prediction-store/predictions` | State a claim with its resolution criteria and odds on the ladder; writes the opening estimate | operator |
-| `DELETE` | `/prediction-store/predictions/{id}` | Soft delete; `?hard=true` purges it with its estimates and links | operator |
-| `GET` | `/prediction-store/predictions/{id}` | One prediction with its estimates and links | operator |
-| `PATCH` | `/prediction-store/predictions/{id}` | Edit the descriptive fields; never the probability, the outcome or the status | operator |
-| `GET` | `/prediction-store/predictions/{id}/estimates` | Every estimate, oldest first | operator |
-| `POST` | `/prediction-store/predictions/{id}/estimates` | Append a revised probability; 409 unless the prediction is open | operator |
-| `GET` | `/prediction-store/predictions/{id}/links` | What the prediction is about | operator |
-| `POST` | `/prediction-store/predictions/{id}/links` | Link it to a record by the owning store's id; linking twice is a no-op | operator |
-| `POST` | `/prediction-store/predictions/{id}/resolve` | Record the outcome, once: `true`, `false` or `void` | operator |
-| `POST` | `/prediction-store/predictions/{id}/restore` | Undo a soft delete | operator |
-| `GET` | `/prediction-store/tags` | Tags on live predictions with their counts, most used first | operator |
-| `GET` | `/prediction-store/vocabulary` | Categories, provenances, statuses, outcomes, `group_by` keys and the probability ladder | operator |
+| `GET` | `/predictions/base-rates` | How often claims of a kind came true, by `group_by` (default `category`) | operator |
+| `GET` | `/predictions/calibration` | Brier, log score, overconfidence and Murphy decomposition of resolved predictions, by `group_by` | operator |
+| `GET` | `/predictions/categories` | The same as `/predictions/vocabulary` | operator |
+| `GET` | `/predictions/health` | `{"status":"ok","counts":{predictions,open,overdue}}` | operator |
+| `DELETE` | `/predictions/links/{id}` | Remove one link by its number | operator |
+| `GET` | `/predictions/predictions` | List predictions, newest first, by status, category, tag, author, provenance, outcome, link, `q`, `overdue`, dates | operator |
+| `POST` | `/predictions/predictions` | State a claim with its resolution criteria and odds on the ladder; writes the opening estimate | operator |
+| `DELETE` | `/predictions/predictions/{id}` | Soft delete; `?hard=true` purges it with its estimates and links | operator |
+| `GET` | `/predictions/predictions/{id}` | One prediction with its estimates and links | operator |
+| `PATCH` | `/predictions/predictions/{id}` | Edit the descriptive fields; never the probability, the outcome or the status | operator |
+| `GET` | `/predictions/predictions/{id}/estimates` | Every estimate, oldest first | operator |
+| `POST` | `/predictions/predictions/{id}/estimates` | Append a revised probability; 409 unless the prediction is open | operator |
+| `GET` | `/predictions/predictions/{id}/links` | What the prediction is about | operator |
+| `POST` | `/predictions/predictions/{id}/links` | Link it to a record by the owning store's id; linking twice is a no-op | operator |
+| `POST` | `/predictions/predictions/{id}/resolve` | Record the outcome, once: `true`, `false` or `void` | operator |
+| `POST` | `/predictions/predictions/{id}/restore` | Undo a soft delete | operator |
+| `GET` | `/predictions/tags` | Tags on live predictions with their counts, most used first | operator |
+| `GET` | `/predictions/vocabulary` | Categories, provenances, statuses, outcomes, `group_by` keys and the probability ladder | operator |
 
 ### tool-store, mounted in this process
 
 | Method | Route | What it does | Who may call |
 |---|---|---|---|
-| `POST` | `/tool-store/harness-tools/observed` | Record the built-in tools a harness reported; registers an unknown one switched off and `unreviewed` | operator |
-| `GET` | `/tool-store/health` | `{"status":"ok"}` | operator |
-| `GET` | `/tool-store/instances/{id}/tools` | The tools an instance opted in to that are on | operator |
-| `DELETE` | `/tool-store/instances/{id}/tools/by-name/{name}` | Opt an instance out of a tool | operator |
-| `POST` | `/tool-store/instances/{id}/tools/by-name/{name}` | Opt an instance in to a tool; refused while the tool is off | operator |
-| `GET` | `/tool-store/kinds` | The tool kinds (`mcp`, `cli`, `local`, `harness`), each with a one-line description | operator |
-| `GET` | `/tool-store/locals` | The in-process tools compiled into this server | operator |
-| `POST` | `/tool-store/provision` | MCP config for `tools`, `tool_ids` or an `instance_id`'s opt-ins, with credentials resolved from auth-store | operator |
-| `GET` | `/tool-store/tools` | List tools by `kind`, `harness`, `tag`, `q`, `enabled`, `not_seen_since`, `limit` | operator |
-| `POST` | `/tool-store/tools` | Create or replace a tool by name; never writes `last_seen_at` | operator |
-| `GET` | `/tool-store/tools/by-name/{name}` | One tool by name | operator |
-| `GET` | `/tool-store/tools/by-name/{name}/instances` | Every instance opted in to a tool | operator |
-| `POST` | `/tool-store/tools/by-name/{name}/invoke` | Run a local or CLI tool in this process; 409 for a harness tool | operator |
-| `GET` | `/tool-store/tools/by-name/{name}/spec` | A CLI or MCP tool's launch spec; 409 for a harness tool | operator |
-| `DELETE` | `/tool-store/tools/{id}` | Delete a tool and its instance opt-ins | operator |
-| `GET` | `/tool-store/tools/{id}` | One tool | operator |
-| `PATCH` | `/tool-store/tools/{id}` | Change a tool's `tags`, `description` or `enabled` | operator |
-| `POST` | `/tool-store/tools/{id}/disable` | Switch a tool off in every instance and session | operator |
-| `POST` | `/tool-store/tools/{id}/enable` | Switch a tool on everywhere (the master switch) | operator |
+| `POST` | `/tools/harness-tools/observed` | Record the built-in tools a harness reported; registers an unknown one switched off and `unreviewed` | operator |
+| `GET` | `/tools/health` | `{"status":"ok"}` | operator |
+| `GET` | `/tools/instances/{id}/tools` | The tools an instance opted in to that are on | operator |
+| `DELETE` | `/tools/instances/{id}/tools/by-name/{name}` | Opt an instance out of a tool | operator |
+| `POST` | `/tools/instances/{id}/tools/by-name/{name}` | Opt an instance in to a tool; refused while the tool is off | operator |
+| `GET` | `/tools/kinds` | The tool kinds (`mcp`, `cli`, `local`, `harness`), each with a one-line description | operator |
+| `GET` | `/tools/locals` | The in-process tools compiled into this server | operator |
+| `POST` | `/tools/provision` | MCP config for `tools`, `tool_ids` or an `instance_id`'s opt-ins, with credentials resolved from auth-store | operator |
+| `GET` | `/tools/tools` | List tools by `kind`, `harness`, `tag`, `q`, `enabled`, `not_seen_since`, `limit` | operator |
+| `POST` | `/tools/tools` | Create or replace a tool by name; never writes `last_seen_at` | operator |
+| `GET` | `/tools/tools/by-name/{name}` | One tool by name | operator |
+| `GET` | `/tools/tools/by-name/{name}/instances` | Every instance opted in to a tool | operator |
+| `POST` | `/tools/tools/by-name/{name}/invoke` | Run a local or CLI tool in this process; 409 for a harness tool | operator |
+| `GET` | `/tools/tools/by-name/{name}/spec` | A CLI or MCP tool's launch spec; 409 for a harness tool | operator |
+| `DELETE` | `/tools/tools/{id}` | Delete a tool and its instance opt-ins | operator |
+| `GET` | `/tools/tools/{id}` | One tool | operator |
+| `PATCH` | `/tools/tools/{id}` | Change a tool's `tags`, `description` or `enabled` | operator |
+| `POST` | `/tools/tools/{id}/disable` | Switch a tool off in every instance and session | operator |
+| `POST` | `/tools/tools/{id}/enable` | Switch a tool on everywhere (the master switch) | operator |
 
 ### skill-store, mounted in this process
 
 | Method | Route | What it does | Who may call |
 |---|---|---|---|
-| `GET` | `/skill-store/health` | `{"status":"ok"}` | operator |
-| `GET` | `/skill-store/installations` | Every installed skill | operator |
-| `POST` | `/skill-store/seed/drift` | Keep the bytes of a file a machine changed | operator |
-| `GET` | `/skill-store/seed/manifest` | The installed skill files a machine should hold, with version ids | operator |
-| `POST` | `/skill-store/seed/observe` | Record the hashes a machine holds | operator |
-| `GET` | `/skill-store/seed/profile` | Whether a machine is seeded with installed skills | operator |
-| `PUT` | `/skill-store/seed/profile` | Switch seeding on or off for a machine | operator |
-| `GET` | `/skill-store/skills` | List skills by `source`, `source_id`, `q`, `limit` | operator |
-| `DELETE` | `/skill-store/skills/{id}` | Delete a skill | operator |
-| `GET` | `/skill-store/skills/{id}` | One skill with its SKILL.md | operator |
-| `GET` | `/skill-store/skills/{id}/files` | The files beside a skill's SKILL.md | operator |
-| `GET` | `/skill-store/skills/{id}/files/{path...}` | One of a skill's files | operator |
-| `POST` | `/skill-store/skills/{id}/install` | Copy a skill into this host's skills directory | operator |
-| `POST` | `/skill-store/skills/{id}/uninstall` | Remove an installed skill | operator |
-| `GET` | `/skill-store/sources` | Every skill source | operator |
-| `POST` | `/skill-store/sources` | Register a git or local source | operator |
-| `DELETE` | `/skill-store/sources/{id}` | Delete a source and its skills | operator |
-| `GET` | `/skill-store/sources/{id}` | One source | operator |
-| `POST` | `/skill-store/sources/{id}/sync` | Clone or read the source and record each SKILL.md in it | operator |
-| `GET` | `/skill-store/versions/{vid}/content` | The bytes of one skill file version | operator |
+| `GET` | `/skills/health` | `{"status":"ok"}` | operator |
+| `GET` | `/skills/installations` | Every installed skill | operator |
+| `POST` | `/skills/seed/drift` | Keep the bytes of a file a machine changed | operator |
+| `GET` | `/skills/seed/manifest` | The installed skill files a machine should hold, with version ids | operator |
+| `POST` | `/skills/seed/observe` | Record the hashes a machine holds | operator |
+| `GET` | `/skills/seed/profile` | Whether a machine is seeded with installed skills | operator |
+| `PUT` | `/skills/seed/profile` | Switch seeding on or off for a machine | operator |
+| `GET` | `/skills/skills` | List skills by `source`, `source_id`, `q`, `limit` | operator |
+| `DELETE` | `/skills/skills/{id}` | Delete a skill | operator |
+| `GET` | `/skills/skills/{id}` | One skill with its SKILL.md | operator |
+| `GET` | `/skills/skills/{id}/files` | The files beside a skill's SKILL.md | operator |
+| `GET` | `/skills/skills/{id}/files/{path...}` | One of a skill's files | operator |
+| `POST` | `/skills/skills/{id}/install` | Copy a skill into this host's skills directory | operator |
+| `POST` | `/skills/skills/{id}/uninstall` | Remove an installed skill | operator |
+| `GET` | `/skills/sources` | Every skill source | operator |
+| `POST` | `/skills/sources` | Register a git or local source | operator |
+| `DELETE` | `/skills/sources/{id}` | Delete a source and its skills | operator |
+| `GET` | `/skills/sources/{id}` | One source | operator |
+| `POST` | `/skills/sources/{id}/sync` | Clone or read the source and record each SKILL.md in it | operator |
+| `GET` | `/skills/versions/{vid}/content` | The bytes of one skill file version | operator |
 
 ### bundle-store, mounted in this process
 
 | Method | Route | What it does | Who may call |
 |---|---|---|---|
-| `GET` | `/bundle-store/bundles` | List bundles | operator |
-| `POST` | `/bundle-store/bundles` | Create or replace a bundle by name, with member ids | operator |
-| `GET` | `/bundle-store/bundles/by-name/{name}` | One bundle by name | operator |
-| `DELETE` | `/bundle-store/bundles/{id}` | Delete a bundle; refused while another extends it | operator |
-| `GET` | `/bundle-store/bundles/{id}` | One bundle with its members | operator |
-| `POST` | `/bundle-store/bundles/{id}/disable` | Switch a bundle off | operator |
-| `POST` | `/bundle-store/bundles/{id}/enable` | Switch a bundle on | operator |
-| `GET` | `/bundle-store/health` | `{"status":"ok"}` | operator |
-| `GET` | `/bundle-store/member-effects` | The effects a bundle member may carry (`include`, `deny`) | operator |
-| `POST` | `/bundle-store/resolve` | Compose bundles by repo and task tags or `bundle_ids`: tools, skills, denials, model and effort | operator |
+| `GET` | `/bundles/bundles` | List bundles | operator |
+| `POST` | `/bundles/bundles` | Create or replace a bundle by name, with member ids | operator |
+| `GET` | `/bundles/bundles/by-name/{name}` | One bundle by name | operator |
+| `DELETE` | `/bundles/bundles/{id}` | Delete a bundle; refused while another extends it | operator |
+| `GET` | `/bundles/bundles/{id}` | One bundle with its members | operator |
+| `POST` | `/bundles/bundles/{id}/disable` | Switch a bundle off | operator |
+| `POST` | `/bundles/bundles/{id}/enable` | Switch a bundle on | operator |
+| `GET` | `/bundles/health` | `{"status":"ok"}` | operator |
+| `GET` | `/bundles/member-effects` | The effects a bundle member may carry (`include`, `deny`) | operator |
+| `POST` | `/bundles/resolve` | Compose bundles by repo and task tags or `bundle_ids`: tools, skills, denials, model and effort | operator |
 
 ### noteboard, mounted in this process
 
@@ -674,125 +673,125 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 
 | Method | Route | What it does | Who may call |
 |---|---|---|---|
-| `GET` | `/project-store/digest` | Every live project's rollup as plain text for an agent | operator |
-| `GET` | `/project-store/goal-links` | Which goals a record serves, by `entity_type` and `entity_ref` | operator |
-| `GET` | `/project-store/goals` | Every project's goals, each project's together; `state`, `project_id` | operator |
-| `GET` | `/project-store/goals/{goal_id}` | One goal | operator |
-| `PATCH` | `/project-store/goals/{goal_id}` | Change a goal's fields, recording each change; a state move the rules do not allow is 409 | operator |
-| `GET` | `/project-store/goals/{goal_id}/changes` | Every change to the goal's fields, oldest first | operator |
-| `GET` | `/project-store/goals/{goal_id}/links` | What serves the goal; `entity_type` narrows | operator |
-| `POST` | `/project-store/goals/{goal_id}/links` | Link a note or a session its own store has to the goal; 400, 502 or 409 as a project link | operator |
-| `DELETE` | `/project-store/goals/{goal_id}/links/{link_id}` | Remove one goal link | operator |
-| `GET` | `/project-store/health` | `{"status":"ok"}` | operator |
-| `GET` | `/project-store/links` | Which projects own a record, by `entity_type` and `entity_ref` | operator |
-| `GET` | `/project-store/projects` | Projects by name; `q`, `kind`, `parent_id`, `include_archived` | operator |
-| `POST` | `/project-store/projects` | Make a project; `name` required | operator |
-| `GET` | `/project-store/projects/{id}` | One project | operator |
-| `PATCH` | `/project-store/projects/{id}` | Change a project's fields, recording each change; `archived` archives or restores it | operator |
-| `GET` | `/project-store/projects/{id}/activity` | What happened in the project, newest first, over `days` (default 14) | operator |
-| `GET` | `/project-store/projects/{id}/changes` | Every change to the project's fields, oldest first | operator |
-| `GET` | `/project-store/projects/{id}/goals` | One project's goals, parents before their children; `state` narrows, and without it every state but `dismissed` | operator |
-| `POST` | `/project-store/projects/{id}/goals` | Make a goal of a project: `statement` required, `open` or `proposed`; 400 for an archived project | operator |
-| `GET` | `/project-store/projects/{id}/links` | What the project owns; `entity_type` narrows | operator |
-| `POST` | `/project-store/projects/{id}/links` | Link a record its own store has; 400 when it has none, 502 when it cannot answer, 409 when linked already | operator |
-| `DELETE` | `/project-store/projects/{id}/links/{link_id}` | Remove one link | operator |
-| `POST` | `/project-store/projects/{id}/next-steps` | Make a noteboard todo tagged `next-step` and link it to the project | operator |
-| `GET` | `/project-store/projects/{id}/rollup` | Worked out on request: children, links, cards, repos, notes, suggestions and goals | operator |
-| `GET` | `/project-store/projects/{id}/suggestions` | The project's suggested next steps, oldest first; `status` narrows | operator |
-| `POST` | `/project-store/projects/{id}/suggestions` | Ask a model for up to five next steps, superseding the undecided ones | operator |
-| `GET` | `/project-store/session-filings` | What the session filer concluded about each chat, newest first; `status`, `session_id`, `project_id`, `limit` | operator |
-| `POST` | `/project-store/session-filings/run` | One filing pass over the chats changed in the window; 502 with the report when some session could not be judged, 409 while a pass runs | operator |
-| `POST` | `/project-store/session-filings/{session_filing_id}/accept` | File the session of a proposed filing; 409 when already decided | operator |
-| `POST` | `/project-store/session-filings/{session_filing_id}/dismiss` | Leave a proposed filing's session unfiled; 409 when already decided | operator |
-| `POST` | `/project-store/suggestions/{suggestion_id}/accept` | Make a suggestion a next step; 409 when already decided | operator |
-| `POST` | `/project-store/suggestions/{suggestion_id}/dismiss` | Dismiss a suggestion; 409 when already decided | operator |
-| `GET` | `/project-store/vocabulary` | Kinds, stages, statuses, activity kinds and the entity types a project can own | operator |
+| `GET` | `/projects/digest` | Every live project's rollup as plain text for an agent | operator |
+| `GET` | `/projects/goal-links` | Which goals a record serves, by `entity_type` and `entity_ref` | operator |
+| `GET` | `/projects/goals` | Every project's goals, each project's together; `state`, `project_id` | operator |
+| `GET` | `/projects/goals/{goal_id}` | One goal | operator |
+| `PATCH` | `/projects/goals/{goal_id}` | Change a goal's fields, recording each change; a state move the rules do not allow is 409 | operator |
+| `GET` | `/projects/goals/{goal_id}/changes` | Every change to the goal's fields, oldest first | operator |
+| `GET` | `/projects/goals/{goal_id}/links` | What serves the goal; `entity_type` narrows | operator |
+| `POST` | `/projects/goals/{goal_id}/links` | Link a note or a session its own store has to the goal; 400, 502 or 409 as a project link | operator |
+| `DELETE` | `/projects/goals/{goal_id}/links/{link_id}` | Remove one goal link | operator |
+| `GET` | `/projects/health` | `{"status":"ok"}` | operator |
+| `GET` | `/projects/links` | Which projects own a record, by `entity_type` and `entity_ref` | operator |
+| `GET` | `/projects/projects` | Projects by name; `q`, `kind`, `parent_id`, `include_archived` | operator |
+| `POST` | `/projects/projects` | Make a project; `name` required | operator |
+| `GET` | `/projects/projects/{id}` | One project | operator |
+| `PATCH` | `/projects/projects/{id}` | Change a project's fields, recording each change; `archived` archives or restores it | operator |
+| `GET` | `/projects/projects/{id}/activity` | What happened in the project, newest first, over `days` (default 14) | operator |
+| `GET` | `/projects/projects/{id}/changes` | Every change to the project's fields, oldest first | operator |
+| `GET` | `/projects/projects/{id}/goals` | One project's goals, parents before their children; `state` narrows, and without it every state but `dismissed` | operator |
+| `POST` | `/projects/projects/{id}/goals` | Make a goal of a project: `statement` required, `open` or `proposed`; 400 for an archived project | operator |
+| `GET` | `/projects/projects/{id}/links` | What the project owns; `entity_type` narrows | operator |
+| `POST` | `/projects/projects/{id}/links` | Link a record its own store has; 400 when it has none, 502 when it cannot answer, 409 when linked already | operator |
+| `DELETE` | `/projects/projects/{id}/links/{link_id}` | Remove one link | operator |
+| `POST` | `/projects/projects/{id}/next-steps` | Make a noteboard todo tagged `next-step` and link it to the project | operator |
+| `GET` | `/projects/projects/{id}/rollup` | Worked out on request: children, links, cards, repos, notes, suggestions and goals | operator |
+| `GET` | `/projects/projects/{id}/suggestions` | The project's suggested next steps, oldest first; `status` narrows | operator |
+| `POST` | `/projects/projects/{id}/suggestions` | Ask a model for up to five next steps, superseding the undecided ones | operator |
+| `GET` | `/projects/session-filings` | What the session filer concluded about each chat, newest first; `status`, `session_id`, `project_id`, `limit` | operator |
+| `POST` | `/projects/session-filings/run` | One filing pass over the chats changed in the window; 502 with the report when some session could not be judged, 409 while a pass runs | operator |
+| `POST` | `/projects/session-filings/{session_filing_id}/accept` | File the session of a proposed filing; 409 when already decided | operator |
+| `POST` | `/projects/session-filings/{session_filing_id}/dismiss` | Leave a proposed filing's session unfiled; 409 when already decided | operator |
+| `POST` | `/projects/suggestions/{suggestion_id}/accept` | Make a suggestion a next step; 409 when already decided | operator |
+| `POST` | `/projects/suggestions/{suggestion_id}/dismiss` | Dismiss a suggestion; 409 when already decided | operator |
+| `GET` | `/projects/vocabulary` | Kinds, stages, statuses, activity kinds and the entity types a project can own | operator |
 
 ### principal-store, mounted in this process
 
 | Method | Route | What it does | Who may call |
 |---|---|---|---|
-| `GET` | `/principal-store/availability-reasons` | The reasons an availability answer can give | principal |
-| `POST` | `/principal-store/contacts/resolve` | Turn an email address into one contact principal | operator |
-| `GET` | `/principal-store/health` | `{"status":"ok","counts":{principals,humans,groups,disabled}}` | operator |
-| `GET` | `/principal-store/identity-bindings` | Identity bindings, by principal, provider, tenant | operator |
-| `POST` | `/principal-store/identity-bindings` | Link an identity to a principal, as the calling administrator (as `POST /admin/identity-bindings`) | operator |
-| `GET` | `/principal-store/identity-bindings/resolve` | Which principal an identity signs in as | operator |
-| `GET` | `/principal-store/identity-bindings/{id}` | One identity binding | operator |
-| `POST` | `/principal-store/identity-bindings/{id}/unlink` | Unlink an identity and end its login sessions (as `POST /admin/identity-bindings/{id}/unlink`) | operator |
-| `GET` | `/principal-store/identity-providers` | The providers an identity binding can name | principal |
-| `GET` | `/principal-store/kind-definitions` | Each kind with what it may do | principal |
-| `GET` | `/principal-store/kinds` | The principal kinds | principal |
-| `GET` | `/principal-store/principals` | List principals by `q`, `kind`, `include_disabled`, `available_at`, page | operator |
-| `POST` | `/principal-store/principals` | Create a principal | operator |
-| `DELETE` | `/principal-store/principals/{group}/members/{member}` | Take a principal out of a group | operator |
-| `PUT` | `/principal-store/principals/{group}/members/{member}` | Put a principal in a group | operator |
-| `GET` | `/principal-store/principals/{id}` | One principal with its groups or members | operator |
-| `PATCH` | `/principal-store/principals/{id}` | Change the name, email, working week or administrator flag | operator |
-| `GET` | `/principal-store/principals/{id}/availability` | Whether a person is available at `at`, and why | operator |
-| `POST` | `/principal-store/principals/{id}/disable` | Disable a principal | operator |
-| `POST` | `/principal-store/principals/{id}/enable` | Enable a principal | operator |
-| `GET` | `/principal-store/principals/{id}/groups` | The groups a principal is in | operator |
-| `GET` | `/principal-store/principals/{id}/members` | A group's members | operator |
-| `GET` | `/principal-store/principals/{id}/time-off` | A person's time off | operator |
-| `POST` | `/principal-store/principals/{id}/time-off` | Add time off | operator |
-| `DELETE` | `/principal-store/principals/{id}/time-off/{timeOffID}` | Remove time off | operator |
-| `GET` | `/principal-store/weekday-codes` | The day codes a working week uses | principal |
+| `GET` | `/principals/availability-reasons` | The reasons an availability answer can give | principal |
+| `POST` | `/principals/contacts/resolve` | Turn an email address into one contact principal | operator |
+| `GET` | `/principals/health` | `{"status":"ok","counts":{principals,humans,groups,disabled}}` | operator |
+| `GET` | `/principals/identity-bindings` | Identity bindings, by principal, provider, tenant | operator |
+| `POST` | `/principals/identity-bindings` | Link an identity to a principal, as the calling administrator (as `POST /admin/identity-bindings`) | operator |
+| `GET` | `/principals/identity-bindings/resolve` | Which principal an identity signs in as | operator |
+| `GET` | `/principals/identity-bindings/{id}` | One identity binding | operator |
+| `POST` | `/principals/identity-bindings/{id}/unlink` | Unlink an identity and end its login sessions (as `POST /admin/identity-bindings/{id}/unlink`) | operator |
+| `GET` | `/principals/identity-providers` | The providers an identity binding can name | principal |
+| `GET` | `/principals/kind-definitions` | Each kind with what it may do | principal |
+| `GET` | `/principals/kinds` | The principal kinds | principal |
+| `GET` | `/principals/principals` | List principals by `q`, `kind`, `include_disabled`, `available_at`, page | operator |
+| `POST` | `/principals/principals` | Create a principal | operator |
+| `DELETE` | `/principals/principals/{group}/members/{member}` | Take a principal out of a group | operator |
+| `PUT` | `/principals/principals/{group}/members/{member}` | Put a principal in a group | operator |
+| `GET` | `/principals/principals/{id}` | One principal with its groups or members | operator |
+| `PATCH` | `/principals/principals/{id}` | Change the name, email, working week or administrator flag | operator |
+| `GET` | `/principals/principals/{id}/availability` | Whether a person is available at `at`, and why | operator |
+| `POST` | `/principals/principals/{id}/disable` | Disable a principal | operator |
+| `POST` | `/principals/principals/{id}/enable` | Enable a principal | operator |
+| `GET` | `/principals/principals/{id}/groups` | The groups a principal is in | operator |
+| `GET` | `/principals/principals/{id}/members` | A group's members | operator |
+| `GET` | `/principals/principals/{id}/time-off` | A person's time off | operator |
+| `POST` | `/principals/principals/{id}/time-off` | Add time off | operator |
+| `DELETE` | `/principals/principals/{id}/time-off/{timeOffID}` | Remove time off | operator |
+| `GET` | `/principals/weekday-codes` | The day codes a working week uses | principal |
 
 ### grant-store, mounted in this process
 
 | Method | Route | What it does | Who may call |
 |---|---|---|---|
-| `GET` | `/grant-store/grants` | List grants, narrowed to what the caller may read | principal or session agent |
-| `POST` | `/grant-store/grants` | Grant a relation on a resource, once both owners confirm them | principal or session agent |
-| `GET` | `/grant-store/grants/{id}` | One grant | principal or session agent |
-| `POST` | `/grant-store/grants/{id}/revoke` | Revoke a grant | principal or session agent |
-| `GET` | `/grant-store/health` | `{"status":"ok","counts":…}` | principal or session agent |
-| `GET` | `/grant-store/principals/{id}/effective` | A principal's own and inherited active grants | principal or session agent |
-| `GET` | `/grant-store/relations` | Each relation with its resource types and whether it is enforced | principal or session agent |
-| `GET` | `/grant-store/resource-types` | The resource types a grant can name | principal or session agent |
+| `GET` | `/grants/grants` | List grants, narrowed to what the caller may read | principal or session agent |
+| `POST` | `/grants/grants` | Grant a relation on a resource, once both owners confirm them | principal or session agent |
+| `GET` | `/grants/grants/{id}` | One grant | principal or session agent |
+| `POST` | `/grants/grants/{id}/revoke` | Revoke a grant | principal or session agent |
+| `GET` | `/grants/health` | `{"status":"ok","counts":…}` | principal or session agent |
+| `GET` | `/grants/principals/{id}/effective` | A principal's own and inherited active grants | principal or session agent |
+| `GET` | `/grants/relations` | Each relation with its resource types and whether it is enforced | principal or session agent |
+| `GET` | `/grants/resource-types` | The resource types a grant can name | principal or session agent |
 
 ### sign-in-store, mounted in this process
 
 | Method | Route | What it does | Who may call |
 |---|---|---|---|
-| `GET` | `/sign-in-store/discord/callback` | Finish a Discord round trip | anyone |
-| `GET` | `/sign-in-store/discord/start` | Start Sign in with Discord, or linking a Discord account | anyone |
-| `GET` | `/sign-in-store/health` | `{"status":"ok"}` | anyone |
-| `POST` | `/sign-in-store/link-requests` | Send a sign-in link to a person's own chat; the same answer whether or not they have an account | anyone |
-| `POST` | `/sign-in-store/principals/{id}/discord-messages` | Send a message to a member's one-to-one Discord chat | operator |
-| `POST` | `/sign-in-store/redeem` | Spend a link's secret and open a session cookie | anyone |
-| `GET` | `/sign-in-store/session` | Who the browser's `sign_in_session` cookie signs in as | anyone |
-| `GET` | `/sign-in-store/sessions` | Sign-in sessions, newest first | operator |
-| `POST` | `/sign-in-store/sessions/{id}/revoke` | End a sign-in session, as the calling administrator | operator |
-| `GET` | `/sign-in-store/sign-in-links` | Sign-in links made, newest first | operator |
-| `POST` | `/sign-in-store/sign-in-links` | Make a one-time sign-in link for a principal, as the calling administrator | operator |
-| `POST` | `/sign-in-store/sign-out` | End the browser's session | anyone |
+| `GET` | `/sign-in/discord/callback` | Finish a Discord round trip | anyone |
+| `GET` | `/sign-in/discord/start` | Start Sign in with Discord, or linking a Discord account | anyone |
+| `GET` | `/sign-in/health` | `{"status":"ok"}` | anyone |
+| `POST` | `/sign-in/link-requests` | Send a sign-in link to a person's own chat; the same answer whether or not they have an account | anyone |
+| `POST` | `/sign-in/principals/{id}/discord-messages` | Send a message to a member's one-to-one Discord chat | operator |
+| `POST` | `/sign-in/redeem` | Spend a link's secret and open a session cookie | anyone |
+| `GET` | `/sign-in/session` | Who the browser's `sign_in_session` cookie signs in as | anyone |
+| `GET` | `/sign-in/sessions` | Sign-in sessions, newest first | operator |
+| `POST` | `/sign-in/sessions/{id}/revoke` | End a sign-in session, as the calling administrator | operator |
+| `GET` | `/sign-in/sign-in-links` | Sign-in links made, newest first | operator |
+| `POST` | `/sign-in/sign-in-links` | Make a one-time sign-in link for a principal, as the calling administrator | operator |
+| `POST` | `/sign-in/sign-out` | End the browser's session | anyone |
 
 ### permission-store, mounted in this process
 
 | Method | Route | What it does | Who may call |
 |---|---|---|---|
-| `GET` | `/permission-store/audit` | Verdicts given, newest first | operator |
-| `POST` | `/permission-store/evaluate` | The verdict on one tool call; writes an audit row | operator |
-| `GET` | `/permission-store/healthz` | `{"status":"ok"}` | operator |
-| `GET` | `/permission-store/rules` | Rules, by `scope` | operator |
-| `POST` | `/permission-store/rules` | Create a rule | operator |
-| `DELETE` | `/permission-store/rules/{id}` | Delete a rule | operator |
-| `GET` | `/permission-store/rules/{id}` | One rule | operator |
-| `PATCH` | `/permission-store/rules/{id}` | Change a rule | operator |
+| `GET` | `/permissions/audit` | Verdicts given, newest first | operator |
+| `POST` | `/permissions/evaluate` | The verdict on one tool call; writes an audit row | operator |
+| `GET` | `/permissions/healthz` | `{"status":"ok"}` | operator |
+| `GET` | `/permissions/rules` | Rules, by `scope` | operator |
+| `POST` | `/permissions/rules` | Create a rule | operator |
+| `DELETE` | `/permissions/rules/{id}` | Delete a rule | operator |
+| `GET` | `/permissions/rules/{id}` | One rule | operator |
+| `PATCH` | `/permissions/rules/{id}` | Change a rule | operator |
 
 ### model-store, mounted in this process
 
 | Method | Route | What it does | Who may call |
 |---|---|---|---|
-| `GET` | `/model-store/api/health` | `{"ok":true}` | operator |
-| `GET` | `/model-store/api/models` | Every model with its health and aliases, by priority then id | operator |
-| `POST` | `/model-store/api/models/toggle` | Switch a model on or off: `{"model","enabled"}` | operator |
-| `GET` | `/model-store/api/roles` | Each role's first model, each role's list, and the canonical roles | operator |
-| `POST` | `/model-store/api/roles` | Set a role's first model (`model`) or its whole list (`models`) | operator |
-| `GET` | `/model-store/api/roles/{role}` | A role's first model, resolved | operator |
-| `GET` | `/model-store/api/roles/{role}/models` | Every model in a role's list, in the order to try them | operator |
+| `GET` | `/models/api/health` | `{"ok":true}` | operator |
+| `GET` | `/models/api/models` | Every model with its health and aliases, by priority then id | operator |
+| `POST` | `/models/api/models/toggle` | Switch a model on or off: `{"model","enabled"}` | operator |
+| `GET` | `/models/api/roles` | Each role's first model, each role's list, and the canonical roles | operator |
+| `POST` | `/models/api/roles` | Set a role's first model (`model`) or its whole list (`models`) | operator |
+| `GET` | `/models/api/roles/{role}` | A role's first model, resolved | operator |
+| `GET` | `/models/api/roles/{role}/models` | Every model in a role's list, in the order to try them | operator |
 
 ### scheduler, mounted in this process
 
@@ -819,604 +818,604 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 
 | Method | Route | What it does | Who may call |
 |---|---|---|---|
-| `GET` | `/rule-store/activity` | The reactor's recent activity, newest first: `after`, `kind`, `limit` | operator |
-| `GET` | `/rule-store/health` | Counts of each record, and the reactor's state | operator |
-| `GET` | `/rule-store/rules` | Every rule, oldest first: `state` | operator |
-| `POST` | `/rule-store/rules` | Create a draft rule: `{name, description?, source, created_by}`. 201 | operator |
-| `GET` | `/rule-store/rules/{id}` | A rule with its revisions and activations | operator |
-| `POST` | `/rule-store/rules/{id}/activate` | Activate a revision in `shadow` or `live` mode | operator |
-| `GET` | `/rule-store/rules/{id}/comparison` | Whether each run's planned effects are visible at their owners now | operator |
-| `POST` | `/rule-store/rules/{id}/pause` | Pause an active rule | operator |
-| `POST` | `/rule-store/rules/{id}/preview` | What a revision or definition would decide about every session held now; records nothing | operator |
-| `POST` | `/rule-store/rules/{id}/retire` | Retire a rule, for good | operator |
-| `POST` | `/rule-store/rules/{id}/revisions` | Add a validated, immutable revision. 201 | operator |
-| `GET` | `/rule-store/runs` | Decisions, newest first: `rule_id`, `subject_id`, `since`, `limit` | operator |
-| `GET` | `/rule-store/subjects/{type}/{id}` | rule-store's copy of a subject and its state episode | operator |
-| `GET` | `/rule-store/summary` | Counts, the reactor's state and every rule with its run counts | operator |
-| `GET` | `/rule-store/vocabulary` | Sources, condition kinds, session fields, effect kinds, modes and rule states | operator |
+| `GET` | `/rules/activity` | The reactor's recent activity, newest first: `after`, `kind`, `limit` | operator |
+| `GET` | `/rules/health` | Counts of each record, and the reactor's state | operator |
+| `GET` | `/rules/rules` | Every rule, oldest first: `state` | operator |
+| `POST` | `/rules/rules` | Create a draft rule: `{name, description?, source, created_by}`. 201 | operator |
+| `GET` | `/rules/rules/{id}` | A rule with its revisions and activations | operator |
+| `POST` | `/rules/rules/{id}/activate` | Activate a revision in `shadow` or `live` mode | operator |
+| `GET` | `/rules/rules/{id}/comparison` | Whether each run's planned effects are visible at their owners now | operator |
+| `POST` | `/rules/rules/{id}/pause` | Pause an active rule | operator |
+| `POST` | `/rules/rules/{id}/preview` | What a revision or definition would decide about every session held now; records nothing | operator |
+| `POST` | `/rules/rules/{id}/retire` | Retire a rule, for good | operator |
+| `POST` | `/rules/rules/{id}/revisions` | Add a validated, immutable revision. 201 | operator |
+| `GET` | `/rules/runs` | Decisions, newest first: `rule_id`, `subject_id`, `since`, `limit` | operator |
+| `GET` | `/rules/subjects/{type}/{id}` | rule-store's copy of a subject and its state episode | operator |
+| `GET` | `/rules/summary` | Counts, the reactor's state and every rule with its run counts | operator |
+| `GET` | `/rules/vocabulary` | Sources, condition kinds, session fields, effect kinds, modes and rule states | operator |
 
 ### budget-store, mounted in this process
 
 | Method | Route | What it does | Who may call |
 |---|---|---|---|
-| `GET` | `/budget-store/accounts` | The accounts in the books, each with its balance and details | principal or session agent |
-| `POST` | `/budget-store/accounts` | Add an account; 201 | principal or session agent |
-| `GET` | `/budget-store/accounts/{id}` | One account with its balance and details | principal or session agent |
-| `PATCH` | `/budget-store/accounts/{id}` | Change an account's fields; a detail block replaces the stored one | principal or session agent |
-| `POST` | `/budget-store/accounts/{id}/description-markers` | Add text that names this account in other accounts' rows | principal or session agent |
-| `DELETE` | `/budget-store/accounts/{id}/description-markers/{marker_id}` | Remove a description marker | principal or session agent |
-| `GET` | `/budget-store/accounts/{id}/loan-payment-facts` | What statements say about a loan's payments | principal or session agent |
-| `POST` | `/budget-store/accounts/{id}/loan-payment-facts` | Record what a statement says about payments, replacing one on the same date | principal or session agent |
-| `GET` | `/budget-store/accounts/{id}/loan-schedule` | A loan's payments split into interest and principal, and the projection to payoff | principal or session agent |
-| `POST` | `/budget-store/accounts/{id}/loan-schedule/apply` | Write the loan schedule onto the loan's payments | principal or session agent |
-| `POST` | `/budget-store/accounts/{id}/opening-balance` | Make the ledger agree with a reported balance with one opening-balance transaction | principal or session agent |
-| `GET` | `/budget-store/balance-assertions` | Reported balances, each with the ledger's balance and the difference | principal or session agent |
-| `POST` | `/budget-store/balance-assertions` | Record a reported balance; 201 | principal or session agent |
-| `GET` | `/budget-store/budget` | One `month`'s budget in the limit or envelope `view` | principal or session agent |
-| `PUT` | `/budget-store/budget-assignments` | Set one category's amount for one month | principal or session agent |
-| `GET` | `/budget-store/categories` | The categories in the books | principal or session agent |
-| `POST` | `/budget-store/categories` | Add a category; 201 | principal or session agent |
-| `GET` | `/budget-store/categories/{id}` | One category | principal or session agent |
-| `GET` | `/budget-store/category-paths` | Every category's path from the top of its tree | principal or session agent |
-| `GET` | `/budget-store/category-suggestions` | Category suggestions by `status`, with each transaction's facts | principal or session agent |
-| `POST` | `/budget-store/category-suggestions` | Record a model's category suggestions; it writes no category | principal or session agent |
-| `GET` | `/budget-store/category-suggestions/candidates` | Wholly Uncategorized transactions with no pending suggestion, for the categorizer | principal or session agent |
-| `POST` | `/budget-store/category-suggestions/decisions` | A person accepting, changing or rejecting suggestions, all or nothing | principal or session agent |
-| `GET` | `/budget-store/health` | `{"status":"ok"}` | principal or session agent |
-| `GET` | `/budget-store/import-batches` | Imported files, newest first, with what became of their rows | principal or session agent |
-| `POST` | `/budget-store/import-batches` | Import one bank file into an account, all or nothing; 201 | principal or session agent |
-| `GET` | `/budget-store/import-batches/{id}` | One imported file | principal or session agent |
-| `POST` | `/budget-store/import-batches/{id}/undo` | Delete what an imported file made, keeping its rows | principal or session agent |
-| `GET` | `/budget-store/institutions` | The banks and issuers in the books | principal or session agent |
-| `POST` | `/budget-store/institutions` | Add a bank or issuer; 201 | principal or session agent |
-| `GET` | `/budget-store/interests` | The interests followed in the books, each with its rules and total | principal or session agent |
-| `POST` | `/budget-store/interests` | Add an interest; 201 | principal or session agent |
-| `POST` | `/budget-store/interests/match` | Run every interest's rules again for new transactions | principal or session agent |
-| `GET` | `/budget-store/interests/{id}` | One interest with its rules, history sources and total | principal or session agent |
-| `POST` | `/budget-store/interests/{id}/history-sources` | Point an interest at another store's record of it | principal or session agent |
-| `POST` | `/budget-store/interests/{id}/rules` | Add a rule to an interest and confirm what it matches | principal or session agent |
-| `GET` | `/budget-store/interests/{id}/transactions` | An interest's transactions, removed ones included | principal or session agent |
-| `PUT` | `/budget-store/interests/{id}/transactions/{transaction_id}` | A person confirming or removing a transaction on an interest | principal or session agent |
-| `GET` | `/budget-store/links` | Links from one of the store's records (`from_id`) to other stores' records | principal or session agent |
-| `POST` | `/budget-store/links` | Link one of the store's records to another store's record by its id; 201 | principal or session agent |
-| `GET` | `/budget-store/marketplace-order-lines/{id}` | One line of a marketplace order | principal or session agent |
-| `PATCH` | `/budget-store/marketplace-order-lines/{id}` | Change what became of an order line | principal or session agent |
-| `GET` | `/budget-store/marketplace-orders` | Marketplace orders newest first, by `transaction_id` and `unmatched` | principal or session agent |
-| `POST` | `/budget-store/marketplace-orders` | Record a marketplace order and its lines, finding its charge; 201 | principal or session agent |
-| `POST` | `/budget-store/marketplace-orders/match-transactions` | Look again for the charge of every order without one | principal or session agent |
-| `GET` | `/budget-store/marketplace-orders/{id}` | One marketplace order with its lines | principal or session agent |
-| `GET` | `/budget-store/payees` | The payees in the books | principal or session agent |
-| `POST` | `/budget-store/payees` | Add a payee and the bank texts that name it; 201 | principal or session agent |
-| `POST` | `/budget-store/payees/apply-rules` | Name each transaction without a payee by the payee rules, and move a wholly Uncategorized one to its payee's category | principal or session agent |
-| `GET` | `/budget-store/payees/{id}` | One payee with its patterns | principal or session agent |
-| `PUT` | `/budget-store/plaid/accounts/{plaid_account_id}` | Match a Plaid account to one of the owner's accounts, or unmatch it | principal or session agent |
-| `GET` | `/budget-store/plaid/items` | Every bank linked through Plaid, with its accounts | principal or session agent |
-| `POST` | `/budget-store/plaid/items` | Link a bank from Plaid Link's public token, keeping its access token in auth-store; 201 | principal or session agent |
-| `POST` | `/budget-store/plaid/link-token` | A Plaid Link token for linking one more bank | principal or session agent |
-| `POST` | `/budget-store/plaid/sync` | Sync every linked bank's transactions from its stored cursor | principal or session agent |
-| `GET` | `/budget-store/recurring-bills` | Recurring bills by `status`, soonest due first | principal or session agent |
-| `POST` | `/budget-store/recurring-bills` | Name a bill from a transaction's payments, with the caller's cadence; 201 | principal or session agent |
-| `POST` | `/budget-store/recurring-bills/detect` | Find payments that come on a steady rhythm and refresh the known bills | principal or session agent |
-| `GET` | `/budget-store/recurring-bills/totals` | Confirmed bills: expected and actual per month, six months and year | principal or session agent |
-| `GET` | `/budget-store/recurring-bills/{id}` | One bill with every payment | principal or session agent |
-| `PATCH` | `/budget-store/recurring-bills/{id}` | A person confirming, rejecting or renaming a bill | principal or session agent |
-| `GET` | `/budget-store/reports/by-account` | The named categories and those under them, per month, category and account | principal or session agent |
-| `GET` | `/budget-store/reports/monthly` | Each category's total in each month from `from` to `to` | principal or session agent |
-| `GET` | `/budget-store/reports/spending` | Each category's total in one `month` | principal or session agent |
-| `GET` | `/budget-store/transactions` | Transactions newest first, by `account_id`, `category_id`, `month`, `q`, `uncategorized`, `limit` and `offset` | principal or session agent |
-| `POST` | `/budget-store/transactions` | Record a balanced transaction by hand; 201 | principal or session agent |
-| `GET` | `/budget-store/transactions/{id}` | One transaction with its postings, source rows, category decision, orders and links | principal or session agent |
-| `PATCH` | `/budget-store/transactions/{id}` | Change a transaction's status, payee or memo | principal or session agent |
-| `PUT` | `/budget-store/transactions/{id}/categories` | Replace a transaction's category postings with splits summing to the same | principal or session agent |
-| `POST` | `/budget-store/transactions/{id}/move-to-account` | Turn a transaction's one category posting into a posting on another of the owner's accounts | principal or session agent |
-| `POST` | `/budget-store/transactions/{id}/undo-transfer-without-partner` | Put a posting the transfer matcher moved without a partner back on Uncategorized | principal or session agent |
-| `POST` | `/budget-store/transfers/match` | Pair transfers between the owner's own accounts | principal or session agent |
-| `GET` | `/budget-store/trips/totals` | Confirmed and suggested spending per location-store trip | principal or session agent |
-| `POST` | `/budget-store/trips/{trip_ref}/suggest` | Suggest the spending dated during a trip | principal or session agent |
-| `GET` | `/budget-store/trips/{trip_ref}/transactions` | The transactions linked to one trip, removed ones included | principal or session agent |
-| `PUT` | `/budget-store/trips/{trip_ref}/transactions/{transaction_id}` | A person confirming, removing or adding a transaction on a trip | principal or session agent |
-| `GET` | `/budget-store/vocabulary` | Every closed set of values budget-store accepts | principal or session agent |
+| `GET` | `/budget/accounts` | The accounts in the books, each with its balance and details | principal or session agent |
+| `POST` | `/budget/accounts` | Add an account; 201 | principal or session agent |
+| `GET` | `/budget/accounts/{id}` | One account with its balance and details | principal or session agent |
+| `PATCH` | `/budget/accounts/{id}` | Change an account's fields; a detail block replaces the stored one | principal or session agent |
+| `POST` | `/budget/accounts/{id}/description-markers` | Add text that names this account in other accounts' rows | principal or session agent |
+| `DELETE` | `/budget/accounts/{id}/description-markers/{marker_id}` | Remove a description marker | principal or session agent |
+| `GET` | `/budget/accounts/{id}/loan-payment-facts` | What statements say about a loan's payments | principal or session agent |
+| `POST` | `/budget/accounts/{id}/loan-payment-facts` | Record what a statement says about payments, replacing one on the same date | principal or session agent |
+| `GET` | `/budget/accounts/{id}/loan-schedule` | A loan's payments split into interest and principal, and the projection to payoff | principal or session agent |
+| `POST` | `/budget/accounts/{id}/loan-schedule/apply` | Write the loan schedule onto the loan's payments | principal or session agent |
+| `POST` | `/budget/accounts/{id}/opening-balance` | Make the ledger agree with a reported balance with one opening-balance transaction | principal or session agent |
+| `GET` | `/budget/balance-assertions` | Reported balances, each with the ledger's balance and the difference | principal or session agent |
+| `POST` | `/budget/balance-assertions` | Record a reported balance; 201 | principal or session agent |
+| `GET` | `/budget/budget` | One `month`'s budget in the limit or envelope `view` | principal or session agent |
+| `PUT` | `/budget/budget-assignments` | Set one category's amount for one month | principal or session agent |
+| `GET` | `/budget/categories` | The categories in the books | principal or session agent |
+| `POST` | `/budget/categories` | Add a category; 201 | principal or session agent |
+| `GET` | `/budget/categories/{id}` | One category | principal or session agent |
+| `GET` | `/budget/category-paths` | Every category's path from the top of its tree | principal or session agent |
+| `GET` | `/budget/category-suggestions` | Category suggestions by `status`, with each transaction's facts | principal or session agent |
+| `POST` | `/budget/category-suggestions` | Record a model's category suggestions; it writes no category | principal or session agent |
+| `GET` | `/budget/category-suggestions/candidates` | Wholly Uncategorized transactions with no pending suggestion, for the categorizer | principal or session agent |
+| `POST` | `/budget/category-suggestions/decisions` | A person accepting, changing or rejecting suggestions, all or nothing | principal or session agent |
+| `GET` | `/budget/health` | `{"status":"ok"}` | principal or session agent |
+| `GET` | `/budget/import-batches` | Imported files, newest first, with what became of their rows | principal or session agent |
+| `POST` | `/budget/import-batches` | Import one bank file into an account, all or nothing; 201 | principal or session agent |
+| `GET` | `/budget/import-batches/{id}` | One imported file | principal or session agent |
+| `POST` | `/budget/import-batches/{id}/undo` | Delete what an imported file made, keeping its rows | principal or session agent |
+| `GET` | `/budget/institutions` | The banks and issuers in the books | principal or session agent |
+| `POST` | `/budget/institutions` | Add a bank or issuer; 201 | principal or session agent |
+| `GET` | `/budget/interests` | The interests followed in the books, each with its rules and total | principal or session agent |
+| `POST` | `/budget/interests` | Add an interest; 201 | principal or session agent |
+| `POST` | `/budget/interests/match` | Run every interest's rules again for new transactions | principal or session agent |
+| `GET` | `/budget/interests/{id}` | One interest with its rules, history sources and total | principal or session agent |
+| `POST` | `/budget/interests/{id}/history-sources` | Point an interest at another store's record of it | principal or session agent |
+| `POST` | `/budget/interests/{id}/rules` | Add a rule to an interest and confirm what it matches | principal or session agent |
+| `GET` | `/budget/interests/{id}/transactions` | An interest's transactions, removed ones included | principal or session agent |
+| `PUT` | `/budget/interests/{id}/transactions/{transaction_id}` | A person confirming or removing a transaction on an interest | principal or session agent |
+| `GET` | `/budget/links` | Links from one of the store's records (`from_id`) to other stores' records | principal or session agent |
+| `POST` | `/budget/links` | Link one of the store's records to another store's record by its id; 201 | principal or session agent |
+| `GET` | `/budget/marketplace-order-lines/{id}` | One line of a marketplace order | principal or session agent |
+| `PATCH` | `/budget/marketplace-order-lines/{id}` | Change what became of an order line | principal or session agent |
+| `GET` | `/budget/marketplace-orders` | Marketplace orders newest first, by `transaction_id` and `unmatched` | principal or session agent |
+| `POST` | `/budget/marketplace-orders` | Record a marketplace order and its lines, finding its charge; 201 | principal or session agent |
+| `POST` | `/budget/marketplace-orders/match-transactions` | Look again for the charge of every order without one | principal or session agent |
+| `GET` | `/budget/marketplace-orders/{id}` | One marketplace order with its lines | principal or session agent |
+| `GET` | `/budget/payees` | The payees in the books | principal or session agent |
+| `POST` | `/budget/payees` | Add a payee and the bank texts that name it; 201 | principal or session agent |
+| `POST` | `/budget/payees/apply-rules` | Name each transaction without a payee by the payee rules, and move a wholly Uncategorized one to its payee's category | principal or session agent |
+| `GET` | `/budget/payees/{id}` | One payee with its patterns | principal or session agent |
+| `PUT` | `/budget/plaid/accounts/{plaid_account_id}` | Match a Plaid account to one of the owner's accounts, or unmatch it | principal or session agent |
+| `GET` | `/budget/plaid/items` | Every bank linked through Plaid, with its accounts | principal or session agent |
+| `POST` | `/budget/plaid/items` | Link a bank from Plaid Link's public token, keeping its access token in auth-store; 201 | principal or session agent |
+| `POST` | `/budget/plaid/link-token` | A Plaid Link token for linking one more bank | principal or session agent |
+| `POST` | `/budget/plaid/sync` | Sync every linked bank's transactions from its stored cursor | principal or session agent |
+| `GET` | `/budget/recurring-bills` | Recurring bills by `status`, soonest due first | principal or session agent |
+| `POST` | `/budget/recurring-bills` | Name a bill from a transaction's payments, with the caller's cadence; 201 | principal or session agent |
+| `POST` | `/budget/recurring-bills/detect` | Find payments that come on a steady rhythm and refresh the known bills | principal or session agent |
+| `GET` | `/budget/recurring-bills/totals` | Confirmed bills: expected and actual per month, six months and year | principal or session agent |
+| `GET` | `/budget/recurring-bills/{id}` | One bill with every payment | principal or session agent |
+| `PATCH` | `/budget/recurring-bills/{id}` | A person confirming, rejecting or renaming a bill | principal or session agent |
+| `GET` | `/budget/reports/by-account` | The named categories and those under them, per month, category and account | principal or session agent |
+| `GET` | `/budget/reports/monthly` | Each category's total in each month from `from` to `to` | principal or session agent |
+| `GET` | `/budget/reports/spending` | Each category's total in one `month` | principal or session agent |
+| `GET` | `/budget/transactions` | Transactions newest first, by `account_id`, `category_id`, `month`, `q`, `uncategorized`, `limit` and `offset` | principal or session agent |
+| `POST` | `/budget/transactions` | Record a balanced transaction by hand; 201 | principal or session agent |
+| `GET` | `/budget/transactions/{id}` | One transaction with its postings, source rows, category decision, orders and links | principal or session agent |
+| `PATCH` | `/budget/transactions/{id}` | Change a transaction's status, payee or memo | principal or session agent |
+| `PUT` | `/budget/transactions/{id}/categories` | Replace a transaction's category postings with splits summing to the same | principal or session agent |
+| `POST` | `/budget/transactions/{id}/move-to-account` | Turn a transaction's one category posting into a posting on another of the owner's accounts | principal or session agent |
+| `POST` | `/budget/transactions/{id}/undo-transfer-without-partner` | Put a posting the transfer matcher moved without a partner back on Uncategorized | principal or session agent |
+| `POST` | `/budget/transfers/match` | Pair transfers between the owner's own accounts | principal or session agent |
+| `GET` | `/budget/trips/totals` | Confirmed and suggested spending per location-store trip | principal or session agent |
+| `POST` | `/budget/trips/{trip_ref}/suggest` | Suggest the spending dated during a trip | principal or session agent |
+| `GET` | `/budget/trips/{trip_ref}/transactions` | The transactions linked to one trip, removed ones included | principal or session agent |
+| `PUT` | `/budget/trips/{trip_ref}/transactions/{transaction_id}` | A person confirming, removing or adding a transaction on a trip | principal or session agent |
+| `GET` | `/budget/vocabulary` | Every closed set of values budget-store accepts | principal or session agent |
 
 ### people-store, mounted in this process
 
 | Method | Route | What it does | Who may call |
 |---|---|---|---|
-| `PUT` | `/people-store/handle-activity` | Report how much the caller talks with each handle | principal or session agent |
-| `GET` | `/people-store/health` | `{"status":"ok","counts":…}`, counted over the caller's own people | principal or session agent |
-| `GET` | `/people-store/identities` | Every handle of a `kind`, in the order linked | principal or session agent |
-| `GET` | `/people-store/identities/resolve` | The person holding a `kind` and `value`; 404 when nobody does | principal or session agent |
-| `DELETE` | `/people-store/identities/{id}` | Remove a handle, refusing it for that person | principal or session agent |
-| `GET` | `/people-store/identity-kinds` | The handle kinds and how each is normalized | principal or session agent |
-| `GET` | `/people-store/link-sources` | Who may link a handle, and whether each overrides refusals | principal or session agent |
-| `GET` | `/people-store/persons` | The caller's people by `q`, `tag`, `principal_id`, `include_deleted`, `limit` and `offset`, by name | principal or session agent |
-| `POST` | `/people-store/persons` | Make a person owned by the caller, with handles; 201 | principal or session agent |
-| `DELETE` | `/people-store/persons/{id}` | Delete a person, reversibly | principal or session agent |
-| `GET` | `/people-store/persons/{id}` | One person with handles and relationships; a deleted one answers with `deleted_at` | principal or session agent |
-| `PATCH` | `/people-store/persons/{id}` | Change a person's name, birthday, how met, tags or principal | principal or session agent |
-| `POST` | `/people-store/persons/{id}/identities` | Link a handle to a person, saying who linked it and why; 201 | principal or session agent |
-| `POST` | `/people-store/persons/{id}/relationships` | Record how two of one owner's people are related; 201 | principal or session agent |
-| `POST` | `/people-store/persons/{id}/restore` | Undo a delete | principal or session agent |
-| `GET` | `/people-store/persons/{id}/revisions` | A person as they were before each change, oldest first | principal or session agent |
-| `GET` | `/people-store/refusals` | Handles refused for a person, by `person_id`, `kind` and `value` | principal or session agent |
-| `GET` | `/people-store/relationship-kinds` | The relationship kinds and their inverses | principal or session agent |
-| `DELETE` | `/people-store/relationships/{id}` | Remove a relationship | principal or session agent |
-| `POST` | `/people-store/reviews` | Mark handles reviewed | principal or session agent |
-| `POST` | `/people-store/reviews/claim` | Take handles off the review queue for 30 minutes | principal or session agent |
-| `GET` | `/people-store/reviews/pending` | Handles the caller talks with that nobody has reviewed | principal or session agent |
-| `GET` | `/people-store/suggestions` | Guesses about who is who, by `status`, `q`, `sort`, `limit` and `offset` | principal or session agent |
-| `POST` | `/people-store/suggestions` | Propose that some handles are one person; 201, or 200 when none is new | principal or session agent |
-| `GET` | `/people-store/suggestions/{id}` | One suggestion | principal or session agent |
-| `POST` | `/people-store/suggestions/{id}/accept` | Accept a suggestion into a new person or `person_id` | principal or session agent |
-| `POST` | `/people-store/suggestions/{id}/reject` | Reject a suggestion, refusing its handles for the people it named | principal or session agent |
+| `PUT` | `/people/handle-activity` | Report how much the caller talks with each handle | principal or session agent |
+| `GET` | `/people/health` | `{"status":"ok","counts":…}`, counted over the caller's own people | principal or session agent |
+| `GET` | `/people/identities` | Every handle of a `kind`, in the order linked | principal or session agent |
+| `GET` | `/people/identities/resolve` | The person holding a `kind` and `value`; 404 when nobody does | principal or session agent |
+| `DELETE` | `/people/identities/{id}` | Remove a handle, refusing it for that person | principal or session agent |
+| `GET` | `/people/identity-kinds` | The handle kinds and how each is normalized | principal or session agent |
+| `GET` | `/people/link-sources` | Who may link a handle, and whether each overrides refusals | principal or session agent |
+| `GET` | `/people/persons` | The caller's people by `q`, `tag`, `principal_id`, `include_deleted`, `limit` and `offset`, by name | principal or session agent |
+| `POST` | `/people/persons` | Make a person owned by the caller, with handles; 201 | principal or session agent |
+| `DELETE` | `/people/persons/{id}` | Delete a person, reversibly | principal or session agent |
+| `GET` | `/people/persons/{id}` | One person with handles and relationships; a deleted one answers with `deleted_at` | principal or session agent |
+| `PATCH` | `/people/persons/{id}` | Change a person's name, birthday, how met, tags or principal | principal or session agent |
+| `POST` | `/people/persons/{id}/identities` | Link a handle to a person, saying who linked it and why; 201 | principal or session agent |
+| `POST` | `/people/persons/{id}/relationships` | Record how two of one owner's people are related; 201 | principal or session agent |
+| `POST` | `/people/persons/{id}/restore` | Undo a delete | principal or session agent |
+| `GET` | `/people/persons/{id}/revisions` | A person as they were before each change, oldest first | principal or session agent |
+| `GET` | `/people/refusals` | Handles refused for a person, by `person_id`, `kind` and `value` | principal or session agent |
+| `GET` | `/people/relationship-kinds` | The relationship kinds and their inverses | principal or session agent |
+| `DELETE` | `/people/relationships/{id}` | Remove a relationship | principal or session agent |
+| `POST` | `/people/reviews` | Mark handles reviewed | principal or session agent |
+| `POST` | `/people/reviews/claim` | Take handles off the review queue for 30 minutes | principal or session agent |
+| `GET` | `/people/reviews/pending` | Handles the caller talks with that nobody has reviewed | principal or session agent |
+| `GET` | `/people/suggestions` | Guesses about who is who, by `status`, `q`, `sort`, `limit` and `offset` | principal or session agent |
+| `POST` | `/people/suggestions` | Propose that some handles are one person; 201, or 200 when none is new | principal or session agent |
+| `GET` | `/people/suggestions/{id}` | One suggestion | principal or session agent |
+| `POST` | `/people/suggestions/{id}/accept` | Accept a suggestion into a new person or `person_id` | principal or session agent |
+| `POST` | `/people/suggestions/{id}/reject` | Reject a suggestion, refusing its handles for the people it named | principal or session agent |
 
 ### calendar-store, mounted in this process
 
 | Method | Route | What it does | Who may call |
 |---|---|---|---|
-| `GET` | `/calendar-store/calendars` | The caller's calendars, in the order made | principal or session agent |
-| `POST` | `/calendar-store/calendars` | Make a calendar owned by the caller; 201, or 200 for the caller's one with that `source` and `source_ref` | principal or session agent |
-| `POST` | `/calendar-store/calendars/{id}/google-event-imports` | Import Google Calendar event resources into a calendar; 201 | principal or session agent |
-| `POST` | `/calendar-store/calendars/{id}/imports` | Import an .ics file into a calendar, in one transaction; 201 | principal or session agent |
-| `GET` | `/calendar-store/events` | Events by `calendar_id`, `from`, `to`, `q`, `person_id`, `limit` and `offset`, oldest first | principal or session agent |
-| `GET` | `/calendar-store/events/{id}` | One event, with its raw VEVENT | principal or session agent |
-| `POST` | `/calendar-store/events/{id}/people` | Link one of the event owner's people to an event; 201 | principal or session agent |
-| `DELETE` | `/calendar-store/events/{id}/people/{person_id}` | Unlink a person from an event | principal or session agent |
-| `GET` | `/calendar-store/events/{id}/revisions` | An event as it was before each import changed it, newest first | principal or session agent |
-| `GET` | `/calendar-store/health` | `{"status":"ok","counts":…}`, counted over the caller's own calendars | principal or session agent |
-| `GET` | `/calendar-store/imports` | The caller's imports, newest first | principal or session agent |
-| `GET` | `/calendar-store/vocabularies` | The link sources and revision reasons | principal or session agent |
+| `GET` | `/calendar/calendars` | The caller's calendars, in the order made | principal or session agent |
+| `POST` | `/calendar/calendars` | Make a calendar owned by the caller; 201, or 200 for the caller's one with that `source` and `source_ref` | principal or session agent |
+| `POST` | `/calendar/calendars/{id}/google-event-imports` | Import Google Calendar event resources into a calendar; 201 | principal or session agent |
+| `POST` | `/calendar/calendars/{id}/imports` | Import an .ics file into a calendar, in one transaction; 201 | principal or session agent |
+| `GET` | `/calendar/events` | Events by `calendar_id`, `from`, `to`, `q`, `person_id`, `limit` and `offset`, oldest first | principal or session agent |
+| `GET` | `/calendar/events/{id}` | One event, with its raw VEVENT | principal or session agent |
+| `POST` | `/calendar/events/{id}/people` | Link one of the event owner's people to an event; 201 | principal or session agent |
+| `DELETE` | `/calendar/events/{id}/people/{person_id}` | Unlink a person from an event | principal or session agent |
+| `GET` | `/calendar/events/{id}/revisions` | An event as it was before each import changed it, newest first | principal or session agent |
+| `GET` | `/calendar/health` | `{"status":"ok","counts":…}`, counted over the caller's own calendars | principal or session agent |
+| `GET` | `/calendar/imports` | The caller's imports, newest first | principal or session agent |
+| `GET` | `/calendar/vocabularies` | The link sources and revision reasons | principal or session agent |
 
 ### journal-store, mounted in this process
 
 | Method | Route | What it does | Who may call |
 |---|---|---|---|
-| `GET` | `/journal-store/entries` | The caller's entries by `q`, `kind`, `tag`, `visibility`, `about_ref`, `source`, `from`, `to`, `limit` and `offset`, newest first | principal or session agent |
-| `POST` | `/journal-store/entries` | Write an entry owned by the caller; 201 | principal or session agent |
-| `DELETE` | `/journal-store/entries/{id}` | Delete an entry, reversibly; 204 | principal or session agent |
-| `GET` | `/journal-store/entries/{id}` | One entry with its mentions | principal or session agent |
-| `PATCH` | `/journal-store/entries/{id}` | Change an entry | principal or session agent |
-| `POST` | `/journal-store/entries/{id}/promote-todo` | Make a checklist `line` a noteboard todo; an administrator's own entries only | principal or session agent |
-| `POST` | `/journal-store/entries/{id}/restore` | Undo a delete | principal or session agent |
-| `GET` | `/journal-store/entries/{id}/revisions` | An entry as it was before each change, newest first | principal or session agent |
-| `GET` | `/journal-store/entry-kinds` | The entry kinds | principal or session agent |
-| `GET` | `/journal-store/health` | `{"status":…,"counts":…}`, counted over the caller's own entries | principal or session agent |
-| `POST` | `/journal-store/imports` | Upsert entries by `source` and `source_ref`, in one transaction; `dry_run=true` writes nothing | principal or session agent |
-| `GET` | `/journal-store/mentions` | The caller's entries that mention `ref` | principal or session agent |
-| `GET` | `/journal-store/published` | The caller's published entries, newest first | principal or session agent |
-| `GET` | `/journal-store/published/{slug}` | One of the caller's published entries by slug | principal or session agent |
-| `GET` | `/journal-store/time-precisions` | The precisions a timeline item's time takes | principal or session agent |
-| `GET` | `/journal-store/timeline-items` | Items of every `timeline` named, merged in time order | principal or session agent |
-| `DELETE` | `/journal-store/timeline-items/{id}` | Delete a timeline item, reversibly; 204 | principal or session agent |
-| `GET` | `/journal-store/timeline-items/{id}` | One timeline item | principal or session agent |
-| `PATCH` | `/journal-store/timeline-items/{id}` | Change a timeline item | principal or session agent |
-| `POST` | `/journal-store/timeline-items/{id}/restore` | Undo a delete | principal or session agent |
-| `GET` | `/journal-store/timeline-items/{id}/revisions` | A timeline item as it was before each change, newest first | principal or session agent |
-| `GET` | `/journal-store/timelines/{id}/items` | A timeline's items, oldest first | principal or session agent |
-| `POST` | `/journal-store/timelines/{id}/items` | Add items to a timeline, in one transaction; 201 | principal or session agent |
-| `GET` | `/journal-store/visibilities` | The visibilities | principal or session agent |
+| `GET` | `/journal/entries` | The caller's entries by `q`, `kind`, `tag`, `visibility`, `about_ref`, `source`, `from`, `to`, `limit` and `offset`, newest first | principal or session agent |
+| `POST` | `/journal/entries` | Write an entry owned by the caller; 201 | principal or session agent |
+| `DELETE` | `/journal/entries/{id}` | Delete an entry, reversibly; 204 | principal or session agent |
+| `GET` | `/journal/entries/{id}` | One entry with its mentions | principal or session agent |
+| `PATCH` | `/journal/entries/{id}` | Change an entry | principal or session agent |
+| `POST` | `/journal/entries/{id}/promote-todo` | Make a checklist `line` a noteboard todo; an administrator's own entries only | principal or session agent |
+| `POST` | `/journal/entries/{id}/restore` | Undo a delete | principal or session agent |
+| `GET` | `/journal/entries/{id}/revisions` | An entry as it was before each change, newest first | principal or session agent |
+| `GET` | `/journal/entry-kinds` | The entry kinds | principal or session agent |
+| `GET` | `/journal/health` | `{"status":…,"counts":…}`, counted over the caller's own entries | principal or session agent |
+| `POST` | `/journal/imports` | Upsert entries by `source` and `source_ref`, in one transaction; `dry_run=true` writes nothing | principal or session agent |
+| `GET` | `/journal/mentions` | The caller's entries that mention `ref` | principal or session agent |
+| `GET` | `/journal/published` | The caller's published entries, newest first | principal or session agent |
+| `GET` | `/journal/published/{slug}` | One of the caller's published entries by slug | principal or session agent |
+| `GET` | `/journal/time-precisions` | The precisions a timeline item's time takes | principal or session agent |
+| `GET` | `/journal/timeline-items` | Items of every `timeline` named, merged in time order | principal or session agent |
+| `DELETE` | `/journal/timeline-items/{id}` | Delete a timeline item, reversibly; 204 | principal or session agent |
+| `GET` | `/journal/timeline-items/{id}` | One timeline item | principal or session agent |
+| `PATCH` | `/journal/timeline-items/{id}` | Change a timeline item | principal or session agent |
+| `POST` | `/journal/timeline-items/{id}/restore` | Undo a delete | principal or session agent |
+| `GET` | `/journal/timeline-items/{id}/revisions` | A timeline item as it was before each change, newest first | principal or session agent |
+| `GET` | `/journal/timelines/{id}/items` | A timeline's items, oldest first | principal or session agent |
+| `POST` | `/journal/timelines/{id}/items` | Add items to a timeline, in one transaction; 201 | principal or session agent |
+| `GET` | `/journal/visibilities` | The visibilities | principal or session agent |
 
 ### message-store, mounted in this process
 
 | Method | Route | What it does | Who may call |
 |---|---|---|---|
-| `GET` | `/message-store/accounts` | The caller's accounts on platforms, its own first, then its bots | principal or session agent |
-| `POST` | `/message-store/accounts` | The caller's account with that platform and handle, made if new | principal or session agent |
-| `GET` | `/message-store/accounts/{id}` | One account | principal or session agent |
-| `GET` | `/message-store/activity` | Message counts per time bucket, by `group_by`, `interval`, `time_zone`, `person`, `after`, `before` and `involved` | principal or session agent |
-| `GET` | `/message-store/conversation-days` | Conversation days by `conversation`, `journal_entry`, `person`, `from`, `to`, `involved` and `limit` | principal or session agent |
-| `POST` | `/message-store/conversation-days/journal-entries` | Record which journal entry held each day's transcript | principal or session agent |
-| `GET` | `/message-store/conversation-days/{id}` | One conversation day, its conversation and its messages | principal or session agent |
-| `GET` | `/message-store/conversation-merges` | Merged conversations, newest first, by `merged_into` and `limit` | principal or session agent |
-| `GET` | `/message-store/conversations` | The caller's conversations, most recently active first, by `account`, `person`, `platform`, `q` and `limit` | principal or session agent |
-| `GET` | `/message-store/conversations/{id}` | One conversation with participants and a message summary; a merged id is a 301 to the one it merged into | principal or session agent |
-| `PATCH` | `/message-store/conversations/{id}/participants/{handle}` | Name a participant's people-store person, or clear it | principal or session agent |
-| `GET` | `/message-store/health` | `{"status":"ok"}` when the database answers | principal or session agent |
-| `GET` | `/message-store/imports` | The caller's import runs | principal or session agent |
-| `POST` | `/message-store/imports` | Start an import run owned by the caller | principal or session agent |
-| `GET` | `/message-store/imports/{id}` | One import run and what it wrote | principal or session agent |
-| `POST` | `/message-store/imports/{id}/batches` | Write conversations, messages, days, supersessions and merges in one transaction | principal or session agent |
-| `POST` | `/message-store/imports/{id}/finish` | End an import run | principal or session agent |
-| `GET` | `/message-store/messages` | The caller's messages in time order by `conversation`, `person`, `platform`, `source`, `source_ref`, `after`, `before`, `q`, `order`, `limit` and `cursor` | principal or session agent |
-| `GET` | `/message-store/messages/{id}` | One message; a superseded id is a 301 to the message that holds it now | principal or session agent |
-| `GET` | `/message-store/messages/{id}/revisions` | Every earlier version of a message, oldest first | principal or session agent |
-| `GET` | `/message-store/summary` | The caller's conversations and messages per platform, with first and last times | principal or session agent |
-| `GET` | `/message-store/superseded-messages` | Retired message rows, newest first, by `superseded_by` and `limit` | principal or session agent |
-| `GET` | `/message-store/vocabulary` | Platforms, message kinds, account kinds, merge rules, day involvements, activity groupings and intervals | principal or session agent |
+| `GET` | `/messages/accounts` | The caller's accounts on platforms, its own first, then its bots | principal or session agent |
+| `POST` | `/messages/accounts` | The caller's account with that platform and handle, made if new | principal or session agent |
+| `GET` | `/messages/accounts/{id}` | One account | principal or session agent |
+| `GET` | `/messages/activity` | Message counts per time bucket, by `group_by`, `interval`, `time_zone`, `person`, `after`, `before` and `involved` | principal or session agent |
+| `GET` | `/messages/conversation-days` | Conversation days by `conversation`, `journal_entry`, `person`, `from`, `to`, `involved` and `limit` | principal or session agent |
+| `POST` | `/messages/conversation-days/journal-entries` | Record which journal entry held each day's transcript | principal or session agent |
+| `GET` | `/messages/conversation-days/{id}` | One conversation day, its conversation and its messages | principal or session agent |
+| `GET` | `/messages/conversation-merges` | Merged conversations, newest first, by `merged_into` and `limit` | principal or session agent |
+| `GET` | `/messages/conversations` | The caller's conversations, most recently active first, by `account`, `person`, `platform`, `q` and `limit` | principal or session agent |
+| `GET` | `/messages/conversations/{id}` | One conversation with participants and a message summary; a merged id is a 301 to the one it merged into | principal or session agent |
+| `PATCH` | `/messages/conversations/{id}/participants/{handle}` | Name a participant's people-store person, or clear it | principal or session agent |
+| `GET` | `/messages/health` | `{"status":"ok"}` when the database answers | principal or session agent |
+| `GET` | `/messages/imports` | The caller's import runs | principal or session agent |
+| `POST` | `/messages/imports` | Start an import run owned by the caller | principal or session agent |
+| `GET` | `/messages/imports/{id}` | One import run and what it wrote | principal or session agent |
+| `POST` | `/messages/imports/{id}/batches` | Write conversations, messages, days, supersessions and merges in one transaction | principal or session agent |
+| `POST` | `/messages/imports/{id}/finish` | End an import run | principal or session agent |
+| `GET` | `/messages/messages` | The caller's messages in time order by `conversation`, `person`, `platform`, `source`, `source_ref`, `after`, `before`, `q`, `order`, `limit` and `cursor` | principal or session agent |
+| `GET` | `/messages/messages/{id}` | One message; a superseded id is a 301 to the message that holds it now | principal or session agent |
+| `GET` | `/messages/messages/{id}/revisions` | Every earlier version of a message, oldest first | principal or session agent |
+| `GET` | `/messages/summary` | The caller's conversations and messages per platform, with first and last times | principal or session agent |
+| `GET` | `/messages/superseded-messages` | Retired message rows, newest first, by `superseded_by` and `limit` | principal or session agent |
+| `GET` | `/messages/vocabulary` | Platforms, message kinds, account kinds, merge rules, day involvements, activity groupings and intervals | principal or session agent |
 
 ### activity-store, mounted in this process
 
 | Method | Route | What it does | Who may call |
 |---|---|---|---|
-| `GET` | `/activity-store/activities` | The caller's activities by `from`, `to`, `product`, `action`, `source`, `q`, `include_deleted`, `order`, `limit` and `offset` | principal or session agent |
-| `DELETE` | `/activity-store/activities/{id}` | Delete an activity, reversibly; 204 | principal or session agent |
-| `GET` | `/activity-store/activities/{id}` | One activity with its sightings and attachments | principal or session agent |
-| `POST` | `/activity-store/activities/{id}/purge` | Blank an activity's words and destroy its attachments, keeping the row so no import brings it back | principal or session agent |
-| `POST` | `/activity-store/activities/{id}/restore` | Undo a delete; a purged activity is 409 | principal or session agent |
-| `GET` | `/activity-store/activities/{id}/revisions` | An activity as it was before each delete, restore and purge, newest first | principal or session agent |
-| `GET` | `/activity-store/attachments/{id}` | An attachment's bytes, kept in file-store; a purged one is 410 | principal or session agent |
-| `GET` | `/activity-store/days/{date}` | One local day (`tz` required) summarized by product | principal or session agent |
-| `GET` | `/activity-store/health` | `{status, counts}`, counted over the caller's own activities | principal or session agent |
-| `GET` | `/activity-store/imports` | The caller's imports, newest first | principal or session agent |
-| `POST` | `/activity-store/imports` | Start an import owned by the caller, or answer the caller's one with that hash | principal or session agent |
-| `GET` | `/activity-store/imports/{id}` | One import | principal or session agent |
-| `POST` | `/activity-store/imports/{id}/batches` | Write activities in one transaction, folding what the caller already holds | principal or session agent |
-| `POST` | `/activity-store/imports/{id}/finish` | End an import | principal or session agent |
-| `GET` | `/activity-store/stats` | The caller's live activities by product, source and action | principal or session agent |
-| `GET` | `/activity-store/vocabularies` | Actions, action phrases, sources, import kinds and revision reasons | principal or session agent |
+| `GET` | `/online-activity/activities` | The caller's activities by `from`, `to`, `product`, `action`, `source`, `q`, `include_deleted`, `order`, `limit` and `offset` | principal or session agent |
+| `DELETE` | `/online-activity/activities/{id}` | Delete an activity, reversibly; 204 | principal or session agent |
+| `GET` | `/online-activity/activities/{id}` | One activity with its sightings and attachments | principal or session agent |
+| `POST` | `/online-activity/activities/{id}/purge` | Blank an activity's words and destroy its attachments, keeping the row so no import brings it back | principal or session agent |
+| `POST` | `/online-activity/activities/{id}/restore` | Undo a delete; a purged activity is 409 | principal or session agent |
+| `GET` | `/online-activity/activities/{id}/revisions` | An activity as it was before each delete, restore and purge, newest first | principal or session agent |
+| `GET` | `/online-activity/attachments/{id}` | An attachment's bytes, kept in file-store; a purged one is 410 | principal or session agent |
+| `GET` | `/online-activity/days/{date}` | One local day (`tz` required) summarized by product | principal or session agent |
+| `GET` | `/online-activity/health` | `{status, counts}`, counted over the caller's own activities | principal or session agent |
+| `GET` | `/online-activity/imports` | The caller's imports, newest first | principal or session agent |
+| `POST` | `/online-activity/imports` | Start an import owned by the caller, or answer the caller's one with that hash | principal or session agent |
+| `GET` | `/online-activity/imports/{id}` | One import | principal or session agent |
+| `POST` | `/online-activity/imports/{id}/batches` | Write activities in one transaction, folding what the caller already holds | principal or session agent |
+| `POST` | `/online-activity/imports/{id}/finish` | End an import | principal or session agent |
+| `GET` | `/online-activity/stats` | The caller's live activities by product, source and action | principal or session agent |
+| `GET` | `/online-activity/vocabularies` | Actions, action phrases, sources, import kinds and revision reasons | principal or session agent |
 
 ### time-ledger-store, mounted in this process
 
 | Method | Route | What it does | Who may call |
 |---|---|---|---|
-| `GET` | `/time-ledger-store/health` | `{status, counts}`, counted over the caller's own entries | principal or session agent |
-| `GET` | `/time-ledger-store/kinds` | The caller's kinds, by name | principal or session agent |
-| `POST` | `/time-ledger-store/kinds` | Make a kind owned by the caller; 201 | principal or session agent |
-| `GET` | `/time-ledger-store/kinds/{id}` | One kind | principal or session agent |
-| `GET` | `/time-ledger-store/links/{link_type}` | The caller's entries' links to one record, by `ref`, `occurrence_starts_at` and `include_removed` | principal or session agent |
-| `GET` | `/time-ledger-store/reviews/{id}` | One review | principal or session agent |
-| `GET` | `/time-ledger-store/time-entries` | The caller's entries by `from`, `to`, `ended_before`, `parent`, `kind_id`, `outcome`, `q`, `needs_review`, `include_deleted`, `limit` and `offset`, earliest first | principal or session agent |
-| `POST` | `/time-ledger-store/time-entries` | Make an entry owned by the caller, with kinds and links, in one transaction; 201 | principal or session agent |
-| `DELETE` | `/time-ledger-store/time-entries/{id}` | Delete an entry, reversibly, keeping its links; 204 | principal or session agent |
-| `GET` | `/time-ledger-store/time-entries/{id}` | One entry with its links, children and reviews | principal or session agent |
-| `PATCH` | `/time-ledger-store/time-entries/{id}` | Change an entry's title, span, place or parent, by who may | principal or session agent |
-| `DELETE` | `/time-ledger-store/time-entries/{id}/kinds/{kind_id}` | Take a kind off an entry; 204 | principal or session agent |
-| `PUT` | `/time-ledger-store/time-entries/{id}/kinds/{kind_id}` | Give an entry a kind | principal or session agent |
-| `DELETE` | `/time-ledger-store/time-entries/{id}/links/{link_type}` | Take a link off an entry, keeping it as removed; 204 | principal or session agent |
-| `POST` | `/time-ledger-store/time-entries/{id}/links/{link_type}` | Link a record of another store to an entry; 201 | principal or session agent |
-| `GET` | `/time-ledger-store/time-entries/{id}/reviews` | An entry's reviews, newest first | principal or session agent |
-| `POST` | `/time-ledger-store/time-entries/{id}/reviews` | Judge whether an entry happened; 201 | principal or session agent |
-| `GET` | `/time-ledger-store/time-entries/{id}/revisions` | An entry as it was before each change, newest first | principal or session agent |
-| `GET` | `/time-ledger-store/vocabularies` | Link types, bears-on values, actor kinds and outcomes | principal or session agent |
+| `GET` | `/time-ledger/health` | `{status, counts}`, counted over the caller's own entries | principal or session agent |
+| `GET` | `/time-ledger/kinds` | The caller's kinds, by name | principal or session agent |
+| `POST` | `/time-ledger/kinds` | Make a kind owned by the caller; 201 | principal or session agent |
+| `GET` | `/time-ledger/kinds/{id}` | One kind | principal or session agent |
+| `GET` | `/time-ledger/links/{link_type}` | The caller's entries' links to one record, by `ref`, `occurrence_starts_at` and `include_removed` | principal or session agent |
+| `GET` | `/time-ledger/reviews/{id}` | One review | principal or session agent |
+| `GET` | `/time-ledger/time-entries` | The caller's entries by `from`, `to`, `ended_before`, `parent`, `kind_id`, `outcome`, `q`, `needs_review`, `include_deleted`, `limit` and `offset`, earliest first | principal or session agent |
+| `POST` | `/time-ledger/time-entries` | Make an entry owned by the caller, with kinds and links, in one transaction; 201 | principal or session agent |
+| `DELETE` | `/time-ledger/time-entries/{id}` | Delete an entry, reversibly, keeping its links; 204 | principal or session agent |
+| `GET` | `/time-ledger/time-entries/{id}` | One entry with its links, children and reviews | principal or session agent |
+| `PATCH` | `/time-ledger/time-entries/{id}` | Change an entry's title, span, place or parent, by who may | principal or session agent |
+| `DELETE` | `/time-ledger/time-entries/{id}/kinds/{kind_id}` | Take a kind off an entry; 204 | principal or session agent |
+| `PUT` | `/time-ledger/time-entries/{id}/kinds/{kind_id}` | Give an entry a kind | principal or session agent |
+| `DELETE` | `/time-ledger/time-entries/{id}/links/{link_type}` | Take a link off an entry, keeping it as removed; 204 | principal or session agent |
+| `POST` | `/time-ledger/time-entries/{id}/links/{link_type}` | Link a record of another store to an entry; 201 | principal or session agent |
+| `GET` | `/time-ledger/time-entries/{id}/reviews` | An entry's reviews, newest first | principal or session agent |
+| `POST` | `/time-ledger/time-entries/{id}/reviews` | Judge whether an entry happened; 201 | principal or session agent |
+| `GET` | `/time-ledger/time-entries/{id}/revisions` | An entry as it was before each change, newest first | principal or session agent |
+| `GET` | `/time-ledger/vocabularies` | Link types, bears-on values, actor kinds and outcomes | principal or session agent |
 
 ### photo-store, mounted in this process
 
 | Method | Route | What it does | Who may call |
 |---|---|---|---|
-| `GET` | `/photo-store/date-sources` | The ways a photo's date is known, strongest first | principal or session agent |
-| `GET` | `/photo-store/face-group-statuses` | The statuses a face group may hold | principal or session agent |
-| `GET` | `/photo-store/face-groups` | The caller's face groups by `status`, `person_id`, `limit` and `offset`, the most photos first | principal or session agent |
-| `POST` | `/photo-store/face-groups` | Make an open group of one owner's faces; 201 | principal or session agent |
-| `GET` | `/photo-store/face-groups/{id}` | One face group with every face in it | principal or session agent |
-| `POST` | `/photo-store/face-groups/{id}/decision` | A person saying who a group is, confirming or rejecting its faces as that person | principal or session agent |
-| `POST` | `/photo-store/face-groups/{id}/guesses` | Record who a model or the context thinks a group is; 201 | principal or session agent |
-| `POST` | `/photo-store/face-groups/{id}/members` | Add faces of the group's owner to an open group | principal or session agent |
-| `POST` | `/photo-store/face-scans` | Record what one face model found on one of the caller's photos; 201 | principal or session agent |
-| `GET` | `/photo-store/face-scans/pending` | Ids of the caller's photos a `model` has not scanned, oldest first | principal or session agent |
-| `GET` | `/photo-store/faces` | Faces on the caller's live photos in id order, by `photo_id`, `model`, `after`, `include_embeddings` and `limit` | principal or session agent |
-| `GET` | `/photo-store/faces/{id}/image` | One face cut from its photo's thumbnail, as a JPEG | principal or session agent |
-| `GET` | `/photo-store/health` | `{"status":"ok","counts":…}`, counted over the caller's own photos | principal or session agent |
-| `POST` | `/photo-store/imports` | Upsert photos owned by the caller by the original's sha256, thumbnails kept in file-store; description and tags are never touched | principal or session agent |
-| `GET` | `/photo-store/people-counts` | How many of the caller's photos each person is confirmed and suggested on | principal or session agent |
-| `GET` | `/photo-store/photo-people` | Who is on which of the caller's photos, by `photo_id`, `person_id`, `status`, `limit` and `offset` | principal or session agent |
-| `POST` | `/photo-store/photo-people` | Propose or confirm a person of the photo owner's people on a photo; only ever moves a link upward | principal or session agent |
-| `PATCH` | `/photo-store/photo-people/{id}` | A person's decision on who is on a photo | principal or session agent |
-| `GET` | `/photo-store/photo-person-statuses` | The statuses a person on a photo may hold | principal or session agent |
-| `GET` | `/photo-store/photos` | The caller's live photos by `from`, `to`, `folder`, `q`, `tag`, `person`, `described`, `has_gps`, `sha256`, `exclude_tag`, `limit` and `offset`, oldest taken first | principal or session agent |
-| `DELETE` | `/photo-store/photos/{id}` | Delete a photo, reversibly; 204 | principal or session agent |
-| `GET` | `/photo-store/photos/{id}` | One photo; a deleted one only with `include_deleted=true` | principal or session agent |
-| `PATCH` | `/photo-store/photos/{id}` | Change a photo's description, tags or date | principal or session agent |
-| `GET` | `/photo-store/photos/{id}/faces` | The faces found on one photo | principal or session agent |
-| `POST` | `/photo-store/photos/{id}/purge` | Remove a picture that must not be kept: destroy its thumbnail and blank its description everywhere | principal or session agent |
-| `POST` | `/photo-store/photos/{id}/restore` | Undo a delete; a purged photo is 409 | principal or session agent |
-| `GET` | `/photo-store/photos/{id}/revisions` | A photo as it was before each change, newest first | principal or session agent |
-| `GET` | `/photo-store/photos/{id}/thumbnail` | The photo's JPEG thumbnail, from file-store; a purged photo is 410 | principal or session agent |
-| `GET` | `/photo-store/sightings` | Every place an import found each of the caller's photos, by `source_machine`, `limit` and `offset` | principal or session agent |
-| `GET` | `/photo-store/tags` | Every tag on the caller's live photos, with how many carry it | principal or session agent |
-| `GET` | `/photo-store/taken-activity` | The caller's photos counted per day, week, month or year in `time_zone`, with sample ids | principal or session agent |
+| `GET` | `/photos/date-sources` | The ways a photo's date is known, strongest first | principal or session agent |
+| `GET` | `/photos/face-group-statuses` | The statuses a face group may hold | principal or session agent |
+| `GET` | `/photos/face-groups` | The caller's face groups by `status`, `person_id`, `limit` and `offset`, the most photos first | principal or session agent |
+| `POST` | `/photos/face-groups` | Make an open group of one owner's faces; 201 | principal or session agent |
+| `GET` | `/photos/face-groups/{id}` | One face group with every face in it | principal or session agent |
+| `POST` | `/photos/face-groups/{id}/decision` | A person saying who a group is, confirming or rejecting its faces as that person | principal or session agent |
+| `POST` | `/photos/face-groups/{id}/guesses` | Record who a model or the context thinks a group is; 201 | principal or session agent |
+| `POST` | `/photos/face-groups/{id}/members` | Add faces of the group's owner to an open group | principal or session agent |
+| `POST` | `/photos/face-scans` | Record what one face model found on one of the caller's photos; 201 | principal or session agent |
+| `GET` | `/photos/face-scans/pending` | Ids of the caller's photos a `model` has not scanned, oldest first | principal or session agent |
+| `GET` | `/photos/faces` | Faces on the caller's live photos in id order, by `photo_id`, `model`, `after`, `include_embeddings` and `limit` | principal or session agent |
+| `GET` | `/photos/faces/{id}/image` | One face cut from its photo's thumbnail, as a JPEG | principal or session agent |
+| `GET` | `/photos/health` | `{"status":"ok","counts":…}`, counted over the caller's own photos | principal or session agent |
+| `POST` | `/photos/imports` | Upsert photos owned by the caller by the original's sha256, thumbnails kept in file-store; description and tags are never touched | principal or session agent |
+| `GET` | `/photos/people-counts` | How many of the caller's photos each person is confirmed and suggested on | principal or session agent |
+| `GET` | `/photos/photo-people` | Who is on which of the caller's photos, by `photo_id`, `person_id`, `status`, `limit` and `offset` | principal or session agent |
+| `POST` | `/photos/photo-people` | Propose or confirm a person of the photo owner's people on a photo; only ever moves a link upward | principal or session agent |
+| `PATCH` | `/photos/photo-people/{id}` | A person's decision on who is on a photo | principal or session agent |
+| `GET` | `/photos/photo-person-statuses` | The statuses a person on a photo may hold | principal or session agent |
+| `GET` | `/photos/photos` | The caller's live photos by `from`, `to`, `folder`, `q`, `tag`, `person`, `described`, `has_gps`, `sha256`, `exclude_tag`, `limit` and `offset`, oldest taken first | principal or session agent |
+| `DELETE` | `/photos/photos/{id}` | Delete a photo, reversibly; 204 | principal or session agent |
+| `GET` | `/photos/photos/{id}` | One photo; a deleted one only with `include_deleted=true` | principal or session agent |
+| `PATCH` | `/photos/photos/{id}` | Change a photo's description, tags or date | principal or session agent |
+| `GET` | `/photos/photos/{id}/faces` | The faces found on one photo | principal or session agent |
+| `POST` | `/photos/photos/{id}/purge` | Remove a picture that must not be kept: destroy its thumbnail and blank its description everywhere | principal or session agent |
+| `POST` | `/photos/photos/{id}/restore` | Undo a delete; a purged photo is 409 | principal or session agent |
+| `GET` | `/photos/photos/{id}/revisions` | A photo as it was before each change, newest first | principal or session agent |
+| `GET` | `/photos/photos/{id}/thumbnail` | The photo's JPEG thumbnail, from file-store; a purged photo is 410 | principal or session agent |
+| `GET` | `/photos/sightings` | Every place an import found each of the caller's photos, by `source_machine`, `limit` and `offset` | principal or session agent |
+| `GET` | `/photos/tags` | Every tag on the caller's live photos, with how many carry it | principal or session agent |
+| `GET` | `/photos/taken-activity` | The caller's photos counted per day, week, month or year in `time_zone`, with sample ids | principal or session agent |
 
 ### location-store, mounted in this process
 
 | Method | Route | What it does | Who may call |
 |---|---|---|---|
-| `GET` | `/location-store/calendar-event-links` | The caller's links from calendar events to visits, flights and journeys | principal or session agent |
-| `POST` | `/location-store/calendar-event-links` | Link a calendar event to one of the caller's records by hand; 201 | principal or session agent |
-| `DELETE` | `/location-store/calendar-event-links/{id}` | Delete a calendar event link | principal or session agent |
-| `GET` | `/location-store/calendar-event-links/{id}` | One calendar event link | principal or session agent |
-| `GET` | `/location-store/calendar-series-places` | What each recurring calendar series came to in the caller's records | principal or session agent |
-| `GET` | `/location-store/calendar-series-places/{id}` | One series place | principal or session agent |
-| `POST` | `/location-store/calendar/match` | Link the calendar events sent to one owner's visits, flights and journeys | principal or session agent |
-| `GET` | `/location-store/health` | `{"status":"ok","counts":…}`, counted over the caller's own records | principal or session agent |
-| `GET` | `/location-store/home-periods` | The caller's home periods, oldest first | principal or session agent |
-| `GET` | `/location-store/home-periods/{id}` | One home period | principal or session agent |
-| `GET` | `/location-store/imports` | The caller's imports, newest first | principal or session agent |
-| `POST` | `/location-store/imports` | Start an import owned by the caller, or answer the caller's one with that hash | principal or session agent |
-| `GET` | `/location-store/imports/{id}` | One import | principal or session agent |
-| `POST` | `/location-store/imports/{id}/batches` | Add a batch of records to an import, in one transaction | principal or session agent |
-| `POST` | `/location-store/imports/{id}/finish` | Finish an import, applying a snapshot's span | principal or session agent |
-| `GET` | `/location-store/journeys` | The caller's journeys | principal or session agent |
-| `POST` | `/location-store/journeys/group` | Group one owner's movements into home periods and journeys | principal or session agent |
-| `GET` | `/location-store/journeys/{id}` | One journey with its movements | principal or session agent |
-| `POST` | `/location-store/localities/fill` | Name the town of every empty locality in one owner's records, offline, from GeoNames | principal or session agent |
-| `POST` | `/location-store/phone-points/segment` | Make one owner's live phone points into visits and movements | principal or session agent |
-| `GET` | `/location-store/place-suggestions` | The caller's place name suggestions by `status` and `place_id` | principal or session agent |
-| `POST` | `/location-store/place-suggestions/proposals` | Propose names for one owner's unnamed places | principal or session agent |
-| `GET` | `/location-store/place-suggestions/{id}` | One place name suggestion | principal or session agent |
-| `POST` | `/location-store/place-suggestions/{id}/accept` | Accept a suggested name, naming the place | principal or session agent |
-| `POST` | `/location-store/place-suggestions/{id}/reject` | Reject a suggested name | principal or session agent |
-| `GET` | `/location-store/places` | The caller's places by `q`, `kind`, `tag` and `google_place_id`, oldest first | principal or session agent |
-| `POST` | `/location-store/places` | Make a place owned by the caller; 201 | principal or session agent |
-| `DELETE` | `/location-store/places/{id}` | Delete a place, reversibly | principal or session agent |
-| `GET` | `/location-store/places/{id}` | One place; a deleted one only with `include_deleted=true` | principal or session agent |
-| `PATCH` | `/location-store/places/{id}` | Change a place's name, address, description or tags | principal or session agent |
-| `POST` | `/location-store/places/{id}/merge` | Merge this place into another of the same owner's (`into`), moving its visits, trips and links | principal or session agent |
-| `POST` | `/location-store/places/{id}/restore` | Undo a delete | principal or session agent |
-| `GET` | `/location-store/places/{id}/revisions` | A place as it was before each change | principal or session agent |
-| `GET` | `/location-store/points` | The caller's raw location points by `from`, `to`, `source` and `source_ref`, earliest first | principal or session agent |
-| `POST` | `/location-store/points/live` | A phone's fixes as it makes them, owned by the caller | principal or session agent |
-| `GET` | `/location-store/timeline` | The caller's visits and trips overlapping `from` to `to`, in start order | principal or session agent |
-| `GET` | `/location-store/trips` | The caller's trips by `from`, `to`, `mode`, `parent_trip_id`, `source`, `tag` and the rest of CONTRACT.md's filters, earliest first | principal or session agent |
-| `POST` | `/location-store/trips` | Make a trip owned by the caller; 201 | principal or session agent |
-| `DELETE` | `/location-store/trips/{id}` | Delete a trip, reversibly | principal or session agent |
-| `GET` | `/location-store/trips/{id}` | One trip | principal or session agent |
-| `PATCH` | `/location-store/trips/{id}` | Change a trip's parent, places, mode, title, description or tags | principal or session agent |
-| `POST` | `/location-store/trips/{id}/children` | Make trips of the same owner part of this one, all or none | principal or session agent |
-| `GET` | `/location-store/trips/{id}/path` | The points a trip went through, in time order | principal or session agent |
-| `POST` | `/location-store/trips/{id}/restore` | Undo a delete | principal or session agent |
-| `GET` | `/location-store/trips/{id}/revisions` | A trip as it was before each change | principal or session agent |
-| `GET` | `/location-store/unnamed-places` | The caller's places with no name, the most visited first | principal or session agent |
-| `GET` | `/location-store/visits` | The caller's visits by `from`, `to`, `place_id`, `source` and `tag`, earliest first | principal or session agent |
-| `POST` | `/location-store/visits` | Make a visit owned by the caller; 201 | principal or session agent |
-| `DELETE` | `/location-store/visits/{id}` | Delete a visit, reversibly | principal or session agent |
-| `GET` | `/location-store/visits/{id}` | One visit | principal or session agent |
-| `PATCH` | `/location-store/visits/{id}` | Change a visit's place, description or tags | principal or session agent |
-| `POST` | `/location-store/visits/{id}/restore` | Undo a delete | principal or session agent |
-| `GET` | `/location-store/visits/{id}/revisions` | A visit as it was before each change | principal or session agent |
-| `GET` | `/location-store/vocabularies` | The kinds, sources, modes and reasons location-store knows | principal or session agent |
+| `GET` | `/locations/calendar-event-links` | The caller's links from calendar events to visits, flights and journeys | principal or session agent |
+| `POST` | `/locations/calendar-event-links` | Link a calendar event to one of the caller's records by hand; 201 | principal or session agent |
+| `DELETE` | `/locations/calendar-event-links/{id}` | Delete a calendar event link | principal or session agent |
+| `GET` | `/locations/calendar-event-links/{id}` | One calendar event link | principal or session agent |
+| `GET` | `/locations/calendar-series-places` | What each recurring calendar series came to in the caller's records | principal or session agent |
+| `GET` | `/locations/calendar-series-places/{id}` | One series place | principal or session agent |
+| `POST` | `/locations/calendar/match` | Link the calendar events sent to one owner's visits, flights and journeys | principal or session agent |
+| `GET` | `/locations/health` | `{"status":"ok","counts":…}`, counted over the caller's own records | principal or session agent |
+| `GET` | `/locations/home-periods` | The caller's home periods, oldest first | principal or session agent |
+| `GET` | `/locations/home-periods/{id}` | One home period | principal or session agent |
+| `GET` | `/locations/imports` | The caller's imports, newest first | principal or session agent |
+| `POST` | `/locations/imports` | Start an import owned by the caller, or answer the caller's one with that hash | principal or session agent |
+| `GET` | `/locations/imports/{id}` | One import | principal or session agent |
+| `POST` | `/locations/imports/{id}/batches` | Add a batch of records to an import, in one transaction | principal or session agent |
+| `POST` | `/locations/imports/{id}/finish` | Finish an import, applying a snapshot's span | principal or session agent |
+| `GET` | `/locations/journeys` | The caller's journeys | principal or session agent |
+| `POST` | `/locations/journeys/group` | Group one owner's movements into home periods and journeys | principal or session agent |
+| `GET` | `/locations/journeys/{id}` | One journey with its movements | principal or session agent |
+| `POST` | `/locations/localities/fill` | Name the town of every empty locality in one owner's records, offline, from GeoNames | principal or session agent |
+| `POST` | `/locations/phone-points/segment` | Make one owner's live phone points into visits and movements | principal or session agent |
+| `GET` | `/locations/place-suggestions` | The caller's place name suggestions by `status` and `place_id` | principal or session agent |
+| `POST` | `/locations/place-suggestions/proposals` | Propose names for one owner's unnamed places | principal or session agent |
+| `GET` | `/locations/place-suggestions/{id}` | One place name suggestion | principal or session agent |
+| `POST` | `/locations/place-suggestions/{id}/accept` | Accept a suggested name, naming the place | principal or session agent |
+| `POST` | `/locations/place-suggestions/{id}/reject` | Reject a suggested name | principal or session agent |
+| `GET` | `/locations/places` | The caller's places by `q`, `kind`, `tag` and `google_place_id`, oldest first | principal or session agent |
+| `POST` | `/locations/places` | Make a place owned by the caller; 201 | principal or session agent |
+| `DELETE` | `/locations/places/{id}` | Delete a place, reversibly | principal or session agent |
+| `GET` | `/locations/places/{id}` | One place; a deleted one only with `include_deleted=true` | principal or session agent |
+| `PATCH` | `/locations/places/{id}` | Change a place's name, address, description or tags | principal or session agent |
+| `POST` | `/locations/places/{id}/merge` | Merge this place into another of the same owner's (`into`), moving its visits, trips and links | principal or session agent |
+| `POST` | `/locations/places/{id}/restore` | Undo a delete | principal or session agent |
+| `GET` | `/locations/places/{id}/revisions` | A place as it was before each change | principal or session agent |
+| `GET` | `/locations/points` | The caller's raw location points by `from`, `to`, `source` and `source_ref`, earliest first | principal or session agent |
+| `POST` | `/locations/points/live` | A phone's fixes as it makes them, owned by the caller | principal or session agent |
+| `GET` | `/locations/timeline` | The caller's visits and trips overlapping `from` to `to`, in start order | principal or session agent |
+| `GET` | `/locations/trips` | The caller's trips by `from`, `to`, `mode`, `parent_trip_id`, `source`, `tag` and the rest of CONTRACT.md's filters, earliest first | principal or session agent |
+| `POST` | `/locations/trips` | Make a trip owned by the caller; 201 | principal or session agent |
+| `DELETE` | `/locations/trips/{id}` | Delete a trip, reversibly | principal or session agent |
+| `GET` | `/locations/trips/{id}` | One trip | principal or session agent |
+| `PATCH` | `/locations/trips/{id}` | Change a trip's parent, places, mode, title, description or tags | principal or session agent |
+| `POST` | `/locations/trips/{id}/children` | Make trips of the same owner part of this one, all or none | principal or session agent |
+| `GET` | `/locations/trips/{id}/path` | The points a trip went through, in time order | principal or session agent |
+| `POST` | `/locations/trips/{id}/restore` | Undo a delete | principal or session agent |
+| `GET` | `/locations/trips/{id}/revisions` | A trip as it was before each change | principal or session agent |
+| `GET` | `/locations/unnamed-places` | The caller's places with no name, the most visited first | principal or session agent |
+| `GET` | `/locations/visits` | The caller's visits by `from`, `to`, `place_id`, `source` and `tag`, earliest first | principal or session agent |
+| `POST` | `/locations/visits` | Make a visit owned by the caller; 201 | principal or session agent |
+| `DELETE` | `/locations/visits/{id}` | Delete a visit, reversibly | principal or session agent |
+| `GET` | `/locations/visits/{id}` | One visit | principal or session agent |
+| `PATCH` | `/locations/visits/{id}` | Change a visit's place, description or tags | principal or session agent |
+| `POST` | `/locations/visits/{id}/restore` | Undo a delete | principal or session agent |
+| `GET` | `/locations/visits/{id}/revisions` | A visit as it was before each change | principal or session agent |
+| `GET` | `/locations/vocabularies` | The kinds, sources, modes and reasons location-store knows | principal or session agent |
 
 ### possession-store, mounted in this process
 
 | Method | Route | What it does | Who may call |
 |---|---|---|---|
-| `GET` | `/possession-store/appliances` | The caller's possessions of kind appliance, by the possession filters | principal or session agent |
-| `GET` | `/possession-store/appliances/{id}` | The possession a appliance record (`appliance_…`) belongs to | principal or session agent |
-| `GET` | `/possession-store/appliances/{id}/image` | The cover of the possession a appliance record belongs to, as a JPEG | principal or session agent |
-| `GET` | `/possession-store/art-and-decor` | The caller's possessions of kind art and decor, by the possession filters | principal or session agent |
-| `GET` | `/possession-store/art-and-decor/{id}` | The possession a art and decor record (`art_and_decor_…`) belongs to | principal or session agent |
-| `GET` | `/possession-store/art-and-decor/{id}/image` | The cover of the possession a art and decor record belongs to, as a JPEG | principal or session agent |
-| `GET` | `/possession-store/audio-devices` | The caller's possessions of kind audio device, by the possession filters | principal or session agent |
-| `GET` | `/possession-store/audio-devices/{id}` | The possession a audio device record (`audio_device_…`) belongs to | principal or session agent |
-| `GET` | `/possession-store/audio-devices/{id}/image` | The cover of the possession a audio device record belongs to, as a JPEG | principal or session agent |
-| `GET` | `/possession-store/bags-and-cases` | The caller's possessions of kind bag or case, by the possession filters | principal or session agent |
-| `GET` | `/possession-store/bags-and-cases/{id}` | The possession a bag or case record (`bag_or_case_…`) belongs to | principal or session agent |
-| `GET` | `/possession-store/bags-and-cases/{id}/image` | The cover of the possession a bag or case record belongs to, as a JPEG | principal or session agent |
-| `GET` | `/possession-store/collectibles` | The caller's possessions of kind collectible, by the possession filters | principal or session agent |
-| `GET` | `/possession-store/collectibles/{id}` | The possession a collectible record (`collectible_…`) belongs to | principal or session agent |
-| `GET` | `/possession-store/collectibles/{id}/image` | The cover of the possession a collectible record belongs to, as a JPEG | principal or session agent |
-| `GET` | `/possession-store/computer-parts` | The caller's possessions of kind computer part, by the possession filters | principal or session agent |
-| `GET` | `/possession-store/computer-parts/{id}` | The possession a computer part record (`computer_part_…`) belongs to | principal or session agent |
-| `GET` | `/possession-store/computer-parts/{id}/image` | The cover of the possession a computer part record belongs to, as a JPEG | principal or session agent |
-| `GET` | `/possession-store/computers` | The caller's possessions of kind computer, by the possession filters | principal or session agent |
-| `GET` | `/possession-store/computers/{id}` | The possession a computer record (`computer_…`) belongs to | principal or session agent |
-| `GET` | `/possession-store/computers/{id}/image` | The cover of the possession a computer record belongs to, as a JPEG | principal or session agent |
-| `GET` | `/possession-store/electronic-accessories` | The caller's possessions of kind electronic accessory, by the possession filters | principal or session agent |
-| `GET` | `/possession-store/electronic-accessories/{id}` | The possession a electronic accessory record (`electronic_accessory_…`) belongs to | principal or session agent |
-| `GET` | `/possession-store/electronic-accessories/{id}/image` | The cover of the possession a electronic accessory record belongs to, as a JPEG | principal or session agent |
-| `GET` | `/possession-store/eyewear` | The caller's possessions of kind eyewear, by the possession filters | principal or session agent |
-| `GET` | `/possession-store/eyewear/{id}` | The possession a eyewear record (`eyewear_…`) belongs to | principal or session agent |
-| `GET` | `/possession-store/eyewear/{id}/image` | The cover of the possession a eyewear record belongs to, as a JPEG | principal or session agent |
-| `GET` | `/possession-store/fitness-equipment` | The caller's possessions of kind fitness equipment, by the possession filters | principal or session agent |
-| `GET` | `/possession-store/fitness-equipment/{id}` | The possession a fitness equipment record (`fitness_equipment_…`) belongs to | principal or session agent |
-| `GET` | `/possession-store/fitness-equipment/{id}/image` | The cover of the possession a fitness equipment record belongs to, as a JPEG | principal or session agent |
-| `GET` | `/possession-store/furniture` | The caller's possessions of kind furniture, by the possession filters | principal or session agent |
-| `GET` | `/possession-store/furniture/{id}` | The possession a furniture record (`furniture_…`) belongs to | principal or session agent |
-| `GET` | `/possession-store/furniture/{id}/image` | The cover of the possession a furniture record belongs to, as a JPEG | principal or session agent |
-| `GET` | `/possession-store/garments` | The caller's possessions of kind garment, by the possession filters | principal or session agent |
-| `GET` | `/possession-store/garments/{id}` | The possession a garment record (`garment_…`) belongs to | principal or session agent |
-| `GET` | `/possession-store/garments/{id}/image` | The cover of the possession a garment record belongs to, as a JPEG | principal or session agent |
-| `GET` | `/possession-store/harness-machines/{machine_id}/computer` | The caller's computer a harness-store machine is | principal or session agent |
-| `GET` | `/possession-store/health` | `{"status":"ok","counts":…}`, counted over the caller's own records | principal or session agent |
-| `GET` | `/possession-store/home-textiles` | The caller's possessions of kind home textile, by the possession filters | principal or session agent |
-| `GET` | `/possession-store/home-textiles/{id}` | The possession a home textile record (`home_textile_…`) belongs to | principal or session agent |
-| `GET` | `/possession-store/home-textiles/{id}/image` | The cover of the possession a home textile record belongs to, as a JPEG | principal or session agent |
-| `GET` | `/possession-store/household-tools` | The caller's possessions of kind household tool, by the possession filters | principal or session agent |
-| `GET` | `/possession-store/household-tools/{id}` | The possession a household tool record (`household_tool_…`) belongs to | principal or session agent |
-| `GET` | `/possession-store/household-tools/{id}/image` | The cover of the possession a household tool record belongs to, as a JPEG | principal or session agent |
-| `GET` | `/possession-store/jewelry` | The caller's possessions of kind jewelry, by the possession filters | principal or session agent |
-| `GET` | `/possession-store/jewelry/{id}` | The possession a jewelry record (`jewelry_…`) belongs to | principal or session agent |
-| `GET` | `/possession-store/jewelry/{id}/image` | The cover of the possession a jewelry record belongs to, as a JPEG | principal or session agent |
-| `GET` | `/possession-store/kinds` | The kinds a possession may have, each with its fields and id prefix | principal or session agent |
-| `POST` | `/possession-store/marketplace-order-lines/match` | Both readers match one owner's open order lines to possessions | principal or session agent |
-| `POST` | `/possession-store/marketplace-orders/import-ebay-mail` | Read one owner's eBay order mail with the first reader and record each order in budget-store | principal or session agent |
-| `GET` | `/possession-store/media` | The caller's possessions of kind media, by the possession filters | principal or session agent |
-| `GET` | `/possession-store/media/{id}` | The possession a media record (`media_…`) belongs to | principal or session agent |
-| `GET` | `/possession-store/media/{id}/image` | The cover of the possession a media record belongs to, as a JPEG | principal or session agent |
-| `GET` | `/possession-store/music-accessories` | The caller's possessions of kind music accessory, by the possession filters | principal or session agent |
-| `GET` | `/possession-store/music-accessories/{id}` | The possession a music accessory record (`music_accessory_…`) belongs to | principal or session agent |
-| `GET` | `/possession-store/music-accessories/{id}/image` | The cover of the possession a music accessory record belongs to, as a JPEG | principal or session agent |
-| `GET` | `/possession-store/musical-instruments` | The caller's possessions of kind musical instrument, by the possession filters | principal or session agent |
-| `GET` | `/possession-store/musical-instruments/{id}` | The possession a musical instrument record (`musical_instrument_…`) belongs to | principal or session agent |
-| `GET` | `/possession-store/musical-instruments/{id}/image` | The cover of the possession a musical instrument record belongs to, as a JPEG | principal or session agent |
-| `PUT` | `/possession-store/originals/{sha256}` | Keep an original's bytes in file-store for the owner the request acts for; answers where photo-store should say it is | principal or session agent |
-| `POST` | `/possession-store/outfit-covers/read-wearer-boxes` | Read the wearer box of every cover photo of one owner's outfits that has none | principal or session agent |
-| `GET` | `/possession-store/outfit-looks` | The caller's looks by `worn_on` and `outfit_id` | principal or session agent |
-| `POST` | `/possession-store/outfit-looks/read` | Both readers read each day's photos of one owner into looks and slots | principal or session agent |
-| `GET` | `/possession-store/outfit-looks/{id}` | One look with its photos and slots | principal or session agent |
-| `GET` | `/possession-store/outfit-merges` | The caller's outfit merges, by `outfit_id`, newest first | principal or session agent |
-| `GET` | `/possession-store/outfit-merges/{id}` | One outfit merge and every row it moved | principal or session agent |
-| `POST` | `/possession-store/outfit-merges/{id}/undo` | Undo an outfit merge | principal or session agent |
-| `POST` | `/possession-store/outfit-pieces/rematch` | Match one owner's stuck outfit pieces by picture with both readers | principal or session agent |
-| `GET` | `/possession-store/outfit-rebuilds/{id}` | One rebuild of outfits from looks | principal or session agent |
-| `POST` | `/possession-store/outfit-rebuilds/{id}/undo` | Undo a rebuild | principal or session agent |
-| `POST` | `/possession-store/outfit-slots/identify` | Both readers sort one owner's slots into pieces and link each to its best guess | principal or session agent |
-| `GET` | `/possession-store/outfit-slots/{id}` | One slot with its boxes and candidates | principal or session agent |
-| `GET` | `/possession-store/outfit-slots/{id}/image` | One slot cut from its photo, as a JPEG | principal or session agent |
-| `GET` | `/possession-store/outfit-tags` | Every tag on the caller's live outfits, the most used first | principal or session agent |
-| `GET` | `/possession-store/outfits` | The caller's outfits by `status`, `possession_id`, `favorite`, `tag`, `limit` and `offset`, with their covers | principal or session agent |
-| `POST` | `/possession-store/outfits` | Make an outfit owned by the caller of its wearables; 201 | principal or session agent |
-| `POST` | `/possession-store/outfits/consolidate` | Both readers look for one owner's outfits recorded twice, combining what both see as one | principal or session agent |
-| `POST` | `/possession-store/outfits/rebuild-from-looks` | Place every look of one owner into outfits again, undoably | principal or session agent |
-| `DELETE` | `/possession-store/outfits/{id}` | Delete an outfit; 204 | principal or session agent |
-| `GET` | `/possession-store/outfits/{id}` | One outfit with its cover | principal or session agent |
-| `PATCH` | `/possession-store/outfits/{id}` | Change an outfit, its pieces, favorite or tags | principal or session agent |
-| `POST` | `/possession-store/outfits/{id}/combine` | Combine a duplicate outfit into another of the same owner's, undoably | principal or session agent |
-| `PUT` | `/possession-store/outfits/{id}/cover` | Pick an outfit's cover photo, or take the pick away | principal or session agent |
-| `GET` | `/possession-store/outfits/{id}/image` | An outfit's cover cut to the wearer, as a JPEG | principal or session agent |
-| `POST` | `/possession-store/outfits/{id}/wearings` | Record a day an outfit was worn; 201 | principal or session agent |
-| `GET` | `/possession-store/owner-questions` | The caller's questions, open ones by default, by `photo_review_id`, `purpose`, `include_answered` | principal or session agent |
-| `POST` | `/possession-store/owner-questions/triage-outfit-doubts` | Sort one owner's outfit questions into decisions and details | principal or session agent |
-| `GET` | `/possession-store/owner-questions/{id}` | One question with its choices | principal or session agent |
-| `POST` | `/possession-store/owner-questions/{id}/answer` | Answer a question by a choice or in words, applying what it decides | principal or session agent |
-| `GET` | `/possession-store/owner-questions/{id}/image` | The picture a question asks about, as a JPEG | principal or session agent |
-| `GET` | `/possession-store/personal-care` | The caller's possessions of kind personal care, by the possession filters | principal or session agent |
-| `GET` | `/possession-store/personal-care/{id}` | The possession a personal care record (`personal_care_…`) belongs to | principal or session agent |
-| `GET` | `/possession-store/personal-care/{id}/image` | The cover of the possession a personal care record belongs to, as a JPEG | principal or session agent |
-| `GET` | `/possession-store/photo-reviews` | The caller's photo reviews by `status`, newest first | principal or session agent |
-| `POST` | `/possession-store/photo-reviews` | Queue one of the caller's photos for review; 201, or 200 with the review already queued | principal or session agent |
-| `GET` | `/possession-store/photo-reviews/{id}` | One review with its readings, sightings and questions | principal or session agent |
-| `POST` | `/possession-store/photo-reviews/{id}/retry` | Queue a failed review again | principal or session agent |
-| `GET` | `/possession-store/possession-merges` | The caller's possession merges, by `possession_id`, newest first | principal or session agent |
-| `GET` | `/possession-store/possession-merges/{id}` | One possession merge and every row it moved | principal or session agent |
-| `POST` | `/possession-store/possession-merges/{id}/undo` | Undo a possession merge | principal or session agent |
-| `GET` | `/possession-store/possessions` | The caller's possessions by `q`, `status`, `kind`, `place_id`, `include_deleted`, `limit` and `offset`, newest first | principal or session agent |
-| `POST` | `/possession-store/possessions` | Make a possession owned by the caller, with at most one kind and its photos; 201 | principal or session agent |
-| `POST` | `/possession-store/possessions/classify-kindless` | Give one owner's possessions with no kind one, by the first reader; asks when unsure | principal or session agent |
-| `DELETE` | `/possession-store/possessions/{id}` | Delete a possession, reversibly; 204 | principal or session agent |
-| `GET` | `/possession-store/possessions/{id}` | One possession with its kind, photos, outfits and product | principal or session agent |
-| `PATCH` | `/possession-store/possessions/{id}` | Change a possession's fields or give it a kind | principal or session agent |
-| `GET` | `/possession-store/possessions/{id}/image` | A possession's cover cut from its photo, as a JPEG | principal or session agent |
-| `PUT` | `/possession-store/possessions/{id}/kind` | Move a possession to another kind | principal or session agent |
-| `POST` | `/possession-store/possessions/{id}/merge` | Merge a duplicate possession into another of the same owner's, undoably | principal or session agent |
-| `POST` | `/possession-store/possessions/{id}/photos` | Link a photo of the owner's to a possession, with its box | principal or session agent |
-| `DELETE` | `/possession-store/possessions/{id}/photos/{photo_id}` | Unlink a photo from a possession | principal or session agent |
-| `POST` | `/possession-store/possessions/{id}/restore` | Undo a delete | principal or session agent |
-| `GET` | `/possession-store/possessions/{id}/revisions` | A possession's rows as they were before each change, newest first | principal or session agent |
-| `GET` | `/possession-store/products` | The caller's products by `q`, newest first | principal or session agent |
-| `POST` | `/possession-store/products` | Make a product owned by the caller from its listing in article-store; 201 | principal or session agent |
-| `GET` | `/possession-store/products/{id}` | One product with its possessions | principal or session agent |
-| `PATCH` | `/possession-store/products/{id}` | Change a product, reading its listing again when it moves | principal or session agent |
-| `PATCH` | `/possession-store/purchase-lines/{id}` | Say what a purchase line became; 204 | principal or session agent |
-| `GET` | `/possession-store/purchases` | The caller's purchases by `marketplace`, newest first | principal or session agent |
-| `POST` | `/possession-store/purchases` | Record a purchase owned by the caller, line by line; 201 | principal or session agent |
-| `DELETE` | `/possession-store/purchases/{id}` | Delete a purchase, withdrawing its questions | principal or session agent |
-| `GET` | `/possession-store/purchases/{id}` | One purchase with its lines | principal or session agent |
-| `POST` | `/possession-store/sightings/record-agreed` | Record the sightings of one owner both readers agreed on that earlier reviews held back | principal or session agent |
-| `GET` | `/possession-store/sightings/{id}` | One sighting | principal or session agent |
-| `GET` | `/possession-store/sightings/{id}/image` | One sighting cut from its photo, as a JPEG | principal or session agent |
-| `GET` | `/possession-store/sports-gear` | The caller's possessions of kind sports gear, by the possession filters | principal or session agent |
-| `GET` | `/possession-store/sports-gear/{id}` | The possession a sports gear record (`sports_gear_…`) belongs to | principal or session agent |
-| `GET` | `/possession-store/sports-gear/{id}/image` | The cover of the possession a sports gear record belongs to, as a JPEG | principal or session agent |
-| `GET` | `/possession-store/tabletop-games` | The caller's possessions of kind tabletop game, by the possession filters | principal or session agent |
-| `GET` | `/possession-store/tabletop-games/{id}` | The possession a tabletop game record (`tabletop_game_…`) belongs to | principal or session agent |
-| `GET` | `/possession-store/tabletop-games/{id}/image` | The cover of the possession a tabletop game record belongs to, as a JPEG | principal or session agent |
-| `GET` | `/possession-store/vehicles` | The caller's possessions of kind vehicle, by the possession filters | principal or session agent |
-| `GET` | `/possession-store/vehicles/{id}` | The possession a vehicle record (`vehicle_…`) belongs to | principal or session agent |
-| `GET` | `/possession-store/vehicles/{id}/image` | The cover of the possession a vehicle record belongs to, as a JPEG | principal or session agent |
-| `POST` | `/possession-store/vehicles/{id}/odometer-readings` | Record a vehicle's odometer; 201 | principal or session agent |
-| `GET` | `/possession-store/vocabulary` | Every vocabulary a field takes its words from | principal or session agent |
-| `GET` | `/possession-store/watches` | The caller's possessions of kind watch, by the possession filters | principal or session agent |
-| `GET` | `/possession-store/watches/{id}` | The possession a watch record (`watch_…`) belongs to | principal or session agent |
-| `GET` | `/possession-store/watches/{id}/image` | The cover of the possession a watch record belongs to, as a JPEG | principal or session agent |
-| `GET` | `/possession-store/wearable-groups` | The caller's wearable groups with their members by status | principal or session agent |
-| `PUT` | `/possession-store/wearable-groups/{group}` | Close or open a wearable group, or say how many pieces it holds | principal or session agent |
-| `POST` | `/possession-store/wearables/check-duplicates` | Both readers look for one owner's wearables recorded twice, merging what both see as one | principal or session agent |
-| `POST` | `/possession-store/wearables/check-links` | Both readers check one owner's wearables' photo links, unlinking what both doubt | principal or session agent |
+| `GET` | `/possessions/appliances` | The caller's possessions of kind appliance, by the possession filters | principal or session agent |
+| `GET` | `/possessions/appliances/{id}` | The possession a appliance record (`appliance_…`) belongs to | principal or session agent |
+| `GET` | `/possessions/appliances/{id}/image` | The cover of the possession a appliance record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possessions/art-and-decor` | The caller's possessions of kind art and decor, by the possession filters | principal or session agent |
+| `GET` | `/possessions/art-and-decor/{id}` | The possession a art and decor record (`art_and_decor_…`) belongs to | principal or session agent |
+| `GET` | `/possessions/art-and-decor/{id}/image` | The cover of the possession a art and decor record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possessions/audio-devices` | The caller's possessions of kind audio device, by the possession filters | principal or session agent |
+| `GET` | `/possessions/audio-devices/{id}` | The possession a audio device record (`audio_device_…`) belongs to | principal or session agent |
+| `GET` | `/possessions/audio-devices/{id}/image` | The cover of the possession a audio device record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possessions/bags-and-cases` | The caller's possessions of kind bag or case, by the possession filters | principal or session agent |
+| `GET` | `/possessions/bags-and-cases/{id}` | The possession a bag or case record (`bag_or_case_…`) belongs to | principal or session agent |
+| `GET` | `/possessions/bags-and-cases/{id}/image` | The cover of the possession a bag or case record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possessions/collectibles` | The caller's possessions of kind collectible, by the possession filters | principal or session agent |
+| `GET` | `/possessions/collectibles/{id}` | The possession a collectible record (`collectible_…`) belongs to | principal or session agent |
+| `GET` | `/possessions/collectibles/{id}/image` | The cover of the possession a collectible record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possessions/computer-parts` | The caller's possessions of kind computer part, by the possession filters | principal or session agent |
+| `GET` | `/possessions/computer-parts/{id}` | The possession a computer part record (`computer_part_…`) belongs to | principal or session agent |
+| `GET` | `/possessions/computer-parts/{id}/image` | The cover of the possession a computer part record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possessions/computers` | The caller's possessions of kind computer, by the possession filters | principal or session agent |
+| `GET` | `/possessions/computers/{id}` | The possession a computer record (`computer_…`) belongs to | principal or session agent |
+| `GET` | `/possessions/computers/{id}/image` | The cover of the possession a computer record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possessions/electronic-accessories` | The caller's possessions of kind electronic accessory, by the possession filters | principal or session agent |
+| `GET` | `/possessions/electronic-accessories/{id}` | The possession a electronic accessory record (`electronic_accessory_…`) belongs to | principal or session agent |
+| `GET` | `/possessions/electronic-accessories/{id}/image` | The cover of the possession a electronic accessory record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possessions/eyewear` | The caller's possessions of kind eyewear, by the possession filters | principal or session agent |
+| `GET` | `/possessions/eyewear/{id}` | The possession a eyewear record (`eyewear_…`) belongs to | principal or session agent |
+| `GET` | `/possessions/eyewear/{id}/image` | The cover of the possession a eyewear record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possessions/fitness-equipment` | The caller's possessions of kind fitness equipment, by the possession filters | principal or session agent |
+| `GET` | `/possessions/fitness-equipment/{id}` | The possession a fitness equipment record (`fitness_equipment_…`) belongs to | principal or session agent |
+| `GET` | `/possessions/fitness-equipment/{id}/image` | The cover of the possession a fitness equipment record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possessions/furniture` | The caller's possessions of kind furniture, by the possession filters | principal or session agent |
+| `GET` | `/possessions/furniture/{id}` | The possession a furniture record (`furniture_…`) belongs to | principal or session agent |
+| `GET` | `/possessions/furniture/{id}/image` | The cover of the possession a furniture record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possessions/garments` | The caller's possessions of kind garment, by the possession filters | principal or session agent |
+| `GET` | `/possessions/garments/{id}` | The possession a garment record (`garment_…`) belongs to | principal or session agent |
+| `GET` | `/possessions/garments/{id}/image` | The cover of the possession a garment record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possessions/harness-machines/{machine_id}/computer` | The caller's computer a harness-store machine is | principal or session agent |
+| `GET` | `/possessions/health` | `{"status":"ok","counts":…}`, counted over the caller's own records | principal or session agent |
+| `GET` | `/possessions/home-textiles` | The caller's possessions of kind home textile, by the possession filters | principal or session agent |
+| `GET` | `/possessions/home-textiles/{id}` | The possession a home textile record (`home_textile_…`) belongs to | principal or session agent |
+| `GET` | `/possessions/home-textiles/{id}/image` | The cover of the possession a home textile record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possessions/household-tools` | The caller's possessions of kind household tool, by the possession filters | principal or session agent |
+| `GET` | `/possessions/household-tools/{id}` | The possession a household tool record (`household_tool_…`) belongs to | principal or session agent |
+| `GET` | `/possessions/household-tools/{id}/image` | The cover of the possession a household tool record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possessions/jewelry` | The caller's possessions of kind jewelry, by the possession filters | principal or session agent |
+| `GET` | `/possessions/jewelry/{id}` | The possession a jewelry record (`jewelry_…`) belongs to | principal or session agent |
+| `GET` | `/possessions/jewelry/{id}/image` | The cover of the possession a jewelry record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possessions/kinds` | The kinds a possession may have, each with its fields and id prefix | principal or session agent |
+| `POST` | `/possessions/marketplace-order-lines/match` | Both readers match one owner's open order lines to possessions | principal or session agent |
+| `POST` | `/possessions/marketplace-orders/import-ebay-mail` | Read one owner's eBay order mail with the first reader and record each order in budget-store | principal or session agent |
+| `GET` | `/possessions/media` | The caller's possessions of kind media, by the possession filters | principal or session agent |
+| `GET` | `/possessions/media/{id}` | The possession a media record (`media_…`) belongs to | principal or session agent |
+| `GET` | `/possessions/media/{id}/image` | The cover of the possession a media record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possessions/music-accessories` | The caller's possessions of kind music accessory, by the possession filters | principal or session agent |
+| `GET` | `/possessions/music-accessories/{id}` | The possession a music accessory record (`music_accessory_…`) belongs to | principal or session agent |
+| `GET` | `/possessions/music-accessories/{id}/image` | The cover of the possession a music accessory record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possessions/musical-instruments` | The caller's possessions of kind musical instrument, by the possession filters | principal or session agent |
+| `GET` | `/possessions/musical-instruments/{id}` | The possession a musical instrument record (`musical_instrument_…`) belongs to | principal or session agent |
+| `GET` | `/possessions/musical-instruments/{id}/image` | The cover of the possession a musical instrument record belongs to, as a JPEG | principal or session agent |
+| `PUT` | `/possessions/originals/{sha256}` | Keep an original's bytes in file-store for the owner the request acts for; answers where photo-store should say it is | principal or session agent |
+| `POST` | `/possessions/outfit-covers/read-wearer-boxes` | Read the wearer box of every cover photo of one owner's outfits that has none | principal or session agent |
+| `GET` | `/possessions/outfit-looks` | The caller's looks by `worn_on` and `outfit_id` | principal or session agent |
+| `POST` | `/possessions/outfit-looks/read` | Both readers read each day's photos of one owner into looks and slots | principal or session agent |
+| `GET` | `/possessions/outfit-looks/{id}` | One look with its photos and slots | principal or session agent |
+| `GET` | `/possessions/outfit-merges` | The caller's outfit merges, by `outfit_id`, newest first | principal or session agent |
+| `GET` | `/possessions/outfit-merges/{id}` | One outfit merge and every row it moved | principal or session agent |
+| `POST` | `/possessions/outfit-merges/{id}/undo` | Undo an outfit merge | principal or session agent |
+| `POST` | `/possessions/outfit-pieces/rematch` | Match one owner's stuck outfit pieces by picture with both readers | principal or session agent |
+| `GET` | `/possessions/outfit-rebuilds/{id}` | One rebuild of outfits from looks | principal or session agent |
+| `POST` | `/possessions/outfit-rebuilds/{id}/undo` | Undo a rebuild | principal or session agent |
+| `POST` | `/possessions/outfit-slots/identify` | Both readers sort one owner's slots into pieces and link each to its best guess | principal or session agent |
+| `GET` | `/possessions/outfit-slots/{id}` | One slot with its boxes and candidates | principal or session agent |
+| `GET` | `/possessions/outfit-slots/{id}/image` | One slot cut from its photo, as a JPEG | principal or session agent |
+| `GET` | `/possessions/outfit-tags` | Every tag on the caller's live outfits, the most used first | principal or session agent |
+| `GET` | `/possessions/outfits` | The caller's outfits by `status`, `possession_id`, `favorite`, `tag`, `limit` and `offset`, with their covers | principal or session agent |
+| `POST` | `/possessions/outfits` | Make an outfit owned by the caller of its wearables; 201 | principal or session agent |
+| `POST` | `/possessions/outfits/consolidate` | Both readers look for one owner's outfits recorded twice, combining what both see as one | principal or session agent |
+| `POST` | `/possessions/outfits/rebuild-from-looks` | Place every look of one owner into outfits again, undoably | principal or session agent |
+| `DELETE` | `/possessions/outfits/{id}` | Delete an outfit; 204 | principal or session agent |
+| `GET` | `/possessions/outfits/{id}` | One outfit with its cover | principal or session agent |
+| `PATCH` | `/possessions/outfits/{id}` | Change an outfit, its pieces, favorite or tags | principal or session agent |
+| `POST` | `/possessions/outfits/{id}/combine` | Combine a duplicate outfit into another of the same owner's, undoably | principal or session agent |
+| `PUT` | `/possessions/outfits/{id}/cover` | Pick an outfit's cover photo, or take the pick away | principal or session agent |
+| `GET` | `/possessions/outfits/{id}/image` | An outfit's cover cut to the wearer, as a JPEG | principal or session agent |
+| `POST` | `/possessions/outfits/{id}/wearings` | Record a day an outfit was worn; 201 | principal or session agent |
+| `GET` | `/possessions/owner-questions` | The caller's questions, open ones by default, by `photo_review_id`, `purpose`, `include_answered` | principal or session agent |
+| `POST` | `/possessions/owner-questions/triage-outfit-doubts` | Sort one owner's outfit questions into decisions and details | principal or session agent |
+| `GET` | `/possessions/owner-questions/{id}` | One question with its choices | principal or session agent |
+| `POST` | `/possessions/owner-questions/{id}/answer` | Answer a question by a choice or in words, applying what it decides | principal or session agent |
+| `GET` | `/possessions/owner-questions/{id}/image` | The picture a question asks about, as a JPEG | principal or session agent |
+| `GET` | `/possessions/personal-care` | The caller's possessions of kind personal care, by the possession filters | principal or session agent |
+| `GET` | `/possessions/personal-care/{id}` | The possession a personal care record (`personal_care_…`) belongs to | principal or session agent |
+| `GET` | `/possessions/personal-care/{id}/image` | The cover of the possession a personal care record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possessions/photo-reviews` | The caller's photo reviews by `status`, newest first | principal or session agent |
+| `POST` | `/possessions/photo-reviews` | Queue one of the caller's photos for review; 201, or 200 with the review already queued | principal or session agent |
+| `GET` | `/possessions/photo-reviews/{id}` | One review with its readings, sightings and questions | principal or session agent |
+| `POST` | `/possessions/photo-reviews/{id}/retry` | Queue a failed review again | principal or session agent |
+| `GET` | `/possessions/possession-merges` | The caller's possession merges, by `possession_id`, newest first | principal or session agent |
+| `GET` | `/possessions/possession-merges/{id}` | One possession merge and every row it moved | principal or session agent |
+| `POST` | `/possessions/possession-merges/{id}/undo` | Undo a possession merge | principal or session agent |
+| `GET` | `/possessions/possessions` | The caller's possessions by `q`, `status`, `kind`, `place_id`, `include_deleted`, `limit` and `offset`, newest first | principal or session agent |
+| `POST` | `/possessions/possessions` | Make a possession owned by the caller, with at most one kind and its photos; 201 | principal or session agent |
+| `POST` | `/possessions/possessions/classify-kindless` | Give one owner's possessions with no kind one, by the first reader; asks when unsure | principal or session agent |
+| `DELETE` | `/possessions/possessions/{id}` | Delete a possession, reversibly; 204 | principal or session agent |
+| `GET` | `/possessions/possessions/{id}` | One possession with its kind, photos, outfits and product | principal or session agent |
+| `PATCH` | `/possessions/possessions/{id}` | Change a possession's fields or give it a kind | principal or session agent |
+| `GET` | `/possessions/possessions/{id}/image` | A possession's cover cut from its photo, as a JPEG | principal or session agent |
+| `PUT` | `/possessions/possessions/{id}/kind` | Move a possession to another kind | principal or session agent |
+| `POST` | `/possessions/possessions/{id}/merge` | Merge a duplicate possession into another of the same owner's, undoably | principal or session agent |
+| `POST` | `/possessions/possessions/{id}/photos` | Link a photo of the owner's to a possession, with its box | principal or session agent |
+| `DELETE` | `/possessions/possessions/{id}/photos/{photo_id}` | Unlink a photo from a possession | principal or session agent |
+| `POST` | `/possessions/possessions/{id}/restore` | Undo a delete | principal or session agent |
+| `GET` | `/possessions/possessions/{id}/revisions` | A possession's rows as they were before each change, newest first | principal or session agent |
+| `GET` | `/possessions/products` | The caller's products by `q`, newest first | principal or session agent |
+| `POST` | `/possessions/products` | Make a product owned by the caller from its listing in article-store; 201 | principal or session agent |
+| `GET` | `/possessions/products/{id}` | One product with its possessions | principal or session agent |
+| `PATCH` | `/possessions/products/{id}` | Change a product, reading its listing again when it moves | principal or session agent |
+| `PATCH` | `/possessions/purchase-lines/{id}` | Say what a purchase line became; 204 | principal or session agent |
+| `GET` | `/possessions/purchases` | The caller's purchases by `marketplace`, newest first | principal or session agent |
+| `POST` | `/possessions/purchases` | Record a purchase owned by the caller, line by line; 201 | principal or session agent |
+| `DELETE` | `/possessions/purchases/{id}` | Delete a purchase, withdrawing its questions | principal or session agent |
+| `GET` | `/possessions/purchases/{id}` | One purchase with its lines | principal or session agent |
+| `POST` | `/possessions/sightings/record-agreed` | Record the sightings of one owner both readers agreed on that earlier reviews held back | principal or session agent |
+| `GET` | `/possessions/sightings/{id}` | One sighting | principal or session agent |
+| `GET` | `/possessions/sightings/{id}/image` | One sighting cut from its photo, as a JPEG | principal or session agent |
+| `GET` | `/possessions/sports-gear` | The caller's possessions of kind sports gear, by the possession filters | principal or session agent |
+| `GET` | `/possessions/sports-gear/{id}` | The possession a sports gear record (`sports_gear_…`) belongs to | principal or session agent |
+| `GET` | `/possessions/sports-gear/{id}/image` | The cover of the possession a sports gear record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possessions/tabletop-games` | The caller's possessions of kind tabletop game, by the possession filters | principal or session agent |
+| `GET` | `/possessions/tabletop-games/{id}` | The possession a tabletop game record (`tabletop_game_…`) belongs to | principal or session agent |
+| `GET` | `/possessions/tabletop-games/{id}/image` | The cover of the possession a tabletop game record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possessions/vehicles` | The caller's possessions of kind vehicle, by the possession filters | principal or session agent |
+| `GET` | `/possessions/vehicles/{id}` | The possession a vehicle record (`vehicle_…`) belongs to | principal or session agent |
+| `GET` | `/possessions/vehicles/{id}/image` | The cover of the possession a vehicle record belongs to, as a JPEG | principal or session agent |
+| `POST` | `/possessions/vehicles/{id}/odometer-readings` | Record a vehicle's odometer; 201 | principal or session agent |
+| `GET` | `/possessions/vocabulary` | Every vocabulary a field takes its words from | principal or session agent |
+| `GET` | `/possessions/watches` | The caller's possessions of kind watch, by the possession filters | principal or session agent |
+| `GET` | `/possessions/watches/{id}` | The possession a watch record (`watch_…`) belongs to | principal or session agent |
+| `GET` | `/possessions/watches/{id}/image` | The cover of the possession a watch record belongs to, as a JPEG | principal or session agent |
+| `GET` | `/possessions/wearable-groups` | The caller's wearable groups with their members by status | principal or session agent |
+| `PUT` | `/possessions/wearable-groups/{group}` | Close or open a wearable group, or say how many pieces it holds | principal or session agent |
+| `POST` | `/possessions/wearables/check-duplicates` | Both readers look for one owner's wearables recorded twice, merging what both see as one | principal or session agent |
+| `POST` | `/possessions/wearables/check-links` | Both readers check one owner's wearables' photo links, unlinking what both doubt | principal or session agent |
 
 ### repo-store, mounted in this process
 
 | Method | Route | What it does | Who may call |
 |---|---|---|---|
-| `GET` | `/repo-store/by-path` | One repo by `path` | operator |
-| `GET` | `/repo-store/deployments` | One repo's deploys (`repo_id`, `limit`), newest first | operator |
-| `GET` | `/repo-store/deployments/latest` | The newest deploy of every repo | operator |
-| `POST` | `/repo-store/detect` | Detect the tags of a `path`, storing nothing | operator |
-| `GET` | `/repo-store/health` | `{"status":"ok"}` | operator |
-| `GET` | `/repo-store/pull-requests` | Pull requests by `repo_id`, `state` (`open`, `closed`, `merged`, `all`) and `limit` | operator |
-| `GET` | `/repo-store/repos` | List repos by `tag`, `q`, `provenance` (`ours`, `vendored`, `unstated`) and `limit`, by name | operator |
-| `POST` | `/repo-store/repos` | Make or refresh a repo by name, its tags detected from `path`; 201 when new | operator |
-| `GET` | `/repo-store/repos/by-mention/{mention}` | One repo by a `repo:<name>` mention | operator |
-| `GET` | `/repo-store/repos/by-name/{name}` | One repo by name | operator |
-| `DELETE` | `/repo-store/repos/{id}` | Delete a repo, its deploys and pull requests | operator |
-| `GET` | `/repo-store/repos/{id}` | One repo, with `github_url` and `effective_tags` | operator |
-| `POST` | `/repo-store/repos/{id}/deployments` | Append a deploy to the ledger, as deploy-gate does | operator |
-| `POST` | `/repo-store/repos/{id}/detect` | Detect its tags from its path again | operator |
-| `PUT` | `/repo-store/repos/{id}/identity` | Rename it and move its path and remote, keeping its id; 409 when another repo holds the name or path | operator |
-| `PUT` | `/repo-store/repos/{id}/provenance` | Say who authors it: `ours`, `vendored` or `""` | operator |
-| `POST` | `/repo-store/repos/{id}/pull-requests/sync` | Read the repo's pull requests from GitHub now; 503 when this server cannot run gh | operator |
+| `GET` | `/repos/by-path` | One repo by `path` | operator |
+| `GET` | `/repos/deployments` | One repo's deploys (`repo_id`, `limit`), newest first | operator |
+| `GET` | `/repos/deployments/latest` | The newest deploy of every repo | operator |
+| `POST` | `/repos/detect` | Detect the tags of a `path`, storing nothing | operator |
+| `GET` | `/repos/health` | `{"status":"ok"}` | operator |
+| `GET` | `/repos/pull-requests` | Pull requests by `repo_id`, `state` (`open`, `closed`, `merged`, `all`) and `limit` | operator |
+| `GET` | `/repos/repos` | List repos by `tag`, `q`, `provenance` (`ours`, `vendored`, `unstated`) and `limit`, by name | operator |
+| `POST` | `/repos/repos` | Make or refresh a repo by name, its tags detected from `path`; 201 when new | operator |
+| `GET` | `/repos/repos/by-mention/{mention}` | One repo by a `repo:<name>` mention | operator |
+| `GET` | `/repos/repos/by-name/{name}` | One repo by name | operator |
+| `DELETE` | `/repos/repos/{id}` | Delete a repo, its deploys and pull requests | operator |
+| `GET` | `/repos/repos/{id}` | One repo, with `github_url` and `effective_tags` | operator |
+| `POST` | `/repos/repos/{id}/deployments` | Append a deploy to the ledger, as deploy-gate does | operator |
+| `POST` | `/repos/repos/{id}/detect` | Detect its tags from its path again | operator |
+| `PUT` | `/repos/repos/{id}/identity` | Rename it and move its path and remote, keeping its id; 409 when another repo holds the name or path | operator |
+| `PUT` | `/repos/repos/{id}/provenance` | Say who authors it: `ours`, `vendored` or `""` | operator |
+| `POST` | `/repos/repos/{id}/pull-requests/sync` | Read the repo's pull requests from GitHub now; 503 when this server cannot run gh | operator |
 
 ### work-graph-store, mounted in this process
 
 | Method | Route | What it does | Who may call |
 |---|---|---|---|
-| `GET` | `/work-graph-store/activity` | The branches sessions touched in the last `hours`; `format=text` for an agent | operator |
-| `GET` | `/work-graph-store/commits/{mention...}` | One commit by a `<repo>@<sha>` mention, with its repo and maker | operator |
-| `GET` | `/work-graph-store/health` | `{"status":"ok"}` | operator |
-| `GET` | `/work-graph-store/ref-updates` | Ref updates by `repo_store_id`, `session_id`, `ref`, `since_unix_nano` and `limit`, newest first | operator |
-| `GET` | `/work-graph-store/repos/{repo_store_id}/graph` | A repo's commit graph with each commit's maker and each branch's sessions | operator |
-| `GET` | `/work-graph-store/session-repos` | How many refs each session moved in each repo since `since_unix_nano` | operator |
+| `GET` | `/git-activity/activity` | The branches sessions touched in the last `hours`; `format=text` for an agent | operator |
+| `GET` | `/git-activity/commits/{mention...}` | One commit by a `<repo>@<sha>` mention, with its repo and maker | operator |
+| `GET` | `/git-activity/health` | `{"status":"ok"}` | operator |
+| `GET` | `/git-activity/ref-updates` | Ref updates by `repo_store_id`, `session_id`, `ref`, `since_unix_nano` and `limit`, newest first | operator |
+| `GET` | `/git-activity/repos/{repo_store_id}/graph` | A repo's commit graph with each commit's maker and each branch's sessions | operator |
+| `GET` | `/git-activity/session-repos` | How many refs each session moved in each repo since `since_unix_nano` | operator |
 
 ### file-store, mounted in this process
 
 | Method | Route | What it does | Who may call |
 |---|---|---|---|
-| `GET` | `/file-store/files` | Files by `owner_service`, `owner_ref`, `sha256`, `include_deleted`, `limit` and `offset`, oldest first | operator |
-| `POST` | `/file-store/files` | Keep the body as a file of `owner_service` and `owner_ref`, named `filename`; 201 and the record | operator |
-| `DELETE` | `/file-store/files/{id}` | Delete, reversibly; `hard=true` purges the row and, with the last row naming them, the bytes | operator |
-| `GET` | `/file-store/files/{id}` | One file's record; `include_deleted=true` for a deleted one | operator |
-| `GET` | `/file-store/files/{id}/content` | The bytes, as a download unless `inline=true` and the type is on the inline list; ranges work | operator |
-| `POST` | `/file-store/files/{id}/restore` | Undo a delete | operator |
-| `GET` | `/file-store/health` | `{"status":"ok","files":…,"blobs":…,"blob_bytes":…}` | operator |
-| `GET` | `/file-store/limits` | The size limit and the inline content types in force | operator |
+| `GET` | `/file-storage/files` | Files by `owner_service`, `owner_ref`, `sha256`, `include_deleted`, `limit` and `offset`, oldest first | operator |
+| `POST` | `/file-storage/files` | Keep the body as a file of `owner_service` and `owner_ref`, named `filename`; 201 and the record | operator |
+| `DELETE` | `/file-storage/files/{id}` | Delete, reversibly; `hard=true` purges the row and, with the last row naming them, the bytes | operator |
+| `GET` | `/file-storage/files/{id}` | One file's record; `include_deleted=true` for a deleted one | operator |
+| `GET` | `/file-storage/files/{id}/content` | The bytes, as a download unless `inline=true` and the type is on the inline list; ranges work | operator |
+| `POST` | `/file-storage/files/{id}/restore` | Undo a delete | operator |
+| `GET` | `/file-storage/health` | `{"status":"ok","files":…,"blobs":…,"blob_bytes":…}` | operator |
+| `GET` | `/file-storage/limits` | The size limit and the inline content types in force | operator |
 
 ### reference-store, mounted in this process
 
 | Method | Route | What it does | Who may call |
 |---|---|---|---|
-| `GET` | `/reference-store/attachments/{id}` | A picture of the record, when the caller may see it | principal or session agent |
-| `GET` | `/reference-store/health` | `{"status":"ok"}` | anyone |
-| `POST` | `/reference-store/resolve` | What each of `ids` (at most 128) names, narrowed to what the caller may see | principal or session agent |
-| `GET` | `/reference-store/search` | Records matching `q` in every mentionable type the caller may see whole | principal or session agent |
-| `GET` | `/reference-store/types` | Every reference type: id patterns, owning service, label and summary fields, page, access | anyone |
-| `GET` | `/reference-store/types/{type}` | One reference type | anyone |
-| `GET` | `/reference-store/vocabulary` | The summary formats, the access rules and the grant names the types use | anyone |
+| `GET` | `/references/attachments/{id}` | A picture of the record, when the caller may see it | principal or session agent |
+| `GET` | `/references/health` | `{"status":"ok"}` | anyone |
+| `POST` | `/references/resolve` | What each of `ids` (at most 128) names, narrowed to what the caller may see | principal or session agent |
+| `GET` | `/references/search` | Records matching `q` in every mentionable type the caller may see whole | principal or session agent |
+| `GET` | `/references/types` | Every reference type: id patterns, owning service, label and summary fields, page, access | anyone |
+| `GET` | `/references/types/{type}` | One reference type | anyone |
+| `GET` | `/references/vocabulary` | The summary formats, the access rules and the grant names the types use | anyone |
 
 ### usage-store, mounted in this process
 
 | Method | Route | What it does | Who may call |
 |---|---|---|---|
-| `GET` | `/usage-store/api/usage` | Token totals per agent, orchestrator and model over the last `day`, `week` and `month`, from model-store's old daily usage rows | operator |
-| `GET` | `/usage-store/api/usage/limits` | The latest limits snapshot of `anthropic` and `codex`, each with `stale_after` | operator |
-| `POST` | `/usage-store/api/usage/limits/refresh` | Read `?provider=anthropic|codex` now and keep the snapshot | operator |
-| `POST` | `/usage-store/api/usage/limits/watch` | The usage page is open: read limits on the watched interval for a while. 204 | operator |
-| `GET` | `/usage-store/api/usage/limits/{provider}` | One provider's latest limits snapshot; 404 when it has none | operator |
-| `GET` | `/usage-store/api/usage/limits/{provider}/history` | One provider's snapshot rows, oldest first: `window`, `since`, `until`, `limit` | operator |
-| `GET` | `/usage-store/api/usage/spend/keys` | Each account's API keys with their 24h, 7d and 30d spend, top-ups and remaining credit | operator |
-| `GET` | `/usage-store/api/usage/spend/keys/{provider}/{api_key_id}/raw` | The provider's last answer about one key, as it came | operator |
-| `POST` | `/usage-store/api/usage/spend/refresh` | Read `?provider=anthropic` per-key spend now | operator |
-| `GET` | `/usage-store/api/usage/spend/topups` | A provider's top-ups, earliest first: `?provider=` | operator |
-| `POST` | `/usage-store/api/usage/spend/topups` | Record credit bought: `{"provider","amount_usd","occurred_at"|"occurred_at_str","note"}` | operator |
-| `DELETE` | `/usage-store/api/usage/spend/topups/{id}` | Delete one top-up. 204 | operator |
-| `GET` | `/usage-store/health` | `{"status":"ok"}` | operator |
+| `GET` | `/usage/api/usage` | Token totals per agent, orchestrator and model over the last `day`, `week` and `month`, from model-store's old daily usage rows | operator |
+| `GET` | `/usage/api/usage/limits` | The latest limits snapshot of `anthropic` and `codex`, each with `stale_after` | operator |
+| `POST` | `/usage/api/usage/limits/refresh` | Read `?provider=anthropic|codex` now and keep the snapshot | operator |
+| `POST` | `/usage/api/usage/limits/watch` | The usage page is open: read limits on the watched interval for a while. 204 | operator |
+| `GET` | `/usage/api/usage/limits/{provider}` | One provider's latest limits snapshot; 404 when it has none | operator |
+| `GET` | `/usage/api/usage/limits/{provider}/history` | One provider's snapshot rows, oldest first: `window`, `since`, `until`, `limit` | operator |
+| `GET` | `/usage/api/usage/spend/keys` | Each account's API keys with their 24h, 7d and 30d spend, top-ups and remaining credit | operator |
+| `GET` | `/usage/api/usage/spend/keys/{provider}/{api_key_id}/raw` | The provider's last answer about one key, as it came | operator |
+| `POST` | `/usage/api/usage/spend/refresh` | Read `?provider=anthropic` per-key spend now | operator |
+| `GET` | `/usage/api/usage/spend/topups` | A provider's top-ups, earliest first: `?provider=` | operator |
+| `POST` | `/usage/api/usage/spend/topups` | Record credit bought: `{"provider","amount_usd","occurred_at"|"occurred_at_str","note"}` | operator |
+| `DELETE` | `/usage/api/usage/spend/topups/{id}` | Delete one top-up. 204 | operator |
+| `GET` | `/usage/health` | `{"status":"ok"}` | operator |
 
 ### eval-store, mounted in this process
 
 | Method | Route | What it does | Who may call |
 |---|---|---|---|
-| `GET` | `/eval-store/cases/{id}` | One case with its prompts and original answer | operator |
-| `PATCH` | `/eval-store/cases/{id}` | Replace a case's `expected_answer` | operator |
-| `GET` | `/eval-store/health` | Counts of each record | operator |
-| `GET` | `/eval-store/runs` | Runs, newest first: `?suite_id=` | operator |
-| `POST` | `/eval-store/runs` | Create a run, freezing its cases and model-store's prices | operator |
-| `DELETE` | `/eval-store/runs/{id}` | Delete a run with its answers, verdicts and checks; 409 while it is going | operator |
-| `GET` | `/eval-store/runs/{id}` | One run and its progress | operator |
-| `PATCH` | `/eval-store/runs/{id}` | Change a run's `prediction_id` or `note` | operator |
-| `GET` | `/eval-store/runs/{id}/answers` | A run's answers; bodies only with `include_bodies=true` | operator |
-| `GET` | `/eval-store/runs/{id}/checks` | A run's check results | operator |
-| `POST` | `/eval-store/runs/{id}/checks` | Run the suite's checker over a run's answers again | operator |
-| `GET` | `/eval-store/runs/{id}/cost-projection` | What each model would cost a week, and what reaches `target_usd` | operator |
-| `GET` | `/eval-store/runs/{id}/report` | A run's report: `format=json|markdown`, `calls_per_week` | operator |
-| `POST` | `/eval-store/runs/{id}/resume` | Make what a run is missing, and with `retry_failed` what failed (202); 503 while runs are off | operator |
-| `POST` | `/eval-store/runs/{id}/start` | Start a created run (202); 503 while `eval_store.runs.enabled` is off | operator |
-| `POST` | `/eval-store/runs/{id}/stop` | Finish the calls in flight, then stop | operator |
-| `GET` | `/eval-store/runs/{id}/verdicts` | A run's verdicts; bodies and reasons only with `include_bodies=true` | operator |
-| `GET` | `/eval-store/suites` | Every suite | operator |
-| `POST` | `/eval-store/suites` | Create a suite | operator |
-| `DELETE` | `/eval-store/suites/{id}` | Delete a suite; 409 while it has runs | operator |
-| `GET` | `/eval-store/suites/{id}` | One suite | operator |
-| `PATCH` | `/eval-store/suites/{id}` | Change the suite fields named | operator |
-| `GET` | `/eval-store/suites/{id}/cases` | A suite's cases without their prompts or answers | operator |
-| `POST` | `/eval-store/suites/{id}/cases` | Add one case | operator |
-| `POST` | `/eval-store/suites/{id}/cases/import-operations` | Import succeeded llm.completion operations as cases | operator |
-| `GET` | `/eval-store/vocabulary` | Run statuses, source kinds, checkers, selection modes and answer origins | operator |
+| `GET` | `/evaluations/cases/{id}` | One case with its prompts and original answer | operator |
+| `PATCH` | `/evaluations/cases/{id}` | Replace a case's `expected_answer` | operator |
+| `GET` | `/evaluations/health` | Counts of each record | operator |
+| `GET` | `/evaluations/runs` | Runs, newest first: `?suite_id=` | operator |
+| `POST` | `/evaluations/runs` | Create a run, freezing its cases and model-store's prices | operator |
+| `DELETE` | `/evaluations/runs/{id}` | Delete a run with its answers, verdicts and checks; 409 while it is going | operator |
+| `GET` | `/evaluations/runs/{id}` | One run and its progress | operator |
+| `PATCH` | `/evaluations/runs/{id}` | Change a run's `prediction_id` or `note` | operator |
+| `GET` | `/evaluations/runs/{id}/answers` | A run's answers; bodies only with `include_bodies=true` | operator |
+| `GET` | `/evaluations/runs/{id}/checks` | A run's check results | operator |
+| `POST` | `/evaluations/runs/{id}/checks` | Run the suite's checker over a run's answers again | operator |
+| `GET` | `/evaluations/runs/{id}/cost-projection` | What each model would cost a week, and what reaches `target_usd` | operator |
+| `GET` | `/evaluations/runs/{id}/report` | A run's report: `format=json|markdown`, `calls_per_week` | operator |
+| `POST` | `/evaluations/runs/{id}/resume` | Make what a run is missing, and with `retry_failed` what failed (202); 503 while runs are off | operator |
+| `POST` | `/evaluations/runs/{id}/start` | Start a created run (202); 503 while `eval_store.runs.enabled` is off | operator |
+| `POST` | `/evaluations/runs/{id}/stop` | Finish the calls in flight, then stop | operator |
+| `GET` | `/evaluations/runs/{id}/verdicts` | A run's verdicts; bodies and reasons only with `include_bodies=true` | operator |
+| `GET` | `/evaluations/suites` | Every suite | operator |
+| `POST` | `/evaluations/suites` | Create a suite | operator |
+| `DELETE` | `/evaluations/suites/{id}` | Delete a suite; 409 while it has runs | operator |
+| `GET` | `/evaluations/suites/{id}` | One suite | operator |
+| `PATCH` | `/evaluations/suites/{id}` | Change the suite fields named | operator |
+| `GET` | `/evaluations/suites/{id}/cases` | A suite's cases without their prompts or answers | operator |
+| `POST` | `/evaluations/suites/{id}/cases` | Add one case | operator |
+| `POST` | `/evaluations/suites/{id}/cases/import-operations` | Import succeeded llm.completion operations as cases | operator |
+| `GET` | `/evaluations/vocabulary` | Run statuses, source kinds, checkers, selection modes and answer origins | operator |
 <!-- route-table:end -->
 
 ## Testing

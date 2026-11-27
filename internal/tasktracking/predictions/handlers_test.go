@@ -14,7 +14,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *Store) {
 	t.Helper()
 	s := newTestStore(t)
 	handlers := NewHandlers(s)
-	// The patterns the bridge registers, without its /prediction-store prefix.
+	// The patterns the bridge registers, without its /predictions prefix.
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", handlers.Health)
 	mux.HandleFunc("GET /vocabulary", handlers.Vocabulary)

@@ -37,9 +37,9 @@ const ROUTER_BASENAME = import.meta.env.BASE_URL === '/' ? undefined : import.me
 /** Stores reached through the bridge's own gateway, as the signed-in person:
  *  every host that runs the bridge carries these. */
 const BRIDGE_GATEWAY_PATHS: Partial<BridgeProps> = {
-  kanbanStoreBasePath: `${BASE}/kanban-store`,
-  grantStoreBasePath: `${BASE}/grant-store`,
-  referenceStoreBasePath: `${BASE}/reference-store`,
+  kanbanStoreBasePath: `${BASE}/issues`,
+  grantStoreBasePath: `${BASE}/grants`,
+  referenceStoreBasePath: `${BASE}/references`,
 }
 
 /** Stores the bridge does not proxy yet, reached at /api/<store> on the page's
@@ -63,24 +63,24 @@ const HOST_STORE_PATHS: Partial<BridgeProps> = {
  *  bridge's own origin, so every prefix is reachable as the signed-in person.
  *  multichat is not one of them, so the Messages pages stay hidden. */
 const STORES_THE_BRIDGE_SERVES: Partial<BridgeProps> = {
-  toolStoreBasePath: '/tool-store',
-  skillStoreBasePath: '/skill-store',
-  bundleStoreBasePath: '/bundle-store',
-  principalStoreBasePath: '/principal-store',
-  permissionStoreBasePath: '/permission-store',
-  modelStoreBasePath: '/model-store',
-  repoStoreBasePath: '/repo-store',
-  workGraphStoreBasePath: '/work-graph-store',
-  projectStoreBasePath: '/project-store',
+  toolStoreBasePath: '/tools',
+  skillStoreBasePath: '/skills',
+  bundleStoreBasePath: '/bundles',
+  principalStoreBasePath: '/principals',
+  permissionStoreBasePath: '/permissions',
+  modelStoreBasePath: '/models',
+  repoStoreBasePath: '/repos',
+  workGraphStoreBasePath: '/git-activity',
+  projectStoreBasePath: '/projects',
   noteboardBasePath: '/noteboard',
   schedulerBasePath: '/scheduler',
-  photoStoreBasePath: '/photo-store',
+  photoStoreBasePath: '/photos',
   // usage-store roots its routes at /api/usage; the Usage page asks
   // `{base}/limits`, `{base}/spend/keys` and so on.
-  usageStoreBasePath: '/usage-store/api/usage',
+  usageStoreBasePath: '/usage/api/usage',
   // mailstack roots its routes at /api; the card drawer asks `{base}/accounts`
   // and `{base}/messages/{id}`.
-  mailBasePath: '/mailstack/api',
+  mailBasePath: '/mail/api',
   // Of the stores above, only the scheduler serves `/settings` in process;
   // the bridge's own `/settings` describes the rest of the server.
   serviceSettingsSourceKeys: ['basePath', 'schedulerBasePath'],

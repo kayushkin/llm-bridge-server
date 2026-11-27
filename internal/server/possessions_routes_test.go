@@ -63,8 +63,8 @@ func testPhotoJPEG(t *testing.T) []byte {
 func TestPossessionStoreAnswers503WithNoModule(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
 	enableConnectedRecordsOnTestDatabase(t, gated)
-	if response := gated.requestAsPrincipal(t, firstTestPrincipalID, "GET", "/possession-store/possessions", nil); response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "possession_store_off") {
-		t.Fatalf("GET /possession-store/possessions = %d %s, want 503 possession_store_off", response.Code, response.Body)
+	if response := gated.requestAsPrincipal(t, firstTestPrincipalID, "GET", "/possessions/possessions", nil); response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "possession_store_off") {
+		t.Fatalf("GET /possessions/possessions = %d %s, want 503 possession_store_off", response.Code, response.Body)
 	}
 }
 
@@ -77,7 +77,7 @@ func TestEveryPossessionStoreRouteIsMountedAndDescribed(t *testing.T) {
 	described := []string{}
 	for pattern := range possessionStoreRouteDescriptions() {
 		method, path, _ := strings.Cut(pattern, " ")
-		described = append(described, method+" "+strings.TrimPrefix(path, possessionStoreMountPrefix))
+		described = append(described, method+" "+strings.TrimPrefix(path, possessionsMountPrefix))
 	}
 	slices.Sort(registered)
 	slices.Sort(described)
@@ -92,7 +92,7 @@ func TestAPossessionIsReachedOnlyByItsOwnerAndAnAdministrator(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
 	enablePossessionsOnTestDatabase(t, gated)
 	thumbnail := testPhotoJPEG(t)
-	response := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/photo-store/imports", map[string]any{"photos": []map[string]any{{
+	response := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/photos/imports", map[string]any{"photos": []map[string]any{{
 		"sha256": strings.Repeat("c", 64), "source_machine": "laptop", "source_path": "Pictures/Camera/desk.jpg", "folder": "Pictures/Camera",
 		"media_type": "image/jpeg", "taken_at": 1700000000, "date_source": "exif", "width": 40, "height": 30, "thumbnail_jpeg": thumbnail,
 	}}})
@@ -105,15 +105,15 @@ func TestAPossessionIsReachedOnlyByItsOwnerAndAnAdministrator(t *testing.T) {
 	photoID := imported.IDs[0]
 	possession := map[string]any{"actor": firstTestPrincipalID, "name": "desk lamp",
 		"photos": []map[string]any{{"photo_id": photoID, "box_left": 0.1, "box_top": 0.1, "box_right": 0.9, "box_bottom": 0.9}}}
-	if refused := gated.requestAsPrincipal(t, secondTestPrincipalID, "POST", "/possession-store/possessions", possession); refused.Code != http.StatusBadRequest {
+	if refused := gated.requestAsPrincipal(t, secondTestPrincipalID, "POST", "/possessions/possessions", possession); refused.Code != http.StatusBadRequest {
 		t.Fatalf("a possession showing another owner's photo = %d %s, want 400", refused.Code, refused.Body)
 	}
-	created := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/possession-store/possessions", possession)
+	created := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/possessions/possessions", possession)
 	if created.Code != http.StatusCreated || decodeRecord(t, created)["owner_principal_id"] != firstTestPrincipalID {
 		t.Fatalf("the owner's POST = %d %s", created.Code, created.Body)
 	}
 	id := decodeRecord(t, created)["id"].(string)
-	path := "/possession-store/possessions/" + id
+	path := "/possessions/possessions/" + id
 
 	if picture := gated.requestAsPrincipal(t, firstTestPrincipalID, "GET", path+"/image", nil); picture.Code != http.StatusOK || picture.Header().Get("Content-Type") != "image/jpeg" {
 		t.Fatalf("the owner's picture = %d %s", picture.Code, picture.Body)
@@ -123,7 +123,7 @@ func TestAPossessionIsReachedOnlyByItsOwnerAndAnAdministrator(t *testing.T) {
 			t.Errorf("another principal's GET %s = %d, want 404", denied, response.Code)
 		}
 	}
-	if response := gated.requestAsPrincipal(t, secondTestPrincipalID, "GET", "/possession-store/possessions", nil); response.Code != http.StatusOK || strings.Contains(response.Body.String(), id) {
+	if response := gated.requestAsPrincipal(t, secondTestPrincipalID, "GET", "/possessions/possessions", nil); response.Code != http.StatusOK || strings.Contains(response.Body.String(), id) {
 		t.Errorf("another principal's list = %d %s, want none of the owner's", response.Code, response.Body)
 	}
 	if response := gated.requestAsPrincipal(t, administratorTestPrincipalID, "GET", path, nil); response.Code != http.StatusOK {
@@ -132,27 +132,27 @@ func TestAPossessionIsReachedOnlyByItsOwnerAndAnAdministrator(t *testing.T) {
 	if response := gated.requestAsService(t, "GET", path+"/image"); response.Code != http.StatusOK {
 		t.Errorf("the internal service's picture = %d %s", response.Code, response.Body)
 	}
-	if response := gated.requestAsServiceWithBody(t, "POST", "/possession-store/possessions", `{"actor":"x","name":"rug"}`); response.Code != http.StatusForbidden {
+	if response := gated.requestAsServiceWithBody(t, "POST", "/possessions/possessions", `{"actor":"x","name":"rug"}`); response.Code != http.StatusForbidden {
 		t.Errorf("the internal service making a record for nobody = %d %s, want 403", response.Code, response.Body)
 	}
 	if response := gated.requestAs(t, nil, "GET", path, nil); response.Code != http.StatusUnauthorized {
 		t.Errorf("nobody's GET = %d, want 401", response.Code)
 	}
-	if response := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/possession-store/possessions",
+	if response := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/possessions/possessions",
 		map[string]any{"actor": firstTestPrincipalID, "name": "laptop", "computer": map[string]any{"form_factor": "laptop", "harness_machine_id": "m_no_such_machine"}}); response.Code != http.StatusBadRequest {
 		t.Errorf("a computer on a machine harness-store does not have = %d %s, want 400", response.Code, response.Body)
 	}
 
 	// reference-store asks possession-store in this process, as the caller.
-	resolve := gated.requestAsPrincipal(t, administratorTestPrincipalID, "POST", "/reference-store/resolve", map[string]any{"ids": []string{id}})
+	resolve := gated.requestAsPrincipal(t, administratorTestPrincipalID, "POST", "/references/resolve", map[string]any{"ids": []string{id}})
 	if resolve.Code != http.StatusOK || !strings.Contains(resolve.Body.String(), `"type":"possession"`) {
 		t.Errorf("the administrator's resolve = %d %s", resolve.Code, resolve.Body)
 	}
-	attachment := gated.requestAsPrincipal(t, administratorTestPrincipalID, "GET", "/reference-store/attachments/"+id, nil)
+	attachment := gated.requestAsPrincipal(t, administratorTestPrincipalID, "GET", "/references/attachments/"+id, nil)
 	if attachment.Code != http.StatusOK || attachment.Body.Len() == 0 {
 		t.Errorf("the administrator's attachment = %d, %d bytes", attachment.Code, attachment.Body.Len())
 	}
-	if response := gated.requestAsPrincipal(t, secondTestPrincipalID, "POST", "/reference-store/resolve", map[string]any{"ids": []string{id}}); response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"type":"possession"`) {
+	if response := gated.requestAsPrincipal(t, secondTestPrincipalID, "POST", "/references/resolve", map[string]any{"ids": []string{id}}); response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"type":"possession"`) {
 		t.Errorf("another principal's resolve = %d %s", response.Code, response.Body)
 	}
 }
@@ -166,12 +166,12 @@ func TestABudgetTransactionIsCheckedInTheOwnersBooks(t *testing.T) {
 	enablePossessionsOnTestDatabase(t, gated)
 	transactionOf := func(principalID string) string {
 		t.Helper()
-		account := gated.requestAsPrincipal(t, principalID, "POST", "/budget-store/accounts", map[string]any{"name": "Checking", "kind": "checking"})
-		category := gated.requestAsPrincipal(t, principalID, "POST", "/budget-store/categories", map[string]any{"name": "Furniture", "kind": "expense"})
+		account := gated.requestAsPrincipal(t, principalID, "POST", "/budget/accounts", map[string]any{"name": "Checking", "kind": "checking"})
+		category := gated.requestAsPrincipal(t, principalID, "POST", "/budget/categories", map[string]any{"name": "Furniture", "kind": "expense"})
 		if account.Code != http.StatusCreated || category.Code != http.StatusCreated {
 			t.Fatalf("%s's account = %d %s, category = %d %s", principalID, account.Code, account.Body, category.Code, category.Body)
 		}
-		created := gated.requestAsPrincipal(t, principalID, "POST", "/budget-store/transactions", map[string]any{"occurred_on": "2026-11-02", "description": "desk lamp",
+		created := gated.requestAsPrincipal(t, principalID, "POST", "/budget/transactions", map[string]any{"occurred_on": "2026-11-02", "description": "desk lamp",
 			"postings": []map[string]any{{"account_id": decodeRecord(t, account)["id"], "amount_cents": -2500}, {"category_id": decodeRecord(t, category)["id"], "amount_cents": 2500}}})
 		if created.Code != http.StatusCreated {
 			t.Fatalf("%s's transaction = %d %s", principalID, created.Code, created.Body)
@@ -184,13 +184,13 @@ func TestABudgetTransactionIsCheckedInTheOwnersBooks(t *testing.T) {
 	possession := func(transactionID string) map[string]any {
 		return map[string]any{"actor": firstTestPrincipalID, "name": "desk lamp", "budget_transaction_id": transactionID}
 	}
-	if created := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/possession-store/possessions", possession(ownTransaction)); created.Code != http.StatusCreated {
+	if created := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/possessions/possessions", possession(ownTransaction)); created.Code != http.StatusCreated {
 		t.Errorf("a possession paid by the owner's own transaction = %d %s, want 201", created.Code, created.Body)
 	}
-	if refused := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/possession-store/possessions", possession(othersTransaction)); refused.Code != http.StatusBadRequest {
+	if refused := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/possessions/possessions", possession(othersTransaction)); refused.Code != http.StatusBadRequest {
 		t.Errorf("a possession paid by another owner's transaction = %d %s, want 400", refused.Code, refused.Body)
 	}
-	if refused := gated.requestAsPrincipal(t, administratorTestPrincipalID, "POST", "/possession-store/possessions?owner_principal_id="+firstTestPrincipalID, possession(othersTransaction)); refused.Code != http.StatusBadRequest {
+	if refused := gated.requestAsPrincipal(t, administratorTestPrincipalID, "POST", "/possessions/possessions?owner_principal_id="+firstTestPrincipalID, possession(othersTransaction)); refused.Code != http.StatusBadRequest {
 		t.Errorf("an administrator's possession for the owner, paid by another owner's transaction = %d %s, want 400", refused.Code, refused.Body)
 	}
 }
@@ -204,7 +204,7 @@ func TestAnOriginalIsKeptInFileStore(t *testing.T) {
 	sum := sha256.Sum256(content)
 	hash := hex.EncodeToString(sum[:])
 	machine, err := gated.server.possessionLocalMachine(context.Background())
-	kept := gated.requestAsPrincipalWithBody(t, firstTestPrincipalID, "PUT", "/possession-store/originals/"+hash+"?extension=.jpg&added_by="+firstTestPrincipalID, string(content))
+	kept := gated.requestAsPrincipalWithBody(t, firstTestPrincipalID, "PUT", "/possessions/originals/"+hash+"?extension=.jpg&added_by="+firstTestPrincipalID, string(content))
 	if err != nil {
 		if kept.Code != http.StatusInternalServerError {
 			t.Fatalf("with no single local machine (%v) the answer = %d %s", err, kept.Code, kept.Body)

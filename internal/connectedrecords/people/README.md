@@ -6,7 +6,7 @@ relate to each other. Each person gets an id like `person_000001` that other
 records join on; names ride alongside for display only.
 
 It runs inside [llm-bridge-server](https://github.com/kayushkin/llm-bridge-server)
-at `/people-store/`, with its records in Postgres (schema `people`), and is
+at `/people/`, with its records in Postgres (schema `people`), and is
 one of the connected-records stores there: every record has an owner, the
 principal who keeps it, and a caller reaches only their own records unless
 they are an administrator. A journal entry, a chat message or an agent's note

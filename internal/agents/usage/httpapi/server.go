@@ -1,6 +1,6 @@
 // Package httpapi serves usage-store's routes: subscription limits, per-key
 // spend and top-ups, and the old token totals. The server mounts it under
-// /usage-store/ and hands it each request with that prefix taken off, so the
+// /usage/ and hands it each request with that prefix taken off, so the
 // paths are the ones the standalone service answered.
 package httpapi
 
@@ -100,7 +100,7 @@ func (s *Server) adminHint(provider string) string {
 }
 
 // RoutePatterns are the patterns routes registers, which the server mounts
-// one by one under /usage-store/.
+// one by one under /usage/.
 var RoutePatterns = []string{
 	"GET /api/usage",
 	"GET /api/usage/limits",
@@ -133,7 +133,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /health", s.handleHealth)
 }
 
-// ServeHTTP answers one request whose path has no /usage-store prefix.
+// ServeHTTP answers one request whose path has no /usage prefix.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
 }

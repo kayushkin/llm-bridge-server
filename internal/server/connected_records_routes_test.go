@@ -65,7 +65,7 @@ func decodeRecord(t *testing.T, response *httptest.ResponseRecorder) map[string]
 
 func TestTheConnectedRecordsStoresAnswer503WithNoModule(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
-	for path, code := range map[string]string{"/people-store/persons": "people_store_off", "/calendar-store/events": "calendar_store_off", "/journal-store/entries": "journal_store_off"} {
+	for path, code := range map[string]string{"/people/persons": "people_store_off", "/calendar/events": "calendar_store_off", "/journal/entries": "journal_store_off"} {
 		if response := gated.requestAsPrincipal(t, firstTestPrincipalID, "GET", path, nil); response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), code) {
 			t.Errorf("GET %s = %d %s, want 503 %s", path, response.Code, response.Body, code)
 		}
@@ -78,7 +78,7 @@ func TestTheConnectedRecordsStoresAnswer503WithNoModule(t *testing.T) {
 func TestAPersonIsReachedOnlyByItsOwnerAndAnAdministrator(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
 	enableConnectedRecordsOnTestDatabase(t, gated)
-	created := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/people-store/persons", map[string]any{"display_name": "Alice",
+	created := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/people/persons", map[string]any{"display_name": "Alice",
 		"identities": []map[string]any{{"kind": "email", "value": "alice@example.com", "linked_by": "operator"}}})
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create = %d %s", created.Code, created.Body)
@@ -88,7 +88,7 @@ func TestAPersonIsReachedOnlyByItsOwnerAndAnAdministrator(t *testing.T) {
 	if person["owner_principal_id"] != firstTestPrincipalID || id == "" {
 		t.Fatalf("the new person's id %q and owner %v", id, person["owner_principal_id"])
 	}
-	path := "/people-store/persons/" + id
+	path := "/people/persons/" + id
 
 	if response := gated.requestAsPrincipal(t, secondTestPrincipalID, "GET", path, nil); response.Code != http.StatusNotFound {
 		t.Errorf("another principal's GET = %d, want 404", response.Code)
@@ -96,10 +96,10 @@ func TestAPersonIsReachedOnlyByItsOwnerAndAnAdministrator(t *testing.T) {
 	if response := gated.requestAsPrincipal(t, secondTestPrincipalID, "PATCH", path, map[string]any{"how_met": "school"}); response.Code != http.StatusNotFound {
 		t.Errorf("another principal's PATCH = %d, want 404", response.Code)
 	}
-	if response := gated.requestAsPrincipal(t, secondTestPrincipalID, "GET", "/people-store/persons", nil); response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != "[]" {
+	if response := gated.requestAsPrincipal(t, secondTestPrincipalID, "GET", "/people/persons", nil); response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != "[]" {
 		t.Errorf("another principal's list = %d %s, want an empty list", response.Code, response.Body)
 	}
-	if response := gated.requestAsPrincipal(t, secondTestPrincipalID, "GET", "/people-store/identities/resolve?kind=email&value=alice@example.com", nil); response.Code != http.StatusNotFound {
+	if response := gated.requestAsPrincipal(t, secondTestPrincipalID, "GET", "/people/identities/resolve?kind=email&value=alice@example.com", nil); response.Code != http.StatusNotFound {
 		t.Errorf("another principal resolving the owner's handle = %d, want 404", response.Code)
 	}
 	// Request authorization reads the session agent token and the cookie the
@@ -121,7 +121,7 @@ func TestAPersonIsReachedOnlyByItsOwnerAndAnAdministrator(t *testing.T) {
 		t.Errorf("GET with no credential = %d, want 401", response.Code)
 	}
 	// The internal service names nobody, so it cannot own a new person.
-	if response := gated.requestAsServiceWithJSON(t, "POST", "/people-store/persons", map[string]any{"display_name": "Nobody's"}); response.Code != http.StatusForbidden {
+	if response := gated.requestAsServiceWithJSON(t, "POST", "/people/persons", map[string]any{"display_name": "Nobody's"}); response.Code != http.StatusForbidden {
 		t.Errorf("the internal service making a person = %d %s, want 403", response.Code, response.Body)
 	}
 }
@@ -131,12 +131,12 @@ func TestAPersonIsReachedOnlyByItsOwnerAndAnAdministrator(t *testing.T) {
 func TestTheJournalAnswersOnlyItsOwnerAndAnAdministrator(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
 	noteboard := enableConnectedRecordsOnTestDatabase(t, gated)
-	for _, path := range []string{"/journal-store/health", "/journal-store/entry-kinds", "/journal-store/entries"} {
+	for _, path := range []string{"/journal/health", "/journal/entry-kinds", "/journal/entries"} {
 		if response := gated.requestAsService(t, "GET", path); response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "journal_store_requires_a_principal") {
 			t.Errorf("GET %s as the internal service = %d %s, want 403 journal_store_requires_a_principal", path, response.Code, response.Body)
 		}
 	}
-	created := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/journal-store/entries", map[string]any{"kind": "note", "title": "Groceries", "body": "- [ ] buy milk"})
+	created := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/journal/entries", map[string]any{"kind": "note", "title": "Groceries", "body": "- [ ] buy milk"})
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create = %d %s", created.Code, created.Body)
 	}
@@ -145,25 +145,25 @@ func TestTheJournalAnswersOnlyItsOwnerAndAnAdministrator(t *testing.T) {
 	if entry["owner_principal_id"] != firstTestPrincipalID {
 		t.Fatalf("the entry's owner is %v", entry["owner_principal_id"])
 	}
-	if response := gated.requestAsPrincipal(t, secondTestPrincipalID, "GET", "/journal-store/entries/"+id, nil); response.Code != http.StatusNotFound {
+	if response := gated.requestAsPrincipal(t, secondTestPrincipalID, "GET", "/journal/entries/"+id, nil); response.Code != http.StatusNotFound {
 		t.Errorf("another principal's GET = %d, want 404", response.Code)
 	}
-	if response := gated.requestAsPrincipal(t, secondTestPrincipalID, "GET", "/journal-store/entries", nil); response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != "[]" {
+	if response := gated.requestAsPrincipal(t, secondTestPrincipalID, "GET", "/journal/entries", nil); response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != "[]" {
 		t.Errorf("another principal's list = %d %s, want an empty list", response.Code, response.Body)
 	}
-	if response := gated.requestAsPrincipal(t, administratorTestPrincipalID, "GET", "/journal-store/entries/"+id, nil); response.Code != http.StatusOK {
+	if response := gated.requestAsPrincipal(t, administratorTestPrincipalID, "GET", "/journal/entries/"+id, nil); response.Code != http.StatusOK {
 		t.Errorf("the administrator's GET = %d %s", response.Code, response.Body)
 	}
 
 	// promote-todo writes into noteboard, which every agent reads: the owner
 	// who is not an administrator is refused, and an administrator's own
 	// entry makes the todo through noteboard in this process.
-	if response := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/journal-store/entries/"+id+"/promote-todo", map[string]any{"line": 1}); response.Code != http.StatusForbidden {
+	if response := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/journal/entries/"+id+"/promote-todo", map[string]any{"line": 1}); response.Code != http.StatusForbidden {
 		t.Errorf("promote-todo by an owner who is not an administrator = %d %s, want 403", response.Code, response.Body)
 	}
-	own := gated.requestAsPrincipal(t, administratorTestPrincipalID, "POST", "/journal-store/entries", map[string]any{"kind": "note", "title": "Errands", "body": "- [ ] post a letter"})
+	own := gated.requestAsPrincipal(t, administratorTestPrincipalID, "POST", "/journal/entries", map[string]any{"kind": "note", "title": "Errands", "body": "- [ ] post a letter"})
 	ownID, _ := decodeRecord(t, own)["id"].(string)
-	promoted := gated.requestAsPrincipal(t, administratorTestPrincipalID, "POST", "/journal-store/entries/"+ownID+"/promote-todo", map[string]any{"line": 1})
+	promoted := gated.requestAsPrincipal(t, administratorTestPrincipalID, "POST", "/journal/entries/"+ownID+"/promote-todo", map[string]any{"line": 1})
 	if promoted.Code != http.StatusCreated {
 		t.Fatalf("the administrator's promote-todo = %d %s", promoted.Code, promoted.Body)
 	}
@@ -179,19 +179,19 @@ func TestTheJournalAnswersOnlyItsOwnerAndAnAdministrator(t *testing.T) {
 func TestACalendarImportLinksAttendeesFromItsOwnersPeople(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
 	enableConnectedRecordsOnTestDatabase(t, gated)
-	if response := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/people-store/persons", map[string]any{"display_name": "Carol",
+	if response := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/people/persons", map[string]any{"display_name": "Carol",
 		"identities": []map[string]any{{"kind": "email", "value": "carol@example.com", "linked_by": "operator"}}}); response.Code != http.StatusCreated {
 		t.Fatalf("create = %d %s", response.Code, response.Body)
 	}
 	calendarFile := "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:lunch-1\r\nDTSTART:20240310T200000Z\r\nDTEND:20240310T210000Z\r\nSUMMARY:Lunch\r\n" +
 		"ATTENDEE;CN=Carol:mailto:carol@example.com\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
 	for principalID, wantLinked := range map[string]float64{firstTestPrincipalID: 1, secondTestPrincipalID: 0} {
-		made := gated.requestAsPrincipal(t, principalID, "POST", "/calendar-store/calendars", map[string]any{"name": "Main", "source": "google", "source_ref": "main"})
+		made := gated.requestAsPrincipal(t, principalID, "POST", "/calendar/calendars", map[string]any{"name": "Main", "source": "google", "source_ref": "main"})
 		if made.Code != http.StatusCreated {
 			t.Fatalf("calendar for %s = %d %s", principalID, made.Code, made.Body)
 		}
 		calendarID, _ := decodeRecord(t, made)["id"].(string)
-		imported := gated.requestAsPrincipalWithBody(t, principalID, "POST", "/calendar-store/calendars/"+calendarID+"/imports", calendarFile)
+		imported := gated.requestAsPrincipalWithBody(t, principalID, "POST", "/calendar/calendars/"+calendarID+"/imports", calendarFile)
 		if imported.Code != http.StatusCreated {
 			t.Fatalf("import for %s = %d %s", principalID, imported.Code, imported.Body)
 		}
@@ -209,7 +209,7 @@ func TestChatLinksAndSignInReadPeopleInProcess(t *testing.T) {
 	enableConnectedRecordsOnTestDatabase(t, gated)
 	ctx := context.Background()
 	for principalID, handle := range map[string]string{firstTestPrincipalID: "pretender", administratorTestPrincipalID: "rootuser"} {
-		if response := gated.requestAsPrincipal(t, principalID, "POST", "/people-store/persons", map[string]any{"display_name": "Root",
+		if response := gated.requestAsPrincipal(t, principalID, "POST", "/people/persons", map[string]any{"display_name": "Root",
 			"principal_id": administratorTestPrincipalID,
 			"identities":   []map[string]any{{"kind": "discord", "value": handle, "linked_by": "operator"}}}); response.Code != http.StatusCreated {
 			t.Fatalf("create for %s = %d %s", principalID, response.Code, response.Body)
@@ -244,10 +244,10 @@ func TestChatLinksAndSignInReadPeopleInProcess(t *testing.T) {
 func TestAPersonChipNeedsTheGrantAndTheOwner(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
 	enableConnectedRecordsOnTestDatabase(t, gated)
-	created := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/people-store/persons", map[string]any{"display_name": "Alice"})
+	created := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/people/persons", map[string]any{"display_name": "Alice"})
 	id, _ := decodeRecord(t, created)["id"].(string)
 	resolve := func(principalID string) []map[string]any {
-		response := gated.requestAsPrincipal(t, principalID, "POST", "/reference-store/resolve", map[string]any{"ids": []string{id}})
+		response := gated.requestAsPrincipal(t, principalID, "POST", "/references/resolve", map[string]any{"ids": []string{id}})
 		if response.Code != http.StatusOK {
 			t.Fatalf("resolve as %s = %d %s", principalID, response.Code, response.Body)
 		}

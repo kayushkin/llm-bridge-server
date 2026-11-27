@@ -82,14 +82,14 @@ func importedTestMessage(providerID, subject string) localmail.ImportedMessage {
 }
 
 func (test *mailstackTestServer) metadataPath(id string) string {
-	return "/mailstack/api/messages/" + id + "/metadata?account=desk"
+	return "/mail/api/messages/" + id + "/metadata?account=desk"
 }
 
 func TestMailstackAnswersTheInternalServiceAndAnAdministratorWholly(t *testing.T) {
 	test := newMailstackTestServer(t)
 	for _, caller := range []accessTestCaller{callerServiceTokenAlone, callerAdministratorThroughDash, callerAdministratorWithLoginCookie} {
-		for _, path := range []string{"/mailstack/api/accounts", "/mailstack/api/messages?account=desk",
-			test.metadataPath(test.linkedMessageID), test.metadataPath(test.unlinkedMessageID), "/mailstack/api/ingress/receipts"} {
+		for _, path := range []string{"/mail/api/accounts", "/mail/api/messages?account=desk",
+			test.metadataPath(test.linkedMessageID), test.metadataPath(test.unlinkedMessageID), "/mail/api/ingress/receipts"} {
 			if response := test.call(t, caller, "GET", path, ""); response.Code != http.StatusOK {
 				t.Errorf("%s: GET %s = %d %s", caller.name, path, response.Code, response.Body)
 			}
@@ -99,7 +99,7 @@ func TestMailstackAnswersTheInternalServiceAndAnAdministratorWholly(t *testing.T
 
 func TestMailstackNeedsACaller(t *testing.T) {
 	test := newMailstackTestServer(t)
-	if response := test.call(t, callerWithNoCredential, "GET", "/mailstack/api/accounts", ""); response.Code != http.StatusUnauthorized {
+	if response := test.call(t, callerWithNoCredential, "GET", "/mail/api/accounts", ""); response.Code != http.StatusUnauthorized {
 		t.Fatalf("no credential: %d %s, want 401", response.Code, response.Body)
 	}
 }
@@ -113,7 +113,7 @@ func TestMailstackNarrowsAMemberToItsTicketsAndItsGrants(t *testing.T) {
 		addLoginCookie(request, test.memberCookie)
 		request.Header.Set(principalIdentityHeader, accessTestAdministratorID)
 	}}
-	for _, path := range []string{test.metadataPath(test.unlinkedMessageID), "/mailstack/api/accounts"} {
+	for _, path := range []string{test.metadataPath(test.unlinkedMessageID), "/mail/api/accounts"} {
 		if response := test.call(t, forging, "GET", path, ""); response.Code != http.StatusUnauthorized {
 			t.Errorf("%s: GET %s = %d %s, want 401", forging.name, path, response.Code, response.Body)
 		}
@@ -122,8 +122,8 @@ func TestMailstackNarrowsAMemberToItsTicketsAndItsGrants(t *testing.T) {
 		for path, want := range map[string]int{
 			test.metadataPath(test.linkedMessageID):   http.StatusOK,
 			test.metadataPath(test.unlinkedMessageID): http.StatusNotFound,
-			"/mailstack/api/messages?account=desk":    http.StatusForbidden,
-			"/mailstack/api/ingress/receipts":         http.StatusForbidden,
+			"/mail/api/messages?account=desk":         http.StatusForbidden,
+			"/mail/api/ingress/receipts":              http.StatusForbidden,
 		} {
 			if response := test.call(t, caller, "GET", path, ""); response.Code != want {
 				t.Errorf("%s: GET %s = %d %s, want %d", caller.name, path, response.Code, response.Body, want)
@@ -134,7 +134,7 @@ func TestMailstackNarrowsAMemberToItsTicketsAndItsGrants(t *testing.T) {
 				ID string `json:"id"`
 			} `json:"accounts"`
 		}
-		response := test.call(t, caller, "GET", "/mailstack/api/accounts", "")
+		response := test.call(t, caller, "GET", "/mail/api/accounts", "")
 		if err := json.Unmarshal(response.Body.Bytes(), &listed); err != nil || response.Code != http.StatusOK || len(listed.Accounts) != 0 {
 			t.Errorf("%s: the account list of a member with no grant = %d %s", caller.name, response.Code, response.Body)
 		}
@@ -154,13 +154,13 @@ func TestMailstackNarrowsAMemberToItsTicketsAndItsGrants(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("grant can_read_mail on desk: %v", err)
 	}
-	for _, path := range []string{test.metadataPath(test.unlinkedMessageID), "/mailstack/api/messages?account=desk"} {
+	for _, path := range []string{test.metadataPath(test.unlinkedMessageID), "/mail/api/messages?account=desk"} {
 		if response := test.call(t, callerMemberWithLoginCookie, "GET", path, ""); response.Code != http.StatusOK {
 			t.Errorf("with can_read_mail: GET %s = %d %s", path, response.Code, response.Body)
 		}
 	}
 	// Reading is not importing.
-	if response := test.call(t, callerMemberWithLoginCookie, "GET", "/mailstack/api/accounts/desk/import-sources", ""); response.Code != http.StatusForbidden {
+	if response := test.call(t, callerMemberWithLoginCookie, "GET", "/mail/api/accounts/desk/import-sources", ""); response.Code != http.StatusForbidden {
 		t.Errorf("import sources with can_read_mail only = %d %s, want 403", response.Code, response.Body)
 	}
 }
@@ -169,7 +169,7 @@ func TestMailstackNarrowsAMemberToItsTicketsAndItsGrants(t *testing.T) {
 // answers for the ingress credential.
 func TestMailstackTakesAPushedDeliveryWithAnIngressCredentialAndNoLogin(t *testing.T) {
 	test := newMailstackTestServer(t)
-	path := "/mailstack/api/ingress/deliveries"
+	path := "/mail/api/ingress/deliveries"
 	body := `{"deliveries":[{"delivery_id":"d1","account_id":"desk","message":{"provider_message_id":"SRC-9","source_revision":"r1",
 		"subject":"Pushed","from":{"email":"pat@demo.invalid"},"received_at":"2026-10-02T09:30:00Z","body_text":"hello"}}]}`
 	response := test.call(t, callerWithNoCredential, "POST", path, body)
@@ -177,7 +177,7 @@ func TestMailstackTakesAPushedDeliveryWithAnIngressCredentialAndNoLogin(t *testi
 		t.Fatalf("no ingress token: %d %s, want mailstack's 401 naming its header", response.Code, response.Body)
 	}
 
-	minted := test.call(t, callerServiceTokenAlone, "POST", "/mailstack/api/ingress/credentials", `{"source":"custody","account_ids":["desk"]}`)
+	minted := test.call(t, callerServiceTokenAlone, "POST", "/mail/api/ingress/credentials", `{"source":"custody","account_ids":["desk"]}`)
 	var credential struct {
 		Token string `json:"token"`
 	}
@@ -192,7 +192,7 @@ func TestMailstackTakesAPushedDeliveryWithAnIngressCredentialAndNoLogin(t *testi
 		t.Fatalf("delivery: %d %s", response.Code, response.Body)
 	}
 	// The credential opens nothing else.
-	if response := test.call(t, delivering, "GET", "/mailstack/api/accounts", ""); response.Code != http.StatusUnauthorized {
+	if response := test.call(t, delivering, "GET", "/mail/api/accounts", ""); response.Code != http.StatusUnauthorized {
 		t.Errorf("the ingress credential on another route = %d %s, want 401", response.Code, response.Body)
 	}
 }
@@ -216,7 +216,7 @@ func TestMailstackKeepsAttachmentBytesInTheFileStoreModule(t *testing.T) {
 	body := `{"messages":[{"provider_message_id":"SRC-ATT","subject":"Invoice","from":{"email":"pat@demo.invalid"},
 		"received_at":"2026-10-03T09:30:00Z","body_text":"attached",
 		"attachments":[{"filename":"invoice.txt","content_type":"text/plain","content_base64":"aW52b2ljZSBib2R5"}]}]}`
-	imported := test.call(t, callerServiceTokenAlone, "POST", "/mailstack/api/accounts/desk/messages/import", body)
+	imported := test.call(t, callerServiceTokenAlone, "POST", "/mail/api/accounts/desk/messages/import", body)
 	var answer struct {
 		Outcomes []struct {
 			ID string `json:"id"`
@@ -225,7 +225,7 @@ func TestMailstackKeepsAttachmentBytesInTheFileStoreModule(t *testing.T) {
 	if err := json.Unmarshal(imported.Body.Bytes(), &answer); err != nil || imported.Code != http.StatusOK || len(answer.Outcomes) != 1 {
 		t.Fatalf("import: %d %s", imported.Code, imported.Body)
 	}
-	path := "/mailstack/api/messages/" + answer.Outcomes[0].ID + "/attachments/a1?account=desk"
+	path := "/mail/api/messages/" + answer.Outcomes[0].ID + "/attachments/a1?account=desk"
 	read := test.call(t, callerServiceTokenAlone, "GET", path, "")
 	if read.Code != http.StatusOK || read.Body.String() != "invoice body" {
 		t.Fatalf("read the attachment: %d %q", read.Code, read.Body.String())

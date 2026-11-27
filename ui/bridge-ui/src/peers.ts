@@ -288,15 +288,15 @@ export async function peerRouteErrorText(res: Response, verb: string): Promise<s
  *    composer, the panes and their controls ask it exactly what they ask this
  *    one.
  *  - `grant-store-gateway`: grant-store through the other server's
- *    `/grant-store/` gateway, which forwards `<rest>` to grant-store's `/<rest>`
+ *    `/grants/` gateway, which forwards `<rest>` to grant-store's `/<rest>`
  *    — the same shape as this host's grant-store path, so every call the
  *    library makes lands on the same route there.
  *  - `kanban-store-gateway`: kanban-store through the other server's
- *    `/kanban-store/` gateway, which forwards `<rest>` to kanban-store's
+ *    `/issues/` gateway, which forwards `<rest>` to kanban-store's
  *    `/<rest>` unchanged, as this host's kanban path does. (Its `/kanban/`
  *    gateway adds `/api/` itself, which this library adds too.)
  *  - `reference-store-gateway`: reference-store through the other server's
- *    `/reference-store/` gateway, so its chips are looked up by the server
+ *    `/references/` gateway, so its chips are looked up by the server
  *    that owns them, as the person mapped there.
  *  - `not-there`: a path to one of THIS host's own stores or pages, or one whose
  *    shape the other server's gateways do not match. Left empty, which is the
@@ -314,9 +314,9 @@ export type ConnectedServerPathSource = 'bridge' | 'grant-store-gateway' | 'kanb
 
 /** Where each gateway source sits under the connection's proxy. */
 const GATEWAY_PATH_UNDER_PROXY: Readonly<Record<'grant-store-gateway' | 'kanban-store-gateway' | 'reference-store-gateway', string>> = {
-  'grant-store-gateway': '/grant-store',
-  'kanban-store-gateway': '/kanban-store',
-  'reference-store-gateway': '/reference-store',
+  'grant-store-gateway': '/grants',
+  'kanban-store-gateway': '/issues',
+  'reference-store-gateway': '/references',
 }
 
 export const CONNECTED_SERVER_PATH_SOURCES: Readonly<Record<BridgeConfigPathField, ConnectedServerPathSource>> = {

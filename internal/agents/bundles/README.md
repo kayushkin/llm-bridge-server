@@ -5,7 +5,7 @@ sets of **skills and tools**, with optional model and effort defaults — and
 composes the right one for a session from the repo's tags and the task's tags,
 at `POST /resolve`. It is a module of llm-bridge-server: its records live in
 Postgres (schema `bundles`, role `bundles_module`) and its routes are mounted at
-`/bundle-store/`, the same paths as the standalone service's behind that prefix.
+`/bundles/`, the same paths as the standalone service's behind that prefix.
 
 It is one of the stores of the [llm-bridge](https://github.com/kayushkin/llm-bridge)
 ecosystem. Members are the ids that `skill-store` and `tool-store` assign;
@@ -151,7 +151,7 @@ repo_tags=[go]                      → skills[backend-patterns,sql-pro] tools[]
 
 ## HTTP API
 
-The paths are relative to `/bundle-store/` on llm-bridge-server, where every
+The paths are relative to `/bundles/` on llm-bridge-server, where every
 route is an operator route: the rows have no owner, so any caller who could
 write one could change every session's bundle.
 

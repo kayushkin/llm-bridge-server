@@ -185,7 +185,7 @@ func newFakeKanbanStore(t *testing.T) *fakeKanbanStore {
 	return fake
 }
 
-// useKanbanStoreHandlerForTests serves /kanban/ and /kanban-store/ from
+// useKanbanStoreHandlerForTests serves /issues/ from
 // handler, as EnableKanbanStore does from the store's, and this server's own
 // kanban reads from a store that answers none of them (501).
 func (s *Server) useKanbanStoreHandlerForTests(handler http.Handler) {
@@ -380,13 +380,13 @@ func TestKanbanProxyWithoutALiveLoginSessionIs401AndReachesNothing(t *testing.T)
 		"malformed":         {&http.Cookie{Name: loginSessionCookieName, Value: "not-a-session"}, "login_session_unknown"},
 		"logged out":        {revokedCookie, "login_session_revoked"},
 	} {
-		request := httptest.NewRequest("GET", "/kanban/boards", nil)
+		request := httptest.NewRequest("GET", "/issues/api/boards", nil)
 		if check.cookie != nil {
 			request.AddCookie(check.cookie)
 		}
 		response := serve(server, request)
 		if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), check.code) {
-			t.Errorf("%s: /kanban/boards = %d %s, want 401 %s", name, response.Code, response.Body.String(), check.code)
+			t.Errorf("%s: /issues/api/boards = %d %s, want 401 %s", name, response.Code, response.Body.String(), check.code)
 		}
 		who := httptest.NewRequest("GET", "/auth/principal", nil)
 		if check.cookie != nil {
@@ -399,10 +399,10 @@ func TestKanbanProxyWithoutALiveLoginSessionIs401AndReachesNothing(t *testing.T)
 
 	// Twelve hours on, the first login has expired.
 	server.loginClock = func() time.Time { return time.Now().Add(loginSessionLifetime + time.Second) }
-	expired := httptest.NewRequest("GET", "/kanban/boards", nil)
+	expired := httptest.NewRequest("GET", "/issues/api/boards", nil)
 	expired.AddCookie(cookie)
 	if response := serve(server, expired); response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), "login_session_expired") {
-		t.Errorf("expired: /kanban/boards = %d %s, want 401 login_session_expired", response.Code, response.Body.String())
+		t.Errorf("expired: /issues/api/boards = %d %s, want 401 login_session_expired", response.Code, response.Body.String())
 	}
 	if got := kanban.recorded(); len(got) != 0 {
 		t.Fatalf("kanban-store received %d requests from unauthenticated callers: %+v", len(got), got)
@@ -414,7 +414,7 @@ func TestKanbanStoreHearsOnlyTheCookiesPrincipalAndNoServiceToken(t *testing.T) 
 	server := demoLoginTestServer(t, standardPrincipalDirectory(t).server.URL, kanban)
 	cookie := loginCookieFrom(t, demoLogin(t, server, "principal_000001"))
 
-	request := httptest.NewRequest("GET", "/kanban/boards", nil)
+	request := httptest.NewRequest("GET", "/issues/api/boards", nil)
 	request.Header.Set("X-Kanban-Store-Service-Token", "forged")
 	// A key set directly on the map bypasses canonicalisation.
 	request.Header["x-kanban-store-service-token"] = []string{"forged-lowercase"}
@@ -452,7 +452,7 @@ func TestKanbanProxyPassesPathQueryBodyAndUpstreamAnswerThroughUnchanged(t *test
 	server := demoLoginTestServer(t, standardPrincipalDirectory(t).server.URL, kanban)
 	cookie := loginCookieFrom(t, demoLogin(t, server, "principal_000001"))
 
-	escapedPathRequest := httptest.NewRequest("GET", "/kanban/boards/a%2Fb/cards?tag=x&tag=y%20z", nil)
+	escapedPathRequest := httptest.NewRequest("GET", "/issues/api/boards/a%2Fb/cards?tag=x&tag=y%20z", nil)
 	escapedPathRequest.AddCookie(cookie)
 	if response := serve(server, escapedPathRequest); response.Code != http.StatusOK {
 		t.Fatalf("escaped path GET = %d %s", response.Code, response.Body.String())
@@ -464,7 +464,7 @@ func TestKanbanProxyPassesPathQueryBodyAndUpstreamAnswerThroughUnchanged(t *test
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = w.Write([]byte(`{"error":"principal_000001 has no grant on board b1"}`))
 	}
-	postRequest := httptest.NewRequest("POST", "/kanban/boards/b1/cards", strings.NewReader(`{"title":"Call plumber"}`))
+	postRequest := httptest.NewRequest("POST", "/issues/api/boards/b1/cards", strings.NewReader(`{"title":"Call plumber"}`))
 	postRequest.Header.Set("Content-Type", "application/json")
 	addLoginCookie(postRequest, cookie)
 	response := serve(server, postRequest)
@@ -491,7 +491,7 @@ func TestKanbanProxyPassesPathQueryBodyAndUpstreamAnswerThroughUnchanged(t *test
 func TestKanbanStoreAnswers503WhenItIsOff(t *testing.T) {
 	server := demoLoginTestServer(t, standardPrincipalDirectory(t).server.URL, nil)
 	cookie := loginCookieFrom(t, demoLogin(t, server, "principal_000001"))
-	for _, path := range []string{"/kanban/boards", "/kanban-store/api/boards"} {
+	for _, path := range []string{"/issues/api/boards", "/issues/api/boards"} {
 		request := httptest.NewRequest("GET", path, nil)
 		request.AddCookie(cookie)
 		response := serve(server, request)
@@ -510,7 +510,7 @@ func TestAClientSentPrincipalHeaderIsRefusedWithoutTheServiceToken(t *testing.T)
 		"canonical":     func(h http.Header) { h.Set(principalIdentityHeader, "principal_000002") },
 		"non-canonical": func(h http.Header) { h["x-principal-id"] = []string{"principal_000002"} },
 	} {
-		for _, path := range []string{"/kanban/boards", "/health", "/sessions"} {
+		for _, path := range []string{"/issues/api/boards", "/health", "/sessions"} {
 			request := httptest.NewRequest("GET", path, nil)
 			addHeader(request.Header)
 			request.AddCookie(cookie)
@@ -588,22 +588,22 @@ func TestNewRefusesAServerThatCouldNotIdentifyACaller(t *testing.T) {
 	}
 }
 
-// /kanban-store/ reaches kanban-store at its root, so a client that takes its
+// /issues/ reaches kanban-store at its root, so a client that takes its
 // base path to be kanban-store itself (bridge-ui through a connected server)
-// gets /api/… and /health without the /api/ that /kanban/ adds.
+// gets /api/… and /health under /issues/ with nothing added.
 func TestKanbanStoreRootProxyForwardsThePathUnchanged(t *testing.T) {
 	kanban := newFakeKanbanStore(t)
 	server := demoLoginTestServer(t, standardPrincipalDirectory(t).server.URL, kanban)
 	cookie := loginCookieFrom(t, demoLogin(t, server, "principal_000001"))
 
-	for _, path := range []string{"/kanban-store/api/boards/b1/cards?tag=x", "/kanban-store/health"} {
+	for _, path := range []string{"/issues/api/boards/b1/cards?tag=x", "/issues/health"} {
 		request := httptest.NewRequest("GET", path, nil)
 		request.AddCookie(cookie)
 		if response := serve(server, request); response.Code != http.StatusOK {
 			t.Fatalf("GET %s = %d %s", path, response.Code, response.Body.String())
 		}
 	}
-	unauthenticated := httptest.NewRequest("GET", "/kanban-store/api/boards", nil)
+	unauthenticated := httptest.NewRequest("GET", "/issues/api/boards", nil)
 	if response := serve(server, unauthenticated); response.Code != http.StatusUnauthorized {
 		t.Fatalf("GET without a login = %d, want 401", response.Code)
 	}

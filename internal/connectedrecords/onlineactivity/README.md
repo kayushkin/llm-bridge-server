@@ -5,7 +5,7 @@ used and places looked up on a map, one activity per thing done at one time.
 It imports Google Takeout: My Activity's pages, YouTube's watch and search
 history, and Chrome's history and bookmarks.
 
-It runs inside llm-bridge-server, at `/activity-store/`, with its records in
+It runs inside llm-bridge-server, at `/online-activity/`, with its records in
 Postgres (schema `activity`, role `activity_module`) and the bytes of its
 attachments in the server's file-store. Every record has an owner, the
 principal whose activity it is, and a caller reaches only its own records (an

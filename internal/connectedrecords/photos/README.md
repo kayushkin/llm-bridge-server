@@ -10,7 +10,7 @@ What is known about each owner's own photos and videos: where each original is, 
 
 Each photo has an id like `photo_000001`, so an agent's note or a timeline can cite it, and [bridge-ui](https://github.com/kayushkin/bridge-ui) draws it as a chip with the thumbnail, using the TypeScript types in `ts/` (`./generate-ts.sh` renders them from the Go wire types).
 
-It runs inside llm-bridge-server, at `/photo-store/`, on Postgres (schema `photos`). `CONTRACT.md` is the route table and the owner rules. The server builds the store with `New(db, thumbnails, people)`, where `thumbnails` keeps the thumbnails' bytes (file-store) and `people` says which persons an owner keeps (people-store), and mounts it with `RegisterHandlers`. `ImportStandaloneDatabase` moves a standalone store's file and thumbnails in.
+It runs inside llm-bridge-server, at `/photos/`, on Postgres (schema `photos`). `CONTRACT.md` is the route table and the owner rules. The server builds the store with `New(db, thumbnails, people)`, where `thumbnails` keeps the thumbnails' bytes (file-store) and `people` says which persons an owner keeps (people-store), and mounts it with `RegisterHandlers`. `ImportStandaloneDatabase` moves a standalone store's file and thumbnails in.
 
 ```bash
 POSTGRESTEST_ADMINISTRATOR_URL="$(scripts/test-postgres.sh url)" go test ./internal/connectedrecords/photos/...

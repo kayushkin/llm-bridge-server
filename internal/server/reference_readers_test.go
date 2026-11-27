@@ -19,23 +19,23 @@ import (
 // mounted on this server, for comparing a reader with its route.
 var referenceMountPrefixes = map[string]string{
 	"llm-bridge-server": "",
-	"prediction-store":  "/prediction-store",
+	"prediction-store":  "/predictions",
 	"noteboard":         "/noteboard",
-	"project-store":     "/project-store",
-	"principal-store":   "/principal-store",
-	"repo-store":        repoStoreMountPrefix,
-	"work-graph-store":  workGraphStoreMountPrefix,
-	"people-store":      peopleStoreMountPrefix,
-	"journal-store":     journalStoreMountPrefix,
-	"calendar-store":    calendarStoreMountPrefix,
-	"message-store":     messageStoreMountPrefix,
-	"activity-store":    activityStoreMountPrefix,
-	"time-ledger-store": timeLedgerStoreMountPrefix,
-	"budget-store":      budgetStoreMountPrefix,
+	"project-store":     "/projects",
+	"principal-store":   "/principals",
+	"repo-store":        reposMountPrefix,
+	"work-graph-store":  gitActivityMountPrefix,
+	"people-store":      peopleMountPrefix,
+	"journal-store":     journalMountPrefix,
+	"calendar-store":    calendarMountPrefix,
+	"message-store":     messagesMountPrefix,
+	"activity-store":    onlineActivityMountPrefix,
+	"time-ledger-store": timeLedgerMountPrefix,
+	"budget-store":      budgetMountPrefix,
 	"scheduler":         schedulerMountPrefix,
-	"photo-store":       photoStoreMountPrefix,
-	"location-store":    locationStoreMountPrefix,
-	"possession-store":  possessionStoreMountPrefix,
+	"photo-store":       photosMountPrefix,
+	"location-store":    locationsMountPrefix,
+	"possession-store":  possessionsMountPrefix,
 }
 
 // createdID posts body and answers the id the store gave the record.
@@ -85,17 +85,17 @@ func TestEveryInProcessReaderAnswersWhatItsRouteAnswers(t *testing.T) {
 		"session":    {session.SessionID, "br_1794083694355010889"},
 		"repo":       {"repo:webapp", "repo:nothing"},
 		"note":       {createdID(t, gated, "", "/noteboard/api/items", map[string]any{"type": "note", "title": "Printer"}, "id"), "00000000-0000-0000-0000-000000000000"},
-		"project":    {createdID(t, gated, "", "/project-store/projects", map[string]any{"name": "Inbox", "goal": "One inbox."}, "id"), "project_000099"},
-		"prediction": {createdID(t, gated, "", "/prediction-store/predictions", map[string]any{"claim": "it rains", "resolution_criteria": "look outside", "category": "will-fix", "provenance": "inferred", "probability": 0.7}, "id"), "prediction_000099"},
+		"project":    {createdID(t, gated, "", "/projects/projects", map[string]any{"name": "Inbox", "goal": "One inbox."}, "id"), "project_000099"},
+		"prediction": {createdID(t, gated, "", "/predictions/predictions", map[string]any{"claim": "it rains", "resolution_criteria": "look outside", "category": "will-fix", "provenance": "inferred", "probability": 0.7}, "id"), "prediction_000099"},
 		"scheduler_job": {"scheduler_job_" + createdID(t, gated, "", "/scheduler/api/jobs", map[string]any{"name": "disk check", "schedule": "*/5 * * * *", "command": "echo disk"}, "id"),
 			"scheduler_job_000099"},
-		"person":         {createdID(t, gated, firstTestPrincipalID, "/people-store/persons", map[string]any{"display_name": "Sam"}, "id"), "person_000099"},
-		"entry":          {createdID(t, gated, firstTestPrincipalID, "/journal-store/entries", map[string]any{"kind": "note", "title": "Errands", "body": "post a letter"}, "id"), "entry_000099"},
-		"place":          {createdID(t, gated, firstTestPrincipalID, "/location-store/places", map[string]any{"name": "Example home", "latitude": 10.0, "longitude": 20.0, "kind": "home"}, "id"), "place_000099"},
-		"budget_account": {createdID(t, gated, firstTestPrincipalID, "/budget-store/accounts", map[string]any{"name": "Checking", "kind": "checking"}, "id"), "account_000099"},
-		"time_entry": {createdID(t, gated, firstTestPrincipalID, "/time-ledger-store/time-entries", map[string]any{"title": "Lunch", "starts_at": 1710100800, "ends_at": 1710104400,
+		"person":         {createdID(t, gated, firstTestPrincipalID, "/people/persons", map[string]any{"display_name": "Sam"}, "id"), "person_000099"},
+		"entry":          {createdID(t, gated, firstTestPrincipalID, "/journal/entries", map[string]any{"kind": "note", "title": "Errands", "body": "post a letter"}, "id"), "entry_000099"},
+		"place":          {createdID(t, gated, firstTestPrincipalID, "/locations/places", map[string]any{"name": "Example home", "latitude": 10.0, "longitude": 20.0, "kind": "home"}, "id"), "place_000099"},
+		"budget_account": {createdID(t, gated, firstTestPrincipalID, "/budget/accounts", map[string]any{"name": "Checking", "kind": "checking"}, "id"), "account_000099"},
+		"time_entry": {createdID(t, gated, firstTestPrincipalID, "/time-ledger/time-entries", map[string]any{"title": "Lunch", "starts_at": 1710100800, "ends_at": 1710104400,
 			"by": "test", "by_kind": "operator", "reason": "made up for a test", "time_zone": "Europe/Lisbon"}, "id"), "time_entry_000099"},
-		"possession": {createdID(t, gated, firstTestPrincipalID, "/possession-store/possessions", map[string]any{"actor": firstTestPrincipalID, "name": "rug"}, "id"), "possession_000099"},
+		"possession": {createdID(t, gated, firstTestPrincipalID, "/possessions/possessions", map[string]any{"actor": firstTestPrincipalID, "name": "rug"}, "id"), "possession_000099"},
 	}
 
 	readers := gated.server.InProcessReferenceReaders()
@@ -179,7 +179,7 @@ func TestThePrincipalReaderAnswersWhatItsRoutesAnswer(t *testing.T) {
 	readers := test.server.InProcessReferenceReaders()
 	ctx := context.Background()
 	for _, id := range []string{accessTestMemberID, "principal_000099"} {
-		route := test.call(t, callerServiceTokenAlone, http.MethodGet, "/principal-store/principals/"+id, "")
+		route := test.call(t, callerServiceTokenAlone, http.MethodGet, "/principals/principals/"+id, "")
 		data, err := readers.Readers["principal"].Record(ctx, id, references.InProcessAsker{})
 		if route.Code == http.StatusNotFound {
 			if !errors.Is(err, references.ErrRecordNotFound) {
@@ -192,7 +192,7 @@ func TestThePrincipalReaderAnswersWhatItsRoutesAnswer(t *testing.T) {
 			t.Errorf("%s: the route answered %d %s, the reader %s, %v", id, route.Code, route.Body, data, err)
 		}
 	}
-	route := test.call(t, callerServiceTokenAlone, http.MethodGet, "/principal-store/principals?q=Member", "")
+	route := test.call(t, callerServiceTokenAlone, http.MethodGet, "/principals/principals?q=Member", "")
 	data, err := readers.Readers["principal"].Search(ctx, "Member", references.InProcessAsker{})
 	var fromRoute, fromReader any
 	if route.Code != http.StatusOK || err != nil || json.Unmarshal(route.Body.Bytes(), &fromRoute) != nil || json.Unmarshal(data, &fromReader) != nil || !reflect.DeepEqual(fromRoute, fromReader) {

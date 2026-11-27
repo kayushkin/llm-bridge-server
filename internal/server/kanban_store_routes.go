@@ -1,8 +1,8 @@
 package server
 
 // kanban-store, run in this process (internal/tasktracking/issues). Its
-// routes stay where the identity-carrying proxy put them: /kanban/<rest>
-// answers kanban-store's /api/<rest>, and /kanban-store/<rest> its /<rest>.
+// routes are mounted under /issues/: /issues/<rest> answers kanban-store's
+// /<rest>, so /issues/api/boards is its /api/boards.
 //
 // The standalone store trusted X-Principal-Id, which only the proxy was meant
 // to set. In this process the store reads its caller from the request
@@ -65,7 +65,7 @@ type KanbanStoreOwners struct {
 
 // EnableKanbanStore serves kanban-store from store, joined to the owners it
 // asks. main calls it once, after EnableAccess and before the server listens;
-// until then, and in a test that never calls it, /kanban/ and /kanban-store/
+// until then, and in a test that never calls it, /issues/
 // answer 503 and this server's own kanban reads are off.
 func (s *Server) EnableKanbanStore(store *issuesdb.Store, owners KanbanStoreOwners) {
 	// noteboard runs in this process, and kanban-store calls its API in Go.
@@ -126,8 +126,8 @@ func CheckKanbanStoreConfiguration(cfg *config.Config, messageTriggersEnabled bo
 var errKanbanStoreOff = errors.New("kanban-store is off: EnableKanbanStore was never called on this server")
 
 // serveKanbanStore answers <mountPrefix>/<rest> with the store's
-// <storePathPrefix>/<rest>, as the verified caller.
-func (s *Server) serveKanbanStore(w http.ResponseWriter, r *http.Request, mountPrefix, storePathPrefix string) {
+// /<rest>, as the verified caller.
+func (s *Server) serveKanbanStore(w http.ResponseWriter, r *http.Request, mountPrefix string) {
 	handlers := s.kanbanStore.Load()
 	if handlers == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "kanban_store_off", errKanbanStoreOff.Error())
@@ -144,7 +144,7 @@ func (s *Server) serveKanbanStore(w http.ResponseWriter, r *http.Request, mountP
 			mountPrefix+"/ answers a principal or this server's service token")
 		return
 	}
-	storePath, err := url.Parse(storePathPrefix + escapedPathAfterPrefix(r.URL, mountPrefix))
+	storePath, err := url.Parse(escapedPathAfterPrefix(r.URL, mountPrefix))
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_path", fmt.Sprintf("the path after %s/ is not one kanban-store can read: %v", mountPrefix, err))
 		return
@@ -166,16 +166,10 @@ func (s *Server) serveKanbanStore(w http.ResponseWriter, r *http.Request, mountP
 	handlers.handler.ServeHTTP(w, served)
 }
 
-// handleKanbanStoreAsCaller answers /kanban/<rest> with kanban-store's
-// /api/<rest>.
-func (s *Server) handleKanbanStoreAsCaller(w http.ResponseWriter, r *http.Request) {
-	s.serveKanbanStore(w, r, kanbanProxyMountPrefix, "/api")
-}
-
-// handleKanbanStoreRootAsCaller answers /kanban-store/<rest> with kanban-store's
+// handleIssuesAsCaller answers /issues/<rest> with kanban-store's
 // /<rest>, unchanged.
-func (s *Server) handleKanbanStoreRootAsCaller(w http.ResponseWriter, r *http.Request) {
-	s.serveKanbanStore(w, r, kanbanStoreProxyMountPrefix, "")
+func (s *Server) handleIssuesAsCaller(w http.ResponseWriter, r *http.Request) {
+	s.serveKanbanStore(w, r, issuesMountPrefix)
 }
 
 // checkKanbanBoardExists is grant-store's check that a board a grant names

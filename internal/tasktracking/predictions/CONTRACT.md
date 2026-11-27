@@ -4,8 +4,8 @@ The calibration ledger: resolvable claims, the odds stated for them, and what
 actually happened.
 
 Package `internal/tasktracking/predictions` of llm-bridge-server, mounted
-by the server under `/prediction-store/`: every route below is served behind
-that prefix (`GET /prediction-store/calibration`). The routes are operator
+by the server under `/predictions/`: every route below is served behind
+that prefix (`GET /predictions/calibration`). The routes are operator
 routes (`routeOperatorOnly`): the service token, an administrator, or the
 session agent token of an administrator's session. The rows have no owning
 principal, so any caller could rewrite or purge anyone's prediction; that
@@ -206,7 +206,7 @@ caller builds a filter from whatever values the rows happen to hold.
 
 ## Routes
 
-Each path is behind `/prediction-store`.
+Each path is behind `/predictions`.
 
 | Method | Path | Notes |
 |---|---|---|

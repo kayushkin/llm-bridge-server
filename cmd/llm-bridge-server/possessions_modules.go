@@ -74,7 +74,7 @@ func enablePossessions(ctx context.Context, cfg *config.Config, srv *server.Serv
 		srv.ClosePossessions()
 		return nil, err
 	}
-	log.Printf("postgres: possession-store open, served at /possession-store/")
+	log.Printf("postgres: possession-store open, served at /possessions/")
 	return srv.ClosePossessions, nil
 }
 

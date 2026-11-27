@@ -28,7 +28,7 @@ func openMailModule(ctx context.Context, url string) (*sql.DB, error) {
 }
 
 // enableMail opens mailstack's module in Postgres and serves mailstack from
-// srv at /mailstack/. It reads a person's access from the access stores and
+// srv at /mail/. It reads a person's access from the access stores and
 // kanban-store in this process, and keeps attachment bytes in the file-store
 // module in this process, so it runs after both are enabled. Gmail, Outlook
 // and IMAP accounts reach their providers only when
@@ -58,9 +58,9 @@ func enableMail(ctx context.Context, cfg *config.Config, srv *server.Server, acc
 	mail := mail.NewServer(parts)
 	srv.EnableMailstack(mail)
 	if providerConnections {
-		log.Printf("postgres: mailstack open, served at /mailstack/; Gmail, Outlook and IMAP accounts reach their providers, with tokens from auth-store at %s", cfg.AuthStoreURL)
+		log.Printf("postgres: mailstack open, served at /mail/; Gmail, Outlook and IMAP accounts reach their providers, with tokens from auth-store at %s", cfg.AuthStoreURL)
 	} else {
-		log.Printf("postgres: mailstack open, served at /mailstack/; only local accounts answer, since %s is off and no mail provider is reached", config.SettingMailstackProviderConnectionsEnabled)
+		log.Printf("postgres: mailstack open, served at /mail/; only local accounts answer, since %s is off and no mail provider is reached", config.SettingMailstackProviderConnectionsEnabled)
 	}
 	return func() {
 		if err := mail.Shutdown(context.Background()); err != nil {

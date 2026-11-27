@@ -245,7 +245,7 @@ func (s *Server) runPhotoFacePassesForOwner(ctx context.Context, settings photoF
 		options.Limit = settings.guessLimit
 		options.PhotoStoreURL = photoStoreURL
 		options.BridgeURL, options.BridgeServiceToken = "http://"+facePassBridgeHost, s.cfg.ServiceToken
-		options.ModelStoreURL = "http://" + facePassBridgeHost + "/model-store"
+		options.ModelStoreURL = "http://" + facePassBridgeHost + "/models"
 		options.PeopleStoreURL = "http://" + facePassPeopleStoreHost
 		options.MessageStoreURL = "http://" + facePassMessageStoreHost
 		options.MultichatURL, options.MultichatToken = settings.multichatURL, multichatToken

@@ -8,7 +8,7 @@ import (
 
 // Handlers answers the registry's HTTP routes, the ones the standalone `ms
 // serve` answered on its own port: the bridge mounts each one under
-// /model-store/ with the same path behind the prefix.
+// /models/ with the same path behind the prefix.
 //
 //	GET  /api/models               all models with health, by priority then id
 //	POST /api/models/toggle        {"model": "<id>", "enabled": bool}
@@ -136,7 +136,7 @@ func (h *Handlers) Health(w http.ResponseWriter, r *http.Request) {
 }
 
 // Register mounts every route on mux under prefix, which is "" for a mux of
-// the registry's own and "/model-store" in the bridge.
+// the registry's own and "/models" in the bridge.
 func (h *Handlers) Register(mux *http.ServeMux, prefix string) {
 	mux.HandleFunc("GET "+prefix+"/api/models", h.ListModels)
 	mux.HandleFunc("POST "+prefix+"/api/models/toggle", h.ToggleModel)

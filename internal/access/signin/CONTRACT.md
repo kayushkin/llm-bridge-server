@@ -1,6 +1,6 @@
 # sign-in-store contract
 
-How people sign in, and the sessions that result. A package the server mounts: llm-bridge-server serves every route below under `/sign-in-store/`, the same paths behind the prefix, and keeps the records in the Postgres module `sign_in` (role `sign_in_module`), built by `migrations/*.sql`. Who anybody is belongs to principal-store, which the server answers in process (`PrincipalDirectory`); people-store, auth-store and multichat are reached over HTTP. `ImportStandaloneDatabase` copies a standalone sign-in-store's SQLite file into an empty module, keeping every id, hash and time. Design note `f3d492d9-a6b0-4ea1-bd8a-46f28ee3542b`.
+How people sign in, and the sessions that result. A package the server mounts: llm-bridge-server serves every route below under `/sign-in/`, the same paths behind the prefix, and keeps the records in the Postgres module `sign_in` (role `sign_in_module`), built by `migrations/*.sql`. Who anybody is belongs to principal-store, which the server answers in process (`PrincipalDirectory`); people-store, auth-store and multichat are reached over HTTP. `ImportStandaloneDatabase` copies a standalone sign-in-store's SQLite file into an empty module, keeping every id, hash and time. Design note `f3d492d9-a6b0-4ea1-bd8a-46f28ee3542b`.
 
 ## Records
 

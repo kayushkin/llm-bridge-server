@@ -2,7 +2,7 @@
 
 Every chat message one person sent or received, one row each, in time order,
 whatever app carried it: phone texts, Skype, Messenger, Discord, and whatever a
-live bridge logs. It runs inside llm-bridge-server, at `/message-store/`, and
+live bridge logs. It runs inside llm-bridge-server, at `/messages/`, and
 keeps its records in Postgres (schema `messages`). Every record has an owner,
 the principal whose messages they are, and a caller reaches only its own.
 

@@ -1,6 +1,6 @@
 # activity-store contract
 
-activity-store runs inside llm-bridge-server, at `/activity-store/` with the
+activity-store runs inside llm-bridge-server, at `/online-activity/` with the
 paths below, and keeps its records in Postgres (schema `activity`, role
 `activity_module`) and the bytes of its attachments in the server's file-store
 (owner service `activity-store`, owner ref the activity id). It answers only a
@@ -114,7 +114,7 @@ reads, each file as its own import:
   `chrome_bookmarks`.
 
 It posts to `ACTIVITY_STORE_URL` (default `http://127.0.0.1:8336`, where the
-standalone store answered; point it at the server's `/activity-store/`) in
+standalone store answered; point it at the server's `/online-activity/`) in
 batches of 2000 and prints, per file, what the store did, then names any
 file beside the My Activity pages that no card names.
 

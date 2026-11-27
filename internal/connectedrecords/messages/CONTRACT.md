@@ -1,6 +1,6 @@
 # message-store routes
 
-message-store runs inside llm-bridge-server, at `/message-store/` with the paths below, and keeps its records in Postgres (schema `messages`, role `messages_module`). It answers only a request carrying the caller the server verified; one with none is 401. All JSON. Times are unix milliseconds, UTC. Errors are `{"error": "…"}`: 400 for a bad request (an unknown field included), 404 for a missing id.
+message-store runs inside llm-bridge-server, at `/messages/` with the paths below, and keeps its records in Postgres (schema `messages`, role `messages_module`). It answers only a request carrying the caller the server verified; one with none is 401. All JSON. Times are unix milliseconds, UTC. Errors are `{"error": "…"}`: 400 for a bad request (an unknown field included), 404 for a missing id.
 
 ## Owners
 

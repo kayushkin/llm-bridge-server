@@ -43,9 +43,9 @@ func TestSessionAgentTokenActsAsThePrincipalOnTheKanbanProxyOnly(t *testing.T) {
 	session := gated.createSessionAs(t, cookie, "")
 	token := gated.sessionAgentTokenFor(t, session)
 
-	proxied := gated.requestWithBearer(t, token, "GET", "/kanban/boards")
+	proxied := gated.requestWithBearer(t, token, "GET", "/issues/api/boards")
 	if proxied.Code != http.StatusOK {
-		t.Fatalf("token on /kanban/boards = %d %s, want 200", proxied.Code, proxied.Body.String())
+		t.Fatalf("token on /issues/api/boards = %d %s, want 200", proxied.Code, proxied.Body.String())
 	}
 	recorded := gated.kanban.recorded()
 	if len(recorded) != 1 {
@@ -90,7 +90,7 @@ func TestSessionAgentTokenDiesWithItsSession(t *testing.T) {
 	if response := gated.requestAs(t, cookie, "POST", "/sessions/"+stopped.SessionID+"/stop", nil); response.Code != http.StatusOK {
 		t.Fatalf("stop = %d %s", response.Code, response.Body.String())
 	}
-	if response := gated.requestWithBearer(t, stoppedToken, "GET", "/kanban/boards"); response.Code != http.StatusUnauthorized ||
+	if response := gated.requestWithBearer(t, stoppedToken, "GET", "/issues/api/boards"); response.Code != http.StatusUnauthorized ||
 		!strings.Contains(response.Body.String(), "has ended") {
 		t.Errorf("token of a stopped session = %d %s, want 401 naming the ended session", response.Code, response.Body.String())
 	}
@@ -100,7 +100,7 @@ func TestSessionAgentTokenDiesWithItsSession(t *testing.T) {
 	if err := gated.store.DeleteSession(deleted.SessionID); err != nil {
 		t.Fatal(err)
 	}
-	if response := gated.requestWithBearer(t, deletedToken, "GET", "/kanban/boards"); response.Code != http.StatusUnauthorized {
+	if response := gated.requestWithBearer(t, deletedToken, "GET", "/issues/api/boards"); response.Code != http.StatusUnauthorized {
 		t.Errorf("token of a deleted session = %d %s, want 401", response.Code, response.Body.String())
 	}
 	if got := gated.kanban.recorded(); len(got) != 0 {
@@ -115,7 +115,7 @@ func TestSessionAgentTokensAndLoginCookiesAreNotInterchangeable(t *testing.T) {
 	token := gated.sessionAgentTokenFor(t, session)
 	codec := gated.server.harnessChildTokenSigner
 
-	if response := gated.requestWithBearer(t, cookie.Value, "GET", "/kanban/boards"); response.Code != http.StatusUnauthorized {
+	if response := gated.requestWithBearer(t, cookie.Value, "GET", "/issues/api/boards"); response.Code != http.StatusUnauthorized {
 		t.Errorf("login cookie value as a bearer token = %d, want 401", response.Code)
 	}
 	tokenAsCookie := httptest.NewRequest("GET", "/sessions", nil)
@@ -131,11 +131,11 @@ func TestSessionAgentTokensAndLoginCookiesAreNotInterchangeable(t *testing.T) {
 	}
 
 	expired := codec.encodeSessionAgentToken(sessionAgentTokenClaims{PrincipalID: firstTestPrincipalID, SessionID: session.SessionID, ExpiresAt: time.Now().Add(-time.Minute)})
-	if response := gated.requestWithBearer(t, expired, "GET", "/kanban/boards"); response.Code != http.StatusUnauthorized {
+	if response := gated.requestWithBearer(t, expired, "GET", "/issues/api/boards"); response.Code != http.StatusUnauthorized {
 		t.Errorf("expired token = %d, want 401", response.Code)
 	}
 	otherPrincipal := codec.encodeSessionAgentToken(sessionAgentTokenClaims{PrincipalID: secondTestPrincipalID, SessionID: session.SessionID, ExpiresAt: time.Now().Add(time.Hour)})
-	if response := gated.requestWithBearer(t, otherPrincipal, "GET", "/kanban/boards"); response.Code != http.StatusUnauthorized {
+	if response := gated.requestWithBearer(t, otherPrincipal, "GET", "/issues/api/boards"); response.Code != http.StatusUnauthorized {
 		t.Errorf("token naming a principal the session is not started as = %d, want 401", response.Code)
 	}
 }
@@ -207,8 +207,8 @@ func TestASpawnedPrincipalSessionReceivesTheGatewayAndTokenButNotTheSigningKey(t
 	if gatewayURL != gatedTestServerPublicURL {
 		t.Errorf("%s = %q, want %q", gatewayURLEnvironmentVariable, gatewayURL, gatedTestServerPublicURL)
 	}
-	if proxied := gated.requestWithBearer(t, token, "GET", "/kanban/boards"); proxied.Code != http.StatusOK {
-		t.Errorf("the token the child received does not work on /kanban/: %d %s", proxied.Code, proxied.Body.String())
+	if proxied := gated.requestWithBearer(t, token, "GET", "/issues/api/boards"); proxied.Code != http.StatusOK {
+		t.Errorf("the token the child received does not work on /issues/: %d %s", proxied.Code, proxied.Body.String())
 	}
 }
 
@@ -238,7 +238,7 @@ func TestAnAdministratorsSessionAgentTokenReachesWhatTheAdministratorDoes(t *tes
 		{"GET", "/bridge-prefs"},
 		{"GET", "/sessions"},
 		{"GET", "/sessions/" + ordinarySession.SessionID},
-		{"GET", "/kanban/boards"},
+		{"GET", "/issues/api/boards"},
 	} {
 		if response := gated.requestWithBearer(t, administratorToken, route.method, route.path); response.Code != http.StatusOK {
 			t.Errorf("administrator's token on %s %s = %d %s, want 200", route.method, route.path, response.Code, response.Body.String())

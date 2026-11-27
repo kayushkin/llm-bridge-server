@@ -1,8 +1,8 @@
 package server
 
 // message-store, activity-store and time-ledger-store, moved in from their
-// standalone services: the same routes under /message-store/,
-// /activity-store/ and /time-ledger-store/, answered from this process.
+// standalone services: the same routes under /messages/,
+// /online-activity/ and /time-ledger/, answered from this process.
 //
 // They follow the other connected_records stores (connected_records_routes.go):
 // every record has an owner, each store narrows every read and write to the
@@ -34,9 +34,9 @@ import (
 
 // Where each store is mounted.
 const (
-	messageStoreMountPrefix    = "/message-store"
-	activityStoreMountPrefix   = "/activity-store"
-	timeLedgerStoreMountPrefix = "/time-ledger-store"
+	messagesMountPrefix       = "/messages"
+	onlineActivityMountPrefix = "/online-activity"
+	timeLedgerMountPrefix     = "/time-ledger"
 )
 
 // messageActivityAndTimeLedgerStores is the three stores as this server
@@ -101,17 +101,17 @@ func (s *Server) messageActivityOrTimeLedgerRoute(mountPrefix, storeName, offCod
 }
 
 func (s *Server) messageStoreRoute() http.HandlerFunc {
-	return s.messageActivityOrTimeLedgerRoute(messageStoreMountPrefix, "message-store", "message_store_off",
+	return s.messageActivityOrTimeLedgerRoute(messagesMountPrefix, "message-store", "message_store_off",
 		func(stores *messageActivityAndTimeLedgerStores) http.Handler { return stores.messageHandler })
 }
 
 func (s *Server) activityStoreRoute() http.HandlerFunc {
-	return s.messageActivityOrTimeLedgerRoute(activityStoreMountPrefix, "activity-store", "activity_store_off",
+	return s.messageActivityOrTimeLedgerRoute(onlineActivityMountPrefix, "activity-store", "activity_store_off",
 		func(stores *messageActivityAndTimeLedgerStores) http.Handler { return stores.activityHandler })
 }
 
 func (s *Server) timeLedgerStoreRoute() http.HandlerFunc {
-	return s.messageActivityOrTimeLedgerRoute(timeLedgerStoreMountPrefix, "time-ledger-store", "time_ledger_store_off",
+	return s.messageActivityOrTimeLedgerRoute(timeLedgerMountPrefix, "time-ledger-store", "time_ledger_store_off",
 		func(stores *messageActivityAndTimeLedgerStores) http.Handler { return stores.timeLedgerHandler })
 }
 
