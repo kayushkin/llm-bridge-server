@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/sessionfiles"
+
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/filestorage/files"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -299,7 +301,7 @@ func TestAStatedSourcePathMustBeAPlainAbsolutePath(t *testing.T) {
 	for name, sourcePath := range map[string]string{
 		"empty":               "",
 		"relative":            "renders/hood.png",
-		"longer than allowed": "/" + strings.Repeat("a", maximumSourcePathBytes),
+		"longer than allowed": "/" + strings.Repeat("a", sessionfiles.MaximumSourcePathBytes),
 		"a control character": "/work/renders/hood\n.png",
 	} {
 		request := shareRequest("br_badpath", "hood.png", "image/png", []byte("HOOD"))

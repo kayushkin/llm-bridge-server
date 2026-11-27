@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/sessionfiles"
+
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/grantcheck"
@@ -41,6 +43,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/references"
 	"github.com/kayushkin/llm-bridge-server/internal/serviceinventory"
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/briefs"
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/messagesender"
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/snapshots"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	itemsapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/items/api"
@@ -170,7 +173,7 @@ type Server struct {
 	// fileStore keeps the bytes of files shared into sessions: the file-store
 	// module in this process, called in Go. Nil until EnableFiles, which
 	// switches session files off.
-	fileStore sessionFileStore
+	fileStore sessionfiles.SessionFileStore
 	// fileStoreCalls is the same module as the other modules in this process
 	// call it (kanban-store's and mailstack's attachments, activity-store's);
 	// nil until EnableFiles.
@@ -268,6 +271,8 @@ type Server struct {
 	briefService    *briefs.Service
 	operationRoutes *operationroutes.Service
 	machineRoutes   *machineroutes.Service
+	messageSenders  *messagesender.Senders
+	sessionFiles    *sessionfiles.Service
 }
 
 func New(st *store.Store, as *agents.Store, ms *memories.Store, hs *machines.Store, hks *hooks.Store, mds *models.Store, ss *snapshots.Store, cfg *config.Config) *Server {
@@ -458,9 +463,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /sessions", s.touchingKeepAwake(s.handleCreateSession))
 	s.mux.HandleFunc("GET /sessions/{id}", s.handleGetSession)
 	s.mux.HandleFunc("POST /sessions/{id}/send", s.touchingKeepAwake(s.handleSendMessage))
-	s.mux.HandleFunc("POST /sessions/{id}/files", s.handleShareSessionFile)
-	s.mux.HandleFunc("GET /sessions/{id}/files", s.handleListSessionFiles)
-	s.mux.HandleFunc("GET /sessions/{id}/files/{file_id}/content", s.handleSessionFileContent)
+	s.sessionFiles.Mount(s.mux)
 	s.mux.HandleFunc("GET /sessions/{id}/files-named-by-tools", s.handleFilesNamedByTools)
 	s.mux.HandleFunc("GET /sessions/{id}/files-named-by-tools/content", s.handleFileNamedByToolsContent)
 	s.mux.HandleFunc("GET /sessions/{id}/files-named-by-tools/image", s.handleImageNamedByTools)

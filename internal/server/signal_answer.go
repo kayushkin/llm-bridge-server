@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/messagesender"
+
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -219,7 +221,7 @@ func (s *Server) answerAsNextMessage(r *http.Request, sess *store.Session, group
 	// While the server drains before a restart, the answer waits to be sent
 	// like any other message (restart_drain.go); the questions are answered
 	// now either way.
-	_, held, err := s.holdMessageIfRestartDraining(sess.SessionID, msg.SendMessageRequest{Message: text}, senderPrincipalIDOfRequest(r), "signal_answer")
+	_, held, err := s.holdMessageIfRestartDraining(sess.SessionID, msg.SendMessageRequest{Message: text}, messagesender.SenderPrincipalIDOfRequest(r), "signal_answer")
 	if err != nil {
 		return err
 	}
@@ -276,7 +278,7 @@ func (s *Server) sendAnswerNow(r *http.Request, sess *store.Session, text string
 		Timestamp:       time.Now(),
 		Result:          &msg.ResultEvent{Text: text},
 	}
-	if err := s.stampMessageSender(r, &userEvent); err != nil {
+	if err := s.messageSenders.Stamp(r, &userEvent); err != nil {
 		return err
 	}
 	if _, err := s.harness.BroadcastEvent(&userEvent); err != nil {

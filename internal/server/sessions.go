@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/messagesender"
+
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/harnessconfig"
 
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads"
@@ -829,7 +831,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	s.sendMessageToSession(r.Context(), r.PathValue("id"), req, senderPrincipalIDOfRequest(r)).Write(w)
+	s.sendMessageToSession(r.Context(), r.PathValue("id"), req, messagesender.SenderPrincipalIDOfRequest(r)).Write(w)
 }
 
 // sendMessageToSession sends a message into a session as senderPrincipalID
@@ -896,11 +898,11 @@ func (s *Server) sendMessageToSession(ctx context.Context, bridgeID string, req 
 		Timestamp:       time.Now(),
 		Result:          &msg.ResultEvent{Text: req.Message, Blocks: req.Blocks},
 	}
-	sender, err := s.messageSenderOf(ctx, senderPrincipalID)
+	sender, err := s.messageSenders.Of(ctx, senderPrincipalID)
 	if err != nil {
 		return sendanswer.JSONError(http.StatusBadGateway, "principal_store_unavailable", err.Error())
 	}
-	sender.stamp(&userEvent)
+	sender.Stamp(&userEvent)
 	// Persist before forwarding to the harness. If either store can't take
 	// the user_message, refuse the send — otherwise the assistant runs against
 	// a prompt that's missing from the durable log (log-store is what the

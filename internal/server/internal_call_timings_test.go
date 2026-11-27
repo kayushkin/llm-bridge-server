@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/sessionfiles"
+
 	"github.com/kayushkin/llm-bridge-server/internal/filestorage/files"
 	"github.com/kayushkin/llm-bridge-server/internal/references"
 	"github.com/kayushkin/llm-bridge-server/internal/repositories/repos"
@@ -91,7 +93,7 @@ func TestInternalCallTimings(t *testing.T) {
 		enableRepositoriesAndReferencesOnTestDatabase(t, gated.server)
 		content := strings.Repeat("a session file's bytes\n", 2800) // about 64 KB
 		stored, err := gated.server.fileStore.Accept(strings.NewReader(content), int64(len(content)), "text/plain",
-			files.NewFile{Filename: "notes.txt", OwnerService: sessionFileOwnerService, OwnerRef: "br_timed"})
+			files.NewFile{Filename: "notes.txt", OwnerService: sessionfiles.SessionFileOwnerService, OwnerRef: "br_timed"})
 		if err != nil {
 			t.Fatal(err)
 		}

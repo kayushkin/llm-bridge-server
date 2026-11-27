@@ -10,6 +10,8 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/machines"
 	"github.com/kayushkin/llm-bridge-server/internal/machines/machineroutes"
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/briefs"
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/messagesender"
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/sessionfiles"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads"
 )
 
@@ -26,6 +28,21 @@ func (s *Server) composeServices() {
 			}
 			return s.principalLookupCache
 		},
+	}}
+	s.messageSenders = &messagesender.Senders{Dependencies: messagesender.Dependencies{
+		PrincipalLookupCache: func() messagesender.PrincipalLookupCache {
+			if s.principalLookupCache == nil {
+				return nil
+			}
+			return s.principalLookupCache
+		},
+	}}
+	s.sessionFiles = &sessionfiles.Service{Dependencies: sessionfiles.Dependencies{
+		Cfg:            s.cfg,
+		FileStore:      func() sessionfiles.SessionFileStore { return s.fileStore },
+		Harness:        s.harness,
+		MessageSenders: s.messageSenders,
+		Store:          s.store,
 	}}
 	s.operationRoutes = &operationroutes.Service{Dependencies: operationroutes.Dependencies{
 		GrantChecker:   s.grantChecker,

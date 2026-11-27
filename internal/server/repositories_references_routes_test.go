@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/sessionfiles"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
 	"github.com/kayushkin/llm-bridge-server/internal/filestorage/files"
 	"github.com/kayushkin/llm-bridge-server/internal/references"
@@ -132,7 +134,7 @@ func TestRepoStoreWorkGraphStoreAndFileStoreAreTheOperators(t *testing.T) {
 func TestSessionFilesGoToTheFileStoreModule(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
 	enableRepositoriesAndReferencesOnTestDatabase(t, gated.server)
-	stored, err := gated.server.fileStore.Accept(strings.NewReader("the bytes"), 9, "text/plain", files.NewFile{Filename: "note.txt", OwnerService: sessionFileOwnerService, OwnerRef: "br_files"})
+	stored, err := gated.server.fileStore.Accept(strings.NewReader("the bytes"), 9, "text/plain", files.NewFile{Filename: "note.txt", OwnerService: sessionfiles.SessionFileOwnerService, OwnerRef: "br_files"})
 	if err != nil || stored.ID != "file_000001" || stored.SizeBytes != 9 {
 		t.Fatalf("upload: %v %+v", err, stored)
 	}
@@ -156,10 +158,10 @@ func TestSessionFilesGoToTheFileStoreModule(t *testing.T) {
 		t.Fatalf("an unknown file = %d %s", missing.Code, missing.Body)
 	}
 	var refusal *files.Refusal
-	if _, err := gated.server.fileStore.Accept(strings.NewReader("x"), 1, "text/plain", files.NewFile{Filename: "../x", OwnerService: sessionFileOwnerService, OwnerRef: "br_files"}); !errors.As(err, &refusal) || refusal.Status != http.StatusBadRequest {
+	if _, err := gated.server.fileStore.Accept(strings.NewReader("x"), 1, "text/plain", files.NewFile{Filename: "../x", OwnerService: sessionfiles.SessionFileOwnerService, OwnerRef: "br_files"}); !errors.As(err, &refusal) || refusal.Status != http.StatusBadRequest {
 		t.Fatalf("a name with a path separator: %v", err)
 	}
-	if _, err := gated.server.fileStore.Accept(strings.NewReader("x"), 26*1024*1024, "text/plain", files.NewFile{Filename: "big", OwnerService: sessionFileOwnerService, OwnerRef: "br_files"}); !errors.As(err, &refusal) || refusal.Status != http.StatusRequestEntityTooLarge {
+	if _, err := gated.server.fileStore.Accept(strings.NewReader("x"), 26*1024*1024, "text/plain", files.NewFile{Filename: "big", OwnerService: sessionfiles.SessionFileOwnerService, OwnerRef: "br_files"}); !errors.As(err, &refusal) || refusal.Status != http.StatusRequestEntityTooLarge {
 		t.Fatalf("a file over the limit: %v", err)
 	}
 	listed := gated.requestAsService(t, "GET", "/file-storage/files?owner_service=llm-bridge-server&owner_ref=br_files")
