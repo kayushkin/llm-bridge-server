@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
 	"github.com/kayushkin/llm-bridge-server/internal/ids"
@@ -227,7 +229,7 @@ func (s *Server) handleListSignals(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	filter.SessionID = r.URL.Query().Get("session_id")
-	filter.OwnedByPrincipalID, filter.OwnedThroughPeerPrincipalID = sessionScopeFilterOfRequest(r)
+	filter.OwnedByPrincipalID, filter.OwnedThroughPeerPrincipalID = requestcaller.SessionScopeFilterOfRequest(r)
 	signals, err := s.store.ListSignals(filter)
 	writeSignals(w, signals, err)
 }

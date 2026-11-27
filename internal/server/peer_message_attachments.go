@@ -47,6 +47,8 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
@@ -127,8 +129,8 @@ func peerAttachmentMediaTypeOf(raw string) string {
 // agent, else the administrator making the change. It answers the refusal
 // itself.
 func peerMessageSenderOf(w http.ResponseWriter, r *http.Request) (string, bool) {
-	if caller, ok := callerOfRequest(r); ok && caller.delegatingAgentOfSessionID != "" {
-		return "session:" + caller.delegatingAgentOfSessionID, true
+	if caller, ok := requestcaller.FromRequest(r); ok && caller.DelegatingAgentOfSessionID != "" {
+		return "session:" + caller.DelegatingAgentOfSessionID, true
 	}
 	return administratorMakingPeerChange(w, r)
 }
@@ -481,8 +483,8 @@ func (s *Server) handleDownloadPeerAttachment(w http.ResponseWriter, r *http.Req
 	if !ok {
 		return
 	}
-	if caller, isAgent := callerOfRequest(r); isAgent && caller.delegatingAgentOfSessionID != "" {
-		agentSession := caller.delegatingAgentOfSessionID
+	if caller, isAgent := requestcaller.FromRequest(r); isAgent && caller.DelegatingAgentOfSessionID != "" {
+		agentSession := caller.DelegatingAgentOfSessionID
 		if message.CreatedBy != "session:"+agentSession && message.SessionID != agentSession {
 			httpjson.WriteJSONError(w, http.StatusNotFound, "peer_attachment_not_found", fmt.Sprintf(
 				"session %s neither sent %s nor was started by approving it", agentSession, message.ID))

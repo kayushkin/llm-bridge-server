@@ -32,6 +32,8 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
 )
 
@@ -52,10 +54,10 @@ func (subject grantSubject) String() string {
 }
 
 // grantSubjectOfCaller is whose grants decide for an authorized request.
-func grantSubjectOfCaller(caller requestCaller) grantSubject {
-	subject := grantSubject{principalID: caller.principalID}
-	if caller.peer.actsForRemoteUser() {
-		subject.throughPeerPrincipalID = caller.peer.peerPrincipalID
+func grantSubjectOfCaller(caller requestcaller.Caller) grantSubject {
+	subject := grantSubject{principalID: caller.PrincipalID}
+	if caller.Peer.ActsForRemoteUser() {
+		subject.throughPeerPrincipalID = caller.Peer.PeerPrincipalID
 	}
 	return subject
 }

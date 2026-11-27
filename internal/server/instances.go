@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
 	"github.com/kayushkin/llm-bridge/msg"
@@ -50,8 +52,8 @@ func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if _, restricted := principalRestrictingRequest(r); restricted {
-		caller, _ := callerOfRequest(r)
+	if _, restricted := requestcaller.PrincipalRestrictingRequest(r); restricted {
+		caller, _ := requestcaller.FromRequest(r)
 		instances, err = s.instancesPrincipalMayDispatchOn(r.Context(), grantSubjectOfCaller(caller), instances)
 		if err != nil {
 			httpjson.WriteJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())

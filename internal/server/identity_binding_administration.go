@@ -26,6 +26,8 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 )
 
@@ -128,7 +130,7 @@ func decodeAdministrationBody(w http.ResponseWriter, r *http.Request, target any
 // is stamped with. The service token acting as itself is nobody, so it must
 // say whom it acts for.
 func administratorMakingIdentityBindingChange(w http.ResponseWriter, r *http.Request) (string, bool) {
-	principalID, identified := principalIdentityOfRequest(r)
+	principalID, identified := requestcaller.PrincipalIdentityOfRequest(r)
 	if !identified {
 		httpjson.WriteJSONError(w, http.StatusForbidden, "identity_binding_change_requires_a_principal", fmt.Sprintf(
 			"a binding records which administrator changed it; send %s with the service token", principalIdentityHeader))

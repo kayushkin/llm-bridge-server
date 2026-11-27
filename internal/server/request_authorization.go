@@ -36,13 +36,14 @@ package server
 // is_administrator is past every per-resource check below.
 
 import (
-	"context"
 	"crypto/subtle"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
 
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 )
@@ -844,118 +845,6 @@ var routeAccessRules = map[string]routeAccessRule{
 	"POST /memories/context":                                  operatorRoute("memory-store is not partitioned by principal"),
 }
 
-// requestCallerContextKey carries who an authorized request acts as.
-type requestCallerContextKey struct{}
-
-// requestCaller is who an authorized request acts as, as request
-// authorization established it.
-// peerCaller is what a peer token says about the server presenting it: the
-// grant it was issued by, the connection that grant is on, its level, and the
-// peer principal it acts as. When the request also names one of the calling
-// server's users (peerUserHeader), remoteUserPrincipalID is that user's id
-// there and mappingID the mapping that made it one of this server's
-// principals; the request's principalID is then the mapped local principal,
-// and peerPrincipalID still limits what it may do.
-type peerCaller struct {
-	grantID         string
-	connectionID    string
-	level           string
-	peerPrincipalID string
-	// peerIsAdministrator is principal-store's answer for the peer principal.
-	peerIsAdministrator   bool
-	remoteUserPrincipalID string
-	mappingID             string
-}
-
-// actsForRemoteUser reports whether a peer request names one of the calling
-// server's users and so acts as a mapped local principal.
-func (peer *peerCaller) actsForRemoteUser() bool {
-	return peer != nil && peer.remoteUserPrincipalID != ""
-}
-
-type requestCaller struct {
-	// principalID is the principal the request acts as, and empty for the
-	// internal service acting as itself.
-	principalID string
-	// isAdministrator is principal-store's own answer for principalID. An
-	// administrator is past every per-resource check: every session whoever
-	// owns it, every operator route, every list unfiltered, both store
-	// proxies.
-	isAdministrator bool
-	// loginSessionID is the login session whose cookie authenticated the
-	// request, and empty for every other credential.
-	loginSessionID string
-	// peer is set when another llm-bridge-server presented a peer token;
-	// principalID is then the peer principal the token acts as.
-	peer *peerCaller
-	// postingAgentOfSessionID is set, and nothing else is, when the caller
-	// is a session's own agent presenting its session posting token. It reaches
-	// only routeSessionOwnerOrItsAgentPostsIntoSession, for this session.
-	postingAgentOfSessionID string
-	// delegatingAgentOfSessionID is set when the caller is a session's agent
-	// presenting its posting token on a route that lets it start or drive its
-	// delegates. principalID is then the principal that session runs with,
-	// empty when it runs with none.
-	delegatingAgentOfSessionID string
-	// observesEverySession is set on a read-only route that narrows to one
-	// principal's sessions when the caller's can_observe_sessions_on grants
-	// name every instance: sessionScopeRestrictingRequest then narrows
-	// nothing.
-	observesEverySession bool
-}
-
-// sessionScopeOfCaller is the sessions a restricted caller reaches by
-// ownership (peer_users.go).
-func sessionScopeOfCaller(caller requestCaller) sessionScope {
-	scope := sessionScope{principalID: caller.principalID}
-	if caller.peer.actsForRemoteUser() {
-		scope.throughPeerPrincipalID = caller.peer.peerPrincipalID
-	}
-	return scope
-}
-
-// narrowsToOnePrincipal reports whether this caller's answers must be limited
-// to one principal's own records. The internal service and an administrator
-// are identified but not narrowed.
-func (caller requestCaller) narrowsToOnePrincipal() bool {
-	return caller.principalID != "" && !caller.isAdministrator
-}
-
-func callerOfRequest(r *http.Request) (requestCaller, bool) {
-	caller, ok := r.Context().Value(requestCallerContextKey{}).(requestCaller)
-	return caller, ok
-}
-
-// principalRestrictingRequest returns the principal a request is restricted
-// to, and "" with false when it is not restricted: the caller is the internal
-// service acting as itself, or an administrator. Handlers that narrow their
-// answer to one principal's sessions read it here and nowhere else.
-//
-// The id is empty whenever the bool is false, so a caller that reads only the
-// id — a store filter where "" means every owner — cannot narrow an
-// administrator to the sessions that happen to carry their own id.
-// principalIdentityOfRequest is the one that names an administrator.
-func principalRestrictingRequest(r *http.Request) (string, bool) {
-	caller, ok := callerOfRequest(r)
-	if !ok || !caller.narrowsToOnePrincipal() {
-		return "", false
-	}
-	return caller.principalID, true
-}
-
-// principalIdentityOfRequest returns who the request acts as, whether or not
-// that narrows what it may reach — an administrator is identified here and
-// restricted nowhere. The store proxies set X-Principal-Id from this, because
-// kanban-store and grant-store make their own administrator check.
-func principalIdentityOfRequest(r *http.Request) (string, bool) {
-	caller, ok := callerOfRequest(r)
-	return caller.principalID, ok && caller.principalID != ""
-}
-
-func withRequestCaller(r *http.Request, caller requestCaller) *http.Request {
-	return r.WithContext(context.WithValue(r.Context(), requestCallerContextKey{}, caller))
-}
-
 // authorizeAndServe is ServeHTTP: every request reaches the mux through here.
 func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 	_, pattern := s.mux.Handler(r)
@@ -1089,7 +978,7 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 		}
 		if !arrivedOverPeerSocket {
 			// Over a socket, serveRequest has already read and stamped the id and name.
-			s.noteOtherServerIdentity(caller.peer.connectionID, r.Header)
+			s.noteOtherServerIdentity(caller.Peer.ConnectionID, r.Header)
 			s.stampThisServersIdentity(w.Header())
 		}
 		if peerUserPresent {
@@ -1104,7 +993,7 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		trackedRequest, forget := s.peerRequestsInFlight.track(r, caller.peer)
+		trackedRequest, forget := s.peerRequestsInFlight.track(r, caller.Peer)
 		defer forget()
 		s.serveAsCaller(w, trackedRequest, pattern, rule, caller)
 		return
@@ -1128,7 +1017,7 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 			credentialError.write(w)
 			return
 		}
-		s.mux.ServeHTTP(w, withRequestCaller(r, caller))
+		s.mux.ServeHTTP(w, requestcaller.WithCaller(r, caller))
 		return
 	}
 
@@ -1153,7 +1042,7 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	caller.loginSessionID = loginSessionID
+	caller.LoginSessionID = loginSessionID
 	s.serveAsCaller(w, r, pattern, rule, caller)
 }
 
@@ -1165,18 +1054,18 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 // peer the session was started through, as a posting token is, and never
 // answers through the public reverse proxy, so a token copied out of a
 // transcript reaches nothing from outside this host.
-func (s *Server) administratorOfSessionAgentToken(r *http.Request, pattern string, caller requestCaller, sessionID string) (requestCaller, *requestCredentialError) {
+func (s *Server) administratorOfSessionAgentToken(r *http.Request, pattern string, caller requestcaller.Caller, sessionID string) (requestcaller.Caller, *requestCredentialError) {
 	caller, credentialError := s.administratorOnlyIfSessionPeerIsOne(r.Context(), caller, sessionID)
 	if credentialError != nil {
-		return requestCaller{}, credentialError
+		return requestcaller.Caller{}, credentialError
 	}
-	if !caller.isAdministrator {
-		return requestCaller{}, &requestCredentialError{http.StatusUnauthorized, "authorization_header_not_accepted", fmt.Sprintf(
+	if !caller.IsAdministrator {
+		return requestcaller.Caller{}, &requestCredentialError{http.StatusUnauthorized, "authorization_header_not_accepted", fmt.Sprintf(
 			"a session agent token is accepted on %s only for a principal principal-store marks is_administrator, and %s is not one; anyone's is accepted on %s/, %s/, %s/ and %s/",
-			pattern, caller.principalID, issuesMountPrefix, grantsMountPrefix, mailMountPrefix, referencesMountPrefix)}
+			pattern, caller.PrincipalID, issuesMountPrefix, grantsMountPrefix, mailMountPrefix, referencesMountPrefix)}
 	}
 	if requestCameThroughPublicProxy(r) {
-		return requestCaller{}, &requestCredentialError{http.StatusForbidden, "session_agent_token_not_public", fmt.Sprintf(
+		return requestcaller.Caller{}, &requestCredentialError{http.StatusForbidden, "session_agent_token_not_public", fmt.Sprintf(
 			"an administrator's session agent token reaches %s only from this host, never through the public proxy", pattern)}
 	}
 	return caller, nil
@@ -1216,26 +1105,26 @@ func refuseUnclassifiedRoute(w http.ResponseWriter, pattern string) {
 
 // serveAsCaller applies the route's rule to a caller acting as a principal and
 // dispatches, or writes the refusal the rule decides on.
-func (s *Server) serveAsCaller(w http.ResponseWriter, r *http.Request, pattern string, rule routeAccessRule, caller requestCaller) {
+func (s *Server) serveAsCaller(w http.ResponseWriter, r *http.Request, pattern string, rule routeAccessRule, caller requestcaller.Caller) {
 	switch rule.class {
 	case routeOpenToEveryone, routeHarnessCallback:
-		s.mux.ServeHTTP(w, withRequestCaller(r, caller))
+		s.mux.ServeHTTP(w, requestcaller.WithCaller(r, caller))
 		return
 	}
-	if caller.peer != nil && rule.class == routePrincipalActsThroughPeerConnection {
+	if caller.Peer != nil && rule.class == routePrincipalActsThroughPeerConnection {
 		httpjson.WriteJSONError(w, http.StatusForbidden, "route_not_for_peers", fmt.Sprintf(
 			"%s reaches a server connected to this one, and a connected server may not go on through it to another", pattern))
 		return
 	}
-	if caller.isAdministrator {
+	if caller.IsAdministrator {
 		// principal-store says this person may do anything here, so no
 		// per-resource check applies. The identity still travels with the
 		// request: the store proxies set X-Principal-Id from it, and
 		// kanban-store and grant-store make their own administrator check.
-		s.mux.ServeHTTP(w, withRequestCaller(r, caller))
+		s.mux.ServeHTTP(w, requestcaller.WithCaller(r, caller))
 		return
 	}
-	if caller.peer.actsForRemoteUser() && routeClassIsRefusedToPeerUsers(rule.class) {
+	if caller.Peer.ActsForRemoteUser() && routeClassIsRefusedToPeerUsers(rule.class) {
 		httpjson.WriteJSONError(w, http.StatusForbidden, "route_not_for_peer_users", fmt.Sprintf(
 			"%s answers as one principal from a store or record this server cannot narrow to what both the connected server and its mapped user may do, so a connected server's user is refused it (%s)", pattern, rule.reason))
 		return
@@ -1275,7 +1164,7 @@ func (s *Server) serveAsCaller(w http.ResponseWriter, r *http.Request, pattern s
 			http.Error(w, "signal not found", http.StatusNotFound)
 			return
 		}
-		if !s.sessionIDIsInScope(signal.SessionID, sessionScopeOfCaller(caller)) {
+		if !s.sessionIDIsInScope(signal.SessionID, requestcaller.SessionScopeOfCaller(caller)) {
 			observes := false
 			if requestOnlyReads(r, pattern) {
 				if observes, err = s.mayObserveSession(r.Context(), caller, signal.SessionID); err != nil {
@@ -1294,7 +1183,7 @@ func (s *Server) serveAsCaller(w http.ResponseWriter, r *http.Request, pattern s
 			httpjson.WriteJSONError(w, http.StatusInternalServerError, "route_rule_invalid", err.Error())
 			return
 		}
-		if s.operations != nil && !s.operationIsOwnedByPrincipal(operationID, caller.principalID) {
+		if s.operations != nil && !s.operationIsOwnedByPrincipal(operationID, caller.PrincipalID) {
 			http.Error(w, "operation not found", http.StatusNotFound)
 			return
 		}
@@ -1305,7 +1194,7 @@ func (s *Server) serveAsCaller(w http.ResponseWriter, r *http.Request, pattern s
 				httpjson.WriteJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
 				return
 			}
-			caller.observesEverySession = observes
+			caller.ObservesEverySession = observes
 		}
 	case routePrincipalCreatesSession, routePrincipalReadsCatalog, routePrincipalActsThroughPeerConnection,
 		routePrincipalOrSessionAgentThroughStoreProxy, routePrincipalCreatesOperation, routePrincipalSeesOwnOperationsOnly,
@@ -1314,7 +1203,7 @@ func (s *Server) serveAsCaller(w http.ResponseWriter, r *http.Request, pattern s
 		httpjson.WriteJSONError(w, http.StatusInternalServerError, "route_rule_invalid", fmt.Sprintf("route %q has an access class this server does not handle", pattern))
 		return
 	}
-	s.mux.ServeHTTP(w, withRequestCaller(r, caller))
+	s.mux.ServeHTTP(w, requestcaller.WithCaller(r, caller))
 }
 
 // principalIdentityHeaderNameIn returns the key a request carries
@@ -1391,26 +1280,26 @@ func (s *Server) principalOfRequest(r *http.Request, rule routeAccessRule) (stri
 // postingAgentOfRequest verifies a session posting token and holds it to the
 // session in the path. A token for another session is 404, the same answer a
 // principal gets for a session that is not theirs.
-func (s *Server) postingAgentOfRequest(r *http.Request, pattern string, rule routeAccessRule) (requestCaller, *requestCredentialError) {
+func (s *Server) postingAgentOfRequest(r *http.Request, pattern string, rule routeAccessRule) (requestcaller.Caller, *requestCredentialError) {
 	scheme, token, _ := strings.Cut(r.Header.Get("Authorization"), " ")
 	if !strings.EqualFold(scheme, "Bearer") || strings.TrimSpace(token) == "" {
-		return requestCaller{}, &requestCredentialError{http.StatusUnauthorized, "invalid_session_posting_token",
+		return requestcaller.Caller{}, &requestCredentialError{http.StatusUnauthorized, "invalid_session_posting_token",
 			"the Authorization header must be \"Bearer <session posting token>\""}
 	}
 	tokenSession, credentialError := s.verifiedPostingSession(token)
 	if credentialError != nil {
-		return requestCaller{}, credentialError
+		return requestcaller.Caller{}, credentialError
 	}
 	tokenSessionID := tokenSession.SessionID
 	pathSessionID, err := pathValueForPattern(pattern, r.URL.EscapedPath(), rule.ownedResourcePathValueName)
 	if err != nil {
-		return requestCaller{}, &requestCredentialError{http.StatusInternalServerError, "route_rule_invalid", err.Error()}
+		return requestcaller.Caller{}, &requestCredentialError{http.StatusInternalServerError, "route_rule_invalid", err.Error()}
 	}
 	session, err := s.store.GetSession(pathSessionID)
 	if err != nil || session.SessionID != tokenSessionID {
-		return requestCaller{}, &requestCredentialError{http.StatusNotFound, "session_not_found", "session not found"}
+		return requestcaller.Caller{}, &requestCredentialError{http.StatusNotFound, "session_not_found", "session not found"}
 	}
-	return requestCaller{postingAgentOfSessionID: tokenSessionID}, nil
+	return requestcaller.Caller{PostingAgentOfSessionID: tokenSessionID}, nil
 }
 
 // pathValueForPattern extracts the named wildcard from an escaped request path

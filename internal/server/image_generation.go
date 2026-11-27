@@ -23,6 +23,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
 	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
@@ -168,7 +170,7 @@ func (s *Server) handleGenerateImagesIntoSession(w http.ResponseWriter, r *http.
 	}
 
 	sharedBy := msg.SessionFileSharedByUser
-	if caller, ok := callerOfRequest(r); ok && caller.postingAgentOfSessionID != "" {
+	if caller, ok := requestcaller.FromRequest(r); ok && caller.PostingAgentOfSessionID != "" {
 		sharedBy = msg.SessionFileSharedByAgent
 	}
 	limits := s.fileStore.CurrentLimits()

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/agents/evaluations"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/operationstore"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -44,7 +46,7 @@ func (thisServer evalStoreInThisServer) SubmitOperation(ctx context.Context, int
 		return msg.OperationReceipt{}, &operationRefusal{http.StatusBadRequest, "invalid_intent",
 			fmt.Sprintf("the intent is %d bytes; an operation intent is at most %d", len(encoded), maximumOperationIntentBytes)}
 	}
-	receipt, _, refusal := thisServer.server.submitOperation(ctx, requestCaller{}, intent)
+	receipt, _, refusal := thisServer.server.submitOperation(ctx, requestcaller.Caller{}, intent)
 	if refusal == nil {
 		return receipt, nil
 	}

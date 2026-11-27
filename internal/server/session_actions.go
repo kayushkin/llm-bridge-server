@@ -32,6 +32,8 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
 	schedulerapi "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/api"
@@ -190,7 +192,7 @@ func (s *Server) handleRunSessionAction(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	runByPrincipalID, _ := principalIdentityOfRequest(r)
+	runByPrincipalID, _ := requestcaller.PrincipalIdentityOfRequest(r)
 	running, err := s.store.StartSessionAction(session.SessionID, actionID, runByPrincipalID, time.Now().UTC())
 	if errors.Is(err, store.ErrSessionActionNotOffered) {
 		current, readErr := s.store.GetSessionAction(session.SessionID, actionID)

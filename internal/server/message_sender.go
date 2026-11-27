@@ -14,6 +14,8 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -21,8 +23,8 @@ import (
 // message: the caller. Empty when the caller acts as no principal (the
 // internal service, a harness).
 func senderPrincipalIDOfRequest(r *http.Request) string {
-	if caller, ok := callerOfRequest(r); ok {
-		return caller.principalID
+	if caller, ok := requestcaller.FromRequest(r); ok {
+		return caller.PrincipalID
 	}
 	return ""
 }

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -72,7 +74,7 @@ func (s *Server) handleListSessionBriefs(w http.ResponseWriter, r *http.Request)
 		}
 		filter.Limit = parsed
 	}
-	filter.OwnedByPrincipalID, filter.OwnedThroughPeerPrincipalID = sessionScopeFilterOfRequest(r)
+	filter.OwnedByPrincipalID, filter.OwnedThroughPeerPrincipalID = requestcaller.SessionScopeFilterOfRequest(r)
 	views, err := s.store.ListSessionBriefs(filter)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

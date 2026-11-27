@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
@@ -269,7 +271,7 @@ func (s *Server) handleDeleteFromMachineDisk(w http.ResponseWriter, r *http.Requ
 		httpjson.WriteJSONError(w, http.StatusBadRequest, "confirmation_mismatch", fmt.Sprintf("confirmation_name must be exactly %q, the name of what is deleted", name))
 		return
 	}
-	requestedBy, _ := principalIdentityOfRequest(r)
+	requestedBy, _ := requestcaller.PrincipalIdentityOfRequest(r)
 	deletion, err := s.store.RecordRequestedMachineDiskDeletion(store.MachineDiskDeletion{
 		MachineID:              machine.ID,
 		Path:                   body.Path,

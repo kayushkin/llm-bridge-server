@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -296,14 +298,14 @@ func (s *Server) handleCreateChatLink(w http.ResponseWriter, r *http.Request) {
 		httpjson.WriteJSONError(w, http.StatusBadRequest, "unknown_account", err.Error())
 		return
 	}
-	caller, _ := callerOfRequest(r)
+	caller, _ := requestcaller.FromRequest(r)
 	link := store.ChatLink{
 		SessionID: session.SessionID, AccountID: create.AccountID, Platform: create.Platform,
 		ConversationID: create.ConversationID, PersonDisplayName: create.PersonDisplayName,
-		CreatedByPrincipalID: caller.principalID, CreatedBySessionAgent: caller.postingAgentOfSessionID != "",
+		CreatedByPrincipalID: caller.PrincipalID, CreatedBySessionAgent: caller.PostingAgentOfSessionID != "",
 		CreatedAt: s.chatLinks.now(),
 	}
-	if caller.postingAgentOfSessionID != "" {
+	if caller.PostingAgentOfSessionID != "" {
 		link.CreatedByPrincipalID = session.PrincipalID
 	}
 	created, err := s.store.CreateChatLink(link)

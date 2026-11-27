@@ -34,6 +34,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
@@ -117,7 +119,7 @@ func (s *Server) principalThatHoldsServicePrincipalTokens(ctx context.Context, p
 // administratorMakingServicePrincipalChange returns the principal a token or
 // starter change is recorded as.
 func administratorMakingServicePrincipalChange(w http.ResponseWriter, r *http.Request) (string, bool) {
-	principalID, identified := principalIdentityOfRequest(r)
+	principalID, identified := requestcaller.PrincipalIdentityOfRequest(r)
 	if !identified {
 		httpjson.WriteJSONError(w, http.StatusForbidden, "service_principal_change_requires_a_principal", fmt.Sprintf(
 			"a change to service principal tokens or session starters records which administrator made it; send %s with the service token", principalIdentityHeader))
@@ -243,15 +245,15 @@ func (s *Server) mayStartSessionsAs(ctx context.Context, subject grantSubject, p
 
 // callerStartedSessionAndMayDriveIt reports whether the caller started this
 // session as its principal and still holds can_start_sessions_as on it.
-func (s *Server) callerStartedSessionAndMayDriveIt(ctx context.Context, caller requestCaller, session *store.Session) (bool, error) {
-	if session == nil || caller.principalID == "" || session.PrincipalID == "" || caller.peer != nil {
+func (s *Server) callerStartedSessionAndMayDriveIt(ctx context.Context, caller requestcaller.Caller, session *store.Session) (bool, error) {
+	if session == nil || caller.PrincipalID == "" || session.PrincipalID == "" || caller.Peer != nil {
 		return false, nil
 	}
 	starter, found, err := s.store.SessionStarterOf(session.SessionID)
 	if err != nil {
 		return false, fmt.Errorf("read who started session %s: %w", session.SessionID, err)
 	}
-	if !found || starter.PrincipalID != caller.principalID {
+	if !found || starter.PrincipalID != caller.PrincipalID {
 		return false, nil
 	}
 	return s.mayStartSessionsAs(ctx, grantSubjectOfCaller(caller), session.PrincipalID)
@@ -259,7 +261,7 @@ func (s *Server) callerStartedSessionAndMayDriveIt(ctx context.Context, caller r
 
 // callerStartedSessionIDAndMayDriveIt is callerStartedSessionAndMayDriveIt
 // for a session id; a session this server does not have is false.
-func (s *Server) callerStartedSessionIDAndMayDriveIt(ctx context.Context, caller requestCaller, sessionID string) (bool, error) {
+func (s *Server) callerStartedSessionIDAndMayDriveIt(ctx context.Context, caller requestcaller.Caller, sessionID string) (bool, error) {
 	session, err := s.store.GetSession(sessionID)
 	if err != nil {
 		return false, nil
@@ -327,10 +329,10 @@ func (s *Server) handleRecordSessionStarter(w http.ResponseWriter, r *http.Reque
 // handleSelf: GET /self. Who the request acts as, so a service learns its own
 // principal id from its token rather than from a setting beside it.
 func (s *Server) handleSelf(w http.ResponseWriter, r *http.Request) {
-	caller, ok := callerOfRequest(r)
-	if !ok || caller.principalID == "" {
+	caller, ok := requestcaller.FromRequest(r)
+	if !ok || caller.PrincipalID == "" {
 		httpjson.WriteJSON(w, msg.CallerSelf{InternalService: true})
 		return
 	}
-	httpjson.WriteJSON(w, msg.CallerSelf{PrincipalID: caller.principalID, IsAdministrator: caller.isAdministrator})
+	httpjson.WriteJSON(w, msg.CallerSelf{PrincipalID: caller.PrincipalID, IsAdministrator: caller.IsAdministrator})
 }

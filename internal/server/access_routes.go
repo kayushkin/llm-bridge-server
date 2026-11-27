@@ -22,6 +22,8 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access"
@@ -174,7 +176,7 @@ func (s *Server) principalStoreRoute(route func(*principals.Handlers, http.Respo
 // again rather than infer it from a missing caller, so no other way of
 // arriving without a caller can be mistaken for it.
 func (s *Server) requestIsTheInternalServiceActingAsItself(r *http.Request) bool {
-	if _, identified := principalIdentityOfRequest(r); identified {
+	if _, identified := requestcaller.PrincipalIdentityOfRequest(r); identified {
 		return false
 	}
 	if principalIdentityHeaderNameIn(r.Header) != "" {
@@ -196,7 +198,7 @@ func (s *Server) grantStoreRoute(route func(*grants.Handlers, http.ResponseWrite
 			return
 		}
 		ctx := r.Context()
-		if principalID, identified := principalIdentityOfRequest(r); identified {
+		if principalID, identified := requestcaller.PrincipalIdentityOfRequest(r); identified {
 			ctx = grants.ContextWithCaller(ctx, grants.Caller{PrincipalID: principalID})
 		} else if s.requestIsTheInternalServiceActingAsItself(r) {
 			ctx = grants.ContextWithCaller(ctx, grants.Caller{InternalService: true})
@@ -228,7 +230,7 @@ func (s *Server) signInStoreRoute(route func(*signin.Handlers, http.ResponseWrit
 // records the administrator who made it.
 func (s *Server) signInStoreAdministratorRoute(route func(*signin.Handlers, http.ResponseWriter, *http.Request)) http.HandlerFunc {
 	return s.signInStoreRoute(func(handlers *signin.Handlers, w http.ResponseWriter, r *http.Request) {
-		if principalID, identified := principalIdentityOfRequest(r); identified {
+		if principalID, identified := requestcaller.PrincipalIdentityOfRequest(r); identified {
 			r = r.WithContext(signin.ContextWithAdministrator(r.Context(), principalID))
 		}
 		route(handlers, w, r)

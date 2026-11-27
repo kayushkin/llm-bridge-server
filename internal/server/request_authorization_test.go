@@ -371,7 +371,7 @@ func TestAnAdministratorReachesTheOperatorRoutesAndTheStoreProxies(t *testing.T)
 
 // TestAnAdministratorListsEverySessionWhoeverOwnsIt pins the lists that are
 // narrowed in the store. The operator's sidebar went down to two sessions out
-// of 65,000 on 2026-09-17: principalRestrictingRequest handed back an
+// of 65,000 on 2026-09-17: PrincipalRestrictingRequest handed back an
 // administrator's id beside restricted=false, and the four callers that read
 // only the id filtered on it. The same requests as the service, and as the
 // administrator through a trusted caller, must all answer every session.

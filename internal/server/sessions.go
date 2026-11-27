@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
 	"github.com/kayushkin/llm-bridge-server/conformance"
@@ -217,8 +219,8 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var sessions []store.Session
-	if scope, restricted := sessionScopeRestrictingRequest(r); restricted {
-		sessions, err = s.store.ListSessionsOwnedByPrincipalPaged(scope.principalID, scope.throughPeerPrincipalID, state, limit, offset)
+	if scope, restricted := requestcaller.SessionScopeRestrictingRequest(r); restricted {
+		sessions, err = s.store.ListSessionsOwnedByPrincipalPaged(scope.PrincipalID, scope.ThroughPeerPrincipalID, state, limit, offset)
 	} else if state != "" {
 		sessions, err = s.store.ListSessionsByStatePaged(state, limit, offset)
 	} else {
@@ -266,8 +268,8 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 
 	// A session's agent starts a delegate under its own session, as that
 	// session's principal (delegate_sessions.go).
-	if caller, ok := callerOfRequest(r); ok && caller.delegatingAgentOfSessionID != "" {
-		if refusal := delegateRequestRefusal(&req, caller.delegatingAgentOfSessionID, caller.principalID); refusal != nil {
+	if caller, ok := requestcaller.FromRequest(r); ok && caller.DelegatingAgentOfSessionID != "" {
+		if refusal := delegateRequestRefusal(&req, caller.DelegatingAgentOfSessionID, caller.PrincipalID); refusal != nil {
 			refusal.write(w)
 			return
 		}
@@ -281,11 +283,11 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// without the grant is refused rather than overwritten, so a client bug
 	// that sends the wrong id is visible.
 	startedAsAnotherPrincipalBy := ""
-	if callerPrincipalID, restricted := principalRestrictingRequest(r); restricted {
+	if callerPrincipalID, restricted := requestcaller.PrincipalRestrictingRequest(r); restricted {
 		if req.PrincipalID != "" && req.PrincipalID != callerPrincipalID {
-			caller, _ := callerOfRequest(r)
+			caller, _ := requestcaller.FromRequest(r)
 			allowed := false
-			if caller.peer == nil && caller.delegatingAgentOfSessionID == "" {
+			if caller.Peer == nil && caller.DelegatingAgentOfSessionID == "" {
 				var err error
 				if allowed, err = s.mayStartSessionsAs(r.Context(), grantSubjectOfCaller(caller), req.PrincipalID); err != nil {
 					httpjson.WriteJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
@@ -306,13 +308,13 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// mapped to here, administrator or not, so the session's agent holds that
 	// principal's token. The connected server cannot name one of this
 	// server's ids.
-	if caller, ok := callerOfRequest(r); ok && caller.peer.actsForRemoteUser() {
-		if req.PrincipalID != "" && req.PrincipalID != caller.principalID {
+	if caller, ok := requestcaller.FromRequest(r); ok && caller.Peer.ActsForRemoteUser() {
+		if req.PrincipalID != "" && req.PrincipalID != caller.PrincipalID {
 			httpjson.WriteJSONError(w, http.StatusForbidden, "principal_mismatch", fmt.Sprintf(
-				"principal_id %q is not %s, the principal this connected server's user is mapped to; omit principal_id", req.PrincipalID, caller.principalID))
+				"principal_id %q is not %s, the principal this connected server's user is mapped to; omit principal_id", req.PrincipalID, caller.PrincipalID))
 			return
 		}
-		req.PrincipalID = caller.principalID
+		req.PrincipalID = caller.PrincipalID
 	}
 	// An administrator who names no principal starts the session as
 	// themselves, as every other principal does, so its agent holds their
@@ -328,12 +330,12 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// agent whose own session was started that way.
 	creatorSubject := grantSubject{principalID: req.PrincipalID}
 	var creatorPeerOrigin *store.SessionPeerOrigin
-	if caller, ok := callerOfRequest(r); ok {
+	if caller, ok := requestcaller.FromRequest(r); ok {
 		switch {
-		case caller.peer.actsForRemoteUser():
-			creatorPeerOrigin = &store.SessionPeerOrigin{PeerPrincipalID: caller.peer.peerPrincipalID, RemotePrincipalID: caller.peer.remoteUserPrincipalID}
-		case caller.delegatingAgentOfSessionID != "":
-			origin, found, err := s.store.SessionPeerOriginOfLineage(caller.delegatingAgentOfSessionID)
+		case caller.Peer.ActsForRemoteUser():
+			creatorPeerOrigin = &store.SessionPeerOrigin{PeerPrincipalID: caller.Peer.PeerPrincipalID, RemotePrincipalID: caller.Peer.RemoteUserPrincipalID}
+		case caller.DelegatingAgentOfSessionID != "":
+			origin, found, err := s.store.SessionPeerOriginOfLineage(caller.DelegatingAgentOfSessionID)
 			if err != nil {
 				httpjson.WriteJSONError(w, http.StatusInternalServerError, "session_peer_origin_lookup_failed", err.Error())
 				return
@@ -541,8 +543,8 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 				"could not read manager_session_id %s, so the session was not created: %v", req.ManagerSessionID, err))
 			return
 		}
-		if scope, restricted := sessionScopeRestrictingRequest(r); restricted && !s.sessionIsInScope(parent, scope) {
-			caller, _ := callerOfRequest(r)
+		if scope, restricted := requestcaller.SessionScopeRestrictingRequest(r); restricted && !s.sessionIsInScope(parent, scope) {
+			caller, _ := requestcaller.FromRequest(r)
 			drives, err := s.callerStartedSessionAndMayDriveIt(r.Context(), caller, parent)
 			if err != nil {
 				httpjson.WriteJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
@@ -1757,9 +1759,9 @@ func resolveCredential(hs *machines.Store, instanceID string) string {
 // handled above), and for a session's agent starting a delegate, whose
 // principal delegateRequestRefusal decides.
 func principalStartingSessionAsThemselves(r *http.Request) string {
-	caller, ok := callerOfRequest(r)
-	if !ok || caller.peer != nil || caller.delegatingAgentOfSessionID != "" {
+	caller, ok := requestcaller.FromRequest(r)
+	if !ok || caller.Peer != nil || caller.DelegatingAgentOfSessionID != "" {
 		return ""
 	}
-	return caller.principalID
+	return caller.PrincipalID
 }

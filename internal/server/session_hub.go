@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 )
 
@@ -343,15 +345,15 @@ func (s *Server) handleSessionListEvents(w http.ResponseWriter, r *http.Request)
 	// Everything the client missed, in the order it was published, before any
 	// live frame — the backlog was snapshotted at subscribe time, so no live
 	// frame can be older than the last one here.
-	scope, restricted := sessionScopeRestrictingRequest(r)
+	scope, restricted := requestcaller.SessionScopeRestrictingRequest(r)
 	frameIsOutOfScope := func(frame sessionListFrame) bool {
 		if !restricted {
 			return false
 		}
-		if frame.ownerPrincipalID != scope.principalID {
+		if frame.ownerPrincipalID != scope.PrincipalID {
 			return true
 		}
-		return scope.throughPeerPrincipalID != "" && !s.sessionIDIsInScope(frame.sessionID, scope)
+		return scope.ThroughPeerPrincipalID != "" && !s.sessionIDIsInScope(frame.sessionID, scope)
 	}
 	for _, frame := range backlog {
 		if frameIsOutOfScope(frame) {

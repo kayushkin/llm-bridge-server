@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"sync"
+
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
 )
 
 // peerRequestsInFlight holds a cancel for every request a peer token is being
@@ -36,12 +38,12 @@ func newPeerRequestsInFlight() *peerRequestsInFlight {
 
 // track returns r with a context that ending the caller's access cancels,
 // and the function that forgets it once the request is served.
-func (inFlight *peerRequestsInFlight) track(r *http.Request, peer *peerCaller) (*http.Request, func()) {
+func (inFlight *peerRequestsInFlight) track(r *http.Request, peer *requestcaller.Peer) (*http.Request, func()) {
 	ctx, cancel := context.WithCancel(r.Context())
 	inFlight.mutex.Lock()
 	inFlight.nextID++
 	id := inFlight.nextID
-	inFlight.requests[id] = peerRequestInFlight{grantID: peer.grantID, mappingID: peer.mappingID, cancel: cancel}
+	inFlight.requests[id] = peerRequestInFlight{grantID: peer.GrantID, mappingID: peer.MappingID, cancel: cancel}
 	inFlight.mutex.Unlock()
 	return r.WithContext(ctx), func() {
 		inFlight.mutex.Lock()

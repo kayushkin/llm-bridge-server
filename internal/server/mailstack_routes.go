@@ -23,6 +23,8 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access"
@@ -100,7 +102,7 @@ func (s *Server) serveMailstack(w http.ResponseWriter, r *http.Request, caller *
 // handleMailstackAsCaller answers /mail/<rest> as the verified caller.
 func (s *Server) handleMailstackAsCaller(w http.ResponseWriter, r *http.Request) {
 	var caller mail.Caller
-	if principalID, identified := principalIdentityOfRequest(r); identified {
+	if principalID, identified := requestcaller.PrincipalIdentityOfRequest(r); identified {
 		caller = mail.Caller{PrincipalID: principalID}
 	} else if s.requestIsTheInternalServiceActingAsItself(r) {
 		caller = mail.Caller{InternalService: true}

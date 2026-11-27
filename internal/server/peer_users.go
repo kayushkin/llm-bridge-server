@@ -14,7 +14,7 @@ package server
 //   - is allowed only what both principals' grants allow (grantSubject,
 //     principal_grants.go);
 //   - reaches only the sessions that principal started through this peer
-//     (sessionScope), plus what both may observe;
+//     (SessionScope), plus what both may observe;
 //   - is refused routes whose answer this server cannot intersect: the store
 //     proxies, operations and login sessions.
 //
@@ -28,6 +28,8 @@ import (
 	"log"
 	"net/http"
 	"strings"
+
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
 
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
@@ -44,54 +46,20 @@ const observeSessionsRelation = "can_observe_sessions_on"
 // and calling the connected server through it.
 const callThroughRelation = "can_call_through"
 
-// sessionScope is which sessions a restricted caller reaches: those started
-// as principalID, and, for a connected server's user, only those started
-// through that server's peer principal.
-type sessionScope struct {
-	principalID            string
-	throughPeerPrincipalID string
-}
-
-// sessionScopeRestrictingRequest is principalRestrictingRequest for the
-// session routes: the scope a request is narrowed to, and false when it is
-// not narrowed — the internal service, an administrator, or a caller whose
-// grants let it observe every session on a read-only route.
-func sessionScopeRestrictingRequest(r *http.Request) (sessionScope, bool) {
-	caller, ok := callerOfRequest(r)
-	if !ok || !caller.narrowsToOnePrincipal() || caller.observesEverySession {
-		return sessionScope{}, false
-	}
-	scope := sessionScope{principalID: caller.principalID}
-	if caller.peer.actsForRemoteUser() {
-		scope.throughPeerPrincipalID = caller.peer.peerPrincipalID
-	}
-	return scope, true
-}
-
-// sessionScopeFilterOfRequest is the two store filter fields a restricted
-// request sets, both empty when it is not narrowed.
-func sessionScopeFilterOfRequest(r *http.Request) (ownedByPrincipalID, ownedThroughPeerPrincipalID string) {
-	scope, restricted := sessionScopeRestrictingRequest(r)
-	if !restricted {
-		return "", ""
-	}
-	return scope.principalID, scope.throughPeerPrincipalID
-}
-
 // sessionIsInScope reports whether a session is one the scope reaches.
-func (s *Server) sessionIsInScope(session *store.Session, scope sessionScope) bool {
-	if session == nil || scope.principalID == "" || session.PrincipalID != scope.principalID {
+func (s *Server) sessionIsInScope(session *store.Session, scope requestcaller.SessionScope) bool {
+	if session == nil || scope.PrincipalID == "" || session.PrincipalID != scope.PrincipalID {
 		return false
 	}
-	if scope.throughPeerPrincipalID == "" {
+	if scope.ThroughPeerPrincipalID == "" {
 		return true
 	}
 	origin, found, err := s.store.SessionPeerOriginOfLineage(session.SessionID)
-	return err == nil && found && origin.PeerPrincipalID == scope.throughPeerPrincipalID
+	return err == nil && found && origin.PeerPrincipalID == scope.ThroughPeerPrincipalID
 }
 
 // sessionIDIsInScope is sessionIsInScope for a session id.
-func (s *Server) sessionIDIsInScope(sessionID string, scope sessionScope) bool {
+func (s *Server) sessionIDIsInScope(sessionID string, scope requestcaller.SessionScope) bool {
 	session, err := s.store.GetSession(sessionID)
 	return err == nil && s.sessionIsInScope(session, scope)
 }
@@ -119,8 +87,8 @@ func requestOnlyReads(r *http.Request, pattern string) bool {
 // its scope, it started the session as another principal and may still drive
 // it, or, on a route that only reads, its grants let it observe the session.
 // A session it does not reach answers as a missing one.
-func (s *Server) sessionReachedByCaller(ctx context.Context, caller requestCaller, sessionID string, onlyReads bool) (bool, error) {
-	if s.sessionIDIsInScope(sessionID, sessionScopeOfCaller(caller)) {
+func (s *Server) sessionReachedByCaller(ctx context.Context, caller requestcaller.Caller, sessionID string, onlyReads bool) (bool, error) {
+	if s.sessionIDIsInScope(sessionID, requestcaller.SessionScopeOfCaller(caller)) {
 		return true, nil
 	}
 	// A service that started this session as another principal drives it
@@ -139,7 +107,7 @@ func (s *Server) sessionReachedByCaller(ctx context.Context, caller requestCalle
 // session it does not own: can_observe_sessions_on naming the session's
 // instance or its machine, for the caller's principal and, through a peer,
 // for the peer too.
-func (s *Server) mayObserveSession(ctx context.Context, caller requestCaller, sessionID string) (bool, error) {
+func (s *Server) mayObserveSession(ctx context.Context, caller requestcaller.Caller, sessionID string) (bool, error) {
 	session, err := s.store.GetSession(sessionID)
 	if err != nil {
 		return false, nil
@@ -170,7 +138,7 @@ func (s *Server) mayObserveSession(ctx context.Context, caller requestCaller, se
 
 // mayObserveEverySession reports whether the caller's grants name every
 // instance for observation, which is what lets a list answer every session.
-func (s *Server) mayObserveEverySession(r *http.Request, caller requestCaller) (bool, error) {
+func (s *Server) mayObserveEverySession(r *http.Request, caller requestcaller.Caller) (bool, error) {
 	granted, err := s.grantedResourcesOf(r.Context(), grantSubjectOfCaller(caller), observeSessionsRelation, "instance")
 	if err != nil {
 		return false, err

@@ -26,6 +26,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
@@ -137,8 +139,8 @@ func (s *Server) connectedRecordsRoute(mountPrefix, storeName, offCode string, h
 			return
 		}
 		var caller ownership.Caller
-		if requestCaller, ok := callerOfRequest(r); ok && requestCaller.principalID != "" {
-			caller = ownership.Caller{PrincipalID: requestCaller.principalID, SeesEveryOwner: requestCaller.isAdministrator}
+		if requestCaller, ok := requestcaller.FromRequest(r); ok && requestCaller.PrincipalID != "" {
+			caller = ownership.Caller{PrincipalID: requestCaller.PrincipalID, SeesEveryOwner: requestCaller.IsAdministrator}
 		} else if s.requestIsTheInternalServiceActingAsItself(r) {
 			if requirePrincipal {
 				httpjson.WriteJSONError(w, http.StatusForbidden, strings.ReplaceAll(storeName, "-", "_")+"_requires_a_principal", fmt.Sprintf(

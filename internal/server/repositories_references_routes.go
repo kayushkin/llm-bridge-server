@@ -18,6 +18,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
@@ -203,7 +205,7 @@ func (s *Server) referenceStoreRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	if principalID, identified := principalIdentityOfRequest(r); identified {
+	if principalID, identified := requestcaller.PrincipalIdentityOfRequest(r); identified {
 		ctx = references.ContextWithCaller(ctx, references.Caller{PrincipalID: principalID})
 	} else if s.requestIsTheInternalServiceActingAsItself(r) {
 		ctx = references.ContextWithCaller(ctx, references.Caller{Unchecked: true})

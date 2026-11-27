@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -139,16 +141,16 @@ func TestRevokingAGrantEndsAStreamAlreadyOpen(t *testing.T) {
 // ends only the requests acting through it.
 func TestEndingAccessCancelsOnlyTheRequestsItCovered(t *testing.T) {
 	inFlight := newPeerRequestsInFlight()
-	request := func(peer *peerCaller) (context.Context, func()) {
+	request := func(peer *requestcaller.Peer) (context.Context, func()) {
 		r, _ := http.NewRequest("GET", "/x", nil)
 		tracked, forget := inFlight.track(r, peer)
 		return tracked.Context(), forget
 	}
-	wholePeer, forgetWholePeer := request(&peerCaller{grantID: "peer_grant_000001"})
+	wholePeer, forgetWholePeer := request(&requestcaller.Peer{GrantID: "peer_grant_000001"})
 	defer forgetWholePeer()
-	mappedUser, forgetMappedUser := request(&peerCaller{grantID: "peer_grant_000001", mappingID: "peer_user_mapping_000001"})
+	mappedUser, forgetMappedUser := request(&requestcaller.Peer{GrantID: "peer_grant_000001", MappingID: "peer_user_mapping_000001"})
 	defer forgetMappedUser()
-	otherGrant, forgetOtherGrant := request(&peerCaller{grantID: "peer_grant_000002"})
+	otherGrant, forgetOtherGrant := request(&requestcaller.Peer{GrantID: "peer_grant_000002"})
 	defer forgetOtherGrant()
 
 	if ended := inFlight.cancelMapping("peer_user_mapping_000001"); ended != 1 || mappedUser.Err() == nil || wholePeer.Err() != nil {

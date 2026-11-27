@@ -3,6 +3,8 @@ package server
 import (
 	"net/http"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 )
 
@@ -21,7 +23,7 @@ type SessionPrincipal struct {
 // visible sessions were started as, most sessions first. A person held to their
 // own sessions sees only themselves; an administrator sees everyone.
 func (s *Server) handleSessionPrincipals(w http.ResponseWriter, r *http.Request) {
-	ownedBy, throughPeer := sessionScopeFilterOfRequest(r)
+	ownedBy, throughPeer := requestcaller.SessionScopeFilterOfRequest(r)
 	counts, err := s.store.SessionCountsByPrincipal(ownedBy, throughPeer)
 	if err != nil {
 		httpjson.WriteJSONError(w, http.StatusInternalServerError, "count_sessions", err.Error())

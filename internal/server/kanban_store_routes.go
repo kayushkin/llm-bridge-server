@@ -23,6 +23,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access"
@@ -140,7 +142,7 @@ func (s *Server) serveKanbanStore(w http.ResponseWriter, r *http.Request, mountP
 		return
 	}
 	var caller issuesapi.Caller
-	if principalID, identified := principalIdentityOfRequest(r); identified {
+	if principalID, identified := requestcaller.PrincipalIdentityOfRequest(r); identified {
 		caller = issuesapi.Caller{PrincipalID: principalID}
 	} else if s.requestIsTheInternalServiceActingAsItself(r) {
 		caller = issuesapi.Caller{InternalService: true}

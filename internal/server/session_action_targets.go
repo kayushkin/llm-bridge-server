@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -78,7 +80,7 @@ func (s *Server) sessionPrincipalMayReachTarget(ctx context.Context, session, ta
 	if !throughPeer && target.PrincipalID == session.PrincipalID {
 		return true, nil
 	}
-	if throughPeer && s.sessionIsInScope(target, sessionScope{principalID: session.PrincipalID, throughPeerPrincipalID: origin.PeerPrincipalID}) {
+	if throughPeer && s.sessionIsInScope(target, requestcaller.SessionScope{PrincipalID: session.PrincipalID, ThroughPeerPrincipalID: origin.PeerPrincipalID}) {
 		return true, nil
 	}
 	if session.PrincipalID == "" {
@@ -89,13 +91,13 @@ func (s *Server) sessionPrincipalMayReachTarget(ctx context.Context, session, ta
 		return false, &sessionActionRefusal{credentialError.status, credentialError.code, credentialError.message}
 	}
 	if !throughPeer {
-		return owner.isAdministrator, nil
+		return owner.IsAdministrator, nil
 	}
 	peer, credentialError := s.callerForPrincipalID(ctx, origin.PeerPrincipalID, "session "+session.SessionID+" was started through")
 	if credentialError != nil {
 		return false, &sessionActionRefusal{credentialError.status, credentialError.code, credentialError.message}
 	}
-	return owner.isAdministrator && peer.isAdministrator, nil
+	return owner.IsAdministrator && peer.IsAdministrator, nil
 }
 
 // describeTargetSessionAction writes Command for a send_to_session or

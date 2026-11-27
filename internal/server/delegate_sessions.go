@@ -30,6 +30,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -71,7 +73,7 @@ func (s *Server) serveDelegatingAgent(w http.ResponseWriter, r *http.Request, pa
 		}
 	}
 
-	caller := requestCaller{}
+	caller := requestcaller.Caller{}
 	if agentSession.PrincipalID != "" {
 		principalCaller, credentialError := s.callerForPrincipalID(r.Context(), agentSession.PrincipalID, "the session the posting token names runs as")
 		if credentialError != nil {
@@ -88,7 +90,7 @@ func (s *Server) serveDelegatingAgent(w http.ResponseWriter, r *http.Request, pa
 		s.serveSessionReadingAgent(w, r, pattern, rule, agentSession, caller)
 		return
 	}
-	caller.delegatingAgentOfSessionID = agentSessionID
+	caller.DelegatingAgentOfSessionID = agentSessionID
 
 	switch rule.sessionAgentAccess {
 	case sessionAgentCreatesItsDelegate:
@@ -110,7 +112,7 @@ func (s *Server) serveDelegatingAgent(w http.ResponseWriter, r *http.Request, pa
 				"%s takes a session posting token only from this server's own harness children, never through the public proxy", pattern))
 			return
 		}
-		if agentSession.PrincipalID != "" && !caller.isAdministrator {
+		if agentSession.PrincipalID != "" && !caller.IsAdministrator {
 			httpjson.WriteJSONError(w, http.StatusForbidden, "peer_messaging_needs_an_administrator", fmt.Sprintf(
 				"session %s runs as %s, who is not an administrator here, so its agent may not message connected servers", agentSessionID, agentSession.PrincipalID))
 			return
@@ -120,7 +122,7 @@ func (s *Server) serveDelegatingAgent(w http.ResponseWriter, r *http.Request, pa
 			"route %q lets a session's agent in with a kind of access this server does not handle", pattern))
 		return
 	}
-	s.mux.ServeHTTP(w, withRequestCaller(r, caller))
+	s.mux.ServeHTTP(w, requestcaller.WithCaller(r, caller))
 }
 
 // sessionIsDelegateOf reports whether the session exists and managerSessionID
@@ -169,14 +171,14 @@ func delegateRequestRefusal(req *CreateSessionRequest, agentSessionID, agentPrin
 // The token reaches this server only from its own harness children, so a
 // request that came through the public reverse proxy is refused before
 // anything is read.
-func (s *Server) serveSessionReadingAgent(w http.ResponseWriter, r *http.Request, pattern string, rule routeAccessRule, agentSession *store.Session, caller requestCaller) {
+func (s *Server) serveSessionReadingAgent(w http.ResponseWriter, r *http.Request, pattern string, rule routeAccessRule, agentSession *store.Session, caller requestcaller.Caller) {
 	if requestCameThroughPublicProxy(r) {
 		httpjson.WriteJSONError(w, http.StatusForbidden, "session_posting_token_not_public", fmt.Sprintf(
 			"%s takes a session posting token only from this server's own harness children, never through the public proxy", pattern))
 		return
 	}
 	if agentSession.PrincipalID == "" {
-		s.mux.ServeHTTP(w, withRequestCaller(r, requestCaller{}))
+		s.mux.ServeHTTP(w, requestcaller.WithCaller(r, requestcaller.Caller{}))
 		return
 	}
 	origin, throughPeer, err := s.store.SessionPeerOriginOfLineage(agentSession.SessionID)
@@ -190,10 +192,10 @@ func (s *Server) serveSessionReadingAgent(w http.ResponseWriter, r *http.Request
 			credentialError.write(w)
 			return
 		}
-		caller.peer = &peerCaller{
-			peerPrincipalID:       origin.PeerPrincipalID,
-			peerIsAdministrator:   peer.isAdministrator,
-			remoteUserPrincipalID: origin.RemotePrincipalID,
+		caller.Peer = &requestcaller.Peer{
+			PeerPrincipalID:       origin.PeerPrincipalID,
+			PeerIsAdministrator:   peer.IsAdministrator,
+			RemoteUserPrincipalID: origin.RemotePrincipalID,
 		}
 	}
 	s.serveAsCaller(w, r, pattern, rule, caller)
@@ -205,20 +207,20 @@ func (s *Server) serveSessionReadingAgent(w http.ResponseWriter, r *http.Request
 // as well as its principal's, so its agent is an administrator here only when
 // both are: a peer user mapped to a local administrator through a peer that is
 // not one gets no administrator's reach through its agent's token.
-func (s *Server) administratorOnlyIfSessionPeerIsOne(ctx context.Context, caller requestCaller, agentSessionID string) (requestCaller, *requestCredentialError) {
-	if !caller.isAdministrator {
+func (s *Server) administratorOnlyIfSessionPeerIsOne(ctx context.Context, caller requestcaller.Caller, agentSessionID string) (requestcaller.Caller, *requestCredentialError) {
+	if !caller.IsAdministrator {
 		return caller, nil
 	}
 	origin, throughPeer, err := s.store.SessionPeerOriginOfLineage(agentSessionID)
 	if err != nil {
-		return requestCaller{}, &requestCredentialError{http.StatusInternalServerError, "session_peer_origin_unreadable", err.Error()}
+		return requestcaller.Caller{}, &requestCredentialError{http.StatusInternalServerError, "session_peer_origin_unreadable", err.Error()}
 	}
 	if throughPeer {
 		peer, credentialError := s.callerForPrincipalID(ctx, origin.PeerPrincipalID, "the peer session "+agentSessionID+" was started through is")
 		if credentialError != nil {
-			return requestCaller{}, credentialError
+			return requestcaller.Caller{}, credentialError
 		}
-		caller.isAdministrator = peer.isAdministrator
+		caller.IsAdministrator = peer.IsAdministrator
 	}
 	return caller, nil
 }

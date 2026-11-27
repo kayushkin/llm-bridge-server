@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -62,7 +64,7 @@ func (s *Server) handleSessionsSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	filter.ManagerSessionIDs = managerSessionIDs
-	filter.OwnedByPrincipalID, filter.OwnedThroughPeerPrincipalID = sessionScopeFilterOfRequest(r)
+	filter.OwnedByPrincipalID, filter.OwnedThroughPeerPrincipalID = requestcaller.SessionScopeFilterOfRequest(r)
 
 	s.serveSessionsSummary(w, r, limit, before, filter)
 }
@@ -122,7 +124,7 @@ func (s *Server) handleSessionsSummaryLookup(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	filter.ManagerSessionIDs = managerSessionIDs
-	filter.OwnedByPrincipalID, filter.OwnedThroughPeerPrincipalID = sessionScopeFilterOfRequest(r)
+	filter.OwnedByPrincipalID, filter.OwnedThroughPeerPrincipalID = requestcaller.SessionScopeFilterOfRequest(r)
 
 	s.serveSessionsSummary(w, r, limit, req.Before, filter)
 }
@@ -232,8 +234,8 @@ func (s *Server) handleSessionsValidatorsLookup(w http.ResponseWriter, r *http.R
 // sessions: every other id is dropped before log-store is asked, exactly as if
 // it named no session.
 func (s *Server) serveSessionsValidators(w http.ResponseWriter, r *http.Request, ids string) {
-	if scope, restricted := sessionScopeRestrictingRequest(r); restricted && strings.TrimSpace(ids) != "" {
-		owned, err := s.store.SessionIDsOwnedByPrincipal(scope.principalID, scope.throughPeerPrincipalID, strings.Split(ids, ","))
+	if scope, restricted := requestcaller.SessionScopeRestrictingRequest(r); restricted && strings.TrimSpace(ids) != "" {
+		owned, err := s.store.SessionIDsOwnedByPrincipal(scope.PrincipalID, scope.ThroughPeerPrincipalID, strings.Split(ids, ","))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -290,7 +292,7 @@ func (s *Server) handleRecentBundle(w http.ResponseWriter, r *http.Request) {
 	// Except by owner: a principal restricted to itself is warmed only its
 	// own sessions, and the cache key carries the principal so one principal's
 	// bundle is never served to another.
-	ownedByPrincipalID, ownedThroughPeerPrincipalID := sessionScopeFilterOfRequest(r)
+	ownedByPrincipalID, ownedThroughPeerPrincipalID := requestcaller.SessionScopeFilterOfRequest(r)
 	rows, err := s.store.ListSessionSummaries(n, "", store.SessionSummaryFilter{OwnedByPrincipalID: ownedByPrincipalID, OwnedThroughPeerPrincipalID: ownedThroughPeerPrincipalID})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

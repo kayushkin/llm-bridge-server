@@ -41,6 +41,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 )
 
@@ -112,13 +114,13 @@ func (s *Server) handlePeerConnectionProxy(w http.ResponseWriter, r *http.Reques
 			header[http.CanonicalHeaderKey(name)] = append([]string(nil), values...)
 		}
 	}
-	if caller, ok := callerOfRequest(r); ok {
-		if caller.peer != nil {
+	if caller, ok := requestcaller.FromRequest(r); ok {
+		if caller.Peer != nil {
 			httpjson.WriteJSONError(w, http.StatusForbidden, "route_not_for_peers", "a connected server may not go on through this server to another")
 			return
 		}
-		if caller.principalID != "" && (!caller.isAdministrator || startsASession) {
-			header.Set(peerUserHeader, caller.principalID)
+		if caller.PrincipalID != "" && (!caller.IsAdministrator || startsASession) {
+			header.Set(peerUserHeader, caller.PrincipalID)
 		}
 	}
 	// A principal restricted to its grants, such as a service, calls through

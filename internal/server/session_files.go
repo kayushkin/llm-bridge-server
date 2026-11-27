@@ -22,6 +22,8 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
 	"github.com/kayushkin/llm-bridge-server/internal/filestorage/files"
@@ -59,7 +61,7 @@ func (s *Server) handleShareSessionFile(w http.ResponseWriter, r *http.Request) 
 	}
 
 	sharedBy := msg.SessionFileSharedByUser
-	if caller, ok := callerOfRequest(r); ok && caller.postingAgentOfSessionID != "" {
+	if caller, ok := requestcaller.FromRequest(r); ok && caller.PostingAgentOfSessionID != "" {
 		sharedBy = msg.SessionFileSharedByAgent
 	}
 	// source_path is the agent's own statement of where it read the bytes; a

@@ -53,6 +53,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
@@ -159,7 +161,7 @@ func (s *Server) refuseWhileDemoLoginIsOn(w http.ResponseWriter, what string) bo
 
 // administratorMakingPeerChange returns the principal a change is recorded as.
 func administratorMakingPeerChange(w http.ResponseWriter, r *http.Request) (string, bool) {
-	principalID, identified := principalIdentityOfRequest(r)
+	principalID, identified := requestcaller.PrincipalIdentityOfRequest(r)
 	if !identified {
 		httpjson.WriteJSONError(w, http.StatusForbidden, "peer_change_requires_a_principal", fmt.Sprintf(
 			"a change to a peer connection records which administrator made it; send %s with the service token", principalIdentityHeader))
@@ -508,10 +510,10 @@ func (s *Server) handleListPeerConnections(w http.ResponseWriter, r *http.Reques
 // peer connections, and false when the caller is not narrowed by them: the
 // service token, or an administrator.
 func (s *Server) callThroughGrantsOfRequest(r *http.Request) (grantedResources, bool, error) {
-	if _, restricted := principalRestrictingRequest(r); !restricted {
+	if _, restricted := requestcaller.PrincipalRestrictingRequest(r); !restricted {
 		return grantedResources{}, false, nil
 	}
-	caller, _ := callerOfRequest(r)
+	caller, _ := requestcaller.FromRequest(r)
 	granted, err := s.grantedResourcesOf(r.Context(), grantSubjectOfCaller(caller), callThroughRelation, "peer_connection")
 	return granted, true, err
 }
@@ -1004,13 +1006,13 @@ func (s *Server) handleReceivePeerAccessRevoked(w http.ResponseWriter, r *http.R
 
 // handlePeerSelf: GET /peer/self. Tells a peer who its token acts as here.
 func (s *Server) handlePeerSelf(w http.ResponseWriter, r *http.Request) {
-	caller, ok := callerOfRequest(r)
-	if !ok || caller.peer == nil {
+	caller, ok := requestcaller.FromRequest(r)
+	if !ok || caller.Peer == nil {
 		httpjson.WriteJSONError(w, http.StatusBadRequest, "not_a_peer", fmt.Sprintf("GET %s answers a caller presenting %s", peerSelfPath, peerTokenHeader))
 		return
 	}
-	httpjson.WriteJSON(w, msg.PeerGrantSelf{GrantID: caller.peer.grantID, ConnectionID: caller.peer.connectionID, PeerPrincipalID: caller.principalID,
-		Level: caller.peer.level, IsAdministrator: caller.isAdministrator})
+	httpjson.WriteJSON(w, msg.PeerGrantSelf{GrantID: caller.Peer.GrantID, ConnectionID: caller.Peer.ConnectionID, PeerPrincipalID: caller.PrincipalID,
+		Level: caller.Peer.Level, IsAdministrator: caller.IsAdministrator})
 }
 
 // handleCheckPeerConnection: POST /peer-connections/{id}/check. Asks the

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
@@ -57,7 +59,7 @@ func (s *Server) handleCreateOperation(w http.ResponseWriter, r *http.Request) {
 		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_intent", "body is not an operation intent: "+err.Error())
 		return
 	}
-	caller, _ := callerOfRequest(r)
+	caller, _ := requestcaller.FromRequest(r)
 	receipt, created, refusal := s.submitOperation(r.Context(), caller, intent)
 	if refusal != nil {
 		httpjson.WriteJSONError(w, refusal.status, refusal.code, refusal.message)
@@ -99,11 +101,11 @@ func refusalOf(status int, code, message string) *operationRefusal {
 // the type. The zero caller is this server's internal service, acting as no
 // principal, which belongs to every organization and needs no grant. Both
 // POST /operations and the callers inside this server go through here.
-func (s *Server) submitOperation(ctx context.Context, caller requestCaller, intent msg.OperationIntent) (msg.OperationReceipt, bool, *operationRefusal) {
+func (s *Server) submitOperation(ctx context.Context, caller requestcaller.Caller, intent msg.OperationIntent) (msg.OperationReceipt, bool, *operationRefusal) {
 	if s.operations == nil {
 		return msg.OperationReceipt{}, false, &operationRefusal{http.StatusServiceUnavailable, "operations_not_configured", "this server was started without an operations coordinator"}
 	}
-	intent.PrincipalID = caller.principalID
+	intent.PrincipalID = caller.PrincipalID
 	if refusal := refusalOf(s.checkOperationOrganization(ctx, caller, intent.OrganizationID)); refusal != nil {
 		return msg.OperationReceipt{}, false, refusal
 	}
@@ -130,14 +132,14 @@ func (s *Server) submitOperation(ctx context.Context, caller requestCaller, inte
 // checkOperationOrganization makes sure the organization is an active
 // principal-store group and, for a principal who is not an administrator,
 // one they belong to. A zero status means it passed.
-func (s *Server) checkOperationOrganization(ctx context.Context, caller requestCaller, organizationID string) (status int, code, message string) {
+func (s *Server) checkOperationOrganization(ctx context.Context, caller requestcaller.Caller, organizationID string) (status int, code, message string) {
 	if status, code, message := s.checkOrganizationIsAnActiveGroup(ctx, organizationID); status != 0 {
 		return status, code, message
 	}
-	if !caller.narrowsToOnePrincipal() {
+	if !caller.NarrowsToOnePrincipal() {
 		return 0, "", ""
 	}
-	principalID := caller.principalID
+	principalID := caller.PrincipalID
 	groups, err := s.principalStore.ListGroups(ctx, principalID, false)
 	if err != nil {
 		return http.StatusBadGateway, "principal_store_unavailable", fmt.Sprintf("principal-store: the groups of %s: %v", principalID, err)
@@ -243,7 +245,7 @@ func (s *Server) handleListOperations(w http.ResponseWriter, r *http.Request) {
 		httpjson.WriteJSONError(w, http.StatusBadRequest, "unknown_state", fmt.Sprintf("state %q is not one of %v", filter.State, msg.AllOperationStates))
 		return
 	}
-	if principalID, restricted := principalRestrictingRequest(r); restricted {
+	if principalID, restricted := requestcaller.PrincipalRestrictingRequest(r); restricted {
 		if filter.PrincipalID != "" && filter.PrincipalID != principalID {
 			httpjson.WriteJSON(w, []msg.OperationReceipt{})
 			return
@@ -489,11 +491,11 @@ const (
 // principal starting an operation, as operations.grant_enforcement says. An
 // administrator and the service token are not checked. A zero status means
 // it passed.
-func (s *Server) checkOperationGrant(ctx context.Context, caller requestCaller, operationType msg.OperationType) (status int, code, message string) {
-	if !caller.narrowsToOnePrincipal() {
+func (s *Server) checkOperationGrant(ctx context.Context, caller requestcaller.Caller, operationType msg.OperationType) (status int, code, message string) {
+	if !caller.NarrowsToOnePrincipal() {
 		return 0, "", ""
 	}
-	principalID := caller.principalID
+	principalID := caller.PrincipalID
 	enforcement := s.settings.String(config.SettingOperationsGrantEnforcement)
 	if enforcement != config.OperationsGrantEnforcementLenient && enforcement != config.OperationsGrantEnforcementStrict {
 		return http.StatusInternalServerError, "grant_enforcement_misconfigured", fmt.Sprintf(
@@ -565,7 +567,7 @@ func (s *Server) handlePutOperationBudget(w http.ResponseWriter, r *http.Request
 		httpjson.WriteJSONError(w, status, code, message)
 		return
 	}
-	updatedBy, _ := principalIdentityOfRequest(r)
+	updatedBy, _ := requestcaller.PrincipalIdentityOfRequest(r)
 	if err := coordinator.Store().SetOrganizationBudget(organizationID, *body.MonthlyLimitUSD, updatedBy, time.Now()); writeOperationStoreError(w, err) {
 		return
 	}
