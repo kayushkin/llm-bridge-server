@@ -296,7 +296,7 @@ func (s *Server) restartForAnswer(r *http.Request, sess *store.Session) error {
 	if err != nil {
 		return fmt.Errorf("instance not found: %w", err)
 	}
-	credID := resolveCredential(s.harnessStore, inst.ID)
+	credID := s.harnessStore.FirstEnabledCredentialID(inst.ID)
 	if _, err := s.startOnInstance(r.Context(), sess, inst, credID); err != nil {
 		return fmt.Errorf("failed to start harness: %w", err)
 	}

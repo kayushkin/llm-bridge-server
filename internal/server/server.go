@@ -27,6 +27,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/agents/hooks"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/memories"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelcredentials"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/skills"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/tools"
@@ -267,12 +268,13 @@ type Server struct {
 	chatLinkService *chatlinks.Service
 	// grantChecker answers what a principal's grants allow; it reads
 	// grantStore and principalLookupCache as they are when it is asked.
-	grantChecker    *grantcheck.Checker
-	briefService    *briefs.Service
-	operationRoutes *operationroutes.Service
-	machineRoutes   *machineroutes.Service
-	messageSenders  *messagesender.Senders
-	sessionFiles    *sessionfiles.Service
+	grantChecker     *grantcheck.Checker
+	briefService     *briefs.Service
+	operationRoutes  *operationroutes.Service
+	machineRoutes    *machineroutes.Service
+	messageSenders   *messagesender.Senders
+	modelCredentials *modelcredentials.Service
+	sessionFiles     *sessionfiles.Service
 }
 
 func New(st *store.Store, as *agents.Store, ms *memories.Store, hs *machines.Store, hks *hooks.Store, mds *models.Store, ss *snapshots.Store, cfg *config.Config) *Server {
@@ -641,14 +643,7 @@ func (s *Server) routes() {
 	}
 
 	// Credential routes (auth-store)
-	s.mux.HandleFunc("GET /credentials", s.handleCredentialsList)
-	s.mux.HandleFunc("POST /credentials", s.handleCredentialCreate)
-	s.mux.HandleFunc("DELETE /credentials/{id}", s.handleCredentialDelete)
-
-	// Model routes (model-store)
-	if s.modelStore != nil {
-		s.mux.HandleFunc("GET /models", s.handleModels)
-	}
+	s.modelCredentials.Mount(s.mux)
 
 	// Snapshot routes (snapshot-store). Metadata + blob retrieval for
 	// Edit/Write tool-call before/after diffs rendered by the UI.
@@ -1114,7 +1109,7 @@ func (s *Server) autoResume(sess store.Session) {
 		log.Printf("[auto-resume] %s: instance %s not found: %v", sess.SessionID, sess.InstanceID, err)
 		return
 	}
-	credID := resolveCredential(s.harnessStore, inst.ID)
+	credID := s.harnessStore.FirstEnabledCredentialID(inst.ID)
 	if _, err := s.startOnInstance(context.Background(), &sess, inst, credID); err != nil {
 		log.Printf("[auto-resume] %s: start failed: %v", sess.SessionID, err)
 		return

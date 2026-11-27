@@ -79,7 +79,7 @@ func (s *Server) runOneShot(ctx context.Context, inst *msg.Instance, req msg.One
 	// need it call auth-store themselves; harnesses that don't (e.g. inber,
 	// which inherits its credential from the running inber-server's env)
 	// just ignore it.
-	credID := resolveCredential(s.harnessStore, inst.ID)
+	credID := s.harnessStore.FirstEnabledCredentialID(inst.ID)
 
 	callCtx, cancel := context.WithTimeout(ctx, 6*time.Minute)
 	defer cancel()

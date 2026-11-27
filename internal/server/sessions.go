@@ -669,7 +669,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.AutoStart {
-		credID := resolveCredential(s.harnessStore, inst.ID)
+		credID := s.harnessStore.FirstEnabledCredentialID(inst.ID)
 		if _, startErr := s.startOnInstance(r.Context(), sess, inst, credID); startErr != nil {
 			// The cause goes on the session's status and in the log. Until
 			// 2026-10-19 it went nowhere: br_1791866142589272438 errored in
@@ -885,7 +885,7 @@ func (s *Server) sendMessageToSession(ctx context.Context, bridgeID string, req 
 		if err != nil {
 			return sendanswer.PlainText(http.StatusInternalServerError, fmt.Sprintf("instance not found: %v", err))
 		}
-		credID := resolveCredential(s.harnessStore, inst.ID)
+		credID := s.harnessStore.FirstEnabledCredentialID(inst.ID)
 		if _, startErr := s.startOnInstance(ctx, sess, inst, credID); startErr != nil {
 			return sendanswer.PlainText(http.StatusInternalServerError, fmt.Sprintf("failed to start harness: %v", startErr))
 		}
@@ -1219,7 +1219,7 @@ func (s *Server) handleResumeSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("instance not found: %v", err), http.StatusInternalServerError)
 		return
 	}
-	credID := resolveCredential(s.harnessStore, inst.ID)
+	credID := s.harnessStore.FirstEnabledCredentialID(inst.ID)
 	if _, err := s.startOnInstance(r.Context(), sess, inst, credID); err != nil {
 		http.Error(w, fmt.Sprintf("failed to resume: %v", err), http.StatusInternalServerError)
 		return
@@ -1350,7 +1350,7 @@ func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	credID := resolveCredential(s.harnessStore, inst.ID)
+	credID := s.harnessStore.FirstEnabledCredentialID(inst.ID)
 	if _, err := s.startOnInstance(context.Background(), forked, inst, credID); err != nil {
 		s.recordSpawnFailure(forked, err)
 	} else {
@@ -1697,21 +1697,6 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 
 func generateBridgeID() string {
 	return fmt.Sprintf("br_%d", time.Now().UnixNano())
-}
-
-// resolveCredential returns the highest-priority enabled credential ID for an instance,
-// or empty string if none are bound.
-func resolveCredential(hs *machines.Store, instanceID string) string {
-	bindings, err := hs.ListInstanceCredentials(instanceID)
-	if err != nil || len(bindings) == 0 {
-		return ""
-	}
-	for _, b := range bindings {
-		if b.Enabled {
-			return b.CredentialID
-		}
-	}
-	return ""
 }
 
 // principalStartingSessionAsThemselves is the principal a request to start a

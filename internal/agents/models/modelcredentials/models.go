@@ -1,4 +1,4 @@
-package server
+package modelcredentials
 
 import (
 	"context"
@@ -12,8 +12,8 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 )
 
-func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
-	statuses, err := s.modelStore.AllModelsWithStatus()
+func (s *Service) HandleModels(w http.ResponseWriter, r *http.Request) {
+	statuses, err := s.ModelStore().AllModelsWithStatus()
 	if err != nil {
 		http.Error(w, `{"error":"failed to query models"}`, http.StatusInternalServerError)
 		return
@@ -26,7 +26,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	// on each row rather than shown as "no credentials".
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	creds, credentialsErr := s.authClient.List(ctx, authstoreclient.ListFilter{})
+	creds, credentialsErr := s.AuthClient().List(ctx, authstoreclient.ListFilter{})
 	if credentialsErr != nil {
 		log.Printf("[models] ERROR: reading credentials from auth-store; answering the models with their credentials unknown: %v", credentialsErr)
 	}
@@ -64,18 +64,4 @@ type modelWithCredentials struct {
 	Credentials      []credResponse `json:"credentials"`
 	CredentialsKnown bool           `json:"credentials_known"`
 	CredentialsError string         `json:"credentials_error,omitempty"`
-}
-
-// ModelListPrice reads a model's list price from model-store. A model it
-// does not know, or one whose prices are both zero, has no known price: a
-// zero there means nobody entered one, and budgets must not treat it as free.
-func (s *Server) ModelListPrice(model string) (inputPerMillion, outputPerMillion float64, known bool) {
-	if s.modelStore == nil || model == "" {
-		return 0, 0, false
-	}
-	resolved, err := s.modelStore.ResolveModel(model)
-	if err != nil || resolved == nil || (resolved.InputCost <= 0 && resolved.OutputCost <= 0) {
-		return 0, 0, false
-	}
-	return resolved.InputCost, resolved.OutputCost, true
 }

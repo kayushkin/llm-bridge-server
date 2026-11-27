@@ -4,6 +4,8 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/access/grantcheck"
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelcredentials"
+	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/operations"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/operationroutes"
 	"github.com/kayushkin/llm-bridge-server/internal/chatlinks"
@@ -44,6 +46,10 @@ func (s *Server) composeServices() {
 		MessageSenders: s.messageSenders,
 		Store:          s.store,
 	}}
+	s.modelCredentials = &modelcredentials.Service{Dependencies: modelcredentials.Dependencies{
+		AuthClient: func() *authstoreclient.Client { return s.authClient },
+		ModelStore: func() *models.Store { return s.modelStore },
+	}}
 	s.operationRoutes = &operationroutes.Service{Dependencies: operationroutes.Dependencies{
 		GrantChecker:   s.grantChecker,
 		IssueReads:     func() *issuereads.Reader { return s.issueReads },
@@ -76,4 +82,18 @@ func (s *Server) composeServices() {
 // it is called they answer 503 operations_not_configured.
 func (s *Server) EnableOperations(coordinator *operations.Coordinator) {
 	s.operations = coordinator
+}
+
+// ModelListPrice reads a model's list price from model-store. A model it
+// does not know, or one whose prices are both zero, has no known price: a
+// zero there means nobody entered one, and budgets must not treat it as free.
+func (s *Server) ModelListPrice(model string) (inputPerMillion, outputPerMillion float64, known bool) {
+	if s.modelStore == nil || model == "" {
+		return 0, 0, false
+	}
+	resolved, err := s.modelStore.ResolveModel(model)
+	if err != nil || resolved == nil || (resolved.InputCost <= 0 && resolved.OutputCost <= 0) {
+		return 0, 0, false
+	}
+	return resolved.InputCost, resolved.OutputCost, true
 }

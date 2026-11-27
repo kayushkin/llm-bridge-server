@@ -122,7 +122,7 @@ func (s *Server) handleSwitchMode(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("instance not found: %v", err), http.StatusInternalServerError)
 		return
 	}
-	credID := resolveCredential(s.harnessStore, inst.ID)
+	credID := s.harnessStore.FirstEnabledCredentialID(inst.ID)
 	if _, startErr := s.startOnInstance(r.Context(), sess, inst, credID); startErr != nil {
 		s.recordSpawnFailure(sess, startErr)
 		http.Error(w, fmt.Sprintf("spawn in %s mode: %v", req.Mode, startErr), http.StatusInternalServerError)

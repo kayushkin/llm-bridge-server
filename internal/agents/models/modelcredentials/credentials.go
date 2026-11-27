@@ -1,4 +1,4 @@
-package server
+package modelcredentials
 
 import (
 	"context"
@@ -44,10 +44,10 @@ func toCredResponse(c *authstoreclient.Credential) credResponse {
 	return cr
 }
 
-func (s *Server) handleCredentialsList(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleCredentialsList(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	creds, err := s.authClient.List(ctx, authstoreclient.ListFilter{})
+	creds, err := s.AuthClient().List(ctx, authstoreclient.ListFilter{})
 	if err != nil {
 		httpjson.WriteJSONError(w, http.StatusBadGateway, "auth_store_unavailable", err.Error())
 		return
@@ -55,7 +55,7 @@ func (s *Server) handleCredentialsList(w http.ResponseWriter, r *http.Request) {
 	httpjson.WriteJSON(w, toCredResponses(creds))
 }
 
-func (s *Server) handleCredentialCreate(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleCredentialCreate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name     string `json:"name"`
 		Provider string `json:"provider"`
@@ -105,7 +105,7 @@ func (s *Server) handleCredentialCreate(w http.ResponseWriter, r *http.Request) 
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	c, err := s.authClient.Create(ctx, in)
+	c, err := s.AuthClient().Create(ctx, in)
 	if err != nil {
 		httpjson.WriteJSONError(w, http.StatusBadGateway, "auth_store_unavailable", err.Error())
 		return
@@ -116,7 +116,7 @@ func (s *Server) handleCredentialCreate(w http.ResponseWriter, r *http.Request) 
 	json.NewEncoder(w).Encode(map[string]string{"id": c.ID, "status": "created"})
 }
 
-func (s *Server) handleCredentialDelete(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleCredentialDelete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
 		http.Error(w, `{"error":"credential id required"}`, http.StatusBadRequest)
@@ -124,7 +124,7 @@ func (s *Server) handleCredentialDelete(w http.ResponseWriter, r *http.Request) 
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	if err := s.authClient.Delete(ctx, id); err != nil {
+	if err := s.AuthClient().Delete(ctx, id); err != nil {
 		httpjson.WriteJSONError(w, http.StatusBadGateway, "auth_store_unavailable", err.Error())
 		return
 	}
