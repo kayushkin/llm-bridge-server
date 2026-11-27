@@ -37,7 +37,7 @@ import { useCardEffectiveDefaults } from '../useCardEffectiveDefaults'
 import { SIGNAL_KIND_QUESTION, groupSignalsByRequest, type Signal } from '@kayushkin/chat-core'
 import { SignalRequestCard } from './chat/SignalCard'
 import { useOpenSignalsByTodo, useOpenSignalsForTodo } from '../kanbanSignals'
-import { fetchNoteboardItemRef } from './noteboardItemRef'
+import { fetchNoteOrIssueRef } from './noteOrIssueRef'
 import {
   CARD_AXES, allCardsOf, axisUsage, filterIsActive, matchesFilter,
   parseEmailLocator, sortCards, withAxisValue,
@@ -345,7 +345,7 @@ function KanbanBoardOnServer({ server, servers, boardsByServer, onPickBoardOnSer
     void (async () => {
       try {
         const res = await fetchFn(
-          `${issuesBasePath}/api/cards/${encodeURIComponent(drawerCardID)}/placements`,
+          `${issuesBasePath}/cards/${encodeURIComponent(drawerCardID)}/placements`,
         )
         if (!res.ok || canceled) return
         // ⚠️ kanban-store answers a card id it does not know with 200 and a JSON
@@ -2098,13 +2098,13 @@ export function CardDetail({
  * Every link used to render as `<type> <raw uuid>`, with a click-through on
  * `session` alone. A card is linked to the sessions, subagent runs and todos
  * that did its work — all three ARE linkable today, via `session` and via
- * `note`, which resolves noteboard's `/api/items` and therefore covers todos —
+ * `note`, which resolves in notes and then issues and therefore covers todos —
  * but a todo showed as 36 characters of hex naming nothing. Measured on this
  * host: zero `note` links existed, which is what an unusable affordance looks
  * like from the data side.
  *
  * A `note` ref now resolves to its title and links to the host's notes page.
- * The resolution is `fetchNoteboardItemRef`, the same call the chat's reference chips
+ * The resolution is `fetchNoteOrIssueRef`, the same lookup the chat's reference chips
  * make — reused rather than re-derived, so a todo reads identically wherever it
  * is referenced.
  *
@@ -2165,7 +2165,7 @@ function EntityLinkRow({
   onOpenChat: OpenChatFn
   onDeleteLink: (linkID: string) => void
 }) {
-  const { routes, noteboardBasePath, fetch: fetchFn } = useBridgeConfig()
+  const { routes, notesBasePath, issuesBasePath, fetch: fetchFn } = useBridgeConfig()
   const [title, setTitle] = useState<string | null>(null)
 
   const isSessionLink = link.entity_type === 'session' && !!link.entity_ref
@@ -2173,14 +2173,14 @@ function EntityLinkRow({
   // here rather than in kanban-store is deliberate: the store publishes an
   // entity-type registry and leaves resolution to whoever knows the service.
   const target = entityTarget(link.entity_type, link.entity_ref)
-  // `note` is noteboard's whole item space, todos included — the registry entry
-  // points at `/api/items`, not at a notes-only route.
+  // `note` is the one id space notes and issues share, todos included, so the
+  // lookup asks notes and then issues.
   const isNoteLink = link.entity_type === 'note' && !!link.entity_ref
 
   useEffect(() => {
-    if (!isNoteLink || !noteboardBasePath) return
+    if (!isNoteLink || !notesBasePath || !issuesBasePath) return
     let canceled = false
-    fetchNoteboardItemRef(fetchFn, noteboardBasePath, link.entity_ref)
+    fetchNoteOrIssueRef(fetchFn, notesBasePath, issuesBasePath, link.entity_ref)
       .then(ref => {
         if (!canceled && ref?.title) setTitle(ref.title)
       })
@@ -2190,7 +2190,7 @@ function EntityLinkRow({
     return () => {
       canceled = true
     }
-  }, [isNoteLink, noteboardBasePath, fetchFn, link.entity_ref])
+  }, [isNoteLink, notesBasePath, issuesBasePath, fetchFn, link.entity_ref])
 
   return (
     <li>

@@ -110,8 +110,8 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
   const fetchBoards = useCallback(async () => {
     if (!enabled || !loadBoards) return
     try {
-      const res = await fetchFn(`${issuesBasePath}/api/boards`)
-      if (!res.ok) throw new Error(`/api/boards HTTP ${res.status}`)
+      const res = await fetchFn(`${issuesBasePath}/boards`)
+      if (!res.ok) throw new Error(`/boards HTTP ${res.status}`)
       const data: Board[] = (await res.json()) ?? []
       setBoards(data)
       setError(null)
@@ -124,8 +124,8 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
     if (!enabled || !boardID) { setView(null); return }
     try {
       const query = columnPageSize > 0 ? `?limit=${columnPageSize}` : ''
-      const res = await fetchFn(`${issuesBasePath}/api/boards/${encodeURIComponent(boardID)}/cards${query}`)
-      if (!res.ok) throw new Error(`/api/boards/:id/cards HTTP ${res.status}`)
+      const res = await fetchFn(`${issuesBasePath}/boards/${encodeURIComponent(boardID)}/cards${query}`)
+      if (!res.ok) throw new Error(`/boards/:id/cards HTTP ${res.status}`)
       const data: BoardView = await res.json()
 
       // Columns the user expanded are re-read at the size they asked for, so an
@@ -134,8 +134,8 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
       if (expanded.length > 0) {
         const pages = await Promise.all(expanded.map(async cv => {
           const limit = columnLimits[cv.column.id]
-          const r = await fetchFn(`${issuesBasePath}/api/columns/${encodeURIComponent(cv.column.id)}/cards?limit=${limit}`)
-          if (!r.ok) throw new Error(`/api/columns/:id/cards HTTP ${r.status}`)
+          const r = await fetchFn(`${issuesBasePath}/columns/${encodeURIComponent(cv.column.id)}/cards?limit=${limit}`)
+          if (!r.ok) throw new Error(`/columns/:id/cards HTTP ${r.status}`)
           return (await r.json()) as ColumnView
         }))
         const byColumn = new Map(pages.map(p => [p.column.id, p]))
@@ -156,7 +156,7 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
   const fetchEntityTypes = useCallback(async () => {
     if (!enabled || !loadEntityTypes) return
     try {
-      const res = await fetchFn(`${issuesBasePath}/api/entity-types`)
+      const res = await fetchFn(`${issuesBasePath}/entity-types`)
       if (!res.ok) return
       setEntityTypes((await res.json()) ?? [])
     } catch {/* non-fatal */}
@@ -165,7 +165,7 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
   // Two effects, not one: the board list does not depend on which board is
   // open, so picking a board (the page picks one as soon as the list arrives)
   // must not read the list again. In one effect keyed on both, every load read
-  // `/api/boards` twice.
+  // `/boards` twice.
   //
   // Each timer runs only when its call can actually fetch. The chat pane's
   // LinkedKanbanPanel constructs this hook with loadBoards false and no board
@@ -208,7 +208,7 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
 
   const createBoard = useCallback(async (args: CreateBoardArgs): Promise<Board | null> => {
     if (!enabled) return null
-    const res = await fetchFn(`${issuesBasePath}/api/boards`, {
+    const res = await fetchFn(`${issuesBasePath}/boards`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(args),
@@ -221,7 +221,7 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
 
   const deleteBoard = useCallback(async (id: string): Promise<boolean> => {
     if (!enabled) return false
-    const res = await fetchFn(`${issuesBasePath}/api/boards/${encodeURIComponent(id)}`, { method: 'DELETE' })
+    const res = await fetchFn(`${issuesBasePath}/boards/${encodeURIComponent(id)}`, { method: 'DELETE' })
     if (!res.ok) { setError(`deleteBoard HTTP ${res.status}`); return false }
     await fetchBoards()
     return true
@@ -229,7 +229,7 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
 
   const createColumn = useCallback(async (args: CreateColumnArgs): Promise<boolean> => {
     if (!enabled || !boardID) return false
-    const res = await fetchFn(`${issuesBasePath}/api/boards/${encodeURIComponent(boardID)}/columns`, {
+    const res = await fetchFn(`${issuesBasePath}/boards/${encodeURIComponent(boardID)}/columns`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(args),
@@ -241,7 +241,7 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
 
   const deleteColumn = useCallback(async (columnID: string): Promise<boolean> => {
     if (!enabled) return false
-    const res = await fetchFn(`${issuesBasePath}/api/columns/${encodeURIComponent(columnID)}`, { method: 'DELETE' })
+    const res = await fetchFn(`${issuesBasePath}/columns/${encodeURIComponent(columnID)}`, { method: 'DELETE' })
     if (!res.ok) { setError(`deleteColumn HTTP ${res.status}`); return false }
     await fetchView()
     return true
@@ -249,7 +249,7 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
 
   const createCard = useCallback(async (args: CreateCardArgs): Promise<boolean> => {
     if (!enabled || !boardID) return false
-    const res = await fetchFn(`${issuesBasePath}/api/boards/${encodeURIComponent(boardID)}/cards`, {
+    const res = await fetchFn(`${issuesBasePath}/boards/${encodeURIComponent(boardID)}/cards`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(args),
@@ -265,7 +265,7 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
 
   const moveCard = useCallback(async (cardID: string, columnID: string, position = 0): Promise<boolean> => {
     if (!enabled || !boardID) return false
-    const res = await fetchFn(`${issuesBasePath}/api/cards/${encodeURIComponent(cardID)}/move`, {
+    const res = await fetchFn(`${issuesBasePath}/cards/${encodeURIComponent(cardID)}/move`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ board_id: boardID, column_id: columnID, position }),
@@ -281,7 +281,7 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
 
   const patchCard = useCallback(async (cardID: string, patch: Record<string, unknown>): Promise<boolean> => {
     if (!enabled) return false
-    const res = await fetchFn(`${issuesBasePath}/api/cards/${encodeURIComponent(cardID)}`, {
+    const res = await fetchFn(`${issuesBasePath}/cards/${encodeURIComponent(cardID)}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch),
@@ -301,7 +301,7 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
    */
   const holdCard = useCallback(async (cardID: string, reason = ''): Promise<boolean> => {
     if (!enabled) return false
-    const res = await fetchFn(`${issuesBasePath}/api/cards/${encodeURIComponent(cardID)}/hold`, {
+    const res = await fetchFn(`${issuesBasePath}/cards/${encodeURIComponent(cardID)}/hold`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ reason }),
@@ -313,7 +313,7 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
 
   const unholdCard = useCallback(async (cardID: string): Promise<boolean> => {
     if (!enabled) return false
-    const res = await fetchFn(`${issuesBasePath}/api/cards/${encodeURIComponent(cardID)}/unhold`, {
+    const res = await fetchFn(`${issuesBasePath}/cards/${encodeURIComponent(cardID)}/unhold`, {
       method: 'POST',
     })
     if (!res.ok) { setError(`unholdCard HTTP ${res.status}`); return false }
@@ -323,7 +323,7 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
 
   const deleteCard = useCallback(async (cardID: string, hard = false): Promise<boolean> => {
     if (!enabled) return false
-    const url = `${issuesBasePath}/api/cards/${encodeURIComponent(cardID)}${hard ? '?hard=true' : ''}`
+    const url = `${issuesBasePath}/cards/${encodeURIComponent(cardID)}${hard ? '?hard=true' : ''}`
     const res = await fetchFn(url, { method: 'DELETE' })
     if (!res.ok) { setError(`deleteCard HTTP ${res.status}`); return false }
     await fetchView()
@@ -344,7 +344,7 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
    */
   const detachCard = useCallback(async (boardID: string, cardID: string): Promise<boolean> => {
     if (!enabled) return false
-    const url = `${issuesBasePath}/api/boards/${encodeURIComponent(boardID)}/cards/${encodeURIComponent(cardID)}`
+    const url = `${issuesBasePath}/boards/${encodeURIComponent(boardID)}/cards/${encodeURIComponent(cardID)}`
     const res = await fetchFn(url, { method: 'DELETE' })
     if (!res.ok) { setError(`detachCard HTTP ${res.status}`); return false }
     await fetchView()
@@ -366,7 +366,7 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
 
   const listCardLinks = useCallback(async (cardID: string): Promise<CardLink[]> => {
     if (!enabled) return []
-    const res = await fetchFn(`${issuesBasePath}/api/cards/${encodeURIComponent(cardID)}/links`)
+    const res = await fetchFn(`${issuesBasePath}/cards/${encodeURIComponent(cardID)}/links`)
     if (!res.ok) return []
     return (await res.json()) ?? []
   }, [fetchFn, issuesBasePath, enabled])
@@ -440,7 +440,7 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
 
   const addCardLink = useCallback(async (cardID: string, entity_type: string, entity_ref: string, label?: string): Promise<boolean> => {
     if (!enabled) return false
-    const res = await fetchFn(`${issuesBasePath}/api/cards/${encodeURIComponent(cardID)}/links`, {
+    const res = await fetchFn(`${issuesBasePath}/cards/${encodeURIComponent(cardID)}/links`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ entity_type, entity_ref, label }),
@@ -463,7 +463,7 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
   const assign = useCallback(async (cardID: string, principalID: string): Promise<AssignmentOutcome> => {
     if (!enabled) return { ok: false, error: 'kanban-store is not configured' }
     const res = await fetchFn(
-      `${issuesBasePath}/api/cards/${encodeURIComponent(cardID)}/assignments/${encodeURIComponent(principalID)}`,
+      `${issuesBasePath}/cards/${encodeURIComponent(cardID)}/assignments/${encodeURIComponent(principalID)}`,
       { method: 'PUT' },
     )
     if (!res.ok) return { ok: false, error: await readErrorText(res, 'assign') }
@@ -474,7 +474,7 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
   const unassign = useCallback(async (cardID: string, principalID: string): Promise<AssignmentOutcome> => {
     if (!enabled) return { ok: false, error: 'kanban-store is not configured' }
     const res = await fetchFn(
-      `${issuesBasePath}/api/cards/${encodeURIComponent(cardID)}/assignments/${encodeURIComponent(principalID)}`,
+      `${issuesBasePath}/cards/${encodeURIComponent(cardID)}/assignments/${encodeURIComponent(principalID)}`,
       { method: 'DELETE' },
     )
     if (!res.ok) return { ok: false, error: await readErrorText(res, 'unassign') }
@@ -484,7 +484,7 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
 
   const deleteCardLink = useCallback(async (linkID: string): Promise<boolean> => {
     if (!enabled) return false
-    const res = await fetchFn(`${issuesBasePath}/api/links/${encodeURIComponent(linkID)}`, { method: 'DELETE' })
+    const res = await fetchFn(`${issuesBasePath}/links/${encodeURIComponent(linkID)}`, { method: 'DELETE' })
     if (!res.ok) { setError(`deleteCardLink HTTP ${res.status}`); return false }
     await fetchView()
     return true
@@ -499,21 +499,21 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
   // what lets the caller keep the last good answer on screen.
   const listCardsForEntity = useCallback(async (entityType: string, entityRef: string): Promise<EntityCardView[]> => {
     if (!enabled) return []
-    const res = await fetchFn(`${issuesBasePath}/api/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityRef)}/cards`)
+    const res = await fetchFn(`${issuesBasePath}/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityRef)}/cards`)
     if (!res.ok) throw new Error(`listCardsForEntity HTTP ${res.status}`)
     return (await res.json()) ?? []
   }, [fetchFn, issuesBasePath, enabled])
 
   const listEntityTags = useCallback(async (entityType: string, entityRef: string): Promise<EntityTag[]> => {
     if (!enabled) return []
-    const res = await fetchFn(`${issuesBasePath}/api/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityRef)}/tags`)
+    const res = await fetchFn(`${issuesBasePath}/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityRef)}/tags`)
     if (!res.ok) throw new Error(`listEntityTags HTTP ${res.status}`)
     return (await res.json()) ?? []
   }, [fetchFn, issuesBasePath, enabled])
 
   const addEntityTag = useCallback(async (entityType: string, entityRef: string, tag: string): Promise<boolean> => {
     if (!enabled) return false
-    const res = await fetchFn(`${issuesBasePath}/api/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityRef)}/tags`, {
+    const res = await fetchFn(`${issuesBasePath}/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityRef)}/tags`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ tag }),
@@ -524,7 +524,7 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
 
   const deleteEntityTag = useCallback(async (entityType: string, entityRef: string, tag: string): Promise<boolean> => {
     if (!enabled) return false
-    const res = await fetchFn(`${issuesBasePath}/api/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityRef)}/tags/${encodeURIComponent(tag)}`, {
+    const res = await fetchFn(`${issuesBasePath}/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityRef)}/tags/${encodeURIComponent(tag)}`, {
       method: 'DELETE',
     })
     if (!res.ok) { setError(`deleteEntityTag HTTP ${res.status}`); return false }

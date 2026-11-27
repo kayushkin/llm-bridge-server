@@ -338,7 +338,7 @@ export const CONNECTED_SERVER_PATH_SOURCES: Readonly<Record<BridgeConfigPathFiel
   permissionsBasePath: 'not-there',
   bundlesBasePath: 'not-there',
   reposBasePath: 'not-there',
-  noteboardBasePath: 'not-there',
+  notesBasePath: 'not-there',
   bridgeAdapterBasePath: 'not-there',
   orchestratorBasePath: 'not-there',
   usageBasePath: 'not-there',

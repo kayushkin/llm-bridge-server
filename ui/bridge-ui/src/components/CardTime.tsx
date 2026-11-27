@@ -128,7 +128,7 @@ export function CardTimelinePanel({ cardID, boardID }: { cardID: string; boardID
     if (!issuesBasePath) return
     const query = boardID ? `?board_id=${encodeURIComponent(boardID)}` : ''
     try {
-      const res = await fetchFn(`${issuesBasePath}/api/cards/${encodeURIComponent(cardID)}/timeline${query}`)
+      const res = await fetchFn(`${issuesBasePath}/cards/${encodeURIComponent(cardID)}/timeline${query}`)
       if (!res.ok) throw new Error(`timeline: ${res.status}`)
       setTimeline(await res.json())
       setError(null)
@@ -146,7 +146,7 @@ export function CardTimelinePanel({ cardID, boardID }: { cardID: string; boardID
     if (!noteBody.trim() || !issuesBasePath) return
     setSaving(true)
     try {
-      const res = await fetchFn(`${issuesBasePath}/api/cards/${encodeURIComponent(cardID)}/notes`, {
+      const res = await fetchFn(`${issuesBasePath}/cards/${encodeURIComponent(cardID)}/notes`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

@@ -190,10 +190,13 @@ export interface BridgeConfig {
    * The Bundles page reads its repos to preview a resolution for one. If
    * empty, the page lists bundles and says there are no repos to preview. */
   reposBasePath: string
-  /** Base path for the noteboard API (e.g. "/api/noteboard"). No trailing
-   * slash. Used by chat reference chips to resolve a todo/item id to its
-   * title/status. If empty, todo chips render but say lookup isn't configured. */
-  noteboardBasePath: string
+  /** Base path for notes (llm-bridge-server: "/notes"): notes, ranked list
+   * entries and workspaces, at `/items/{id}`. No trailing slash. With
+   * `issuesBasePath` (whose `/items/{id}` is an issue's content), chat
+   * reference chips resolve a note or todo id to its title and status, asking
+   * notes first and issues when notes has no such item. If either is empty,
+   * those chips render but say lookup isn't configured. */
+  notesBasePath: string
   /** reference-store through the bridge (dash: "/api/bridge/reference-store"):
    * the one list of reference types and lookups for the signed-in person.
    * The generic chip and the record page (`routes.reference`) need it. */

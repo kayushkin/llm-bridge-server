@@ -4,8 +4,8 @@
 //
 // Everything here is a function of its arguments — no fetch, no React — so the
 // wire bodies the page sends are pinned by tests without a DOM. The wire
-// contract is kanban-store's `PATCH /api/boards/{id}` and
-// `PUT /api/boards/{id}/priority-levels` (README "Board settings", "Priority
+// contract is kanban-store's `PATCH /boards/{id}` and
+// `PUT /boards/{id}/priority-levels` (README "Board settings", "Priority
 // ladders", "Business hours"): omit a field to leave it alone, `""` clears an
 // id, `{"classifier":{}}` clears the classifier, `{"business_hours":{}}`
 // clears the hours, `{"assignment_pool":{}}` clears the pool.
@@ -16,7 +16,7 @@ import type { Bundle } from '@kayushkin/bundle-store-types'
 import type { AssignmentPool, Board, BoardPriorityLevel, BusinessHours, CardEvent, ClassifierConfig, DefaultSource, EffectiveDefault, PriorityLadder, UpdateBoardRequest } from '@kayushkin/kanban-store-types'
 import { machineLabel } from './grantResources'
 
-/** A `PATCH /api/boards/{id}` body. Every key is optional because an omitted
+/** A `PATCH /boards/{id}` body. Every key is optional because an omitted
  *  key is "leave it alone"; an empty object clears the three object-valued
  *  settings and an empty string clears an id. */
 export type BoardSettingsPatch = Omit<UpdateBoardRequest, 'business_hours' | 'classifier' | 'assignment_pool'> & {
@@ -115,7 +115,7 @@ export function defaultsPatchOf(board: Pick<Board, BoardDefaultField>, draft: De
 //
 // A card that arrives with no assignee goes to one available member of a
 // principal-store group, chosen by a strategy kanban-store serves at
-// `GET /api/assignment-strategies`. kanban-store decides who; these helpers only
+// `GET /assignment-strategies`. kanban-store decides who; these helpers only
 // carry the form to the wire and word what the store recorded.
 
 export interface AssignmentPoolDraft {
@@ -272,7 +272,7 @@ export function emptyLadderRow(rows: readonly LadderRowDraft[]): LadderRowDraft 
   return { label: '', priorityValue: String(Math.max(1, lowest - 1)), budgetAmount: '', budgetUnit: 'hours', defaultAutoHoldAtUSD: '' }
 }
 
-/** One rung as `PUT /api/boards/{id}/priority-ladder` takes it: kanban-store's
+/** One rung as `PUT /boards/{id}/priority-ladder` takes it: kanban-store's
  *  BoardPriorityLevel without `board_id`, which the route supplies. */
 export type LadderWireLevel = Omit<BoardPriorityLevel, 'board_id'>
 

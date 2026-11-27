@@ -1,6 +1,6 @@
 import { createContext, useContext } from 'react';
 import type { ApiClient } from '../net/ApiClient.js';
-import type { NoteboardClient } from '../net/NoteboardClient.js';
+import type { NotesAndIssuesClient } from '../net/NotesAndIssuesClient.js';
 import type { ReferenceStoreClient } from '../net/ReferenceStoreClient.js';
 import type { SessionCache } from '../cache/SessionCache.js';
 import type { SyncEngine } from '../sync/SyncEngine.js';
@@ -14,11 +14,11 @@ export interface ChatContextValue {
   cache: SessionCache;
   sync: SyncEngine;
   prefetcher: Prefetcher;
-  /** Noteboard reader for note/todo ref chips, or null when the host did not
-   *  configure a `noteboardBasePath`. Null is a real state, not a failure: a
-   *  host that mounts the chat without a noteboard proxy has nowhere to resolve
-   *  an item id, and the chip must say so rather than spin forever. */
-  noteboard: NoteboardClient | null;
+  /** Notes and issues reader for note/todo ref chips, or null when the host
+   *  did not configure `notesBasePath` and `issuesBasePath`. Null is a real
+   *  state, not a failure: a host that mounts the chat without those has
+   *  nowhere to resolve such a chip, and the chip says so. */
+  notesAndIssues: NotesAndIssuesClient | null;
   /** reference-store through the bridge, or null when the host did not
    *  configure a `referencesBasePath`. It answers the list of reference
    *  types and looks ids up for the signed-in person. Null means an id with

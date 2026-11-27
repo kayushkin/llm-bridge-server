@@ -19,7 +19,7 @@ describe('kanbanStoreClient', () => {
     const { calls, fetchFn } = recordingFetch(200, { id: 'b1' })
     const result = await patchBoard(fetchFn, '/api/kanban', 'b1', { default_instance_id: '' })
     expect(result.ok).toBe(true)
-    expect(calls).toEqual([{ url: '/api/kanban/api/boards/b1', method: 'PATCH', body: { default_instance_id: '' } }])
+    expect(calls).toEqual([{ url: '/api/kanban/boards/b1', method: 'PATCH', body: { default_instance_id: '' } }])
   })
 
   it('returns kanban-store’s refusal verbatim, so the page shows the owner’s words', async () => {
@@ -42,7 +42,7 @@ describe('tag rules and effective defaults', () => {
     const { calls, fetchFn } = recordingFetch(200, { board_id: 'b 1', rules: [] })
     const result = await getTagRules(fetchFn, '/api/kanban', 'b 1')
     expect(result).toEqual({ ok: true, value: { board_id: 'b 1', rules: [] } })
-    expect(calls).toEqual([{ url: '/api/kanban/api/boards/b%201/tag-rules', method: undefined, body: undefined }])
+    expect(calls).toEqual([{ url: '/api/kanban/boards/b%201/tag-rules', method: undefined, body: undefined }])
   })
 
   it('PUTs the whole list, in order, to /tag-rules', async () => {
@@ -53,7 +53,7 @@ describe('tag rules and effective defaults', () => {
     const { calls, fetchFn } = recordingFetch(200, { board_id: 'b1', rules: [] })
     const result = await putTagRules(fetchFn, '/api/kanban', 'b1', body)
     expect(result.ok).toBe(true)
-    expect(calls).toEqual([{ url: '/api/kanban/api/boards/b1/tag-rules', method: 'PUT', body }])
+    expect(calls).toEqual([{ url: '/api/kanban/boards/b1/tag-rules', method: 'PUT', body }])
   })
 
   it('returns a tag-rules refusal verbatim, naming the rule the store refused', async () => {
@@ -77,7 +77,7 @@ describe('tag rules and effective defaults', () => {
     const { calls, fetchFn } = recordingFetch(200, answer)
     const result = await getCardEffectiveDefaults(fetchFn, '/api/kanban', 'b1', 'c/1')
     expect(result).toEqual({ ok: true, value: answer })
-    expect(calls[0].url).toBe('/api/kanban/api/boards/b1/cards/c%2F1/effective-defaults')
+    expect(calls[0].url).toBe('/api/kanban/boards/b1/cards/c%2F1/effective-defaults')
   })
 
   it('returns a card read’s failure verbatim', async () => {
@@ -90,9 +90,9 @@ describe('tag rules and effective defaults', () => {
     await getEffectiveDefaultsForTags(fetchFn, '/api/kanban', 'b1', ['cat:product', 'urgency:high'])
     await getEffectiveDefaultsForTags(fetchFn, '/api/kanban', 'b1', [])
     const first = new URL(calls[0].url, 'http://host')
-    expect(first.pathname).toBe('/api/kanban/api/boards/b1/effective-defaults')
+    expect(first.pathname).toBe('/api/kanban/boards/b1/effective-defaults')
     expect(first.searchParams.getAll('tag')).toEqual(['cat:product', 'urgency:high'])
-    expect(calls[1].url).toBe('/api/kanban/api/boards/b1/effective-defaults')
+    expect(calls[1].url).toBe('/api/kanban/boards/b1/effective-defaults')
   })
 })
 
@@ -101,7 +101,7 @@ describe('assignment strategies', () => {
     const { calls, fetchFn } = recordingFetch(200, ['least_open_cards', 'round_robin'])
     const result = await listAssignmentStrategies(fetchFn, '/api/kanban')
     expect(result).toEqual({ ok: true, value: ['least_open_cards', 'round_robin'] })
-    expect(calls).toEqual([{ url: '/api/kanban/api/assignment-strategies', method: undefined, body: undefined }])
+    expect(calls).toEqual([{ url: '/api/kanban/assignment-strategies', method: undefined, body: undefined }])
   })
 
   it('reports a store without the route as an error, not as an empty list', async () => {

@@ -1,13 +1,13 @@
 import type { FetchFn } from '../types'
 
-// A noteboard item's title and state, for a kanban link row that names one.
+// A note's or issue's title and state, for a kanban link row that names one.
 // What is left of the chat's reference-chip data after the chips moved to
 // chat-core; the kanban's link list is the one reader.
 
-// The fields a link row shows — for any item type in noteboard's one id space
-// (note, todo, rank, workspace). `type` comes from the item itself, which is
-// the authority.
-export interface NoteboardItemRef {
+// The fields a link row shows — for any item type in the one id space notes
+// and issues share (note, rank and workspace in notes, todo in issues).
+// `type` comes from the item itself, which is the authority.
+export interface NoteOrIssueRef {
   type: string
   title: string
   status: string
@@ -19,10 +19,16 @@ export interface NoteboardItemRef {
   deleted_at: string | null
 }
 
-async function getJSON(fetchFn: FetchFn, url: string): Promise<unknown> {
-  const res = await fetchFn(url)
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
-  return res.json()
+// getNoteOrIssue reads one id from notes, and from issues when notes has no
+// such item: the two hold disjoint ids, so this finds the one that has it.
+async function getNoteOrIssue(fetchFn: FetchFn, notesBasePath: string, issuesBasePath: string, itemId: string): Promise<unknown> {
+  const itemPath = `/items/${encodeURIComponent(itemId)}`
+  const notes = await fetchFn(`${notesBasePath}${itemPath}`)
+  if (notes.ok) return notes.json()
+  if (notes.status !== 404) throw new Error(`notes: ${notes.status} ${notes.statusText}`)
+  const issues = await fetchFn(`${issuesBasePath}${itemPath}`)
+  if (!issues.ok) throw new Error(`issues: ${issues.status} ${issues.statusText}`)
+  return issues.json()
 }
 
 function str(o: Record<string, unknown>, k: string): string {
@@ -34,7 +40,7 @@ function str(o: Record<string, unknown>, k: string): string {
 // the same id repeated many times would otherwise refetch per chip, so results
 // are cached by id for a short window and shared across chips.
 const CORE_TTL_MS = 30_000
-const noteboardItemCache = new Map<string, { at: number; p: Promise<NoteboardItemRef> }>()
+const noteOrIssueCache = new Map<string, { at: number; p: Promise<NoteOrIssueRef> }>()
 
 function cached<T>(cache: Map<string, { at: number; p: Promise<T> }>, key: string, make: () => Promise<T>): Promise<T> {
   const now = Date.now()
@@ -47,9 +53,9 @@ function cached<T>(cache: Map<string, { at: number; p: Promise<T> }>, key: strin
   return p
 }
 
-export function fetchNoteboardItemRef(fetchFn: FetchFn, noteboardBasePath: string, itemId: string): Promise<NoteboardItemRef> {
-  return cached(noteboardItemCache, itemId, async () => {
-    const raw = await getJSON(fetchFn, `${noteboardBasePath}/api/items/${encodeURIComponent(itemId)}`)
+export function fetchNoteOrIssueRef(fetchFn: FetchFn, notesBasePath: string, issuesBasePath: string, itemId: string): Promise<NoteOrIssueRef> {
+  return cached(noteOrIssueCache, itemId, async () => {
+    const raw = await getNoteOrIssue(fetchFn, notesBasePath, issuesBasePath, itemId)
     const o = (raw ?? {}) as Record<string, unknown>
     const tags = Array.isArray(o.tags) ? (o.tags as unknown[]).filter((t): t is string => typeof t === 'string') : []
     return {

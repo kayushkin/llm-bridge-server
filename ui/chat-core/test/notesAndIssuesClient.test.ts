@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { NoteboardClient, type NoteboardItem } from '../src/net/NoteboardClient.js';
+import { NotesAndIssuesClient, type NoteOrIssue } from '../src/net/NotesAndIssuesClient.js';
 import { ApiError } from '../src/net/ApiClient.js';
 
 const UUID = '0d195aec-5ad0-4399-9b5d-75fe03262145';
 
-function item(over: Partial<NoteboardItem> = {}): NoteboardItem {
+function item(over: Partial<NoteOrIssue> = {}): NoteOrIssue {
   return {
     id: UUID,
     type: 'todo',
@@ -42,27 +42,49 @@ function fakeFetch(
   return { fn, urls };
 }
 
-describe('NoteboardClient.getItem', () => {
+describe('NotesAndIssuesClient.getItem', () => {
+  it('asks issues for an id notes does not have, and answers the issue', () => {
+    const issue = item({ type: 'todo', title: 'Call plumber' });
+    const { fn, urls } = fakeFetch((url) => (url.startsWith('/notes/') ? { status: 404, body: '{"error":"not found"}' } : { status: 200, body: issue }));
+    const client = new NotesAndIssuesClient({ fetch: fn, notesBasePath: '/notes', issuesBasePath: '/issues' });
+    return client.getItem(UUID).then((got) => {
+      expect(urls).toEqual([`/notes/items/${UUID}`, `/issues/items/${UUID}`]);
+      expect(got).toEqual(issue);
+    });
+  });
+
+  it('does not ask issues when notes fails with anything but 404', () => {
+    const { fn, urls } = fakeFetch(() => ({ status: 503, body: 'notes_off' }));
+    const client = new NotesAndIssuesClient({ fetch: fn, notesBasePath: '/notes', issuesBasePath: '/issues' });
+    return client.getItem(UUID).then(
+      () => { throw new Error('expected getItem to reject'); },
+      (e: unknown) => {
+        expect((e as ApiError).status).toBe(503);
+        expect(urls).toEqual([`/notes/items/${UUID}`]);
+      },
+    );
+  });
+
   it('builds the path under the configured base and encodes the id', () => {
     const { fn, urls } = fakeFetch(() => ({ status: 200, body: item() }));
-    const client = new NoteboardClient({ fetch: fn, basePath: '/api/noteboard' });
+    const client = new NotesAndIssuesClient({ fetch: fn, notesBasePath: '/notes', issuesBasePath: '/issues' });
     return client.getItem(UUID).then(() => {
-      expect(urls).toEqual([`/api/noteboard/api/items/${UUID}`]);
+      expect(urls).toEqual([`/notes/items/${UUID}`]);
     });
   });
 
   it('strips a trailing slash from the base rather than doubling it', () => {
     const { fn, urls } = fakeFetch(() => ({ status: 200, body: item() }));
-    const client = new NoteboardClient({ fetch: fn, basePath: '/api/noteboard/' });
+    const client = new NotesAndIssuesClient({ fetch: fn, notesBasePath: '/notes/', issuesBasePath: '/issues/' });
     return client.getItem(UUID).then(() => {
-      expect(urls[0]).toBe(`/api/noteboard/api/items/${UUID}`);
+      expect(urls[0]).toBe(`/notes/items/${UUID}`);
     });
   });
 
   it('returns the row verbatim, including fields the chip does not read', () => {
     const row = item({ type: 'note', body: '## Steps', tags: ['ops'], priority: 2 });
     const { fn } = fakeFetch(() => ({ status: 200, body: row }));
-    const client = new NoteboardClient({ fetch: fn, basePath: '/api/noteboard' });
+    const client = new NotesAndIssuesClient({ fetch: fn, notesBasePath: '/notes', issuesBasePath: '/issues' });
     return client.getItem(UUID).then((got) => {
       expect(got).toEqual(row);
     });
@@ -76,7 +98,7 @@ describe('NoteboardClient.getItem', () => {
       status: 200,
       body: item({ deleted_at: '2026-08-09T22:30:00Z' }),
     }));
-    const client = new NoteboardClient({ fetch: fn, basePath: '/api/noteboard' });
+    const client = new NotesAndIssuesClient({ fetch: fn, notesBasePath: '/notes', issuesBasePath: '/issues' });
     return client.getItem(UUID).then((got) => {
       expect(got.deleted_at).toBe('2026-08-09T22:30:00Z');
       expect(got.status).toBe('open');
@@ -85,7 +107,7 @@ describe('NoteboardClient.getItem', () => {
 
   it('throws a loud ApiError on a non-2xx, carrying the status and body', () => {
     const { fn } = fakeFetch(() => ({ status: 404, body: 'item not found' }));
-    const client = new NoteboardClient({ fetch: fn, basePath: '/api/noteboard' });
+    const client = new NotesAndIssuesClient({ fetch: fn, notesBasePath: '/notes', issuesBasePath: '/issues' });
     return client.getItem(UUID).then(
       () => {
         throw new Error('expected getItem to reject');

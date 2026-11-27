@@ -1,6 +1,6 @@
 import { useEffect, useRef, type JSX, type ReactNode } from 'react';
 import { ApiClient } from '../net/ApiClient.js';
-import { NoteboardClient } from '../net/NoteboardClient.js';
+import { NotesAndIssuesClient } from '../net/NotesAndIssuesClient.js';
 import { ReferenceStoreClient } from '../net/ReferenceStoreClient.js';
 import { SessionCache } from '../cache/SessionCache.js';
 import { SyncEngine } from '../sync/SyncEngine.js';
@@ -12,10 +12,12 @@ import { ChatContext, type ChatContextValue } from './context.js';
 export interface ChatProviderProps {
   fetch: typeof fetch; // dash passes its cookie-credentialed apiFetch
   basePath: string; // '/api/bridge'
-  /** Noteboard root, e.g. dash's '/api/noteboard'. Omit it and note/todo ref
-   *  chips render but say lookup is not configured here — they never guess a
-   *  path, because a wrong one would 404 as if the item did not exist. */
-  noteboardBasePath?: string;
+  /** The roots of notes and of the content of issues, e.g. llm-bridge-server's
+   *  '/notes' and '/issues'. Omit either and note/todo ref chips render but say
+   *  lookup is not configured here — they never guess a path, because a wrong
+   *  one would 404 as if the item did not exist. */
+  notesBasePath?: string;
+  issuesBasePath?: string;
   /** Where reference-store is reached through the bridge, e.g. dash's
    *  '/api/bridge/reference-store'. It owns the list of reference types and
    *  looks ids up for the signed-in person. */
@@ -52,7 +54,8 @@ export function ChatProvider(props: ChatProviderProps): JSX.Element {
   const {
     fetch: fetchFn,
     basePath,
-    noteboardBasePath,
+    notesBasePath,
+    issuesBasePath,
     referencesBasePath,
     recentN = 20,
     turnsPerBundle = 30,
@@ -86,16 +89,16 @@ export function ChatProvider(props: ChatProviderProps): JSX.Element {
     // and the SyncEngine's sweep trims the cache to it. Configure one and not the
     // other and the sweep drops rows the next boot paint wanted.
     const sync = new SyncEngine({ store, api, cache: sessionCache, sessionsPerPage });
-    // Built only when a path was given. An unconfigured noteboard is null all
-    // the way to the chip, which then says so — rather than a client pointed at
+    // Built only when both paths were given. Unconfigured, it is null all the
+    // way to the chip, which then says so — rather than a client pointed at
     // the bridge root, whose 404 would read as "that item does not exist".
-    const noteboard = noteboardBasePath
-      ? new NoteboardClient({ fetch: fetchFn, basePath: noteboardBasePath })
+    const notesAndIssues = notesBasePath && issuesBasePath
+      ? new NotesAndIssuesClient({ fetch: fetchFn, notesBasePath, issuesBasePath })
       : null;
     const references = referencesBasePath
       ? new ReferenceStoreClient({ fetch: fetchFn, basePath: referencesBasePath })
       : null;
-    ctxRef.current = { store, api, cache: sessionCache, sync, prefetcher, noteboard, references };
+    ctxRef.current = { store, api, cache: sessionCache, sync, prefetcher, notesAndIssues, references };
   }
 
   const ctx = ctxRef.current;

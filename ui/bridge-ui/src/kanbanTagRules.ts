@@ -2,7 +2,7 @@
 // board's stored rules become on the form, what the form becomes on the wire,
 // and how rows move. No fetch, no React, so the PUT body is pinned by tests.
 //
-// The wire contract is kanban-store's `PUT /api/boards/{id}/tag-rules` (README
+// The wire contract is kanban-store's `PUT /boards/{id}/tag-rules` (README
 // "Tag rules"): the whole list replaces the stored one in the order sent, a
 // rule sent with its `id` is kept, an omitted default is unset.
 //

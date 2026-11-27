@@ -28,7 +28,7 @@ const SOURCE_FIELDS: ReadonlyArray<{ configKey: keyof BridgeConfig; serviceName:
   { configKey: 'bundlesBasePath', serviceName: 'bundle-store' },
   { configKey: 'reposBasePath', serviceName: 'repo-store' },
   { configKey: 'usageBasePath', serviceName: 'usage-store' },
-  { configKey: 'noteboardBasePath', serviceName: 'noteboard' },
+  { configKey: 'notesBasePath', serviceName: 'notes' },
   { configKey: 'mailBasePath', serviceName: 'mailstack' },
   { configKey: 'multichatBasePath', serviceName: 'multichat' },
   { configKey: 'orchestratorBasePath', serviceName: 'orchestrator' },

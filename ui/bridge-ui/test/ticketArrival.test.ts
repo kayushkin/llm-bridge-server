@@ -57,13 +57,13 @@ describe('ticket reads', () => {
   it('lists email tickets from a cursor', async () => {
     const { urls, fetchFn } = fetchAnswering(200, { tickets: [] })
     await listTickets(fetchFn, '/api/kanban', { channel: 'email', before: '2026-09-21T17:01:07.188278837Z', limit: 50 })
-    expect(urls).toEqual(['/api/kanban/api/tickets?channel=email&before=2026-09-21T17%3A01%3A07.188278837Z&limit=50'])
+    expect(urls).toEqual(['/api/kanban/tickets?channel=email&before=2026-09-21T17%3A01%3A07.188278837Z&limit=50'])
   })
 
   it('keeps an email locator one path segment when asking for its cards', async () => {
     const { urls, fetchFn } = fetchAnswering(200, [])
     await listCardsForEntity(fetchFn, '/api/kanban', 'email', 'gmail-personal:1a0b/73')
-    expect(urls).toEqual(['/api/kanban/api/entities/email/gmail-personal%3A1a0b%2F73/cards'])
+    expect(urls).toEqual(['/api/kanban/entities/email/gmail-personal%3A1a0b%2F73/cards'])
   })
 
   it('reads a card that is not a ticket as null, not as a failure', async () => {

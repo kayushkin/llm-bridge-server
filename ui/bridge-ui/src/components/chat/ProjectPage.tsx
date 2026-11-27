@@ -16,7 +16,7 @@ import {
   entityTypeHeading,
   finishedNextSteps,
   linkedNotesOtherThanTodos,
-  noteboardItemPath,
+  noteOrIssuePath,
   openNextSteps,
   ownedThingsByType,
   projectActivityPath,
@@ -336,7 +336,7 @@ function Questions({
 }
 
 function NextSteps({ project, rollup, onChanged }: { project: Project; rollup: Rollup; onChanged: () => void }): JSX.Element {
-  const { fetch: fetchFn, projectsBasePath, noteboardBasePath } = useBridgeConfig()
+  const { fetch: fetchFn, projectsBasePath, notesBasePath, issuesBasePath } = useBridgeConfig()
   const [title, setTitle] = useState('')
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -372,10 +372,11 @@ function NextSteps({ project, rollup, onChanged }: { project: Project; rollup: R
     if (added) setTitle('')
   }
 
-  // A step's status is noteboard's, so finishing one is noteboard's write.
+  // A step is an issue, and its status is the issue's, so finishing one is
+  // a write to issues.
   const setStatus = (note: LinkedNote, status: 'open' | 'done') =>
     run(note.note_id, status === 'done' ? 'finish the step' : 'reopen the step', () =>
-      fetchFn(noteboardItemPath(noteboardBasePath, note.note_id), {
+      fetchFn(noteOrIssuePath(notesBasePath, issuesBasePath, note.type, note.note_id), {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status }),
@@ -398,7 +399,7 @@ function NextSteps({ project, rollup, onChanged }: { project: Project; rollup: R
               title="Mark done"
             />
             <RefChip kind="todo" refId={note.note_id} />
-            {note.priority > 0 && <span className={styles.priority} title="noteboard priority; higher is more urgent">p{note.priority}</span>}
+            {note.priority > 0 && <span className={styles.priority} title="priority; higher is more urgent">p{note.priority}</span>}
             {note.due_at && <span className={styles.muted}>due {timeAgo(note.due_at)}</span>}
           </li>
         ))}
@@ -592,7 +593,7 @@ function OpenIssues({ rollup, onActivateSession }: { rollup: Rollup; onActivateS
       )}
       {missing.length > 0 && (
         <div className={styles.group}>
-          <h4 className={`${styles.groupTitle} ${styles.stateWaiting}`}>Links to notes noteboard no longer has ({missing.length})</h4>
+          <h4 className={`${styles.groupTitle} ${styles.stateWaiting}`}>Links to notes and issues that are no longer there ({missing.length})</h4>
           <ul className={styles.plainList}>
             {missing.map((id) => <li key={id} className={styles.mono}>{id}</li>)}
           </ul>

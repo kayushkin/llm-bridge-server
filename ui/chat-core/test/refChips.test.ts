@@ -542,7 +542,7 @@ describe('remarkRefChips', () => {
 });
 
 describe('parseRefChips — ids the resolver registered', () => {
-  // The registry's own spellings, from kanban-store's /api/entity-types.
+  // The registry's own spellings, from kanban-store's /entity-types.
   const REGISTERED = ['project_\\d{6,}', 'prediction_\\d{6,}', 'article_\\d{6,}', 'principal_\\d{6,}'];
 
   it('leaves prefixed store ids as text when no patterns are passed', () => {

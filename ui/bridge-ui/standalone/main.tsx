@@ -72,7 +72,7 @@ const STORES_THE_BRIDGE_SERVES: Partial<BridgeProps> = {
   reposBasePath: '/repos',
   gitActivityBasePath: '/git-activity',
   projectsBasePath: '/projects',
-  noteboardBasePath: '/noteboard',
+  notesBasePath: '/notes',
   schedulerBasePath: '/scheduler',
   photosBasePath: '/photos',
   // usage-store roots its routes at /api/usage; the Usage page asks

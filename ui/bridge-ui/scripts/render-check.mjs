@@ -1131,7 +1131,7 @@ console.log('\nCardDetail — assignees render honestly without a directory')
       h(BridgeContext.Provider, { value: {
         fetch: async () => ({ ok: true, status: 200, text: async () => '', json: async () => [] }),
         basePath: '/api/bridge', issuesBasePath: '/api/kanban', principalsBasePath,
-        noteboardBasePath: '', mailBasePath: '', mailPagePath: '', routes: DEFAULT_BRIDGE_ROUTES,
+        notesBasePath: '', mailBasePath: '', mailPagePath: '', routes: DEFAULT_BRIDGE_ROUTES,
       } },
         h(CardDetail, {
           card: card(assignments, boardID), boardID, entityTypes: [{ type: 'session' }],
@@ -1176,7 +1176,7 @@ console.log('\nBridgePrincipals — the directory editor')
   const bridgeConfig = (principalsBasePath) => ({
     fetch: async () => ({ ok: true, status: 200, text: async () => '', json: async () => [] }),
     basePath: '/api/bridge', issuesBasePath: '/api/kanban', principalsBasePath,
-    noteboardBasePath: '', mailBasePath: '', mailPagePath: '', routes: DEFAULT_BRIDGE_ROUTES,
+    notesBasePath: '', mailBasePath: '', mailPagePath: '', routes: DEFAULT_BRIDGE_ROUTES,
   })
   const mountPage = (principalsBasePath) => renderToStaticMarkup(
     h(MemoryRouter, { initialEntries: ['/principals'] },
@@ -1498,7 +1498,7 @@ console.log('\nagentPrompt — the suggestion')
   check('names the card so the agent can close it', s.includes('card-1'))
   check('carries the title', s.includes('Cancel the subscription'))
   check('carries the body', s.includes('It renews Friday.'))
-  check('tells the agent how to finish', s.includes('/api/items/card-1'))
+  check('tells the agent how to finish', s.includes('/issues/items/card-1'))
   check('says nothing about email when none is linked', !s.toLowerCase().includes('email'))
 
   const withMail = suggestAgentPrompt({ cardID: 'c2', title: 'T', body: '', linkedEmailCount: 3 })
@@ -2166,7 +2166,7 @@ console.log('Reference chips in a connected server’s thread')
 {
   // Every lookup this server could make throws, so a chip that asked would fail the render.
   const refuse = what => () => { throw new Error(`${what} asked about a connected server’s id`) }
-  const local = { api: new Proxy({}, { get: (_t, name) => refuse(`api.${String(name)}`) }), noteboard: { getItem: refuse('noteboard') }, resolve: { resolve: refuse('resolver') } }
+  const local = { api: new Proxy({}, { get: (_t, name) => refuse(`api.${String(name)}`) }), notesAndIssues: { getItem: refuse('notes and issues') }, resolve: { resolve: refuse('resolver') } }
   const laptop = { connectionId: 'peer_connection_000001', serverName: 'laptop' }
   const inThread = (server, kind, refId) => renderToStaticMarkup(h(ChatContext.Provider, { value: local },
     h(RefChipServerContext.Provider, { value: server }, h(RefChip, { kind, refId }))))
@@ -2174,7 +2174,7 @@ console.log('Reference chips in a connected server’s thread')
   check('a connected server’s principal id draws as that server’s, muted and dashed, not as one of this server’s records',
     principal.includes('ref-chip-remote') && principal.includes('data-ref-server="laptop"') && principal.includes('principal_000014'), principal)
   const note = inThread(laptop, 'todo', '8637db10-0000-4000-8000-000000000001')
-  check('a cue-prefixed uuid from a connected server is never sent to this server’s noteboard', note.includes('ref-chip-remote'), note)
+  check('a cue-prefixed uuid from a connected server is never sent to this server’s notes or issues', note.includes('ref-chip-remote'), note)
   const here = inThread(null, 'uuid', '8637db10-0000-4000-8000-000000000002')
   check('outside a connected server’s thread a uuid is this server’s, as before', !here.includes('ref-chip-remote'), here)
 }
@@ -2198,7 +2198,7 @@ console.log('A connected server’s session gets the full thread view')
   check('the remote config sends llm-bridge-server’s routes through the proxy and nothing to this host’s stores',
     remote.basePath === '/api/bridge/peer-connections/peer_connection_000001/proxy' &&
     remote.grantsBasePath === '/api/bridge/peer-connections/peer_connection_000001/proxy/grants' &&
-    remote.noteboardBasePath === '' && remote.issuesBasePath === remote.basePath + '/issues' && remote.projectsBasePath === '' &&
+    remote.notesBasePath === '' && remote.issuesBasePath === remote.basePath + '/issues' && remote.projectsBasePath === '' &&
     remote.routes.effectiveConfig === '' && remote.routes.chat === DEFAULT_BRIDGE_ROUTES.chat,
     JSON.stringify({ basePath: remote.basePath, grant: remote.grantsBasePath }))
 }
@@ -2443,7 +2443,7 @@ console.log('Every file shared into a chat carries its reference chip')
   const api = {
     sessionFileContentUrl: (sessionId, fileId, opts) => `/api/bridge/sessions/${sessionId}/files/${fileId}/content${opts?.inline ? '?inline=true' : ''}`,
   }
-  const chat = { api, noteboard: { getItem: () => { throw new Error('noteboard asked about a file') } }, resolve: { resolve: () => { throw new Error('resolver asked about a file of this session') } } }
+  const chat = { api, notesAndIssues: { getItem: () => { throw new Error('notes and issues asked about a file') } }, resolve: { resolve: () => { throw new Error('resolver asked about a file of this session') } } }
   const fileOf = (number, filename, mediaType) => ({
     file_id: `file_00000${number}`, session_id: 'br_1700000000000000001', filename, media_type: mediaType, size_bytes: 2048,
     shared_by: 'agent', path: `/srv/session-files/file_00000${number}/${filename}`, created_at: '2026-11-17T23:12:28Z',

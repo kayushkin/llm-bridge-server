@@ -179,7 +179,7 @@ describe('peerConnectionBridgeConfig', () => {
     fetch: fetchFn,
     basePath: '/api/bridge',
     issuesBasePath: '/api/kanban',
-    noteboardBasePath: '/api/noteboard',
+    notesBasePath: '/api/notes',
     referencesBasePath: '/api/bridge/reference-store',
     photosBasePath: '/api/photos',
     renderHarnessExtension: () => null,
@@ -189,7 +189,7 @@ describe('peerConnectionBridgeConfig', () => {
   it("points llm-bridge-server's routes at the connection's proxy and empties this host's stores", () => {
     const peer = peerConnectionBridgeConfig(local, 'peer_connection_000001')
     expect(peer.basePath).toBe('/api/bridge/peer-connections/peer_connection_000001/proxy')
-    expect(peer.noteboardBasePath).toBe('')
+    expect(peer.notesBasePath).toBe('')
     expect(peer.referencesBasePath).toBe('/api/bridge/peer-connections/peer_connection_000001/proxy/references')
     expect(peer.photosBasePath).toBe('')
     expect(peer.renderHarnessExtension).toBeNull()

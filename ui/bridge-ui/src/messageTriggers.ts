@@ -15,9 +15,9 @@ import { readErrorText } from './useKanban'
 
 /** `pending`: handed to multichat, no answer recorded. `not_configured`: kanban-store has no MULTICHAT_URL. */
 
-/** `GET /api/message-trigger-options` — everything the form offers, served rather than hardcoded. */
+/** `GET /message-trigger-options` — everything the form offers, served rather than hardcoded. */
 
-/** The body of `POST /api/boards/{id}/message-triggers` and `PATCH /api/message-triggers/{id}`.
+/** The body of `POST /boards/{id}/message-triggers` and `PATCH /message-triggers/{id}`.
  *  On PATCH an omitted key is left alone, `""` clears a string, and
  *  `clear_priority` drops the priority filter. */
 
@@ -43,11 +43,11 @@ function jsonInit(method: string, body: unknown): RequestInit {
 }
 
 function boardURL(issuesBasePath: string, boardID: string): string {
-  return `${issuesBasePath}/api/boards/${encodeURIComponent(boardID)}`
+  return `${issuesBasePath}/boards/${encodeURIComponent(boardID)}`
 }
 
 export function getMessageTriggerOptions(fetchFn: FetchFn, issuesBasePath: string): Promise<KanbanStoreResult<MessageTriggerOptions>> {
-  return send(fetchFn, 'read message trigger options', `${issuesBasePath}/api/message-trigger-options`)
+  return send(fetchFn, 'read message trigger options', `${issuesBasePath}/message-trigger-options`)
 }
 
 export function listMessageTriggers(fetchFn: FetchFn, issuesBasePath: string, boardID: string): Promise<KanbanStoreResult<MessageTrigger[]>> {
@@ -63,11 +63,11 @@ export function createMessageTrigger(
 export function patchMessageTrigger(
   fetchFn: FetchFn, issuesBasePath: string, triggerID: string, body: UpsertMessageTriggerRequest,
 ): Promise<KanbanStoreResult<MessageTrigger>> {
-  return send(fetchFn, 'save message trigger', `${issuesBasePath}/api/message-triggers/${encodeURIComponent(triggerID)}`, jsonInit('PATCH', body))
+  return send(fetchFn, 'save message trigger', `${issuesBasePath}/message-triggers/${encodeURIComponent(triggerID)}`, jsonInit('PATCH', body))
 }
 
 export function deleteMessageTrigger(fetchFn: FetchFn, issuesBasePath: string, triggerID: string): Promise<KanbanStoreResult<unknown>> {
-  return send(fetchFn, 'delete message trigger', `${issuesBasePath}/api/message-triggers/${encodeURIComponent(triggerID)}`, { method: 'DELETE' })
+  return send(fetchFn, 'delete message trigger', `${issuesBasePath}/message-triggers/${encodeURIComponent(triggerID)}`, { method: 'DELETE' })
 }
 
 export function listMessageDeliveries(

@@ -106,7 +106,7 @@ export function suggestAgentPrompt(args: {
     ``,
     `## When you are done`,
     `1. Do the work described above.`,
-    `2. PATCH http://localhost:8191/api/items/${cardID} with {"status":"done"} and a body update saying what you did.`,
+    `2. PATCH $LLM_BRIDGE_GATEWAY_URL/issues/items/${cardID} (header Authorization: Bearer $LLM_BRIDGE_PRINCIPAL_TOKEN) with {"status":"done"} and a body update saying what you did.`,
     `3. Exit cleanly. The kanban-curator moves the card to Done once this session ends.`,
     `4. If it is blocked or unclear, leave a body update explaining why and exit — the card stays where it is and a human will pick it up.`,
   )

@@ -158,9 +158,12 @@ export function sessionFilingsToDecide(filings: readonly SessionFiling[]): Sessi
   )
 }
 
-/** noteboard's route for one item, under the host's noteboard base path. */
-export function noteboardItemPath(noteboardBase: string, noteId: string): string {
-  return `${noteboardBase}/api/items/${encodeURIComponent(noteId)}`
+/** The route for one linked note or issue: a todo is an issue, under the
+ *  host's issues base path; any other type is a note, under its notes base
+ *  path. The item's own `type` decides, never the link. */
+export function noteOrIssuePath(notesBase: string, issuesBase: string, itemType: string, itemId: string): string {
+  const base = itemType === 'todo' ? issuesBase : notesBase
+  return `${base}/items/${encodeURIComponent(itemId)}`
 }
 
 /** The body that files a session under a project. */

@@ -32,7 +32,7 @@ export {
 } from './react/hooks.js';
 export {
   useSessionRefDetail,
-  useNoteboardRefDetail,
+  useNoteOrIssueRefDetail,
   useResolvedRef,
   useSessionRefTranscript,
   clearRefDetailCache,
@@ -368,9 +368,9 @@ export { Prefetcher, type PrefetcherConfig } from './boot/Prefetcher.js';
 // ---- Net ----
 export { ApiClient, ApiError, type ApiClientConfig, type CreatedSession, type SendResult } from './net/ApiClient.js';
 export {
-  NoteboardClient,
-  type NoteboardClientConfig,
-  type NoteboardItem,
-  type NoteboardItemType,
-  type NoteboardSchedule,
-} from './net/NoteboardClient.js';
+  NotesAndIssuesClient,
+  type NotesAndIssuesClientConfig,
+  type NoteOrIssue,
+  type NoteOrIssueType,
+  type ItemSchedule,
+} from './net/NotesAndIssuesClient.js';

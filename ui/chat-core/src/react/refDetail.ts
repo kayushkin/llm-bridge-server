@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useChatContext } from './context.js';
 import type { ApiClient } from '../net/ApiClient.js';
 import type { ManagedSessionDetail, SessionPrincipal, TurnModel } from '../net/types.js';
-import type { NoteboardItem } from '../net/NoteboardClient.js';
+import type { NoteOrIssue } from '../net/NotesAndIssuesClient.js';
 import type { ResolvedRefMatch, ResolveResponse } from '../net/ReferenceStoreClient.js';
 import type { FileNamedByTools, FileNamedByToolsContent } from '../reduce/fileMentions.js';
 
@@ -87,7 +87,7 @@ function clientKey(client: object | null): string {
 }
 
 const sessionDetailCache = new ClientScopedCache<ManagedSessionDetail>();
-const noteboardItemCache = new ClientScopedCache<NoteboardItem>();
+const noteOrIssueCache = new ClientScopedCache<NoteOrIssue>();
 const transcriptCache = new ClientScopedCache<TurnModel>();
 const resolvedRefCache = new ClientScopedCache<ResolvedRefMatch[]>();
 const filesNamedByToolsCache = new ClientScopedCache<FileNamedByTools[]>();
@@ -96,7 +96,7 @@ const sessionPrincipalsCache = new ClientScopedCache<SessionPrincipal[]>();
 
 export function clearRefDetailCache(): void {
   sessionDetailCache.clear();
-  noteboardItemCache.clear();
+  noteOrIssueCache.clear();
   transcriptCache.clear();
   resolvedRefCache.clear();
   filesNamedByToolsCache.clear();
@@ -269,20 +269,20 @@ export function loadSessionRefDetail(
 }
 
 /**
- * A referenced noteboard item (`GET /api/items/{id}`) — note, todo, rank list
+ * A referenced note or issue (`GET /items/{id}` of notes, then of issues) — note, todo, rank list
  * or workspace, whichever the id turns out to name.
  *
- * When the host configured no noteboard, this reports that as an error rather
+ * When the host configured no notes and issues, this reports that as an error rather
  * than loading forever: a chip that cannot resolve should say why. The message
  * is deliberately plain, because it is shown to a user who can act on it.
  */
-export function useNoteboardRefDetail(itemId: string): RefDetailState<NoteboardItem> {
-  const { noteboard } = useChatContext();
-  return useCachedRef(`${clientKey(noteboard)}|${itemId}`, itemId !== '', () => {
-    if (!noteboard) {
-      return Promise.reject(new Error('noteboard lookup is not configured here'));
+export function useNoteOrIssueRefDetail(itemId: string): RefDetailState<NoteOrIssue> {
+  const { notesAndIssues } = useChatContext();
+  return useCachedRef(`${clientKey(notesAndIssues)}|${itemId}`, itemId !== '', () => {
+    if (!notesAndIssues) {
+      return Promise.reject(new Error('note and issue lookup is not configured here'));
     }
-    return takeCached(noteboardItemCache, noteboard, itemId, () => noteboard.getItem(itemId));
+    return takeCached(noteOrIssueCache, notesAndIssues, itemId, () => notesAndIssues.getItem(itemId));
   });
 }
 

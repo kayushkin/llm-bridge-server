@@ -13,7 +13,7 @@ const PAGE_SIZE = 50
  * became, and whether the email made a new card or turned an existing one
  * into a ticket.
  *
- * Read from kanban-store's `GET /api/tickets?channel=email`. The email is the
+ * Read from kanban-store's `GET /tickets?channel=email`. The email is the
  * ticket's `source_entity_ref`, which the classifier writes once when it makes
  * the ticket — not the card's email links, which merges and refiles move. A
  * ticket written before the source existed and not backfilled shows no email

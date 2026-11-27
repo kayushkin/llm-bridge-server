@@ -29,7 +29,7 @@ import { fileMentionOf } from './fileMentions.js';
  * `workspace`. So the note/todo split here is only which cue word was written
  * in front of the uuid — it is a hint about where to look, never a claim about
  * what the row is. The item's own `type` field is the authority, and a chip
- * labels itself from that once loaded (see NoteboardClient.getItem).
+ * labels itself from that once loaded (see NotesAndIssuesClient.getItem).
  *
  * `uuid` is a bare uuid with no cue word at all: the text says nothing about
  * what it names, so the chip asks reference-store (see ReferenceStoreClient),

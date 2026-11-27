@@ -70,7 +70,7 @@ describe('message trigger calls', () => {
     }) as unknown as FetchFn
     const result = await createMessageTrigger(fetchFn, '/api/kanban', 'b1', { name: 'P0 created', event_kind: 'card_created' })
     expect(result.ok).toBe(true)
-    expect(seen).toEqual({ url: '/api/kanban/api/boards/b1/message-triggers', method: 'POST', body: { name: 'P0 created', event_kind: 'card_created' } })
+    expect(seen).toEqual({ url: '/api/kanban/boards/b1/message-triggers', method: 'POST', body: { name: 'P0 created', event_kind: 'card_created' } })
   })
 
   it('returns kanban-store’s refusal verbatim', async () => {

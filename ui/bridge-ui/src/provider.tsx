@@ -32,7 +32,7 @@ export interface BridgeProviderProps {
   reposBasePath?: string
   /** Base path for the noteboard API. If omitted, chat todo chips can't resolve
    * an item's title/status and say so. */
-  noteboardBasePath?: string
+  notesBasePath?: string
   /** reference-store through the bridge, e.g. "/api/bridge/reference-store". */
   referencesBasePath?: string
   /** Base path for llm-bridge-adapter API. If omitted, bus_session links can't
@@ -130,7 +130,7 @@ export function BridgeProvider({
   photosBasePath = '',
   messagesBasePath = '',
   serviceSettingsSourceKeys,
-  noteboardBasePath = '',
+  notesBasePath = '',
   referencesBasePath = '',
   bridgeAdapterBasePath = '',
   orchestratorBasePath = '',
@@ -173,7 +173,7 @@ export function BridgeProvider({
     photosBasePath,
     messagesBasePath,
     serviceSettingsSourceKeys: serviceSettingsSourceKeys ?? null,
-    noteboardBasePath,
+    notesBasePath,
     referencesBasePath,
     bridgeAdapterBasePath,
     orchestratorBasePath,
@@ -194,7 +194,7 @@ export function BridgeProvider({
     renderHarnessExtension: renderHarnessExtension ?? null,
     renderReferenceChip: renderReferenceChip ?? null,
     routes: { ...DEFAULT_BRIDGE_ROUTES, ...routes },
-  }), [fetchFn, basePath, skillsBasePath, toolsBasePath, permissionsBasePath, issuesBasePath, principalsBasePath, grantsBasePath, bundlesBasePath, reposBasePath, mailBasePath, multichatBasePath, libraryInvitationsPath, mailPagePath, peopleBasePath, journalBasePath, photosBasePath, messagesBasePath, serviceSettingsSourceKeys, noteboardBasePath, referencesBasePath, bridgeAdapterBasePath, orchestratorBasePath, usageBasePath, schedulerBasePath, sessionLogBasePath, jobStoreBasePath, quoteStoreBasePath, predictionsBasePath, eventStoreBasePath, authStoreBasePath, hostBasePath, previewsBasePath, threeDimensionalModelsBasePath, gitActivityBasePath, projectsBasePath, modelsBasePath, renderHarnessExtension, renderReferenceChip, routes])
+  }), [fetchFn, basePath, skillsBasePath, toolsBasePath, permissionsBasePath, issuesBasePath, principalsBasePath, grantsBasePath, bundlesBasePath, reposBasePath, mailBasePath, multichatBasePath, libraryInvitationsPath, mailPagePath, peopleBasePath, journalBasePath, photosBasePath, messagesBasePath, serviceSettingsSourceKeys, notesBasePath, referencesBasePath, bridgeAdapterBasePath, orchestratorBasePath, usageBasePath, schedulerBasePath, sessionLogBasePath, jobStoreBasePath, quoteStoreBasePath, predictionsBasePath, eventStoreBasePath, authStoreBasePath, hostBasePath, previewsBasePath, threeDimensionalModelsBasePath, gitActivityBasePath, projectsBasePath, modelsBasePath, renderHarnessExtension, renderReferenceChip, routes])
 
   return (
     <BridgeContext value={config}>

@@ -2,7 +2,7 @@ import { useContext, useEffect, useLayoutEffect, useRef, useState, type JSX, typ
 import { createPortal } from 'react-dom';
 import type { RefKind } from '@kayushkin/chat-core';
 import type { ManagedSessionDetail, SignalRequest, TurnModel } from '@kayushkin/chat-core';
-import type { NoteboardItem } from '@kayushkin/chat-core';
+import type { NoteOrIssue } from '@kayushkin/chat-core';
 import type { ResolvedRefMatch } from '@kayushkin/chat-core';
 import type { Project } from '@kayushkin/project-store-types';
 import type { Repo as RepoStoreRepo } from '@kayushkin/repo-store-types';
@@ -14,7 +14,7 @@ import { githubCommitUrl, shortSha, workGraphChatHref, type WorkGraphCommitAnswe
 import {
   isSessionAwaitingOperator,
   loadSessionRefDetail,
-  useNoteboardRefDetail,
+  useNoteOrIssueRefDetail,
   useResolvedRef,
   useSessionRefDetail,
   useSessionRefTranscript,
@@ -149,7 +149,7 @@ export function RefChip(props: RefChipProps): JSX.Element {
       <UnclassifiedRefChip refId={refId} className={props.className} onActivate={props.onActivate} />
     );
   }
-  return <NoteboardRefChip refId={refId} kind={kind} className={props.className} />;
+  return <NoteOrIssueRefChip refId={refId} kind={kind} className={props.className} />;
 }
 
 function RegisteredRefChip({
@@ -880,7 +880,7 @@ function TranscriptBody({ model }: { model: TurnModel }): JSX.Element {
 /** Emoji for a noteboard item. Held and deleted outrank the item's type,
  *  because they are what a reader most needs to know about a quoted id: a
  *  parked or deleted item is not work anyone should pick up. */
-function itemEmoji(item: NoteboardItem): string {
+function itemEmoji(item: NoteOrIssue): string {
   if (item.deleted_at) return '🗑';
   if (item.held_at) return '⏸';
   if (item.status === 'done') return '✅';
@@ -890,7 +890,7 @@ function itemEmoji(item: NoteboardItem): string {
   return '☑';
 }
 
-function NoteboardRefChip({
+function NoteOrIssueRefChip({
   refId,
   kind,
   className,
@@ -900,7 +900,7 @@ function NoteboardRefChip({
   className?: string;
 }): JSX.Element {
   const { open, toggle, wrapRef, panelRef, panelStyle } = useAnchoredPanel();
-  const { data: item, error, loading } = useNoteboardRefDetail(refId);
+  const { data: item, error, loading } = useNoteOrIssueRefDetail(refId);
 
   // The cue word only decided which regex matched; the loaded item's own `type`
   // is the authority, so the rendered kind switches to it as soon as it lands.
@@ -942,14 +942,14 @@ function NoteboardRefChip({
         >
           {loading && <div className="ref-chip-panel-loading">Loading {kind}…</div>}
           {error && <div className="ref-chip-panel-error">Couldn’t load {kind}: {error}</div>}
-          {item && <NoteboardRefPanel item={item} />}
+          {item && <NoteOrIssueRefPanel item={item} />}
         </AnchoredPanel>
       )}
     </span>
   );
 }
 
-function NoteboardRefPanel({ item }: { item: NoteboardItem }): JSX.Element {
+function NoteOrIssueRefPanel({ item }: { item: NoteOrIssue }): JSX.Element {
   const [showBody, setShowBody] = useState(false);
 
   // Deleted and held are not statuses (noteboard keeps them as separate stamps
@@ -1066,7 +1066,7 @@ function UnclassifiedRefChip({
       // The fetched item's own `type` labels the chip; the match's registry
       // type only says which store answered.
       const itemType = (match.data as { type?: string } | null)?.type ?? 'note';
-      return <NoteboardRefChip refId={refId} kind={itemType} className={className} />;
+      return <NoteOrIssueRefChip refId={refId} kind={itemType} className={className} />;
     }
     if (match.type === 'project') {
       return <ProjectRefChip refId={refId} project={match.data as Project} className={className} />;
