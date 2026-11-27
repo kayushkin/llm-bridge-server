@@ -916,7 +916,16 @@ function foldEvent(state: TailState, ev: WireEvent, annotate: boolean): TailStat
   // reload, which is what was measured on br_1788973449319671731 (2026-09-10).
   const existingIsHydrated =
     existing !== undefined && (state.entryEventIds.get(entryId)?.size ?? 0) === 0;
-  if ((!existing || existingIsHydrated) && heldCopyExists(state, ev, kind, role)) {
+  // A live entry the cache handed back already holds every frame up to its
+  // `eventId`, which is in the live stream's own numbering. On a reload the
+  // stream replays those frames, and a replayed delta or whole block would add
+  // its text again: one more copy of the reply per reload. `heldCopyExists`
+  // catches a whole block whose text the entry holds, but not a delta, and once
+  // a replayed delta has folded the entry no longer counts as handed back. So a
+  // frame no newer than what the handed-back entry holds is a replay.
+  const replayOntoHydratedLiveEntry =
+    existingIsHydrated && existing.origin === 'live' && evId > 0 && evId <= existing.eventId;
+  if (replayOntoHydratedLiveEntry || ((!existing || existingIsHydrated) && heldCopyExists(state, ev, kind, role))) {
     // A cross-space replay: fold nothing, but record the frame id so the check
     // is O(1) next time and a later literal replay short-circuits at the top.
     if (!evId) return state;
