@@ -17,22 +17,22 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
-	"github.com/kayushkin/llm-bridge-server/internal/access/grantstore"
-	permstore "github.com/kayushkin/llm-bridge-server/internal/access/permissionstore"
-	"github.com/kayushkin/llm-bridge-server/internal/access/principalstore"
-	"github.com/kayushkin/llm-bridge-server/internal/access/signinstore"
+	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
+	"github.com/kayushkin/llm-bridge-server/internal/access/permissions"
+	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
+	"github.com/kayushkin/llm-bridge-server/internal/access/signin"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 )
 
 // Stores is the four access stores, open on their modules.
 type Stores struct {
-	Principals  *principalstore.Store
-	Grants      *grantstore.Store
-	SignIn      *signinstore.Store
-	Permissions *permstore.Store
+	Principals  *principals.Store
+	Grants      *grants.Store
+	SignIn      *signin.Store
+	Permissions *permissions.Store
 	// PermissionEngine is the one rule engine: the mounted rule routes
 	// invalidate its cache, and the permission prehook asks it.
-	PermissionEngine *permstore.Engine
+	PermissionEngine *permissions.Engine
 
 	pools []*sql.DB
 }
@@ -51,7 +51,7 @@ func (stores *Stores) Close() error {
 func Modules() ([]postgresstorage.Module, error) {
 	var modules []postgresstorage.Module
 	for _, module := range []func() (postgresstorage.Module, error){
-		principalstore.Module, grantstore.Module, signinstore.Module, permstore.Module,
+		principals.Module, grants.Module, signin.Module, permissions.Module,
 	} {
 		described, err := module()
 		if err != nil {
@@ -91,11 +91,11 @@ func OpenStores(ctx context.Context, url string) (*Stores, error) {
 		pools[module.Schema] = pool
 	}
 	principalsModule, grantsModule, signInModule, permissionsModule := modules[0], modules[1], modules[2], modules[3]
-	stores.Principals = principalstore.New(pools[principalsModule.Schema])
-	stores.Grants = grantstore.New(pools[grantsModule.Schema])
-	stores.SignIn = signinstore.New(pools[signInModule.Schema])
-	stores.Permissions = permstore.New(pools[permissionsModule.Schema])
-	stores.PermissionEngine = permstore.NewEngine(stores.Permissions)
+	stores.Principals = principals.New(pools[principalsModule.Schema])
+	stores.Grants = grants.New(pools[grantsModule.Schema])
+	stores.SignIn = signin.New(pools[signInModule.Schema])
+	stores.Permissions = permissions.New(pools[permissionsModule.Schema])
+	stores.PermissionEngine = permissions.NewEngine(stores.Permissions)
 	return stores, nil
 }
 
@@ -141,13 +141,13 @@ func provisionMigrateAndOpen(ctx context.Context, administrator *sql.DB, url str
 
 // StoresOnPools builds the stores over pools a caller already opened, one per
 // module in Modules order: what a test does with postgrestest databases.
-func StoresOnPools(principals, grants, signIn, permissions *sql.DB) *Stores {
+func StoresOnPools(principalsPool, grantsPool, signInPool, permissionsPool *sql.DB) *Stores {
 	stores := &Stores{
-		Principals:  principalstore.New(principals),
-		Grants:      grantstore.New(grants),
-		SignIn:      signinstore.New(signIn),
-		Permissions: permstore.New(permissions),
+		Principals:  principals.New(principalsPool),
+		Grants:      grants.New(grantsPool),
+		SignIn:      signin.New(signInPool),
+		Permissions: permissions.New(permissionsPool),
 	}
-	stores.PermissionEngine = permstore.NewEngine(stores.Permissions)
+	stores.PermissionEngine = permissions.NewEngine(stores.Permissions)
 	return stores
 }

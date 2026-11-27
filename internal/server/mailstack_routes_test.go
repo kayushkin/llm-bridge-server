@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/access/grantstore"
+	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
 	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
 	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack"
 	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/accounts"
@@ -144,13 +144,13 @@ func TestMailstackNarrowsAMemberToItsTicketsAndItsGrants(t *testing.T) {
 	// process, opens the account.
 	ctx := context.Background()
 	checker := test.server.grantResourceChecker(test.stores.Principals)
-	if _, _, err := test.stores.Grants.Create(ctx, test.grantsDirectory(), checker, grantstore.GrantRequest{
-		PrincipalID: accessTestMemberID, Relation: grantstore.RelationCanReadMail, ResourceType: grantstore.ResourceTypeMailAccount, ResourceID: "nowhere",
-	}); !errors.Is(err, grantstore.ErrInvalidGrant) || !strings.Contains(err.Error(), "does not exist in mailstack") {
+	if _, _, err := test.stores.Grants.Create(ctx, test.grantsDirectory(), checker, grants.GrantRequest{
+		PrincipalID: accessTestMemberID, Relation: grants.RelationCanReadMail, ResourceType: grants.ResourceTypeMailAccount, ResourceID: "nowhere",
+	}); !errors.Is(err, grants.ErrInvalidGrant) || !strings.Contains(err.Error(), "does not exist in mailstack") {
 		t.Fatalf("a grant on an account mailstack does not have: %v, want it refused as one mailstack does not have", err)
 	}
-	if _, _, err := test.stores.Grants.Create(ctx, test.grantsDirectory(), checker, grantstore.GrantRequest{
-		PrincipalID: accessTestMemberID, Relation: grantstore.RelationCanReadMail, ResourceType: grantstore.ResourceTypeMailAccount, ResourceID: "desk",
+	if _, _, err := test.stores.Grants.Create(ctx, test.grantsDirectory(), checker, grants.GrantRequest{
+		PrincipalID: accessTestMemberID, Relation: grants.RelationCanReadMail, ResourceType: grants.ResourceTypeMailAccount, ResourceID: "desk",
 	}); err != nil {
 		t.Fatalf("grant can_read_mail on desk: %v", err)
 	}

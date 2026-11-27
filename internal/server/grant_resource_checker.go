@@ -16,8 +16,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/kayushkin/llm-bridge-server/internal/access/grantstore"
-	"github.com/kayushkin/llm-bridge-server/internal/access/principalstore"
+	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
+	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/skillstore"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore"
 	"github.com/kayushkin/llm-bridge-server/internal/references/referencestore"
@@ -27,10 +27,10 @@ import (
 // inProcessResourceChecker routes each check to the resource's owner.
 type inProcessResourceChecker struct {
 	server     *Server
-	principals *principalstore.Store
+	principals *principals.Store
 }
 
-func (s *Server) grantResourceChecker(principals *principalstore.Store) grantstore.ResourceChecker {
+func (s *Server) grantResourceChecker(principals *principals.Store) grants.ResourceChecker {
 	return inProcessResourceChecker{
 		server:     s,
 		principals: principals,
@@ -38,15 +38,15 @@ func (s *Server) grantResourceChecker(principals *principalstore.Store) grantsto
 }
 
 // CheckResourceExists answers nil when the owner has the resource, an error
-// wrapping grantstore.ErrResourceNotFound when it does not, and any other
+// wrapping grants.ErrResourceNotFound when it does not, and any other
 // error when it could not say.
 func (checker inProcessResourceChecker) CheckResourceExists(ctx context.Context, resourceType, resourceID string) error {
 	notFound := func(owner string) error {
-		return fmt.Errorf("%w: %s has no %s %q", grantstore.ErrResourceNotFound, owner, resourceType, resourceID)
+		return fmt.Errorf("%w: %s has no %s %q", grants.ErrResourceNotFound, owner, resourceType, resourceID)
 	}
 	s := checker.server
 	switch resourceType {
-	case grantstore.ResourceTypeTool:
+	case grants.ResourceTypeTool:
 		tools := s.toolStoreForResourceChecks.Load()
 		if tools == nil {
 			return fmt.Errorf("this server's tool-store module is off, so tool %q cannot be checked", resourceID)
@@ -61,7 +61,7 @@ func (checker inProcessResourceChecker) CheckResourceExists(ctx context.Context,
 			return fmt.Errorf("tool-store: reading tool %s: %w", resourceID, err)
 		}
 		return nil
-	case grantstore.ResourceTypeSkill:
+	case grants.ResourceTypeSkill:
 		skills := s.skillStoreForResourceChecks.Load()
 		if skills == nil {
 			return fmt.Errorf("this server's skill-store module is off, so skill %q cannot be checked", resourceID)
@@ -76,7 +76,7 @@ func (checker inProcessResourceChecker) CheckResourceExists(ctx context.Context,
 			return fmt.Errorf("skill-store: reading skill %s: %w", resourceID, err)
 		}
 		return nil
-	case grantstore.ResourceTypeAgent:
+	case grants.ResourceTypeAgent:
 		if s.agentStore == nil {
 			return fmt.Errorf("this server has no agent-store, so agent %q cannot be checked", resourceID)
 		}
@@ -91,28 +91,28 @@ func (checker inProcessResourceChecker) CheckResourceExists(ctx context.Context,
 			return fmt.Errorf("agent-store: reading agent %s: %w", resourceID, err)
 		}
 		return nil
-	case grantstore.ResourceTypeInstance:
+	case grants.ResourceTypeInstance:
 		if _, err := s.harnessStore.GetInstance(resourceID); errors.Is(err, sql.ErrNoRows) {
 			return notFound("harness-store")
 		} else if err != nil {
 			return fmt.Errorf("harness-store: reading instance %s: %w", resourceID, err)
 		}
 		return nil
-	case grantstore.ResourceTypeMachine:
+	case grants.ResourceTypeMachine:
 		if _, err := s.harnessStore.GetMachine(resourceID); errors.Is(err, sql.ErrNoRows) {
 			return notFound("harness-store")
 		} else if err != nil {
 			return fmt.Errorf("harness-store: reading machine %s: %w", resourceID, err)
 		}
 		return nil
-	case grantstore.ResourceTypePeerConnection:
+	case grants.ResourceTypePeerConnection:
 		if _, err := s.store.GetPeerConnection(resourceID); errors.Is(err, store.ErrPeerConnectionNotFound) {
 			return notFound("this server")
 		} else if err != nil {
 			return fmt.Errorf("reading peer connection %s: %w", resourceID, err)
 		}
 		return nil
-	case grantstore.ResourceTypeOperationType:
+	case grants.ResourceTypeOperationType:
 		if s.operations == nil {
 			return fmt.Errorf("this server runs no operations, so operation type %q cannot be checked", resourceID)
 		}
@@ -123,8 +123,8 @@ func (checker inProcessResourceChecker) CheckResourceExists(ctx context.Context,
 			}
 			known = append(known, string(description.Type))
 		}
-		return fmt.Errorf("%w: this server runs no operation type %q; it runs %s", grantstore.ErrResourceNotFound, resourceID, strings.Join(known, ", "))
-	case grantstore.ResourceTypeReferenceType:
+		return fmt.Errorf("%w: this server runs no operation type %q; it runs %s", grants.ErrResourceNotFound, resourceID, strings.Join(known, ", "))
+	case grants.ResourceTypeReferenceType:
 		resolver := s.referenceResolver.Load()
 		if resolver == nil {
 			return fmt.Errorf("this server's reference-store is off, so reference type %q cannot be checked", resourceID)
@@ -133,7 +133,7 @@ func (checker inProcessResourceChecker) CheckResourceExists(ctx context.Context,
 			return notFound("reference-store")
 		}
 		return nil
-	case grantstore.ResourceTypeReference:
+	case grants.ResourceTypeReference:
 		resolver := s.referenceResolver.Load()
 		if resolver == nil {
 			return fmt.Errorf("this server's reference-store is off, so reference %q cannot be checked", resourceID)
@@ -148,12 +148,12 @@ func (checker inProcessResourceChecker) CheckResourceExists(ctx context.Context,
 			return fmt.Errorf("reference-store could not say whether %q names a record: %s: %s", resourceID, lookupErrors[0].Type, lookupErrors[0].Error)
 		}
 		return notFound("reference-store")
-	case grantstore.ResourceTypeBoard:
+	case grants.ResourceTypeBoard:
 		return s.checkKanbanBoardExists(resourceID)
-	case grantstore.ResourceTypeMailAccount:
+	case grants.ResourceTypeMailAccount:
 		return s.checkMailAccountExists(resourceID)
-	case grantstore.ResourceTypePrincipal:
-		if _, err := checker.principals.Get(ctx, resourceID, false); errors.Is(err, principalstore.ErrNotFound) {
+	case grants.ResourceTypePrincipal:
+		if _, err := checker.principals.Get(ctx, resourceID, false); errors.Is(err, principals.ErrNotFound) {
 			return notFound("principal-store")
 		} else if err != nil {
 			return fmt.Errorf("principal-store: reading %s: %w", resourceID, err)
@@ -161,5 +161,5 @@ func (checker inProcessResourceChecker) CheckResourceExists(ctx context.Context,
 		return nil
 	}
 	return fmt.Errorf("no owner check for resource_type %q: grant-store names %s, and each needs an owner check here",
-		resourceType, strings.Join(grantstore.ResourceTypes, ", "))
+		resourceType, strings.Join(grants.ResourceTypes, ", "))
 }

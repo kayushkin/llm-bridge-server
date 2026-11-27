@@ -3,7 +3,7 @@
 // which principal an outside identity signs in as, and the few writes peer
 // provisioning makes.
 //
-// principal-store runs in this process (internal/access/principalstore), so
+// principal-store runs in this process (internal/access/principals), so
 // every call here is a call into its store, not a request over HTTP. The
 // types below are the part of its records this server reads.
 //
@@ -18,7 +18,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/kayushkin/llm-bridge-server/internal/access/principalstore"
+	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 )
 
 // ErrNotFound is principal-store answering that it has no such principal.
@@ -91,16 +91,16 @@ type IdentityResolution struct {
 
 // Client is principal-store in this process.
 type Client struct {
-	store *principalstore.Store
+	store *principals.Store
 }
 
 // New reads and writes principals through store.
-func New(store *principalstore.Store) *Client {
+func New(store *principals.Store) *Client {
 	return &Client{store: store}
 }
 
 // principalOf is the part of a store record this server reads.
-func principalOf(record *principalstore.Principal) Principal {
+func principalOf(record *principals.Principal) Principal {
 	return Principal{ID: record.ID, Kind: record.Kind, DisplayName: record.DisplayName, DisabledAt: record.DisabledAt,
 		IsAdministrator: record.IsAdministrator, ActsAsCaller: record.ActsAsCaller, RestrictedToItsGrants: record.RestrictedToItsGrants,
 		HoldsServicePrincipalTokens: record.HoldsServicePrincipalTokens}
@@ -118,7 +118,7 @@ func (c *Client) CheckExists(ctx context.Context, principalID string) error {
 // contract as CheckExists.
 func (c *Client) Get(ctx context.Context, principalID string) (Principal, error) {
 	record, err := c.store.Get(ctx, principalID, false)
-	if errors.Is(err, principalstore.ErrNotFound) {
+	if errors.Is(err, principals.ErrNotFound) {
 		return Principal{}, fmt.Errorf("%w: %v", ErrNotFound, err)
 	}
 	if err != nil {
@@ -149,7 +149,7 @@ func (c *Client) GroupIDsOf(ctx context.Context, principalID string) ([]string, 
 // asked about is an error, not a match.
 func (c *Client) ResolveIdentityBinding(ctx context.Context, provider, tenantID, subject string) (IdentityResolution, error) {
 	resolution, err := c.store.ResolveIdentity(ctx, provider, tenantID, subject)
-	if errors.Is(err, principalstore.ErrNotFound) {
+	if errors.Is(err, principals.ErrNotFound) {
 		return IdentityResolution{}, fmt.Errorf("%w: %v", ErrIdentityNotProvisioned, err)
 	}
 	if err != nil {
@@ -178,7 +178,7 @@ func (c *Client) ResolveIdentityBinding(ctx context.Context, provider, tenantID,
 
 // Create makes a principal of the given kind and returns its id.
 func (c *Client) Create(ctx context.Context, kind, displayName string) (string, error) {
-	created, err := c.store.Create(ctx, &principalstore.Principal{Kind: kind, DisplayName: displayName})
+	created, err := c.store.Create(ctx, &principals.Principal{Kind: kind, DisplayName: displayName})
 	if err != nil {
 		return "", fmt.Errorf("principal-store: creating a %s principal: %w", kind, err)
 	}
@@ -187,7 +187,7 @@ func (c *Client) Create(ctx context.Context, kind, displayName string) (string, 
 
 // SetAdministrator sets principal-store's is_administrator on a principal.
 func (c *Client) SetAdministrator(ctx context.Context, principalID string, isAdministrator bool) error {
-	if _, err := c.store.Patch(ctx, principalID, principalstore.Patch{IsAdministrator: &isAdministrator}); err != nil {
+	if _, err := c.store.Patch(ctx, principalID, principals.Patch{IsAdministrator: &isAdministrator}); err != nil {
 		return fmt.Errorf("principal-store: setting is_administrator on %s: %w", principalID, err)
 	}
 	return nil

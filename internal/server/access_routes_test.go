@@ -11,9 +11,9 @@ import (
 	"testing"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access"
-	"github.com/kayushkin/llm-bridge-server/internal/access/grantstore"
-	"github.com/kayushkin/llm-bridge-server/internal/access/principalstore"
-	"github.com/kayushkin/llm-bridge-server/internal/access/signinstore"
+	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
+	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
+	"github.com/kayushkin/llm-bridge-server/internal/access/signin"
 	"github.com/kayushkin/llm-bridge-server/internal/permclient"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -54,12 +54,12 @@ func newAccessTestServer(t *testing.T) *accessTestServer {
 
 	ctx := context.Background()
 	for _, name := range []string{"Member", "Administrator", "Target"} {
-		if _, err := stores.Principals.Create(ctx, &principalstore.Principal{Kind: "human", DisplayName: name}); err != nil {
+		if _, err := stores.Principals.Create(ctx, &principals.Principal{Kind: "human", DisplayName: name}); err != nil {
 			t.Fatalf("seed %s: %v", name, err)
 		}
 	}
 	administrator := true
-	if _, err := stores.Principals.Patch(ctx, accessTestAdministratorID, principalstore.Patch{IsAdministrator: &administrator}); err != nil {
+	if _, err := stores.Principals.Patch(ctx, accessTestAdministratorID, principals.Patch{IsAdministrator: &administrator}); err != nil {
 		t.Fatalf("make the administrator: %v", err)
 	}
 	test := &accessTestServer{server: server, stores: stores, instanceID: instanceID}
@@ -147,7 +147,7 @@ func TestOnlyAnAdministratorCreatesOrChangesAPrincipal(t *testing.T) {
 	expectRefusedToEveryoneButAnAdministrator(t, test, "GET", "/principal-store/principals", "")
 	expectRefusedToEveryoneButAnAdministrator(t, test, "GET", "/principal-store/principals/"+accessTestAdministratorID, "")
 
-	listed, err := test.stores.Principals.List(ctx, principalstore.Filter{IncludeDisabled: true})
+	listed, err := test.stores.Principals.List(ctx, principals.Filter{IncludeDisabled: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +244,7 @@ func TestOnlyAnAdministratorOrTheInternalServiceChangesAGrant(t *testing.T) {
 			t.Errorf("POST /grant-store/grants as %s = %d %s, want 403", caller.name, response.Code, response.Body)
 		}
 	}
-	granted, err := test.stores.Grants.List(ctx, grantstore.Filter{PrincipalID: accessTestMemberID})
+	granted, err := test.stores.Grants.List(ctx, grants.Filter{PrincipalID: accessTestMemberID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,8 +318,8 @@ func TestOnlyAnAdministratorMintsASignInLink(t *testing.T) {
 		t.Fatalf("POST /sign-in-store/sign-in-links as the administrator = %d %s, want 201", response.Code, response.Body)
 	}
 	var made struct {
-		URL  string                 `json:"url"`
-		Link signinstore.SignInLink `json:"link"`
+		URL  string            `json:"url"`
+		Link signin.SignInLink `json:"link"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &made); err != nil {
 		t.Fatalf("link answer %s: %v", response.Body, err)
@@ -343,12 +343,12 @@ func TestOnlyAnAdministratorMintsASignInLink(t *testing.T) {
 	}
 	var sessionCookie *http.Cookie
 	for _, cookie := range redeem.Result().Cookies() {
-		if cookie.Name == signinstore.SessionCookieName {
+		if cookie.Name == signin.SessionCookieName {
 			sessionCookie = cookie
 		}
 	}
 	if sessionCookie == nil {
-		t.Fatalf("redeem set no %s cookie", signinstore.SessionCookieName)
+		t.Fatalf("redeem set no %s cookie", signin.SessionCookieName)
 	}
 	request := httptest.NewRequest("GET", "/sign-in-store/session", nil)
 	request.AddCookie(sessionCookie)

@@ -18,8 +18,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/kayushkin/llm-bridge-server/internal/access/grantstore"
-	"github.com/kayushkin/llm-bridge-server/internal/access/principalstore"
+	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
+	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
 	"github.com/kayushkin/llm-bridge-server/internal/references/referencestore"
@@ -155,19 +155,19 @@ func (s *Server) EnableReferenceStore(resolver *referencestore.Resolver) error {
 
 // ReferenceAccessDirectory is what reference-store's access check reads,
 // from principal-store and grant-store in this process.
-func ReferenceAccessDirectory(principals *principalstore.Store, grants *grantstore.Store, directory grantstore.PrincipalDirectory) referencestore.AccessDirectory {
+func ReferenceAccessDirectory(principals *principals.Store, grants *grants.Store, directory grants.PrincipalDirectory) referencestore.AccessDirectory {
 	return referenceAccessDirectory{principals: principals, grants: grants, directory: directory}
 }
 
 type referenceAccessDirectory struct {
-	principals *principalstore.Store
-	grants     *grantstore.Store
-	directory  grantstore.PrincipalDirectory
+	principals *principals.Store
+	grants     *grants.Store
+	directory  grants.PrincipalDirectory
 }
 
 func (d referenceAccessDirectory) Standing(ctx context.Context, principalID string) (referencestore.PrincipalStanding, error) {
 	principal, err := d.principals.Get(ctx, principalID, false)
-	if errors.Is(err, principalstore.ErrNotFound) {
+	if errors.Is(err, principals.ErrNotFound) {
 		return referencestore.PrincipalStanding{}, fmt.Errorf("no principal %s", principalID)
 	}
 	if err != nil {

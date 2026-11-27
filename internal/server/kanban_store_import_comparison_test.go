@@ -12,8 +12,8 @@ import (
 	"testing"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access"
-	"github.com/kayushkin/llm-bridge-server/internal/access/grantstore"
-	"github.com/kayushkin/llm-bridge-server/internal/access/principalstore"
+	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
+	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 	kanbandb "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/db"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/items"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
@@ -72,10 +72,10 @@ func TestImportedStandaloneKanbanStoreAnswers(t *testing.T) {
 	}
 	database := postgrestest.NewDatabase(t, append(accessModules, kanbanModule, noteboardModule)...)
 	principalsPool, grantsPool := database.Open(accessModules[0]), database.Open(accessModules[1])
-	if _, err := principalstore.ImportStandaloneDatabase(ctx, principalsPool, *standalonePrincipalStoreCopy); err != nil {
+	if _, err := principals.ImportStandaloneDatabase(ctx, principalsPool, *standalonePrincipalStoreCopy); err != nil {
 		t.Fatalf("principal-store: %v", err)
 	}
-	if _, err := grantstore.ImportStandaloneDatabase(ctx, grantsPool, *standaloneGrantStoreCopy); err != nil {
+	if _, err := grants.ImportStandaloneDatabase(ctx, grantsPool, *standaloneGrantStoreCopy); err != nil {
 		t.Fatalf("grant-store: %v", err)
 	}
 	stores := access.StoresOnPools(principalsPool, grantsPool, database.Open(accessModules[2]), database.Open(accessModules[3]))

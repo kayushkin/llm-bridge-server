@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/kayushkin/llm-bridge-server/internal/access/principalstore"
+	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 )
 
 // Principals is the principal-store a project link to a principal is checked
@@ -17,12 +17,12 @@ type Principals interface {
 
 // PrincipalStoreModule is Principals over the principal-store module.
 type PrincipalStoreModule struct {
-	Store *principalstore.Store
+	Store *principals.Store
 }
 
 func (module PrincipalStoreModule) DisplayName(ctx context.Context, id string) (string, error) {
 	principal, err := module.Store.Get(ctx, id, false)
-	if errors.Is(err, principalstore.ErrNotFound) {
+	if errors.Is(err, principals.ErrNotFound) {
 		return "", ErrNotFound
 	}
 	if err != nil {

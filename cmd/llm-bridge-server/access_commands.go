@@ -8,10 +8,10 @@ import (
 	"os"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access"
-	"github.com/kayushkin/llm-bridge-server/internal/access/grantstore"
-	permstore "github.com/kayushkin/llm-bridge-server/internal/access/permissionstore"
-	"github.com/kayushkin/llm-bridge-server/internal/access/principalstore"
-	"github.com/kayushkin/llm-bridge-server/internal/access/signinstore"
+	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
+	"github.com/kayushkin/llm-bridge-server/internal/access/permissions"
+	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
+	"github.com/kayushkin/llm-bridge-server/internal/access/signin"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 )
@@ -24,20 +24,20 @@ type accessImport struct {
 }
 
 var accessImports = map[string]accessImport{
-	"import-principal-store": {principalstore.Module, func(ctx context.Context, db *sql.DB, path string) (string, error) {
-		counts, err := principalstore.ImportStandaloneDatabase(ctx, db, path)
+	"import-principal-store": {principals.Module, func(ctx context.Context, db *sql.DB, path string) (string, error) {
+		counts, err := principals.ImportStandaloneDatabase(ctx, db, path)
 		return fmt.Sprintf("%+v", counts), err
 	}},
-	"import-grant-store": {grantstore.Module, func(ctx context.Context, db *sql.DB, path string) (string, error) {
-		counts, err := grantstore.ImportStandaloneDatabase(ctx, db, path)
+	"import-grant-store": {grants.Module, func(ctx context.Context, db *sql.DB, path string) (string, error) {
+		counts, err := grants.ImportStandaloneDatabase(ctx, db, path)
 		return fmt.Sprintf("%+v", counts), err
 	}},
-	"import-sign-in-store": {signinstore.Module, func(ctx context.Context, db *sql.DB, path string) (string, error) {
-		counts, err := signinstore.ImportStandaloneDatabase(ctx, db, path)
+	"import-sign-in-store": {signin.Module, func(ctx context.Context, db *sql.DB, path string) (string, error) {
+		counts, err := signin.ImportStandaloneDatabase(ctx, db, path)
 		return fmt.Sprintf("%+v", counts), err
 	}},
-	"import-permission-store": {permstore.Module, func(ctx context.Context, db *sql.DB, path string) (string, error) {
-		counts, err := permstore.ImportStandaloneDatabase(ctx, db, path)
+	"import-permission-store": {permissions.Module, func(ctx context.Context, db *sql.DB, path string) (string, error) {
+		counts, err := permissions.ImportStandaloneDatabase(ctx, db, path)
 		return fmt.Sprintf("%+v", counts), err
 	}},
 }
@@ -107,11 +107,11 @@ func makeSignInLinkCmd(args []string) {
 		os.Exit(1)
 	}
 	defer stores.Close()
-	directory := signinstore.NewDirectory(access.SignInPrincipalDirectory(stores.Principals), signinstore.DirectoryConfig{})
-	link, url, err := signinstore.MakeSignInLinkFromHostShell(ctx, stores.SignIn, directory, args[0], cfg.SignInPageURL)
+	directory := signin.NewDirectory(access.SignInPrincipalDirectory(stores.Principals), signin.DirectoryConfig{})
+	link, url, err := signin.MakeSignInLinkFromHostShell(ctx, stores.SignIn, directory, args[0], cfg.SignInPageURL)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Println(signinstore.HostShellLinkMessage(link, url))
+	fmt.Println(signin.HostShellLinkMessage(link, url))
 }

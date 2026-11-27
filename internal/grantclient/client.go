@@ -2,7 +2,7 @@
 // resources a principal's effective grants name, and the grants peer
 // provisioning makes.
 //
-// grant-store runs in this process (internal/access/grantstore), so every call
+// grant-store runs in this process (internal/access/grants), so every call
 // here is a call into its store, not a request over HTTP. This server calls it
 // as the internal service, the way it called the standalone store with its
 // service token.
@@ -20,7 +20,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/kayushkin/llm-bridge-server/internal/access/grantstore"
+	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
 )
 
 // ErrPrincipalUnknown is grant-store answering that principal-store has no
@@ -30,18 +30,18 @@ var ErrPrincipalUnknown = errors.New("principal unknown")
 
 // AllResources is the resource_id grant-store stores for a grant on every
 // resource of its type, now and later.
-const AllResources = grantstore.AllResources
+const AllResources = grants.AllResources
 
 // Client is grant-store in this process.
 type Client struct {
-	store     *grantstore.Store
-	directory grantstore.PrincipalDirectory
-	checker   grantstore.ResourceChecker
+	store     *grants.Store
+	directory grants.PrincipalDirectory
+	checker   grants.ResourceChecker
 }
 
 // New reads and writes grants through store, asking directory about
 // principals and checker about resources, as grant-store's own routes do.
-func New(store *grantstore.Store, directory grantstore.PrincipalDirectory, checker grantstore.ResourceChecker) *Client {
+func New(store *grants.Store, directory grants.PrincipalDirectory, checker grants.ResourceChecker) *Client {
 	return &Client{store: store, directory: directory, checker: checker}
 }
 
@@ -50,15 +50,15 @@ func New(store *grantstore.Store, directory grantstore.PrincipalDirectory, check
 // the principal — and every group they are in — holds no such grant; it is
 // not an error.
 func (c *Client) EffectiveResourceIDs(ctx context.Context, principalID, relation, resourceType string) ([]string, error) {
-	grants, err := c.store.Effective(ctx, c.directory, principalID, relation, resourceType)
-	if errors.Is(err, grantstore.ErrNotFound) {
+	effective, err := c.store.Effective(ctx, c.directory, principalID, relation, resourceType)
+	if errors.Is(err, grants.ErrNotFound) {
 		return nil, fmt.Errorf("%w: %v", ErrPrincipalUnknown, err)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("grant-store: the effective %s grants of %s on %s: %w", relation, principalID, resourceType, err)
 	}
-	ids := make([]string, 0, len(grants))
-	for _, grant := range grants {
+	ids := make([]string, 0, len(effective))
+	for _, grant := range effective {
 		ids = append(ids, grant.ResourceID)
 	}
 	return ids, nil
@@ -76,7 +76,7 @@ type GrantInput struct {
 // Create records a grant and returns its id. grant-store is idempotent on the
 // active tuple, so a grant that already exists answers with its id too.
 func (c *Client) Create(ctx context.Context, input GrantInput) (string, error) {
-	grant, _, err := c.store.Create(ctx, c.directory, c.checker, grantstore.GrantRequest{
+	grant, _, err := c.store.Create(ctx, c.directory, c.checker, grants.GrantRequest{
 		PrincipalID: input.PrincipalID, Relation: input.Relation, ResourceType: input.ResourceType,
 		ResourceID: input.ResourceID, Note: input.Note,
 	})

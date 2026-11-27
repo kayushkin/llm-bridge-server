@@ -24,8 +24,8 @@ import (
 	"strings"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access"
-	"github.com/kayushkin/llm-bridge-server/internal/access/grantstore"
-	"github.com/kayushkin/llm-bridge-server/internal/access/principalstore"
+	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
+	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack"
 	mailfilestore "github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/filestore"
 	"github.com/kayushkin/llm-bridge-server/internal/mailstackclient"
@@ -132,7 +132,7 @@ func (s *Server) checkMailAccountExists(accountID string) error {
 		return fmt.Errorf("mailstack: reading account %s: %w", accountID, err)
 	}
 	if !exists {
-		return fmt.Errorf("%w: mailstack has no account %q", grantstore.ErrResourceNotFound, accountID)
+		return fmt.Errorf("%w: mailstack has no account %q", grants.ErrResourceNotFound, accountID)
 	}
 	return nil
 }
@@ -142,14 +142,14 @@ func (s *Server) checkMailAccountExists(accountID string) error {
 // HTTP with their service tokens.
 type mailstackPeopleDirectory struct {
 	server     *Server
-	principals *principalstore.Store
-	grants     *grantstore.Store
-	directory  grantstore.PrincipalDirectory
+	principals *principals.Store
+	grants     *grants.Store
+	directory  grants.PrincipalDirectory
 }
 
 func (d mailstackPeopleDirectory) Principal(ctx context.Context, principalID string) (mailstack.PrincipalFacts, error) {
 	principal, err := d.principals.Get(ctx, principalID, false)
-	if errors.Is(err, principalstore.ErrNotFound) {
+	if errors.Is(err, principals.ErrNotFound) {
 		return mailstack.PrincipalFacts{}, mailstack.ErrPrincipalUnknown
 	}
 	if err != nil {
@@ -159,15 +159,15 @@ func (d mailstackPeopleDirectory) Principal(ctx context.Context, principalID str
 }
 
 func (d mailstackPeopleDirectory) MailGrants(ctx context.Context, principalID string) ([]mailstack.MailGrant, error) {
-	grants, err := d.grants.Effective(ctx, d.directory, principalID, "", grantstore.ResourceTypeMailAccount)
-	if errors.Is(err, grantstore.ErrNotFound) {
+	effective, err := d.grants.Effective(ctx, d.directory, principalID, "", grants.ResourceTypeMailAccount)
+	if errors.Is(err, grants.ErrNotFound) {
 		return nil, mailstack.ErrPrincipalUnknown
 	}
 	if err != nil {
 		return nil, fmt.Errorf("the mail grants of %s: %w", principalID, err)
 	}
-	held := make([]mailstack.MailGrant, 0, len(grants))
-	for _, grant := range grants {
+	held := make([]mailstack.MailGrant, 0, len(effective))
+	for _, grant := range effective {
 		held = append(held, mailstack.MailGrant{Relation: grant.Relation, AccountID: grant.ResourceID})
 	}
 	return held, nil

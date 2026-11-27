@@ -12,7 +12,7 @@ import (
 	"testing"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access"
-	"github.com/kayushkin/llm-bridge-server/internal/access/grantstore"
+	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
 	kanbandb "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/db"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/items"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
@@ -75,15 +75,15 @@ func newKanbanTestServer(t *testing.T) *kanbanTestServer {
 
 	// The grant goes through grant-store's own check that the board exists,
 	// which asks kanban-store in this process.
-	if _, _, err := test.stores.Grants.Create(context.Background(), test.grantsDirectory(), test.server.grantResourceChecker(test.stores.Principals), grantstore.GrantRequest{
-		PrincipalID: accessTestMemberID, Relation: "can_view", ResourceType: grantstore.ResourceTypeBoard, ResourceID: test.seenBoardID,
+	if _, _, err := test.stores.Grants.Create(context.Background(), test.grantsDirectory(), test.server.grantResourceChecker(test.stores.Principals), grants.GrantRequest{
+		PrincipalID: accessTestMemberID, Relation: "can_view", ResourceType: grants.ResourceTypeBoard, ResourceID: test.seenBoardID,
 	}); err != nil {
 		t.Fatalf("grant the member can_view on the first board: %v", err)
 	}
 	return test
 }
 
-func (test *kanbanTestServer) grantsDirectory() grantstore.PrincipalDirectory {
+func (test *kanbanTestServer) grantsDirectory() grants.PrincipalDirectory {
 	return access.GrantsPrincipalDirectory(test.stores.Principals)
 }
 
@@ -128,7 +128,7 @@ func (test *kanbanTestServer) storeState(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	grants, err := test.stores.Grants.List(context.Background(), grantstore.Filter{IncludeRevoked: true})
+	grants, err := test.stores.Grants.List(context.Background(), grants.Filter{IncludeRevoked: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +282,7 @@ func TestKanbanStoreGivesTheCreatorOfABoardItsAdministration(t *testing.T) {
 		ID string `json:"id"`
 	}
 	test.mustDecode(t, test.call(t, callerMemberWithLoginCookie, "POST", "/kanban/boards", `{"name":"Mine"}`), http.StatusCreated, &board)
-	grants, err := test.stores.Grants.List(context.Background(), grantstore.Filter{PrincipalID: accessTestMemberID, ResourceType: grantstore.ResourceTypeBoard, ResourceID: board.ID})
+	grants, err := test.stores.Grants.List(context.Background(), grants.Filter{PrincipalID: accessTestMemberID, ResourceType: grants.ResourceTypeBoard, ResourceID: board.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,11 +301,11 @@ func TestKanbanStoreGivesTheCreatorOfABoardItsAdministration(t *testing.T) {
 func TestGrantStoreChecksABoardWithKanbanStoreInProcess(t *testing.T) {
 	test := newKanbanTestServer(t)
 	checker := test.server.grantResourceChecker(test.stores.Principals)
-	if err := checker.CheckResourceExists(context.Background(), grantstore.ResourceTypeBoard, test.unseenBoardID); err != nil {
+	if err := checker.CheckResourceExists(context.Background(), grants.ResourceTypeBoard, test.unseenBoardID); err != nil {
 		t.Fatalf("a board kanban-store has: %v", err)
 	}
-	err := checker.CheckResourceExists(context.Background(), grantstore.ResourceTypeBoard, "no-such-board")
-	if !errors.Is(err, grantstore.ErrResourceNotFound) {
+	err := checker.CheckResourceExists(context.Background(), grants.ResourceTypeBoard, "no-such-board")
+	if !errors.Is(err, grants.ErrResourceNotFound) {
 		t.Fatalf("a board kanban-store does not have: %v, want ErrResourceNotFound", err)
 	}
 }

@@ -23,8 +23,8 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access"
-	"github.com/kayushkin/llm-bridge-server/internal/access/grantstore"
-	"github.com/kayushkin/llm-bridge-server/internal/access/principalstore"
+	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
+	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 	"github.com/kayushkin/llm-bridge-server/internal/bundleclient"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/inprocesshttp"
@@ -187,7 +187,7 @@ func (s *Server) checkKanbanBoardExists(boardID string) error {
 		return fmt.Errorf("%w, so board %q cannot be checked", errKanbanStoreOff, boardID)
 	}
 	if _, err := handlers.store.GetBoard(boardID); errors.Is(err, kanbandb.ErrNotFound) {
-		return fmt.Errorf("%w: kanban-store has no board %q", grantstore.ErrResourceNotFound, boardID)
+		return fmt.Errorf("%w: kanban-store has no board %q", grants.ErrResourceNotFound, boardID)
 	} else if err != nil {
 		return fmt.Errorf("kanban-store: reading board %s: %w", boardID, err)
 	}
@@ -198,10 +198,10 @@ func (s *Server) checkKanbanBoardExists(boardID string) error {
 // from principal-store in this process, as principal-store's GET
 // /principals/{id} and GET /principals/{group}/members?available_at= did.
 type kanbanPrincipalDirectory struct {
-	principals *principalstore.Store
+	principals *principals.Store
 }
 
-func kanbanPrincipalOf(principal *principalstore.Principal) kanbanprincipals.Principal {
+func kanbanPrincipalOf(principal *principals.Principal) kanbanprincipals.Principal {
 	return kanbanprincipals.Principal{
 		ID:              principal.ID,
 		Kind:            principal.Kind,
@@ -213,7 +213,7 @@ func kanbanPrincipalOf(principal *principalstore.Principal) kanbanprincipals.Pri
 
 func (directory kanbanPrincipalDirectory) Get(id string) (*kanbanprincipals.Principal, error) {
 	principal, err := directory.principals.Get(context.Background(), id, false)
-	if errors.Is(err, principalstore.ErrNotFound) {
+	if errors.Is(err, principals.ErrNotFound) {
 		return nil, kanbanprincipals.ErrNotFound
 	}
 	if err != nil {
@@ -225,7 +225,7 @@ func (directory kanbanPrincipalDirectory) Get(id string) (*kanbanprincipals.Prin
 
 func (directory kanbanPrincipalDirectory) ListAvailableMembers(groupID string, at time.Time) ([]kanbanprincipals.Principal, error) {
 	members, err := directory.principals.ListAvailableMembers(context.Background(), groupID, at)
-	if errors.Is(err, principalstore.ErrNotFound) {
+	if errors.Is(err, principals.ErrNotFound) {
 		return nil, kanbanprincipals.ErrNotFound
 	}
 	if err != nil {
@@ -242,28 +242,28 @@ func (directory kanbanPrincipalDirectory) ListAvailableMembers(groupID string, a
 // grant-store in this process, as the internal service, the way kanban-store
 // called the standalone grant-store with its service token.
 type kanbanBoardGrants struct {
-	grants    *grantstore.Store
-	directory grantstore.PrincipalDirectory
-	checker   grantstore.ResourceChecker
+	grants    *grants.Store
+	directory grants.PrincipalDirectory
+	checker   grants.ResourceChecker
 }
 
 func (boardGrants kanbanBoardGrants) EffectiveBoardGrants(principalID string) ([]kanbangrants.BoardGrant, error) {
-	grants, err := boardGrants.grants.Effective(context.Background(), boardGrants.directory, principalID, "", kanbangrants.ResourceTypeBoard)
-	if errors.Is(err, grantstore.ErrNotFound) {
+	effective, err := boardGrants.grants.Effective(context.Background(), boardGrants.directory, principalID, "", kanbangrants.ResourceTypeBoard)
+	if errors.Is(err, grants.ErrNotFound) {
 		return nil, fmt.Errorf("%w: %v", kanbangrants.ErrPrincipalNotFound, err)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("grant-store: the effective board grants of %s: %w", principalID, err)
 	}
-	read := make([]kanbangrants.BoardGrant, 0, len(grants))
-	for _, grant := range grants {
+	read := make([]kanbangrants.BoardGrant, 0, len(effective))
+	for _, grant := range effective {
 		read = append(read, kanbangrants.BoardGrant{PrincipalID: grant.PrincipalID, Relation: grant.Relation, BoardID: grant.ResourceID})
 	}
 	return read, nil
 }
 
 func (boardGrants kanbanBoardGrants) GrantBoardAdministration(principalID, boardID string) error {
-	_, _, err := boardGrants.grants.Create(context.Background(), boardGrants.directory, boardGrants.checker, grantstore.GrantRequest{
+	_, _, err := boardGrants.grants.Create(context.Background(), boardGrants.directory, boardGrants.checker, grants.GrantRequest{
 		PrincipalID:  principalID,
 		Relation:     kanbangrants.RelationCanAdminister,
 		ResourceType: kanbangrants.ResourceTypeBoard,

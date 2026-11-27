@@ -28,7 +28,7 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"github.com/kayushkin/llm-bridge-server/internal/access/principalstore"
+	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 	schedulerapi "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/api"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/activitystore"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/budgetstore"
@@ -82,7 +82,7 @@ var InProcessReferenceServices = []string{
 type referenceReadableStores struct {
 	noteboard     atomic.Pointer[items.Store]
 	predictions   atomic.Pointer[predictionstore.Store]
-	principals    atomic.Pointer[principalstore.Store]
+	principals    atomic.Pointer[principals.Store]
 	repos         atomic.Pointer[repostore.Store]
 	workGraph     atomic.Pointer[workgraphstore.Store]
 	scheduler     atomic.Pointer[schedulerapi.Server]
@@ -552,20 +552,20 @@ func (s *Server) searchProjectsForReference(_ context.Context, query string, _ r
 }
 
 func (s *Server) readPrincipalForReference(ctx context.Context, id string, _ referencestore.InProcessAsker) (json.RawMessage, error) {
-	principals, err := loaded(&s.referenceReadable.principals, "principal-store")
+	directory, err := loaded(&s.referenceReadable.principals, "principal-store")
 	if err != nil {
 		return nil, err
 	}
-	principal, err := principals.Get(ctx, id, false)
-	return referenceAnswer(principal, err, principalstore.ErrNotFound)
+	principal, err := directory.Get(ctx, id, false)
+	return referenceAnswer(principal, err, principals.ErrNotFound)
 }
 
 func (s *Server) searchPrincipalsForReference(ctx context.Context, query string, _ referencestore.InProcessAsker) (json.RawMessage, error) {
-	principals, err := loaded(&s.referenceReadable.principals, "principal-store")
+	directory, err := loaded(&s.referenceReadable.principals, "principal-store")
 	if err != nil {
 		return nil, err
 	}
-	found, err := principals.List(ctx, principalstore.Filter{Query: query})
+	found, err := directory.List(ctx, principals.Filter{Query: query})
 	if err != nil {
 		return nil, err
 	}

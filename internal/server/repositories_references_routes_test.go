@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/access/grantstore"
+	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
 	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
 	"github.com/kayushkin/llm-bridge-server/internal/references/referencestore"
 	"github.com/kayushkin/llm-bridge-server/internal/repositories/repostore"
@@ -269,16 +269,16 @@ func TestAGrantOnAReferenceIsCheckedInProcess(t *testing.T) {
 		resourceType, resourceID string
 		exists                   bool
 	}{
-		{grantstore.ResourceTypeReference, "repo:webapp", true},
-		{grantstore.ResourceTypeReference, "repo:nothing", false},
-		{grantstore.ResourceTypeReferenceType, "repo", true},
-		{grantstore.ResourceTypeReferenceType, "nothing", false},
+		{grants.ResourceTypeReference, "repo:webapp", true},
+		{grants.ResourceTypeReference, "repo:nothing", false},
+		{grants.ResourceTypeReferenceType, "repo", true},
+		{grants.ResourceTypeReferenceType, "nothing", false},
 	} {
 		err := checker.CheckResourceExists(ctx, check.resourceType, check.resourceID)
 		if check.exists && err != nil {
 			t.Errorf("%s %s: %v", check.resourceType, check.resourceID, err)
 		}
-		if !check.exists && !errors.Is(err, grantstore.ErrResourceNotFound) {
+		if !check.exists && !errors.Is(err, grants.ErrResourceNotFound) {
 			t.Errorf("%s %s: %v, want not found", check.resourceType, check.resourceID, err)
 		}
 	}

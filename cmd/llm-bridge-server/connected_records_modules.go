@@ -9,7 +9,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/kayushkin/llm-bridge-server/internal/access/principalstore"
+	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/calendarstore"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/journalstore"
@@ -140,7 +140,7 @@ func importConnectedRecordsStoreCmd(command string, args []string) {
 // checkOwnerIsAPerson refuses an owner principal-store does not hold, one that
 // is disabled, and one that is not a person.
 func checkOwnerIsAPerson(ctx context.Context, url, owner string) error {
-	module, err := principalstore.Module()
+	module, err := principals.Module()
 	if err != nil {
 		return err
 	}
@@ -149,14 +149,14 @@ func checkOwnerIsAPerson(ctx context.Context, url, owner string) error {
 		return fmt.Errorf("principal-store, to check the owner: %w", err)
 	}
 	defer db.Close()
-	principal, err := principalstore.New(db).Get(ctx, owner, false)
-	if errors.Is(err, principalstore.ErrNotFound) {
+	principal, err := principals.New(db).Get(ctx, owner, false)
+	if errors.Is(err, principals.ErrNotFound) {
 		return fmt.Errorf("principal-store holds no principal %s, so it cannot own the records", owner)
 	}
 	if err != nil {
 		return fmt.Errorf("principal-store, reading the owner %s: %w", owner, err)
 	}
-	if principal.Kind != principalstore.KindHuman {
+	if principal.Kind != principals.KindHuman {
 		return fmt.Errorf("%s is a %q principal, and only a person owns connected records", owner, principal.Kind)
 	}
 	if principal.DisabledAt != 0 {

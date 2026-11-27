@@ -26,7 +26,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/kayushkin/llm-bridge-server/internal/access/signinstore"
+	"github.com/kayushkin/llm-bridge-server/internal/access/signin"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/calendarstore"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/journalstore"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
@@ -279,19 +279,19 @@ func (people signInPeople) ownerIsAnAdministrator(ctx context.Context, ownerPrin
 }
 
 // trustedPerson reads one person whole, as sign-in needs it.
-func (people signInPeople) trustedPerson(ctx context.Context, stores *connectedRecordsStores, ownerPrincipalID, personID string) (*signinstore.Person, error) {
+func (people signInPeople) trustedPerson(ctx context.Context, stores *connectedRecordsStores, ownerPrincipalID, personID string) (*signin.Person, error) {
 	detail, err := stores.people.GetPerson(ctx, ownership.OwnedBy(ownerPrincipalID), personID)
 	if err != nil {
 		return nil, err
 	}
-	person := &signinstore.Person{ID: detail.ID, PrincipalID: detail.PrincipalID}
+	person := &signin.Person{ID: detail.ID, PrincipalID: detail.PrincipalID}
 	for _, identity := range detail.Identities {
-		person.Identities = append(person.Identities, signinstore.PersonIdentity{Kind: identity.Kind, Value: identity.Value})
+		person.Identities = append(person.Identities, signin.PersonIdentity{Kind: identity.Kind, Value: identity.Value})
 	}
 	return person, nil
 }
 
-func (people signInPeople) PersonOwningHandle(ctx context.Context, kind, value string) (*signinstore.Person, error) {
+func (people signInPeople) PersonOwningHandle(ctx context.Context, kind, value string) (*signin.Person, error) {
 	stores, err := people.stores()
 	if err != nil {
 		return nil, err
@@ -319,7 +319,7 @@ func (people signInPeople) PersonOwningHandle(ctx context.Context, kind, value s
 	return nil, fmt.Errorf("the records of %d administrators hold this %s handle, so sign-in cannot tell whose it is", len(trusted), kind)
 }
 
-func (people signInPeople) PersonPointingAtPrincipal(ctx context.Context, principalID string) (*signinstore.Person, error) {
+func (people signInPeople) PersonPointingAtPrincipal(ctx context.Context, principalID string) (*signin.Person, error) {
 	stores, err := people.stores()
 	if err != nil {
 		return nil, err
