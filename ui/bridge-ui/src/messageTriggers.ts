@@ -42,42 +42,42 @@ function jsonInit(method: string, body: unknown): RequestInit {
   return { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
 }
 
-function boardURL(kanbanStoreBasePath: string, boardID: string): string {
-  return `${kanbanStoreBasePath}/api/boards/${encodeURIComponent(boardID)}`
+function boardURL(issuesBasePath: string, boardID: string): string {
+  return `${issuesBasePath}/api/boards/${encodeURIComponent(boardID)}`
 }
 
-export function getMessageTriggerOptions(fetchFn: FetchFn, kanbanStoreBasePath: string): Promise<KanbanStoreResult<MessageTriggerOptions>> {
-  return send(fetchFn, 'read message trigger options', `${kanbanStoreBasePath}/api/message-trigger-options`)
+export function getMessageTriggerOptions(fetchFn: FetchFn, issuesBasePath: string): Promise<KanbanStoreResult<MessageTriggerOptions>> {
+  return send(fetchFn, 'read message trigger options', `${issuesBasePath}/api/message-trigger-options`)
 }
 
-export function listMessageTriggers(fetchFn: FetchFn, kanbanStoreBasePath: string, boardID: string): Promise<KanbanStoreResult<MessageTrigger[]>> {
-  return send(fetchFn, 'read message triggers', `${boardURL(kanbanStoreBasePath, boardID)}/message-triggers`)
+export function listMessageTriggers(fetchFn: FetchFn, issuesBasePath: string, boardID: string): Promise<KanbanStoreResult<MessageTrigger[]>> {
+  return send(fetchFn, 'read message triggers', `${boardURL(issuesBasePath, boardID)}/message-triggers`)
 }
 
 export function createMessageTrigger(
-  fetchFn: FetchFn, kanbanStoreBasePath: string, boardID: string, body: UpsertMessageTriggerRequest,
+  fetchFn: FetchFn, issuesBasePath: string, boardID: string, body: UpsertMessageTriggerRequest,
 ): Promise<KanbanStoreResult<MessageTrigger>> {
-  return send(fetchFn, 'create message trigger', `${boardURL(kanbanStoreBasePath, boardID)}/message-triggers`, jsonInit('POST', body))
+  return send(fetchFn, 'create message trigger', `${boardURL(issuesBasePath, boardID)}/message-triggers`, jsonInit('POST', body))
 }
 
 export function patchMessageTrigger(
-  fetchFn: FetchFn, kanbanStoreBasePath: string, triggerID: string, body: UpsertMessageTriggerRequest,
+  fetchFn: FetchFn, issuesBasePath: string, triggerID: string, body: UpsertMessageTriggerRequest,
 ): Promise<KanbanStoreResult<MessageTrigger>> {
-  return send(fetchFn, 'save message trigger', `${kanbanStoreBasePath}/api/message-triggers/${encodeURIComponent(triggerID)}`, jsonInit('PATCH', body))
+  return send(fetchFn, 'save message trigger', `${issuesBasePath}/api/message-triggers/${encodeURIComponent(triggerID)}`, jsonInit('PATCH', body))
 }
 
-export function deleteMessageTrigger(fetchFn: FetchFn, kanbanStoreBasePath: string, triggerID: string): Promise<KanbanStoreResult<unknown>> {
-  return send(fetchFn, 'delete message trigger', `${kanbanStoreBasePath}/api/message-triggers/${encodeURIComponent(triggerID)}`, { method: 'DELETE' })
+export function deleteMessageTrigger(fetchFn: FetchFn, issuesBasePath: string, triggerID: string): Promise<KanbanStoreResult<unknown>> {
+  return send(fetchFn, 'delete message trigger', `${issuesBasePath}/api/message-triggers/${encodeURIComponent(triggerID)}`, { method: 'DELETE' })
 }
 
 export function listMessageDeliveries(
-  fetchFn: FetchFn, kanbanStoreBasePath: string, boardID: string, limit: number,
+  fetchFn: FetchFn, issuesBasePath: string, boardID: string, limit: number,
 ): Promise<KanbanStoreResult<MessageDelivery[]>> {
-  return send(fetchFn, 'read message deliveries', `${boardURL(kanbanStoreBasePath, boardID)}/message-deliveries?limit=${limit}`)
+  return send(fetchFn, 'read message deliveries', `${boardURL(issuesBasePath, boardID)}/message-deliveries?limit=${limit}`)
 }
 
-export function listBoardColumns(fetchFn: FetchFn, kanbanStoreBasePath: string, boardID: string): Promise<KanbanStoreResult<Column[]>> {
-  return send(fetchFn, 'read columns', `${boardURL(kanbanStoreBasePath, boardID)}/columns`)
+export function listBoardColumns(fetchFn: FetchFn, issuesBasePath: string, boardID: string): Promise<KanbanStoreResult<Column[]>> {
+  return send(fetchFn, 'read columns', `${boardURL(issuesBasePath, boardID)}/columns`)
 }
 
 // --- form rules --------------------------------------------------------------

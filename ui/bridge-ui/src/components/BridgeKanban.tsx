@@ -240,7 +240,7 @@ function KanbanBoardOnServer({ server, servers, boardsByServer, onPickBoardOnSer
     routes, mailBasePath, mailPagePath, basePath: bridgeBasePath, fetch: fetchFn,
     // Read directly as well as through useKanban: resolving a deeplinked card's
     // board is a one-off request that hook has no verb for.
-    kanbanStoreBasePath,
+    issuesBasePath,
   } = useBridgeConfig()
   // Who a dispatched session is started as: the Settings page's default.
   const navigate = useNavigate()
@@ -335,7 +335,7 @@ function KanbanBoardOnServer({ server, servers, boardsByServer, onPickBoardOnSer
   // resolves to nothing leaves the board selection alone rather than clearing it.
   const boardResolveAttempted = useRef<string | null>(null)
   useEffect(() => {
-    if (!drawerCardID || drawerCard || !kanbanStoreBasePath) return
+    if (!drawerCardID || drawerCard || !issuesBasePath) return
     // Wait for the view: mid-load it is null and the card may well be in it.
     if (!k.view) return
     if (boardResolveAttempted.current === drawerCardID) return
@@ -345,7 +345,7 @@ function KanbanBoardOnServer({ server, servers, boardsByServer, onPickBoardOnSer
     void (async () => {
       try {
         const res = await fetchFn(
-          `${kanbanStoreBasePath}/api/cards/${encodeURIComponent(drawerCardID)}/placements`,
+          `${issuesBasePath}/api/cards/${encodeURIComponent(drawerCardID)}/placements`,
         )
         if (!res.ok || canceled) return
         // ⚠️ kanban-store answers a card id it does not know with 200 and a JSON
@@ -383,7 +383,7 @@ function KanbanBoardOnServer({ server, servers, boardsByServer, onPickBoardOnSer
     return () => {
       canceled = true
     }
-  }, [drawerCardID, drawerCard, k.view, kanbanStoreBasePath, fetchFn, selectedBoardID])
+  }, [drawerCardID, drawerCard, k.view, issuesBasePath, fetchFn, selectedBoardID])
 
   // Axis controls render only for boards whose cards actually carry these tags.
   // Boards that predate the classifier report no axes and are left exactly as
@@ -603,7 +603,7 @@ function KanbanBoardOnServer({ server, servers, boardsByServer, onPickBoardOnSer
                     // resolution for this card's tags, read fresh here so the
                     // confirmation names what the dispatch will really use; a
                     // failed read starts nothing.
-                    const defaultsResult = await getCardEffectiveDefaults(fetchFn, kanbanStoreBasePath, card.placement.board_id, card.placement.card_id)
+                    const defaultsResult = await getCardEffectiveDefaults(fetchFn, issuesBasePath, card.placement.board_id, card.placement.card_id)
                     if (!defaultsResult.ok) {
                       window.alert(`Could not read this card's defaults, so no agent was started: ${defaultsResult.error}`)
                       return false

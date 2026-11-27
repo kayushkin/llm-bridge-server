@@ -178,10 +178,10 @@ describe('peerConnectionBridgeConfig', () => {
   const local = {
     fetch: fetchFn,
     basePath: '/api/bridge',
-    kanbanStoreBasePath: '/api/kanban',
+    issuesBasePath: '/api/kanban',
     noteboardBasePath: '/api/noteboard',
-    referenceStoreBasePath: '/api/bridge/reference-store',
-    photoStoreBasePath: '/api/photos',
+    referencesBasePath: '/api/bridge/reference-store',
+    photosBasePath: '/api/photos',
     renderHarnessExtension: () => null,
     routes: DEFAULT_BRIDGE_ROUTES,
   } as unknown as BridgeConfig
@@ -190,19 +190,19 @@ describe('peerConnectionBridgeConfig', () => {
     const peer = peerConnectionBridgeConfig(local, 'peer_connection_000001')
     expect(peer.basePath).toBe('/api/bridge/peer-connections/peer_connection_000001/proxy')
     expect(peer.noteboardBasePath).toBe('')
-    expect(peer.referenceStoreBasePath).toBe('/api/bridge/peer-connections/peer_connection_000001/proxy/reference-store')
-    expect(peer.photoStoreBasePath).toBe('')
+    expect(peer.referencesBasePath).toBe('/api/bridge/peer-connections/peer_connection_000001/proxy/references')
+    expect(peer.photosBasePath).toBe('')
     expect(peer.renderHarnessExtension).toBeNull()
   })
 
   it("reaches kanban-store through the other server's rooted /issues/ gateway", () => {
     const peer = peerConnectionBridgeConfig(local, 'peer_connection_000001')
-    expect(peer.kanbanStoreBasePath).toBe('/api/bridge/peer-connections/peer_connection_000001/proxy/kanban-store')
+    expect(peer.issuesBasePath).toBe('/api/bridge/peer-connections/peer_connection_000001/proxy/issues')
   })
 
   it("reaches grant-store through the other server's gateway, whose shape matches this host's path", () => {
-    const peer = peerConnectionBridgeConfig({ ...local, grantStoreBasePath: '/api/grants' } as BridgeConfig, 'peer_connection_000001')
-    expect(peer.grantStoreBasePath).toBe('/api/bridge/peer-connections/peer_connection_000001/proxy/grant-store')
+    const peer = peerConnectionBridgeConfig({ ...local, grantsBasePath: '/api/grants' } as BridgeConfig, 'peer_connection_000001')
+    expect(peer.grantsBasePath).toBe('/api/bridge/peer-connections/peer_connection_000001/proxy/grants')
   })
 
   it('decides every string path of BridgeConfig, and no path of this host survives except through the proxy', () => {

@@ -26,26 +26,26 @@ export interface CardEffectiveDefaultsRead {
  * A card on no board (`boardID` null) has no defaults and is never pending.
  */
 export function useCardEffectiveDefaults(boardID: string | null, cardID: string, tagsKey: string): CardEffectiveDefaultsRead {
-  const { fetch: fetchFn, kanbanStoreBasePath } = useBridgeConfig()
+  const { fetch: fetchFn, issuesBasePath } = useBridgeConfig()
   const readKey = `${boardID ?? ''}\u0000${cardID}\u0000${tagsKey}`
   const [state, setState] = useState<{ effective: EffectiveDefaults | null; error: string | null; forReadKey: string | null }>(
     { effective: null, error: null, forReadKey: null },
   )
   useEffect(() => {
     if (!boardID) return
-    if (!kanbanStoreBasePath) {
+    if (!issuesBasePath) {
       setState({ effective: null, error: 'this host has no route to kanban-store, so the card’s defaults cannot be read', forReadKey: readKey })
       return
     }
     let canceled = false
-    getCardEffectiveDefaults(fetchFn, kanbanStoreBasePath, boardID, cardID).then(result => {
+    getCardEffectiveDefaults(fetchFn, issuesBasePath, boardID, cardID).then(result => {
       if (canceled) return
       setState(result.ok
         ? { effective: result.value, error: null, forReadKey: readKey }
         : { effective: null, error: result.error, forReadKey: readKey })
     })
     return () => { canceled = true }
-  }, [fetchFn, kanbanStoreBasePath, boardID, cardID, readKey])
+  }, [fetchFn, issuesBasePath, boardID, cardID, readKey])
   if (!boardID) return { effective: null, error: null, pending: false }
   // An answer for another card or an older tag set must not stand in for this one's.
   if (state.forReadKey !== readKey) return { effective: null, error: null, pending: true }

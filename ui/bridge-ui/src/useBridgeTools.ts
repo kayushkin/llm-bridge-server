@@ -9,11 +9,11 @@ import type { Tool, LocalDescriptor } from '@kayushkin/tool-store-types'
  * during render.
  *
  * Polls every 30s like the other bridge hooks. Requires
- * `toolStoreBasePath` on BridgeConfig — the hook returns `loading=false` and
+ * `toolsBasePath` on BridgeConfig — the hook returns `loading=false` and
  * empty arrays when unset (the Tools tab is hidden in that case anyway).
  */
 export function useBridgeTools(instanceID: string | null) {
-  const { fetch: fetchFn, toolStoreBasePath } = useBridgeConfig()
+  const { fetch: fetchFn, toolsBasePath } = useBridgeConfig()
 
   const [tools, setTools] = useState<Tool[]>([])
   const [locals, setLocals] = useState<LocalDescriptor[]>([])
@@ -22,7 +22,7 @@ export function useBridgeTools(instanceID: string | null) {
   const [error, setError] = useState<string | null>(null)
 
   const lastJsonRef = useRef('')
-  const enabled = !!toolStoreBasePath
+  const enabled = !!toolsBasePath
 
   const fetchAll = useCallback(async () => {
     if (!enabled) {
@@ -31,8 +31,8 @@ export function useBridgeTools(instanceID: string | null) {
     }
     try {
       const [toolsRes, localsRes] = await Promise.all([
-        fetchFn(`${toolStoreBasePath}/tools`),
-        fetchFn(`${toolStoreBasePath}/locals`),
+        fetchFn(`${toolsBasePath}/tools`),
+        fetchFn(`${toolsBasePath}/locals`),
       ])
       if (!toolsRes.ok) throw new Error(`/tools HTTP ${toolsRes.status}`)
       if (!localsRes.ok) throw new Error(`/locals HTTP ${localsRes.status}`)
@@ -51,7 +51,7 @@ export function useBridgeTools(instanceID: string | null) {
     } finally {
       setLoading(false)
     }
-  }, [fetchFn, toolStoreBasePath, enabled])
+  }, [fetchFn, toolsBasePath, enabled])
 
   const fetchInstanceTools = useCallback(async () => {
     if (!enabled || !instanceID) {
@@ -59,7 +59,7 @@ export function useBridgeTools(instanceID: string | null) {
       return
     }
     try {
-      const res = await fetchFn(`${toolStoreBasePath}/instances/${encodeURIComponent(instanceID)}/tools`)
+      const res = await fetchFn(`${toolsBasePath}/instances/${encodeURIComponent(instanceID)}/tools`)
       if (!res.ok) {
         setInstanceTools([])
         return
@@ -69,7 +69,7 @@ export function useBridgeTools(instanceID: string | null) {
     } catch {
       setInstanceTools([])
     }
-  }, [fetchFn, toolStoreBasePath, instanceID, enabled])
+  }, [fetchFn, toolsBasePath, instanceID, enabled])
 
   useEffect(() => {
     fetchAll()
@@ -83,7 +83,7 @@ export function useBridgeTools(instanceID: string | null) {
 
   const setGlobal = useCallback(async (toolID: number, on: boolean): Promise<boolean> => {
     if (!enabled) return false
-    const path = `${toolStoreBasePath}/tools/${toolID}/${on ? 'enable' : 'disable'}`
+    const path = `${toolsBasePath}/tools/${toolID}/${on ? 'enable' : 'disable'}`
     try {
       const res = await fetchFn(path, { method: 'POST' })
       if (!res.ok) return false
@@ -92,11 +92,11 @@ export function useBridgeTools(instanceID: string | null) {
     } catch {
       return false
     }
-  }, [fetchFn, toolStoreBasePath, enabled, fetchAll])
+  }, [fetchFn, toolsBasePath, enabled, fetchAll])
 
   const setForInstance = useCallback(async (toolName: string, on: boolean): Promise<boolean> => {
     if (!enabled || !instanceID) return false
-    const url = `${toolStoreBasePath}/instances/${encodeURIComponent(instanceID)}/tools/by-name/${encodeURIComponent(toolName)}`
+    const url = `${toolsBasePath}/instances/${encodeURIComponent(instanceID)}/tools/by-name/${encodeURIComponent(toolName)}`
     try {
       const res = await fetchFn(url, { method: on ? 'POST' : 'DELETE' })
       if (!res.ok) return false
@@ -105,7 +105,7 @@ export function useBridgeTools(instanceID: string | null) {
     } catch {
       return false
     }
-  }, [fetchFn, toolStoreBasePath, instanceID, enabled, fetchInstanceTools])
+  }, [fetchFn, toolsBasePath, instanceID, enabled, fetchInstanceTools])
 
   /** Fast lookup: is `toolName` opted-in for the currently-selected instance? */
   const byInstance = useMemo(() => new Set(instanceTools), [instanceTools])

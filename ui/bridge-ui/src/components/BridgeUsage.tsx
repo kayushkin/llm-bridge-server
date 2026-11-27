@@ -281,7 +281,7 @@ function LimitBar({ label, win }: { label: string; win: LimitWindow }) {
 
 
 export function BridgeUsage() {
-  const { fetch: apiFetch, basePath, usageStoreBasePath } = useBridgeConfig()
+  const { fetch: apiFetch, basePath, usageBasePath } = useBridgeConfig()
   const [sessions, setSessions] = useState<SessionSummaryRow[]>([])
   const [aggregates, setAggregates] = useState<SessionAggregate[]>([])
   const [limits, setLimits] = useState<LimitsResponse | null>(null)
@@ -344,33 +344,33 @@ export function BridgeUsage() {
   }, [apiFetch, basePath, period])
 
   // Subscription limits live on usage-store. Skipped entirely when no
-  // usageStoreBasePath is configured.
+  // usageBasePath is configured.
   const fetchLimits = useCallback(async () => {
-    if (!usageStoreBasePath) return
+    if (!usageBasePath) return
     try {
-      const res = await apiFetch(`${usageStoreBasePath}/limits`)
+      const res = await apiFetch(`${usageBasePath}/limits`)
       if (res.ok) setLimits(await res.json())
     } catch { /* ignore */ }
-  }, [apiFetch, usageStoreBasePath])
+  }, [apiFetch, usageBasePath])
 
   // Per-API-key spend (computed from usage_report token counts × per-model
   // pricing). Refreshed hourly on the server; the UI just reads the latest.
   const fetchSpend = useCallback(async () => {
-    if (!usageStoreBasePath) return
+    if (!usageBasePath) return
     try {
-      const res = await apiFetch(`${usageStoreBasePath}/spend/keys`)
+      const res = await apiFetch(`${usageBasePath}/spend/keys`)
       if (res.ok) setSpend(await res.json())
     } catch { /* ignore */ }
-  }, [apiFetch, usageStoreBasePath])
+  }, [apiFetch, usageBasePath])
 
   const submitTopup = useCallback(async (provider: string) => {
-    if (!usageStoreBasePath) return
+    if (!usageBasePath) return
     const amount = parseFloat(addCreditDraft.amount)
     if (!isFinite(amount) || amount <= 0) return
     const body: Record<string, unknown> = { provider, amount_usd: amount, note: addCreditDraft.note }
     if (addCreditDraft.date) body.occurred_at_str = addCreditDraft.date
     try {
-      const res = await apiFetch(`${usageStoreBasePath}/spend/topups`, {
+      const res = await apiFetch(`${usageBasePath}/spend/topups`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -381,19 +381,19 @@ export function BridgeUsage() {
         fetchSpend()
       }
     } catch { /* ignore */ }
-  }, [apiFetch, addCreditDraft, fetchSpend, usageStoreBasePath])
+  }, [apiFetch, addCreditDraft, fetchSpend, usageBasePath])
 
   const deleteTopup = useCallback(async (id: number) => {
-    if (!usageStoreBasePath) return
+    if (!usageBasePath) return
     if (!confirm('Delete this top-up?')) return
     try {
-      const res = await apiFetch(`${usageStoreBasePath}/spend/topups/${id}`, { method: 'DELETE' })
+      const res = await apiFetch(`${usageBasePath}/spend/topups/${id}`, { method: 'DELETE' })
       if (res.ok) fetchSpend()
     } catch { /* ignore */ }
-  }, [apiFetch, fetchSpend, usageStoreBasePath])
+  }, [apiFetch, fetchSpend, usageBasePath])
 
   const toggleRaw = useCallback(async (provider: string, apiKeyID: string) => {
-    if (!usageStoreBasePath) return
+    if (!usageBasePath) return
     const k = `${provider}:${apiKeyID}`
     setExpandedRaw(prev => {
       if (prev[k] !== undefined) {
@@ -405,13 +405,13 @@ export function BridgeUsage() {
     })
     if (expandedRaw[k] !== undefined) return
     try {
-      const res = await apiFetch(`${usageStoreBasePath}/spend/keys/${provider}/${apiKeyID}/raw`)
+      const res = await apiFetch(`${usageBasePath}/spend/keys/${provider}/${apiKeyID}/raw`)
       const text = res.ok ? await res.text() : `error ${res.status}: ${await res.text()}`
       setExpandedRaw(prev => ({ ...prev, [k]: text }))
     } catch (e) {
       setExpandedRaw(prev => ({ ...prev, [k]: `error: ${e}` }))
     }
-  }, [apiFetch, expandedRaw, usageStoreBasePath])
+  }, [apiFetch, expandedRaw, usageBasePath])
 
   useEffect(() => { fetchSessions() }, [fetchSessions])
   useEffect(() => { fetchAggregates() }, [fetchAggregates])
@@ -419,10 +419,10 @@ export function BridgeUsage() {
   // While the tab is visible, say so once a minute; usage-store then reads every
   // couple of minutes. A hidden tab sends nothing, so polling slows down again.
   useEffect(() => {
-    if (!usageStoreBasePath) return
+    if (!usageBasePath) return
     const markWatched = async () => {
       try {
-        const res = await apiFetch(`${usageStoreBasePath}/limits/watch`, { method: 'POST' })
+        const res = await apiFetch(`${usageBasePath}/limits/watch`, { method: 'POST' })
         if (!res.ok) console.error(`usage-store limits/watch answered ${res.status}`)
       } catch (err) {
         console.error('usage-store limits/watch failed', err)
@@ -449,13 +449,13 @@ export function BridgeUsage() {
       clearTimeout(refetchAfterWake)
       document.removeEventListener('visibilitychange', onVisibilityChange)
     }
-  }, [apiFetch, fetchLimits, usageStoreBasePath])
+  }, [apiFetch, fetchLimits, usageBasePath])
   useEffect(() => {
-    if (!usageStoreBasePath) return
+    if (!usageBasePath) return
     fetchSpend()
     const t = setInterval(fetchSpend, 5 * 60_000)
     return () => clearInterval(t)
-  }, [fetchSpend, usageStoreBasePath])
+  }, [fetchSpend, usageBasePath])
 
   type Totals = { tokens: TokenUsageTotals; cost: number; duration: number; turns: number }
   type SourceGroup = { source: string; sessions: SessionUsage[]; totals: Totals }

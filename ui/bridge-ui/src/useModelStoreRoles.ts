@@ -12,21 +12,21 @@ export type ModelStoreRolesState =
   | { phase: 'failed'; error: string }
 
 export function useModelStoreRoles(): { state: ModelStoreRolesState; reload: () => void } {
-  const { fetch: fetchFn, modelStoreBasePath } = useBridgeConfig()
+  const { fetch: fetchFn, modelsBasePath } = useBridgeConfig()
   const [state, setState] = useState<ModelStoreRolesState>({ phase: 'loading' })
   const [generation, setGeneration] = useState(0)
 
   useEffect(() => {
-    if (!modelStoreBasePath) {
-      setState({ phase: 'failed', error: 'This host does not proxy model-store (modelStoreBasePath is empty), so the roles cannot be listed.' })
+    if (!modelsBasePath) {
+      setState({ phase: 'failed', error: 'This host does not proxy model-store (modelsBasePath is empty), so the roles cannot be listed.' })
       return
     }
     let canceled = false
-    fetchModelStoreRoles(fetchFn, modelStoreBasePath)
+    fetchModelStoreRoles(fetchFn, modelsBasePath)
       .then(roles => { if (!canceled) setState({ phase: 'loaded', roles }) })
       .catch(err => { if (!canceled) setState({ phase: 'failed', error: err instanceof Error ? err.message : String(err) }) })
     return () => { canceled = true }
-  }, [fetchFn, modelStoreBasePath, generation])
+  }, [fetchFn, modelsBasePath, generation])
 
   const reload = useCallback(() => setGeneration(g => g + 1), [])
   return { state, reload }

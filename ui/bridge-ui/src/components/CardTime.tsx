@@ -117,7 +117,7 @@ export function describeCardTime(time: CardTimeSummary): string {
  * than taking them on trust.
  */
 export function CardTimelinePanel({ cardID, boardID }: { cardID: string; boardID?: string }) {
-  const { fetch: fetchFn, kanbanStoreBasePath } = useBridgeConfig()
+  const { fetch: fetchFn, issuesBasePath } = useBridgeConfig()
   const [timeline, setTimeline] = useState<CardTimeline | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [noteBody, setNoteBody] = useState('')
@@ -125,10 +125,10 @@ export function CardTimelinePanel({ cardID, boardID }: { cardID: string; boardID
   const [saving, setSaving] = useState(false)
 
   const load = useCallback(async () => {
-    if (!kanbanStoreBasePath) return
+    if (!issuesBasePath) return
     const query = boardID ? `?board_id=${encodeURIComponent(boardID)}` : ''
     try {
-      const res = await fetchFn(`${kanbanStoreBasePath}/api/cards/${encodeURIComponent(cardID)}/timeline${query}`)
+      const res = await fetchFn(`${issuesBasePath}/api/cards/${encodeURIComponent(cardID)}/timeline${query}`)
       if (!res.ok) throw new Error(`timeline: ${res.status}`)
       setTimeline(await res.json())
       setError(null)
@@ -138,15 +138,15 @@ export function CardTimelinePanel({ cardID, boardID }: { cardID: string; boardID
       // different and much more reassuring claim than "we could not find out".
       setError(e instanceof Error ? e.message : String(e))
     }
-  }, [cardID, boardID, fetchFn, kanbanStoreBasePath])
+  }, [cardID, boardID, fetchFn, issuesBasePath])
 
   useEffect(() => { void load() }, [load])
 
   const addNote = async () => {
-    if (!noteBody.trim() || !kanbanStoreBasePath) return
+    if (!noteBody.trim() || !issuesBasePath) return
     setSaving(true)
     try {
-      const res = await fetchFn(`${kanbanStoreBasePath}/api/cards/${encodeURIComponent(cardID)}/notes`, {
+      const res = await fetchFn(`${issuesBasePath}/api/cards/${encodeURIComponent(cardID)}/notes`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

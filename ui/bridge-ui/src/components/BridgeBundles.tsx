@@ -29,20 +29,20 @@ import styles from './BridgeBundles.module.css'
  * the name) or the enable/disable/delete routes, and the list is read again
  * after, so what is shown is what the store holds.
  *
- * When the host passed no `bundleStoreBasePath` (and `BridgeLayout` shows no
- * Bundles tab), a page reached by its address says so instead. Without `repoStoreBasePath` the
+ * When the host passed no `bundlesBasePath` (and `BridgeLayout` shows no
+ * Bundles tab), a page reached by its address says so instead. Without `reposBasePath` the
  * bundles still list and the preview column says there are no repos to pick.
  */
 export function BridgeBundles() {
-  const { fetch: fetchFn, bundleStoreBasePath, repoStoreBasePath } = useBridgeConfig()
-  if (!bundleStoreBasePath) {
+  const { fetch: fetchFn, bundlesBasePath, reposBasePath } = useBridgeConfig()
+  if (!bundlesBasePath) {
     return (
       <div className="bridge-page">
-        <div className="bridge-error">bundle-store is not configured. Pass <code>bundleStoreBasePath</code> to <code>&lt;BridgeProvider&gt;</code>.</div>
+        <div className="bridge-error">bundle-store is not configured. Pass <code>bundlesBasePath</code> to <code>&lt;BridgeProvider&gt;</code>.</div>
       </div>
     )
   }
-  return <BundlesPage fetchFn={fetchFn} bundleStoreBase={bundleStoreBasePath} repoStoreBase={repoStoreBasePath} />
+  return <BundlesPage fetchFn={fetchFn} bundleStoreBase={bundlesBasePath} repoStoreBase={reposBasePath} />
 }
 
 const OWNING_STORE: Record<BundleMemberKind, string> = { skill: 'skill-store', tool: 'tool-store' }
@@ -507,14 +507,14 @@ function SkillPicker({ exclude, onPick }: { exclude: ReadonlySet<string>; onPick
 /** Every tool-store tool, filtered as typed. Stores tool-store's `name` (what
  *  the seed and the resolver display), not the display name. */
 function ToolPicker({ exclude, onPick }: { exclude: ReadonlySet<string>; onPick: (member: BundleDraftMember) => void }) {
-  const { fetch: fetchFn, toolStoreBasePath } = useBridgeConfig()
+  const { fetch: fetchFn, toolsBasePath } = useBridgeConfig()
   const [query, setQuery] = useState('')
   const [tools, setTools] = useState<ToolRecord[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   useEffect(() => {
-    if (!toolStoreBasePath) return
+    if (!toolsBasePath) return
     let current = true
-    fetchFn(`${toolStoreBasePath}/tools`)
+    fetchFn(`${toolsBasePath}/tools`)
       .then(async res => {
         if (!res.ok) throw new Error(`list tools: HTTP ${res.status}`)
         const body: unknown = await res.json()
@@ -525,9 +525,9 @@ function ToolPicker({ exclude, onPick }: { exclude: ReadonlySet<string>; onPick:
       .then(list => { if (current) { setTools(list); setError(null) } })
       .catch(err => { if (current) setError(err instanceof Error ? err.message : String(err)) })
     return () => { current = false }
-  }, [fetchFn, toolStoreBasePath])
+  }, [fetchFn, toolsBasePath])
 
-  if (!toolStoreBasePath) {
+  if (!toolsBasePath) {
     return <div className={styles.picker}><span className={styles.fieldLabel}>add tool</span><span className={styles.empty}>This host has no route to tool-store, so tools cannot be picked here.</span></div>
   }
   const options: ResourceOption[] | null = tools && filterResourceOptions(

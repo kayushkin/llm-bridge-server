@@ -165,6 +165,6 @@ describe('the Models page', () => {
     const flags = { showConformance: false, showServiceInventory: false }
     const base = { basePath: '/api/bridge', routes: DEFAULT_BRIDGE_ROUTES } as BridgeConfig
     expect(navEntriesFor(base, flags).some(e => e.to === '/models')).toBe(false)
-    expect(navEntriesFor({ ...base, modelStoreBasePath: '/api/model-store' }, flags).some(e => e.to === '/models')).toBe(true)
+    expect(navEntriesFor({ ...base, modelsBasePath: '/api/model-store' }, flags).some(e => e.to === '/models')).toBe(true)
   })
 })

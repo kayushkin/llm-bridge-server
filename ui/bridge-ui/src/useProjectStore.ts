@@ -155,8 +155,8 @@ export function useProjectStore(): ProjectStoreState & {
   refresh: () => Promise<void>
   moveSession: (sessionId: string, targetProjectId: string | null) => Promise<void>
 } {
-  const { fetch: fetchFn, projectStoreBasePath } = useBridgeConfig()
-  const reader = projectStoreBasePath ? readerFor(fetchFn, projectStoreBasePath) : null
+  const { fetch: fetchFn, projectsBasePath } = useBridgeConfig()
+  const reader = projectsBasePath ? readerFor(fetchFn, projectsBasePath) : null
   const state = useSyncExternalStore(reader?.subscribe ?? noSubscribe, reader?.snapshot ?? notLoaded, notLoaded)
   const refresh = useCallback(() => (reader ? reader.refresh() : nothingToRefresh()), [reader])
   const moveSession = useCallback(

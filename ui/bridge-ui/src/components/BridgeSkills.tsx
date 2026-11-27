@@ -44,7 +44,7 @@ const TIERS: Record<string, string> = {
 }
 
 export function BridgeSkills() {
-  const { fetch: apiFetch, skillStoreBasePath } = useBridgeConfig()
+  const { fetch: apiFetch, skillsBasePath } = useBridgeConfig()
 
   const [sources, setSources] = useState<Source[]>([])
   const [skills, setSkills] = useState<Skill[]>([])
@@ -59,13 +59,13 @@ export function BridgeSkills() {
   const [syncResult, setSyncResult] = useState<Record<number, SyncResult>>({})
 
   const refetch = useCallback(async () => {
-    if (!skillStoreBasePath) return
+    if (!skillsBasePath) return
     setLoading(true)
     setError(null)
     try {
       const [srcRes, skillRes] = await Promise.all([
-        apiFetch(`${skillStoreBasePath}/sources`),
-        apiFetch(`${skillStoreBasePath}/skills?limit=5000`),
+        apiFetch(`${skillsBasePath}/sources`),
+        apiFetch(`${skillsBasePath}/skills?limit=5000`),
       ])
       if (!srcRes.ok || !skillRes.ok) throw new Error('skill-store unreachable')
       setSources(await srcRes.json())
@@ -75,7 +75,7 @@ export function BridgeSkills() {
     } finally {
       setLoading(false)
     }
-  }, [apiFetch, skillStoreBasePath])
+  }, [apiFetch, skillsBasePath])
 
   useEffect(() => { refetch() }, [refetch])
 
@@ -92,12 +92,12 @@ export function BridgeSkills() {
   const installedCount = useMemo(() => skills.filter(s => s.installed).length, [skills])
 
   const toggle = useCallback(async (skill: Skill, force = false) => {
-    if (!skillStoreBasePath) return
+    if (!skillsBasePath) return
     setBusy(prev => ({ ...prev, [skill.id]: true }))
     try {
       const action = skill.installed ? 'uninstall' : 'install'
       const qs = action === 'install' && force ? '?force=true' : ''
-      const res = await apiFetch(`${skillStoreBasePath}/skills/${skill.id}/${action}${qs}`, { method: 'POST' })
+      const res = await apiFetch(`${skillsBasePath}/skills/${skill.id}/${action}${qs}`, { method: 'POST' })
       if (res.status === 409) {
         const body = await res.json().catch(() => ({}))
         const ok = window.confirm(`${body.error || 'Conflict'}\n\nReplace the existing install?`)
@@ -115,14 +115,14 @@ export function BridgeSkills() {
     } finally {
       setBusy(prev => ({ ...prev, [skill.id]: false }))
     }
-  }, [apiFetch, skillStoreBasePath, refetch])
+  }, [apiFetch, skillsBasePath, refetch])
 
   const syncSource = useCallback(async (source: Source) => {
-    if (!skillStoreBasePath) return
+    if (!skillsBasePath) return
     setSyncing(source.id)
     setError(null)
     try {
-      const res = await apiFetch(`${skillStoreBasePath}/sources/${source.id}/sync`, { method: 'POST' })
+      const res = await apiFetch(`${skillsBasePath}/sources/${source.id}/sync`, { method: 'POST' })
       if (!res.ok) {
         const body = await res.json().catch(() => ({}))
         throw new Error(body.error || `HTTP ${res.status}`)
@@ -135,12 +135,12 @@ export function BridgeSkills() {
     } finally {
       setSyncing(null)
     }
-  }, [apiFetch, skillStoreBasePath, refetch])
+  }, [apiFetch, skillsBasePath, refetch])
 
-  if (!skillStoreBasePath) {
+  if (!skillsBasePath) {
     return (
       <div className="bsk-container">
-        <div className="bridge-error">Skill-store is not configured. Pass <code>skillStoreBasePath</code> to <code>&lt;BridgeProvider&gt;</code>.</div>
+        <div className="bridge-error">Skill-store is not configured. Pass <code>skillsBasePath</code> to <code>&lt;BridgeProvider&gt;</code>.</div>
       </div>
     )
   }

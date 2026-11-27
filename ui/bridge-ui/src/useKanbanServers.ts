@@ -116,7 +116,7 @@ export function useBoardsOnServers(servers: readonly KanbanServer[], config: Bri
       void (async () => {
         let answer: ServerBoards
         try {
-          const res = await serverConfig.fetch(`${serverConfig.kanbanStoreBasePath}/api/boards`)
+          const res = await serverConfig.fetch(`${serverConfig.issuesBasePath}/api/boards`)
           answer = res.ok
             ? { state: 'loaded', boards: (await res.json()) as Board[] }
             : { state: 'failed', error: await peerRouteErrorText(res, 'GET /api/boards') }

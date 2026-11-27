@@ -20,7 +20,7 @@ const PAGE_SIZE = 50
  * rather than a guessed one.
  */
 export function BridgeEmailTickets() {
-  const { fetch: fetchFn, kanbanStoreBasePath } = useBridgeConfig()
+  const { fetch: fetchFn, issuesBasePath } = useBridgeConfig()
   const [entries, setEntries] = useState<TicketLogEntry[]>([])
   const [nextBefore, setNextBefore] = useState<string | undefined>(undefined)
   const [loading, setLoading] = useState(false)
@@ -29,7 +29,7 @@ export function BridgeEmailTickets() {
   const load = useCallback(async (before?: string) => {
     setLoading(true)
     setError(null)
-    const result = await listTickets(fetchFn, kanbanStoreBasePath, { channel: 'email', before, limit: PAGE_SIZE })
+    const result = await listTickets(fetchFn, issuesBasePath, { channel: 'email', before, limit: PAGE_SIZE })
     setLoading(false)
     if (!result.ok) {
       setError(result.error)
@@ -37,7 +37,7 @@ export function BridgeEmailTickets() {
     }
     setEntries(previous => (before ? [...previous, ...result.value.tickets] : result.value.tickets))
     setNextBefore(result.value.next_before)
-  }, [fetchFn, kanbanStoreBasePath])
+  }, [fetchFn, issuesBasePath])
 
   useEffect(() => { void load() }, [load])
 

@@ -24,7 +24,7 @@ const PREVIEW_DELAY_MS = 250
  * never resolves rules on the client — the precedence lives in kanban-store.
  */
 export function BoardTagRulesSection({ board }: { board: Board }) {
-  const { fetch: fetchFn, kanbanStoreBasePath: base } = useBridgeConfig()
+  const { fetch: fetchFn, issuesBasePath: base } = useBridgeConfig()
   const pickers = useDefaultPickers()
   // Null until the first read answers. Save stays disabled while it is null:
   // a PUT replaces the whole list, so saving over rules never read would wipe them.
@@ -189,7 +189,7 @@ function TagRulesPreview({ board, storedRules, savedRulesVersion, pickers }: {
   savedRulesVersion: number
   pickers: DefaultPickers
 }) {
-  const { fetch: fetchFn, kanbanStoreBasePath: base } = useBridgeConfig()
+  const { fetch: fetchFn, issuesBasePath: base } = useBridgeConfig()
   const [tagsText, setTagsText] = useState('')
   const tagsKey = useMemo(() => JSON.stringify(parseRuleTags(tagsText)), [tagsText])
   // The board's own defaults are part of the answer, so a Defaults save

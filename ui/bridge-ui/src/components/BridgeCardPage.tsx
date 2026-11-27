@@ -44,7 +44,7 @@ import type { Item as NoteboardItem } from '@kayushkin/noteboard-types'
 export function BridgeCardPage() {
   const { cardId = '' } = useParams()
   const navigate = useNavigate()
-  const { fetch: fetchFn, kanbanStoreBasePath, noteboardBasePath, mailBasePath, mailPagePath, routes } =
+  const { fetch: fetchFn, issuesBasePath, noteboardBasePath, mailBasePath, mailPagePath, routes } =
     useBridgeConfig()
 
   // No board: this page never renders a board view, and asking for one would be
@@ -75,14 +75,14 @@ export function BridgeCardPage() {
   // treated as "nobody": an assignment list the store would not give is
   // unknown, and unknown must not render as empty.
   const loadAssignments = useCallback(async (): Promise<CardAssignment[]> => {
-    const res = await fetchFn(`${kanbanStoreBasePath}/api/cards/${encodeURIComponent(cardId)}/assignments`)
+    const res = await fetchFn(`${issuesBasePath}/api/cards/${encodeURIComponent(cardId)}/assignments`)
     if (!res.ok) throw new Error(`assignments HTTP ${res.status}`)
     const raw: unknown = await res.json()
     return Array.isArray(raw) ? (raw as CardAssignment[]) : []
-  }, [fetchFn, kanbanStoreBasePath, cardId])
+  }, [fetchFn, issuesBasePath, cardId])
 
   const load = useCallback(async (reason: 'first' | 'refresh' = 'first') => {
-    if (!cardId || !kanbanStoreBasePath || !noteboardBasePath) return
+    if (!cardId || !issuesBasePath || !noteboardBasePath) return
     // Only the first load blanks the page. A refresh that swapped the card for
     // a spinner would unmount everything below it and take the user's state
     // with it: an expanded email collapses, a half-written timeline note is
@@ -94,9 +94,9 @@ export function BridgeCardPage() {
     try {
       const [itemRes, placementsRes, loadedAssignments, cardRes] = await Promise.all([
         fetchFn(`${noteboardBasePath}/api/items/${encodeURIComponent(cardId)}`),
-        fetchFn(`${kanbanStoreBasePath}/api/cards/${encodeURIComponent(cardId)}/placements`),
+        fetchFn(`${issuesBasePath}/api/cards/${encodeURIComponent(cardId)}/placements`),
         loadAssignments(),
-        fetchFn(`${kanbanStoreBasePath}/api/cards/${encodeURIComponent(cardId)}`),
+        fetchFn(`${issuesBasePath}/api/cards/${encodeURIComponent(cardId)}`),
       ])
       // The ITEM decides whether this card exists. A card with no placement is
       // still a card — an unfiled todo — but a card with no item is a dead link.
@@ -126,7 +126,7 @@ export function BridgeCardPage() {
     } catch {
       setState('error')
     }
-  }, [cardId, fetchFn, kanbanStoreBasePath, noteboardBasePath, listCardLinks, loadAssignments])
+  }, [cardId, fetchFn, issuesBasePath, noteboardBasePath, listCardLinks, loadAssignments])
 
   // After an assign or unassign the outcome is the server's; a refusal (a
   // disabled principal, an unknown id) carries its `{"error"}` text through
@@ -151,7 +151,7 @@ export function BridgeCardPage() {
   // so the page says which is missing instead of waiting for an answer that
   // never comes.
   const missingStores = [
-    kanbanStoreBasePath ? null : 'kanbanStoreBasePath',
+    issuesBasePath ? null : 'issuesBasePath',
     noteboardBasePath ? null : 'noteboardBasePath',
   ].filter((name): name is string => name !== null)
   if (missingStores.length > 0) {

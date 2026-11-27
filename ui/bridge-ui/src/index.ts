@@ -151,11 +151,11 @@ export { BridgePermissions } from './components/BridgePermissions'
 export { BridgeAgents } from './components/BridgeAgents'
 export { BridgeFiles } from './components/BridgeFiles'
 export { BridgeKanban } from './components/BridgeKanban'
-// The principal-store editor. Renders nothing without `principalStoreBasePath`,
+// The principal-store editor. Renders nothing without `principalsBasePath`,
 // and BridgeLayout shows no tab for it then either.
 export { BridgePrincipals } from './components/BridgePrincipals'
 // bundle-store's curated session bundles, a composer that writes them, and
-// the resolve preview. Renders nothing without `bundleStoreBasePath`, and
+// the resolve preview. Renders nothing without `bundlesBasePath`, and
 // BridgeLayout shows no tab then.
 export { BridgeBundles } from './components/BridgeBundles'
 export type { Bundle, Member as BundleMember, MemberKind as BundleMemberKind, MemberRef as BundleMemberRef, BundleRef, ResolveResponse as BundleResolution } from '@kayushkin/bundle-store-types'
@@ -253,7 +253,7 @@ export type { HomeSession } from './components/chat/useHomeSession'
 // particular arrangement around it.
 //
 // Kanban and Orchestrator fetch their own state from the paths their
-// BridgeProvider was given (`kanbanStoreBasePath`, `orchestratorBasePath`), and
+// BridgeProvider was given (`issuesBasePath`, `orchestratorBasePath`), and
 // render an empty pane when the host left those unset — an unconfigured host is
 // a legible state, not an error. GitPanel is the one that takes state in: its
 // repo list and selection are shared with the chat's repo dropdown, so the

@@ -41,16 +41,16 @@ export interface SessionsToFileProps {
 }
 
 export function SessionsToFile({ projects, onSelectSession, onChanged, reloadSignal }: SessionsToFileProps): JSX.Element | null {
-  const { fetch: fetchFn, projectStoreBasePath } = useBridgeConfig()
+  const { fetch: fetchFn, projectsBasePath } = useBridgeConfig()
   const [filings, setFilings] = useState<SessionFiling[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [decided, setDecided] = useState(0)
 
   useEffect(() => {
-    if (!projectStoreBasePath) return
+    if (!projectsBasePath) return
     let canceled = false
-    fetchFn(proposedSessionFilingsPath(projectStoreBasePath))
+    fetchFn(proposedSessionFilingsPath(projectsBasePath))
       .then((r) => readJSON<SessionFilingListAnswer>(r, 'sessions to file'))
       .then((answer) => {
         if (canceled) return
@@ -59,17 +59,17 @@ export function SessionsToFile({ projects, onSelectSession, onChanged, reloadSig
       })
       .catch((e: Error) => { if (!canceled) setError(e.message) })
     return () => { canceled = true }
-  }, [fetchFn, projectStoreBasePath, reloadSignal, decided])
+  }, [fetchFn, projectsBasePath, reloadSignal, decided])
 
   const decide = useCallback(
     async (filing: SessionFiling, decision: 'accept' | 'dismiss', projectId: string | null) => {
-      if (!projectStoreBasePath) return
+      if (!projectsBasePath) return
       setBusy(filing.id)
       setError(null)
       try {
         const body = decision === 'accept' ? acceptSessionFilingBody(PROJECTS_PAGE_AUTHOR, projectId) : JSON.stringify({ decided_by: PROJECTS_PAGE_AUTHOR })
         await readJSON<unknown>(
-          await fetchFn(sessionFilingDecisionPath(projectStoreBasePath, filing.id, decision), {
+          await fetchFn(sessionFilingDecisionPath(projectsBasePath, filing.id, decision), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body,
@@ -84,10 +84,10 @@ export function SessionsToFile({ projects, onSelectSession, onChanged, reloadSig
         setDecided((n) => n + 1)
       }
     },
-    [fetchFn, projectStoreBasePath, onChanged],
+    [fetchFn, projectsBasePath, onChanged],
   )
 
-  if (!projectStoreBasePath) return null
+  if (!projectsBasePath) return null
   if (filings === null) return error ? <p className={styles.error}>{error}</p> : null
   if (filings.length === 0 && !error) return null
   return (

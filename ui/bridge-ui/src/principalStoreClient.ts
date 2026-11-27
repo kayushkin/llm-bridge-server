@@ -76,14 +76,14 @@ export const PRINCIPALS_SEARCH_LIMIT = 500
 
 /** The listing URL for a search. `include_disabled` is only sent when true, so
  *  the default request is the store's default answer — active principals. */
-export function principalsSearchURL(principalStoreBasePath: string, search: PrincipalsSearch): string {
+export function principalsSearchURL(principalsBasePath: string, search: PrincipalsSearch): string {
   const params = new URLSearchParams()
   const q = search.query.trim()
   if (q) params.set('q', q)
   if (search.kind !== 'all') params.set('kind', search.kind)
   if (search.includeDisabled) params.set('include_disabled', 'true')
   params.set('limit', String(search.limit))
-  return `${principalStoreBasePath}/principals?${params.toString()}`
+  return `${principalsBasePath}/principals?${params.toString()}`
 }
 
 export function listPrincipalKinds(fetchFn: FetchFn, base: string): Promise<PrincipalStoreResult<PrincipalKind[]>> {

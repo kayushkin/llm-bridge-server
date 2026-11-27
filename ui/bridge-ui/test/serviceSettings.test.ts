@@ -23,15 +23,15 @@ const described = (settings: ServiceSetting[]): ServiceSettings => ({
 
 describe('serviceSettingsSourcesOf', () => {
   it('asks the bridge first, then each store the host proxies, and none it does not', () => {
-    const sources = serviceSettingsSourcesOf({ basePath: '/api/bridge', kanbanStoreBasePath: '/api/kanban', grantStoreBasePath: '', multichatBasePath: '/api/multichat' } as BridgeConfig)
+    const sources = serviceSettingsSourcesOf({ basePath: '/api/bridge', issuesBasePath: '/api/kanban', grantsBasePath: '', multichatBasePath: '/api/multichat' } as BridgeConfig)
     expect(sources.map(s => [s.serviceName, s.basePath])).toEqual([
       ['llm-bridge-server', '/api/bridge'], ['kanban-store', '/api/kanban'], ['multichat', '/api/multichat'],
     ])
   })
   it('lists the seven services that had no base path, after the fifteen, in order', () => {
     const sources = serviceSettingsSourcesOf({
-      basePath: '/api/bridge', schedulerBasePath: '/api/scheduler', logStoreBasePath: '/api/log-store',
-      jobStoreBasePath: '/api/jobs', quoteStoreBasePath: '/api/quotes', predictionStoreBasePath: '/api/predictions',
+      basePath: '/api/bridge', schedulerBasePath: '/api/scheduler', sessionLogBasePath: '/api/log-store',
+      jobStoreBasePath: '/api/jobs', quoteStoreBasePath: '/api/quotes', predictionsBasePath: '/api/predictions',
       eventStoreBasePath: '/api/events', authStoreBasePath: '/api/authstore',
     } as BridgeConfig)
     expect(sources.map(s => [s.serviceName, s.basePath])).toEqual([
@@ -55,7 +55,7 @@ describe('serviceSettingsSourcesOf', () => {
   })
   it('asks only the services the host names as serving settings', () => {
     const sources = serviceSettingsSourcesOf({
-      basePath: '', kanbanStoreBasePath: '/issues', grantStoreBasePath: '/grants', schedulerBasePath: '/scheduler',
+      basePath: '', issuesBasePath: '/issues', grantsBasePath: '/grants', schedulerBasePath: '/scheduler',
       serviceSettingsSourceKeys: ['basePath', 'schedulerBasePath'],
     } as unknown as BridgeConfig)
     // The bridge's own base is empty when it serves the page itself, and its

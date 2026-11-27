@@ -190,7 +190,7 @@ function ProjectPurpose({
   stages: string[] | null
   onChanged: () => void
 }): JSX.Element {
-  const { fetch: fetchFn, projectStoreBasePath } = useBridgeConfig()
+  const { fetch: fetchFn, projectsBasePath } = useBridgeConfig()
   const [editing, setEditing] = useState(false)
   const [goal, setGoal] = useState(project.goal)
   const [doneWhen, setDoneWhen] = useState(project.done_when)
@@ -207,7 +207,7 @@ function ProjectPurpose({
 
   const save = async (event: FormEvent) => {
     event.preventDefault()
-    if (!projectStoreBasePath) return
+    if (!projectsBasePath) return
     // Send only what changed: project-store records every field it is sent
     // that differs, and an unchanged one would be noise in nothing, but
     // sending less says plainly what this edit was.
@@ -219,7 +219,7 @@ function ProjectPurpose({
     setError(null)
     try {
       await readJSON<Project>(
-        await fetchFn(projectPath(projectStoreBasePath, project.id), {
+        await fetchFn(projectPath(projectsBasePath, project.id), {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
@@ -336,7 +336,7 @@ function Questions({
 }
 
 function NextSteps({ project, rollup, onChanged }: { project: Project; rollup: Rollup; onChanged: () => void }): JSX.Element {
-  const { fetch: fetchFn, projectStoreBasePath, noteboardBasePath } = useBridgeConfig()
+  const { fetch: fetchFn, projectsBasePath, noteboardBasePath } = useBridgeConfig()
   const [title, setTitle] = useState('')
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -361,9 +361,9 @@ function NextSteps({ project, rollup, onChanged }: { project: Project; rollup: R
 
   const add = async (event: FormEvent) => {
     event.preventDefault()
-    if (!projectStoreBasePath || title.trim() === '') return
+    if (!projectsBasePath || title.trim() === '') return
     const added = await run('add', 'add the step', () =>
-      fetchFn(projectNextStepsPath(projectStoreBasePath, project.id), {
+      fetchFn(projectNextStepsPath(projectsBasePath, project.id), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title: title.trim(), created_by: PROJECTS_PAGE_AUTHOR }),
@@ -448,7 +448,7 @@ function NextSteps({ project, rollup, onChanged }: { project: Project; rollup: R
 }
 
 function SuggestedSteps({ project, suggestions, onChanged }: { project: Project; suggestions: Suggestion[]; onChanged: () => void }): JSX.Element {
-  const { fetch: fetchFn, projectStoreBasePath } = useBridgeConfig()
+  const { fetch: fetchFn, projectsBasePath } = useBridgeConfig()
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -470,14 +470,14 @@ function SuggestedSteps({ project, suggestions, onChanged }: { project: Project;
     }
   }
 
-  if (!projectStoreBasePath) return <></>
+  if (!projectsBasePath) return <></>
   const ask = () =>
-    void call<SuggestionListAnswer>('ask', 'ask for suggestions', projectSuggestionsPath(projectStoreBasePath, project.id), {
+    void call<SuggestionListAnswer>('ask', 'ask for suggestions', projectSuggestionsPath(projectsBasePath, project.id), {
       requested_by: PROJECTS_PAGE_AUTHOR,
     })
   const decide = (suggestion: Suggestion, decision: 'accept' | 'dismiss') =>
     void call<AcceptedSuggestionAnswer | Suggestion>(suggestion.id, `${decision} the suggestion`,
-      suggestionDecisionPath(projectStoreBasePath, suggestion.id, decision), { decided_by: PROJECTS_PAGE_AUTHOR })
+      suggestionDecisionPath(projectsBasePath, suggestion.id, decision), { decided_by: PROJECTS_PAGE_AUTHOR })
 
   return (
     <Panel
@@ -607,22 +607,22 @@ function OpenIssues({ rollup, onActivateSession }: { rollup: Rollup; onActivateS
 // ---------------------------------------------------------------------------
 
 function Activity({ projectId, onActivateSession }: { projectId: string; onActivateSession: (kind: string, id: string) => void }): JSX.Element {
-  const { fetch: fetchFn, projectStoreBasePath } = useBridgeConfig()
+  const { fetch: fetchFn, projectsBasePath } = useBridgeConfig()
   const [days, setDays] = useState<number>(14)
   const [answer, setAnswer] = useState<ActivityAnswer | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [showAll, setShowAll] = useState(false)
 
   useEffect(() => {
-    if (!projectStoreBasePath) return
+    if (!projectsBasePath) return
     let canceled = false
     setError(null)
-    fetchFn(projectActivityPath(projectStoreBasePath, projectId, days))
+    fetchFn(projectActivityPath(projectsBasePath, projectId, days))
       .then((r) => readJSON<ActivityAnswer>(r, 'project activity'))
       .then((a) => { if (!canceled) setAnswer(a) })
       .catch((e: Error) => { if (!canceled) setError(e.message) })
     return () => { canceled = true }
-  }, [fetchFn, projectStoreBasePath, projectId, days])
+  }, [fetchFn, projectsBasePath, projectId, days])
 
   const events = answer?.events ?? []
   const shown = showAll ? events : events.slice(0, ACTIVITY_EVENTS_SHOWN)

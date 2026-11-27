@@ -18,10 +18,10 @@ import { PageLink } from './PageLink'
 
 export function BridgeReferencePage(): JSX.Element {
   const { refId = '' } = useParams<{ refId: string }>()
-  const { referenceStoreBasePath } = useBridgeConfig()
+  const { referencesBasePath } = useBridgeConfig()
   const { data: matches, error, loading } = useResolvedRef(refId)
 
-  if (!referenceStoreBasePath) {
+  if (!referencesBasePath) {
     return <div className="bridge-page bc-reference-page"><p>reference-store is not configured on this site, so no record can be looked up here.</p></div>
   }
   return (

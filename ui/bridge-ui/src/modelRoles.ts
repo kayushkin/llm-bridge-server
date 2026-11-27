@@ -7,12 +7,12 @@ import type { FetchFn } from './types'
 // model-store's `GET /api/roles` (`canonical`), the models from `GET /api/models`.
 
 /** model-store roots its API at /api, and the host proxies it whole. */
-export function modelStoreRolesURL(modelStoreBasePath: string): string {
-  return `${modelStoreBasePath}/api/roles`
+export function modelStoreRolesURL(modelsBasePath: string): string {
+  return `${modelsBasePath}/api/roles`
 }
 
-export function modelStoreModelsURL(modelStoreBasePath: string): string {
-  return `${modelStoreBasePath}/api/models`
+export function modelStoreModelsURL(modelsBasePath: string): string {
+  return `${modelsBasePath}/api/models`
 }
 
 /** A setting whose value is a model-store role name rather than free text. */
@@ -149,19 +149,19 @@ async function readModelStore<T>(fetchFn: FetchFn, url: string): Promise<T> {
   return await res.json() as T
 }
 
-export function fetchModelStoreRoles(fetchFn: FetchFn, modelStoreBasePath: string): Promise<ModelStoreRoles> {
-  return readModelStore<ModelStoreRoles>(fetchFn, modelStoreRolesURL(modelStoreBasePath))
+export function fetchModelStoreRoles(fetchFn: FetchFn, modelsBasePath: string): Promise<ModelStoreRoles> {
+  return readModelStore<ModelStoreRoles>(fetchFn, modelStoreRolesURL(modelsBasePath))
 }
 
-export function fetchModelStoreModels(fetchFn: FetchFn, modelStoreBasePath: string): Promise<ModelStoreModel[]> {
-  return readModelStore<ModelStoreModel[]>(fetchFn, modelStoreModelsURL(modelStoreBasePath))
+export function fetchModelStoreModels(fetchFn: FetchFn, modelsBasePath: string): Promise<ModelStoreModel[]> {
+  return readModelStore<ModelStoreModel[]>(fetchFn, modelStoreModelsURL(modelsBasePath))
 }
 
 /** Replaces a role's list. A refusal is model-store's own text. */
-export async function saveRoleModels(fetchFn: FetchFn, modelStoreBasePath: string, role: string, models: readonly string[]):
+export async function saveRoleModels(fetchFn: FetchFn, modelsBasePath: string, role: string, models: readonly string[]):
   Promise<{ ok: true } | { ok: false; error: string }> {
   try {
-    const res = await fetchFn(modelStoreRolesURL(modelStoreBasePath), {
+    const res = await fetchFn(modelStoreRolesURL(modelsBasePath), {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(roleModelsSaveBody(role, models)),
     })
     if (!res.ok) return { ok: false, error: `POST /api/roles → ${modelStoreErrorText(res.status, await res.text())}` }

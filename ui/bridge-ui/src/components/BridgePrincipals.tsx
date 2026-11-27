@@ -36,19 +36,19 @@ import type { PrincipalKind } from '../principalStoreClient'
  * in the server's own words: principal-store's 400s name the vocabulary, the
  * PATCH key it will not take, or that a group cannot be a member of a group.
  *
- * When the host passed no `principalStoreBasePath` (and `BridgeLayout` shows no
+ * When the host passed no `principalsBasePath` (and `BridgeLayout` shows no
  * Principals tab), a page reached by its address says so instead.
  */
 export function BridgePrincipals() {
-  const { fetch: fetchFn, principalStoreBasePath, grantStoreBasePath } = useBridgeConfig()
-  if (!principalStoreBasePath) {
+  const { fetch: fetchFn, principalsBasePath, grantsBasePath } = useBridgeConfig()
+  if (!principalsBasePath) {
     return (
       <div className="bridge-page">
-        <div className="bridge-error">principal-store is not configured. Pass <code>principalStoreBasePath</code> to <code>&lt;BridgeProvider&gt;</code>.</div>
+        <div className="bridge-error">principal-store is not configured. Pass <code>principalsBasePath</code> to <code>&lt;BridgeProvider&gt;</code>.</div>
       </div>
     )
   }
-  return <PrincipalsPage fetchFn={fetchFn} base={principalStoreBasePath} grantStoreBase={grantStoreBasePath} />
+  return <PrincipalsPage fetchFn={fetchFn} base={principalsBasePath} grantStoreBase={grantsBasePath} />
 }
 
 const KIND_FILTERS: { value: PrincipalKindFilter; label: string }[] = [

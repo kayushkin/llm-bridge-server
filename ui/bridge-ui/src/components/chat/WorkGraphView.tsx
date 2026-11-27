@@ -95,7 +95,7 @@ export interface WorkGraphViewProps {
 }
 
 export function WorkGraphView({ initialRepoId = null, initialCommitSha = null, onFocusChange, onSelectSession, onClose }: WorkGraphViewProps): JSX.Element {
-  const { fetch: fetchFn, workGraphStoreBasePath, repoStoreBasePath } = useBridgeConfig()
+  const { fetch: fetchFn, gitActivityBasePath, reposBasePath } = useBridgeConfig()
 
   const [activeRepos, setActiveRepos] = useState<WorkGraphRepoChoice[]>([])
   const [allRepos, setAllRepos] = useState<RepoStoreRepo[]>([])
@@ -115,9 +115,9 @@ export function WorkGraphView({ initialRepoId = null, initialCommitSha = null, o
   // other repo repo-store knows. The first active repo is the default; with
   // none active, nothing is picked rather than a guess.
   useEffect(() => {
-    if (!workGraphStoreBasePath) return
+    if (!gitActivityBasePath) return
     let canceled = false
-    fetchFn(workGraphActivityPath(workGraphStoreBasePath, WORK_GRAPH_ACTIVITY_HOURS))
+    fetchFn(workGraphActivityPath(gitActivityBasePath, WORK_GRAPH_ACTIVITY_HOURS))
       .then(response => readJSON<WorkGraphActivityAnswer>(response, 'work-graph-store activity'))
       .then(answer => {
         if (canceled) return
@@ -126,20 +126,20 @@ export function WorkGraphView({ initialRepoId = null, initialCommitSha = null, o
         setRepoId(current => current ?? ordered[0]?.repo.id ?? null)
       })
       .catch((error: Error) => { if (!canceled) setPickerError(error.message) })
-    if (repoStoreBasePath) {
-      fetchFn(`${repoStoreBasePath}/repos`)
+    if (reposBasePath) {
+      fetchFn(`${reposBasePath}/repos`)
         .then(response => readJSON<RepoStoreRepo[]>(response, 'repo-store repos'))
         .then(repos => { if (!canceled) setAllRepos(repos) })
         .catch((error: Error) => { if (!canceled) setPickerError(error.message) })
     }
     return () => { canceled = true }
-  }, [fetchFn, workGraphStoreBasePath, repoStoreBasePath])
+  }, [fetchFn, gitActivityBasePath, reposBasePath])
 
   useEffect(() => {
-    if (!workGraphStoreBasePath || repoId === null) return
+    if (!gitActivityBasePath || repoId === null) return
     let canceled = false
     setLoading(true)
-    fetchFn(workGraphRepoGraphPath(workGraphStoreBasePath, repoId, maxCommits))
+    fetchFn(workGraphRepoGraphPath(gitActivityBasePath, repoId, maxCommits))
       .then(response => readJSON<WorkGraph>(response, 'work-graph-store graph'))
       .then(answer => {
         if (canceled) return
@@ -149,7 +149,7 @@ export function WorkGraphView({ initialRepoId = null, initialCommitSha = null, o
       .catch((error: Error) => { if (!canceled) setGraphError(error.message) })
       .finally(() => { if (!canceled) setLoading(false) })
     return () => { canceled = true }
-  }, [fetchFn, workGraphStoreBasePath, repoId, maxCommits, reloadSignal])
+  }, [fetchFn, gitActivityBasePath, repoId, maxCommits, reloadSignal])
 
   // Agents move refs all the time; the graph follows while the tab is visible.
   useEffect(() => {
@@ -200,13 +200,13 @@ export function WorkGraphView({ initialRepoId = null, initialCommitSha = null, o
   const toggleHighlight = (sessionId: string) =>
     setHighlightedSession(current => (current === sessionId ? null : sessionId))
 
-  if (!workGraphStoreBasePath) {
+  if (!gitActivityBasePath) {
     return (
       <div className="bc-workspace bc-workspace-focused">
         <WorkGraphHeader onClose={onClose} />
         <p className={styles.notice}>
           This host does not proxy work-graph-store, so there is no work graph to draw (the host sets
-          <code> workGraphStoreBasePath</code>).
+          <code> gitActivityBasePath</code>).
         </p>
       </div>
     )

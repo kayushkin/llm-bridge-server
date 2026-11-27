@@ -19,7 +19,7 @@ export interface ChatProviderProps {
   basePath: string;             // '/api/bridge'
   noteboardBasePath?: string;   // '/api/noteboard' — omit and note/todo ref chips
                                 // say lookup is not configured, never guess a path
-  referenceStoreBasePath?: string; // '/api/bridge/reference-store' — the list of
+  referencesBasePath?: string; // '/api/bridge/reference-store' — the list of
                                 // reference types and lookups for the signed-in person
   recentN?: number;             // warm-cache size, default 20
   turnsPerBundle?: number;      // last-N turns per bundled session, default 30
@@ -547,10 +547,10 @@ export function parseRefChips(value: string, options?: RefChipOptions): RefSegme
 export function remarkRefChips(options?: RefChipOptions): (tree: unknown) => void;
 export interface RefChipOptions { resolvableIdPatterns?: readonly string[] | null }
 export function useResolvableIdPatterns(): readonly string[] | null;   // null until loaded
-// reference-store through the bridge (ChatProvider's `referenceStoreBasePath`): the one
+// reference-store through the bridge (ChatProvider's `referencesBasePath`): the one
 // list of reference types, and lookups for the signed-in person. A match from it carries
 // `label`, `page_url`, or `refused: true` with nothing else. It is the only resolver: with
-// no `referenceStoreBasePath`, an id with no chip of its own stays plain text.
+// no `referencesBasePath`, an id with no chip of its own stays plain text.
 export function useReferenceTypes(): ReadonlyMap<string, ReferenceType> | null;   // null until loaded
 export class ReferenceStoreClient { constructor(config: { fetch: typeof fetch; basePath: string }); resolve(ids: string[]): Promise<ResolveResponse>; types(): Promise<ReferenceType[]> }
 export function isResolvableReferenceType(type: ReferenceType): boolean;

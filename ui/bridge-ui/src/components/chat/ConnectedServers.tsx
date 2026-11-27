@@ -186,7 +186,7 @@ export function ConnectedServersProvider({ children }: { children: ReactNode }) 
             <ChatProvider
               fetch={chatFetch}
               basePath={peerConfig.basePath}
-              referenceStoreBasePath={peerConfig.referenceStoreBasePath}
+              referencesBasePath={peerConfig.referencesBasePath}
               cache={false}
               keepDraftsAndFiltersInBrowser={false}
             >

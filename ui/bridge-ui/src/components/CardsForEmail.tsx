@@ -13,19 +13,19 @@ import { CardRefChip } from './CardRefChip'
  * proxies no kanban-store, and nothing for an email on no card.
  */
 export function CardsForEmail({ locator }: { locator: string }) {
-  const { fetch: fetchFn, kanbanStoreBasePath } = useBridgeConfig()
+  const { fetch: fetchFn, issuesBasePath } = useBridgeConfig()
   const [cards, setCards] = useState<EntityCardView[]>([])
   const [ticketFromThisEmail, setTicketFromThisEmail] = useState<Set<string>>(new Set())
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!kanbanStoreBasePath || !locator) return
+    if (!issuesBasePath || !locator) return
     let canceled = false
     setCards([])
     setTicketFromThisEmail(new Set())
     setError(null)
     void (async () => {
-      const result = await listCardsForEntity(fetchFn, kanbanStoreBasePath, 'email', locator)
+      const result = await listCardsForEntity(fetchFn, issuesBasePath, 'email', locator)
       if (canceled) return
       if (!result.ok) {
         setError(result.error)
@@ -33,7 +33,7 @@ export function CardsForEmail({ locator }: { locator: string }) {
       }
       setCards(result.value)
       // An email lands on a handful of cards at most, so one ticket read each.
-      const tickets = await Promise.all(result.value.map(card => getCardTicket(fetchFn, kanbanStoreBasePath, card.card_id)))
+      const tickets = await Promise.all(result.value.map(card => getCardTicket(fetchFn, issuesBasePath, card.card_id)))
       if (canceled) return
       const fromThisEmail = new Set<string>()
       tickets.forEach((ticket, index) => {
@@ -49,9 +49,9 @@ export function CardsForEmail({ locator }: { locator: string }) {
       setTicketFromThisEmail(fromThisEmail)
     })()
     return () => { canceled = true }
-  }, [fetchFn, kanbanStoreBasePath, locator])
+  }, [fetchFn, issuesBasePath, locator])
 
-  if (!kanbanStoreBasePath || (cards.length === 0 && !error)) return null
+  if (!issuesBasePath || (cards.length === 0 && !error)) return null
   return (
     <div className="bet-email-cards">
       <span className="bet-email-cards-label">On {cards.length === 1 ? 'card' : 'cards'}:</span>

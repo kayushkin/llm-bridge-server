@@ -49,13 +49,13 @@ interface EvaluateResponse {
 type Tab = 'rules' | 'audit' | 'test'
 
 export function BridgePermissions() {
-  const { fetch: apiFetch, permissionStoreBasePath } = useBridgeConfig()
+  const { fetch: apiFetch, permissionsBasePath } = useBridgeConfig()
   const [tab, setTab] = useState<Tab>('rules')
 
-  if (!permissionStoreBasePath) {
+  if (!permissionsBasePath) {
     return (
       <div className="bperm-container">
-        <p className="bperm-error">permissionStoreBasePath is not configured. Set it on BridgeProvider to enable this tab.</p>
+        <p className="bperm-error">permissionsBasePath is not configured. Set it on BridgeProvider to enable this tab.</p>
       </div>
     )
   }
@@ -67,9 +67,9 @@ export function BridgePermissions() {
         <button className={`bperm-tab ${tab === 'audit' ? 'bperm-tab-active' : ''}`} onClick={() => setTab('audit')}>Audit</button>
         <button className={`bperm-tab ${tab === 'test' ? 'bperm-tab-active' : ''}`} onClick={() => setTab('test')}>Test</button>
       </div>
-      {tab === 'rules' && <RulesTab apiFetch={apiFetch} basePath={permissionStoreBasePath} />}
-      {tab === 'audit' && <AuditTab apiFetch={apiFetch} basePath={permissionStoreBasePath} />}
-      {tab === 'test' && <TestTab apiFetch={apiFetch} basePath={permissionStoreBasePath} />}
+      {tab === 'rules' && <RulesTab apiFetch={apiFetch} basePath={permissionsBasePath} />}
+      {tab === 'audit' && <AuditTab apiFetch={apiFetch} basePath={permissionsBasePath} />}
+      {tab === 'test' && <TestTab apiFetch={apiFetch} basePath={permissionsBasePath} />}
     </div>
   )
 }

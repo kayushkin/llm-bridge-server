@@ -24,7 +24,7 @@ const NEW_TRIGGER = 'new'
  * multichat shows it firing (`not_configured`) instead of looking dead.
  */
 export function BoardMessageTriggersSection({ board }: { board: Board }) {
-  const { fetch: fetchFn, kanbanStoreBasePath: base } = useBridgeConfig()
+  const { fetch: fetchFn, issuesBasePath: base } = useBridgeConfig()
   const [options, setOptions] = useState<MessageTriggerOptions | null>(null)
   const [triggers, setTriggers] = useState<MessageTrigger[] | null>(null)
   const [deliveries, setDeliveries] = useState<MessageDelivery[] | null>(null)

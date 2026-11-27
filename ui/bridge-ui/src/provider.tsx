@@ -11,30 +11,30 @@ export interface BridgeProviderProps {
   /** Base path for bridge API (default: "/api/bridge") */
   basePath?: string
   /** Base path for skill-store API. If omitted, the Skills tab is hidden. */
-  skillStoreBasePath?: string
+  skillsBasePath?: string
   /** Base path for tool-store API. If omitted, the Tools tab is hidden. */
-  toolStoreBasePath?: string
+  toolsBasePath?: string
   /** Base path for permission-store API. If omitted, the Permissions tab is hidden. */
-  permissionStoreBasePath?: string
+  permissionsBasePath?: string
   /** Base path for kanban-store API. If omitted, the Kanban tab is hidden. */
-  kanbanStoreBasePath?: string
+  issuesBasePath?: string
   /** Base path for principal-store API. If omitted, kanban cards show no
    * assignee chips and the card drawer has no assignee editor. */
-  principalStoreBasePath?: string
+  principalsBasePath?: string
   /** Base path for grant-store API. If omitted, the Grants tab is hidden, a
    * principal shows no grants section, and the kanban "Runs on" picker has no
    * assignee lists to put first. */
-  grantStoreBasePath?: string
+  grantsBasePath?: string
   /** Base path for bundle-store API. If omitted, the Bundles tab is hidden. */
-  bundleStoreBasePath?: string
+  bundlesBasePath?: string
   /** Base path for repo-store API. If omitted, the Bundles page lists bundles
    * but has no repos to preview a resolution for. */
-  repoStoreBasePath?: string
+  reposBasePath?: string
   /** Base path for the noteboard API. If omitted, chat todo chips can't resolve
    * an item's title/status and say so. */
   noteboardBasePath?: string
   /** reference-store through the bridge, e.g. "/api/bridge/reference-store". */
-  referenceStoreBasePath?: string
+  referencesBasePath?: string
   /** Base path for llm-bridge-adapter API. If omitted, bus_session links can't
    * resolve to a bridge_id and the chat button on those cards stays disabled. */
   bridgeAdapterBasePath?: string
@@ -60,25 +60,25 @@ export interface BridgeProviderProps {
   /** people-store and journal-store as the host proxies them (dash:
    * "/api/people", "/api/journal"), and the host's own pages for them (dash:
    * "/people", "/journal"), which person and entry chips link to. */
-  peopleStoreBasePath?: string
-  journalStoreBasePath?: string
-  photoStoreBasePath?: string
-  messageStoreBasePath?: string
+  peopleBasePath?: string
+  journalBasePath?: string
+  photosBasePath?: string
+  messagesBasePath?: string
   /** The base path fields whose service answers `{base}/settings` (see
    * BridgeConfig). Omitted: every base path set. */
   serviceSettingsSourceKeys?: readonly (keyof BridgeConfig)[]
   /** Base path for usage-store API. If omitted, spend/limits sections of the
    * Usage tab are hidden and only per-session aggregates are shown. */
-  usageStoreBasePath?: string
+  usageBasePath?: string
   /** Base paths for seven services the settings page asks and nothing else
    * does (dash: "/api/scheduler", "/api/log-store", "/api/jobs",
    * "/api/quotes", "/api/predictions", "/api/events", "/api/authstore"). If
    * one is omitted, the page does not list that service. */
   schedulerBasePath?: string
-  logStoreBasePath?: string
+  sessionLogBasePath?: string
   jobStoreBasePath?: string
   quoteStoreBasePath?: string
-  predictionStoreBasePath?: string
+  predictionsBasePath?: string
   eventStoreBasePath?: string
   authStoreBasePath?: string
   /** Base path of the host's own routes, read only by the service settings
@@ -93,11 +93,11 @@ export interface BridgeProviderProps {
   /** Base path for work-graph-store (dash: "/api/work-graph"). If omitted,
    * the chat's work-graph view says it is not configured and nothing links to
    * it. */
-  workGraphStoreBasePath?: string
-  projectStoreBasePath?: string
+  gitActivityBasePath?: string
+  projectsBasePath?: string
   /** Base path for model-store (dash: "/api/model-store"). If omitted, the
    * Models page is hidden and a model_role setting cannot list the roles. */
-  modelStoreBasePath?: string
+  modelsBasePath?: string
   /** Optional render hook for per-harness Settings-tab extensions. Return null
    * for harnesses that don't need a custom panel. */
   renderHarnessExtension?: (harnessName: string) => ReactNode
@@ -113,41 +113,41 @@ export interface BridgeProviderProps {
 export function BridgeProvider({
   fetch: fetchFn,
   basePath = '/api/bridge',
-  skillStoreBasePath = '',
-  toolStoreBasePath = '',
-  permissionStoreBasePath = '',
-  kanbanStoreBasePath = '',
-  principalStoreBasePath = '',
-  grantStoreBasePath = '',
-  bundleStoreBasePath = '',
-  repoStoreBasePath = '',
+  skillsBasePath = '',
+  toolsBasePath = '',
+  permissionsBasePath = '',
+  issuesBasePath = '',
+  principalsBasePath = '',
+  grantsBasePath = '',
+  bundlesBasePath = '',
+  reposBasePath = '',
   mailBasePath = '',
   multichatBasePath = '',
   libraryInvitationsPath = '',
   mailPagePath = '',
-  peopleStoreBasePath = '',
-  journalStoreBasePath = '',
-  photoStoreBasePath = '',
-  messageStoreBasePath = '',
+  peopleBasePath = '',
+  journalBasePath = '',
+  photosBasePath = '',
+  messagesBasePath = '',
   serviceSettingsSourceKeys,
   noteboardBasePath = '',
-  referenceStoreBasePath = '',
+  referencesBasePath = '',
   bridgeAdapterBasePath = '',
   orchestratorBasePath = '',
-  usageStoreBasePath = '',
+  usageBasePath = '',
   schedulerBasePath = '',
-  logStoreBasePath = '',
+  sessionLogBasePath = '',
   jobStoreBasePath = '',
   quoteStoreBasePath = '',
-  predictionStoreBasePath = '',
+  predictionsBasePath = '',
   eventStoreBasePath = '',
   authStoreBasePath = '',
   hostBasePath = '',
   previewsBasePath = '',
   threeDimensionalModelsBasePath = '',
-  workGraphStoreBasePath = '',
-  projectStoreBasePath = '',
-  modelStoreBasePath = '',
+  gitActivityBasePath = '',
+  projectsBasePath = '',
+  modelsBasePath = '',
   renderHarnessExtension,
   renderReferenceChip,
   routes,
@@ -156,45 +156,45 @@ export function BridgeProvider({
   const config = useMemo<BridgeConfig>(() => ({
     fetch: fetchFn,
     basePath,
-    skillStoreBasePath,
-    toolStoreBasePath,
-    permissionStoreBasePath,
-    kanbanStoreBasePath,
-    principalStoreBasePath,
-    grantStoreBasePath,
-    bundleStoreBasePath,
-    repoStoreBasePath,
+    skillsBasePath,
+    toolsBasePath,
+    permissionsBasePath,
+    issuesBasePath,
+    principalsBasePath,
+    grantsBasePath,
+    bundlesBasePath,
+    reposBasePath,
     mailBasePath,
     multichatBasePath,
     libraryInvitationsPath,
     mailPagePath,
-    peopleStoreBasePath,
-    journalStoreBasePath,
-    photoStoreBasePath,
-    messageStoreBasePath,
+    peopleBasePath,
+    journalBasePath,
+    photosBasePath,
+    messagesBasePath,
     serviceSettingsSourceKeys: serviceSettingsSourceKeys ?? null,
     noteboardBasePath,
-    referenceStoreBasePath,
+    referencesBasePath,
     bridgeAdapterBasePath,
     orchestratorBasePath,
-    usageStoreBasePath,
+    usageBasePath,
     schedulerBasePath,
-    logStoreBasePath,
+    sessionLogBasePath,
     jobStoreBasePath,
     quoteStoreBasePath,
-    predictionStoreBasePath,
+    predictionsBasePath,
     eventStoreBasePath,
     authStoreBasePath,
     hostBasePath,
     previewsBasePath,
     threeDimensionalModelsBasePath,
-    workGraphStoreBasePath,
-    projectStoreBasePath,
-    modelStoreBasePath,
+    gitActivityBasePath,
+    projectsBasePath,
+    modelsBasePath,
     renderHarnessExtension: renderHarnessExtension ?? null,
     renderReferenceChip: renderReferenceChip ?? null,
     routes: { ...DEFAULT_BRIDGE_ROUTES, ...routes },
-  }), [fetchFn, basePath, skillStoreBasePath, toolStoreBasePath, permissionStoreBasePath, kanbanStoreBasePath, principalStoreBasePath, grantStoreBasePath, bundleStoreBasePath, repoStoreBasePath, mailBasePath, multichatBasePath, libraryInvitationsPath, mailPagePath, peopleStoreBasePath, journalStoreBasePath, photoStoreBasePath, messageStoreBasePath, serviceSettingsSourceKeys, noteboardBasePath, referenceStoreBasePath, bridgeAdapterBasePath, orchestratorBasePath, usageStoreBasePath, schedulerBasePath, logStoreBasePath, jobStoreBasePath, quoteStoreBasePath, predictionStoreBasePath, eventStoreBasePath, authStoreBasePath, hostBasePath, previewsBasePath, threeDimensionalModelsBasePath, workGraphStoreBasePath, projectStoreBasePath, modelStoreBasePath, renderHarnessExtension, renderReferenceChip, routes])
+  }), [fetchFn, basePath, skillsBasePath, toolsBasePath, permissionsBasePath, issuesBasePath, principalsBasePath, grantsBasePath, bundlesBasePath, reposBasePath, mailBasePath, multichatBasePath, libraryInvitationsPath, mailPagePath, peopleBasePath, journalBasePath, photosBasePath, messagesBasePath, serviceSettingsSourceKeys, noteboardBasePath, referencesBasePath, bridgeAdapterBasePath, orchestratorBasePath, usageBasePath, schedulerBasePath, sessionLogBasePath, jobStoreBasePath, quoteStoreBasePath, predictionsBasePath, eventStoreBasePath, authStoreBasePath, hostBasePath, previewsBasePath, threeDimensionalModelsBasePath, gitActivityBasePath, projectsBasePath, modelsBasePath, renderHarnessExtension, renderReferenceChip, routes])
 
   return (
     <BridgeContext value={config}>

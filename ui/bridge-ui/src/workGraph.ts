@@ -31,13 +31,13 @@ export type {
   RepoActivity as WorkGraphRepoActivity,
 }
 
-/** `GET {workGraphStoreBasePath}/activity` */
+/** `GET {gitActivityBasePath}/activity` */
 export interface WorkGraphActivityAnswer {
   since_unix_nano: number
   repos: RepoActivity[]
 }
 
-/** `GET {workGraphStoreBasePath}/ref-updates` */
+/** `GET {gitActivityBasePath}/ref-updates` */
 export interface WorkGraphRefUpdatesAnswer {
   ref_updates: RefUpdate[]
 }

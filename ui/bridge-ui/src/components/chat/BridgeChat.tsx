@@ -895,7 +895,7 @@ export function ThreadPane({
             )}
             {pane === 'timeline' && <Timeline sessionId={id} style={paneStyle('timeline')} />}
             {/* bridge-ui's own pane, mounted unmodified. It self-fetches off the provider
-                config, which is why the `kanbanStoreBasePath` this page was missing had to
+                config, which is why the `issuesBasePath` this page was missing had to
                 land first — without it the pane reads "not configured" and draws nothing,
                 the same way the Orchestrator row did before `4fcdd99`.
 

@@ -19,7 +19,7 @@ export interface ChatProviderProps {
   /** Where reference-store is reached through the bridge, e.g. dash's
    *  '/api/bridge/reference-store'. It owns the list of reference types and
    *  looks ids up for the signed-in person. */
-  referenceStoreBasePath?: string;
+  referencesBasePath?: string;
   recentN?: number; // warm-cache size, default 20
   turnsPerBundle?: number; // last-N turns per bundled session, default 30
   sessionsPerPage?: number; // sidebar sessions per page, default 100
@@ -53,7 +53,7 @@ export function ChatProvider(props: ChatProviderProps): JSX.Element {
     fetch: fetchFn,
     basePath,
     noteboardBasePath,
-    referenceStoreBasePath,
+    referencesBasePath,
     recentN = 20,
     turnsPerBundle = 30,
     sessionsPerPage,
@@ -92,8 +92,8 @@ export function ChatProvider(props: ChatProviderProps): JSX.Element {
     const noteboard = noteboardBasePath
       ? new NoteboardClient({ fetch: fetchFn, basePath: noteboardBasePath })
       : null;
-    const references = referenceStoreBasePath
-      ? new ReferenceStoreClient({ fetch: fetchFn, basePath: referenceStoreBasePath })
+    const references = referencesBasePath
+      ? new ReferenceStoreClient({ fetch: fetchFn, basePath: referencesBasePath })
       : null;
     ctxRef.current = { store, api, cache: sessionCache, sync, prefetcher, noteboard, references };
   }

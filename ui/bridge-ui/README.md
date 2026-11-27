@@ -58,8 +58,8 @@ export default function App() {
         <Bridge
           fetch={apiFetch}
           basePath="/api/bridge"
-          skillStoreBasePath="/api/skill-store"
-          kanbanStoreBasePath="/api/kanban"
+          skillsBasePath="/api/skill-store"
+          issuesBasePath="/api/kanban"
           notesPath="/notes"
         />
       } />
@@ -84,9 +84,9 @@ components itself, passing its own `routes`.
 |------|------|---------|-------------|
 | `fetch` | `(url, init?) => Promise<Response>` | required | Auth'd fetch function. Add cookies / bearer tokens here. |
 | `basePath` | `string` | `/api/bridge` | Base path for the llm-bridge-server API (no trailing slash). |
-| `skillStoreBasePath` | `string` | `""` | Base path for skill-store API. If empty, the Skills tab is hidden. |
-| `bundleStoreBasePath` | `string` | `""` | Base path for bundle-store API. If empty, the Bundles tab is hidden. |
-| `repoStoreBasePath` | `string` | `""` | Base path for repo-store API, which gives the Bundles page repos to preview a resolution for. If empty, the page lists bundles only. |
+| `skillsBasePath` | `string` | `""` | Base path for skill-store API. If empty, the Skills tab is hidden. |
+| `bundlesBasePath` | `string` | `""` | Base path for bundle-store API. If empty, the Bundles tab is hidden. |
+| `reposBasePath` | `string` | `""` | Base path for repo-store API, which gives the Bundles page repos to preview a resolution for. If empty, the page lists bundles only. |
 | `previewsBasePath` | `string` | `""` | The host's list of ports agents' processes listen on, each with the public port that shows it (dash: `/api/previews`). If empty, the Previews tab and the View link on Bash calls are hidden. |
 | `routes` | `Partial<BridgeRoutes>` | `DEFAULT_BRIDGE_ROUTES` | Override individual route paths used by inter-page navigation. `<Bridge>` sets only `notes`. |
 
@@ -116,7 +116,7 @@ components itself, passing its own `routes`.
 | `BridgeAuth` | Credential management (Anthropic, OpenAI, Google, etc.). |
 | `BridgeUsage` | Token / cost rollups across sessions. |
 | `BridgeSettings` | User-level prefs (default model, layout, etc.). |
-| `BridgeSkills` | Skill-store browser — hidden when `skillStoreBasePath` is empty. |
+| `BridgeSkills` | Skill-store browser — hidden when `skillsBasePath` is empty. |
 | `BridgeConformance` | Per-harness conformance matrix (which features pass). |
 
 ### Hooks
@@ -163,7 +163,7 @@ Do **not** copy these types into your host app — they are a single source of t
 ```
 Host app
   │
-  ├─ <Bridge fetch=… basePath=… skillStoreBasePath=… notesPath=…>
+  ├─ <Bridge fetch=… basePath=… skillsBasePath=… notesPath=…>
   │     │
   │     ├─ <BridgeProvider>        ← config context + the one MinimalChromeProvider
   │     │   └─ <ChatProvider>      ← chat-core's session store + sync engine, above the router
@@ -180,7 +180,7 @@ Host app
   │         useBridgeMachines  → /machines
   │         useBridgeFolders   → /folders
   │         useBridgePrefs     → /session-meta/bridge (or localStorage)
-  │         useKanban          → kanban-store, via kanbanStoreBasePath
+  │         useKanban          → kanban-store, via issuesBasePath
   │
   └─ apiFetch — host's job: cookies, bearer tokens, error handling
 ```

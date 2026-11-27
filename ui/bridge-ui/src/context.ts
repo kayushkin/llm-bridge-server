@@ -66,7 +66,7 @@ export interface BridgeRoutes {
   serviceSettings: string
   /** Which models the background calls use: every service setting that names a
    *  model-store role, and each role's ordered model list, editable. Needs
-   *  `modelStoreBasePath`. */
+   *  `modelsBasePath`. */
   models: string
   /** The orchestrator's full review surface (WAL, prior versions, filters), linked
    *  from the sidebar's Orchestrator row and the in-chat orchestrator pane. */
@@ -164,32 +164,32 @@ export interface BridgeConfig {
   basePath: string
   /** Base path for skill-store API (e.g. "/api/skill-store"). No trailing
    * slash. If empty, the Skills tab is hidden. */
-  skillStoreBasePath: string
+  skillsBasePath: string
   /** Base path for tool-store API (e.g. "/api/tool-store"). No trailing
    * slash. If empty, the Tools tab is hidden. */
-  toolStoreBasePath: string
+  toolsBasePath: string
   /** Base path for permission-store API (e.g. "/api/permission-store"). No
    * trailing slash. If empty, the Permissions tab is hidden. */
-  permissionStoreBasePath: string
+  permissionsBasePath: string
   /** Base path for kanban-store API (e.g. "/api/kanban"). No trailing slash.
    * If empty, the Kanban tab is hidden. */
-  kanbanStoreBasePath: string
+  issuesBasePath: string
   /** Base path for principal-store API (e.g. "/api/principals"). No trailing
    * slash. If empty, the Principals tab, assignee chips and the assignee
-   * editor are hidden — the same convention as `kanbanStoreBasePath` hiding
+   * editor are hidden — the same convention as `issuesBasePath` hiding
    * the Kanban tab. */
-  principalStoreBasePath: string
+  principalsBasePath: string
   /** Base path for grant-store API (e.g. "/api/grants"). No trailing slash.
    * If empty, the Grants tab is hidden, a principal shows no grants section,
    * and the kanban "Runs on" picker has no assignee lists to put first. */
-  grantStoreBasePath: string
+  grantsBasePath: string
   /** Base path for bundle-store API (e.g. "/api/bundle-store"). No trailing
    * slash. If empty, the Bundles tab is hidden. */
-  bundleStoreBasePath: string
+  bundlesBasePath: string
   /** Base path for repo-store API (e.g. "/api/repo-store"). No trailing slash.
    * The Bundles page reads its repos to preview a resolution for one. If
    * empty, the page lists bundles and says there are no repos to preview. */
-  repoStoreBasePath: string
+  reposBasePath: string
   /** Base path for the noteboard API (e.g. "/api/noteboard"). No trailing
    * slash. Used by chat reference chips to resolve a todo/item id to its
    * title/status. If empty, todo chips render but say lookup isn't configured. */
@@ -197,7 +197,7 @@ export interface BridgeConfig {
   /** reference-store through the bridge (dash: "/api/bridge/reference-store"):
    * the one list of reference types and lookups for the signed-in person.
    * The generic chip and the record page (`routes.reference`) need it. */
-  referenceStoreBasePath: string
+  referencesBasePath: string
   /** Base path for llm-bridge-adapter API (e.g. "/api/llm-bridge-adapter"). No
    * trailing slash. Used to resolve bus_session_id → bridge_id when a kanban
    * card is linked by entity_type=bus_session. If empty, those cards' chat
@@ -211,7 +211,7 @@ export interface BridgeConfig {
   /** Base path for usage-store API (e.g. "/api/usage"). No trailing slash.
    * If empty, the spend/limits sections of the Usage tab are hidden and only
    * per-session aggregates from llm-bridge-server are shown. */
-  usageStoreBasePath: string
+  usageBasePath: string
   /** Base path for the mailstack API, as the host proxies it. If omitted, the
    * card drawer cannot read a linked email and hides those controls — offering a button that 404s is worse than
    * offering none. */
@@ -236,10 +236,10 @@ export interface BridgeConfig {
    * event-store "/api/events", auth-store "/api/authstore". If one is empty,
    * the page does not list that service. */
   schedulerBasePath: string
-  logStoreBasePath: string
+  sessionLogBasePath: string
   jobStoreBasePath: string
   quoteStoreBasePath: string
-  predictionStoreBasePath: string
+  predictionsBasePath: string
   eventStoreBasePath: string
   authStoreBasePath: string
   /** The HOST's list of ports agents' processes listen on, each with the
@@ -254,20 +254,20 @@ export interface BridgeConfig {
    * "/api/work-graph"): which agent session moved which git ref, drawn as
    * each repo's commit graph by the chat's `?view=work-graph`. If empty, the
    * view says the store is not configured and nothing links to it. */
-  workGraphStoreBasePath: string
+  gitActivityBasePath: string
   /** Base path for project-store as the host proxies it (dash:
    * "/api/projects"): what each project is for and what it owns, filed
    * sessions included. Read by the chat's `?view=projects`, the sidebar's
    * "Group by project" toggle and the session header's filing control. If
    * empty, none of those is drawn. */
-  projectStoreBasePath: string
+  projectsBasePath: string
   /** Base path for model-store as the host proxies it (dash:
    * "/api/model-store"; model-store roots its API at /api, so the page asks
    * `{base}/api/roles` and `{base}/api/models`). Read by the Models page and by
    * the service settings page's drop-down for a `model_role` setting. If
    * empty, the Models page is hidden and a `model_role` setting says the roles
    * cannot be listed. */
-  modelStoreBasePath: string
+  modelsBasePath: string
   /** Base path of the HOST's own routes, read only by the service settings
    * page, which asks `{base}/settings` — the host describes its own settings
    * there like any backend (dash: "/api/dash"). The host is not proxied under a
@@ -283,22 +283,22 @@ export interface BridgeConfig {
    * the people in the operator's own life, `person_000001`. Read by the
    * service settings page. A person id in prose resolves through the host's
    * resolver, not through this. Empty means the host does not carry it. */
-  peopleStoreBasePath: string
+  peopleBasePath: string
   /** Base path for journal-store as the host proxies it (dash:
    * "/api/journal"): the operator's own writing, `entry_000001`. Read by the
    * service settings page. Empty means the host does not carry it. */
-  journalStoreBasePath: string
+  journalBasePath: string
   /** Base path for photo-store as the host proxies it (dash: "/api/photos"):
    * the operator's own photos, `photo_000001`. A photo chip draws its
    * thumbnail from `{base}/photos/{id}/thumbnail`. Empty means the host does
    * not carry it, and a photo chip shows no picture. */
-  photoStoreBasePath: string
+  photosBasePath: string
   /** Base path for message-store as the host proxies it (dash:
    * "/api/message-store"), read only by `/service-settings`. The Messages
    * pages reach message-store's records through multichat instead
    * (`multichatBasePath` + `/message-store`), so the host's front end calls
    * multichat alone for messages. */
-  messageStoreBasePath: string
+  messagesBasePath: string
   /** The base path fields whose service answers `{base}/settings`, which the
    * Service settings and Models pages ask. Null means every base path the host
    * set: dash proxies each service whole, so each answers there. A host that

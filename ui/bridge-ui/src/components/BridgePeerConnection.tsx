@@ -80,7 +80,7 @@ export function BridgePeerConnection() {
             key={view.connection.id}
             fetch={chatFetch}
             basePath={peerConfig.basePath}
-            referenceStoreBasePath={peerConfig.referenceStoreBasePath}
+            referencesBasePath={peerConfig.referencesBasePath}
             cache={false}
             keepDraftsAndFiltersInBrowser={false}
           >

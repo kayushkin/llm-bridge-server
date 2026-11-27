@@ -153,17 +153,17 @@ type ModelsState = { phase: 'loading' } | { phase: 'loaded'; models: ModelStoreM
 
 /** Each of model-store's roles with its ordered list, editable. */
 function Roles({ roles, onSaved }: { roles: ModelStoreRolesState; onSaved: () => void }) {
-  const { fetch: apiFetch, modelStoreBasePath } = useBridgeConfig()
+  const { fetch: apiFetch, modelsBasePath } = useBridgeConfig()
   const [models, setModels] = useState<ModelsState>({ phase: 'loading' })
 
   useEffect(() => {
-    if (!modelStoreBasePath) return
+    if (!modelsBasePath) return
     let canceled = false
-    fetchModelStoreModels(apiFetch, modelStoreBasePath)
+    fetchModelStoreModels(apiFetch, modelsBasePath)
       .then(list => { if (!canceled) setModels({ phase: 'loaded', models: list }) })
       .catch(err => { if (!canceled) setModels({ phase: 'failed', error: err instanceof Error ? err.message : String(err) }) })
     return () => { canceled = true }
-  }, [apiFetch, modelStoreBasePath])
+  }, [apiFetch, modelsBasePath])
 
   return (
     <SettingsSection id="models:roles" title="Roles" scope="global" storedBy="model-store (POST /api/roles)"
@@ -186,7 +186,7 @@ function RoleEditor({ role, roles, models, onSaved }: {
   models: ModelStoreModel[] | null
   onSaved: () => void
 }) {
-  const { fetch: apiFetch, modelStoreBasePath } = useBridgeConfig()
+  const { fetch: apiFetch, modelsBasePath } = useBridgeConfig()
   const stored = roleModelList(roles, role)
   const [draft, setDraft] = useState<string[]>(stored)
   const [adding, setAdding] = useState('')
@@ -200,7 +200,7 @@ function RoleEditor({ role, roles, models, onSaved }: {
 
   const submit = async () => {
     setBusy(true)
-    const result = await saveRoleModels(apiFetch, modelStoreBasePath, role, draft)
+    const result = await saveRoleModels(apiFetch, modelsBasePath, role, draft)
     setBusy(false)
     if (!result.ok) { setError(result.error); return }
     setError(null)

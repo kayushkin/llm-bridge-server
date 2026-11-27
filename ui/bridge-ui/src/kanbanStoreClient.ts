@@ -30,23 +30,23 @@ async function request<T>(fetchFn: FetchFn, verb: string, url: string, init?: Re
   }
 }
 
-function boardURL(kanbanStoreBasePath: string, boardID: string): string {
-  return `${kanbanStoreBasePath}/api/boards/${encodeURIComponent(boardID)}`
+function boardURL(issuesBasePath: string, boardID: string): string {
+  return `${issuesBasePath}/api/boards/${encodeURIComponent(boardID)}`
 }
 
 /** `GET /api/boards/{id}` — the board with its settings. A cleared setting is
  *  absent on the wire, never an empty string. */
-export function getBoard(fetchFn: FetchFn, kanbanStoreBasePath: string, boardID: string): Promise<KanbanStoreResult<Board>> {
-  return request(fetchFn, 'read board', boardURL(kanbanStoreBasePath, boardID))
+export function getBoard(fetchFn: FetchFn, issuesBasePath: string, boardID: string): Promise<KanbanStoreResult<Board>> {
+  return request(fetchFn, 'read board', boardURL(issuesBasePath, boardID))
 }
 
 /** `PATCH /api/boards/{id}` — any subset of the settings. Omitted keys are left
  *  alone; the store checks each id with its owner before writing anything, so
  *  a refusal means nothing changed. Answers the stored board. */
 export function patchBoard(
-  fetchFn: FetchFn, kanbanStoreBasePath: string, boardID: string, patch: BoardSettingsPatch,
+  fetchFn: FetchFn, issuesBasePath: string, boardID: string, patch: BoardSettingsPatch,
 ): Promise<KanbanStoreResult<Board>> {
-  return request(fetchFn, 'save board', boardURL(kanbanStoreBasePath, boardID), {
+  return request(fetchFn, 'save board', boardURL(issuesBasePath, boardID), {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(patch),
@@ -55,19 +55,19 @@ export function patchBoard(
 
 /** `GET /api/assignment-strategies` — the strategies an assignment pool may
  *  name. Served so no page keeps its own copy of the list. */
-export function listAssignmentStrategies(fetchFn: FetchFn, kanbanStoreBasePath: string): Promise<KanbanStoreResult<AssignmentStrategy[]>> {
-  return request(fetchFn, 'list assignment strategies', `${kanbanStoreBasePath}/api/assignment-strategies`)
+export function listAssignmentStrategies(fetchFn: FetchFn, issuesBasePath: string): Promise<KanbanStoreResult<AssignmentStrategy[]>> {
+  return request(fetchFn, 'list assignment strategies', `${issuesBasePath}/api/assignment-strategies`)
 }
 
-export function getPriorityLadder(fetchFn: FetchFn, kanbanStoreBasePath: string, boardID: string): Promise<KanbanStoreResult<PriorityLadder>> {
-  return request(fetchFn, 'read priority ladder', `${boardURL(kanbanStoreBasePath, boardID)}/priority-levels`)
+export function getPriorityLadder(fetchFn: FetchFn, issuesBasePath: string, boardID: string): Promise<KanbanStoreResult<PriorityLadder>> {
+  return request(fetchFn, 'read priority ladder', `${boardURL(issuesBasePath, boardID)}/priority-levels`)
 }
 
 /** `PUT /api/boards/{id}/priority-levels` — the whole ladder, replaced. */
 export function putPriorityLadder(
-  fetchFn: FetchFn, kanbanStoreBasePath: string, boardID: string, body: { levels: LadderWireLevel[] },
+  fetchFn: FetchFn, issuesBasePath: string, boardID: string, body: { levels: LadderWireLevel[] },
 ): Promise<KanbanStoreResult<PriorityLadder>> {
-  return request(fetchFn, 'save priority ladder', `${boardURL(kanbanStoreBasePath, boardID)}/priority-levels`, {
+  return request(fetchFn, 'save priority ladder', `${boardURL(issuesBasePath, boardID)}/priority-levels`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -75,8 +75,8 @@ export function putPriorityLadder(
 }
 
 /** `GET /api/boards/{id}/tag-rules` — the board's tag rules, in order. */
-export function getTagRules(fetchFn: FetchFn, kanbanStoreBasePath: string, boardID: string): Promise<KanbanStoreResult<BoardTagRules>> {
-  return request(fetchFn, 'read tag rules', `${boardURL(kanbanStoreBasePath, boardID)}/tag-rules`)
+export function getTagRules(fetchFn: FetchFn, issuesBasePath: string, boardID: string): Promise<KanbanStoreResult<BoardTagRules>> {
+  return request(fetchFn, 'read tag rules', `${boardURL(issuesBasePath, boardID)}/tag-rules`)
 }
 
 /** `PUT /api/boards/{id}/tag-rules` — the whole list, replaced in the order
@@ -84,9 +84,9 @@ export function getTagRules(fetchFn: FetchFn, kanbanStoreBasePath: string, board
  *  refuses the whole list (400 naming `rules[i]` and its tags, 502 when an
  *  owner cannot answer) and writes nothing on any refusal. */
 export function putTagRules(
-  fetchFn: FetchFn, kanbanStoreBasePath: string, boardID: string, body: { rules: BoardTagRuleInput[] },
+  fetchFn: FetchFn, issuesBasePath: string, boardID: string, body: { rules: BoardTagRuleInput[] },
 ): Promise<KanbanStoreResult<BoardTagRules>> {
-  return request(fetchFn, 'save tag rules', `${boardURL(kanbanStoreBasePath, boardID)}/tag-rules`, {
+  return request(fetchFn, 'save tag rules', `${boardURL(issuesBasePath, boardID)}/tag-rules`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -97,54 +97,54 @@ export function putTagRules(
  *  gets on this board, with the card's tags read from noteboard by the store.
  *  The precedence lives in kanban-store and nowhere else. */
 export function getCardEffectiveDefaults(
-  fetchFn: FetchFn, kanbanStoreBasePath: string, boardID: string, cardID: string,
+  fetchFn: FetchFn, issuesBasePath: string, boardID: string, cardID: string,
 ): Promise<KanbanStoreResult<EffectiveDefaults>> {
   return request(
     fetchFn, 'read card effective defaults',
-    `${boardURL(kanbanStoreBasePath, boardID)}/cards/${encodeURIComponent(cardID)}/effective-defaults`,
+    `${boardURL(issuesBasePath, boardID)}/cards/${encodeURIComponent(cardID)}/effective-defaults`,
   )
 }
 
 /** `GET /api/boards/{id}/effective-defaults?tag=…&tag=…` — what a card carrying
  *  exactly these tags would get on this board. No tags asks for the board's own. */
 export function getEffectiveDefaultsForTags(
-  fetchFn: FetchFn, kanbanStoreBasePath: string, boardID: string, tags: readonly string[],
+  fetchFn: FetchFn, issuesBasePath: string, boardID: string, tags: readonly string[],
 ): Promise<KanbanStoreResult<EffectiveDefaults>> {
   const query = new URLSearchParams(tags.map(tag => ['tag', tag])).toString()
   return request(
     fetchFn, 'read effective defaults',
-    `${boardURL(kanbanStoreBasePath, boardID)}/effective-defaults${query ? `?${query}` : ''}`,
+    `${boardURL(issuesBasePath, boardID)}/effective-defaults${query ? `?${query}` : ''}`,
   )
 }
 
 /** `GET /api/tickets` — tickets the caller can view, newest first, across
  *  boards. `before` is the previous page's `next_before`. */
 export function listTickets(
-  fetchFn: FetchFn, kanbanStoreBasePath: string, query: { channel?: string; before?: string; limit?: number },
+  fetchFn: FetchFn, issuesBasePath: string, query: { channel?: string; before?: string; limit?: number },
 ): Promise<KanbanStoreResult<TicketList>> {
   const params = new URLSearchParams()
   if (query.channel) params.set('channel', query.channel)
   if (query.before) params.set('before', query.before)
   if (query.limit) params.set('limit', String(query.limit))
   const suffix = params.toString()
-  return request(fetchFn, 'list tickets', `${kanbanStoreBasePath}/api/tickets${suffix ? `?${suffix}` : ''}`)
+  return request(fetchFn, 'list tickets', `${issuesBasePath}/api/tickets${suffix ? `?${suffix}` : ''}`)
 }
 
 /** `GET /api/entities/{type}/{ref}/cards` — the cards that link one entity,
  *  such as every card an email was filed onto. */
 export function listCardsForEntity(
-  fetchFn: FetchFn, kanbanStoreBasePath: string, entityType: string, entityRef: string,
+  fetchFn: FetchFn, issuesBasePath: string, entityType: string, entityRef: string,
 ): Promise<KanbanStoreResult<EntityCardView[]>> {
   return request(fetchFn, 'list cards for entity',
-    `${kanbanStoreBasePath}/api/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityRef)}/cards`)
+    `${issuesBasePath}/api/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityRef)}/cards`)
 }
 
 /** `GET /api/cards/{id}/ticket` — the card's ticket, or null when the card is
  *  not one (the store answers 404 for that, which is not a failure here). */
 export async function getCardTicket(
-  fetchFn: FetchFn, kanbanStoreBasePath: string, cardID: string,
+  fetchFn: FetchFn, issuesBasePath: string, cardID: string,
 ): Promise<KanbanStoreResult<TicketView | null>> {
-  const url = `${kanbanStoreBasePath}/api/cards/${encodeURIComponent(cardID)}/ticket`
+  const url = `${issuesBasePath}/api/cards/${encodeURIComponent(cardID)}/ticket`
   let res: Response
   try {
     res = await fetchFn(url)

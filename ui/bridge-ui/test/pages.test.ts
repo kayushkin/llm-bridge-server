@@ -5,12 +5,12 @@ import { BRIDGE_PAGES, PAGE_GROUPS, bridgePagesShown, groupForPath, navEntriesFo
 const config = (overrides: Partial<BridgeConfig> = {}): BridgeConfig => ({
   fetch: async () => new Response(),
   basePath: '/api/bridge',
-  skillStoreBasePath: '', toolStoreBasePath: '', permissionStoreBasePath: '', kanbanStoreBasePath: '',
-  principalStoreBasePath: '', grantStoreBasePath: '', bundleStoreBasePath: '', repoStoreBasePath: '',
+  skillsBasePath: '', toolsBasePath: '', permissionsBasePath: '', issuesBasePath: '',
+  principalsBasePath: '', grantsBasePath: '', bundlesBasePath: '', reposBasePath: '',
   mailBasePath: '', mailPagePath: '', noteboardBasePath: '', bridgeAdapterBasePath: '',
-  orchestratorBasePath: '', usageStoreBasePath: '',
-  schedulerBasePath: '', logStoreBasePath: '', jobStoreBasePath: '', quoteStoreBasePath: '',
-  predictionStoreBasePath: '', eventStoreBasePath: '', authStoreBasePath: '', hostBasePath: '', previewsBasePath: '', workGraphStoreBasePath: '', projectStoreBasePath: '', modelStoreBasePath: '',
+  orchestratorBasePath: '', usageBasePath: '',
+  schedulerBasePath: '', sessionLogBasePath: '', jobStoreBasePath: '', quoteStoreBasePath: '',
+  predictionsBasePath: '', eventStoreBasePath: '', authStoreBasePath: '', hostBasePath: '', previewsBasePath: '', gitActivityBasePath: '', projectsBasePath: '', modelsBasePath: '',
   routes: DEFAULT_BRIDGE_ROUTES,
   ...overrides,
 } as BridgeConfig)
@@ -34,7 +34,7 @@ describe('navEntriesFor', () => {
     const without = navEntriesFor(config(), flags).map(e => e.label)
     expect(without).not.toContain('Skills')
     expect(without).not.toContain('Kanban')
-    const withStores = navEntriesFor(config({ skillStoreBasePath: '/api/skill-store', kanbanStoreBasePath: '/api/kanban' }), flags).map(e => e.label)
+    const withStores = navEntriesFor(config({ skillsBasePath: '/api/skill-store', issuesBasePath: '/api/kanban' }), flags).map(e => e.label)
     expect(withStores).toContain('Skills')
     expect(withStores).toContain('Kanban')
   })
@@ -46,7 +46,7 @@ describe('navEntriesFor', () => {
   })
 
   it('never lists a sub-page', () => {
-    const tos = navEntriesFor(config({ kanbanStoreBasePath: '/api/kanban' }), flags).map(e => e.to)
+    const tos = navEntriesFor(config({ issuesBasePath: '/api/kanban' }), flags).map(e => e.to)
     expect(tos).not.toContain('/kanban/settings')
     expect(tos).not.toContain('/card')
   })
@@ -65,7 +65,7 @@ describe('navEntriesFor', () => {
 describe('onlyBridgePages', () => {
   it('lists only the named pages, beside the host pages', () => {
     const host: HostPage[] = [{ path: '/raid', label: 'Raid', group: 'work', element: null }]
-    const labels = navEntriesFor(config({ kanbanStoreBasePath: '/api/kanban' }), { ...flags, onlyBridgePages: ['chat', 'sessions'] }, host).map(e => e.label)
+    const labels = navEntriesFor(config({ issuesBasePath: '/api/kanban' }), { ...flags, onlyBridgePages: ['chat', 'sessions'] }, host).map(e => e.label)
     expect(labels).toEqual(['Chat', 'Sessions', 'Raid'])
   })
   it('routes only the named pages, and every page when none are named', () => {

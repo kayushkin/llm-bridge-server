@@ -23,14 +23,14 @@ export interface LinkedKanbanPanelProps {
 }
 
 export function LinkedKanbanPanel({ sessionId, onToggleCollapse, style, paneKey }: LinkedKanbanPanelProps) {
-  const { routes, kanbanStoreBasePath } = useBridgeConfig()
+  const { routes, issuesBasePath } = useBridgeConfig()
   const kanban = useKanban(null, { loadBoards: false, loadEntityTypes: false })
   // Depend on the two calls, not on the hook's whole return value. That value
   // is a useMemo over the hook's state as well as its callbacks, so it takes a
   // new identity when the hook's own mount fetch flips `loading` — which would
   // re-run the refresh effect milliseconds after the first one, issuing a
   // second pair of requests and re-arming the interval. These two are
-  // useCallbacks over fetchFn, kanbanStoreBasePath and enabled, all of which
+  // useCallbacks over fetchFn, issuesBasePath and enabled, all of which
   // come from a memoized provider config, so they hold still.
   const { listCardsForEntity, listEntityTags } = kanban
   const [cards, setCards] = useState<EntityCardView[]>([])
@@ -46,7 +46,7 @@ export function LinkedKanbanPanel({ sessionId, onToggleCollapse, style, paneKey 
   // place of cards that are already on screen — and it yields to a request that
   // is still running instead of stacking a second one behind it.
   const refresh = useCallback(async ({ background = false } = {}) => {
-    if (!kanbanStoreBasePath || !sessionId) {
+    if (!issuesBasePath || !sessionId) {
       setCards([])
       setTags([])
       setError(null)
@@ -71,14 +71,14 @@ export function LinkedKanbanPanel({ sessionId, onToggleCollapse, style, paneKey 
       requestInFlight.current = false
       if (!background) setLoading(false)
     }
-  }, [listCardsForEntity, listEntityTags, kanbanStoreBasePath, sessionId])
+  }, [listCardsForEntity, listEntityTags, issuesBasePath, sessionId])
 
   useEffect(() => {
     refresh()
-    if (!kanbanStoreBasePath || !sessionId) return
+    if (!issuesBasePath || !sessionId) return
     const timer = setInterval(() => { refresh({ background: true }) }, LINKED_KANBAN_REFRESH_MS)
     return () => clearInterval(timer)
-  }, [refresh, kanbanStoreBasePath, sessionId])
+  }, [refresh, issuesBasePath, sessionId])
 
   const doNotTrackTags = useMemo(
     () => tags.filter(tag => DO_NOT_TRACK_TAGS.includes(tag.tag as typeof DO_NOT_TRACK_TAGS[number])),
@@ -113,7 +113,7 @@ export function LinkedKanbanPanel({ sessionId, onToggleCollapse, style, paneKey 
       ? `${cards.length} linked ${cards.length === 1 ? 'card' : 'cards'}`
       : 'No linked cards yet'
 
-  const interactive = !!kanbanStoreBasePath && !!sessionId
+  const interactive = !!issuesBasePath && !!sessionId
 
   return (
     <div className="bc-split-pane bc-split-pane-kanban" style={style} data-pane={paneKey}>

@@ -37,9 +37,9 @@ const ROUTER_BASENAME = import.meta.env.BASE_URL === '/' ? undefined : import.me
 /** Stores reached through the bridge's own gateway, as the signed-in person:
  *  every host that runs the bridge carries these. */
 const BRIDGE_GATEWAY_PATHS: Partial<BridgeProps> = {
-  kanbanStoreBasePath: `${BASE}/issues`,
-  grantStoreBasePath: `${BASE}/grants`,
-  referenceStoreBasePath: `${BASE}/references`,
+  issuesBasePath: `${BASE}/issues`,
+  grantsBasePath: `${BASE}/grants`,
+  referencesBasePath: `${BASE}/references`,
 }
 
 /** Stores the bridge does not proxy yet, reached at /api/<store> on the page's
@@ -47,14 +47,14 @@ const BRIDGE_GATEWAY_PATHS: Partial<BridgeProps> = {
  *  only when VITE_HOST_PROXIES_STORES=true says whatever serves it forwards
  *  them too. Left out, bridge-ui hides their pages rather than erroring. */
 const HOST_STORE_PATHS: Partial<BridgeProps> = {
-  skillStoreBasePath: '/api/skill-store',
-  toolStoreBasePath: '/api/tool-store',
-  principalStoreBasePath: '/api/principals',
-  bundleStoreBasePath: '/api/bundle-store',
-  repoStoreBasePath: '/api/repo-store',
-  workGraphStoreBasePath: '/api/work-graph',
-  projectStoreBasePath: '/api/projects',
-  modelStoreBasePath: '/api/model-store',
+  skillsBasePath: '/api/skill-store',
+  toolsBasePath: '/api/tool-store',
+  principalsBasePath: '/api/principals',
+  bundlesBasePath: '/api/bundle-store',
+  reposBasePath: '/api/repo-store',
+  gitActivityBasePath: '/api/work-graph',
+  projectsBasePath: '/api/projects',
+  modelsBasePath: '/api/model-store',
 }
 
 /** Stores the bridge serves in its own process, at the prefixes it mounts
@@ -63,21 +63,21 @@ const HOST_STORE_PATHS: Partial<BridgeProps> = {
  *  bridge's own origin, so every prefix is reachable as the signed-in person.
  *  multichat is not one of them, so the Messages pages stay hidden. */
 const STORES_THE_BRIDGE_SERVES: Partial<BridgeProps> = {
-  toolStoreBasePath: '/tools',
-  skillStoreBasePath: '/skills',
-  bundleStoreBasePath: '/bundles',
-  principalStoreBasePath: '/principals',
-  permissionStoreBasePath: '/permissions',
-  modelStoreBasePath: '/models',
-  repoStoreBasePath: '/repos',
-  workGraphStoreBasePath: '/git-activity',
-  projectStoreBasePath: '/projects',
+  toolsBasePath: '/tools',
+  skillsBasePath: '/skills',
+  bundlesBasePath: '/bundles',
+  principalsBasePath: '/principals',
+  permissionsBasePath: '/permissions',
+  modelsBasePath: '/models',
+  reposBasePath: '/repos',
+  gitActivityBasePath: '/git-activity',
+  projectsBasePath: '/projects',
   noteboardBasePath: '/noteboard',
   schedulerBasePath: '/scheduler',
-  photoStoreBasePath: '/photos',
+  photosBasePath: '/photos',
   // usage-store roots its routes at /api/usage; the Usage page asks
   // `{base}/limits`, `{base}/spend/keys` and so on.
-  usageStoreBasePath: '/usage/api/usage',
+  usageBasePath: '/usage/api/usage',
   // mailstack roots its routes at /api; the card drawer asks `{base}/accounts`
   // and `{base}/messages/{id}`.
   mailBasePath: '/mail/api',

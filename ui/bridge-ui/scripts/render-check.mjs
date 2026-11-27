@@ -1126,11 +1126,11 @@ console.log('\nCardDetail — assignees render honestly without a directory')
   })
   const noop = async () => true
   const outcome = async () => ({ ok: true })
-  const mount = (principalStoreBasePath, assignments, boardID = 'b1') => renderToStaticMarkup(
+  const mount = (principalsBasePath, assignments, boardID = 'b1') => renderToStaticMarkup(
     h(MemoryRouter, { initialEntries: ['/kanban'] },
       h(BridgeContext.Provider, { value: {
         fetch: async () => ({ ok: true, status: 200, text: async () => '', json: async () => [] }),
-        basePath: '/api/bridge', kanbanStoreBasePath: '/api/kanban', principalStoreBasePath,
+        basePath: '/api/bridge', issuesBasePath: '/api/kanban', principalsBasePath,
         noteboardBasePath: '', mailBasePath: '', mailPagePath: '', routes: DEFAULT_BRIDGE_ROUTES,
       } },
         h(CardDetail, {
@@ -1173,14 +1173,14 @@ console.log('\nCardDetail — assignees render honestly without a directory')
 // a given answer, and that an unconfigured host gets nothing at all.
 console.log('\nBridgePrincipals — the directory editor')
 {
-  const bridgeConfig = (principalStoreBasePath) => ({
+  const bridgeConfig = (principalsBasePath) => ({
     fetch: async () => ({ ok: true, status: 200, text: async () => '', json: async () => [] }),
-    basePath: '/api/bridge', kanbanStoreBasePath: '/api/kanban', principalStoreBasePath,
+    basePath: '/api/bridge', issuesBasePath: '/api/kanban', principalsBasePath,
     noteboardBasePath: '', mailBasePath: '', mailPagePath: '', routes: DEFAULT_BRIDGE_ROUTES,
   })
-  const mountPage = (principalStoreBasePath) => renderToStaticMarkup(
+  const mountPage = (principalsBasePath) => renderToStaticMarkup(
     h(MemoryRouter, { initialEntries: ['/principals'] },
-      h(BridgeContext.Provider, { value: bridgeConfig(principalStoreBasePath) }, h(BridgePrincipals))))
+      h(BridgeContext.Provider, { value: bridgeConfig(principalsBasePath) }, h(BridgePrincipals))))
 
   check('no principal-store path says it is not configured', mountPage('').includes('principal-store is not configured'), JSON.stringify(mountPage('')))
   const page = mountPage('/api/principals')
@@ -1255,9 +1255,9 @@ console.log('\nBridgePrincipals — the directory editor')
   // The tab follows the base path, exactly as the Kanban tab does.
   // Principals sits in the Access group, so the row that would show it is the
   // one drawn at its own path.
-  const layout = (principalStoreBasePath) => renderToStaticMarkup(
+  const layout = (principalsBasePath) => renderToStaticMarkup(
     h(MemoryRouter, { initialEntries: ['/principals'] },
-      h(BridgeContext.Provider, { value: bridgeConfig(principalStoreBasePath) },
+      h(BridgeContext.Provider, { value: bridgeConfig(principalsBasePath) },
         h(MinimalChromeProvider, null, h(BridgeLayout)))))
   check('BridgeLayout shows a Principals tab when principal-store is configured',
     layout('/api/principals').includes('>Principals<') && layout('/api/principals').includes('href="/principals"'))
@@ -1268,13 +1268,13 @@ console.log('\nBridgePrincipals — the directory editor')
 // run its fetches, so these pin the gates and what a bundle card shows.
 console.log('\nBridgeBundles — bundle-store bundles and the resolve preview')
 {
-  const bundlesConfig = (bundleStoreBasePath, repoStoreBasePath = '') => ({
+  const bundlesConfig = (bundlesBasePath, reposBasePath = '') => ({
     fetch: async () => ({ ok: true, status: 200, text: async () => '', json: async () => [] }),
-    basePath: '/api/bridge', bundleStoreBasePath, repoStoreBasePath, routes: DEFAULT_BRIDGE_ROUTES,
+    basePath: '/api/bridge', bundlesBasePath, reposBasePath, routes: DEFAULT_BRIDGE_ROUTES,
   })
-  const mountPage = (bundleStoreBasePath, repoStoreBasePath) => renderToStaticMarkup(
+  const mountPage = (bundlesBasePath, reposBasePath) => renderToStaticMarkup(
     h(MemoryRouter, { initialEntries: ['/bundles'] },
-      h(BridgeContext.Provider, { value: bundlesConfig(bundleStoreBasePath, repoStoreBasePath) }, h(BridgeBundles))))
+      h(BridgeContext.Provider, { value: bundlesConfig(bundlesBasePath, reposBasePath) }, h(BridgeBundles))))
 
   check('no bundle-store path says it is not configured', mountPage('').includes('bundle-store is not configured'), JSON.stringify(mountPage('')))
   const withRepos = mountPage('/api/bundle-store', '/api/repo-store')
@@ -1299,9 +1299,9 @@ console.log('\nBridgeBundles — bundle-store bundles and the resolve preview')
   check('a disabled bundle is marked', card.includes('>disabled<'), card)
   check('the unique bundle name shows beside the display name', card.includes('React frontend') && card.includes('>react<'), card)
 
-  const layout = (bundleStoreBasePath) => renderToStaticMarkup(
+  const layout = (bundlesBasePath) => renderToStaticMarkup(
     h(MemoryRouter, { initialEntries: ['/bundles'] },
-      h(BridgeContext.Provider, { value: bundlesConfig(bundleStoreBasePath) },
+      h(BridgeContext.Provider, { value: bundlesConfig(bundlesBasePath) },
         h(MinimalChromeProvider, null, h(BridgeLayout)))))
   check('BridgeLayout shows a Bundles tab when bundle-store is configured',
     layout('/api/bundle-store').includes('>Bundles<') && layout('/api/bundle-store').includes('href="/bundles"'))
@@ -1314,7 +1314,7 @@ function sidePanelChecks() {
   const config = {
     fetch: async () => ({ ok: true, status: 200, text: async () => '', json: async () => [] }),
     basePath: '/api/bridge',
-    kanbanStoreBasePath: '/api/kanban-store',
+    issuesBasePath: '/api/kanban-store',
     orchestratorBasePath: '/api/orchestrator',
     routes: DEFAULT_BRIDGE_ROUTES,
   }
@@ -2100,7 +2100,7 @@ console.log('BridgePeers — the page before anything loads')
     h(MemoryRouter, { initialEntries: ['/peers'] },
       h(BridgeContext.Provider, { value: {
         fetch: async () => ({ ok: true, status: 200, text: async () => '', json: async () => [] }),
-        basePath: '/api/bridge', principalStoreBasePath: '/api/principals', routes: DEFAULT_BRIDGE_ROUTES,
+        basePath: '/api/bridge', principalsBasePath: '/api/principals', routes: DEFAULT_BRIDGE_ROUTES,
       } }, h(BridgePeers))))
   check('it has the connections, the connect form and the people slot',
     html.includes('Connected servers') && html.includes('Make a connection') && html.includes('People from connected servers'), html.slice(0, 300))
@@ -2123,7 +2123,7 @@ console.log('BridgePeers — people from a connected server this one gives acces
     h(MemoryRouter, { initialEntries: ['/peers'] },
       h(BridgeContext.Provider, { value: {
         fetch: async url => ({ ok: true, status: 200, text: async () => '', json: async () => answers[url] ?? [] }),
-        basePath: '/api/bridge', principalStoreBasePath: '/api/principals', routes: DEFAULT_BRIDGE_ROUTES,
+        basePath: '/api/bridge', principalsBasePath: '/api/principals', routes: DEFAULT_BRIDGE_ROUTES,
       } }, h(BridgePeers))))
   check('it says an unmapped person is refused and an administrator acts as the whole server',
     html.includes('A person nobody mapped is refused') && html.includes('acts as the whole server'), html.slice(0, 300))
@@ -2197,10 +2197,10 @@ console.log('A connected server’s session gets the full thread view')
   check('it draws the chat’s own composer', /bc-composer/.test(html), html.slice(0, 400))
   check('the remote config sends llm-bridge-server’s routes through the proxy and nothing to this host’s stores',
     remote.basePath === '/api/bridge/peer-connections/peer_connection_000001/proxy' &&
-    remote.grantStoreBasePath === '/api/bridge/peer-connections/peer_connection_000001/proxy/grant-store' &&
-    remote.noteboardBasePath === '' && remote.kanbanStoreBasePath === remote.basePath + '/issues' && remote.projectStoreBasePath === '' &&
+    remote.grantsBasePath === '/api/bridge/peer-connections/peer_connection_000001/proxy/grants' &&
+    remote.noteboardBasePath === '' && remote.issuesBasePath === remote.basePath + '/issues' && remote.projectsBasePath === '' &&
     remote.routes.effectiveConfig === '' && remote.routes.chat === DEFAULT_BRIDGE_ROUTES.chat,
-    JSON.stringify({ basePath: remote.basePath, grant: remote.grantStoreBasePath }))
+    JSON.stringify({ basePath: remote.basePath, grant: remote.grantsBasePath }))
 }
 
 // The New session menu: a heading per server, this one first, every connected

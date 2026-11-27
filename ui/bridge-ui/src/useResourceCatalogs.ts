@@ -82,13 +82,13 @@ export function useAgentCatalog(query: string): ResourceCatalog {
 }
 
 export function useToolCatalog(query: string): ResourceCatalog {
-  const { toolStoreBasePath } = useBridgeConfig()
-  const { options, error } = useListReadOnce<ToolRecord>(toolStoreBasePath ? `${toolStoreBasePath}/tools` : null, toolOption)
+  const { toolsBasePath } = useBridgeConfig()
+  const { options, error } = useListReadOnce<ToolRecord>(toolsBasePath ? `${toolsBasePath}/tools` : null, toolOption)
   return useMemo(
-    () => toolStoreBasePath
+    () => toolsBasePath
       ? catalogOfList(options, error, query)
       : unavailableCatalog('This host has no route to tool-store, so tool names cannot be looked up here.'),
-    [toolStoreBasePath, options, error, query],
+    [toolsBasePath, options, error, query],
   )
 }
 
@@ -120,7 +120,7 @@ export const SKILL_MATCHES_LIMIT = 30
  * change of the query and keeps only the newest answer.
  */
 export function useSkillCatalog(query: string, resolveIDs: readonly string[]): ResourceCatalog {
-  const { fetch: fetchFn, skillStoreBasePath: base } = useBridgeConfig()
+  const { fetch: fetchFn, skillsBasePath: base } = useBridgeConfig()
   const [resolved, setResolved] = useState<ReadonlyMap<string, ResourceOption>>(NO_OPTIONS)
   const [settledIDs, setSettledIDs] = useState<ReadonlySet<string>>(NOTHING_EXCLUDED)
   const [matches, setMatches] = useState<ResourceOption[] | null>(null)
@@ -193,7 +193,7 @@ export function useInstancesListedForPrincipals(principalIDs: readonly string[])
   listedBy: ReadonlyMap<string, string[]>
   error: string | null
 } {
-  const { fetch: fetchFn, grantStoreBasePath: base } = useBridgeConfig()
+  const { fetch: fetchFn, grantsBasePath: base } = useBridgeConfig()
   const key = principalIDs.join(',')
   const [state, setState] = useState<{ listedBy: ReadonlyMap<string, string[]>; error: string | null }>(
     { listedBy: new Map(), error: null },

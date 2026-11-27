@@ -26,8 +26,8 @@ export const PRINCIPALS_REFRESH_INTERVAL_MS = 10 * 60 * 1000
  *  a directory larger than it would need paging, which nothing here does yet. */
 export const PRINCIPALS_PAGE_LIMIT = 500
 
-export function principalsListURL(principalStoreBasePath: string): string {
-  return `${principalStoreBasePath}/principals?include_disabled=true&limit=${PRINCIPALS_PAGE_LIMIT}`
+export function principalsListURL(principalsBasePath: string): string {
+  return `${principalsBasePath}/principals?include_disabled=true&limit=${PRINCIPALS_PAGE_LIMIT}`
 }
 
 export function principalIsDisabled(principal: Principal): boolean {
@@ -74,7 +74,7 @@ export function pickablePrincipals(list: Principal[], filter: PickablePrincipals
 }
 
 export interface PrincipalsDirectory {
-  /** False when the host passed no `principalStoreBasePath`. Everything that
+  /** False when the host passed no `principalsBasePath`. Everything that
    *  renders an assignee hides itself on false; nothing was fetched. */
   enabled: boolean
   /** Every principal, disabled ones included, by id. */
@@ -91,11 +91,11 @@ export interface PrincipalsDirectory {
   refresh: () => Promise<void>
 }
 
-function principalsPoll(fetchFn: FetchFn, principalStoreBasePath: string): SharedPoll<Principal[]> {
-  return sharedPoll(fetchFn, `principals ${principalStoreBasePath}`, () =>
+function principalsPoll(fetchFn: FetchFn, principalsBasePath: string): SharedPoll<Principal[]> {
+  return sharedPoll(fetchFn, `principals ${principalsBasePath}`, () =>
     new SharedPoll<Principal[]>(
-      () => principalStoreBasePath
-        ? loadJSONList<Principal>(fetchFn, principalsListURL(principalStoreBasePath))
+      () => principalsBasePath
+        ? loadJSONList<Principal>(fetchFn, principalsListURL(principalsBasePath))
         // No store configured: nothing to load, and `enabled` below says so.
         : Promise.resolve({ ok: true, value: [] }),
       [],
@@ -108,9 +108,9 @@ function principalsPoll(fetchFn: FetchFn, principalStoreBasePath: string): Share
  * to people and for the assignee picker.
  */
 export function usePrincipals(): PrincipalsDirectory {
-  const { fetch: fetchFn, principalStoreBasePath } = useBridgeConfig()
-  const enabled = !!principalStoreBasePath
-  const poll = principalsPoll(fetchFn, principalStoreBasePath)
+  const { fetch: fetchFn, principalsBasePath } = useBridgeConfig()
+  const enabled = !!principalsBasePath
+  const poll = principalsPoll(fetchFn, principalsBasePath)
   const snapshot = useSharedPoll(poll)
   const refresh = useCallback(() => poll.refresh(), [poll])
   return useMemo(() => ({

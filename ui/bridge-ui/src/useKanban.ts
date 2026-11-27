@@ -91,8 +91,8 @@ export interface CreateCardArgs {
 export function useKanban(boardID: string | null, options: UseKanbanOptions = {}) {
   // basePath is llm-bridge-server: the stop button has to reach past kanban-store
   // to interrupt the session that is actually running the card's work.
-  const { fetch: fetchFn, kanbanStoreBasePath, basePath } = useBridgeConfig()
-  const enabled = !!kanbanStoreBasePath
+  const { fetch: fetchFn, issuesBasePath, basePath } = useBridgeConfig()
+  const enabled = !!issuesBasePath
   const { loadBoards = true, loadEntityTypes = true, columnPageSize = 0 } = options
 
   const [boards, setBoards] = useState<Board[]>([])
@@ -110,7 +110,7 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
   const fetchBoards = useCallback(async () => {
     if (!enabled || !loadBoards) return
     try {
-      const res = await fetchFn(`${kanbanStoreBasePath}/api/boards`)
+      const res = await fetchFn(`${issuesBasePath}/api/boards`)
       if (!res.ok) throw new Error(`/api/boards HTTP ${res.status}`)
       const data: Board[] = (await res.json()) ?? []
       setBoards(data)
@@ -118,13 +118,13 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
     } catch (err) {
       setError(`${err}`)
     }
-  }, [fetchFn, kanbanStoreBasePath, enabled, loadBoards])
+  }, [fetchFn, issuesBasePath, enabled, loadBoards])
 
   const fetchView = useCallback(async () => {
     if (!enabled || !boardID) { setView(null); return }
     try {
       const query = columnPageSize > 0 ? `?limit=${columnPageSize}` : ''
-      const res = await fetchFn(`${kanbanStoreBasePath}/api/boards/${encodeURIComponent(boardID)}/cards${query}`)
+      const res = await fetchFn(`${issuesBasePath}/api/boards/${encodeURIComponent(boardID)}/cards${query}`)
       if (!res.ok) throw new Error(`/api/boards/:id/cards HTTP ${res.status}`)
       const data: BoardView = await res.json()
 
@@ -134,7 +134,7 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
       if (expanded.length > 0) {
         const pages = await Promise.all(expanded.map(async cv => {
           const limit = columnLimits[cv.column.id]
-          const r = await fetchFn(`${kanbanStoreBasePath}/api/columns/${encodeURIComponent(cv.column.id)}/cards?limit=${limit}`)
+          const r = await fetchFn(`${issuesBasePath}/api/columns/${encodeURIComponent(cv.column.id)}/cards?limit=${limit}`)
           if (!r.ok) throw new Error(`/api/columns/:id/cards HTTP ${r.status}`)
           return (await r.json()) as ColumnView
         }))
@@ -151,16 +151,16 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
     } catch (err) {
       setError(`${err}`)
     }
-  }, [fetchFn, kanbanStoreBasePath, enabled, boardID, columnPageSize, columnLimits])
+  }, [fetchFn, issuesBasePath, enabled, boardID, columnPageSize, columnLimits])
 
   const fetchEntityTypes = useCallback(async () => {
     if (!enabled || !loadEntityTypes) return
     try {
-      const res = await fetchFn(`${kanbanStoreBasePath}/api/entity-types`)
+      const res = await fetchFn(`${issuesBasePath}/api/entity-types`)
       if (!res.ok) return
       setEntityTypes((await res.json()) ?? [])
     } catch {/* non-fatal */}
-  }, [fetchFn, kanbanStoreBasePath, enabled, loadEntityTypes])
+  }, [fetchFn, issuesBasePath, enabled, loadEntityTypes])
 
   // Two effects, not one: the board list does not depend on which board is
   // open, so picking a board (the page picks one as soon as the list arrives)
@@ -208,7 +208,7 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
 
   const createBoard = useCallback(async (args: CreateBoardArgs): Promise<Board | null> => {
     if (!enabled) return null
-    const res = await fetchFn(`${kanbanStoreBasePath}/api/boards`, {
+    const res = await fetchFn(`${issuesBasePath}/api/boards`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(args),
@@ -217,19 +217,19 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
     const b: Board = await res.json()
     await fetchBoards()
     return b
-  }, [fetchFn, kanbanStoreBasePath, enabled, fetchBoards])
+  }, [fetchFn, issuesBasePath, enabled, fetchBoards])
 
   const deleteBoard = useCallback(async (id: string): Promise<boolean> => {
     if (!enabled) return false
-    const res = await fetchFn(`${kanbanStoreBasePath}/api/boards/${encodeURIComponent(id)}`, { method: 'DELETE' })
+    const res = await fetchFn(`${issuesBasePath}/api/boards/${encodeURIComponent(id)}`, { method: 'DELETE' })
     if (!res.ok) { setError(`deleteBoard HTTP ${res.status}`); return false }
     await fetchBoards()
     return true
-  }, [fetchFn, kanbanStoreBasePath, enabled, fetchBoards])
+  }, [fetchFn, issuesBasePath, enabled, fetchBoards])
 
   const createColumn = useCallback(async (args: CreateColumnArgs): Promise<boolean> => {
     if (!enabled || !boardID) return false
-    const res = await fetchFn(`${kanbanStoreBasePath}/api/boards/${encodeURIComponent(boardID)}/columns`, {
+    const res = await fetchFn(`${issuesBasePath}/api/boards/${encodeURIComponent(boardID)}/columns`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(args),
@@ -237,19 +237,19 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
     if (!res.ok) { setError(`createColumn HTTP ${res.status}`); return false }
     await fetchView()
     return true
-  }, [fetchFn, kanbanStoreBasePath, enabled, boardID, fetchView])
+  }, [fetchFn, issuesBasePath, enabled, boardID, fetchView])
 
   const deleteColumn = useCallback(async (columnID: string): Promise<boolean> => {
     if (!enabled) return false
-    const res = await fetchFn(`${kanbanStoreBasePath}/api/columns/${encodeURIComponent(columnID)}`, { method: 'DELETE' })
+    const res = await fetchFn(`${issuesBasePath}/api/columns/${encodeURIComponent(columnID)}`, { method: 'DELETE' })
     if (!res.ok) { setError(`deleteColumn HTTP ${res.status}`); return false }
     await fetchView()
     return true
-  }, [fetchFn, kanbanStoreBasePath, enabled, fetchView])
+  }, [fetchFn, issuesBasePath, enabled, fetchView])
 
   const createCard = useCallback(async (args: CreateCardArgs): Promise<boolean> => {
     if (!enabled || !boardID) return false
-    const res = await fetchFn(`${kanbanStoreBasePath}/api/boards/${encodeURIComponent(boardID)}/cards`, {
+    const res = await fetchFn(`${issuesBasePath}/api/boards/${encodeURIComponent(boardID)}/cards`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(args),
@@ -261,11 +261,11 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
     }
     await fetchView()
     return true
-  }, [fetchFn, kanbanStoreBasePath, enabled, boardID, fetchView])
+  }, [fetchFn, issuesBasePath, enabled, boardID, fetchView])
 
   const moveCard = useCallback(async (cardID: string, columnID: string, position = 0): Promise<boolean> => {
     if (!enabled || !boardID) return false
-    const res = await fetchFn(`${kanbanStoreBasePath}/api/cards/${encodeURIComponent(cardID)}/move`, {
+    const res = await fetchFn(`${issuesBasePath}/api/cards/${encodeURIComponent(cardID)}/move`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ board_id: boardID, column_id: columnID, position }),
@@ -277,11 +277,11 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
     }
     await fetchView()
     return true
-  }, [fetchFn, kanbanStoreBasePath, enabled, boardID, fetchView])
+  }, [fetchFn, issuesBasePath, enabled, boardID, fetchView])
 
   const patchCard = useCallback(async (cardID: string, patch: Record<string, unknown>): Promise<boolean> => {
     if (!enabled) return false
-    const res = await fetchFn(`${kanbanStoreBasePath}/api/cards/${encodeURIComponent(cardID)}`, {
+    const res = await fetchFn(`${issuesBasePath}/api/cards/${encodeURIComponent(cardID)}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch),
@@ -289,7 +289,7 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
     if (!res.ok) { setError(`patchCard HTTP ${res.status}`); return false }
     await fetchView()
     return true
-  }, [fetchFn, kanbanStoreBasePath, enabled, fetchView])
+  }, [fetchFn, issuesBasePath, enabled, fetchView])
 
   /**
    * holdCard / unholdCard — the stop/play button.
@@ -301,7 +301,7 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
    */
   const holdCard = useCallback(async (cardID: string, reason = ''): Promise<boolean> => {
     if (!enabled) return false
-    const res = await fetchFn(`${kanbanStoreBasePath}/api/cards/${encodeURIComponent(cardID)}/hold`, {
+    const res = await fetchFn(`${issuesBasePath}/api/cards/${encodeURIComponent(cardID)}/hold`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ reason }),
@@ -309,26 +309,26 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
     if (!res.ok) { setError(`holdCard HTTP ${res.status}`); return false }
     await fetchView()
     return true
-  }, [fetchFn, kanbanStoreBasePath, enabled, fetchView])
+  }, [fetchFn, issuesBasePath, enabled, fetchView])
 
   const unholdCard = useCallback(async (cardID: string): Promise<boolean> => {
     if (!enabled) return false
-    const res = await fetchFn(`${kanbanStoreBasePath}/api/cards/${encodeURIComponent(cardID)}/unhold`, {
+    const res = await fetchFn(`${issuesBasePath}/api/cards/${encodeURIComponent(cardID)}/unhold`, {
       method: 'POST',
     })
     if (!res.ok) { setError(`unholdCard HTTP ${res.status}`); return false }
     await fetchView()
     return true
-  }, [fetchFn, kanbanStoreBasePath, enabled, fetchView])
+  }, [fetchFn, issuesBasePath, enabled, fetchView])
 
   const deleteCard = useCallback(async (cardID: string, hard = false): Promise<boolean> => {
     if (!enabled) return false
-    const url = `${kanbanStoreBasePath}/api/cards/${encodeURIComponent(cardID)}${hard ? '?hard=true' : ''}`
+    const url = `${issuesBasePath}/api/cards/${encodeURIComponent(cardID)}${hard ? '?hard=true' : ''}`
     const res = await fetchFn(url, { method: 'DELETE' })
     if (!res.ok) { setError(`deleteCard HTTP ${res.status}`); return false }
     await fetchView()
     return true
-  }, [fetchFn, kanbanStoreBasePath, enabled, fetchView])
+  }, [fetchFn, issuesBasePath, enabled, fetchView])
 
   /**
    * detachCard — take a card off this board without touching the work.
@@ -344,12 +344,12 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
    */
   const detachCard = useCallback(async (boardID: string, cardID: string): Promise<boolean> => {
     if (!enabled) return false
-    const url = `${kanbanStoreBasePath}/api/boards/${encodeURIComponent(boardID)}/cards/${encodeURIComponent(cardID)}`
+    const url = `${issuesBasePath}/api/boards/${encodeURIComponent(boardID)}/cards/${encodeURIComponent(cardID)}`
     const res = await fetchFn(url, { method: 'DELETE' })
     if (!res.ok) { setError(`detachCard HTTP ${res.status}`); return false }
     await fetchView()
     return true
-  }, [fetchFn, kanbanStoreBasePath, enabled, fetchView])
+  }, [fetchFn, issuesBasePath, enabled, fetchView])
 
   /**
    * archiveCard — mark the work archived, leaving it a live, restorable item.
@@ -366,10 +366,10 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
 
   const listCardLinks = useCallback(async (cardID: string): Promise<CardLink[]> => {
     if (!enabled) return []
-    const res = await fetchFn(`${kanbanStoreBasePath}/api/cards/${encodeURIComponent(cardID)}/links`)
+    const res = await fetchFn(`${issuesBasePath}/api/cards/${encodeURIComponent(cardID)}/links`)
     if (!res.ok) return []
     return (await res.json()) ?? []
-  }, [fetchFn, kanbanStoreBasePath, enabled])
+  }, [fetchFn, issuesBasePath, enabled])
 
   /**
    * stopCard — the stop button, in whichever column the card is sitting.
@@ -440,7 +440,7 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
 
   const addCardLink = useCallback(async (cardID: string, entity_type: string, entity_ref: string, label?: string): Promise<boolean> => {
     if (!enabled) return false
-    const res = await fetchFn(`${kanbanStoreBasePath}/api/cards/${encodeURIComponent(cardID)}/links`, {
+    const res = await fetchFn(`${issuesBasePath}/api/cards/${encodeURIComponent(cardID)}/links`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ entity_type, entity_ref, label }),
@@ -448,7 +448,7 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
     if (!res.ok) { setError(`addCardLink HTTP ${res.status}`); return false }
     await fetchView()
     return true
-  }, [fetchFn, kanbanStoreBasePath, enabled, fetchView])
+  }, [fetchFn, issuesBasePath, enabled, fetchView])
 
   /**
    * assign / unassign — put a principal on a card, or take them off.
@@ -463,32 +463,32 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
   const assign = useCallback(async (cardID: string, principalID: string): Promise<AssignmentOutcome> => {
     if (!enabled) return { ok: false, error: 'kanban-store is not configured' }
     const res = await fetchFn(
-      `${kanbanStoreBasePath}/api/cards/${encodeURIComponent(cardID)}/assignments/${encodeURIComponent(principalID)}`,
+      `${issuesBasePath}/api/cards/${encodeURIComponent(cardID)}/assignments/${encodeURIComponent(principalID)}`,
       { method: 'PUT' },
     )
     if (!res.ok) return { ok: false, error: await readErrorText(res, 'assign') }
     await fetchView()
     return { ok: true }
-  }, [fetchFn, kanbanStoreBasePath, enabled, fetchView])
+  }, [fetchFn, issuesBasePath, enabled, fetchView])
 
   const unassign = useCallback(async (cardID: string, principalID: string): Promise<AssignmentOutcome> => {
     if (!enabled) return { ok: false, error: 'kanban-store is not configured' }
     const res = await fetchFn(
-      `${kanbanStoreBasePath}/api/cards/${encodeURIComponent(cardID)}/assignments/${encodeURIComponent(principalID)}`,
+      `${issuesBasePath}/api/cards/${encodeURIComponent(cardID)}/assignments/${encodeURIComponent(principalID)}`,
       { method: 'DELETE' },
     )
     if (!res.ok) return { ok: false, error: await readErrorText(res, 'unassign') }
     await fetchView()
     return { ok: true }
-  }, [fetchFn, kanbanStoreBasePath, enabled, fetchView])
+  }, [fetchFn, issuesBasePath, enabled, fetchView])
 
   const deleteCardLink = useCallback(async (linkID: string): Promise<boolean> => {
     if (!enabled) return false
-    const res = await fetchFn(`${kanbanStoreBasePath}/api/links/${encodeURIComponent(linkID)}`, { method: 'DELETE' })
+    const res = await fetchFn(`${issuesBasePath}/api/links/${encodeURIComponent(linkID)}`, { method: 'DELETE' })
     if (!res.ok) { setError(`deleteCardLink HTTP ${res.status}`); return false }
     await fetchView()
     return true
-  }, [fetchFn, kanbanStoreBasePath, enabled, fetchView])
+  }, [fetchFn, issuesBasePath, enabled, fetchView])
 
   // These two throw rather than reporting through the hook's `error`, because
   // their only caller renders its own error and never reads that field. An
@@ -499,37 +499,37 @@ export function useKanban(boardID: string | null, options: UseKanbanOptions = {}
   // what lets the caller keep the last good answer on screen.
   const listCardsForEntity = useCallback(async (entityType: string, entityRef: string): Promise<EntityCardView[]> => {
     if (!enabled) return []
-    const res = await fetchFn(`${kanbanStoreBasePath}/api/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityRef)}/cards`)
+    const res = await fetchFn(`${issuesBasePath}/api/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityRef)}/cards`)
     if (!res.ok) throw new Error(`listCardsForEntity HTTP ${res.status}`)
     return (await res.json()) ?? []
-  }, [fetchFn, kanbanStoreBasePath, enabled])
+  }, [fetchFn, issuesBasePath, enabled])
 
   const listEntityTags = useCallback(async (entityType: string, entityRef: string): Promise<EntityTag[]> => {
     if (!enabled) return []
-    const res = await fetchFn(`${kanbanStoreBasePath}/api/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityRef)}/tags`)
+    const res = await fetchFn(`${issuesBasePath}/api/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityRef)}/tags`)
     if (!res.ok) throw new Error(`listEntityTags HTTP ${res.status}`)
     return (await res.json()) ?? []
-  }, [fetchFn, kanbanStoreBasePath, enabled])
+  }, [fetchFn, issuesBasePath, enabled])
 
   const addEntityTag = useCallback(async (entityType: string, entityRef: string, tag: string): Promise<boolean> => {
     if (!enabled) return false
-    const res = await fetchFn(`${kanbanStoreBasePath}/api/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityRef)}/tags`, {
+    const res = await fetchFn(`${issuesBasePath}/api/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityRef)}/tags`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ tag }),
     })
     if (!res.ok) { setError(`addEntityTag HTTP ${res.status}`); return false }
     return true
-  }, [fetchFn, kanbanStoreBasePath, enabled])
+  }, [fetchFn, issuesBasePath, enabled])
 
   const deleteEntityTag = useCallback(async (entityType: string, entityRef: string, tag: string): Promise<boolean> => {
     if (!enabled) return false
-    const res = await fetchFn(`${kanbanStoreBasePath}/api/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityRef)}/tags/${encodeURIComponent(tag)}`, {
+    const res = await fetchFn(`${issuesBasePath}/api/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityRef)}/tags/${encodeURIComponent(tag)}`, {
       method: 'DELETE',
     })
     if (!res.ok) { setError(`deleteEntityTag HTTP ${res.status}`); return false }
     return true
-  }, [fetchFn, kanbanStoreBasePath, enabled])
+  }, [fetchFn, issuesBasePath, enabled])
 
   return useMemo(() => ({
     boards,

@@ -81,7 +81,7 @@ export interface ProjectsViewProps {
 }
 
 export function ProjectsView({ projectId, onOpenProject, onSelectSession, onClose }: ProjectsViewProps): JSX.Element {
-  const { fetch: fetchFn, projectStoreBasePath } = useBridgeConfig()
+  const { fetch: fetchFn, projectsBasePath } = useBridgeConfig()
   const { api } = useChatContext()
   const { projects, sessionLinks, error: storeError, loaded, refresh } = useProjectStore()
 
@@ -101,14 +101,14 @@ export function ProjectsView({ projectId, onOpenProject, onSelectSession, onClos
   const filedKey = filedSessionIds.join(',')
 
   useEffect(() => {
-    if (!projectStoreBasePath) return
+    if (!projectsBasePath) return
     let canceled = false
-    fetchFn(vocabularyPath(projectStoreBasePath))
+    fetchFn(vocabularyPath(projectsBasePath))
       .then((r) => readJSON<ProjectVocabulary>(r, 'project-store vocabulary'))
       .then((v) => { if (!canceled) setVocabulary(v) })
       .catch((error: Error) => console.error(error))
     return () => { canceled = true }
-  }, [fetchFn, projectStoreBasePath])
+  }, [fetchFn, projectsBasePath])
 
   // Every rollup on the landing page; only the open project's on its page.
   const wantedRollups = useMemo(
@@ -117,7 +117,7 @@ export function ProjectsView({ projectId, onOpenProject, onSelectSession, onClos
   )
   const wantedKey = wantedRollups.join(',')
   useEffect(() => {
-    if (!projectStoreBasePath || wantedKey === '') return
+    if (!projectsBasePath || wantedKey === '') return
     let canceled = false
     const ids = wantedKey.split(',')
     setLoading(true)
@@ -127,7 +127,7 @@ export function ProjectsView({ projectId, onOpenProject, onSelectSession, onClos
         const id = ids[next++]
         let slot: RollupSlot
         try {
-          const rollup = await fetchFn(projectRollupPath(projectStoreBasePath, id)).then((r) =>
+          const rollup = await fetchFn(projectRollupPath(projectsBasePath, id)).then((r) =>
             readJSON<Rollup>(r, `rollup of ${id}`),
           )
           slot = { rollup, error: null }
@@ -142,7 +142,7 @@ export function ProjectsView({ projectId, onOpenProject, onSelectSession, onClos
       if (!canceled) setLoading(false)
     })
     return () => { canceled = true }
-  }, [fetchFn, projectStoreBasePath, wantedKey, reloadSignal])
+  }, [fetchFn, projectsBasePath, wantedKey, reloadSignal])
 
   // The filed sessions' rows, for names, states and spend: one lookup by id,
   // because most of them are long past the sidebar's loaded page.
@@ -183,13 +183,13 @@ export function ProjectsView({ projectId, onOpenProject, onSelectSession, onClos
     return out
   }, [rollups, openSignals.operator.requests, openSignals.background.requests])
 
-  if (!projectStoreBasePath) {
+  if (!projectsBasePath) {
     return (
       <div className="bc-workspace bc-workspace-focused">
         <ProjectsHeader title="Projects" onClose={onClose} />
         <p className={styles.notice}>
           This host does not proxy project-store, so there are no projects to show (the host sets
-          <code> projectStoreBasePath</code>).
+          <code> projectsBasePath</code>).
         </p>
       </div>
     )

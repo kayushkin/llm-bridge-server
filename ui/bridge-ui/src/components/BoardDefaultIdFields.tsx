@@ -44,7 +44,7 @@ export const DEFAULT_FIELD_LABELS: Record<BoardDefaultField, string> = {
  * instances, bundle-store's enabled bundles (numeric ids).
  */
 export function useDefaultPickers(): DefaultPickers {
-  const { bundleStoreBasePath } = useBridgeConfig()
+  const { bundlesBasePath } = useBridgeConfig()
 
   const principals = usePrincipals()
   const principalOptions = useMemo<PickerOption[] | null>(() => {
@@ -91,7 +91,7 @@ export function useDefaultPickers(): DefaultPickers {
     default_bundle_id: {
       options: bundleOptions,
       optionsError: bundles.error,
-      unavailable: bundleStoreBasePath ? null : 'This host has no route to bundle-store, so the id is typed here.',
+      unavailable: bundlesBasePath ? null : 'This host has no route to bundle-store, so the id is typed here.',
     },
   }
 }

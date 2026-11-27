@@ -244,7 +244,7 @@ export default function Sidebar({
   const { harnessMap, basePath } = useBridgeHarnesses()
   // An empty `orchestratorBasePath` means this host proxies no orchestrator, in which
   // case its row is not rendered at all rather than pointed at a guessed path.
-  const { orchestratorBasePath, workGraphStoreBasePath } = useBridgeConfig()
+  const { orchestratorBasePath, gitActivityBasePath } = useBridgeConfig()
   // Liveness of the session-list stream. `listLoading` only covers the FIRST fetch, so
   // without this an empty list after a dropped stream reads as "you have no sessions".
   // 'open' is the only state in which updates are flowing — see useConnState.
@@ -1187,7 +1187,7 @@ export default function Sidebar({
         {/* The work graph and projects pages, as small buttons at the end of the search
             row rather than rows styled like sessions. Each is drawn only when the host
             proxies its store. */}
-        {workGraphStoreBasePath && (
+        {gitActivityBasePath && (
           <button
             className={`bc-sidebar-page-btn ${workGraphOpen ? 'bc-sidebar-page-btn-selected' : ''}`}
             onClick={onOpenWorkGraph}

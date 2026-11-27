@@ -11,9 +11,9 @@ import type { ShellFlags } from './pages'
  *  component, and a page that imported it back would load before the list it
  *  is part of. */
 export const BRIDGE_PAGE_AVAILABILITY: Readonly<Partial<Record<keyof BridgeRoutes, (config: BridgeConfig, flags: ShellFlags) => boolean>>> = {
-  kanban: c => !!c.kanbanStoreBasePath,
-  reference: c => !!c.referenceStoreBasePath,
-  emailTickets: c => !!c.kanbanStoreBasePath && !!c.mailBasePath,
+  kanban: c => !!c.issuesBasePath,
+  reference: c => !!c.referencesBasePath,
+  emailTickets: c => !!c.issuesBasePath && !!c.mailBasePath,
   orchestrator: c => !!c.orchestratorBasePath,
   previews: c => !!c.previewsBasePath,
   threeDimensionalModels: c => !!c.threeDimensionalModelsBasePath,
@@ -24,13 +24,13 @@ export const BRIDGE_PAGE_AVAILABILITY: Readonly<Partial<Record<keyof BridgeRoute
   discord: c => !!c.multichatBasePath,
   emoji: c => !!c.multichatBasePath,
   autoReactions: c => !!c.multichatBasePath,
-  skills: c => !!c.skillStoreBasePath,
-  tools: c => !!c.toolStoreBasePath,
-  bundles: c => !!c.bundleStoreBasePath,
-  principals: c => !!c.principalStoreBasePath,
-  grants: c => !!c.grantStoreBasePath,
-  permissions: c => !!c.permissionStoreBasePath,
-  models: c => !!c.modelStoreBasePath,
+  skills: c => !!c.skillsBasePath,
+  tools: c => !!c.toolsBasePath,
+  bundles: c => !!c.bundlesBasePath,
+  principals: c => !!c.principalsBasePath,
+  grants: c => !!c.grantsBasePath,
+  permissions: c => !!c.permissionsBasePath,
+  models: c => !!c.modelsBasePath,
   serviceInventory: (_, f) => f.showServiceInventory,
   conformance: (_, f) => f.showConformance,
 }

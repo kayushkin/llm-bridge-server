@@ -23,7 +23,7 @@ import {
  *  legend, the records, the notes and the warnings are the server's, computed
  *  by the same code the spawn runs. */
 export function BridgeEffectiveConfig() {
-  const { fetch: apiFetch, basePath, routes, principalStoreBasePath, bundleStoreBasePath, kanbanStoreBasePath } = useBridgeConfig()
+  const { fetch: apiFetch, basePath, routes, principalsBasePath, bundlesBasePath, issuesBasePath } = useBridgeConfig()
   const [params, setParams] = useSearchParams()
   const sessionID = params.get('session') ?? ''
   const inputs = useMemo(() => effectiveConfigInputsFromParams(params), [params])
@@ -85,9 +85,9 @@ export function BridgeEffectiveConfig() {
         <DryRunForm
           inputs={inputs}
           onChange={setInputs}
-          showPrincipals={!!principalStoreBasePath}
-          showBundles={!!bundleStoreBasePath}
-          showBoards={!!kanbanStoreBasePath}
+          showPrincipals={!!principalsBasePath}
+          showBundles={!!bundlesBasePath}
+          showBoards={!!issuesBasePath}
         />
       )}
 

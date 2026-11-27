@@ -4,7 +4,7 @@ import { listBundles } from './bundleStoreClient'
 import type { Bundle } from '@kayushkin/bundle-store-types'
 
 export interface BundlesList {
-  /** False when the host passed no `bundleStoreBasePath`: nothing was fetched,
+  /** False when the host passed no `bundlesBasePath`: nothing was fetched,
    *  and a bundle id can only be shown as itself. */
   enabled: boolean
   /** Every bundle, enabled or not, or null until the store has answered. */
@@ -18,18 +18,18 @@ export interface BundlesList {
  * picker. Small (six rows on this host), so no search and no shared poll.
  */
 export function useBundles(): BundlesList {
-  const { fetch: fetchFn, bundleStoreBasePath } = useBridgeConfig()
+  const { fetch: fetchFn, bundlesBasePath } = useBridgeConfig()
   const [bundles, setBundles] = useState<Bundle[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   useEffect(() => {
-    if (!bundleStoreBasePath) return
+    if (!bundlesBasePath) return
     let canceled = false
-    listBundles(fetchFn, bundleStoreBasePath).then(result => {
+    listBundles(fetchFn, bundlesBasePath).then(result => {
       if (canceled) return
       // Go encodes an empty slice it never allocated as null.
       if (result.ok) { setBundles(result.value ?? []); setError(null) } else setError(result.error)
     })
     return () => { canceled = true }
-  }, [fetchFn, bundleStoreBasePath])
-  return { enabled: !!bundleStoreBasePath, bundles, error }
+  }, [fetchFn, bundlesBasePath])
+  return { enabled: !!bundlesBasePath, bundles, error }
 }

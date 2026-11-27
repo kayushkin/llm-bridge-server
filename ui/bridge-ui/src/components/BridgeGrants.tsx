@@ -24,13 +24,13 @@ import type { GrantResourceType } from '../grantStoreClient'
  * the holder, and each resource's own store for the resource, so a rename
  * shows here without a copy going stale.
  *
- * Renders nothing when the host passed no `grantStoreBasePath`, which is also
+ * Renders nothing when the host passed no `grantsBasePath`, which is also
  * when `BridgeLayout` shows no Grants tab.
  */
 export function BridgeGrants() {
-  const { fetch: fetchFn, grantStoreBasePath } = useBridgeConfig()
-  if (!grantStoreBasePath) return null
-  return <GrantsPage fetchFn={fetchFn} base={grantStoreBasePath} />
+  const { fetch: fetchFn, grantsBasePath } = useBridgeConfig()
+  if (!grantsBasePath) return null
+  return <GrantsPage fetchFn={fetchFn} base={grantsBasePath} />
 }
 
 /** How many grants one read asks for. Plenty for a personal box; the store

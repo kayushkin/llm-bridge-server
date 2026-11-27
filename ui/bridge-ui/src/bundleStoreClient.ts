@@ -41,20 +41,20 @@ async function request<T>(fetchFn: FetchFn, verb: string, url: string, init?: Re
   }
 }
 
-export function listBundles(fetchFn: FetchFn, bundleStoreBasePath: string): Promise<BundleStoreResult<Bundle[] | null>> {
-  return request(fetchFn, 'list bundles', `${bundleStoreBasePath}/bundles`)
+export function listBundles(fetchFn: FetchFn, bundlesBasePath: string): Promise<BundleStoreResult<Bundle[] | null>> {
+  return request(fetchFn, 'list bundles', `${bundlesBasePath}/bundles`)
 }
 
 /** Every repo. repo-store applies a LIMIT only when `limit` is sent, so this
  *  sends none: a capped list would pass for the whole one. */
-export function listRepos(fetchFn: FetchFn, repoStoreBasePath: string): Promise<BundleStoreResult<RepoStoreRepo[] | null>> {
-  return request(fetchFn, 'list repos', `${repoStoreBasePath}/repos`)
+export function listRepos(fetchFn: FetchFn, reposBasePath: string): Promise<BundleStoreResult<RepoStoreRepo[] | null>> {
+  return request(fetchFn, 'list repos', `${reposBasePath}/repos`)
 }
 
 export function resolveBundles(
-  fetchFn: FetchFn, bundleStoreBasePath: string, repoTags: string[], taskTags: string[],
+  fetchFn: FetchFn, bundlesBasePath: string, repoTags: string[], taskTags: string[],
 ): Promise<BundleStoreResult<BundleResolution>> {
-  return request(fetchFn, 'resolve', `${bundleStoreBasePath}/resolve`, {
+  return request(fetchFn, 'resolve', `${bundlesBasePath}/resolve`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ repo_tags: repoTags, task_tags: taskTags }),
@@ -67,8 +67,8 @@ export function resolveBundles(
 // parent that does not exist, a delete refused because children extend it.
 
 /** `POST /bundles` — an upsert on `name`: the whole member set is replaced. */
-export function upsertBundle(fetchFn: FetchFn, bundleStoreBasePath: string, body: BundleWrite): Promise<BundleStoreResult<Bundle>> {
-  return request(fetchFn, `save bundle ${body.name}`, `${bundleStoreBasePath}/bundles`, {
+export function upsertBundle(fetchFn: FetchFn, bundlesBasePath: string, body: BundleWrite): Promise<BundleStoreResult<Bundle>> {
+  return request(fetchFn, `save bundle ${body.name}`, `${bundlesBasePath}/bundles`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -76,13 +76,13 @@ export function upsertBundle(fetchFn: FetchFn, bundleStoreBasePath: string, body
 }
 
 export function setBundleEnabled(
-  fetchFn: FetchFn, bundleStoreBasePath: string, id: number, enabled: boolean,
+  fetchFn: FetchFn, bundlesBasePath: string, id: number, enabled: boolean,
 ): Promise<BundleStoreResult<{ id: number; enabled: boolean }>> {
   const verb = enabled ? 'enable' : 'disable'
-  return request(fetchFn, `${verb} bundle ${id}`, `${bundleStoreBasePath}/bundles/${id}/${verb}`, { method: 'POST' })
+  return request(fetchFn, `${verb} bundle ${id}`, `${bundlesBasePath}/bundles/${id}/${verb}`, { method: 'POST' })
 }
 
 /** Refused with 409 when other bundles extend this one; the message names them. */
-export function deleteBundle(fetchFn: FetchFn, bundleStoreBasePath: string, id: number): Promise<BundleStoreResult<{ status: string }>> {
-  return request(fetchFn, `delete bundle ${id}`, `${bundleStoreBasePath}/bundles/${id}`, { method: 'DELETE' })
+export function deleteBundle(fetchFn: FetchFn, bundlesBasePath: string, id: number): Promise<BundleStoreResult<{ status: string }>> {
+  return request(fetchFn, `delete bundle ${id}`, `${bundlesBasePath}/bundles/${id}`, { method: 'DELETE' })
 }

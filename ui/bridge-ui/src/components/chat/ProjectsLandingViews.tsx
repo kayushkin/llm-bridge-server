@@ -83,13 +83,13 @@ export function ProjectTimeline({
   projects: Project[]
   onOpenProject: (projectId: string) => void
 }): JSX.Element {
-  const { fetch: fetchFn, projectStoreBasePath } = useBridgeConfig()
+  const { fetch: fetchFn, projectsBasePath } = useBridgeConfig()
   const [activity, setActivity] = useState<ReadonlyMap<string, ActivitySlot>>(new Map())
   const rows = useMemo(() => projectTree(projects), [projects])
   const idsKey = rows.map((r) => r.project.id).join(',')
 
   useEffect(() => {
-    if (!projectStoreBasePath || idsKey === '') return
+    if (!projectsBasePath || idsKey === '') return
     let canceled = false
     const ids = idsKey.split(',')
     let next = 0
@@ -98,7 +98,7 @@ export function ProjectTimeline({
         const id = ids[next++]
         let slot: ActivitySlot
         try {
-          const answer = await fetchFn(projectActivityPath(projectStoreBasePath, id, TIMELINE_DAYS)).then((r) =>
+          const answer = await fetchFn(projectActivityPath(projectsBasePath, id, TIMELINE_DAYS)).then((r) =>
             readJSON<ActivityAnswer>(r, `activity of ${id}`),
           )
           slot = { events: answer.events, error: null }
@@ -111,7 +111,7 @@ export function ProjectTimeline({
     }
     void Promise.all(Array.from({ length: Math.min(ACTIVITY_CONCURRENCY, ids.length) }, worker))
     return () => { canceled = true }
-  }, [fetchFn, projectStoreBasePath, idsKey])
+  }, [fetchFn, projectsBasePath, idsKey])
 
   const nowSeconds = Math.floor(Date.now() / 1000)
   const dayStarts = timelineDayStarts(TIMELINE_DAYS, nowSeconds)
@@ -198,17 +198,17 @@ function TimelineCell({ day, busiest, isToday }: { day: TimelineDay; busiest: nu
 
 /** One project's month as a strip, for the top of its own page. */
 export function ProjectMonthStrip({ projectId }: { projectId: string }): JSX.Element | null {
-  const { fetch: fetchFn, projectStoreBasePath } = useBridgeConfig()
+  const { fetch: fetchFn, projectsBasePath } = useBridgeConfig()
   const [slot, setSlot] = useState<ActivitySlot | null>(null)
   useEffect(() => {
-    if (!projectStoreBasePath) return
+    if (!projectsBasePath) return
     let canceled = false
-    fetchFn(projectActivityPath(projectStoreBasePath, projectId, TIMELINE_DAYS))
+    fetchFn(projectActivityPath(projectsBasePath, projectId, TIMELINE_DAYS))
       .then((r) => readJSON<ActivityAnswer>(r, 'project activity'))
       .then((answer) => { if (!canceled) setSlot({ events: answer.events, error: null }) })
       .catch((error: Error) => { if (!canceled) setSlot({ events: null, error: error.message }) })
     return () => { canceled = true }
-  }, [fetchFn, projectStoreBasePath, projectId])
+  }, [fetchFn, projectsBasePath, projectId])
   if (!slot) return null
   if (slot.error !== null) return <p className={styles.error}>{slot.error}</p>
   const days = timelineDays(slot.events, timelineDayStarts(TIMELINE_DAYS, Math.floor(Date.now() / 1000)))
@@ -243,7 +243,7 @@ export function StageBoard({
   onOpenProject: (projectId: string) => void
   onChanged: () => void
 }): JSX.Element {
-  const { fetch: fetchFn, projectStoreBasePath } = useBridgeConfig()
+  const { fetch: fetchFn, projectsBasePath } = useBridgeConfig()
   const [dragging, setDragging] = useState<string | null>(null)
   const [over, setOver] = useState<string | null>(null)
   const [moving, setMoving] = useState<string | null>(null)
@@ -253,12 +253,12 @@ export function StageBoard({
 
   const move = async (projectId: string, stage: string) => {
     const project = projects.find((p) => p.id === projectId)
-    if (!project || project.stage === stage || !projectStoreBasePath) return
+    if (!project || project.stage === stage || !projectsBasePath) return
     setMoving(projectId)
     setError(null)
     try {
       await readJSON<Project>(
-        await fetchFn(projectPath(projectStoreBasePath, projectId), {
+        await fetchFn(projectPath(projectsBasePath, projectId), {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ stage, changed_by: PROJECTS_PAGE_AUTHOR }),

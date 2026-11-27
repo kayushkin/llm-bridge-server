@@ -34,13 +34,13 @@ import type { Board, PriorityLadder } from '@kayushkin/kanban-store-types'
  * the section redrawn from the record, and a refusal is shown in place in the
  * store's own words — it names the field and what its owner said.
  *
- * Renders nothing when the host passed no `kanbanStoreBasePath`, which is also
+ * Renders nothing when the host passed no `issuesBasePath`, which is also
  * when `BridgeLayout` shows no Kanban tab.
  */
 export function BridgeKanbanSettings() {
-  const { fetch: fetchFn, kanbanStoreBasePath } = useBridgeConfig()
-  if (!kanbanStoreBasePath) return null
-  return <KanbanSettingsPage fetchFn={fetchFn} base={kanbanStoreBasePath} />
+  const { fetch: fetchFn, issuesBasePath } = useBridgeConfig()
+  if (!issuesBasePath) return null
+  return <KanbanSettingsPage fetchFn={fetchFn} base={issuesBasePath} />
 }
 
 function readLastBoardID(): string | null {

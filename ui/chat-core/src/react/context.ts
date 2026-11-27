@@ -20,7 +20,7 @@ export interface ChatContextValue {
    *  an item id, and the chip must say so rather than spin forever. */
   noteboard: NoteboardClient | null;
   /** reference-store through the bridge, or null when the host did not
-   *  configure a `referenceStoreBasePath`. It answers the list of reference
+   *  configure a `referencesBasePath`. It answers the list of reference
    *  types and looks ids up for the signed-in person. Null means an id with
    *  no chip of its own stays plain text: there is nowhere to ask. */
   references: ReferenceStoreClient | null;
