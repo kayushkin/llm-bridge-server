@@ -28,7 +28,7 @@
 #   stores (/principals/, /grants/, /sign-in/, /permissions/), the agent stores
 #   (/tools/, /skills/, /bundles/, agent-store at the root, /models/,
 #   memory-store at the root, /usage/, /evaluations/), the task stores
-#   (/noteboard/, /issues/, /projects/, /predictions/), the repository stores
+#   (/notes/, /issues/ with each issue at /issues/items/, /projects/, /predictions/), the repository stores
 #   (/repos/, /git-activity/), file-store at /file-storage/ (bytes under
 #   data/file-store), /session-log/, /mail/, /scheduler/ and /rules/, and the
 #   connected records stores (/people/, /calendar/, /journal/, /messages/,

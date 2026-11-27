@@ -5,17 +5,33 @@
 > **In llm-bridge-server.** This copy runs inside llm-bridge-server on a
 > Postgres module (`issues`; `kanban` before 2026-11-27, renamed at start),
 > not as a service of its own. Its routes are the server's `/issues/<rest>`
-> (this store's `/<rest>`, so its boards are `/issues/api/boards`). The server names the caller in the
+> (this store's `/<rest>`, so its boards are `/issues/boards`: the paths below
+> lost their `/api` on 2026-11-27, so `/api/boards` is `/boards`). The server names the caller in the
 > request context from the credential it verified, so `X-Principal-Id` and
 > `X-Kanban-Store-Service-Token` below name nobody: a principal comes from a
 > login or a session agent token, and the internal service is the server's own
 > service token. There is no `GET /settings`, no unit and no environment of the
 > store's own; the server's `issues.*`, `multichat.url`, `auth_store.*`,
-> `files.*` and `reference_store.url` settings wire it. Noteboard,
-> principal-store, grant-store, bundle-store, agent-store and harness-store are
-> asked in the same process. `llm-bridge-server import-issues -sqlite
-> <file>` copies a standalone database in. The rest of this file describes the
-> standalone service, which still runs until the landing day.
+> `files.*` and `reference_store.url` settings wire it. principal-store,
+> grant-store, bundle-store, agent-store and harness-store are asked in the
+> same process. `llm-bridge-server import-issues -sqlite <file>` copies a
+> standalone database in. The rest of this file describes the standalone
+> service, which still runs until the landing day.
+>
+> **Since 2026-11-27 this module owns the whole issue.** What the rest of this
+> file calls "the noteboard item" of a card is now the issue's content, kept
+> in this module's own `items` and `item_revisions` tables (migration 0002,
+> `issueitems`), read and written by `internal/tasktracking/items`, the store
+> notes uses too, and served at the server's `/issues/items` (operator only;
+> `/items`, `/items/{id}`, `/items/{id}/hold` and the rest, as noteboard's
+> `/api/items…`). An issue need not be on a board: a card is an issue that
+> is, and a card's id is its issue's id, as before. The boards call the
+> content through `issuecontent.Contents` (the package was `noteboard`), in
+> Go. Notes, ranked lists and workspaces are notes
+> (`internal/tasktracking/notes`, `/notes/`). The todos of an install's
+> noteboard module move here at its first start, and `import-noteboard`
+> splits a standalone noteboard file between the two
+> (`internal/tasktracking/noteboardsplit`); run `import-issues` first.
 
 A kanban service that stores **where a card sits and what has happened to it**.
 
@@ -153,14 +169,14 @@ the unit or a drop-in, and takes effect on restart.
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/api/boards` | `?include_archived=true` to include archived boards |
-| `POST` | `/api/boards` | `{"name":…,"description":…}`; `name` required |
-| `GET` | `/api/boards/{id}` | |
-| `PATCH` | `/api/boards/{id}` | Any of `name`, `description`, `archived`, `business_hours`, `default_principal_id`, `default_agent_id`, `default_instance_id`, `default_bundle_id`, `classifier`, `assignment_pool`, `organization_id` — see [Board settings](#board-settings). `taxonomy` is refused here with a 400: see [Board classification](#board-classification) |
-| `GET` `PUT` | `/api/boards/{id}/tag-rules` | The board's ordered tag rules — see [Tag rules](#tag-rules) |
-| `GET` | `/api/boards/{id}/effective-defaults?tag=…&tag=…` | What a card carrying these tags gets on this board, each default with its source |
-| `GET` | `/api/boards/{id}/cards/{card_id}/effective-defaults` | The same, with the card's tags read from noteboard |
-| `DELETE` | `/api/boards/{id}` | |
+| `GET` | `/boards` | `?include_archived=true` to include archived boards |
+| `POST` | `/boards` | `{"name":…,"description":…}`; `name` required |
+| `GET` | `/boards/{id}` | |
+| `PATCH` | `/boards/{id}` | Any of `name`, `description`, `archived`, `business_hours`, `default_principal_id`, `default_agent_id`, `default_instance_id`, `default_bundle_id`, `classifier`, `assignment_pool`, `organization_id` — see [Board settings](#board-settings). `taxonomy` is refused here with a 400: see [Board classification](#board-classification) |
+| `GET` `PUT` | `/boards/{id}/tag-rules` | The board's ordered tag rules — see [Tag rules](#tag-rules) |
+| `GET` | `/boards/{id}/effective-defaults?tag=…&tag=…` | What a card carrying these tags gets on this board, each default with its source |
+| `GET` | `/boards/{id}/cards/{card_id}/effective-defaults` | The same, with the card's tags read from noteboard |
+| `DELETE` | `/boards/{id}` | |
 
 ### Board classification routes
 
@@ -168,24 +184,24 @@ See [Board classification](#board-classification) for what these mean.
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/api/boards/{id}/classification` | Taxonomy, `taxonomy_revision`, policy, `supported_modes` and `caller_actions`. Writes nothing. `can_view` |
-| `PUT` | `/api/boards/{id}/classification/taxonomy` | `{"taxonomy":{…}}` or `{"taxonomy":null}`, with **`If-Match: "taxonomy-<revision>"`** (428 without, 412 stale). Answers the settings and an affected-work `preview`. `can_administer` |
-| `PUT` | `/api/boards/{id}/classification/policy` | `{"axis_policies":{"<axis id>":{"mode":"off\|discovery\|assisted"}}}`, with **`If-Match: "policy-<revision>"`**. `can_administer` |
-| `GET` | `/api/boards/{id}/classification/decisions` | Newest first, without source text. `?card_id=`, `?review_state=unreviewed\|reviewed\|needs_review`, `?axis_id=` (and `&value_id=`), `?source_digest=`, `?operation_id=`, `?limit=` (1–100, default 50), `?cursor=`. `total` counts every match. `can_view` |
-| `POST` | `/api/boards/{id}/classification/decisions` | A classifier publishes one decision: llm-bridge's `msg.BoardClassificationDecisionPublication`. **Service token only**; 201 new, 200 the same payload again, 409 a different payload under the same key |
-| `GET` | `/api/boards/{id}/classification/decisions/{decision_id}` | The decision with its source text and the taxonomy revision it was made under, every review, and the card's labels now. `can_view` |
-| `POST` | `/api/boards/{id}/classification/decisions/{decision_id}/reviews` | Accept, correct or reject, by a person (`X-Principal-Id`; the service token is 403). 201 new, 200 a replay. `can_edit` |
-| `GET` | `/api/boards/{id}/cards/{card_id}/classification` | The card's labels on this board and their `revision`. `can_view` |
+| `GET` | `/boards/{id}/classification` | Taxonomy, `taxonomy_revision`, policy, `supported_modes` and `caller_actions`. Writes nothing. `can_view` |
+| `PUT` | `/boards/{id}/classification/taxonomy` | `{"taxonomy":{…}}` or `{"taxonomy":null}`, with **`If-Match: "taxonomy-<revision>"`** (428 without, 412 stale). Answers the settings and an affected-work `preview`. `can_administer` |
+| `PUT` | `/boards/{id}/classification/policy` | `{"axis_policies":{"<axis id>":{"mode":"off\|discovery\|assisted"}}}`, with **`If-Match: "policy-<revision>"`**. `can_administer` |
+| `GET` | `/boards/{id}/classification/decisions` | Newest first, without source text. `?card_id=`, `?review_state=unreviewed\|reviewed\|needs_review`, `?axis_id=` (and `&value_id=`), `?source_digest=`, `?operation_id=`, `?limit=` (1–100, default 50), `?cursor=`. `total` counts every match. `can_view` |
+| `POST` | `/boards/{id}/classification/decisions` | A classifier publishes one decision: llm-bridge's `msg.BoardClassificationDecisionPublication`. **Service token only**; 201 new, 200 the same payload again, 409 a different payload under the same key |
+| `GET` | `/boards/{id}/classification/decisions/{decision_id}` | The decision with its source text and the taxonomy revision it was made under, every review, and the card's labels now. `can_view` |
+| `POST` | `/boards/{id}/classification/decisions/{decision_id}/reviews` | Accept, correct or reject, by a person (`X-Principal-Id`; the service token is 403). 201 new, 200 a replay. `can_edit` |
+| `GET` | `/boards/{id}/cards/{card_id}/classification` | The card's labels on this board and their `revision`. `can_view` |
 
 ### Columns
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/api/boards/{id}/columns` | In `position` order |
-| `POST` | `/api/boards/{id}/columns` | `{"name":…,"position":…,"color":…,"wip_limit":…,"auto_status":…,"budget_clock_state":…,"lifecycle_state":…,"work_state":…}` |
-| `POST` | `/api/boards/{id}/columns/reorder` | `{"columns":[{"id":…,"position":…}]}`; returns the reordered set |
-| `GET` `PATCH` `DELETE` | `/api/columns/{id}` | |
-| `GET` | `/api/columns/{id}/cards` | One column a page at a time: `?limit=&offset=`, with the column's `total` |
+| `GET` | `/boards/{id}/columns` | In `position` order |
+| `POST` | `/boards/{id}/columns` | `{"name":…,"position":…,"color":…,"wip_limit":…,"auto_status":…,"budget_clock_state":…,"lifecycle_state":…,"work_state":…}` |
+| `POST` | `/boards/{id}/columns/reorder` | `{"columns":[{"id":…,"position":…}]}`; returns the reordered set |
+| `GET` `PATCH` `DELETE` | `/columns/{id}` | |
+| `GET` | `/columns/{id}/cards` | One column a page at a time: `?limit=&offset=`, with the column's `total` |
 
 `position` is a float, so inserting between two columns means averaging their
 positions rather than renumbering the rest.
@@ -215,24 +231,24 @@ A card is a noteboard item plus a placement. Board-scoped operations:
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/api/boards/{id}/access` | What the caller of this request may do on the board: `{"principal_id":…,"unrestricted":…,"relations":["can_view","can_edit"]}`. `relations` is every relation that holds, weakest first, with the inclusion rule already applied — ask whether the one you need is in it. Needs `can_view`; **404** otherwise |
-| `GET` | `/api/boards/{id}/cards` | The assembled board: columns, each with its cards in order, plus `orphans`. Each card carries its shared `work_state` and `work_state_source` — see [Shared work states](#shared-work-states). `?limit=` caps **each column**; `?assignee=`, `?unassigned=`, `?tickets_only=`, `?requester=`, `?channel=`, `?tag=`, `?priority=`, `?status=`, `?due_before=` keep matching cards and `?sort=` orders each column — see [Filtering a board](#filtering-a-board) |
-| `GET` | `/api/boards/{id}/card-page` | One global page across columns; required `limit`, optional `offset`. Returns board/column metadata, complete page cards and exact matching `total`. Same board view grants as `/cards` |
-| `POST` | `/api/boards/{id}/cards` | Creates the noteboard item **and** places it; `title` and `column_id` required |
-| `PUT` | `/api/boards/{id}/cards/{cardID}` | Attaches an *existing* noteboard item; 404 if that item does not exist |
-| `DELETE` | `/api/boards/{id}/cards/{cardID}` | Detaches from this board only; the item survives |
+| `GET` | `/boards/{id}/access` | What the caller of this request may do on the board: `{"principal_id":…,"unrestricted":…,"relations":["can_view","can_edit"]}`. `relations` is every relation that holds, weakest first, with the inclusion rule already applied — ask whether the one you need is in it. Needs `can_view`; **404** otherwise |
+| `GET` | `/boards/{id}/cards` | The assembled board: columns, each with its cards in order, plus `orphans`. Each card carries its shared `work_state` and `work_state_source` — see [Shared work states](#shared-work-states). `?limit=` caps **each column**; `?assignee=`, `?unassigned=`, `?tickets_only=`, `?requester=`, `?channel=`, `?tag=`, `?priority=`, `?status=`, `?due_before=` keep matching cards and `?sort=` orders each column — see [Filtering a board](#filtering-a-board) |
+| `GET` | `/boards/{id}/card-page` | One global page across columns; required `limit`, optional `offset`. Returns board/column metadata, complete page cards and exact matching `total`. Same board view grants as `/cards` |
+| `POST` | `/boards/{id}/cards` | Creates the noteboard item **and** places it; `title` and `column_id` required |
+| `PUT` | `/boards/{id}/cards/{cardID}` | Attaches an *existing* noteboard item; 404 if that item does not exist |
+| `DELETE` | `/boards/{id}/cards/{cardID}` | Detaches from this board only; the item survives |
 
 Card-scoped operations, across every board the card is on:
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/api/cards/{id}` | One card read through the gate: `item`, the `placements` the caller can view, `links`, `assignments`, `ticket`, its shared `work_state` with `work_state_source`, and `access` — what the caller may do to it. **404** for an id that is on no board, so this is not a way to read any noteboard item. noteboard checks no caller, so a client that must not see every item reads a card's body here |
-| `PATCH` | `/api/cards/{id}` | Forwarded to noteboard unchanged — edit title, body, tags, anything. Send `If-Match: "<the item's updated_at>"` to refuse saving over someone else's change: it goes to noteboard as sent, and noteboard's **412** `{"error":…,"current":{the item as it is now}}` comes back unchanged, with nothing written. No header saves whatever the version |
-| `DELETE` | `/api/cards/{id}` | Reversible; `?hard=true` purges the item and drops every placement |
-| `POST` | `/api/cards/{id}/move` | `{"board_id":…,"column_id":…,"position":…}` |
-| `GET` | `/api/cards/{id}/placements` | Every board this card appears on |
-| `POST` | `/api/cards/{id}/hold` | `{"reason":…}` — park the work |
-| `POST` | `/api/cards/{id}/unhold` | Release it |
+| `GET` | `/cards/{id}` | One card read through the gate: `item`, the `placements` the caller can view, `links`, `assignments`, `ticket`, its shared `work_state` with `work_state_source`, and `access` — what the caller may do to it. **404** for an id that is on no board, so this is not a way to read any noteboard item. noteboard checks no caller, so a client that must not see every item reads a card's body here |
+| `PATCH` | `/cards/{id}` | Forwarded to noteboard unchanged — edit title, body, tags, anything. Send `If-Match: "<the item's updated_at>"` to refuse saving over someone else's change: it goes to noteboard as sent, and noteboard's **412** `{"error":…,"current":{the item as it is now}}` comes back unchanged, with nothing written. No header saves whatever the version |
+| `DELETE` | `/cards/{id}` | Reversible; `?hard=true` purges the item and drops every placement |
+| `POST` | `/cards/{id}/move` | `{"board_id":…,"column_id":…,"position":…}` |
+| `GET` | `/cards/{id}/placements` | Every board this card appears on |
+| `POST` | `/cards/{id}/hold` | `{"reason":…}` — park the work |
+| `POST` | `/cards/{id}/unhold` | Release it |
 
 **Hold is the stop/play button, and it lives on the noteboard item, not on the
 board.** That is what lets a card be parked in *any* column instead of only by
@@ -249,8 +265,8 @@ without `parent_id` escapes both.
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/api/bulk-card-commands` | The vocabulary: `{"commands":["move","assign","unassign","hold","unhold","add_tags","remove_tags"],"max_cards":200}` |
-| `POST` | `/api/bulk-card-commands` | `{"card_ids":[…],"command":…}` plus the one field the command reads: `move` (`{"board_id":…,"column_id":…,"position":…}`), `principal_id` (assign, unassign), `reason` (hold), `tags` (add_tags, remove_tags) |
+| `GET` | `/bulk-card-commands` | The vocabulary: `{"commands":["move","assign","unassign","hold","unhold","add_tags","remove_tags"],"max_cards":200}` |
+| `POST` | `/bulk-card-commands` | `{"card_ids":[…],"command":…}` plus the one field the command reads: `move` (`{"board_id":…,"column_id":…,"position":…}`), `principal_id` (assign, unassign), `reason` (hold), `tags` (add_tags, remove_tags) |
 
 ```json
 {"command":"move","succeeded":1,"failed":2,"results":[
@@ -284,16 +300,16 @@ they were sent in.
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` `POST` | `/api/cards/{id}/time-entries` | Time people log by hand, as `time_logged` events; a correction names the entry it replaces — see [Time people log by hand](#time-people-log-by-hand) |
-| `GET` `POST` | `/api/cards/{id}/events` | The action log. `POST {"kind":…,"clock_state":…,"occurred_at":…,"actor":…,"summary":…}` |
-| `GET` `POST` | `/api/cards/{id}/notes` | Status updates and summaries written onto the card. Each carries `visibility` — see [Who a note is for](#who-a-note-is-for); `GET ?visibility=requester` keeps only those |
-| `GET` | `/api/note-visibilities` | The vocabulary: `["internal","requester"]` |
-| `GET` | `/api/cards/{id}/timeline` | `?board_id=` — every action in order, with the time between them and the totals |
-| `DELETE` | `/api/notes/{noteID}` | Removes the note's text; its `note_added` event stays |
-| `GET` `PUT` | `/api/boards/{id}/priority-levels` | The board's priority ladder |
-| `GET` `POST` | `/api/cards/{id}/links` | `{"entity_type":…,"entity_ref":…,"label":…,"occurred_at":…,"clock_state":…}` |
-| `DELETE` | `/api/links/{linkID}` | |
-| `GET` | `/api/entities/{type}/{ref}/cards` | Reverse lookup: every card linked to this entity, oldest link first, as `{"card_id":…,"item":{…},"work_state":…,"work_state_source":{…}}` |
+| `GET` `POST` | `/cards/{id}/time-entries` | Time people log by hand, as `time_logged` events; a correction names the entry it replaces — see [Time people log by hand](#time-people-log-by-hand) |
+| `GET` `POST` | `/cards/{id}/events` | The action log. `POST {"kind":…,"clock_state":…,"occurred_at":…,"actor":…,"summary":…}` |
+| `GET` `POST` | `/cards/{id}/notes` | Status updates and summaries written onto the card. Each carries `visibility` — see [Who a note is for](#who-a-note-is-for); `GET ?visibility=requester` keeps only those |
+| `GET` | `/note-visibilities` | The vocabulary: `["internal","requester"]` |
+| `GET` | `/cards/{id}/timeline` | `?board_id=` — every action in order, with the time between them and the totals |
+| `DELETE` | `/notes/{noteID}` | Removes the note's text; its `note_added` event stays |
+| `GET` `PUT` | `/boards/{id}/priority-levels` | The board's priority ladder |
+| `GET` `POST` | `/cards/{id}/links` | `{"entity_type":…,"entity_ref":…,"label":…,"occurred_at":…,"clock_state":…}` |
+| `DELETE` | `/links/{linkID}` | |
+| `GET` | `/entities/{type}/{ref}/cards` | Reverse lookup: every card linked to this entity, oldest link first, as `{"card_id":…,"item":{…},"work_state":…,"work_state_source":{…}}` |
 
 `entity_type` is not validated against the registry and `entity_ref` is never
 resolved. `(card_id, entity_type, entity_ref)` is unique, which makes repeated
@@ -314,10 +330,10 @@ visibility query per card for a principal.
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/api/cards/{id}/attachments` | `[{"card_id":…,"file_id":"file_000001","visibility":…,"attached_by":…,"created_at":…,"file":{…}}]`, oldest first. `?visibility=requester` keeps only those |
-| `POST` | `/api/cards/{id}/attachments?filename=…[&visibility=…]` | The body is the file's bytes and `Content-Type` is what they are. **201** and the attachment |
-| `GET` | `/api/cards/{id}/attachments/{file_id}/content[?inline=true]` | The bytes, with file-store's headers as it sent them. Range requests work |
-| `DELETE` | `/api/cards/{id}/attachments/{file_id}` | **204**. The file comes off the card and is deleted in file-store, reversibly there |
+| `GET` | `/cards/{id}/attachments` | `[{"card_id":…,"file_id":"file_000001","visibility":…,"attached_by":…,"created_at":…,"file":{…}}]`, oldest first. `?visibility=requester` keeps only those |
+| `POST` | `/cards/{id}/attachments?filename=…[&visibility=…]` | The body is the file's bytes and `Content-Type` is what they are. **201** and the attachment |
+| `GET` | `/cards/{id}/attachments/{file_id}/content[?inline=true]` | The bytes, with file-store's headers as it sent them. Range requests work |
+| `DELETE` | `/cards/{id}/attachments/{file_id}` | **204**. The file comes off the card and is deleted in file-store, reversibly there |
 
 **file-store owns the file; this store owns that it hangs on the card.**
 file-store (`127.0.0.1:8317`) keeps the bytes and the record — name, size,
@@ -365,8 +381,8 @@ store and answers **413** with nginx's page, not file-store's words.
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/api/cards/{id}/time-entries` | `{"card_id":…,"active_seconds":…,"entries":[…]}`, oldest first. `?active=true` leaves out the replaced ones; `active_seconds` is the card's total either way |
-| `POST` | `/api/cards/{id}/time-entries` | `{"seconds":2700,"summary":…,"worked_at":…,"worker_principal_id":…,"board_id":…,"supersedes_event_id":…}` → **201** and the entry |
+| `GET` | `/cards/{id}/time-entries` | `{"card_id":…,"active_seconds":…,"entries":[…]}`, oldest first. `?active=true` leaves out the replaced ones; `active_seconds` is the card's total either way |
+| `POST` | `/cards/{id}/time-entries` | `{"seconds":2700,"summary":…,"worked_at":…,"worker_principal_id":…,"board_id":…,"supersedes_event_id":…}` → **201** and the entry |
 
 **A time entry is an event.** It is a `time_logged` event on the card's
 timeline, beside the moves and the notes, with `detail`
@@ -439,10 +455,10 @@ and neither is what "assigned" means. Principals are owned by the
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/api/cards/{id}/assignments` | `[{"card_id":…,"principal_id":…,"assigned_by":…,"created_at":…}]`, oldest first |
-| `PUT` | `/api/cards/{id}/assignments/{principal_id}` | Idempotent: **201** + the row when this call created it, **200** + the unchanged row when it was already there. `assigned_by` is `?actor=` |
-| `DELETE` | `/api/cards/{id}/assignments/{principal_id}` | **204**; **404** if the principal was not on the card |
-| `GET` | `/api/assignments?principal_id=…` | Reverse lookup: every card this principal is on, across every board, oldest first. **400** without the parameter |
+| `GET` | `/cards/{id}/assignments` | `[{"card_id":…,"principal_id":…,"assigned_by":…,"created_at":…}]`, oldest first |
+| `PUT` | `/cards/{id}/assignments/{principal_id}` | Idempotent: **201** + the row when this call created it, **200** + the unchanged row when it was already there. `assigned_by` is `?actor=` |
+| `DELETE` | `/cards/{id}/assignments/{principal_id}` | **204**; **404** if the principal was not on the card |
+| `GET` | `/assignments?principal_id=…` | Reverse lookup: every card this principal is on, across every board, oldest first. **400** without the parameter |
 
 `GET /api/cards/{id}/assignments` returns an `ETag` for the exact assignment snapshot.
 Automatic owners can send that value as `If-Match` on the assignment `PUT`.
@@ -484,18 +500,18 @@ session `p0`, a machine `lab`.
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` `POST` | `/api/entities/{type}/{ref}/tags` | `{"tag":…}` |
-| `DELETE` | `/api/entities/{type}/{ref}/tags/{tag}` | |
-| `GET` | `/api/tags` | Every tag with its count; `?tag=…&entity_type=…` searches instead |
+| `GET` `POST` | `/entities/{type}/{ref}/tags` | `{"tag":…}` |
+| `DELETE` | `/entities/{type}/{ref}/tags/{tag}` | |
+| `GET` | `/tags` | Every tag with its count; `?tag=…&entity_type=…` searches instead |
 
 ### Discovery and search
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/api/entity-types` | The registry: `[{"type":…,"service":…,"search":…,"get":…,"id_patterns":[…],"search_results":…,"label_field":…}]` |
-| `GET` | `/api/assignment-strategies` | How a board's `assignment_pool` may choose: `["least_open_cards","round_robin"]` |
-| `GET` | `/api/work-states` | The shared work-state vocabulary, each with its meaning: `[{"work_state":"not_started","meaning":…},…]` — see [Shared work states](#shared-work-states) |
-| `GET` | `/api/search?q=…` | Full-text, delegated to noteboard; `&limit=`, `&board_id=`, `&on_board=true` |
+| `GET` | `/entity-types` | The registry: `[{"type":…,"service":…,"search":…,"get":…,"id_patterns":[…],"search_results":…,"label_field":…}]` |
+| `GET` | `/assignment-strategies` | How a board's `assignment_pool` may choose: `["least_open_cards","round_robin"]` |
+| `GET` | `/work-states` | The shared work-state vocabulary, each with its meaning: `[{"work_state":"not_started","meaning":…},…]` — see [Shared work states](#shared-work-states) |
+| `GET` | `/search?q=…` | Full-text, delegated to noteboard; `&limit=`, `&board_id=`, `&on_board=true` |
 
 `/api/entity-types` is how a client discovers where to resolve a ref it finds in
 a link or a tag: which service owns that type, and what to append a query to. An

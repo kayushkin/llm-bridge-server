@@ -1,68 +1,89 @@
-# noteboard
+# items
 
-One store for notes, todos and ranked lists. API-first, built to be written to
-by programs rather than by a person in a text field.
+The record store two modules of llm-bridge-server share. It was noteboard,
+one store for notes, todos and ranked lists, until 2026-11-27, when the
+operator split it: **issues** owns the whole issue (a todo, on a board or
+not), and **notes** keeps notes, ranked list entries and workspaces. Both keep
+their items with this code, in tables of the same shape in their own Postgres
+schemas, so a note and an issue take the same calls, holds, revisions,
+schedules and search.
 
 Every record is an **item**. A `type` of `note`, `todo`, `rank` or `workspace`
 says what it is; everything else — markdown body, tags, priority, due date,
-recurrence rule, parent — is the same set of columns regardless. That is the
-whole design: one table, one API, so a todo can be searched alongside a note and
-a program never has to pick which store to talk to.
+recurrence rule, parent — is the same set of columns regardless. A store is
+made with a `Holding` that names the types it keeps:
+
+| Module | Package | Types | Routes | Postgres module |
+|---|---|---|---|---|
+| notes | `internal/tasktracking/notes` | `note`, `rank`, `workspace` | `/notes/…` | `notes` (role `notes_module`; `noteboard` before 2026-11-27, renamed at start) |
+| issues | `internal/tasktracking/issues/issueitems` | `todo` (the default when none is sent) | `/issues/items…` | `issues`, tables `items` and `item_revisions` (migration 0002) |
+
+A request naming a type the store does not keep is a `400` that says where
+that type lives: a todo written to notes is told to use `/issues/items`.
+issues also refuses a `list_id` (ranked lists are notes; a rank entry whose
+`links` hold an issue's id puts the issue on a list). The ids are one space,
+as they were in noteboard: a todo's uuid is its issue's id, and a uuid names
+an item in exactly one of the two.
 
 Nothing here destroys data by accident. `DELETE` is reversible, every write
 snapshots the row it replaced, and a purge snapshots before it purges.
 
 ## Where it runs
 
-noteboard is a module of llm-bridge-server. Its items live in the Postgres
-module `noteboard` (role `noteboard_module`), built by the migrations in
-`items/migrations/`, and the server answers its routes under `/noteboard/`
-with the same paths behind the prefix: `GET /noteboard/api/items`,
-`POST /noteboard/api/items/{id}/hold`, and so on. The server's
-`database.postgres_url` (`LLMBRIDGE_POSTGRES_URL`) names the Postgres; with it
-empty the routes answer 503 `noteboard_off`.
+The server mounts each store's handlers itself (`internal/server/notes_routes.go`):
+notes under `/notes/`, issues under `/issues/items`, with noteboard's paths
+less their `/api`: `GET /notes/items`, `POST /issues/items/{id}/hold`, and so
+on. The issues module's tag list and search are `/issues/items/tags` and
+`/issues/items/search`, because `/issues/tags` and `/issues/search` are the
+boards' own; issues serves no `/lists`. The server's `database.postgres_url`
+(`LLMBRIDGE_POSTGRES_URL`) names the Postgres; with it empty the routes answer
+503 `notes_off` and `issues_off`.
 
 `llm-bridge-server import-noteboard -sqlite <file>` copies a standalone
-noteboard's SQLite file (a copy made with `sqlite3 .backup`) into an empty
-module, keeping every item id, revision number, hold, rule and soft-deleted
-row. Times keep microseconds, so the nanoseconds the standalone store wrote
-are cut off. Text holding U+0000, which Postgres cannot keep, is refused by
-name, in the import and on every write.
+noteboard's SQLite file (a copy made with `sqlite3 .backup`) into the two
+modules (`internal/tasktracking/noteboardsplit`): todos and their revisions
+into issues, the rest into notes, keeping every item id, revision number,
+hold, rule and soft-deleted row. Times keep microseconds, so the nanoseconds
+the standalone store wrote are cut off. Text holding U+0000, which Postgres
+cannot keep, is refused by name, in the import and on every write. An install
+whose noteboard module already held todos in Postgres has them moved into
+issues at its first start (`noteboardsplit.MoveTodosOutOfNotes`).
 
 Packages: `items` is the store, `api` the route handlers, `model` the wire
 types and the recurrence rules, `boundedtext` the cap on echoed input.
 
 ## Who may call it
 
-Every route is an operator route of llm-bridge-server: the service token, an
-administrator, or an administrator's session agent token
-(`$LLM_BRIDGE_PRINCIPAL_TOKEN`). The notes are the operator's own and private,
-and no row has an owner, so nobody else may read or write them.
+Every route of both is an operator route of llm-bridge-server: the service
+token, an administrator, or an administrator's session agent token
+(`$LLM_BRIDGE_PRINCIPAL_TOKEN`). The notes and issues are the operator's own,
+and no row has an owner, so nobody else may read or write them; a principal
+reads the cards on the boards it may view through `/issues/cards/{id}`.
 `created_by` is a caller-supplied string used as a list filter. **It is not an
 identity and nothing checks it.**
 
 ## HTTP API
 
-Paths below are behind `/noteboard`. All bodies are JSON. A method a path does not take is the server's plain 405, and an item action no route names its plain 404.
+Paths below are behind `/notes` or, for issues, `/issues` (so `/items` is `/issues/items`, and `/tags` and `/search` are `/issues/items/tags` and `/issues/items/search`). All bodies are JSON. A method a path does not take is the server's plain 405, and an item action no route names its plain 404.
 
 ### Items
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/api/items` | See filters below |
-| `POST` | `/api/items` | `type` and `title` required → `201` |
-| `GET` | `/api/items/{id}` | `?include_deleted=true` to fetch a tombstone |
-| `POST` | `/api/items/batch` | Read `{"ids":[…]}` as `{"items":[…]}` in input order; duplicates retained, null for missing/deleted, held items included, complete content |
-| `POST` | `/api/items/query` | Of these ids, which match a filter, in what order — see [Of these items, which match](#of-these-items-which-match). Changes nothing |
-| `GET` | `/api/items/query-options` | The sorts and limits that route takes |
-| `PATCH` | `/api/items/{id}` | Partial update; see nullable fields below. Conditional with `If-Match` — see [Saving over someone else's change](#saving-over-someone-elses-change) |
-| `DELETE` | `/api/items/{id}` | Reversible; `?hard=true` purges |
-| `POST` | `/api/items/{id}/restore` | Undo a delete |
-| `GET` | `/api/items/{id}/revisions` | Every prior state, newest first; `?limit=&offset=` to page |
-| `POST` | `/api/items/{id}/hold` | Optional `{"reason":…}` |
-| `POST` | `/api/items/{id}/unhold` | |
-| `GET` | `/api/items/{id}/occurrences` | `?from=&to=` RFC3339; `400` if the item has no schedule |
-| `POST` | `/api/items/rerank` | `{"items":[{"id":…,"rank":…}]}` |
+| `GET` | `/items` | See filters below |
+| `POST` | `/items` | `title` required, and `type` in notes (in issues it is `todo` when left out) → `201` |
+| `GET` | `/items/{id}` | `?include_deleted=true` to fetch a tombstone |
+| `POST` | `/items/batch` | Read `{"ids":[…]}` as `{"items":[…]}` in input order; duplicates retained, null for missing/deleted, held items included, complete content |
+| `POST` | `/items/query` | Of these ids, which match a filter, in what order — see [Of these items, which match](#of-these-items-which-match). Changes nothing |
+| `GET` | `/items/query-options` | The sorts and limits that route takes |
+| `PATCH` | `/items/{id}` | Partial update; see nullable fields below. Conditional with `If-Match` — see [Saving over someone else's change](#saving-over-someone-elses-change) |
+| `DELETE` | `/items/{id}` | Reversible; `?hard=true` purges |
+| `POST` | `/items/{id}/restore` | Undo a delete |
+| `GET` | `/items/{id}/revisions` | Every prior state, newest first; `?limit=&offset=` to page |
+| `POST` | `/items/{id}/hold` | Optional `{"reason":…}` |
+| `POST` | `/items/{id}/unhold` | |
+| `GET` | `/items/{id}/occurrences` | `?from=&to=` RFC3339; `400` if the item has no schedule |
+| `POST` | `/items/rerank` | `{"items":[{"id":…,"rank":…}]}` |
 
 **Paging the revision history.** A revision carries the whole body it replaced,
 so an item that is rewritten often costs the sum of every version of itself to
@@ -73,7 +94,7 @@ before paging existed changes. A `limit` or `offset` that is not a non-negative
 integer is a `400` rather than a silent 0 — 0 here means unlimited, which is the
 opposite of what a caller passing `?limit=abc` was asking for.
 
-**List filters** on `GET /api/items`: `type`, `tag`, `exclude_tag` (repeatable),
+**List filters** on `GET /items`: `type`, `tag`, `exclude_tag` (repeatable),
 `status`, `list_id`, `created_by`, `parent_id`, `include_deleted`,
 `include_held`, `limit` (default 100), `offset`, and `sort` — one of `rank`,
 `priority`, `updated_at`, `created_at` (default `created_at` descending).
@@ -86,20 +107,20 @@ leaving it out means "don't touch". Absent and null are different requests.
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/api/lists` | `list_id` values with their counts |
-| `GET` | `/api/tags` | Every unique tag with its count, most-used first |
-| `GET` | `/api/search?q=` | Full-text search over title and body; `&type=`, `&tag=`, `&status=`, `&limit=` (default 50), `&include_held=` |
+| `GET` | `/lists` | `list_id` values with their counts |
+| `GET` | `/tags` | Every unique tag with its count, most-used first |
+| `GET` | `/search?q=` | Full-text search over title and body; `&type=`, `&tag=`, `&status=`, `&limit=` (default 50), `&include_held=` |
 | `GET` | `/health` | `{"status":"ok","items":N}`; **500** if the database cannot be read |
 
-A **list is not a stored row.** `GET /api/lists` derives the set by grouping
+A **list is not a stored row.** `GET /lists` derives the set by grouping
 items on `list_id`, so a list exists exactly when an item claims it. There is no
-`POST /api/lists` — assign `list_id` on an item instead.
+`POST /lists` — assign `list_id` on an item instead.
 
 ## Behaviors worth knowing before you build on it
 
 **Delete is reversible and is not archiving.** `DELETE` stamps `deleted_at` and
 leaves the row in place; it drops out of every read path — list, get, search,
-tags, lists, count — and `POST /api/items/{id}/restore` brings it back in
+tags, lists, count — and `POST /items/{id}/restore` brings it back in
 exactly the state it left in. It deliberately does **not** touch `status`:
 archived is a state you chose for a live item, deletion is the item being taken
 away, and collapsing the two means a restore cannot tell them apart. `?hard=true`
@@ -108,13 +129,13 @@ purges the row, and snapshots it into revisions before doing so.
 **Revisions are partial.** Every update, delete, restore, hold and unhold writes
 a snapshot, but the snapshot covers 8 columns — `title`, `body`, `tags`,
 `status`, `priority`, `list_id`, `parent_id`, `links`. It does **not** cover
-`rank`, `due_at` or `schedule`, and `POST /api/items/rerank` writes `rank` with
+`rank`, `due_at` or `schedule`, and `POST /items/rerank` writes `rank` with
 no snapshot at all. Overwrite a recurrence rule and the old rule is gone. Read
 before you overwrite.
 
 **Held items are hidden by default, and nothing in the response says so.** A
 hold is the user parking work behind a gate: the item stays `open` and stays
-visible to a human, but `GET /api/items` and `/api/search` withhold it unless
+visible to a human, but `GET /items` and `/search` withhold it unless
 you pass `include_held=true`. Hold is inherited down `parent_id`, so holding a
 parent withholds its whole subtree. An unattended worker should leave that
 default alone rather than widening its own search with it.
@@ -139,7 +160,7 @@ to do, and so the schema can enforce one per job.
 ### Of these items, which match
 
 ```bash
-curl -s -X POST "$LLM_BRIDGE_GATEWAY_URL/noteboard/api/items/query" -H "Authorization: Bearer $LLM_BRIDGE_PRINCIPAL_TOKEN" \
+curl -s -X POST "$LLM_BRIDGE_GATEWAY_URL/notes/items/query" -H "Authorization: Bearer $LLM_BRIDGE_PRINCIPAL_TOKEN" \
   -H 'Content-Type: application/json' -d '{
   "ids":["<id>","<id>","…"], "tags":["billing"], "priorities":[3],
   "sort":"priority", "limit":25, "offset":0, "include_items":true}'
@@ -154,7 +175,7 @@ not fit in a URL. It changes nothing.
 
 - An item must match **every** filter set: `tags` (all of them, exactly),
   `priorities` (any), `statuses` (any), `due_before`.
-- `sort` is one of `GET /api/items/query-options` — `given` (the default: the
+- `sort` is one of `GET /items/query-options` — `given` (the default: the
   order the ids were sent in), `priority`, `due_at`, `updated_at`, `created_at`,
   `title`. **Ties fall back to the order sent**, so a page is the same page
   every time and the caller's own order survives inside a tie.
@@ -180,7 +201,7 @@ and neither of them sees it happen. A `PATCH` can refuse that:
 ```bash
 # The version is the item's updated_at, exactly as the item carries it.
 # GET also sends it as the ETag.
-curl -s -X PATCH "$LLM_BRIDGE_GATEWAY_URL/noteboard/api/items/<id>" -H "Authorization: Bearer $LLM_BRIDGE_PRINCIPAL_TOKEN" \
+curl -s -X PATCH "$LLM_BRIDGE_GATEWAY_URL/notes/items/<id>" -H "Authorization: Bearer $LLM_BRIDGE_PRINCIPAL_TOKEN" \
   -H 'If-Match: "2026-09-18T18:59:29.430695045Z"' \
   -H 'Content-Type: application/json' -d '{"title":"…"}'
 ```
@@ -229,7 +250,7 @@ is the series anchor, not the current due date.
 - **`remind.nag`** is a second rule that repeats until the item is done.
 - An invalid rule is rejected at write time rather than expanding to nothing.
 
-Check `GET /api/items/{id}/occurrences?from=&to=` before trusting a rule —
+Check `GET /items/{id}/occurrences?from=&to=` before trusting a rule —
 `BYDAY=3TU` and `BYDAY=TU;BYSETPOS=3` read alike and diverge in months that
 start on a Tuesday. Occurrences are capped at 500 per list, and the response
 sets `truncated` when the cap was hit.
@@ -239,7 +260,7 @@ extra due date does not buy an extra nag, and a skipped due week still nags.
 
 ### Search
 
-`GET /api/search` splits `q` on whitespace into terms, and an item must match
+`GET /search` splits `q` on whitespace into terms, and an item must match
 every term. Each term is literal text, never query syntax: a `-`, a quote or
 `OR` is punctuation or a word. Punctuation separates words in the text and in
 the query, as the FTS5 table this replaced did, so `deploy.sh` is the phrase
@@ -254,7 +275,7 @@ search document is limited to the 1 MB Postgres puts on a `tsvector`.
 
 ```sh
 export POSTGRESTEST_ADMINISTRATOR_URL="$(scripts/test-postgres.sh start)"   # from the repo root
-go test ./internal/tasktracking/noteboard/...
+go test ./internal/tasktracking/items/... ./internal/tasktracking/notes/... ./internal/tasktracking/noteboardsplit/...
 ```
 
 ## License
@@ -263,7 +284,7 @@ MIT — see [LICENSE](LICENSE).
 
 ### Query text and creation dates
 
-`POST /api/items/query` also accepts `q` (a literal case-insensitive Unicode
+`POST /items/query` also accepts `q` (a literal case-insensitive Unicode
 substring across title, body and id), inclusive RFC3339 `created_from` and
 `created_to`, and `sort: "updated_asc"`. Filtering occurs before paging and
 `total` counts all matches. Percent and underscore characters are literal,
