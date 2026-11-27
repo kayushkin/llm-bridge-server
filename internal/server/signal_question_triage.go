@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
-	"github.com/kayushkin/llm-bridge-server/internal/mailstackclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -97,7 +96,7 @@ type cardContext struct {
 	// Customer is the sender of the card's oldest linked mail — the person
 	// who asked for the work. Nil when the card has no mail link or mailstack
 	// could not be asked.
-	Customer *mailstackclient.MessageHeaders
+	Customer *mailMessageHeaders
 }
 
 // questionTriage runs the triage call. Zero value is unusable; build it with
@@ -309,7 +308,7 @@ func (s *Server) cardContextForSession(ctx context.Context, sessionID string) ca
 		return out
 	}
 	out.Card = card
-	if s.mailstackClient == nil {
+	if s.mailMessages == nil {
 		return out
 	}
 	links, err := s.kanbanClient.CardLinks(ctx, card.ID)
@@ -321,12 +320,12 @@ func (s *Server) cardContextForSession(ctx context.Context, sessionID string) ca
 		if link.EntityType != "email" {
 			continue
 		}
-		accountID, providerID, err := mailstackclient.ParseLocator(link.EntityRef)
+		accountID, providerID, err := parseEmailLocator(link.EntityRef)
 		if err != nil {
 			log.Printf("[triage] %s: card %s: %v", sessionID, card.ID, err)
 			continue
 		}
-		headers, err := s.mailstackClient.GetMessageHeaders(ctx, accountID, providerID)
+		headers, err := readMailMessageHeaders(ctx, s.mailMessages, accountID, providerID)
 		if err != nil {
 			log.Printf("[triage] %s: card %s: read mail %s: %v", sessionID, card.ID, link.EntityRef, err)
 			continue

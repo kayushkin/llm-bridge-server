@@ -200,7 +200,7 @@ func TestMailstackTakesAPushedDeliveryWithAnIngressCredentialAndNoLogin(t *testi
 // Triage's sender lookup reads mailstack in this process.
 func TestTriageReadsAMessagesSenderFromMailstackInProcess(t *testing.T) {
 	test := newMailstackTestServer(t)
-	headers, err := test.server.mailstackClient.GetMessageHeaders(context.Background(), "desk", test.linkedMessageID)
+	headers, err := readMailMessageHeaders(context.Background(), test.server.mailMessages, "desk", test.linkedMessageID)
 	if err != nil {
 		t.Fatal(err)
 	}

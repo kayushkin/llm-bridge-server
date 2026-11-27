@@ -32,7 +32,6 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/keepawake"
 	"github.com/kayushkin/llm-bridge-server/internal/machines"
 	"github.com/kayushkin/llm-bridge-server/internal/mail"
-	"github.com/kayushkin/llm-bridge-server/internal/mailstackclient"
 	"github.com/kayushkin/llm-bridge-server/internal/references"
 	"github.com/kayushkin/llm-bridge-server/internal/serviceinventory"
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/snapshots"
@@ -206,11 +205,11 @@ type Server struct {
 	// questionTriage stands between a surfacing worker's question and the
 	// person on its card. See signal_question_triage.go.
 	questionTriage *questionTriage
-	// mailstackClient resolves the sender of a card's mail so a drafted
+	// mailMessages resolves the sender of a card's mail so a drafted
 	// customer reply has a recipient, from mailstack in this process. Nil
 	// until EnableMailstack, and every draft is then minted with an empty To.
-	mailstackClient *mailstackclient.Client
-	cfg             *config.Config
+	mailMessages mailMessageReader
+	cfg          *config.Config
 	// serviceInventory is the last reading of the host's services and their
 	// databases, held for serviceInventoryMaxAge so a page load that asks for
 	// the list and then a schema does not walk /proc twice. See services.go.

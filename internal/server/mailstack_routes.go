@@ -28,7 +28,6 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 	"github.com/kayushkin/llm-bridge-server/internal/mail"
 	mailfilestore "github.com/kayushkin/llm-bridge-server/internal/mail/filestore"
-	"github.com/kayushkin/llm-bridge-server/internal/mailstackclient"
 )
 
 // mailstackIngressDeliveryPattern is pushed delivery, answered by mailstack
@@ -44,7 +43,7 @@ var errMailstackOff = errors.New("mailstack is off: EnableMailstack was never ca
 // triage's sender lookup is off.
 func (s *Server) EnableMailstack(mail *mail.Server) {
 	s.mailstack.Store(mail)
-	s.mailstackClient = mailstackclient.New(mail)
+	s.mailMessages = mail
 }
 
 // MailstackPeopleDirectory is what mailstack reads a person's access from:

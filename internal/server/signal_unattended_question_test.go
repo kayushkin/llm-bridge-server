@@ -14,7 +14,6 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient/kanbanclienttest"
 	"github.com/kayushkin/llm-bridge-server/internal/mail/backend"
-	"github.com/kayushkin/llm-bridge-server/internal/mailstackclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	issuesmodel "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/model"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -130,7 +129,7 @@ func (stubMailstackMessages) ReadMessage(_ context.Context, accountID, _, _ stri
 
 func stubMailstack(t *testing.T, srv *Server) {
 	t.Helper()
-	srv.mailstackClient = mailstackclient.New(stubMailstackMessages{})
+	srv.mailMessages = stubMailstackMessages{}
 }
 
 func TestSurfacingWorkerSignoffIsAnsweredWithoutAPerson(t *testing.T) {
