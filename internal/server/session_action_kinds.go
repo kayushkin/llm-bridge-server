@@ -18,6 +18,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models/oneshot"
+
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/harnessconfig"
 
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelrouting"
@@ -186,7 +188,7 @@ func (s *Server) modelCallAction(offer msg.SessionActionOffer) sessionActionOutc
 	response, err := s.sessionActionModels.RunOneShotRoute(ctx, plan.route, msg.OneShotRequest{
 		Prompt:    offer.Message,
 		MaxTokens: plan.maximumOutputTokens,
-		Caller:    oneShotCallerSessionActionModel,
+		Caller:    oneshot.OneShotCallerSessionActionModel,
 	}, nil)
 	if err != nil {
 		return sessionActionOutcome{err: err}
@@ -242,7 +244,7 @@ func (s *Server) reviewSessionActionCommand(ctx context.Context, session *store.
 		Prompt:       prompt,
 		SystemPrompt: sessionActionReviewInstructions,
 		Schema:       sessionActionReviewSchema,
-		Caller:       oneShotCallerSessionActionsReview,
+		Caller:       oneshot.OneShotCallerSessionActionsReview,
 	}, nil)
 	if err != nil {
 		return nil, &sessionActionRefusal{http.StatusBadGateway, "review_failed", fmt.Sprintf("the reviewer (role %s) could not be asked: %v", modelRole, err)}

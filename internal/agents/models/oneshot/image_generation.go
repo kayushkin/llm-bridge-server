@@ -1,4 +1,4 @@
-package server
+package oneshot
 
 // Image generation: a prompt, and optionally reference images, in; image
 // files out. One harness instance makes them (image_generation.instance_id),
@@ -71,14 +71,14 @@ func decodeImageGenerationRequest(r *http.Request) (msg.ImageGenerationRequest, 
 
 // generateImages runs the configured instance's harness in -generate-image
 // mode and returns its answer with InstanceID set.
-func (s *Server) generateImages(ctx context.Context, request msg.ImageGenerationRequest) (msg.ImageGenerationResponse, *imageGenerationFailure) {
+func (s *Service) generateImages(ctx context.Context, request msg.ImageGenerationRequest) (msg.ImageGenerationResponse, *imageGenerationFailure) {
 	var response msg.ImageGenerationResponse
-	instanceID := s.settings.String(config.SettingImageGenerationInstanceID)
+	instanceID := s.Settings.String(config.SettingImageGenerationInstanceID)
 	if instanceID == "" {
 		return response, &imageGenerationFailure{http.StatusServiceUnavailable, "image_generation_off",
 			config.SettingImageGenerationInstanceID + " is empty, so this server makes no images"}
 	}
-	instance, err := s.harnessStore.GetInstance(instanceID)
+	instance, err := s.HarnessStore().GetInstance(instanceID)
 	if err != nil {
 		return response, &imageGenerationFailure{http.StatusServiceUnavailable, "image_generation_instance_unavailable",
 			fmt.Sprintf("%s names instance %q: %v", config.SettingImageGenerationInstanceID, instanceID, err)}
@@ -130,9 +130,9 @@ func (s *Server) generateImages(ctx context.Context, request msg.ImageGeneration
 	return response, nil
 }
 
-// handleGenerateImages is POST /images: make images and answer with where
+// HandleGenerateImages is POST /images: make images and answer with where
 // they were saved.
-func (s *Server) handleGenerateImages(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleGenerateImages(w http.ResponseWriter, r *http.Request) {
 	request, failure := decodeImageGenerationRequest(r)
 	if failure == nil {
 		var response msg.ImageGenerationResponse
@@ -145,16 +145,16 @@ func (s *Server) handleGenerateImages(w http.ResponseWriter, r *http.Request) {
 	httpjson.WriteJSONError(w, failure.status, failure.code, failure.message)
 }
 
-// handleGenerateImagesIntoSession is POST /sessions/{id}/images: make images
+// HandleGenerateImagesIntoSession is POST /sessions/{id}/images: make images
 // and share each into the session, as its agent when the caller holds the
 // session's posting token. Answers with the images and their session files.
-func (s *Server) handleGenerateImagesIntoSession(w http.ResponseWriter, r *http.Request) {
-	if s.fileStore == nil {
+func (s *Service) HandleGenerateImagesIntoSession(w http.ResponseWriter, r *http.Request) {
+	if s.FileStore() == nil {
 		httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "session_files_off",
 			"LLMBRIDGE_FILE_STORE_URL is not set, so this server cannot share images into a session; POST /images makes them without sharing")
 		return
 	}
-	session, err := s.store.GetSession(r.PathValue("id"))
+	session, err := s.Store.GetSession(r.PathValue("id"))
 	if err != nil {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
@@ -177,7 +177,7 @@ func (s *Server) handleGenerateImagesIntoSession(w http.ResponseWriter, r *http.
 	if caller, ok := requestcaller.FromRequest(r); ok && caller.PostingAgentOfSessionID != "" {
 		sharedBy = msg.SessionFileSharedByAgent
 	}
-	limits := s.fileStore.CurrentLimits()
+	limits := s.FileStore().CurrentLimits()
 	for _, image := range response.Images {
 		generation := &msg.SessionFileGeneration{
 			Prompt:              request.Prompt,
@@ -203,7 +203,7 @@ func (s *Server) handleGenerateImagesIntoSession(w http.ResponseWriter, r *http.
 
 // shareGeneratedImageIntoSession shares one image file the harness saved,
 // recording the path it was saved at and how it was made.
-func (s *Server) shareGeneratedImageIntoSession(session *store.Session, image msg.GeneratedImage, maximumFileBytes int64, sharedBy msg.SessionFileSharer, generation *msg.SessionFileGeneration) (store.SessionFile, *sessionfiles.SessionFileShareFailure) {
+func (s *Service) shareGeneratedImageIntoSession(session *store.Session, image msg.GeneratedImage, maximumFileBytes int64, sharedBy msg.SessionFileSharer, generation *msg.SessionFileGeneration) (store.SessionFile, *sessionfiles.SessionFileShareFailure) {
 	if image.SizeBytes > maximumFileBytes {
 		return store.SessionFile{}, &sessionfiles.SessionFileShareFailure{Status: http.StatusRequestEntityTooLarge, Code: "file_too_large",
 			Message: fmt.Sprintf("%s is %d bytes; a session file may be at most %d (file-store's maximum_file_bytes)", image.Path, image.SizeBytes, maximumFileBytes)}
@@ -217,7 +217,7 @@ func (s *Server) shareGeneratedImageIntoSession(session *store.Session, image ms
 	if problem := sessionfiles.PlainFilenameProblem(filename); problem != "" {
 		return store.SessionFile{}, &sessionfiles.SessionFileShareFailure{Status: http.StatusBadGateway, Code: "generated_image_unnamable", Message: problem}
 	}
-	return s.sessionFiles.ShareFileIntoSession(session, file, maximumFileBytes, image.MediaType, filename, sharedBy, messagesender.Sender{}, sessionfiles.SessionFileOrigin{SourcePath: image.Path, Generation: generation})
+	return s.SessionFiles.ShareFileIntoSession(session, file, maximumFileBytes, image.MediaType, filename, sharedBy, messagesender.Sender{}, sessionfiles.SessionFileOrigin{SourcePath: image.Path, Generation: generation})
 }
 
 func generatedImagePaths(images []msg.GeneratedImage) string {

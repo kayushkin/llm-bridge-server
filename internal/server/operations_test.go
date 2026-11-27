@@ -398,7 +398,7 @@ func TestOneShotRouteResolvesRolesModelsAndAliases(t *testing.T) {
 	gated, _ := newOperationsTestServer(t, testModelClassifier(0))
 	server := gated.server
 	server.modelStore = testModelStore(t)
-	server.oneShotRouter = server.newOneShotRouter()
+	server.oneShotRouter = server.oneShot.NewOneShotRouter()
 	set := func(key, value string) *httptest.ResponseRecorder {
 		t.Helper()
 		return gated.requestAsServiceWithBody(t, "PUT", "/settings/"+key, `{"value":"`+value+`"}`)
@@ -409,13 +409,13 @@ func TestOneShotRouteResolvesRolesModelsAndAliases(t *testing.T) {
 		"alt":        {Requested: "alt", Candidates: []modelrouting.Candidate{{ModelID: "mock-model-alt", Provider: "mock"}}},
 		"mock-model": {Requested: "mock-model", Candidates: []modelrouting.Candidate{{ModelID: "mock-model", Provider: "mock"}}},
 	} {
-		route, err := server.OneShotRoute(requested)
+		route, err := server.oneShot.OneShotRoute(requested)
 		if err != nil || !reflect.DeepEqual(route, want) {
 			t.Errorf("%s: %+v %v", requested, route, err)
 		}
 	}
 	for requested, code := range map[string]string{"no-such-model": "unknown_model", "": "no_model", "balanced": "model_role_unresolvable"} {
-		_, err := server.OneShotRoute(requested)
+		_, err := server.oneShot.OneShotRoute(requested)
 		var targetError *executors.TargetError
 		if !errors.As(err, &targetError) || targetError.Code != code {
 			t.Errorf("%q: %v, want %s", requested, err, code)
@@ -424,7 +424,7 @@ func TestOneShotRouteResolvesRolesModelsAndAliases(t *testing.T) {
 	if response := set(config.SettingOperationsCompletionModelRole, "efficient"); response.Code != http.StatusOK {
 		t.Fatalf("set the default role: %d %s", response.Code, response.Body.String())
 	}
-	if route, err := server.OneShotRoute(""); err != nil || route.Role != "efficient" {
+	if route, err := server.oneShot.OneShotRoute(""); err != nil || route.Role != "efficient" {
 		t.Errorf("default role: %+v %v", route, err)
 	}
 

@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models/oneshot"
+
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads"
 
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -206,7 +208,7 @@ func (q *questionTriage) triage(ctx context.Context, question triageQuestion, ca
 		Prompt:       triagePrompt(question, card),
 		SystemPrompt: triageSystemPrompt,
 		ModelRole:    triageModelRole,
-		Caller:       oneShotCallerQuestionTriage,
+		Caller:       oneshot.OneShotCallerQuestionTriage,
 		Schema:       schema,
 		MaxTokens:    triageMaxTokens,
 	})

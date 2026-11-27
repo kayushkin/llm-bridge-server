@@ -1,4 +1,4 @@
-package server
+package oneshot
 
 import (
 	"context"
@@ -26,40 +26,40 @@ import (
 // provider, skipping one whose subscription usage-store reports full, until
 // one answers. The Caller on each request says which feature asked.
 const (
-	oneShotCallerSignalClassifier     = "signal-classifier"
-	oneShotCallerQuestionTriage       = "question-triage"
-	oneShotCallerPromptDriftTagger    = "prompt-drift-tagger"
-	oneShotCallerSessionRenamer       = "session-renamer"
-	oneShotCallerSessionActionsReview = "session-actions-review"
-	oneShotCallerSessionActionModel   = "session-action-model-call"
+	OneShotCallerSignalClassifier     = "signal-classifier"
+	OneShotCallerQuestionTriage       = "question-triage"
+	OneShotCallerPromptDriftTagger    = "prompt-drift-tagger"
+	OneShotCallerSessionRenamer       = "session-renamer"
+	OneShotCallerSessionActionsReview = "session-actions-review"
+	OneShotCallerSessionActionModel   = "session-action-model-call"
 )
 
-// newOneShotRouter builds the router from the server's stores and settings.
+// NewOneShotRouter builds the router from the server's stores and settings.
 // A store the server was built without stays nil in the router, so a call
 // fails naming it rather than on a nil pointer.
-func (s *Server) newOneShotRouter() *modelrouting.Router {
+func (s *Service) NewOneShotRouter() *modelrouting.Router {
 	router := &modelrouting.Router{
 		InstanceByProvider: func() map[string]string {
-			return s.settings.StringMap(config.SettingOneShotInstanceByProvider)
+			return s.Settings.StringMap(config.SettingOneShotInstanceByProvider)
 		},
 		Call: s.callInstanceOneShot,
 		Logf: log.Printf,
 	}
-	if s.modelStore != nil {
-		router.Models = s.modelStore
+	if s.ModelStore() != nil {
+		router.Models = s.ModelStore()
 	}
-	if s.harnessStore != nil {
-		router.Instances = s.harnessStore
+	if s.HarnessStore() != nil {
+		router.Instances = s.HarnessStore()
 	}
 	// usage-store runs in this process. Until its module is open a read is
 	// an error, which the router logs and calls anyway.
-	router.Limits = modelrouting.NewUsageStoreLimits(s.readUsageStoreLimits)
+	router.Limits = modelrouting.NewUsageStoreLimits(s.Server.ReadUsageStoreLimits)
 	return router
 }
 
 // callInstanceOneShot runs one request on one instance's harness and reads
 // its answer. Anything but a 200 with a one-shot response is an error.
-func (s *Server) callInstanceOneShot(ctx context.Context, instance *msg.Instance, request msg.OneShotRequest) (msg.OneShotResponse, error) {
+func (s *Service) callInstanceOneShot(ctx context.Context, instance *msg.Instance, request msg.OneShotRequest) (msg.OneShotResponse, error) {
 	raw, status, err := s.runOneShot(ctx, instance, request)
 	if err != nil {
 		return msg.OneShotResponse{}, err
@@ -74,10 +74,10 @@ func (s *Server) callInstanceOneShot(ctx context.Context, instance *msg.Instance
 	return response, nil
 }
 
-// routedOneShotJSON runs a request that names a role and returns the answer
+// RoutedOneShotJSON runs a request that names a role and returns the answer
 // encoded, for the classifier and triage, which read the bytes.
-func (s *Server) routedOneShotJSON(ctx context.Context, request msg.OneShotRequest) ([]byte, error) {
-	response, err := s.oneShotRouter.RunRole(ctx, request)
+func (s *Service) RoutedOneShotJSON(ctx context.Context, request msg.OneShotRequest) ([]byte, error) {
+	response, err := s.OneShotRouter().RunRole(ctx, request)
 	if err != nil {
 		return nil, err
 	}
@@ -87,15 +87,15 @@ func (s *Server) routedOneShotJSON(ctx context.Context, request msg.OneShotReque
 // OneShotRoute implements executors.OneShotCaller. An input's model — a
 // role, an id or an alias — or operations.completion_model_role when it names
 // none, read at the time of use.
-func (s *Server) OneShotRoute(requestedModel string) (modelrouting.Route, error) {
+func (s *Service) OneShotRoute(requestedModel string) (modelrouting.Route, error) {
 	if requestedModel == "" {
-		requestedModel = s.settings.ModelRole(config.SettingOperationsCompletionModelRole)
+		requestedModel = s.Settings.ModelRole(config.SettingOperationsCompletionModelRole)
 	}
 	if requestedModel == "" {
 		return modelrouting.Route{}, &executors.TargetError{Code: "no_model",
 			Message: "the input names no model and operations.completion_model_role is empty"}
 	}
-	route, err := s.oneShotRouter.Resolve(requestedModel)
+	route, err := s.OneShotRouter().Resolve(requestedModel)
 	if resolution, ok := modelrouting.IsResolutionError(err); ok {
 		return modelrouting.Route{}, &executors.TargetError{Code: resolution.Code, Message: resolution.Message}
 	}
@@ -103,16 +103,16 @@ func (s *Server) OneShotRoute(requestedModel string) (modelrouting.Route, error)
 }
 
 // RunOneShotRoute implements executors.OneShotCaller.
-func (s *Server) RunOneShotRoute(ctx context.Context, route modelrouting.Route, request msg.OneShotRequest, admit func(modelrouting.Candidate) string) (msg.OneShotResponse, error) {
-	return s.oneShotRouter.Run(ctx, request.Caller, route, request, admit)
+func (s *Service) RunOneShotRoute(ctx context.Context, route modelrouting.Route, request msg.OneShotRequest, admit func(modelrouting.Candidate) string) (msg.OneShotResponse, error) {
+	return s.OneShotRouter().Run(ctx, request.Caller, route, request, admit)
 }
 
-// handleRoutedOneShot is POST /oneshot: one stateless model call for a
+// HandleRoutedOneShot is POST /oneshot: one stateless model call for a
 // model-store role, routed and fallen back by the server. The body is a
 // msg.OneShotRequest naming model_role (never model) and, for the logs,
 // caller; the answer is a msg.OneShotResponse with model, instance_id and
 // attempts filled.
-func (s *Server) handleRoutedOneShot(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleRoutedOneShot(w http.ResponseWriter, r *http.Request) {
 	var request msg.OneShotRequest
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
@@ -120,7 +120,7 @@ func (s *Server) handleRoutedOneShot(w http.ResponseWriter, r *http.Request) {
 		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_body", "invalid request body: "+err.Error())
 		return
 	}
-	response, refusal := s.routedOneShot(r.Context(), request)
+	response, refusal := s.RoutedOneShot(r.Context(), request)
 	if refusal != nil {
 		if refusal.attempts != nil {
 			w.Header().Set("Content-Type", "application/json")
@@ -150,10 +150,10 @@ func (refusal *oneShotRefusal) Error() string {
 	return fmt.Sprintf("%s (%d): %s", refusal.code, refusal.status, refusal.message)
 }
 
-// routedOneShot is one stateless model call for a model-store role, routed
+// RoutedOneShot is one stateless model call for a model-store role, routed
 // and fallen back by the server, with the checks POST /oneshot makes: a
 // prompt is required, and the request names a model_role, never a model.
-func (s *Server) routedOneShot(ctx context.Context, request msg.OneShotRequest) (msg.OneShotResponse, *oneShotRefusal) {
+func (s *Service) RoutedOneShot(ctx context.Context, request msg.OneShotRequest) (msg.OneShotResponse, *oneShotRefusal) {
 	if strings.TrimSpace(request.Prompt) == "" {
 		return msg.OneShotResponse{}, &oneShotRefusal{status: http.StatusBadRequest, code: "prompt_required", message: "prompt is required"}
 	}
@@ -161,7 +161,7 @@ func (s *Server) routedOneShot(ctx context.Context, request msg.OneShotRequest) 
 		return msg.OneShotResponse{}, &oneShotRefusal{status: http.StatusBadRequest, code: "model_not_accepted",
 			message: "name a model_role (" + strings.Join(models.CanonicalRoles, ", ") + "), not a model: the server picks the model, the instance and the fallbacks. POST /instances/{id}/oneshot takes a model"}
 	}
-	route, err := s.oneShotRouter.ResolveRole(request.ModelRole)
+	route, err := s.OneShotRouter().ResolveRole(request.ModelRole)
 	if err != nil {
 		status := http.StatusServiceUnavailable
 		code := "model_role_unresolvable"
@@ -173,7 +173,7 @@ func (s *Server) routedOneShot(ctx context.Context, request msg.OneShotRequest) 
 		}
 		return msg.OneShotResponse{}, &oneShotRefusal{status: status, code: code, message: err.Error()}
 	}
-	response, err := s.oneShotRouter.Run(ctx, request.Caller, route, request, nil)
+	response, err := s.OneShotRouter().Run(ctx, request.Caller, route, request, nil)
 	if err != nil {
 		var allFailed *modelrouting.AllModelsFailedError
 		if errors.As(err, &allFailed) {
@@ -184,17 +184,17 @@ func (s *Server) routedOneShot(ctx context.Context, request msg.OneShotRequest) 
 	return response, nil
 }
 
-// checkSettingNamesAnAssignedModelRole is the write check on every model_role
+// CheckSettingNamesAnAssignedModelRole is the write check on every model_role
 // setting: the role must be one of model-store's, and model-store must have
 // models for it, or every call on it would fail.
-func (s *Server) checkSettingNamesAnAssignedModelRole(role string) error {
+func (s *Service) CheckSettingNamesAnAssignedModelRole(role string) error {
 	if !models.IsCanonicalRole(role) {
 		return fmt.Errorf("%q is not a model role; the roles are %s", role, strings.Join(models.CanonicalRoles, ", "))
 	}
-	if s.modelStore == nil {
+	if s.ModelStore() == nil {
 		return fmt.Errorf("%w: this server has no model-store to check role %q with", servicesettings.ErrSettingOwnerUnavailable, role)
 	}
-	assigned, err := s.modelStore.RoleModelLists()
+	assigned, err := s.ModelStore().RoleModelLists()
 	if err != nil {
 		return fmt.Errorf("%w: model-store: %v", servicesettings.ErrSettingOwnerUnavailable, err)
 	}
@@ -206,18 +206,18 @@ func (s *Server) checkSettingNamesAnAssignedModelRole(role string) error {
 
 // OperationExecutors is every executor this server runs operations with,
 // wired to its own one-shot path. main hands them to the coordinator.
-func (s *Server) OperationExecutors() []operations.Executor {
+func (s *Service) OperationExecutors() []operations.Executor {
 	var boardStore executors.BoardClassificationStore
-	if s.issueReads != nil {
-		boardStore = s.issueReads
+	if s.IssueReads() != nil {
+		boardStore = s.IssueReads()
 	}
-	return []operations.Executor{executors.ModelClassifier{Caller: s, Taxonomies: s.operationRoutes}, executors.BoardClassifier{Caller: s, Store: boardStore}, executors.LLMCompletion{Caller: s}}
+	return []operations.Executor{executors.ModelClassifier{Caller: s, Taxonomies: s.OperationRoutes}, executors.BoardClassifier{Caller: s, Store: boardStore}, executors.LLMCompletion{Caller: s}}
 }
 
-// checkOneShotInstanceByProvider is the write check on
+// CheckOneShotInstanceByProvider is the write check on
 // oneshot.instance_by_provider: each provider must be one model-store knows,
 // and each instance one harness-store has enabled.
-func (s *Server) checkOneShotInstanceByProvider(value string) error {
+func (s *Service) CheckOneShotInstanceByProvider(value string) error {
 	pairs := map[string]string{}
 	for _, pair := range strings.Split(value, ",") {
 		provider, instanceID, found := strings.Cut(strings.TrimSpace(pair), ":")
@@ -229,8 +229,8 @@ func (s *Server) checkOneShotInstanceByProvider(value string) error {
 		}
 		pairs[provider] = instanceID
 	}
-	if s.modelStore != nil {
-		providers, err := s.modelStore.Providers()
+	if s.ModelStore() != nil {
+		providers, err := s.ModelStore().Providers()
 		if err != nil {
 			return fmt.Errorf("%w: model-store: %v", servicesettings.ErrSettingOwnerUnavailable, err)
 		}
@@ -245,7 +245,7 @@ func (s *Server) checkOneShotInstanceByProvider(value string) error {
 		}
 	}
 	for _, instanceID := range pairs {
-		if err := s.checkSettingNamesAnEnabledInstance(instanceID); err != nil {
+		if err := s.Server.CheckSettingNamesAnEnabledInstance(instanceID); err != nil {
 			return err
 		}
 	}

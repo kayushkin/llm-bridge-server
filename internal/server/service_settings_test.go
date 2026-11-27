@@ -65,7 +65,7 @@ func TestAStoredSettingIsSeededFromTheConfigAndReadWhenItIsUsed(t *testing.T) {
 	if role := srv.settings.ModelRole(config.SettingSignalClassifierModelRole); role != "" {
 		t.Fatalf("seeded classifier role = %q, want empty", role)
 	}
-	if _, err := srv.routedOneShotJSON(t.Context(), msg.OneShotRequest{Prompt: "hi"}); err == nil || !strings.Contains(err.Error(), "no model role") {
+	if _, err := srv.oneShot.RoutedOneShotJSON(t.Context(), msg.OneShotRequest{Prompt: "hi"}); err == nil || !strings.Contains(err.Error(), "no model role") {
 		t.Fatalf("a routed call with no role = %v", err)
 	}
 

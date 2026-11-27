@@ -287,7 +287,7 @@ func main() {
 		// process left running and reconciles it.
 		LeaseOwner:     fmt.Sprintf("llm-bridge-server pid %d started %s", os.Getpid(), time.Now().UTC().Format(time.RFC3339Nano)),
 		ModelListPrice: srv.ModelListPrice,
-	}, srv.OperationExecutors()...)
+	}, srv.OneShot().OperationExecutors()...)
 	if err != nil {
 		log.Fatalf("operations: %v", err)
 	}

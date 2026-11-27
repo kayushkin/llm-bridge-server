@@ -29,6 +29,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelcredentials"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelrouting"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models/oneshot"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/skills"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/tools"
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
@@ -274,6 +275,7 @@ type Server struct {
 	machineRoutes    *machineroutes.Service
 	messageSenders   *messagesender.Senders
 	modelCredentials *modelcredentials.Service
+	oneShot          *oneshot.Service
 	sessionFiles     *sessionfiles.Service
 }
 
@@ -347,14 +349,14 @@ func New(st *store.Store, as *agents.Store, ms *memories.Store, hs *machines.Sto
 	srv.harness.SetSessionInfoObserver(srv.onSessionInfo)
 	// The classifier runs its call through the server's one-shot router, so
 	// it is wired here, after the server that owns the router exists.
-	srv.oneShotRouter = srv.newOneShotRouter()
+	srv.oneShotRouter = srv.oneShot.NewOneShotRouter()
 	if srv.signalClassifier != nil {
-		srv.signalClassifier.runOneShot = srv.routedOneShotJSON
+		srv.signalClassifier.runOneShot = srv.oneShot.RoutedOneShotJSON
 	}
 	// Triage shares the classifier's timeout and router, and has its own
 	// role (question_triage.model_role), so either can move to another model
 	// without the other.
-	srv.questionTriage = newQuestionTriage(cfg.QuestionTriageModelRole, cfg.SignalClassifierTimeout, srv.routedOneShotJSON)
+	srv.questionTriage = newQuestionTriage(cfg.QuestionTriageModelRole, cfg.SignalClassifierTimeout, srv.oneShot.RoutedOneShotJSON)
 	// Every request this server answers is authorized first, and it cannot
 	// identify a caller without these. main refuses to start on the same
 	// check plus the store addresses; reaching this means a caller skipped it,
@@ -377,7 +379,7 @@ func New(st *store.Store, as *agents.Store, ms *memories.Store, hs *machines.Sto
 		srv.entraSignIn = newEntraSignIn(cfg)
 	}
 	srv.principalLookupCache = newPrincipalLookupCache(srv)
-	srv.sessionActionModels = srv
+	srv.sessionActionModels = sessionActionModelsInThisServer{Service: srv.oneShot, server: srv}
 	srv.wireServiceSettings()
 	srv.routes()
 	srv.syncHarnessTypes()
@@ -471,7 +473,6 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /sessions/{id}/files-named-by-tools/image", s.handleImageNamedByTools)
 	s.chatLinkService.Mount(s.mux)
 	s.mux.HandleFunc("POST /sessions/{id}/actions", s.handleOfferSessionAction)
-	s.mux.HandleFunc("POST /sessions/{id}/images", s.handleGenerateImagesIntoSession)
 	s.mux.HandleFunc("GET /sessions/{id}/actions", s.handleListSessionActions)
 	s.mux.HandleFunc("POST /sessions/{id}/actions/{action_id}/run", s.handleRunSessionAction)
 	s.mux.HandleFunc("GET /sessions/{id}/events", s.handleSessionEvents)
@@ -623,11 +624,7 @@ func (s *Server) routes() {
 
 	// Instance routes only available if harness-store is loaded
 	s.machineRoutes.Mount(s.mux)
-	if s.harnessStore != nil {
-		s.mux.HandleFunc("POST /instances/{id}/oneshot", s.handleInstanceOneShot)
-	}
-	s.mux.HandleFunc("POST /oneshot", s.handleRoutedOneShot)
-	s.mux.HandleFunc("POST /images", s.handleGenerateImages)
+	s.oneShot.Mount(s.mux)
 
 	// Hook registry routes (mounted only when hook-store is loaded).
 	// /hooks/exec/{id} is always registered because the hook-store is
@@ -1466,3 +1463,7 @@ func (s *Server) turnClassifierForBriefs() briefs.TurnClassifier {
 // Machines is the machine, instance and runner routes and the work behind
 // them: machine stats, disk usage and runner sockets.
 func (s *Server) Machines() *machineroutes.Service { return s.machineRoutes }
+
+// OneShot is the one-shot and image generation path: the routed model calls
+// every background feature makes, and the executors operations run with.
+func (s *Server) OneShot() *oneshot.Service { return s.oneShot }

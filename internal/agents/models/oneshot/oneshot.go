@@ -1,4 +1,4 @@
-package server
+package oneshot
 
 import (
 	"bytes"
@@ -14,16 +14,16 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// handleInstanceOneShot runs a stateless single-turn LLM call against an
+// HandleInstanceOneShot runs a stateless single-turn LLM call against an
 // instance's harness binary in -oneshot mode. The harness binary is expected
 // to implement the -oneshot flag: read a msg.OneShotRequest JSON from stdin,
 // emit a msg.OneShotResponse JSON on stdout, and exit. Binaries that don't
 // implement -oneshot will exit non-zero and the error is surfaced verbatim.
 //
 // No session is created. No event is streamed. Use POST /sessions for those.
-func (s *Server) handleInstanceOneShot(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleInstanceOneShot(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	inst, err := s.harnessStore.GetInstance(id)
+	inst, err := s.HarnessStore().GetInstance(id)
 	if err != nil {
 		http.Error(w, "instance not found", http.StatusNotFound)
 		return
@@ -66,7 +66,7 @@ func (s *Server) handleInstanceOneShot(w http.ResponseWriter, r *http.Request) {
 // The harness's bytes are returned untouched, including on failure: a harness
 // that wrote a structured error explains itself better than anything this layer
 // could invent about it.
-func (s *Server) runOneShot(ctx context.Context, inst *msg.Instance, req msg.OneShotRequest) ([]byte, int, error) {
+func (s *Service) runOneShot(ctx context.Context, inst *msg.Instance, req msg.OneShotRequest) ([]byte, int, error) {
 	h := inst.HarnessType
 	binPath, ok := harness.Available(h)
 	if !ok {
@@ -79,7 +79,7 @@ func (s *Server) runOneShot(ctx context.Context, inst *msg.Instance, req msg.One
 	// need it call auth-store themselves; harnesses that don't (e.g. inber,
 	// which inherits its credential from the running inber-server's env)
 	// just ignore it.
-	credID := s.harnessStore.FirstEnabledCredentialID(inst.ID)
+	credID := s.HarnessStore().FirstEnabledCredentialID(inst.ID)
 
 	callCtx, cancel := context.WithTimeout(ctx, 6*time.Minute)
 	defer cancel()

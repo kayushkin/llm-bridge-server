@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models/oneshot"
+
 	"github.com/kayushkin/llm-bridge-server/internal/ids"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -291,7 +293,7 @@ func (c *signalClassifier) classify(ctx context.Context, text string) (*turnClas
 		Prompt:       "Final message of the finished turn:\n\n" + c.trim(text),
 		SystemPrompt: classifierSystemPrompt,
 		ModelRole:    c.currentTuning().modelRole,
-		Caller:       oneShotCallerSignalClassifier,
+		Caller:       oneshot.OneShotCallerSignalClassifier,
 		Schema:       schema,
 		MaxTokens:    classifierMaxTokens,
 	})

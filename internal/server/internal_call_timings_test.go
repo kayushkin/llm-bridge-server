@@ -49,7 +49,7 @@ func TestInternalCallTimings(t *testing.T) {
 			b.ReportAllocs()
 			for range b.N {
 				// A new router keeps no answer from the last iteration.
-				if exhausted, err := gated.server.newOneShotRouter().Limits.ExhaustedWindow(ctx, "anthropic"); err != nil || exhausted != "" {
+				if exhausted, err := gated.server.oneShot.NewOneShotRouter().Limits.ExhaustedWindow(ctx, "anthropic"); err != nil || exhausted != "" {
 					b.Fatalf("ExhaustedWindow = %q, %v", exhausted, err)
 				}
 			}

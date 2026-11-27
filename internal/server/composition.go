@@ -5,6 +5,8 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelcredentials"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelrouting"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models/oneshot"
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/operations"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/operationroutes"
@@ -58,6 +60,17 @@ func (s *Server) composeServices() {
 		PrincipalStore: func() operationroutes.PrincipalStore { return s.principalStore },
 		Settings:       s.settings,
 	}}
+	s.oneShot = &oneshot.Service{Dependencies: oneshot.Dependencies{
+		FileStore:     func() sessionfiles.SessionFileStore { return s.fileStore },
+		HarnessStore:  func() *machines.Store { return s.harnessStore },
+		IssueReads:    func() *issuereads.Reader { return s.issueReads },
+		ModelStore:    func() *models.Store { return s.modelStore },
+		OneShotRouter: func() *modelrouting.Router { return s.oneShotRouter },
+		SessionFiles:  s.sessionFiles,
+		Settings:      s.settings,
+		Store:         s.store,
+		Server:        s,
+	}}
 	s.machineRoutes = &machineroutes.Service{Dependencies: machineroutes.Dependencies{
 		GrantChecker: s.grantChecker,
 		Harness:      s.harness,
@@ -96,4 +109,16 @@ func (s *Server) ModelListPrice(model string) (inputPerMillion, outputPerMillion
 		return 0, 0, false
 	}
 	return resolved.InputCost, resolved.OutputCost, true
+}
+
+// sessionActionModelsInThisServer is the one-shot path and model-store's list
+// prices, which model_call and the command reviewer use.
+type sessionActionModelsInThisServer struct {
+	*oneshot.Service
+	server *Server
+}
+
+// ModelListPrice is the server's model-store list price.
+func (models sessionActionModelsInThisServer) ModelListPrice(model string) (inputPerMillion, outputPerMillion float64, known bool) {
+	return models.server.ModelListPrice(model)
 }

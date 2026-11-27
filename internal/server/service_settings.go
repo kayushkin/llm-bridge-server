@@ -55,16 +55,16 @@ func attachServiceSettings(cfg *config.Config, st *store.Store) *servicesettings
 // after the components exist.
 func (s *Server) wireServiceSettings() {
 	if s.harnessStore != nil {
-		s.settings.SetValidator(config.SettingOneShotInstanceByProvider, s.checkOneShotInstanceByProvider)
+		s.settings.SetValidator(config.SettingOneShotInstanceByProvider, s.oneShot.CheckOneShotInstanceByProvider)
 		s.settings.SetValidator(config.SettingImageGenerationInstanceID, func(value string) error {
 			if value == "" {
 				return nil
 			}
-			return s.checkSettingNamesAnEnabledInstance(value)
+			return s.CheckSettingNamesAnEnabledInstance(value)
 		})
 	}
 	for _, key := range config.ModelRoleSettings {
-		s.settings.SetValidator(key, s.checkSettingNamesAnAssignedModelRole)
+		s.settings.SetValidator(key, s.oneShot.CheckSettingNamesAnAssignedModelRole)
 	}
 	s.settings.SetValidator(config.SettingOperationsGrantEnforcement, operationroutes.CheckOperationGrantEnforcementValue)
 	s.settings.SetValidator(config.SettingServerName, checkServerNameValue)
@@ -90,10 +90,10 @@ func (s *Server) wireServiceSettings() {
 	s.retuneFromServiceSettings()
 }
 
-// checkSettingNamesAnEnabledInstance refuses an instance id harness-store does
+// CheckSettingNamesAnEnabledInstance refuses an instance id harness-store does
 // not know or has disabled: a one-shot call on it would fail every time, and
 // the setting would look fine until someone read the log.
-func (s *Server) checkSettingNamesAnEnabledInstance(instanceID string) error {
+func (s *Server) CheckSettingNamesAnEnabledInstance(instanceID string) error {
 	instance, err := s.harnessStore.GetInstance(instanceID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("harness-store knows no instance %q", instanceID)

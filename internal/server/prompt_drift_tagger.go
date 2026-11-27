@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models/oneshot"
+
 	"github.com/kayushkin/llm-bridge-server/internal/agents"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -142,7 +144,7 @@ func buildPromptDriftTaggerRequest(drift agents.PromptDrift, sections []agents.P
 		Prompt:       prompt.String(),
 		SystemPrompt: promptDriftTaggerSystemPrompt,
 		ModelRole:    modelRole,
-		Caller:       oneShotCallerPromptDriftTagger,
+		Caller:       oneshot.OneShotCallerPromptDriftTagger,
 		Schema:       schema,
 		MaxTokens:    promptDriftTaggerMaxTokens,
 	}, nil

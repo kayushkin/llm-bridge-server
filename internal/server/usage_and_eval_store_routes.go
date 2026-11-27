@@ -59,9 +59,9 @@ func (s *Server) usageStoreHandler() http.Handler {
 // open.
 var errUsageStoreOff = errors.New("this server's usage-store module is not open")
 
-// readUsageStoreLimits is usage-store's latest limits, read in this process
+// ReadUsageStoreLimits is usage-store's latest limits, read in this process
 // from the same function its GET /api/usage/limits answers from.
-func (s *Server) readUsageStoreLimits(context.Context) (map[string]modelrouting.UsageProviderLimits, error) {
+func (s *Server) ReadUsageStoreLimits(context.Context) (map[string]modelrouting.UsageProviderLimits, error) {
 	handlers := s.usageAndEvalStores.usage.Load()
 	if handlers == nil {
 		return nil, errUsageStoreOff

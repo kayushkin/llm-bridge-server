@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models/oneshot"
+
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge-server/internal/textutil"
@@ -201,7 +203,7 @@ func (s *Server) renameFromTranscript(target *store.Session, turns []store.TurnT
 		Prompt:       buildRenamerPrompt(target, turns),
 		SystemPrompt: renamerSystemPrompt,
 		ModelRole:    modelRole,
-		Caller:       oneShotCallerSessionRenamer,
+		Caller:       oneshot.OneShotCallerSessionRenamer,
 		Schema:       renamerTitleSchema,
 		MaxTokens:    renamerMaxTokens,
 	})

@@ -10,7 +10,7 @@ import (
 )
 
 // TestOneShotRefusesAHarnessWhoseBinaryIsNotOnPath pins the availability guard
-// in handleInstanceOneShot. Nothing reached that handler before this test:
+// in HandleInstanceOneShot. Nothing reached that handler before this test:
 // replacing its `harness.Available(h)` result with a hardcoded `ok := true`
 // left the whole internal/server package green, so the one check standing
 // between a request and an exec of a binary that isn't there was unheld.

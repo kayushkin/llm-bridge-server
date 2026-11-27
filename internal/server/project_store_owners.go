@@ -310,7 +310,7 @@ func (bridge projectStoreBridge) SessionBrief(_ context.Context, sessionID strin
 
 // OneShot is POST /oneshot, with the same checks of the request.
 func (bridge projectStoreBridge) OneShot(ctx context.Context, request msg.OneShotRequest) (msg.OneShotResponse, error) {
-	response, refusal := bridge.server.routedOneShot(ctx, request)
+	response, refusal := bridge.server.oneShot.RoutedOneShot(ctx, request)
 	if refusal != nil {
 		return msg.OneShotResponse{}, refusal
 	}
