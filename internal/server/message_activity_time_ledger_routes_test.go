@@ -40,7 +40,7 @@ func enableMessageActivityAndTimeLedgerModulesOnTestDatabase(t *testing.T, gated
 		t.Fatal(err)
 	}
 	database := postgrestest.NewDatabase(t, messageModule, activityModule, timeLedgerModule)
-	if err := gated.server.EnableMessageActivityAndTimeLedgerStores(MessageActivityAndTimeLedgerModules{
+	if err := gated.server.EnableMessagesOnlineActivityAndTimeLedger(MessageActivityAndTimeLedgerModules{
 		Messages: database.Open(messageModule), Activity: database.Open(activityModule), TimeLedger: database.Open(timeLedgerModule),
 	}); err != nil {
 		t.Fatal(err)

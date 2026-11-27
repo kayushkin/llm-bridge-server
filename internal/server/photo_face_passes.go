@@ -126,7 +126,7 @@ func checkPhotoFacePassSettings(settings photoFacePassSettings) error {
 // StartPhotoFacePasses checks the face pass settings and, when any pass is
 // on, runs rounds until ctx ends. It refuses settings that could not run, so
 // the server does not start with a pass that would only fail. main calls it
-// after EnableMessageActivityAndTimeLedgerStores and EnablePhotosAndLocations.
+// after EnableMessagesOnlineActivityAndTimeLedger and EnablePhotosAndLocations.
 func (s *Server) StartPhotoFacePasses(ctx context.Context) error {
 	settings, err := s.readPhotoFacePassSettings()
 	if err != nil {
@@ -141,7 +141,7 @@ func (s *Server) StartPhotoFacePasses(ctx context.Context) error {
 		return errors.New("photo-store face passes: EnablePhotosAndLocations must run first")
 	}
 	if (settings.matching || settings.guessing) && s.messageActivityAndTimeLedger.Load() == nil {
-		return errors.New("photo-store face passes: people matching and face group guessing read message-store, so EnableMessageActivityAndTimeLedgerStores must run first")
+		return errors.New("photo-store face passes: people matching and face group guessing read message-store, so EnableMessagesOnlineActivityAndTimeLedger must run first")
 	}
 	if len(settings.owners) == 0 {
 		log.Printf("photo-store: face passes are on, and %s names no owner, so they run for nobody", config.SettingPhotosFacePassesOwnerPrincipalIDs)

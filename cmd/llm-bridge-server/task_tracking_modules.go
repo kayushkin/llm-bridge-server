@@ -81,7 +81,7 @@ func enableTaskTrackingModules(ctx context.Context, cfg *config.Config, srv *ser
 		closeModules()
 		return nil, fmt.Errorf("kanban-store: %w", err)
 	}
-	srv.EnableKanbanStore(issuesdb.New(kanbanStoreDB), server.KanbanStoreOwners{Noteboard: noteboardStore, Access: accessStores, MessageTriggersEnabled: kanbanMessageTriggersEnabled})
+	srv.EnableIssues(issuesdb.New(kanbanStoreDB), server.KanbanStoreOwners{Noteboard: noteboardStore, Access: accessStores, MessageTriggersEnabled: kanbanMessageTriggersEnabled})
 
 	settings := cfg.Settings
 	projectStore := projects.New(projectStoreDB)
@@ -109,8 +109,8 @@ func enableTaskTrackingModules(ctx context.Context, cfg *config.Config, srv *ser
 		closeModules()
 		return nil, fmt.Errorf("project-store: %w", err)
 	}
-	srv.EnableProjectStore(&projects.Handlers{Store: projectStore, Owners: owners, SessionFiler: filer})
-	log.Printf("postgres: noteboard open, served at /noteboard/; kanban-store open, served at /issues/ (%s); project-store open, served at /projects/", srv.KanbanStoreDescription())
+	srv.EnableProjects(&projects.Handlers{Store: projectStore, Owners: owners, SessionFiler: filer})
+	log.Printf("postgres: noteboard open, served at /noteboard/; kanban-store open, served at /issues/ (%s); project-store open, served at /projects/", srv.IssuesDescription())
 
 	if settings.Boolean(config.SettingProjectsSessionFilerEnabled) {
 		interval := settings.Duration(config.SettingProjectsSessionFilerInterval)

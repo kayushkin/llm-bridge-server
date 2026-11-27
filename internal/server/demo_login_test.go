@@ -186,7 +186,7 @@ func newFakeKanbanStore(t *testing.T) *fakeKanbanStore {
 }
 
 // useKanbanStoreHandlerForTests serves /issues/ from
-// handler, as EnableKanbanStore does from the store's, and this server's own
+// handler, as EnableIssues does from the store's, and this server's own
 // kanban reads from a store that answers none of them (501).
 func (s *Server) useKanbanStoreHandlerForTests(handler http.Handler) {
 	s.issueReads = newIssueReader(&fakeIssueStore{})

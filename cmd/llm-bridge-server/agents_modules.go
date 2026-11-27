@@ -69,16 +69,16 @@ func enableAgentsStoreModules(ctx context.Context, srv *server.Server, cfg *conf
 		closeAll()
 		log.Fatalf("tool-store: seeding the registry: %v", err)
 	}
-	srv.EnableToolStore(toolStore, srv.ToolStoreCredentialResolver())
+	srv.EnableTools(toolStore, srv.ToolStoreCredentialResolver())
 
 	skillStore, err := skills.New(open("skill-store", skills.Module), cfg.SkillStoreDataDirectory, cfg.SkillStoreInstallDirectory)
 	if err != nil {
 		closeAll()
 		log.Fatalf("skill-store: %v", err)
 	}
-	srv.EnableSkillStore(skillStore)
+	srv.EnableSkills(skillStore)
 
-	srv.EnableBundleStore(bundles.New(open("bundle-store", bundles.Module)))
+	srv.EnableBundles(bundles.New(open("bundle-store", bundles.Module)))
 
 	log.Printf("postgres: tool-store, skill-store and bundle-store open, served at /tools/, /skills/ and /bundles/ (skill files in %s)", cfg.SkillStoreDataDirectory)
 	return closeAll

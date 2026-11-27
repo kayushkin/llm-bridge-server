@@ -35,27 +35,27 @@ import (
 const mailstackIngressDeliveryPattern = "POST " + mailMountPrefix + "/api/ingress/deliveries"
 
 // errMailstackOff is a use of mailstack on a server that never enabled it.
-var errMailstackOff = errors.New("mailstack is off: EnableMailstack was never called on this server")
+var errMailstackOff = errors.New("mailstack is off: EnableMail was never called on this server")
 
-// EnableMailstack serves mailstack from mail. main calls it once, after
-// EnableAccess and EnableKanbanStore and before the server listens; until
+// EnableMail serves mailstack from mail. main calls it once, after
+// EnableAccess and EnableIssues and before the server listens; until
 // then, and in a test that never calls it, /mail/ answers 503 and
 // triage's sender lookup is off.
-func (s *Server) EnableMailstack(mail *mail.Server) {
+func (s *Server) EnableMail(mail *mail.Server) {
 	s.mailstack.Store(mail)
 	s.mailMessages = mail
 }
 
 // MailstackPeopleDirectory is what mailstack reads a person's access from:
 // principal-store and grant-store in this process, and kanban-store once
-// EnableKanbanStore has run.
+// EnableIssues has run.
 func (s *Server) MailstackPeopleDirectory(stores *access.Stores) mail.PeopleDirectory {
 	return mailstackPeopleDirectory{server: s, principals: stores.Principals, grants: stores.Grants,
 		directory: access.GrantsPrincipalDirectory(stores.Principals)}
 }
 
 // MailstackFileStore is file-store as mailstack keeps attachment bytes: the
-// module in this process, called in Go. Until EnableFileStore each call fails,
+// module in this process, called in Go. Until EnableFiles each call fails,
 // and mailstack refuses attachments.
 func (s *Server) MailstackFileStore() mailfilestore.Files {
 	return mailstackFileStore{server: s}

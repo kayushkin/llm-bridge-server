@@ -50,14 +50,14 @@ type PhotosAndLocationsModules struct {
 }
 
 // EnablePhotosAndLocations serves photo-store and location-store from their
-// modules. main calls it once, after EnableFileStore (photo-store keeps its
+// modules. main calls it once, after EnableFiles (photo-store keeps its
 // thumbnails there) and EnableConnectedRecords (it checks people in
 // people-store), and before the server listens. Until then their routes
 // answer 503.
 func (s *Server) EnablePhotosAndLocations(modules PhotosAndLocationsModules) error {
 	files := s.fileStoreModule.Load()
 	if files == nil {
-		return errors.New("photo-store: EnableFileStore must run first, since photo-store keeps its thumbnails in file-store")
+		return errors.New("photo-store: EnableFiles must run first, since photo-store keeps its thumbnails in file-store")
 	}
 	connected := s.connectedRecords.Load()
 	if connected == nil {

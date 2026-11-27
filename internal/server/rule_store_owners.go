@@ -65,7 +65,7 @@ func (sessions ruleStoreSessions) FollowSessions(ctx context.Context, lastEventI
 }
 
 // RuleStoreKanban is kanban-store as rule-store reads it. It answers once
-// EnableKanbanStore has run.
+// EnableIssues has run.
 func (s *Server) RuleStoreKanban() rules.KanbanFacts {
 	return ruleStoreKanban{server: s}
 }

@@ -40,7 +40,7 @@ func enableBudgetStore(ctx context.Context, cfg *config.Config, srv *server.Serv
 			Client: &http.Client{Timeout: 30 * time.Second}})
 		log.Printf("budget-store: Plaid on, environment %s", environment)
 	}
-	if err := srv.EnableBudgetStore(store); err != nil {
+	if err := srv.EnableBudget(store); err != nil {
 		closePool()
 		return nil, err
 	}

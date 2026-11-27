@@ -45,7 +45,7 @@ func newMailstackTestServer(t *testing.T) *mailstackTestServer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := test.server.EnableFileStore(files); err != nil {
+	if err := test.server.EnableFiles(files); err != nil {
 		t.Fatal(err)
 	}
 	mailAccounts := accounts.New(db)
@@ -53,7 +53,7 @@ func newMailstackTestServer(t *testing.T) *mailstackTestServer {
 		t.Fatal(err)
 	}
 	local := localmail.New(db)
-	test.server.EnableMailstack(mail.NewServer(mail.ServerParts{
+	test.server.EnableMail(mail.NewServer(mail.ServerParts{
 		Accounts: mailAccounts, LocalMail: local, People: test.server.MailstackPeopleDirectory(test.stores),
 		Files: test.server.MailstackFileStore(),
 	}))

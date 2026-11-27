@@ -114,11 +114,11 @@ func (s *Server) readBudgetStorePassSettings(module *budgetStoreModule) (budgetS
 // StartBudgetStorePasses checks the pass settings and, when any pass is on,
 // runs rounds until ctx ends. It refuses settings that could not run, so the
 // server does not start with a pass that would only fail. main calls it
-// after EnableBudgetStore.
+// after EnableBudget.
 func (s *Server) StartBudgetStorePasses(ctx context.Context) error {
 	module := s.budgetStore.Load()
 	if module == nil {
-		return errors.New("budget-store passes: EnableBudgetStore must run first")
+		return errors.New("budget-store passes: EnableBudget must run first")
 	}
 	settings, err := s.readBudgetStorePassSettings(module)
 	if err != nil {

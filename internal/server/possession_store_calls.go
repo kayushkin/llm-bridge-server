@@ -184,7 +184,7 @@ var (
 func (budget possessionBudgetStore) inOwnersBooks(ctx context.Context, work func(*budget.Ledger) error) error {
 	module := budget.server.budgetStore.Load()
 	if module == nil {
-		return errors.New("budget-store is not open on this server: EnableBudgetStore was never called")
+		return errors.New("budget-store is not open on this server: EnableBudget was never called")
 	}
 	owner, err := possessionOwner(ctx, "budget-store")
 	if err != nil {
@@ -206,7 +206,7 @@ func (budget possessionBudgetStore) inOwnersBooks(ctx context.Context, work func
 func (budgetStore possessionBudgetStore) RecordExists(ctx context.Context, id string) (bool, error) {
 	module := budgetStore.server.budgetStore.Load()
 	if module == nil {
-		return false, errors.New("budget-store is not open on this server: EnableBudgetStore was never called")
+		return false, errors.New("budget-store is not open on this server: EnableBudget was never called")
 	}
 	owner, err := possessionOwner(ctx, "budget-store")
 	if err != nil {

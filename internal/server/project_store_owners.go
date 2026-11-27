@@ -28,7 +28,7 @@ func (s *Server) ProjectStoreRepositories() projects.Repositories {
 }
 
 // ProjectStoreKanban is kanban-store as project-store reads it. It answers
-// once EnableKanbanStore has run.
+// once EnableIssues has run.
 func (s *Server) ProjectStoreKanban() projects.Kanban {
 	return projectStoreKanban{server: s}
 }

@@ -13,10 +13,10 @@ import (
 // Projects and the session filer, moved in from the standalone project-store:
 // the same routes under /projects/, answered from the Postgres module.
 
-// EnableProjectStore serves the store's routes from handlers. main calls it
+// EnableProjects serves the store's routes from handlers. main calls it
 // once the module is provisioned, migrated and open; until then, and on a
 // server with no Postgres URL, the routes answer 503.
-func (s *Server) EnableProjectStore(handlers *projects.Handlers) {
+func (s *Server) EnableProjects(handlers *projects.Handlers) {
 	s.projectStore.Store(handlers)
 }
 

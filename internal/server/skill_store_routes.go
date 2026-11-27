@@ -12,10 +12,10 @@ import (
 // the data directory that holds each skill's files, and the four seed routes
 // runners call under /api/skill-store/.
 
-// EnableSkillStore serves the store's routes from store. main calls it once the
+// EnableSkills serves the store's routes from store. main calls it once the
 // module is provisioned, migrated and open, before the server takes requests;
 // until then, and on a server with no Postgres URL, the routes answer 503.
-func (s *Server) EnableSkillStore(store *skills.Store) {
+func (s *Server) EnableSkills(store *skills.Store) {
 	s.skillStoreForResourceChecks.Store(store)
 	s.skillStoreHandlers.Store(skills.NewHandlers(store))
 }

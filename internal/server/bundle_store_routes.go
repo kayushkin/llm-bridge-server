@@ -23,11 +23,11 @@ type bundleResolver interface {
 // bundleStoreOffMessage says why a server has no bundle-store.
 const bundleStoreOffMessage = "this server's bundle-store module is off (" + config.PostgresURLEnvironmentVariable + " is not set)"
 
-// EnableBundleStore serves the store's routes from store and answers session
+// EnableBundles serves the store's routes from store and answers session
 // bundles from it. main calls it once the module is provisioned, migrated and
 // open, before the server takes requests; until then, and on a server with no
 // Postgres URL, the routes answer 503 and a session naming a bundle is refused.
-func (s *Server) EnableBundleStore(store *bundles.Store) {
+func (s *Server) EnableBundles(store *bundles.Store) {
 	s.bundleStore = store
 	s.bundleStoreHandlers.Store(bundles.NewHandlers(store))
 }

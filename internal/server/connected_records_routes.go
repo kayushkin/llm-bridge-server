@@ -63,7 +63,7 @@ type ConnectedRecordsModules struct {
 // EnableConnectedRecords serves people-store, calendar-store and journal-store
 // from their modules. main calls it once, after EnableAccess (people-store
 // checks a principal_id with principal-store), EnableNoteboard (journal-store's
-// promote-todo makes its todo there) and EnableReferenceStore (journal-store
+// promote-todo makes its todo there) and EnableReferences (journal-store
 // types its mentions from reference-store's list), and before
 // the server listens. Until then their routes answer 503, and chat links and
 // sign-in cannot read who owns an account.
@@ -73,7 +73,7 @@ func (s *Server) EnableConnectedRecords(ctx context.Context, modules ConnectedRe
 	}
 	resolver := s.referenceResolver.Load()
 	if resolver == nil {
-		return errors.New("connected records: EnableReferenceStore must run first, since journal-store types its mentions from reference-store's list")
+		return errors.New("connected records: EnableReferences must run first, since journal-store types its mentions from reference-store's list")
 	}
 	noteboard := s.noteboard.Load()
 	if noteboard == nil {

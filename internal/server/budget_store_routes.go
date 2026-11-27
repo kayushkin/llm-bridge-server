@@ -26,10 +26,10 @@ type budgetStoreModule struct {
 	handler http.Handler
 }
 
-// EnableBudgetStore serves budget-store from store. main calls it once,
+// EnableBudget serves budget-store from store. main calls it once,
 // after EnablePhotosAndLocations (trip matching reads location-store's
 // journeys) and before the server listens. Until then its routes answer 503.
-func (s *Server) EnableBudgetStore(store *budget.Store) error {
+func (s *Server) EnableBudget(store *budget.Store) error {
 	if store == nil {
 		return errors.New("budget-store: the store is required")
 	}
@@ -45,7 +45,7 @@ func (s *Server) budgetStoreRoute() http.HandlerFunc {
 			module := s.budgetStore.Load()
 			if module == nil {
 				return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-					writeJSONError(w, http.StatusServiceUnavailable, "budget_store_off", "budget-store is not open on this server: EnableBudgetStore was never called")
+					writeJSONError(w, http.StatusServiceUnavailable, "budget_store_off", "budget-store is not open on this server: EnableBudget was never called")
 				})
 			}
 			return module.handler

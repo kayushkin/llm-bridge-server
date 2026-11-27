@@ -63,11 +63,11 @@ type KanbanStoreOwners struct {
 	MessageTriggersEnabled bool
 }
 
-// EnableKanbanStore serves kanban-store from store, joined to the owners it
+// EnableIssues serves kanban-store from store, joined to the owners it
 // asks. main calls it once, after EnableAccess and before the server listens;
 // until then, and in a test that never calls it, /issues/
 // answer 503 and this server's own kanban reads are off.
-func (s *Server) EnableKanbanStore(store *issuesdb.Store, owners KanbanStoreOwners) {
+func (s *Server) EnableIssues(store *issuesdb.Store, owners KanbanStoreOwners) {
 	// noteboard runs in this process, and kanban-store calls its API in Go.
 	notes := kanbanNoteboard{notes: noteboardapi.New(owners.Noteboard)}
 	directory := access.GrantsPrincipalDirectory(owners.Access.Principals)
@@ -93,9 +93,9 @@ func (s *Server) EnableKanbanStore(store *issuesdb.Store, owners KanbanStoreOwne
 	s.kanbanStore.Store(&kanbanStoreHandlers{handler: handler, store: store, api: api, messageTriggersEnabled: owners.MessageTriggersEnabled})
 }
 
-// KanbanStoreDescription says, for the start log, what kanban-store was
+// IssuesDescription says, for the start log, what kanban-store was
 // joined to.
-func (s *Server) KanbanStoreDescription() string {
+func (s *Server) IssuesDescription() string {
 	handlers := s.kanbanStore.Load()
 	if handlers == nil {
 		return errKanbanStoreOff.Error()
@@ -123,7 +123,7 @@ func CheckKanbanStoreConfiguration(cfg *config.Config, messageTriggersEnabled bo
 }
 
 // errKanbanStoreOff is a use of the store on a server that never enabled it.
-var errKanbanStoreOff = errors.New("kanban-store is off: EnableKanbanStore was never called on this server")
+var errKanbanStoreOff = errors.New("kanban-store is off: EnableIssues was never called on this server")
 
 // serveKanbanStore answers <mountPrefix>/<rest> with the store's
 // /<rest>, as the verified caller.
@@ -324,12 +324,12 @@ func (owner kanbanBundles) CheckBundleExists(id string) error {
 	return err
 }
 
-// KanbanStoreHTTPClientAsInternalService is an HTTP client whose every
+// IssuesHTTPClientAsInternalService is an HTTP client whose every
 // request kanban-store's handler serves in this process as the internal
 // service. Only rule-store's live rules use it: a rule's effect names a
 // method, a path and a body, and its run records the answer's status, so it
-// is a request by design. Its requests go to KanbanStoreInProcessBaseURL.
-func (s *Server) KanbanStoreHTTPClientAsInternalService() (*http.Client, error) {
+// is a request by design. Its requests go to IssuesInProcessBaseURL.
+func (s *Server) IssuesHTTPClientAsInternalService() (*http.Client, error) {
 	handlers := s.kanbanStore.Load()
 	if handlers == nil {
 		return nil, errKanbanStoreOff
@@ -340,7 +340,7 @@ func (s *Server) KanbanStoreHTTPClientAsInternalService() (*http.Client, error) 
 	return &http.Client{Transport: inprocesshttp.Transport{Handler: asInternalService}}, nil
 }
 
-// KanbanStoreInProcessBaseURL is the address requests to
-// KanbanStoreHTTPClientAsInternalService are written to. No request leaves the
+// IssuesInProcessBaseURL is the address requests to
+// IssuesHTTPClientAsInternalService are written to. No request leaves the
 // process, so it names nothing on the network.
-const KanbanStoreInProcessBaseURL = "http://kanban-store.in-process"
+const IssuesInProcessBaseURL = "http://issues.in-process"

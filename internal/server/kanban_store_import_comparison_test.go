@@ -55,7 +55,7 @@ func TestImportedStandaloneKanbanStoreAnswers(t *testing.T) {
 	server, _, _ := testServerWithInstance(t, msg.HarnessMock)
 	// GET /api/entity-types serves reference-store's list of types, from
 	// reference-store in this process.
-	if err := server.EnableReferenceStore(&references.Resolver{Types: references.Types, Credentials: &references.Credentials{}}); err != nil {
+	if err := server.EnableReferences(&references.Resolver{Types: references.Types, Credentials: &references.Credentials{}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -91,7 +91,7 @@ func TestImportedStandaloneKanbanStoreAnswers(t *testing.T) {
 		t.Fatalf("kanban-store: %v", err)
 	}
 	t.Logf("kanban-store imported: %+v", counts)
-	server.EnableKanbanStore(issuesdb.New(kanbanPool), KanbanStoreOwners{Noteboard: items.New(noteboardPool), Access: stores})
+	server.EnableIssues(issuesdb.New(kanbanPool), KanbanStoreOwners{Noteboard: items.New(noteboardPool), Access: stores})
 
 	requests, err := os.Open(*kanbanComparisonRequests)
 	if err != nil {

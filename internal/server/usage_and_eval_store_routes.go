@@ -34,9 +34,9 @@ const (
 	evaluationsRoutePrefix = "/evaluations"
 )
 
-// EnableUsageStore serves usage-store's routes from handlers, and from then on
+// EnableUsage serves usage-store's routes from handlers, and from then on
 // the one-shot router reads subscription limits from it.
-func (s *Server) EnableUsageStore(handlers *usagestorehttpapi.Server) {
+func (s *Server) EnableUsage(handlers *usagestorehttpapi.Server) {
 	s.usageAndEvalStores.usage.Store(handlers)
 }
 
@@ -95,13 +95,13 @@ type EvalStoreOptions struct {
 	OperationPollingInterval time.Duration
 }
 
-// EnableEvalStore serves eval-store's routes from store and returns the
+// EnableEvaluations serves eval-store's routes from store and returns the
 // runner that carries its runs out, which main closes at shutdown. Every
 // model call is an llm.completion operation on this server, and prices and
 // subscription usage come from model-store and usage-store, all called in
 // process as the internal service (evalStoreInThisServer), as the standalone
 // eval-store called them with the service token alone.
-func (s *Server) EnableEvalStore(store *evaluations.Store, options EvalStoreOptions) (*evaluations.Runner, error) {
+func (s *Server) EnableEvaluations(store *evaluations.Store, options EvalStoreOptions) (*evaluations.Runner, error) {
 	if options.RunsEnabled && options.OperationPollingInterval <= 0 {
 		return nil, fmt.Errorf("eval-store: %s is %s; it must be longer than nothing", config.SettingEvaluationsOperationPollingInterval, options.OperationPollingInterval)
 	}

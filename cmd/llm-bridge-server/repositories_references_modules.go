@@ -124,7 +124,7 @@ func enableRepositoriesAndReferences(ctx context.Context, cfg *config.Config, sr
 	if err != nil {
 		return fail(fmt.Errorf("file-store: %w", err))
 	}
-	if err := srv.EnableFileStore(files); err != nil {
+	if err := srv.EnableFiles(files); err != nil {
 		return fail(fmt.Errorf("file-store: %w", err))
 	}
 
@@ -141,7 +141,7 @@ func enableRepositoriesAndReferences(ctx context.Context, cfg *config.Config, sr
 	}
 	seconds := func(key string) time.Duration { return time.Duration(settings.Integer(key)) * time.Second }
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	if err := srv.EnableReferenceStore(&references.Resolver{
+	if err := srv.EnableReferences(&references.Resolver{
 		Types:       references.Types,
 		ServiceURLs: serviceURLs,
 		SiteURLs:    siteURLs,

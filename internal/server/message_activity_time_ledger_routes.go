@@ -54,18 +54,18 @@ type MessageActivityAndTimeLedgerModules struct {
 	TimeLedger *sql.DB
 }
 
-// EnableMessageActivityAndTimeLedgerStores serves message-store,
+// EnableMessagesOnlineActivityAndTimeLedger serves message-store,
 // activity-store and time-ledger-store from their modules. main calls it once,
 // after EnableConnectedRecords (the stores share its caller rules) and
-// EnableFileStore (activity-store keeps its attachments' bytes in file-store),
+// EnableFiles (activity-store keeps its attachments' bytes in file-store),
 // and before the server listens. Until then their routes answer 503.
-func (s *Server) EnableMessageActivityAndTimeLedgerStores(modules MessageActivityAndTimeLedgerModules) error {
+func (s *Server) EnableMessagesOnlineActivityAndTimeLedger(modules MessageActivityAndTimeLedgerModules) error {
 	if s.connectedRecords.Load() == nil {
 		return errors.New("message-store, activity-store and time-ledger-store: EnableConnectedRecords must run first; they are served the way its stores are")
 	}
 	files := s.fileStoreCalls.Load()
 	if files == nil {
-		return errors.New("activity-store: EnableFileStore must run first, since activity-store keeps its attachments' bytes in file-store")
+		return errors.New("activity-store: EnableFiles must run first, since activity-store keeps its attachments' bytes in file-store")
 	}
 	messageStore := messages.New(modules.Messages)
 	activities := onlineactivity.New(modules.Activity, ActivityAttachmentFilesIn(files))
@@ -93,7 +93,7 @@ func (s *Server) messageActivityOrTimeLedgerRoute(mountPrefix, storeName, offCod
 		stores := s.messageActivityAndTimeLedger.Load()
 		if stores == nil {
 			return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				writeJSONError(w, http.StatusServiceUnavailable, offCode, storeName+" is not open on this server: EnableMessageActivityAndTimeLedgerStores was never called")
+				writeJSONError(w, http.StatusServiceUnavailable, offCode, storeName+" is not open on this server: EnableMessagesOnlineActivityAndTimeLedger was never called")
 			})
 		}
 		return handlerOf(stores)

@@ -76,7 +76,7 @@ func enableMessageActivityAndTimeLedgerStores(ctx context.Context, cfg *config.C
 		pools = append(pools, db)
 		*opened.into = db
 	}
-	if err := srv.EnableMessageActivityAndTimeLedgerStores(modules); err != nil {
+	if err := srv.EnableMessagesOnlineActivityAndTimeLedger(modules); err != nil {
 		closePools()
 		return nil, err
 	}

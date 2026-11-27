@@ -130,8 +130,8 @@ type Server struct {
 	toolStoreHandlers  atomic.Pointer[tools.Handlers]
 	skillStoreHandlers atomic.Pointer[skills.Handlers]
 	// The tool-store and skill-store modules, for grant-store to check that a
-	// tool or skill a grant names exists. Nil until EnableToolStore and
-	// EnableSkillStore, like the handlers above.
+	// tool or skill a grant names exists. Nil until EnableTools and
+	// EnableSkills, like the handlers above.
 	toolStoreForResourceChecks  atomic.Pointer[tools.Store]
 	skillStoreForResourceChecks atomic.Pointer[skills.Store]
 	bundleStoreHandlers         atomic.Pointer[bundles.Handlers]
@@ -146,22 +146,22 @@ type Server struct {
 	referenceReadable referenceReadableStores
 	// issueReads answers "which noteboard todo is this session linked
 	// to?" when a signal is minted, and every other read this server makes of
-	// kanban-store. EnableKanbanStore sets it; nil until then, which leaves
+	// kanban-store. EnableIssues sets it; nil until then, which leaves
 	// every signal unlinked rather than guessing.
 	issueReads *issueReader
-	// kanbanStore answers /issues/ once EnableKanbanStore
+	// kanbanStore answers /issues/ once EnableIssues
 	// has run (kanban_store_routes.go); nil answers them 503.
 	kanbanStore atomic.Pointer[kanbanStoreHandlers]
 
-	// mailstack answers /mail/ once EnableMailstack has run.
+	// mailstack answers /mail/ once EnableMail has run.
 	mailstack atomic.Pointer[mail.Server]
 	// fileStore keeps the bytes of files shared into sessions: the file-store
-	// module in this process, called in Go. Nil until EnableFileStore, which
+	// module in this process, called in Go. Nil until EnableFiles, which
 	// switches session files off.
 	fileStore sessionFileStore
 	// fileStoreCalls is the same module as the other modules in this process
 	// call it (kanban-store's and mailstack's attachments, activity-store's);
-	// nil until EnableFileStore.
+	// nil until EnableFiles.
 	fileStoreCalls atomic.Pointer[files.Server]
 	// The repositories, file_storage and references modules
 	// (repositories_references_routes.go); nil answers their routes 503.
@@ -174,20 +174,20 @@ type Server struct {
 	// (connected_records_routes.go); nil answers them 503.
 	connectedRecords atomic.Pointer[connectedRecordsStores]
 	// messageActivityAndTimeLedger answers /messages/, /online-activity/
-	// and /time-ledger/ once EnableMessageActivityAndTimeLedgerStores
+	// and /time-ledger/ once EnableMessagesOnlineActivityAndTimeLedger
 	// has run (message_activity_time_ledger_routes.go); nil answers them 503.
 	messageActivityAndTimeLedger atomic.Pointer[messageActivityAndTimeLedgerStores]
 	// photosAndLocations answers /photos/ and /locations/ once
 	// EnablePhotosAndLocations has run (photos_locations_routes.go); nil
 	// answers them 503.
 	photosAndLocations atomic.Pointer[photosAndLocationsStores]
-	// budgetStore answers /budget/ once EnableBudgetStore has run
+	// budgetStore answers /budget/ once EnableBudget has run
 	// (budget_store_routes.go); nil answers it 503.
 	budgetStore atomic.Pointer[budgetStoreModule]
 	// possessions answers /possessions/ once EnablePossessions has run
 	// (possessions_routes.go); nil answers it 503.
 	possessions atomic.Pointer[possessionStores]
-	// fileStoreModule is the file-store module EnableFileStore was given:
+	// fileStoreModule is the file-store module EnableFiles was given:
 	// photo-store keeps its thumbnails' bytes there, called in Go.
 	fileStoreModule atomic.Pointer[files.Store]
 	// repoRegistryForDeploys is repo-store as a deploy action reads it; nil
@@ -206,7 +206,7 @@ type Server struct {
 	questionTriage *questionTriage
 	// mailMessages resolves the sender of a card's mail so a drafted
 	// customer reply has a recipient, from mailstack in this process. Nil
-	// until EnableMailstack, and every draft is then minted with an empty To.
+	// until EnableMail, and every draft is then minted with an empty To.
 	mailMessages mailMessageReader
 	cfg          *config.Config
 	// serviceInventory is the last reading of the host's services and their

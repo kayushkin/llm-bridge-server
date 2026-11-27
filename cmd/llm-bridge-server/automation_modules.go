@@ -225,7 +225,7 @@ func enableRuleStore(ctx context.Context, cfg *config.Config, srv *server.Server
 	if reactorEnabled && sweepInterval <= 0 {
 		return nil, fmt.Errorf("rule-store: %s is %s; it must be longer than nothing", config.SettingRulesSweepInterval, sweepInterval)
 	}
-	kanbanClient, err := srv.KanbanStoreHTTPClientAsInternalService()
+	kanbanClient, err := srv.IssuesHTTPClientAsInternalService()
 	if err != nil {
 		return nil, fmt.Errorf("rule-store: %w", err)
 	}
@@ -247,10 +247,10 @@ func enableRuleStore(ctx context.Context, cfg *config.Config, srv *server.Server
 	sessions := srv.RuleStoreSessions(feed)
 	kanban := srv.RuleStoreKanban()
 	_, effectsOnThisServer := srv.HTTPClientToThisServer(0)
-	owners := rules.NewOwnerCalls(feed, &rules.KanbanStore{BaseURL: server.KanbanStoreInProcessBaseURL})
+	owners := rules.NewOwnerCalls(feed, &rules.KanbanStore{BaseURL: server.IssuesInProcessBaseURL})
 	owners.Client = &http.Client{Timeout: ruleStoreEffectCallTimeout, Transport: transportByHost{
 		hostOf(bridgeBaseURL):                      effectsOnThisServer.Transport,
-		hostOf(server.KanbanStoreInProcessBaseURL): kanbanClient.Transport,
+		hostOf(server.IssuesInProcessBaseURL): kanbanClient.Transport,
 	}}
 	reactor := rules.NewReactor(store, sessions, kanban, owners, sweepInterval)
 
@@ -271,7 +271,7 @@ func enableRuleStore(ctx context.Context, cfg *config.Config, srv *server.Server
 	}
 	routes := http.NewServeMux()
 	rules.RegisterHandlers(lifetime, routes, store, reactor, kanban)
-	srv.EnableRuleStore(routes)
+	srv.EnableRules(routes)
 	if reactorEnabled {
 		log.Printf("postgres: rule-store open, served at /rules/; its reactor runs here")
 	} else {

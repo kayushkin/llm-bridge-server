@@ -24,7 +24,7 @@ func enablePredictionStoreOnTestDatabase(t *testing.T, server *Server) *predicti
 	}
 	database := postgrestest.NewDatabase(t, module)
 	store := predictions.New(database.Open(module))
-	server.EnablePredictionStore(store)
+	server.EnablePredictions(store)
 	return store
 }
 
@@ -167,7 +167,7 @@ func TestImportedStandaloneDatabaseCalibration(t *testing.T) {
 		t.Fatalf("import: %v", err)
 	}
 	t.Logf("imported %+v", counts)
-	gated.server.EnablePredictionStore(predictions.New(db))
+	gated.server.EnablePredictions(predictions.New(db))
 	report := map[string]json.RawMessage{}
 	for _, path := range []string{"/predictions/calibration", "/predictions/calibration?group_by=category", "/predictions/base-rates", "/predictions/health", "/predictions/predictions?include_deleted=1&expand=1", "/predictions/tags"} {
 		response := gated.requestAsService(t, "GET", path)

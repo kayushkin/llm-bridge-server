@@ -11,7 +11,7 @@ import (
 
 // kanbanReferenceTypes is reference-store's list of types as kanban-store
 // reads it, from the resolver in this process. The list is compiled into
-// this binary; until EnableReferenceStore has run it is an error.
+// this binary; until EnableReferences has run it is an error.
 type kanbanReferenceTypes struct {
 	server *Server
 }

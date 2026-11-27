@@ -28,7 +28,7 @@ func enableBudgetStoreModuleOnTestDatabase(t *testing.T, gated *gatedTestServer)
 	}
 	database := postgrestest.NewDatabase(t, module)
 	store := budget.New(database.Open(module))
-	if err := gated.server.EnableBudgetStore(store); err != nil {
+	if err := gated.server.EnableBudget(store); err != nil {
 		t.Fatal(err)
 	}
 	return store

@@ -69,18 +69,18 @@ type PossessionsModule struct {
 }
 
 // EnablePossessions serves possession-store from its module. main calls it
-// once, after EnableFileStore, EnablePhotosAndLocations, EnableMailstack and
-// EnableBudgetStore, and before the server listens. Until then its routes answer 503.
+// once, after EnableFiles, EnablePhotosAndLocations, EnableMail and
+// EnableBudget, and before the server listens. Until then its routes answer 503.
 func (s *Server) EnablePossessions(module PossessionsModule) error {
 	files := s.fileStoreModule.Load()
 	if files == nil {
-		return errors.New("possession-store: EnableFileStore must run first, since possession-store keeps its originals in file-store")
+		return errors.New("possession-store: EnableFiles must run first, since possession-store keeps its originals in file-store")
 	}
 	if s.photosAndLocations.Load() == nil {
 		return errors.New("possession-store: EnablePhotosAndLocations must run first, since possession-store reads photos and checks places there")
 	}
 	if s.budgetStore.Load() == nil {
-		return errors.New("possession-store: EnableBudgetStore must run first, since possession-store records eBay orders and checks transactions there")
+		return errors.New("possession-store: EnableBudget must run first, since possession-store records eBay orders and checks transactions there")
 	}
 	if s.harnessStore == nil {
 		return errors.New("possession-store: this server has no harness-store, where a computer's machine is checked")

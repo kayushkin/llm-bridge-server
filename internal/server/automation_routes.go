@@ -59,9 +59,9 @@ func (s *Server) schedulerJobsInProcess() schedulerJobs {
 	return *jobs
 }
 
-// EnableRuleStore serves rule-store's routes from routes, which answer the
+// EnableRules serves rule-store's routes from routes, which answer the
 // paths without the /rules prefix.
-func (s *Server) EnableRuleStore(routes http.Handler) {
+func (s *Server) EnableRules(routes http.Handler) {
 	s.automationStores.ruleStore.Store(&routes)
 }
 

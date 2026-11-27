@@ -56,7 +56,7 @@ func enableMail(ctx context.Context, cfg *config.Config, srv *server.Server, acc
 		parts.Tokens = apiauth.New(cfg.AuthStoreURL, cfg.AuthStoreToken)
 	}
 	mail := mail.NewServer(parts)
-	srv.EnableMailstack(mail)
+	srv.EnableMail(mail)
 	if providerConnections {
 		log.Printf("postgres: mailstack open, served at /mail/; Gmail, Outlook and IMAP accounts reach their providers, with tokens from auth-store at %s", cfg.AuthStoreURL)
 	} else {

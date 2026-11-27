@@ -45,7 +45,7 @@ func newKanbanTestServer(t *testing.T) *kanbanTestServer {
 	database := postgrestest.NewDatabase(t, kanbanModule, noteboardModule)
 	test.kanban = issuesdb.New(database.Open(kanbanModule))
 	test.notes = items.New(database.Open(noteboardModule))
-	test.server.EnableKanbanStore(test.kanban, KanbanStoreOwners{Noteboard: test.notes, Access: test.stores})
+	test.server.EnableIssues(test.kanban, KanbanStoreOwners{Noteboard: test.notes, Access: test.stores})
 
 	makeBoard := func(name string) (string, string) {
 		var board struct {

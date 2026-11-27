@@ -118,7 +118,7 @@ func TestRuleStoreRoutesAnswerAndDecideNothingWhileTheReactorIsOff(t *testing.T)
 	reactor.SwitchOff("the reactor is off in this test")
 	routes := http.NewServeMux()
 	rules.RegisterHandlers(context.Background(), routes, store, reactor, kanban)
-	gated.server.EnableRuleStore(routes)
+	gated.server.EnableRules(routes)
 
 	created := gated.requestAsServiceWithJSON(t, "POST", "/rules/rules", map[string]any{"name": "completed sessions", "source": rules.SourceSession, "created_by": "principal_000001"})
 	if created.Code != http.StatusCreated || !strings.Contains(created.Body.String(), `"id":"rule_000001"`) {

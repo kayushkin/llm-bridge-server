@@ -31,7 +31,7 @@ func enableTaskTrackingOnTestDatabase(t *testing.T, server *Server) (*items.Stor
 	noteboard := items.New(database.Open(noteboardModule))
 	projectStore := projects.New(database.Open(projectsModule))
 	server.EnableNoteboard(noteboard)
-	server.EnableProjectStore(&projects.Handlers{Store: projectStore, Owners: &projects.Owners{Noteboard: projects.NoteboardModule{Store: noteboard}}})
+	server.EnableProjects(&projects.Handlers{Store: projectStore, Owners: &projects.Owners{Noteboard: projects.NoteboardModule{Store: noteboard}}})
 	return noteboard, projectStore
 }
 
@@ -173,7 +173,7 @@ func TestImportedStandaloneTaskTrackingDatabases(t *testing.T) {
 	t.Logf("imported noteboard %+v and project-store %+v", noteboardCounts, projectCounts)
 	noteboard := items.New(noteboardDB)
 	gated.server.EnableNoteboard(noteboard)
-	gated.server.EnableProjectStore(&projects.Handlers{Store: projects.New(projectsDB), Owners: &projects.Owners{Noteboard: projects.NoteboardModule{Store: noteboard}}})
+	gated.server.EnableProjects(&projects.Handlers{Store: projects.New(projectsDB), Owners: &projects.Owners{Noteboard: projects.NoteboardModule{Store: noteboard}}})
 
 	paths, err := os.ReadFile(*taskTrackingPaths)
 	if err != nil {

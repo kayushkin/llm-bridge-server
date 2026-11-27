@@ -4,7 +4,7 @@ package server
 // keeps card attachments there and mailstack keeps mail attachments there.
 // Each call goes through the module's own checks and limit
 // (files.Server.Accept and the rest), as a request to its routes did.
-// Until EnableFileStore has run each call fails naming that, as the routes
+// Until EnableFiles has run each call fails naming that, as the routes
 // answered 503, and kanban-store and mailstack answer it as a file-store that
 // could not be reached.
 

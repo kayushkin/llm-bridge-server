@@ -10,10 +10,10 @@ import (
 // The calibration ledger, moved in from the standalone prediction-store: the
 // same routes under /predictions/, answered from the Postgres module.
 
-// EnablePredictionStore serves the store's routes from store. main calls it
+// EnablePredictions serves the store's routes from store. main calls it
 // once the module is provisioned, migrated and open; until then, and on a
 // server with no Postgres URL, the routes answer 503.
-func (s *Server) EnablePredictionStore(store *predictions.Store) {
+func (s *Server) EnablePredictions(store *predictions.Store) {
 	s.predictionStore.Store(predictions.NewHandlers(store))
 	s.referenceReadable.predictions.Store(store)
 }

@@ -12,14 +12,14 @@ import (
 // module, and the questions session creation and spawn ask it, answered in
 // process through toolRegistry.
 
-// EnableToolStore serves the store's routes from store and answers the tool
+// EnableTools serves the store's routes from store and answers the tool
 // offer, the harness tool denials and the harness tool reports from it.
 // resolveCredential turns the auth-store provider an MCP tool's environment
 // key names into its secret when the tool is provisioned. main calls it once
 // the module is provisioned, migrated, open and seeded, before the server
 // takes requests; until then, and on a server with no Postgres URL, the routes
 // answer 503 and sessions get no tools from the registry.
-func (s *Server) EnableToolStore(store *tools.Store, resolveCredential tools.ResolveCredentialFunc) {
+func (s *Server) EnableTools(store *tools.Store, resolveCredential tools.ResolveCredentialFunc) {
 	s.toolRegistry = inProcessToolRegistry{store: store, resolveCredential: resolveCredential}
 	s.toolStoreForResourceChecks.Store(store)
 	s.toolStoreHandlers.Store(tools.NewHandlers(store, tools.HandlerOptions{
@@ -29,7 +29,7 @@ func (s *Server) EnableToolStore(store *tools.Store, resolveCredential tools.Res
 	}))
 }
 
-// ToolStoreCredentialResolver is the resolver EnableToolStore is given on this
+// ToolStoreCredentialResolver is the resolver EnableTools is given on this
 // server: auth-store, through the server's own auth-store client.
 func (s *Server) ToolStoreCredentialResolver() tools.ResolveCredentialFunc {
 	return credentialResolverFromAuthStore(s.authClient)

@@ -74,11 +74,11 @@ func enableRepositoryModulesOnTestDatabase(t *testing.T, server *Server) testRep
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := server.EnableFileStore(files); err != nil {
+	if err := server.EnableFiles(files); err != nil {
 		t.Fatal(err)
 	}
 	modules.files = files
-	if err := server.EnableReferenceStore(&references.Resolver{
+	if err := server.EnableReferences(&references.Resolver{
 		Types:       references.Types,
 		Credentials: &references.Credentials{HTTPClient: http.DefaultClient},
 		Access:      &references.AccessChecker{Directory: testReferenceAccess{}, TTL: time.Minute},
@@ -238,7 +238,7 @@ func TestReferenceStoreResolvesInProcessAsTheCaller(t *testing.T) {
 
 // Every type of a service in this process has a reader for each thing a
 // row asks of it, and nothing is read over the network: the server's
-// readers pass the check EnableReferenceStore makes at start.
+// readers pass the check EnableReferences makes at start.
 func TestEveryInProcessReferenceTypeHasAReader(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
 	if err := references.ValidateInProcessReaders(references.Types, gated.server.InProcessReferenceReaders()); err != nil {

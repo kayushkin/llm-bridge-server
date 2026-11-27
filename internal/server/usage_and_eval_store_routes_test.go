@@ -32,7 +32,7 @@ func enableUsageStoreOnTestDatabase(t *testing.T, server *Server) *usage.Store {
 		t.Fatal(err)
 	}
 	store := usage.New(postgrestest.NewDatabase(t, module).Open(module))
-	server.EnableUsageStore(usagestorehttpapi.New(store, nil, nil, nil, limitsWatchedNowhere{}, 45*time.Minute, usagestorehttpapi.SpendCollectors{}))
+	server.EnableUsage(usagestorehttpapi.New(store, nil, nil, nil, limitsWatchedNowhere{}, 45*time.Minute, usagestorehttpapi.SpendCollectors{}))
 	return store
 }
 
@@ -153,7 +153,7 @@ func TestEvalStoreRoutesAnswerAndRunsStayOffUntilTheSettingIsOn(t *testing.T) {
 	if off := gated.requestAsService(t, "GET", "/evaluations/suites"); off.Code != http.StatusServiceUnavailable || !strings.Contains(off.Body.String(), "eval_store_off") {
 		t.Fatalf("before the module opens = %d %s, want 503 eval_store_off", off.Code, off.Body)
 	}
-	if _, err := gated.server.EnableEvalStore(openTestEvalStore(t), EvalStoreOptions{Defaults: evaluations.RunDefaults{Concurrency: 1, BudgetCheckEveryCalls: 1}}); err != nil {
+	if _, err := gated.server.EnableEvaluations(openTestEvalStore(t), EvalStoreOptions{Defaults: evaluations.RunDefaults{Concurrency: 1, BudgetCheckEveryCalls: 1}}); err != nil {
 		t.Fatal(err)
 	}
 	runID := createSyntheticEvalRun(t, gated)
@@ -218,7 +218,7 @@ func TestAnEvalStoreRunMakesItsCallsAsOperationsInProcess(t *testing.T) {
 
 	usage := enableUsageStoreOnTestDatabase(t, gated.server)
 	saveUsageSnapshot(t, usage, "anthropic", "seven_day", 10)
-	runner, err := gated.server.EnableEvalStore(openTestEvalStore(t), EvalStoreOptions{RunsEnabled: true, OperationPollingInterval: 10 * time.Millisecond,
+	runner, err := gated.server.EnableEvaluations(openTestEvalStore(t), EvalStoreOptions{RunsEnabled: true, OperationPollingInterval: 10 * time.Millisecond,
 		Defaults: evaluations.RunDefaults{Concurrency: 2, BudgetCheckEveryCalls: 2, AnswerTimeout: 30 * time.Second, JudgeTimeout: 30 * time.Second,
 			BudgetLimits: []evaluations.BudgetLimit{{Subscription: "anthropic", Window: "seven_day", MaxUsedPercent: 40}}}})
 	if err != nil {

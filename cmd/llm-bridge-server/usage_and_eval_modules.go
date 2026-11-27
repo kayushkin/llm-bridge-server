@@ -137,7 +137,7 @@ func enableUsageAndEvalStores(ctx context.Context, cfg *config.Config, srv *serv
 
 	usageHandlers := usagestorehttpapi.New(usageStore, modelStoreTokenUsage{models: models}, anthropicLimits, codexLimits, limitsRefresher,
 		time.Duration(limitsStaleAfterIdleIntervals)*idleInterval, collectors)
-	srv.EnableUsageStore(usageHandlers)
+	srv.EnableUsage(usageHandlers)
 	if settings.Boolean(config.SettingUsageLimitsRefreshEnabled) {
 		go limitsRefresher.Run(loops, limitsRefreshCheckEvery)
 		log.Printf("usage-store: reading limits every %s, every %s while the usage page is open (codex: %t)", idleInterval, watchedInterval, codexLimits != nil)
@@ -155,7 +155,7 @@ func enableUsageAndEvalStores(ctx context.Context, cfg *config.Config, srv *serv
 	}
 	evalStore := evaluations.New(evalDB)
 	runsEnabled := settings.Boolean(config.SettingEvaluationsRunsEnabled)
-	runner, err = srv.EnableEvalStore(evalStore, server.EvalStoreOptions{
+	runner, err = srv.EnableEvaluations(evalStore, server.EvalStoreOptions{
 		RunsEnabled:              runsEnabled,
 		OperationPollingInterval: settings.Duration(config.SettingEvaluationsOperationPollingInterval),
 		Defaults: evaluations.RunDefaults{

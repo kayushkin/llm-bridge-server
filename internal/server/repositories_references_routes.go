@@ -96,13 +96,13 @@ func (s *Server) EnableRepositories(repoStore *repos.Store, syncer *repos.PullRe
 	s.referenceReadable.workGraph.Store(workGraph)
 }
 
-// EnableFileStore serves file-store from its module, and makes the session
+// EnableFiles serves file-store from its module, and makes the session
 // files and images this server keeps go to it in process. The module reads
 // the two file_store settings at each request; a change to either through
 // PUT /settings is judged by file-store's own validators, and the values in
 // force are judged now, since a value seeded from the environment never
 // passed through PUT. main calls it once, before the server listens.
-func (s *Server) EnableFileStore(fileStore *files.Store) error {
+func (s *Server) EnableFiles(fileStore *files.Store) error {
 	s.settings.SetValidator(config.SettingFilesMaximumFileBytes, files.ValidateMaximumFileBytes)
 	s.settings.SetValidator(config.SettingFilesInlineContentTypes, files.ValidateInlineContentTypes)
 	if err := s.checkFileStoreSettings(); err != nil {
@@ -139,10 +139,10 @@ func (s *Server) checkFileStoreSettings() error {
 	return nil
 }
 
-// EnableReferenceStore serves reference-store from resolver, and makes the
+// EnableReferences serves reference-store from resolver, and makes the
 // chat links' references and grant-store's reference checks call it in
 // process. main calls it once, after EnableAccess.
-func (s *Server) EnableReferenceStore(resolver *references.Resolver) error {
+func (s *Server) EnableReferences(resolver *references.Resolver) error {
 	if err := references.ValidateInProcessReaders(resolver.Types, resolver.InProcess); err != nil {
 		return err
 	}

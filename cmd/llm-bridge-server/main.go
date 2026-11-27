@@ -214,7 +214,7 @@ func main() {
 			log.Fatalf("prediction-store: %v", err)
 		}
 		defer predictionStoreDB.Close()
-		srv.EnablePredictionStore(predictions.New(predictionStoreDB))
+		srv.EnablePredictions(predictions.New(predictionStoreDB))
 		log.Printf("postgres: prediction-store open, served at /predictions/")
 		closeTaskTrackingModules, err := enableTaskTrackingModules(context.Background(), cfg, srv, accessStores)
 		if err != nil {
