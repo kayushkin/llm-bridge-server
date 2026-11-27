@@ -27,7 +27,7 @@ var shelvesModule = postgresstorage.Module{
 func TestASessionSettingReachesEveryConnectionOfItsPool(t *testing.T) {
 	ctx := context.Background()
 	database := postgrestest.NewDatabase(t)
-	if err := postgresstorage.Provision(ctx, database.OpenAsAdministrator(), shelvesModule); err != nil {
+	if _, err := postgresstorage.Provision(ctx, database.OpenAsAdministrator(), shelvesModule); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := postgresstorage.Migrate(ctx, database.Open(shelvesModule), shelvesModule); err != nil {

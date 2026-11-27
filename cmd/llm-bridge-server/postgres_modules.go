@@ -40,8 +40,12 @@ func openPostgresModule(ctx context.Context, url string, module postgresstorage.
 	if err := administrator.PingContext(ctx); err != nil {
 		return nil, fmt.Errorf("reaching Postgres: %w", err)
 	}
-	if err := postgresstorage.Provision(ctx, administrator, module); err != nil {
+	provisioned, err := postgresstorage.Provision(ctx, administrator, module)
+	if err != nil {
 		return nil, err
+	}
+	if former := provisioned.RenamedFrom; former != nil {
+		log.Printf("postgres: module %s: renamed schema %s and role %s, its names before, to %s and %s", module.Schema, former.Schema, former.Role, module.Schema, module.Role)
 	}
 	db, err := postgresstorage.Open(ctx, url, module, options...)
 	if err != nil {

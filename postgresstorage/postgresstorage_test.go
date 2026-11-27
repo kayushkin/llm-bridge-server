@@ -43,7 +43,7 @@ var ledgerModule = postgresstorage.Module{
 
 func provisionedAndOpened(t *testing.T, database *postgrestest.Database, module postgresstorage.Module) *sql.DB {
 	t.Helper()
-	if err := postgresstorage.Provision(context.Background(), database.OpenAsAdministrator(), module); err != nil {
+	if _, err := postgresstorage.Provision(context.Background(), database.OpenAsAdministrator(), module); err != nil {
 		t.Fatal(err)
 	}
 	return database.Open(module)
@@ -183,7 +183,7 @@ func TestMigrateLeavesNoTraceOfAMigrationThatFails(t *testing.T) {
 func TestMigrateRunsEachMigrationOnceWhenServersStartTogether(t *testing.T) {
 	ctx := context.Background()
 	database := postgrestest.NewDatabase(t)
-	if err := postgresstorage.Provision(ctx, database.OpenAsAdministrator(), notesModule); err != nil {
+	if _, err := postgresstorage.Provision(ctx, database.OpenAsAdministrator(), notesModule); err != nil {
 		t.Fatal(err)
 	}
 
@@ -291,7 +291,7 @@ func TestProvisionChangesNothingThatIsAlreadyInPlace(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 {
-		if err := postgresstorage.Provision(ctx, database.OpenAsAdministrator(), notesModule); err != nil {
+		if _, err := postgresstorage.Provision(ctx, database.OpenAsAdministrator(), notesModule); err != nil {
 			t.Fatalf("provisioning a module that is already provisioned: %v", err)
 		}
 	}
@@ -362,7 +362,7 @@ func TestALoginThatIsNotASuperuserProvisionsOpensAndMigrates(t *testing.T) {
 	for _, module := range []postgresstorage.Module{notes, ledger} {
 		// Twice: the second call finds everything in place.
 		for range 2 {
-			if err := postgresstorage.Provision(ctx, asLogin, module); err != nil {
+			if _, err := postgresstorage.Provision(ctx, asLogin, module); err != nil {
 				t.Fatalf("provisioning %s as a login that is not a superuser: %v", module.Schema, err)
 			}
 		}
@@ -564,5 +564,220 @@ func TestEachTestGetsADatabaseOfItsOwn(t *testing.T) {
 func BenchmarkNewDatabase(b *testing.B) {
 	for b.Loop() {
 		postgrestest.NewDatabase(b, notesModule, ledgerModule).Open(notesModule)
+	}
+}
+
+// renamedModules are one made-up module before and after a rename, with roles
+// of the test's own: a role belongs to the whole Postgres server, and the
+// rename must not touch a role another test is using.
+func renamedModules(t *testing.T) (before, after postgresstorage.Module) {
+	t.Helper()
+	suffix := randomLowerHex(t)
+	before = postgresstorage.Module{Schema: "shelf_" + suffix, Role: "shelf_role_" + suffix, Migrations: notesModule.Migrations}
+	after = postgresstorage.Module{Schema: "bookcase_" + suffix, Role: "bookcase_role_" + suffix, Migrations: notesModule.Migrations,
+		FormerNames: []postgresstorage.FormerName{{Schema: before.Schema, Role: before.Role}}}
+	// Registered before the database, so it runs after the database is gone.
+	t.Cleanup(func() {
+		server, err := sql.Open("pgx", os.Getenv(postgrestest.AdministratorURLVariable))
+		if err != nil {
+			t.Errorf("cleaning up roles: %v", err)
+			return
+		}
+		defer server.Close()
+		for _, role := range []string{before.Role, after.Role} {
+			if _, err := server.ExecContext(context.Background(), "DROP ROLE IF EXISTS "+role); err != nil {
+				t.Errorf("dropping role %s: %v", role, err)
+			}
+		}
+	})
+	return before, after
+}
+
+func namedObjectExists(t *testing.T, db *sql.DB, query, name string) bool {
+	t.Helper()
+	var exists bool
+	if err := db.QueryRowContext(context.Background(), query, name).Scan(&exists); err != nil {
+		t.Fatal(err)
+	}
+	return exists
+}
+
+const (
+	schemaExistsQuery = "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1)"
+	roleExistsQuery   = "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)"
+)
+
+func TestProvisionRenamesAFormerSchemaAndRoleAndKeepsTheRecords(t *testing.T) {
+	ctx := context.Background()
+	before, after := renamedModules(t)
+	database := postgrestest.NewDatabase(t)
+	administrator := database.OpenAsAdministrator()
+
+	old := provisionedAndOpened(t, database, before)
+	if _, err := postgresstorage.Migrate(ctx, old, before); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.ExecContext(ctx, "INSERT INTO notes (title, body) VALUES ('kept', 'across the rename')"); err != nil {
+		t.Fatal(err)
+	}
+	old.Close()
+
+	report, err := postgresstorage.Provision(ctx, administrator, after)
+	if err != nil {
+		t.Fatalf("provisioning the renamed module: %v", err)
+	}
+	if report.RenamedFrom == nil || report.RenamedFrom.Schema != before.Schema || report.RenamedFrom.Role != before.Role {
+		t.Fatalf("RenamedFrom = %+v, want %s and %s", report.RenamedFrom, before.Schema, before.Role)
+	}
+	if namedObjectExists(t, administrator, schemaExistsQuery, before.Schema) || namedObjectExists(t, administrator, roleExistsQuery, before.Role) {
+		t.Errorf("the former schema or role is still there after the rename")
+	}
+
+	renamed := database.Open(after)
+	migration, err := postgresstorage.Migrate(ctx, renamed, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(migration.Applied) != 0 {
+		t.Errorf("after the rename Migrate applied %v; the schema's own record says both ran", appliedVersions(migration))
+	}
+	var title, body string
+	if err := renamed.QueryRowContext(ctx, "SELECT title, body FROM notes").Scan(&title, &body); err != nil || title != "kept" || body != "across the rename" {
+		t.Fatalf("after the rename the row reads %q, %q (err %v)", title, body, err)
+	}
+	if _, err := renamed.ExecContext(ctx, "INSERT INTO notes (title) VALUES ('written after')"); err != nil {
+		t.Fatalf("the renamed role cannot write its own table: %v", err)
+	}
+
+	again, err := postgresstorage.Provision(ctx, administrator, after)
+	if err != nil || again.RenamedFrom != nil {
+		t.Errorf("provisioning again: RenamedFrom %+v, err %v; want nothing renamed", again.RenamedFrom, err)
+	}
+}
+
+func TestProvisionRenamesOnlyTheSchemaWhenAnotherDatabaseRenamedTheRole(t *testing.T) {
+	ctx := context.Background()
+	before, after := renamedModules(t)
+	database := postgrestest.NewDatabase(t)
+	administrator := database.OpenAsAdministrator()
+	old := provisionedAndOpened(t, database, before)
+	if _, err := postgresstorage.Migrate(ctx, old, before); err != nil {
+		t.Fatal(err)
+	}
+	old.Close()
+	// What a server on another database of the same Postgres did first.
+	if _, err := administrator.ExecContext(ctx, "ALTER ROLE "+before.Role+" RENAME TO "+after.Role); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := postgresstorage.Provision(ctx, administrator, after)
+	if err != nil {
+		t.Fatalf("provisioning the renamed module: %v", err)
+	}
+	if report.RenamedFrom == nil || report.RenamedFrom.Schema != before.Schema {
+		t.Fatalf("RenamedFrom = %+v, want schema %s", report.RenamedFrom, before.Schema)
+	}
+	if _, err := database.Open(after).ExecContext(ctx, "INSERT INTO notes (title) VALUES ('a')"); err != nil {
+		t.Fatalf("the renamed module cannot write its table: %v", err)
+	}
+}
+
+func TestProvisionRefusesARenameWhenBothSchemasExist(t *testing.T) {
+	ctx := context.Background()
+	before, after := renamedModules(t)
+	database := postgrestest.NewDatabase(t)
+	administrator := database.OpenAsAdministrator()
+	provisionedAndOpened(t, database, before)
+	current := after
+	current.FormerNames = nil
+	if _, err := postgresstorage.Provision(ctx, administrator, current); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := postgresstorage.Provision(ctx, administrator, after)
+	if err == nil || !strings.Contains(err.Error(), "holds both schema") {
+		t.Fatalf("err = %v, want a refusal naming both schemas", err)
+	}
+	for _, name := range []string{before.Schema, after.Schema} {
+		if !namedObjectExists(t, administrator, schemaExistsQuery, name) {
+			t.Errorf("schema %s is gone after the refused rename", name)
+		}
+	}
+	if !namedObjectExists(t, administrator, roleExistsQuery, before.Role) {
+		t.Errorf("role %s was renamed although the rename was refused", before.Role)
+	}
+}
+
+// An install's login made the module's role and is no superuser; renaming the
+// role takes what making it gave (CREATEROLE, and admin of the role it made).
+func TestALoginThatIsNotASuperuserRenamesTheRoleItMade(t *testing.T) {
+	ctx := context.Background()
+	before, after := renamedModules(t)
+	suffix := randomLowerHex(t)
+	login, password := "rename_login_"+suffix, "password_"+suffix+randomLowerHex(t)
+	t.Cleanup(func() {
+		server, err := sql.Open("pgx", os.Getenv(postgrestest.AdministratorURLVariable))
+		if err != nil {
+			t.Errorf("cleaning up the login: %v", err)
+			return
+		}
+		defer server.Close()
+		if _, err := server.ExecContext(context.Background(), "DROP ROLE IF EXISTS "+login); err != nil {
+			t.Errorf("dropping role %s: %v", login, err)
+		}
+	})
+	database := postgrestest.NewDatabase(t)
+	superuser := database.OpenAsAdministrator()
+	if _, err := superuser.ExecContext(ctx, "CREATE ROLE "+login+" LOGIN CREATEROLE PASSWORD '"+password+"'"); err != nil {
+		t.Fatal(err)
+	}
+	var databaseName string
+	if err := superuser.QueryRowContext(ctx, "SELECT current_database()").Scan(&databaseName); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := superuser.ExecContext(ctx, `GRANT CREATE ON DATABASE "`+databaseName+`" TO `+login); err != nil {
+		t.Fatal(err)
+	}
+	loginURL, err := url.Parse(database.URL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	loginURL.User = url.UserPassword(login, password)
+	asLogin, err := sql.Open("pgx", loginURL.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer asLogin.Close()
+
+	if _, err := postgresstorage.Provision(ctx, asLogin, before); err != nil {
+		t.Fatal(err)
+	}
+	old, err := postgresstorage.Open(ctx, loginURL.String(), before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := postgresstorage.Migrate(ctx, old, before); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.ExecContext(ctx, "INSERT INTO notes (title) VALUES ('kept')"); err != nil {
+		t.Fatal(err)
+	}
+	old.Close()
+
+	report, err := postgresstorage.Provision(ctx, asLogin, after)
+	if err != nil {
+		t.Fatalf("renaming as a login that is not a superuser: %v", err)
+	}
+	if report.RenamedFrom == nil {
+		t.Fatal("nothing was renamed")
+	}
+	renamed, err := postgresstorage.Open(ctx, loginURL.String(), after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer renamed.Close()
+	var count int
+	if err := renamed.QueryRowContext(ctx, "SELECT count(*) FROM notes WHERE title = 'kept'").Scan(&count); err != nil || count != 1 {
+		t.Fatalf("after the rename the kept row counts %d (err %v), want 1", count, err)
 	}
 }

@@ -60,7 +60,7 @@ func TestImportedBridgeDatabaseAnswersTheCoreRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := postgresstorage.Provision(ctx, administrator, sessionLogModule); err != nil {
+	if _, err := postgresstorage.Provision(ctx, administrator, sessionLogModule); err != nil {
 		t.Fatal(err)
 	}
 	administrator.Close()

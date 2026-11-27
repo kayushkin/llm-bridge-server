@@ -114,8 +114,12 @@ func OpenModule(ctx context.Context, url string, module postgresstorage.Module) 
 }
 
 func provisionMigrateAndOpen(ctx context.Context, administrator *sql.DB, url string, module postgresstorage.Module) (*sql.DB, error) {
-	if err := postgresstorage.Provision(ctx, administrator, module); err != nil {
+	provisioned, err := postgresstorage.Provision(ctx, administrator, module)
+	if err != nil {
 		return nil, err
+	}
+	if former := provisioned.RenamedFrom; former != nil {
+		log.Printf("postgres: module %s: renamed schema %s and role %s, its names before, to %s and %s", module.Schema, former.Schema, former.Role, module.Schema, module.Role)
 	}
 	pool, err := postgresstorage.Open(ctx, url, module)
 	if err != nil {

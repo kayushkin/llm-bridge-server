@@ -150,7 +150,7 @@ func buildTemplateOnce(ctx context.Context, t testing.TB, administrator *sql.DB,
 		buildingAdministrator := openPlain(t, buildingURL)
 		defer buildingAdministrator.Close()
 		for _, module := range modules {
-			if err := postgresstorage.Provision(ctx, buildingAdministrator, module); err != nil {
+			if _, err := postgresstorage.Provision(ctx, buildingAdministrator, module); err != nil {
 				t.Fatalf("postgrestest: %v", err)
 			}
 			db, err := postgresstorage.Open(ctx, buildingURL, module)

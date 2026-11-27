@@ -43,8 +43,27 @@ type Module struct {
 	// gives up the wall between modules; use that only where one module has
 	// the database to itself.
 	Role string
+	// FormerNames are the schema and role names the module had in earlier
+	// builds, newest first. Provision renames a database's schema of a former
+	// name, and its role, to the current names, so an install keeps its
+	// records across a rename. See Provision.
+	FormerNames []FormerName
 	// Migrations build the schema, in order. See Migration.
 	Migrations []Migration
+}
+
+// FormerName is a schema and role a module was called in an earlier build.
+// Role is empty for a module that acted as the login role itself.
+type FormerName struct {
+	Schema string
+	Role   string
+}
+
+// ProvisionReport says what Provision changed besides making what was missing.
+type ProvisionReport struct {
+	// RenamedFrom is the former name whose schema, and role, Provision renamed
+	// to the module's current names. Nil when nothing was renamed.
+	RenamedFrom *FormerName
 }
 
 var identifierPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
@@ -66,6 +85,22 @@ func (module Module) check() error {
 	if module.Role != "" {
 		if err := checkIdentifier("role", module.Role); err != nil {
 			return err
+		}
+	}
+	for _, former := range module.FormerNames {
+		if err := checkIdentifier("former schema", former.Schema); err != nil {
+			return err
+		}
+		if former.Schema == module.Schema {
+			return fmt.Errorf("postgresstorage: module %s names its own schema as a former name", module.Schema)
+		}
+		if former.Role != "" {
+			if err := checkIdentifier("former role", former.Role); err != nil {
+				return err
+			}
+		}
+		if (former.Role == "") != (module.Role == "") {
+			return fmt.Errorf("postgresstorage: module %s and its former name %s must both have a role or both have none", module.Schema, former.Schema)
 		}
 	}
 	return checkMigrations(module.Migrations)
@@ -132,19 +167,33 @@ func OpenWithSessionSettings(ctx context.Context, url string, module Module, set
 // the login that administrator connects as act as the role. It changes nothing
 // that is already in place, so every start may call it.
 //
+// When the database holds no schema of the module's name but holds one of a
+// former name (Module.FormerNames), Provision renames that schema, and the role
+// that owns it, to the current names first, in the same transaction, so the
+// records stay where the module now looks for them. It refuses, changing
+// nothing, when the current and a former schema both exist, or when the role
+// to rename is not the one that owns the former schema: either needs a person
+// to say which records are the module's.
+//
 // The login needs no superuser: CREATEROLE, and CREATE on the database, are
 // enough. A role that already exists must be one this login may grant (one it
-// made, or one it was given WITH ADMIN OPTION).
-func Provision(ctx context.Context, administrator *sql.DB, module Module) error {
+// made, or one it was given WITH ADMIN OPTION); renaming a role needs the same.
+func Provision(ctx context.Context, administrator *sql.DB, module Module) (ProvisionReport, error) {
+	var report ProvisionReport
 	if err := module.check(); err != nil {
-		return err
+		return report, err
 	}
-	return InTransaction(ctx, administrator, func(tx *sql.Tx) error {
+	err := InTransaction(ctx, administrator, func(tx *sql.Tx) error {
 		// Servers that start together would both find the schema missing and
 		// both try to create it; the lock makes one wait for the other.
 		if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", "postgresstorage.provision"); err != nil {
 			return fmt.Errorf("postgresstorage: taking the provisioning lock: %w", err)
 		}
+		renamedFrom, err := renameFormerSchema(ctx, tx, module)
+		if err != nil {
+			return err
+		}
+		report.RenamedFrom = renamedFrom
 		if module.Role == "" {
 			if _, err := tx.ExecContext(ctx, "CREATE SCHEMA IF NOT EXISTS "+module.Schema); err != nil {
 				return fmt.Errorf("postgresstorage: creating schema %s: %w", module.Schema, err)
@@ -166,4 +215,99 @@ func Provision(ctx context.Context, administrator *sql.DB, module Module) error 
 		}
 		return nil
 	})
+	if err != nil {
+		return ProvisionReport{}, err
+	}
+	return report, nil
+}
+
+// renameFormerSchema renames the schema of the first former name the database
+// holds, and the role that owns it, to the module's current names, and returns
+// that former name. It returns nil when the database holds the current schema
+// already or no former one. It runs inside Provision's transaction and lock,
+// so a failure leaves every name as it was.
+//
+// A role belongs to the whole Postgres server, so another database's server
+// may have renamed it already: then only the schema is renamed here, once the
+// current role is found to own it.
+func renameFormerSchema(ctx context.Context, tx *sql.Tx, module Module) (*FormerName, error) {
+	currentExists, err := schemaExists(ctx, tx, module.Schema)
+	if err != nil {
+		return nil, err
+	}
+	for _, former := range module.FormerNames {
+		formerExists, err := schemaExists(ctx, tx, former.Schema)
+		if err != nil {
+			return nil, err
+		}
+		if !formerExists {
+			continue
+		}
+		if currentExists {
+			return nil, fmt.Errorf("postgresstorage: this database holds both schema %s and schema %s, the name module %s had before; move what %s holds into %s or drop it, by hand, then start again",
+				module.Schema, former.Schema, module.Schema, former.Schema, module.Schema)
+		}
+		if former.Role != "" {
+			if err := renameFormerRole(ctx, tx, module, former); err != nil {
+				return nil, err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, "ALTER SCHEMA "+former.Schema+" RENAME TO "+module.Schema); err != nil {
+			return nil, fmt.Errorf("postgresstorage: renaming schema %s to %s: %w", former.Schema, module.Schema, err)
+		}
+		renamed := former
+		return &renamed, nil
+	}
+	return nil, nil
+}
+
+// renameFormerRole makes the role that owns former's schema carry the
+// module's current role name: it renames former's role, unless another
+// database's server already did. Either way the current role must then own
+// the former schema, or the records would sit under a role the module does
+// not act as.
+func renameFormerRole(ctx context.Context, tx *sql.Tx, module Module, former FormerName) error {
+	formerRoleExists, err := roleExists(ctx, tx, former.Role)
+	if err != nil {
+		return err
+	}
+	currentRoleExists, err := roleExists(ctx, tx, module.Role)
+	if err != nil {
+		return err
+	}
+	switch {
+	case formerRoleExists && currentRoleExists:
+		return fmt.Errorf("postgresstorage: roles %s and %s both exist, so renaming schema %s to %s cannot tell which role should own it; drop the one that owns nothing, by hand, then start again",
+			former.Role, module.Role, former.Schema, module.Schema)
+	case formerRoleExists:
+		if _, err := tx.ExecContext(ctx, "ALTER ROLE "+former.Role+" RENAME TO "+module.Role); err != nil {
+			return fmt.Errorf("postgresstorage: renaming role %s to %s: %w", former.Role, module.Role, err)
+		}
+	case !currentRoleExists:
+		return fmt.Errorf("postgresstorage: schema %s, the name module %s had before, is there, but neither role %s nor role %s is", former.Schema, module.Schema, former.Role, module.Role)
+	}
+	var owner string
+	if err := tx.QueryRowContext(ctx, "SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname = $1", former.Schema).Scan(&owner); err != nil {
+		return fmt.Errorf("postgresstorage: reading the owner of schema %s: %w", former.Schema, err)
+	}
+	if owner != module.Role {
+		return fmt.Errorf("postgresstorage: schema %s, the name module %s had before, is owned by role %s, not %s", former.Schema, module.Schema, owner, module.Role)
+	}
+	return nil
+}
+
+func schemaExists(ctx context.Context, tx *sql.Tx, schema string) (bool, error) {
+	var exists bool
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1)", schema).Scan(&exists); err != nil {
+		return false, fmt.Errorf("postgresstorage: looking for schema %s: %w", schema, err)
+	}
+	return exists, nil
+}
+
+func roleExists(ctx context.Context, tx *sql.Tx, role string) (bool, error) {
+	var exists bool
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)", role).Scan(&exists); err != nil {
+		return false, fmt.Errorf("postgresstorage: looking for role %s: %w", role, err)
+	}
+	return exists, nil
 }
