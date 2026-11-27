@@ -89,7 +89,7 @@ var discoveryPromptPrefixes = []struct {
 	prefix string
 	source string
 }{
-	// scheduler/cmd/autoworker/main.go defaultPrompt
+	// internal/automation/workers/autoworker/cmd/autoworker/main.go defaultPrompt
 	{"You are the nightly todo-worker.", "autoworker"},
 	// inber/scripts/harness-watch.sh
 	{"You are running as a scheduled harness-watch job", "harness-watch"},
