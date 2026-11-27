@@ -1,4 +1,4 @@
-package server
+package operationroutes
 
 import (
 	"context"
@@ -8,7 +8,6 @@ import (
 	"log"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads"
@@ -28,7 +27,6 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/operationstore"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge/msg"
-	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
 // The operation routes. The coordinator (internal/automation/operations) does the work;
@@ -36,39 +34,33 @@ import (
 // principal-store, and translate the coordinator's answers to HTTP. The
 // contract is docs/OPERATIONS.md in llm-bridge.
 
-// EnableOperations attaches the coordinator the operation routes use. Until
-// it is called they answer 503 operations_not_configured.
-func (s *Server) EnableOperations(coordinator *operations.Coordinator) {
-	s.operations = coordinator
-}
-
-func (s *Server) operationsOrRefuse(w http.ResponseWriter) (*operations.Coordinator, bool) {
-	if s.operations == nil {
+func (s *Service) operationsOrRefuse(w http.ResponseWriter) (*operations.Coordinator, bool) {
+	if s.Operations() == nil {
 		httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "operations_not_configured", "this server was started without an operations coordinator")
 		return nil, false
 	}
-	return s.operations, true
+	return s.Operations(), true
 }
 
-// maximumOperationIntentBytes bounds one intent. Content a store owns travels
+// MaximumOperationIntentBytes bounds one intent. Content a store owns travels
 // by reference, so an intent is small.
-const maximumOperationIntentBytes = 4 << 20
+const MaximumOperationIntentBytes = 4 << 20
 
-func (s *Server) handleCreateOperation(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleCreateOperation(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.operationsOrRefuse(w); !ok {
 		return
 	}
 	var intent msg.OperationIntent
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maximumOperationIntentBytes))
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, MaximumOperationIntentBytes))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&intent); err != nil {
 		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_intent", "body is not an operation intent: "+err.Error())
 		return
 	}
 	caller, _ := requestcaller.FromRequest(r)
-	receipt, created, refusal := s.submitOperation(r.Context(), caller, intent)
+	receipt, created, refusal := s.SubmitOperation(r.Context(), caller, intent)
 	if refusal != nil {
-		httpjson.WriteJSONError(w, refusal.status, refusal.code, refusal.message)
+		httpjson.WriteJSONError(w, refusal.Status, refusal.Code, refusal.Message)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -81,35 +73,35 @@ func (s *Server) handleCreateOperation(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(receipt)
 }
 
-// operationRefusal is an operation call refused: the status, code and
+// Refusal is an operation call refused: the status, code and
 // message the operation routes answer it with.
-type operationRefusal struct {
-	status  int
-	code    string
-	message string
+type Refusal struct {
+	Status  int
+	Code    string
+	Message string
 }
 
-func (refusal *operationRefusal) Error() string {
-	return fmt.Sprintf("%d %s: %s", refusal.status, refusal.code, refusal.message)
+func (refusal *Refusal) Error() string {
+	return fmt.Sprintf("%d %s: %s", refusal.Status, refusal.Code, refusal.Message)
 }
 
 // refusalOf turns a check's zero-or-status answer into a refusal.
-func refusalOf(status int, code, message string) *operationRefusal {
+func refusalOf(status int, code, message string) *Refusal {
 	if status == 0 {
 		return nil
 	}
-	return &operationRefusal{status: status, code: code, message: message}
+	return &Refusal{Status: status, Code: code, Message: message}
 }
 
-// submitOperation checks and submits an intent as caller: the operation is
+// SubmitOperation checks and submits an intent as caller: the operation is
 // the caller's whatever the intent says, the organization must be an active
 // group the caller belongs to, and the caller must hold can_run_operation on
 // the type. The zero caller is this server's internal service, acting as no
 // principal, which belongs to every organization and needs no grant. Both
 // POST /operations and the callers inside this server go through here.
-func (s *Server) submitOperation(ctx context.Context, caller requestcaller.Caller, intent msg.OperationIntent) (msg.OperationReceipt, bool, *operationRefusal) {
-	if s.operations == nil {
-		return msg.OperationReceipt{}, false, &operationRefusal{http.StatusServiceUnavailable, "operations_not_configured", "this server was started without an operations coordinator"}
+func (s *Service) SubmitOperation(ctx context.Context, caller requestcaller.Caller, intent msg.OperationIntent) (msg.OperationReceipt, bool, *Refusal) {
+	if s.Operations() == nil {
+		return msg.OperationReceipt{}, false, &Refusal{http.StatusServiceUnavailable, "operations_not_configured", "this server was started without an operations coordinator"}
 	}
 	intent.PrincipalID = caller.PrincipalID
 	if refusal := refusalOf(s.checkOperationOrganization(ctx, caller, intent.OrganizationID)); refusal != nil {
@@ -118,19 +110,19 @@ func (s *Server) submitOperation(ctx context.Context, caller requestcaller.Calle
 	if refusal := refusalOf(s.checkOperationGrant(ctx, caller, intent.Type)); refusal != nil {
 		return msg.OperationReceipt{}, false, refusal
 	}
-	receipt, created, err := s.operations.Submit(intent)
+	receipt, created, err := s.Operations().Submit(intent)
 	var intentError *operations.IntentError
 	var budgetError *operations.BudgetError
 	switch {
 	case errors.As(err, &intentError):
-		return msg.OperationReceipt{}, false, &operationRefusal{http.StatusBadRequest, intentError.Code, intentError.Message}
+		return msg.OperationReceipt{}, false, &Refusal{http.StatusBadRequest, intentError.Code, intentError.Message}
 	case errors.As(err, &budgetError):
-		return msg.OperationReceipt{}, false, &operationRefusal{http.StatusPaymentRequired, budgetError.Code, budgetError.Message}
+		return msg.OperationReceipt{}, false, &Refusal{http.StatusPaymentRequired, budgetError.Code, budgetError.Message}
 	case errors.Is(err, operationstore.ErrIdempotencyKeyReused):
-		return msg.OperationReceipt{}, false, &operationRefusal{http.StatusConflict, "idempotency_key_reused", err.Error()}
+		return msg.OperationReceipt{}, false, &Refusal{http.StatusConflict, "idempotency_key_reused", err.Error()}
 	case err != nil:
 		log.Printf("operations: submit: %v", err)
-		return msg.OperationReceipt{}, false, &operationRefusal{http.StatusInternalServerError, "operation_not_stored", err.Error()}
+		return msg.OperationReceipt{}, false, &Refusal{http.StatusInternalServerError, "operation_not_stored", err.Error()}
 	}
 	return receipt, created, nil
 }
@@ -138,7 +130,7 @@ func (s *Server) submitOperation(ctx context.Context, caller requestcaller.Calle
 // checkOperationOrganization makes sure the organization is an active
 // principal-store group and, for a principal who is not an administrator,
 // one they belong to. A zero status means it passed.
-func (s *Server) checkOperationOrganization(ctx context.Context, caller requestcaller.Caller, organizationID string) (status int, code, message string) {
+func (s *Service) checkOperationOrganization(ctx context.Context, caller requestcaller.Caller, organizationID string) (status int, code, message string) {
 	if status, code, message := s.checkOrganizationIsAnActiveGroup(ctx, organizationID); status != 0 {
 		return status, code, message
 	}
@@ -146,7 +138,7 @@ func (s *Server) checkOperationOrganization(ctx context.Context, caller requestc
 		return 0, "", ""
 	}
 	principalID := caller.PrincipalID
-	groups, err := s.principalStore.ListGroups(ctx, principalID, false)
+	groups, err := s.PrincipalStore().ListGroups(ctx, principalID, false)
 	if err != nil {
 		return http.StatusBadGateway, "principal_store_unavailable", fmt.Sprintf("principal-store: the groups of %s: %v", principalID, err)
 	}
@@ -160,11 +152,11 @@ func (s *Server) checkOperationOrganization(ctx context.Context, caller requestc
 
 // checkOrganizationIsAnActiveGroup makes sure principal-store has the
 // organization as an active group. A zero status means it passed.
-func (s *Server) checkOrganizationIsAnActiveGroup(ctx context.Context, organizationID string) (status int, code, message string) {
+func (s *Service) checkOrganizationIsAnActiveGroup(ctx context.Context, organizationID string) (status int, code, message string) {
 	if organizationID == "" {
 		return http.StatusBadRequest, "organization_required", "organization_id is required: the principal-store group the operation runs for"
 	}
-	organization, err := s.principalStore.Get(ctx, organizationID, false)
+	organization, err := s.PrincipalStore().Get(ctx, organizationID, false)
 	switch {
 	case errors.Is(err, principals.ErrNotFound):
 		return http.StatusBadRequest, "unknown_organization", fmt.Sprintf("principal-store has no principal %s", organizationID)
@@ -178,7 +170,7 @@ func (s *Server) checkOrganizationIsAnActiveGroup(ctx context.Context, organizat
 	return 0, "", ""
 }
 
-func (s *Server) handleGetOperation(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleGetOperation(w http.ResponseWriter, r *http.Request) {
 	coordinator, ok := s.operationsOrRefuse(w)
 	if !ok {
 		return
@@ -190,7 +182,7 @@ func (s *Server) handleGetOperation(w http.ResponseWriter, r *http.Request) {
 	httpjson.WriteJSON(w, operation.Receipt)
 }
 
-func (s *Server) handleCancelOperation(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleCancelOperation(w http.ResponseWriter, r *http.Request) {
 	coordinator, ok := s.operationsOrRefuse(w)
 	if !ok {
 		return
@@ -215,10 +207,10 @@ func (s *Server) handleCancelOperation(w http.ResponseWriter, r *http.Request) {
 	httpjson.WriteJSON(w, receipt)
 }
 
-// maximumOperationListLimit bounds GET /operations and the children route.
-const maximumOperationListLimit = 500
+// MaximumOperationListLimit bounds GET /operations and the children route.
+const MaximumOperationListLimit = 500
 
-func (s *Server) handleListOperationChildren(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleListOperationChildren(w http.ResponseWriter, r *http.Request) {
 	coordinator, ok := s.operationsOrRefuse(w)
 	if !ok {
 		return
@@ -227,14 +219,14 @@ func (s *Server) handleListOperationChildren(w http.ResponseWriter, r *http.Requ
 	if _, err := coordinator.Store().Get(parentID); writeOperationStoreError(w, err) {
 		return
 	}
-	children, err := coordinator.Store().List(operationstore.Filter{ParentOperationID: parentID, Limit: maximumOperationListLimit})
+	children, err := coordinator.Store().List(operationstore.Filter{ParentOperationID: parentID, Limit: MaximumOperationListLimit})
 	if writeOperationStoreError(w, err) {
 		return
 	}
 	httpjson.WriteJSON(w, children)
 }
 
-func (s *Server) handleListOperations(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleListOperations(w http.ResponseWriter, r *http.Request) {
 	coordinator, ok := s.operationsOrRefuse(w)
 	if !ok {
 		return
@@ -270,8 +262,8 @@ func (s *Server) handleListOperations(w http.ResponseWriter, r *http.Request) {
 	}
 	if value := query.Get("limit"); value != "" {
 		limit, err := strconv.Atoi(value)
-		if err != nil || limit < 1 || limit > maximumOperationListLimit {
-			httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_limit", fmt.Sprintf("limit must be between 1 and %d", maximumOperationListLimit))
+		if err != nil || limit < 1 || limit > MaximumOperationListLimit {
+			httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_limit", fmt.Sprintf("limit must be between 1 and %d", MaximumOperationListLimit))
 			return
 		}
 		filter.Limit = limit
@@ -283,7 +275,7 @@ func (s *Server) handleListOperations(w http.ResponseWriter, r *http.Request) {
 	httpjson.WriteJSON(w, receipts)
 }
 
-func (s *Server) handleOperationTypes(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleOperationTypes(w http.ResponseWriter, r *http.Request) {
 	coordinator, ok := s.operationsOrRefuse(w)
 	if !ok {
 		return
@@ -291,11 +283,11 @@ func (s *Server) handleOperationTypes(w http.ResponseWriter, r *http.Request) {
 	httpjson.WriteJSON(w, coordinator.Types())
 }
 
-// handleOperationEvents streams an operation's events: every stored one after
+// HandleOperationEvents streams an operation's events: every stored one after
 // Last-Event-ID, then each new one, and closes once the operation and all its
 // children have finished and every event has been sent. The
 // SSE id of each frame is its sequence, which is the receipt's revision.
-func (s *Server) handleOperationEvents(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleOperationEvents(w http.ResponseWriter, r *http.Request) {
 	coordinator, ok := s.operationsOrRefuse(w)
 	if !ok {
 		return
@@ -402,88 +394,26 @@ func writeOperationStoreError(w http.ResponseWriter, err error) bool {
 	return true
 }
 
-// operationIsOwnedByPrincipal reports whether the operation exists and was
+// OperationIsOwnedByPrincipal reports whether the operation exists and was
 // started as principalID.
-func (s *Server) operationIsOwnedByPrincipal(operationID, principalID string) bool {
-	if s.operations == nil || principalID == "" {
+func (s *Service) OperationIsOwnedByPrincipal(operationID, principalID string) bool {
+	if s.Operations() == nil || principalID == "" {
 		return false
 	}
-	operation, err := s.operations.Store().Get(operationID)
+	operation, err := s.Operations().Store().Get(operationID)
 	return err == nil && operation.Receipt.PrincipalID == principalID
 }
 
-// OperationExecutors is every executor this server runs operations with,
-// wired to its own one-shot path. main hands them to the coordinator.
-func (s *Server) OperationExecutors() []operations.Executor {
-	var boardStore executors.BoardClassificationStore
-	if s.issueReads != nil {
-		boardStore = s.issueReads
-	}
-	return []operations.Executor{executors.ModelClassifier{Caller: s, Taxonomies: s}, executors.BoardClassifier{Caller: s, Store: boardStore}, executors.LLMCompletion{Caller: s}}
-}
-
-// checkOneShotInstanceByProvider is the write check on
-// oneshot.instance_by_provider: each provider must be one model-store knows,
-// and each instance one harness-store has enabled.
-func (s *Server) checkOneShotInstanceByProvider(value string) error {
-	pairs := map[string]string{}
-	for _, pair := range strings.Split(value, ",") {
-		provider, instanceID, found := strings.Cut(strings.TrimSpace(pair), ":")
-		if strings.TrimSpace(pair) == "" {
-			continue
-		}
-		if !found || provider == "" || instanceID == "" {
-			return fmt.Errorf("%q is not provider:instance", pair)
-		}
-		pairs[provider] = instanceID
-	}
-	if s.modelStore != nil {
-		providers, err := s.modelStore.Providers()
-		if err != nil {
-			return fmt.Errorf("%w: model-store: %v", servicesettings.ErrSettingOwnerUnavailable, err)
-		}
-		known := map[string]bool{}
-		for _, provider := range providers {
-			known[provider.ID] = true
-		}
-		for provider := range pairs {
-			if !known[provider] {
-				return fmt.Errorf("model-store has no provider %q", provider)
-			}
-		}
-	}
-	for _, instanceID := range pairs {
-		if err := s.checkSettingNamesAnEnabledInstance(instanceID); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // BoardTaxonomy implements executors.TaxonomyReader with kanban-store.
-func (s *Server) BoardTaxonomy(ctx context.Context, boardID, principalID string) (msg.ClassificationTaxonomy, string, error) {
-	if s.issueReads == nil {
+func (s *Service) BoardTaxonomy(ctx context.Context, boardID, principalID string) (msg.ClassificationTaxonomy, string, error) {
+	if s.IssueReads() == nil {
 		return msg.ClassificationTaxonomy{}, "", errors.New("kanban-store is not configured, so no board taxonomy can be read")
 	}
-	taxonomy, revision, err := s.issueReads.BoardTaxonomy(ctx, boardID, principalID)
+	taxonomy, revision, err := s.IssueReads().BoardTaxonomy(ctx, boardID, principalID)
 	if errors.Is(err, issuereads.ErrNotFound) {
 		return msg.ClassificationTaxonomy{}, "", fmt.Errorf("%w: %w", executors.ErrTaxonomyBoardNotFound, err)
 	}
 	return taxonomy, revision, err
-}
-
-// ModelListPrice reads a model's list price from model-store. A model it
-// does not know, or one whose prices are both zero, has no known price: a
-// zero there means nobody entered one, and budgets must not treat it as free.
-func (s *Server) ModelListPrice(model string) (inputPerMillion, outputPerMillion float64, known bool) {
-	if s.modelStore == nil || model == "" {
-		return 0, 0, false
-	}
-	resolved, err := s.modelStore.ResolveModel(model)
-	if err != nil || resolved == nil || (resolved.InputCost <= 0 && resolved.OutputCost <= 0) {
-		return 0, 0, false
-	}
-	return resolved.InputCost, resolved.OutputCost, true
 }
 
 // operationRunGrantRelation and operationTypeResourceType are how grant-store
@@ -497,17 +427,17 @@ const (
 // principal starting an operation, as operations.grant_enforcement says. An
 // administrator and the service token are not checked. A zero status means
 // it passed.
-func (s *Server) checkOperationGrant(ctx context.Context, caller requestcaller.Caller, operationType msg.OperationType) (status int, code, message string) {
+func (s *Service) checkOperationGrant(ctx context.Context, caller requestcaller.Caller, operationType msg.OperationType) (status int, code, message string) {
 	if !caller.NarrowsToOnePrincipal() {
 		return 0, "", ""
 	}
 	principalID := caller.PrincipalID
-	enforcement := s.settings.String(config.SettingOperationsGrantEnforcement)
+	enforcement := s.Settings.String(config.SettingOperationsGrantEnforcement)
 	if enforcement != config.OperationsGrantEnforcementLenient && enforcement != config.OperationsGrantEnforcementStrict {
 		return http.StatusInternalServerError, "grant_enforcement_misconfigured", fmt.Sprintf(
 			"operations.grant_enforcement is %q, not one of %v", enforcement, config.OperationsGrantEnforcementValues)
 	}
-	granted, err := s.grantChecker.GrantedResourcesOf(ctx, grantcheck.SubjectOfCaller(caller), operationRunGrantRelation, operationTypeResourceType)
+	granted, err := s.GrantChecker.GrantedResourcesOf(ctx, grantcheck.SubjectOfCaller(caller), operationRunGrantRelation, operationTypeResourceType)
 	switch {
 	case errors.Is(err, grants.ErrNotFound):
 		return http.StatusBadRequest, "unknown_principal", err.Error()
@@ -526,7 +456,7 @@ func (s *Server) checkOperationGrant(ctx context.Context, caller requestcaller.C
 		principalID, operationTypeResourceType, operationType, enforcement, granted.Describe())
 }
 
-func (s *Server) handleListOperationBudgets(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleListOperationBudgets(w http.ResponseWriter, r *http.Request) {
 	coordinator, ok := s.operationsOrRefuse(w)
 	if !ok {
 		return
@@ -538,7 +468,7 @@ func (s *Server) handleListOperationBudgets(w http.ResponseWriter, r *http.Reque
 	httpjson.WriteJSON(w, budgets)
 }
 
-func (s *Server) handleGetOperationBudget(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleGetOperationBudget(w http.ResponseWriter, r *http.Request) {
 	coordinator, ok := s.operationsOrRefuse(w)
 	if !ok {
 		return
@@ -554,7 +484,7 @@ func (s *Server) handleGetOperationBudget(w http.ResponseWriter, r *http.Request
 	httpjson.WriteJSON(w, budget)
 }
 
-func (s *Server) handlePutOperationBudget(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandlePutOperationBudget(w http.ResponseWriter, r *http.Request) {
 	coordinator, ok := s.operationsOrRefuse(w)
 	if !ok {
 		return
@@ -577,10 +507,10 @@ func (s *Server) handlePutOperationBudget(w http.ResponseWriter, r *http.Request
 	if err := coordinator.Store().SetOrganizationBudget(organizationID, *body.MonthlyLimitUSD, updatedBy, time.Now()); writeOperationStoreError(w, err) {
 		return
 	}
-	s.handleGetOperationBudget(w, r)
+	s.HandleGetOperationBudget(w, r)
 }
 
-func (s *Server) handleDeleteOperationBudget(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleDeleteOperationBudget(w http.ResponseWriter, r *http.Request) {
 	coordinator, ok := s.operationsOrRefuse(w)
 	if !ok {
 		return
@@ -591,9 +521,9 @@ func (s *Server) handleDeleteOperationBudget(w http.ResponseWriter, r *http.Requ
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// checkOperationGrantEnforcementValue is the write check on
+// CheckOperationGrantEnforcementValue is the write check on
 // operations.grant_enforcement.
-func checkOperationGrantEnforcementValue(value string) error {
+func CheckOperationGrantEnforcementValue(value string) error {
 	for _, allowed := range config.OperationsGrantEnforcementValues {
 		if value == allowed {
 			return nil

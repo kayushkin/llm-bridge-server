@@ -65,3 +65,17 @@ type modelWithCredentials struct {
 	CredentialsKnown bool           `json:"credentials_known"`
 	CredentialsError string         `json:"credentials_error,omitempty"`
 }
+
+// ModelListPrice reads a model's list price from model-store. A model it
+// does not know, or one whose prices are both zero, has no known price: a
+// zero there means nobody entered one, and budgets must not treat it as free.
+func (s *Server) ModelListPrice(model string) (inputPerMillion, outputPerMillion float64, known bool) {
+	if s.modelStore == nil || model == "" {
+		return 0, 0, false
+	}
+	resolved, err := s.modelStore.ResolveModel(model)
+	if err != nil || resolved == nil || (resolved.InputCost <= 0 && resolved.OutputCost <= 0) {
+		return 0, 0, false
+	}
+	return resolved.InputCost, resolved.OutputCost, true
+}

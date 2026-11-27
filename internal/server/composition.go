@@ -3,8 +3,12 @@ package server
 import (
 	"github.com/kayushkin/llm-bridge-server/internal/access/grantcheck"
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/operations"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/operationroutes"
 	"github.com/kayushkin/llm-bridge-server/internal/chatlinks"
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/briefs"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads"
 )
 
 // composeServices builds the packages split out of this server from its
@@ -21,6 +25,14 @@ func (s *Server) composeServices() {
 			return s.principalLookupCache
 		},
 	}}
+	s.operationRoutes = &operationroutes.Service{Dependencies: operationroutes.Dependencies{
+		GrantChecker:   s.grantChecker,
+		IssueReads:     func() *issuereads.Reader { return s.issueReads },
+		ModelStore:     func() *models.Store { return s.modelStore },
+		Operations:     func() *operations.Coordinator { return s.operations },
+		PrincipalStore: func() operationroutes.PrincipalStore { return s.principalStore },
+		Settings:       s.settings,
+	}}
 	s.briefService = &briefs.Service{Dependencies: briefs.Dependencies{
 		Harness:        s.harness,
 		Store:          s.store,
@@ -33,4 +45,10 @@ func (s *Server) composeServices() {
 		ReferenceResolver: s.referenceResolver.Load,
 		Sessions:          s,
 	}}
+}
+
+// EnableOperations attaches the coordinator the operation routes use. Until
+// it is called they answer 503 operations_not_configured.
+func (s *Server) EnableOperations(coordinator *operations.Coordinator) {
+	s.operations = coordinator
 }

@@ -30,6 +30,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/agents/tools"
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/operations"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/operationroutes"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/filestorage/files"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
@@ -262,8 +263,9 @@ type Server struct {
 	chatLinkService *chatlinks.Service
 	// grantChecker answers what a principal's grants allow; it reads
 	// grantStore and principalLookupCache as they are when it is asked.
-	grantChecker *grantcheck.Checker
-	briefService *briefs.Service
+	grantChecker    *grantcheck.Checker
+	briefService    *briefs.Service
+	operationRoutes *operationroutes.Service
 }
 
 func New(st *store.Store, as *agents.Store, ms *memories.Store, hs *machines.Store, hks *hooks.Store, mds *models.Store, ss *snapshots.Store, cfg *config.Config) *Server {
@@ -532,17 +534,7 @@ func (s *Server) routes() {
 
 	// Operations: asynchronous work with a durable receipt. See operations.go
 	// and docs/OPERATIONS.md in llm-bridge.
-	s.mux.HandleFunc("POST /operations", s.handleCreateOperation)
-	s.mux.HandleFunc("GET /operations", s.handleListOperations)
-	s.mux.HandleFunc("GET /operations/{id}", s.handleGetOperation)
-	s.mux.HandleFunc("GET /operations/{id}/events", s.handleOperationEvents)
-	s.mux.HandleFunc("POST /operations/{id}/cancel", s.handleCancelOperation)
-	s.mux.HandleFunc("GET /operations/{id}/children", s.handleListOperationChildren)
-	s.mux.HandleFunc("GET /operation-types", s.handleOperationTypes)
-	s.mux.HandleFunc("GET /operation-budgets", s.handleListOperationBudgets)
-	s.mux.HandleFunc("GET /operation-budgets/{organization_id}", s.handleGetOperationBudget)
-	s.mux.HandleFunc("PUT /operation-budgets/{organization_id}", s.handlePutOperationBudget)
-	s.mux.HandleFunc("DELETE /operation-budgets/{organization_id}", s.handleDeleteOperationBudget)
+	s.operationRoutes.Mount(s.mux)
 
 	// The Services page: healthcheck's services joined to the SQLite files
 	// their processes hold open, and read-only reads of those files. See

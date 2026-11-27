@@ -1183,7 +1183,7 @@ func (s *Server) serveAsCaller(w http.ResponseWriter, r *http.Request, pattern s
 			httpjson.WriteJSONError(w, http.StatusInternalServerError, "route_rule_invalid", err.Error())
 			return
 		}
-		if s.operations != nil && !s.operationIsOwnedByPrincipal(operationID, caller.PrincipalID) {
+		if s.operations != nil && !s.operationRoutes.OperationIsOwnedByPrincipal(operationID, caller.PrincipalID) {
 			http.Error(w, "operation not found", http.StatusNotFound)
 			return
 		}

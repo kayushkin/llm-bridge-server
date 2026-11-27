@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/operationroutes"
+
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -64,7 +66,7 @@ func (s *Server) wireServiceSettings() {
 	for _, key := range config.ModelRoleSettings {
 		s.settings.SetValidator(key, s.checkSettingNamesAnAssignedModelRole)
 	}
-	s.settings.SetValidator(config.SettingOperationsGrantEnforcement, checkOperationGrantEnforcementValue)
+	s.settings.SetValidator(config.SettingOperationsGrantEnforcement, operationroutes.CheckOperationGrantEnforcementValue)
 	s.settings.SetValidator(config.SettingServerName, checkServerNameValue)
 	s.settings.SetValidator(config.SettingKeepAwakeGraceMinutes, checkKeepAwakeGraceMinutesValue)
 	s.settings.SetValidator(config.SettingSessionHostHoldMinutes, checkSessionHostHoldMinutesValue)

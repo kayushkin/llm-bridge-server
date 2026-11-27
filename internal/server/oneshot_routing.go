@@ -13,6 +13,7 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelrouting"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/operations"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/executors"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -199,6 +200,54 @@ func (s *Server) checkSettingNamesAnAssignedModelRole(role string) error {
 	}
 	if len(assigned[role]) == 0 {
 		return fmt.Errorf("model-store has no models for role %q", role)
+	}
+	return nil
+}
+
+// OperationExecutors is every executor this server runs operations with,
+// wired to its own one-shot path. main hands them to the coordinator.
+func (s *Server) OperationExecutors() []operations.Executor {
+	var boardStore executors.BoardClassificationStore
+	if s.issueReads != nil {
+		boardStore = s.issueReads
+	}
+	return []operations.Executor{executors.ModelClassifier{Caller: s, Taxonomies: s.operationRoutes}, executors.BoardClassifier{Caller: s, Store: boardStore}, executors.LLMCompletion{Caller: s}}
+}
+
+// checkOneShotInstanceByProvider is the write check on
+// oneshot.instance_by_provider: each provider must be one model-store knows,
+// and each instance one harness-store has enabled.
+func (s *Server) checkOneShotInstanceByProvider(value string) error {
+	pairs := map[string]string{}
+	for _, pair := range strings.Split(value, ",") {
+		provider, instanceID, found := strings.Cut(strings.TrimSpace(pair), ":")
+		if strings.TrimSpace(pair) == "" {
+			continue
+		}
+		if !found || provider == "" || instanceID == "" {
+			return fmt.Errorf("%q is not provider:instance", pair)
+		}
+		pairs[provider] = instanceID
+	}
+	if s.modelStore != nil {
+		providers, err := s.modelStore.Providers()
+		if err != nil {
+			return fmt.Errorf("%w: model-store: %v", servicesettings.ErrSettingOwnerUnavailable, err)
+		}
+		known := map[string]bool{}
+		for _, provider := range providers {
+			known[provider.ID] = true
+		}
+		for provider := range pairs {
+			if !known[provider] {
+				return fmt.Errorf("model-store has no provider %q", provider)
+			}
+		}
+	}
+	for _, instanceID := range pairs {
+		if err := s.checkSettingNamesAnEnabledInstance(instanceID); err != nil {
+			return err
+		}
 	}
 	return nil
 }
