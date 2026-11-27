@@ -11,7 +11,7 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 
-	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/runnerprotocol"
+	"github.com/kayushkin/llm-bridge-server/internal/machines/runnerprotocol"
 )
 
 var claudeAuthorizationURL = regexp.MustCompile(`https://claude\.com/cai/oauth/authorize\?[^[:space:]]+`)

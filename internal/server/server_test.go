@@ -5,7 +5,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 
-	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore/harnessstoretest"
+	"github.com/kayushkin/llm-bridge-server/internal/machines/machinestest"
 
 	"encoding/json"
 	"io"
@@ -15,7 +15,7 @@ import (
 	"strings"
 	"testing"
 
-	logstoreclient "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/client"
+	sessionlogclient "github.com/kayushkin/llm-bridge-server/internal/sessionlog/client"
 
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
@@ -75,7 +75,7 @@ func testServerWithInstanceAndLogStore(t *testing.T, harness msg.Harness, logSto
 	dir := t.TempDir()
 	st := newTestBridgeStore(t)
 
-	hs := harnessstoretest.NewStore(t)
+	hs := machinestest.NewStore(t)
 
 	mach := &msg.Machine{
 		ID:        "m_test",
@@ -122,7 +122,7 @@ func enableLogStoreAt(t *testing.T, srv *Server, logStoreURL string) {
 	if err != nil {
 		t.Fatalf("log-store URL %q: %v", logStoreURL, err)
 	}
-	srv.EnableSessionLog(httputil.NewSingleHostReverseProxy(target), logstoreclient.New(logStoreURL))
+	srv.EnableSessionLog(httputil.NewSingleHostReverseProxy(target), sessionlogclient.New(logStoreURL))
 }
 
 func doJSON(t *testing.T, srv http.Handler, method, path string, body any) *http.Response {

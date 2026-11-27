@@ -17,7 +17,7 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessions"
-	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
+	"github.com/kayushkin/llm-bridge-server/internal/filestorage/files"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 	_ "modernc.org/sqlite"
@@ -104,19 +104,19 @@ func TestAnImportedPossessionStoreAnswersAsTheStandaloneOne(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fileModule, err := filestore.Module()
+	fileModule, err := files.Module()
 	if err != nil {
 		t.Fatal(err)
 	}
 	database := postgrestest.NewDatabase(t, possessionModule, fileModule)
-	files, err := filestore.New(database.Open(fileModule), *possessionFileStoreDirectory)
+	fileStore, err := files.New(database.Open(fileModule), *possessionFileStoreDirectory)
 	if err != nil {
 		t.Fatal(err)
 	}
-	limits := func() filestore.Limits { return filestore.Limits{MaximumFileBytes: 1 << 30} }
+	limits := func() files.Limits { return files.Limits{MaximumFileBytes: 1 << 30} }
 	root, err := possessions.New(func(ctx context.Context, settings map[string]string) (*sql.DB, error) {
 		return postgresstorage.OpenWithSessionSettings(ctx, database.URL(), possessionModule, settings)
-	}, possessions.ServiceReferences{}, PossessionOriginalFilesCarrying(files, limits, filestore.LinkBlobs))
+	}, possessions.ServiceReferences{}, PossessionOriginalFilesCarrying(fileStore, limits, files.LinkBlobs))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
-	"github.com/kayushkin/llm-bridge-server/internal/repositories/repostore"
-	"github.com/kayushkin/llm-bridge-server/internal/repositories/workgraphstore"
+	"github.com/kayushkin/llm-bridge-server/internal/filestorage/files"
+	"github.com/kayushkin/llm-bridge-server/internal/repositories/gitactivity"
+	"github.com/kayushkin/llm-bridge-server/internal/repositories/repos"
 )
 
 // Copies of standalone stores' files, made with sqlite3 .backup, to check
@@ -46,21 +46,21 @@ func TestImportedRepositoriesAndFilesAnswer(t *testing.T) {
 	ctx := context.Background()
 	imported := map[string]any{}
 	if *standaloneRepoStoreCopy != "" {
-		counts, err := repostore.ImportStandaloneDatabase(ctx, modules.repoStoreDB, *standaloneRepoStoreCopy)
+		counts, err := repos.ImportStandaloneDatabase(ctx, modules.repoStoreDB, *standaloneRepoStoreCopy)
 		if err != nil {
 			t.Fatalf("repo-store import: %v", err)
 		}
 		imported["repo-store"] = counts
 	}
 	if *standaloneWorkGraphStoreCopy != "" {
-		counts, err := workgraphstore.ImportStandaloneDatabase(ctx, modules.workGraphStoreDB, *standaloneWorkGraphStoreCopy)
+		counts, err := gitactivity.ImportStandaloneDatabase(ctx, modules.workGraphStoreDB, *standaloneWorkGraphStoreCopy)
 		if err != nil {
 			t.Fatalf("work-graph-store import: %v", err)
 		}
 		imported["work-graph-store"] = counts
 	}
 	if *standaloneFileStoreCopy != "" {
-		counts, err := filestore.ImportStandaloneDatabase(ctx, modules.fileStoreDB, modules.files, *standaloneFileStoreCopy, *standaloneFileStoreBlobs, filestore.CopyBlobs)
+		counts, err := files.ImportStandaloneDatabase(ctx, modules.fileStoreDB, modules.files, *standaloneFileStoreCopy, *standaloneFileStoreBlobs, files.CopyBlobs)
 		if err != nil {
 			t.Fatalf("file-store import: %v", err)
 		}

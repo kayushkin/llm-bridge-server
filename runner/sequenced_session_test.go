@@ -16,7 +16,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/runnerprotocol"
+	"github.com/kayushkin/llm-bridge-server/internal/machines/runnerprotocol"
 )
 
 // standInServer is the server's end of the runner connection, driven by the

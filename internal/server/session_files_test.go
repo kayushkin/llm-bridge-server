@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
+	"github.com/kayushkin/llm-bridge-server/internal/filestorage/files"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -34,13 +34,13 @@ func newFakeFileStore() *fakeFileStore {
 	return &fakeFileStore{maximumFileBytes: 1024, uploads: map[string][]byte{}, contentTypes: map[string]string{}, ownerRefs: map[string]string{}}
 }
 
-func (fake *fakeFileStore) CurrentLimits() filestore.Limits {
+func (fake *fakeFileStore) CurrentLimits() files.Limits {
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
-	return filestore.Limits{MaximumFileBytes: fake.maximumFileBytes}
+	return files.Limits{MaximumFileBytes: fake.maximumFileBytes}
 }
 
-func (fake *fakeFileStore) Accept(content io.Reader, _ int64, contentType string, file filestore.NewFile) (*filestore.File, error) {
+func (fake *fakeFileStore) Accept(content io.Reader, _ int64, contentType string, file files.NewFile) (*files.File, error) {
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
 	body, _ := io.ReadAll(content)
@@ -48,7 +48,7 @@ func (fake *fakeFileStore) Accept(content io.Reader, _ int64, contentType string
 	fake.uploads[id] = body
 	fake.contentTypes[id] = contentType
 	fake.ownerRefs[id] = file.OwnerRef
-	return &filestore.File{ID: id, Filename: file.Filename, SizeBytes: int64(len(body)), ContentType: contentType}, nil
+	return &files.File{ID: id, Filename: file.Filename, SizeBytes: int64(len(body)), ContentType: contentType}, nil
 }
 
 func (fake *fakeFileStore) ServeContentOf(w http.ResponseWriter, _ *http.Request, id, inline string) {

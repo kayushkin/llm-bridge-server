@@ -13,8 +13,8 @@ import (
 	"time"
 
 	schedulerapi "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/api"
-	"github.com/kayushkin/llm-bridge-server/internal/repositories/repostore"
-	"github.com/kayushkin/llm-bridge-server/internal/repositories/workgraphstore"
+	"github.com/kayushkin/llm-bridge-server/internal/repositories/gitactivity"
+	"github.com/kayushkin/llm-bridge-server/internal/repositories/repos"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	issuesapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/api"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/projects"
@@ -60,7 +60,7 @@ func (repositories projectStoreRepositories) stores() (*repositoryStores, error)
 // repoStoreAnswer is a repo-store error as project-store reads it: a repo it
 // does not have is projects.ErrNotFound.
 func repoStoreAnswer(err error) error {
-	if errors.Is(err, repostore.ErrNotFound) || errors.Is(err, workgraphstore.ErrNotFound) {
+	if errors.Is(err, repos.ErrNotFound) || errors.Is(err, gitactivity.ErrNotFound) {
 		return projects.ErrNotFound
 	}
 	return err
@@ -99,7 +99,7 @@ func (repositories projectStoreRepositories) PullRequests(_ context.Context, rep
 	if err != nil {
 		return nil, err
 	}
-	stored, err := stores.repos.ListPullRequests(repostore.PullRequestListFilter{RepoID: repoStoreID, State: state, Limit: repostore.DefaultPullRequestListLimit})
+	stored, err := stores.repos.ListPullRequests(repos.PullRequestListFilter{RepoID: repoStoreID, State: state, Limit: repos.DefaultPullRequestListLimit})
 	if err != nil {
 		return nil, repoStoreAnswer(err)
 	}
@@ -122,7 +122,7 @@ func (repositories projectStoreRepositories) Graph(ctx context.Context, repoStor
 	if err != nil {
 		return projects.RepoGraph{}, repoStoreAnswer(err)
 	}
-	graph, err := workgraphstore.BuildGraph(ctx, stores.workGraph, repo, maxCommits)
+	graph, err := gitactivity.BuildGraph(ctx, stores.workGraph, repo, maxCommits)
 	if err != nil {
 		return projects.RepoGraph{}, err
 	}

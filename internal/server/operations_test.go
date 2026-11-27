@@ -13,11 +13,11 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelrouting"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/operations"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/executors"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/executors/executorstest"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/operationstore/operationstoretest"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	"github.com/kayushkin/llm-bridge-server/internal/executors"
-	"github.com/kayushkin/llm-bridge-server/internal/executors/executorstest"
-	"github.com/kayushkin/llm-bridge-server/internal/operations"
-	"github.com/kayushkin/llm-bridge-server/internal/operationstore/operationstoretest"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 

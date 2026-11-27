@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
-	logstore "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/client"
+	sessionlogclient "github.com/kayushkin/llm-bridge-server/internal/sessionlog/client"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge-server/internal/store/storetest"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -17,7 +17,7 @@ import (
 func newManagerOnLogStoreURL(st *store.Store, logStoreURL, publicServerURL, localBridgeURL string, ptyRingBytes int, authClient *authstoreclient.Client) *Manager {
 	m := NewManager(st, publicServerURL, localBridgeURL, ptyRingBytes, authClient)
 	if logStoreURL != "" {
-		m.SetSessionEventLog(logstore.New(logStoreURL))
+		m.SetSessionEventLog(sessionlogclient.New(logStoreURL))
 	}
 	return m
 }

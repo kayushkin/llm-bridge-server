@@ -41,9 +41,9 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photos"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessions"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/timeledger"
-	"github.com/kayushkin/llm-bridge-server/internal/references/referencestore"
-	"github.com/kayushkin/llm-bridge-server/internal/repositories/repostore"
-	"github.com/kayushkin/llm-bridge-server/internal/repositories/workgraphstore"
+	"github.com/kayushkin/llm-bridge-server/internal/references"
+	"github.com/kayushkin/llm-bridge-server/internal/repositories/gitactivity"
+	"github.com/kayushkin/llm-bridge-server/internal/repositories/repos"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/items"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/predictions"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/projects"
@@ -83,8 +83,8 @@ type referenceReadableStores struct {
 	noteboard     atomic.Pointer[items.Store]
 	predictions   atomic.Pointer[predictions.Store]
 	principals    atomic.Pointer[principals.Store]
-	repos         atomic.Pointer[repostore.Store]
-	workGraph     atomic.Pointer[workgraphstore.Store]
+	repos         atomic.Pointer[repos.Store]
+	workGraph     atomic.Pointer[gitactivity.Store]
 	scheduler     atomic.Pointer[schedulerapi.Server]
 	calendar      atomic.Pointer[calendar.Store]
 	messages      atomic.Pointer[messages.Store]
@@ -113,7 +113,7 @@ func loaded[T any](pointer *atomic.Pointer[T], storeName string) (*T, error) {
 // store's not-found error read as a record that is not there.
 func referenceAnswer(value any, err error, notFound error) (json.RawMessage, error) {
 	if errors.Is(err, notFound) {
-		return nil, referencestore.ErrRecordNotFound
+		return nil, references.ErrRecordNotFound
 	}
 	if err != nil {
 		return nil, err
@@ -125,7 +125,7 @@ func referenceAnswer(value any, err error, notFound error) (json.RawMessage, err
 // reference-store acts as, as the store proxy routes decide it for a request.
 // requirePrincipal refuses this server's own service acting as itself, as
 // journal-store's route does.
-func (s *Server) ownershipCallerOfReferenceAsker(ctx context.Context, asker referencestore.InProcessAsker, storeName string, requirePrincipal bool) (ownership.Caller, error) {
+func (s *Server) ownershipCallerOfReferenceAsker(ctx context.Context, asker references.InProcessAsker, storeName string, requirePrincipal bool) (ownership.Caller, error) {
 	if asker.PrincipalID == "" {
 		if requirePrincipal {
 			return ownership.Caller{}, fmt.Errorf("%s answers only its owner's or an administrator's principal, and the read names none", storeName)
@@ -148,7 +148,7 @@ func (s *Server) callerOfReferenceAsker(ctx context.Context, principalID string)
 		return caller, nil
 	}
 	if credentialError.status == 403 {
-		return requestCaller{}, fmt.Errorf("%w: %s", referencestore.ErrRefusedByOwner, credentialError.message)
+		return requestCaller{}, fmt.Errorf("%w: %s", references.ErrRefusedByOwner, credentialError.message)
 	}
 	return requestCaller{}, fmt.Errorf("%s: %s", credentialError.code, credentialError.message)
 }
@@ -156,8 +156,8 @@ func (s *Server) callerOfReferenceAsker(ctx context.Context, principalID string)
 // ownedRecordReader is a reader of one connected-records type: read is the
 // store's read of one record in scope, with the caller in ctx for a store
 // that asks another on the way.
-func (s *Server) ownedRecordReader(storeName string, requirePrincipal bool, notFound error, read func(ctx context.Context, scope ownership.Scope, id string) (any, error)) func(context.Context, string, referencestore.InProcessAsker) (json.RawMessage, error) {
-	return func(ctx context.Context, id string, asker referencestore.InProcessAsker) (json.RawMessage, error) {
+func (s *Server) ownedRecordReader(storeName string, requirePrincipal bool, notFound error, read func(ctx context.Context, scope ownership.Scope, id string) (any, error)) func(context.Context, string, references.InProcessAsker) (json.RawMessage, error) {
+	return func(ctx context.Context, id string, asker references.InProcessAsker) (json.RawMessage, error) {
 		caller, err := s.ownershipCallerOfReferenceAsker(ctx, asker, storeName, requirePrincipal)
 		if err != nil {
 			return nil, err
@@ -172,8 +172,8 @@ func (s *Server) ownedRecordReader(storeName string, requirePrincipal bool, notF
 }
 
 // ownedRecordSearch is a connected-records type's search, read as the asker.
-func (s *Server) ownedRecordSearch(storeName string, requirePrincipal bool, search func(ctx context.Context, scope ownership.Scope, query string) (any, error)) func(context.Context, string, referencestore.InProcessAsker) (json.RawMessage, error) {
-	return func(ctx context.Context, query string, asker referencestore.InProcessAsker) (json.RawMessage, error) {
+func (s *Server) ownedRecordSearch(storeName string, requirePrincipal bool, search func(ctx context.Context, scope ownership.Scope, query string) (any, error)) func(context.Context, string, references.InProcessAsker) (json.RawMessage, error) {
+	return func(ctx context.Context, query string, asker references.InProcessAsker) (json.RawMessage, error) {
 		caller, err := s.ownershipCallerOfReferenceAsker(ctx, asker, storeName, requirePrincipal)
 		if err != nil {
 			return nil, err
@@ -198,7 +198,7 @@ func ownedImageReader(read func(ctx context.Context, scope ownership.Scope, id s
 		ctx = ownership.ContextWithCaller(ctx, ownership.Caller{SeesEveryOwner: true})
 		data, err := read(ctx, ownership.EveryOwner(), id)
 		if errors.Is(err, notFound) {
-			return "", nil, referencestore.ErrNoAttachment
+			return "", nil, references.ErrNoAttachment
 		}
 		if err != nil {
 			return "", nil, err
@@ -209,8 +209,8 @@ func ownedImageReader(read func(ctx context.Context, scope ownership.Scope, id s
 
 // InProcessReferenceReaders are reference-store's readers of every type of
 // the services in this process.
-func (s *Server) InProcessReferenceReaders() referencestore.InProcessServices {
-	readers := map[string]referencestore.InProcessReader{
+func (s *Server) InProcessReferenceReaders() references.InProcessServices {
+	readers := map[string]references.InProcessReader{
 		"session":       {Record: s.readSessionForReference},
 		"repo":          {Record: s.readRepoForReference},
 		"commit":        {Record: s.readCommitForReference},
@@ -235,7 +235,7 @@ func (s *Server) InProcessReferenceReaders() referencestore.InProcessServices {
 		}
 		return stores.journal, nil
 	}
-	readers["person"] = referencestore.InProcessReader{
+	readers["person"] = references.InProcessReader{
 		Record: s.ownedRecordReader("people-store", false, people.ErrNotFound, func(ctx context.Context, scope ownership.Scope, id string) (any, error) {
 			store, err := loadPeople()
 			if err != nil {
@@ -251,7 +251,7 @@ func (s *Server) InProcessReferenceReaders() referencestore.InProcessServices {
 			return store.ListPersons(ctx, scope, people.PersonFilter{Query: query})
 		}),
 	}
-	readers["entry"] = referencestore.InProcessReader{
+	readers["entry"] = references.InProcessReader{
 		Record: s.ownedRecordReader("journal-store", true, journal.ErrNotFound, func(ctx context.Context, scope ownership.Scope, id string) (any, error) {
 			store, err := loadJournal()
 			if err != nil {
@@ -267,7 +267,7 @@ func (s *Server) InProcessReferenceReaders() referencestore.InProcessServices {
 			return store.List(ctx, scope, journal.Filter{Query: query})
 		}),
 	}
-	readers["calendar_event"] = referencestore.InProcessReader{
+	readers["calendar_event"] = references.InProcessReader{
 		Record: s.ownedRecordReader("calendar-store", false, calendar.ErrNotFound, func(ctx context.Context, scope ownership.Scope, id string) (any, error) {
 			store, err := loaded(&s.referenceReadable.calendar, "calendar-store")
 			if err != nil {
@@ -284,7 +284,7 @@ func (s *Server) InProcessReferenceReaders() referencestore.InProcessServices {
 		}
 		return stores, nil
 	}
-	readers["photo"] = referencestore.InProcessReader{
+	readers["photo"] = references.InProcessReader{
 		Record: s.ownedRecordReader("photo-store", false, photos.ErrNotFound, func(ctx context.Context, scope ownership.Scope, id string) (any, error) {
 			stores, err := loadPhotosAndLocations()
 			if err != nil {
@@ -302,10 +302,10 @@ func (s *Server) InProcessReferenceReaders() referencestore.InProcessServices {
 				return nil, err
 			}
 			defer content.Close()
-			return io.ReadAll(io.LimitReader(content, referencestore.MaximumAttachmentBytes+1))
+			return io.ReadAll(io.LimitReader(content, references.MaximumAttachmentBytes+1))
 		}, photos.ErrNotFound),
 	}
-	readers["face_group"] = referencestore.InProcessReader{
+	readers["face_group"] = references.InProcessReader{
 		Record: s.ownedRecordReader("photo-store", false, photos.ErrNotFound, func(ctx context.Context, scope ownership.Scope, id string) (any, error) {
 			stores, err := loadPhotosAndLocations()
 			if err != nil {
@@ -314,8 +314,8 @@ func (s *Server) InProcessReferenceReaders() referencestore.InProcessServices {
 			return stores.photos.FaceGroupByID(ctx, scope, id, true)
 		}),
 	}
-	locationReader := func(read func(store *locations.Store, ctx context.Context, scope ownership.Scope, id string) (any, error)) referencestore.InProcessReader {
-		return referencestore.InProcessReader{
+	locationReader := func(read func(store *locations.Store, ctx context.Context, scope ownership.Scope, id string) (any, error)) references.InProcessReader {
+		return references.InProcessReader{
 			Record: s.ownedRecordReader("location-store", false, locations.ErrNotFound, func(ctx context.Context, scope ownership.Scope, id string) (any, error) {
 				stores, err := loadPhotosAndLocations()
 				if err != nil {
@@ -335,8 +335,8 @@ func (s *Server) InProcessReferenceReaders() referencestore.InProcessServices {
 		return store.GetTripWithCalendarEventLinks(ctx, scope, id, false)
 	})
 
-	messageReader := func(read func(store *messages.Store, ctx context.Context, scope ownership.Scope, id string) (any, error)) referencestore.InProcessReader {
-		return referencestore.InProcessReader{
+	messageReader := func(read func(store *messages.Store, ctx context.Context, scope ownership.Scope, id string) (any, error)) references.InProcessReader {
+		return references.InProcessReader{
 			Record: s.ownedRecordReader("message-store", false, messages.ErrNotFound, func(ctx context.Context, scope ownership.Scope, id string) (any, error) {
 				store, err := loaded(&s.referenceReadable.messages, "message-store")
 				if err != nil {
@@ -358,7 +358,7 @@ func (s *Server) InProcessReferenceReaders() referencestore.InProcessServices {
 	readers["conversation_day"] = messageReader(func(store *messages.Store, ctx context.Context, scope ownership.Scope, id string) (any, error) {
 		return store.GetConversationDay(ctx, scope, id)
 	})
-	readers["activity"] = referencestore.InProcessReader{
+	readers["activity"] = references.InProcessReader{
 		Record: s.ownedRecordReader("activity-store", false, onlineactivity.ErrNotFound, func(ctx context.Context, scope ownership.Scope, id string) (any, error) {
 			store, err := loaded(&s.referenceReadable.activities, "activity-store")
 			if err != nil {
@@ -367,8 +367,8 @@ func (s *Server) InProcessReferenceReaders() referencestore.InProcessServices {
 			return store.GetActivity(ctx, scope, id, false)
 		}),
 	}
-	timeLedgerReader := func(read func(store *timeledger.Store, ctx context.Context, scope ownership.Scope, id string) (any, error)) referencestore.InProcessReader {
-		return referencestore.InProcessReader{
+	timeLedgerReader := func(read func(store *timeledger.Store, ctx context.Context, scope ownership.Scope, id string) (any, error)) references.InProcessReader {
+		return references.InProcessReader{
 			Record: s.ownedRecordReader("time-ledger-store", false, timeledger.ErrNotFound, func(ctx context.Context, scope ownership.Scope, id string) (any, error) {
 				store, err := loaded(&s.referenceReadable.timeLedger, "time-ledger-store")
 				if err != nil {
@@ -391,12 +391,12 @@ func (s *Server) InProcessReferenceReaders() referencestore.InProcessServices {
 	// budget-store's and possession-store's types are each read by the path
 	// their row's Get route names: /accounts/{id} is budget-store's
 	// accounts, /garments/{id} possession-store's garments.
-	for _, row := range referencestore.Types {
+	for _, row := range references.Types {
 		route := firstPathSegment(row.Get)
 		switch row.Service {
 		case "budget-store":
 			kind := budget.RecordKind(route)
-			readers[row.Type] = referencestore.InProcessReader{
+			readers[row.Type] = references.InProcessReader{
 				Record: s.ownedRecordReader("budget-store", false, budget.ErrNotFound, func(ctx context.Context, scope ownership.Scope, id string) (any, error) {
 					module := s.budgetStore.Load()
 					if module == nil {
@@ -406,7 +406,7 @@ func (s *Server) InProcessReferenceReaders() referencestore.InProcessServices {
 				}),
 			}
 		case "possession-store":
-			readers[row.Type] = referencestore.InProcessReader{
+			readers[row.Type] = references.InProcessReader{
 				Record: s.ownedRecordReader("possession-store", false, possessions.ErrNotFound, func(ctx context.Context, scope ownership.Scope, id string) (any, error) {
 					server, err := loaded(&s.referenceReadable.possessionsAt, "possession-store")
 					if err != nil {
@@ -424,13 +424,13 @@ func (s *Server) InProcessReferenceReaders() referencestore.InProcessServices {
 			}
 		}
 	}
-	return referencestore.InProcessServices{Services: InProcessReferenceServices, Readers: readers}
+	return references.InProcessServices{Services: InProcessReferenceServices, Readers: readers}
 }
 
 // readSessionForReference is GET /sessions/{id}: the session record, for the
 // internal service, or for a principal who reaches it as that route lets
 // one.
-func (s *Server) readSessionForReference(ctx context.Context, id string, asker referencestore.InProcessAsker) (json.RawMessage, error) {
+func (s *Server) readSessionForReference(ctx context.Context, id string, asker references.InProcessAsker) (json.RawMessage, error) {
 	if asker.PrincipalID != "" {
 		caller, err := s.callerOfReferenceAsker(ctx, asker.PrincipalID)
 		if err != nil {
@@ -442,32 +442,32 @@ func (s *Server) readSessionForReference(ctx context.Context, id string, asker r
 				return nil, fmt.Errorf("grant_store_unavailable: %w", err)
 			}
 			if !reached {
-				return nil, referencestore.ErrRecordNotFound
+				return nil, references.ErrRecordNotFound
 			}
 		}
 	}
 	session, err := s.store.GetSession(id)
 	if err != nil {
 		// The route answers every failed read as a missing session.
-		return nil, referencestore.ErrRecordNotFound
+		return nil, references.ErrRecordNotFound
 	}
 	return json.Marshal(session)
 }
 
-func (s *Server) readRepoForReference(_ context.Context, mention string, _ referencestore.InProcessAsker) (json.RawMessage, error) {
-	repos, err := loaded(&s.referenceReadable.repos, "repo-store")
+func (s *Server) readRepoForReference(_ context.Context, mention string, _ references.InProcessAsker) (json.RawMessage, error) {
+	repoStore, err := loaded(&s.referenceReadable.repos, "repo-store")
 	if err != nil {
 		return nil, err
 	}
-	name, ok := repostore.RepoNameOfMention(mention)
+	name, ok := repos.RepoNameOfMention(mention)
 	if !ok {
-		return nil, fmt.Errorf("a repo mention is %s<name>, not %q", repostore.RepoMentionPrefix, mention)
+		return nil, fmt.Errorf("a repo mention is %s<name>, not %q", repos.RepoMentionPrefix, mention)
 	}
-	repo, err := repos.GetRepoByName(name)
-	return referenceAnswer(repo, err, repostore.ErrNotFound)
+	repo, err := repoStore.GetRepoByName(name)
+	return referenceAnswer(repo, err, repos.ErrNotFound)
 }
 
-func (s *Server) readCommitForReference(ctx context.Context, mention string, _ referencestore.InProcessAsker) (json.RawMessage, error) {
+func (s *Server) readCommitForReference(ctx context.Context, mention string, _ references.InProcessAsker) (json.RawMessage, error) {
 	repos, err := loaded(&s.referenceReadable.repos, "repo-store")
 	if err != nil {
 		return nil, err
@@ -476,11 +476,11 @@ func (s *Server) readCommitForReference(ctx context.Context, mention string, _ r
 	if err != nil {
 		return nil, err
 	}
-	answer, err := workgraphstore.ResolveCommitMention(ctx, workGraph, workgraphstore.RepoStoreModule{Store: repos}, mention)
-	return referenceAnswer(answer, err, workgraphstore.ErrNotFound)
+	answer, err := gitactivity.ResolveCommitMention(ctx, workGraph, gitactivity.RepoStoreModule{Store: repos}, mention)
+	return referenceAnswer(answer, err, gitactivity.ErrNotFound)
 }
 
-func (s *Server) readNoteForReference(_ context.Context, id string, _ referencestore.InProcessAsker) (json.RawMessage, error) {
+func (s *Server) readNoteForReference(_ context.Context, id string, _ references.InProcessAsker) (json.RawMessage, error) {
 	notes, err := loaded(&s.referenceReadable.noteboard, "noteboard")
 	if err != nil {
 		return nil, err
@@ -489,7 +489,7 @@ func (s *Server) readNoteForReference(_ context.Context, id string, _ references
 	return referenceAnswer(item, err, items.ErrItemNotFound)
 }
 
-func (s *Server) searchNotesForReference(_ context.Context, query string, _ referencestore.InProcessAsker) (json.RawMessage, error) {
+func (s *Server) searchNotesForReference(_ context.Context, query string, _ references.InProcessAsker) (json.RawMessage, error) {
 	notes, err := loaded(&s.referenceReadable.noteboard, "noteboard")
 	if err != nil {
 		return nil, err
@@ -501,7 +501,7 @@ func (s *Server) searchNotesForReference(_ context.Context, query string, _ refe
 	return json.Marshal(found)
 }
 
-func (s *Server) readPredictionForReference(ctx context.Context, id string, _ referencestore.InProcessAsker) (json.RawMessage, error) {
+func (s *Server) readPredictionForReference(ctx context.Context, id string, _ references.InProcessAsker) (json.RawMessage, error) {
 	predictionStore, err := loaded(&s.referenceReadable.predictions, "prediction-store")
 	if err != nil {
 		return nil, err
@@ -510,7 +510,7 @@ func (s *Server) readPredictionForReference(ctx context.Context, id string, _ re
 	return referenceAnswer(prediction, err, predictions.ErrNotFound)
 }
 
-func (s *Server) searchPredictionsForReference(ctx context.Context, query string, _ referencestore.InProcessAsker) (json.RawMessage, error) {
+func (s *Server) searchPredictionsForReference(ctx context.Context, query string, _ references.InProcessAsker) (json.RawMessage, error) {
 	predictionStore, err := loaded(&s.referenceReadable.predictions, "prediction-store")
 	if err != nil {
 		return nil, err
@@ -530,7 +530,7 @@ func (s *Server) projectStoreForReference() (*projects.Store, error) {
 	return handlers.Store, nil
 }
 
-func (s *Server) readProjectForReference(_ context.Context, id string, _ referencestore.InProcessAsker) (json.RawMessage, error) {
+func (s *Server) readProjectForReference(_ context.Context, id string, _ references.InProcessAsker) (json.RawMessage, error) {
 	projectStore, err := s.projectStoreForReference()
 	if err != nil {
 		return nil, err
@@ -539,7 +539,7 @@ func (s *Server) readProjectForReference(_ context.Context, id string, _ referen
 	return referenceAnswer(project, err, projects.ErrNotFound)
 }
 
-func (s *Server) searchProjectsForReference(_ context.Context, query string, _ referencestore.InProcessAsker) (json.RawMessage, error) {
+func (s *Server) searchProjectsForReference(_ context.Context, query string, _ references.InProcessAsker) (json.RawMessage, error) {
 	projectStore, err := s.projectStoreForReference()
 	if err != nil {
 		return nil, err
@@ -551,7 +551,7 @@ func (s *Server) searchProjectsForReference(_ context.Context, query string, _ r
 	return json.Marshal(list)
 }
 
-func (s *Server) readPrincipalForReference(ctx context.Context, id string, _ referencestore.InProcessAsker) (json.RawMessage, error) {
+func (s *Server) readPrincipalForReference(ctx context.Context, id string, _ references.InProcessAsker) (json.RawMessage, error) {
 	directory, err := loaded(&s.referenceReadable.principals, "principal-store")
 	if err != nil {
 		return nil, err
@@ -560,7 +560,7 @@ func (s *Server) readPrincipalForReference(ctx context.Context, id string, _ ref
 	return referenceAnswer(principal, err, principals.ErrNotFound)
 }
 
-func (s *Server) searchPrincipalsForReference(ctx context.Context, query string, _ referencestore.InProcessAsker) (json.RawMessage, error) {
+func (s *Server) searchPrincipalsForReference(ctx context.Context, query string, _ references.InProcessAsker) (json.RawMessage, error) {
 	directory, err := loaded(&s.referenceReadable.principals, "principal-store")
 	if err != nil {
 		return nil, err
@@ -572,7 +572,7 @@ func (s *Server) searchPrincipalsForReference(ctx context.Context, query string,
 	return json.Marshal(found)
 }
 
-func (s *Server) readSchedulerJobForReference(_ context.Context, reference string, _ referencestore.InProcessAsker) (json.RawMessage, error) {
+func (s *Server) readSchedulerJobForReference(_ context.Context, reference string, _ references.InProcessAsker) (json.RawMessage, error) {
 	scheduler, err := loaded(&s.referenceReadable.scheduler, "the scheduler")
 	if err != nil {
 		return nil, err

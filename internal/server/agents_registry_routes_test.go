@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	harnessstore "github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore"
+	"github.com/kayushkin/llm-bridge-server/internal/machines"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -51,7 +51,7 @@ func TestAgentStoreSeedRoutesAnswerARunnerInProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	const token = "runner-token-for-this-test"
-	if err := srv.harnessStore.SetMachineRunnerTokenHash("m_runner", harnessstore.HashRunnerToken(token)); err != nil {
+	if err := srv.harnessStore.SetMachineRunnerTokenHash("m_runner", machines.HashRunnerToken(token)); err != nil {
 		t.Fatal(err)
 	}
 	get := func(path, bearer string) *httptest.ResponseRecorder {

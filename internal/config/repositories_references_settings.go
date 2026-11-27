@@ -1,7 +1,7 @@
 package config
 
 import (
-	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
+	"github.com/kayushkin/llm-bridge-server/internal/filestorage/files"
 	"github.com/kayushkin/llm-bridge-server/internal/productiondefaults"
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
@@ -52,9 +52,9 @@ func repositoriesAndReferencesSettingDefinitions() []servicesettings.Definition 
 			Description: "The file the git hook (work-graph-hook) appends ref updates to, which the ingest reads. The hook always writes to the default, so changing this makes the ingest read a file nobody writes."},
 		{Key: SettingFileStoreDataDirectory, EnvironmentVariable: "LLMBRIDGE_FILE_STORE_DATA_DIRECTORY", Kind: path, ValueType: text, Default: productiondefaults.FileStoreDataDirectory(),
 			Description: "The directory the file-store module keeps every file's bytes in (blobs/<aa>/<bb>/<sha256>); the records are in Postgres. Moving it leaves the bytes behind: move blobs/ along, or every file reads as damaged. Only this server may write it."},
-		{Key: SettingFileStoreMaximumFileBytes, EnvironmentVariable: "LLMBRIDGE_FILE_STORE_MAXIMUM_FILE_BYTES", Kind: behavior, ValueType: integer, Editable: true, Default: filestore.DefaultMaximumFileBytes,
+		{Key: SettingFileStoreMaximumFileBytes, EnvironmentVariable: "LLMBRIDGE_FILE_STORE_MAXIMUM_FILE_BYTES", Kind: behavior, ValueType: integer, Editable: true, Default: files.DefaultMaximumFileBytes,
 			Description: "The largest file file-store takes, in bytes; a larger upload is refused with 413 and nothing is kept. Lowering it does not touch files already stored."},
-		{Key: SettingFileStoreInlineContentTypes, EnvironmentVariable: "LLMBRIDGE_FILE_STORE_INLINE_CONTENT_TYPES", Kind: behavior, ValueType: msg.ServiceSettingValueTypeStringList, Editable: true, Default: filestore.DefaultInlineContentTypes,
+		{Key: SettingFileStoreInlineContentTypes, EnvironmentVariable: "LLMBRIDGE_FILE_STORE_INLINE_CONTENT_TYPES", Kind: behavior, ValueType: msg.ServiceSettingValueTypeStringList, Editable: true, Default: files.DefaultInlineContentTypes,
 			Description: "The declared content types file-store serves for display when a download asks ?inline=true; every other file is served as an attachment. A type a browser runs as a page or a script (text/html, image/svg+xml, XML, JavaScript) is refused."},
 		{Key: SettingReferenceStoreServiceURLs, EnvironmentVariable: "LLMBRIDGE_REFERENCE_STORE_SERVICE_URLS", Kind: wiring, ValueType: pairs,
 			Description: "service:url pairs for the owning services reference-store asks over HTTP: every service a reference type names that does not run in this server. A lookup or search in a service that is in neither this list nor this server answers an error naming it. Naming a service that runs in this server stops the start."},

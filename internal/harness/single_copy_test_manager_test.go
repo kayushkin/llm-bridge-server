@@ -5,8 +5,8 @@ import (
 	"sync"
 	"testing"
 
-	logstoreserver "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/server"
-	"github.com/kayushkin/llm-bridge-server/internal/sessionlog/sessionevents"
+	"github.com/kayushkin/llm-bridge-server/internal/sessionlog"
+	sessionlogserver "github.com/kayushkin/llm-bridge-server/internal/sessionlog/server"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge-server/internal/store/storetest"
 )
@@ -17,8 +17,8 @@ import (
 type singleCopyTestStores struct {
 	database   *storetest.Database
 	bridge     *store.Store
-	sessionLog *logstoreserver.Server
-	singleCopy *sessionevents.SingleCopy
+	sessionLog *sessionlogserver.Server
+	singleCopy *sessionlog.SingleCopy
 }
 
 func newSingleCopyTestStores(t testing.TB) *singleCopyTestStores {
@@ -26,7 +26,7 @@ func newSingleCopyTestStores(t testing.TB) *singleCopyTestStores {
 	database := storetest.NewDatabase(t)
 	bridge := database.OpenStore()
 	sessionLog := database.OpenSessionLog(false)
-	singleCopy, err := sessionevents.OpenSingleCopy(context.Background(), bridge, sessionLog)
+	singleCopy, err := sessionlog.OpenSingleCopy(context.Background(), bridge, sessionLog)
 	if err != nil {
 		t.Fatalf("open the single copy: %v", err)
 	}

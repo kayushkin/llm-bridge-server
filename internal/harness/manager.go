@@ -21,7 +21,7 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 	"github.com/kayushkin/llm-bridge-server/internal/ids"
-	logstore "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/client"
+	sessionlogclient "github.com/kayushkin/llm-bridge-server/internal/sessionlog/client"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -2219,9 +2219,9 @@ func (m *Manager) ImportHistory(ctx context.Context, bridgeSessionID string, h m
 // outage costs duplicates rather than a transcript. Failing closed would drop
 // history on the floor whenever log-store hiccuped, and nothing would ever
 // go back for it.
-func (m *Manager) logStoreAlreadyHoldsTranscript(harnessSessionID string) (logstore.HeldSession, bool) {
+func (m *Manager) logStoreAlreadyHoldsTranscript(harnessSessionID string) (sessionlogclient.HeldSession, bool) {
 	if harnessSessionID == "" {
-		return logstore.HeldSession{}, false
+		return sessionlogclient.HeldSession{}, false
 	}
 	held, err := m.sessionEventLog().SessionsHoldingHarnessSessionID(harnessSessionID)
 	if err != nil {
@@ -2229,7 +2229,7 @@ func (m *Manager) logStoreAlreadyHoldsTranscript(harnessSessionID string) (logst
 			"[import-history] %s: could not ask log-store whether it already holds this transcript (%v); importing, which may duplicate it",
 			harnessSessionID, err,
 		)
-		return logstore.HeldSession{}, false
+		return sessionlogclient.HeldSession{}, false
 	}
 	for _, h := range held {
 		// A projection row with no events behind it is not a transcript.
@@ -2237,7 +2237,7 @@ func (m *Manager) logStoreAlreadyHoldsTranscript(harnessSessionID string) (logst
 			return h, true
 		}
 	}
-	return logstore.HeldSession{}, false
+	return sessionlogclient.HeldSession{}, false
 }
 
 // machineReachabilityFreshFor is how long one SSH login probe's answer is

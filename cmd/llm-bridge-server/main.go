@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/operations"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	harnessstore "github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore"
-	"github.com/kayushkin/llm-bridge-server/internal/operations"
+	"github.com/kayushkin/llm-bridge-server/internal/machines"
 	"github.com/kayushkin/llm-bridge-server/internal/server"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/predictions"
 )
@@ -348,7 +348,7 @@ func mintEnrollCmd(args []string) {
 		fmt.Fprintf(os.Stderr, "error: %s is not set, so there is no harness-store to keep the enrollment in\n", config.PostgresURLEnvironmentVariable)
 		os.Exit(1)
 	}
-	harnessStoreModule, err := harnessstore.Module()
+	harnessStoreModule, err := machines.Module()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "harness-store: %v\n", err)
 		os.Exit(1)
@@ -359,7 +359,7 @@ func mintEnrollCmd(args []string) {
 		os.Exit(1)
 	}
 	defer harnessStoreDB.Close()
-	hs := harnessstore.New(harnessStoreDB)
+	hs := machines.New(harnessStoreDB)
 
 	passphrase, enr, err := hs.MintEnrollment(*ttl)
 	if err != nil {

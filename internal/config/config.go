@@ -21,7 +21,7 @@ type Config struct {
 	ListenAddr string
 	DBPath     string
 	// OperationsWorkerCount and OperationsLeaseDuration bound the operations
-	// coordinator; see internal/operations.
+	// coordinator; see internal/automation/operations.
 	OperationsWorkerCount   int
 	OperationsLeaseDuration time.Duration
 	// The stored one-shot and operations settings, as the environment seeded

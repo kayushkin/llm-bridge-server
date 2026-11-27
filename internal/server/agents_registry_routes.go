@@ -6,7 +6,7 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/agents"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models"
-	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/runnerprotocol"
+	"github.com/kayushkin/llm-bridge-server/internal/machines/runnerprotocol"
 )
 
 // agent-store, memory-store and model-store run in this process from their

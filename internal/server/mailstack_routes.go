@@ -1,6 +1,6 @@
 package server
 
-// mailstack, run in this process (internal/mail/mailstack). Its routes stay
+// mailstack, run in this process (internal/mail). Its routes stay
 // where the identity-carrying proxy put them: /mailstack/<rest> answers
 // mailstack's /<rest>.
 //
@@ -26,8 +26,8 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/access"
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
 	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
-	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack"
-	mailfilestore "github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/filestore"
+	"github.com/kayushkin/llm-bridge-server/internal/mail"
+	mailfilestore "github.com/kayushkin/llm-bridge-server/internal/mail/filestore"
 	"github.com/kayushkin/llm-bridge-server/internal/mailstackclient"
 )
 
@@ -42,7 +42,7 @@ var errMailstackOff = errors.New("mailstack is off: EnableMailstack was never ca
 // EnableAccess and EnableKanbanStore and before the server listens; until
 // then, and in a test that never calls it, /mailstack/ answers 503 and
 // triage's sender lookup is off.
-func (s *Server) EnableMailstack(mail *mailstack.Server) {
+func (s *Server) EnableMailstack(mail *mail.Server) {
 	s.mailstack.Store(mail)
 	s.mailstackClient = mailstackclient.New(mail)
 }
@@ -50,7 +50,7 @@ func (s *Server) EnableMailstack(mail *mailstack.Server) {
 // MailstackPeopleDirectory is what mailstack reads a person's access from:
 // principal-store and grant-store in this process, and kanban-store once
 // EnableKanbanStore has run.
-func (s *Server) MailstackPeopleDirectory(stores *access.Stores) mailstack.PeopleDirectory {
+func (s *Server) MailstackPeopleDirectory(stores *access.Stores) mail.PeopleDirectory {
 	return mailstackPeopleDirectory{server: s, principals: stores.Principals, grants: stores.Grants,
 		directory: access.GrantsPrincipalDirectory(stores.Principals)}
 }
@@ -64,9 +64,9 @@ func (s *Server) MailstackFileStore() mailfilestore.Files {
 
 // serveMailstack answers /mailstack/<rest> with mailstack's /<rest>, as
 // caller.
-func (s *Server) serveMailstack(w http.ResponseWriter, r *http.Request, caller *mailstack.Caller) {
-	mail := s.mailstack.Load()
-	if mail == nil {
+func (s *Server) serveMailstack(w http.ResponseWriter, r *http.Request, caller *mail.Caller) {
+	mailServer := s.mailstack.Load()
+	if mailServer == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "mailstack_off", errMailstackOff.Error())
 		return
 	}
@@ -77,7 +77,7 @@ func (s *Server) serveMailstack(w http.ResponseWriter, r *http.Request, caller *
 	}
 	ctx := r.Context()
 	if caller != nil {
-		ctx = mailstack.ContextWithCaller(ctx, *caller)
+		ctx = mail.ContextWithCaller(ctx, *caller)
 	}
 	served := r.Clone(ctx)
 	served.URL.Path = storePath.Path
@@ -93,16 +93,16 @@ func (s *Server) serveMailstack(w http.ResponseWriter, r *http.Request, caller *
 		}
 	}
 	removeCookieFromRequestHeader(served.Header, loginSessionCookieName)
-	mail.Handler().ServeHTTP(w, served)
+	mailServer.Handler().ServeHTTP(w, served)
 }
 
 // handleMailstackAsCaller answers /mailstack/<rest> as the verified caller.
 func (s *Server) handleMailstackAsCaller(w http.ResponseWriter, r *http.Request) {
-	var caller mailstack.Caller
+	var caller mail.Caller
 	if principalID, identified := principalIdentityOfRequest(r); identified {
-		caller = mailstack.Caller{PrincipalID: principalID}
+		caller = mail.Caller{PrincipalID: principalID}
 	} else if s.requestIsTheInternalServiceActingAsItself(r) {
-		caller = mailstack.Caller{InternalService: true}
+		caller = mail.Caller{InternalService: true}
 	} else {
 		// Request authorization lets nothing else through to a store route.
 		writeJSONError(w, http.StatusUnauthorized, "mailstack_requires_a_caller",
@@ -147,28 +147,28 @@ type mailstackPeopleDirectory struct {
 	directory  grants.PrincipalDirectory
 }
 
-func (d mailstackPeopleDirectory) Principal(ctx context.Context, principalID string) (mailstack.PrincipalFacts, error) {
+func (d mailstackPeopleDirectory) Principal(ctx context.Context, principalID string) (mail.PrincipalFacts, error) {
 	principal, err := d.principals.Get(ctx, principalID, false)
 	if errors.Is(err, principals.ErrNotFound) {
-		return mailstack.PrincipalFacts{}, mailstack.ErrPrincipalUnknown
+		return mail.PrincipalFacts{}, mail.ErrPrincipalUnknown
 	}
 	if err != nil {
-		return mailstack.PrincipalFacts{}, fmt.Errorf("reading %s: %w", principalID, err)
+		return mail.PrincipalFacts{}, fmt.Errorf("reading %s: %w", principalID, err)
 	}
-	return mailstack.PrincipalFacts{Kind: principal.Kind, Disabled: principal.DisabledAt != 0, IsAdministrator: principal.IsAdministrator}, nil
+	return mail.PrincipalFacts{Kind: principal.Kind, Disabled: principal.DisabledAt != 0, IsAdministrator: principal.IsAdministrator}, nil
 }
 
-func (d mailstackPeopleDirectory) MailGrants(ctx context.Context, principalID string) ([]mailstack.MailGrant, error) {
+func (d mailstackPeopleDirectory) MailGrants(ctx context.Context, principalID string) ([]mail.MailGrant, error) {
 	effective, err := d.grants.Effective(ctx, d.directory, principalID, "", grants.ResourceTypeMailAccount)
 	if errors.Is(err, grants.ErrNotFound) {
-		return nil, mailstack.ErrPrincipalUnknown
+		return nil, mail.ErrPrincipalUnknown
 	}
 	if err != nil {
 		return nil, fmt.Errorf("the mail grants of %s: %w", principalID, err)
 	}
-	held := make([]mailstack.MailGrant, 0, len(effective))
+	held := make([]mail.MailGrant, 0, len(effective))
 	for _, grant := range effective {
-		held = append(held, mailstack.MailGrant{Relation: grant.Relation, AccountID: grant.ResourceID})
+		held = append(held, mail.MailGrant{Relation: grant.Relation, AccountID: grant.ResourceID})
 	}
 	return held, nil
 }

@@ -23,18 +23,18 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/agents/skills"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/tools"
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/operations"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
+	"github.com/kayushkin/llm-bridge-server/internal/filestorage/files"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
 	"github.com/kayushkin/llm-bridge-server/internal/keepawake"
-	harnessstore "github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore"
-	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack"
+	"github.com/kayushkin/llm-bridge-server/internal/machines"
+	"github.com/kayushkin/llm-bridge-server/internal/mail"
 	"github.com/kayushkin/llm-bridge-server/internal/mailstackclient"
-	"github.com/kayushkin/llm-bridge-server/internal/operations"
-	"github.com/kayushkin/llm-bridge-server/internal/references/referencestore"
+	"github.com/kayushkin/llm-bridge-server/internal/references"
 	"github.com/kayushkin/llm-bridge-server/internal/serviceinventory"
-	snapshotstore "github.com/kayushkin/llm-bridge-server/internal/sessions/snapshotstore"
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/snapshots"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	noteboardapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/api"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/predictions"
@@ -43,7 +43,7 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 
-	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/runnerprotocol"
+	"github.com/kayushkin/llm-bridge-server/internal/machines/runnerprotocol"
 )
 
 // autoResumeWindow caps how recently a session must have been active (by
@@ -68,10 +68,10 @@ type Server struct {
 	store          *store.Store
 	agentStore     *agents.Store
 	memoryStore    *memories.Store
-	harnessStore   *harnessstore.Store
+	harnessStore   *machines.Store
 	hookStore      *hooks.Store
 	modelStore     *models.Store
-	snapshotStore  *snapshotstore.Store
+	snapshotStore  *snapshots.Store
 	// predictionStore answers /prediction-store/ once the Postgres module is
 	// open (prediction_store_routes.go); nil answers those routes 503.
 	predictionStore atomic.Pointer[predictions.Handlers]
@@ -150,7 +150,7 @@ type Server struct {
 	kanbanStore atomic.Pointer[kanbanStoreHandlers]
 
 	// mailstack answers /mailstack/ once EnableMailstack has run.
-	mailstack atomic.Pointer[mailstack.Server]
+	mailstack atomic.Pointer[mail.Server]
 	// fileStore keeps the bytes of files shared into sessions: the file-store
 	// module in this process, called in Go. Nil until EnableFileStore, which
 	// switches session files off.
@@ -158,13 +158,13 @@ type Server struct {
 	// fileStoreCalls is the same module as the other modules in this process
 	// call it (kanban-store's and mailstack's attachments, activity-store's);
 	// nil until EnableFileStore.
-	fileStoreCalls atomic.Pointer[filestore.Server]
+	fileStoreCalls atomic.Pointer[files.Server]
 	// The repositories, file_storage and references modules
 	// (repositories_references_routes.go); nil answers their routes 503.
 	repositories          atomic.Pointer[repositoryStores]
 	fileStoreHandler      atomic.Pointer[mountedStore]
 	referenceStoreHandler atomic.Pointer[mountedStore]
-	referenceResolver     atomic.Pointer[referencestore.Resolver]
+	referenceResolver     atomic.Pointer[references.Resolver]
 	// connectedRecords answers /people-store/, /calendar-store/ and
 	// /journal-store/ once EnableConnectedRecords has run
 	// (connected_records_routes.go); nil answers them 503.
@@ -185,7 +185,7 @@ type Server struct {
 	possessions atomic.Pointer[possessionStores]
 	// fileStoreModule is the file-store module EnableFileStore was given:
 	// photo-store keeps its thumbnails' bytes there, called in Go.
-	fileStoreModule atomic.Pointer[filestore.Store]
+	fileStoreModule atomic.Pointer[files.Store]
 	// repoRegistryForDeploys is repo-store as a deploy action reads it; nil
 	// until EnableRepositories, which refuses deploy actions.
 	repoRegistryForDeploys repoRegistry
@@ -248,7 +248,7 @@ type Server struct {
 	chatLinks *chatLinks
 }
 
-func New(st *store.Store, as *agents.Store, ms *memories.Store, hs *harnessstore.Store, hks *hooks.Store, mds *models.Store, ss *snapshotstore.Store, cfg *config.Config) *Server {
+func New(st *store.Store, as *agents.Store, ms *memories.Store, hs *machines.Store, hks *hooks.Store, mds *models.Store, ss *snapshots.Store, cfg *config.Config) *Server {
 	authClient := authstoreclient.New("", "", "llm-bridge-server")
 	hub := newSessionHub(st)
 	// The chat-page response cache and the SSE hub both need session-row mutation
@@ -365,7 +365,7 @@ func (s *Server) syncHarnessTypes() {
 	}
 	for _, h := range allHarnesses {
 		meta := harnessMetadata[h]
-		if err := s.harnessStore.UpsertHarnessType(&harnessstore.HarnessType{
+		if err := s.harnessStore.UpsertHarnessType(&machines.HarnessType{
 			Name:  h,
 			Label: meta.Label,
 			Emoji: meta.Emoji,
@@ -1437,7 +1437,7 @@ func (s *Server) authorizeRunnerRequest(r *http.Request) bool {
 	if token == "" {
 		return false
 	}
-	_, err := s.harnessStore.GetMachineByRunnerTokenHash(harnessstore.HashRunnerToken(token))
+	_, err := s.harnessStore.GetMachineByRunnerTokenHash(machines.HashRunnerToken(token))
 	return err == nil
 }
 

@@ -10,10 +10,10 @@ import (
 	"os"
 
 	"github.com/kayushkin/llm-bridge-server/internal/agents/hooks"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/operationstore"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore"
-	"github.com/kayushkin/llm-bridge-server/internal/operationstore"
-	"github.com/kayushkin/llm-bridge-server/internal/sessions/snapshotstore"
+	"github.com/kayushkin/llm-bridge-server/internal/machines"
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/snapshots"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 )
 
@@ -22,9 +22,9 @@ import (
 // (hooks), snapshot-store (snapshots, with its blobs still in the git folder
 // snapshot_store.git_path names) and the operations queue (operations).
 type bridgeOwnStores struct {
-	harnesses  *harnessstore.Store
+	harnesses  *machines.Store
 	hooks      *hooks.Store
-	snapshots  *snapshotstore.Store
+	snapshots  *snapshots.Store
 	operations *operationstore.Store
 	pools      []*sql.DB
 }
@@ -57,10 +57,10 @@ func openBridgeOwnStoreModules(ctx context.Context, cfg *config.Config) *bridgeO
 		stores.pools = append(stores.pools, db)
 		return db
 	}
-	stores.harnesses = harnessstore.New(open("harness-store", harnessstore.Module))
+	stores.harnesses = machines.New(open("harness-store", machines.Module))
 	stores.hooks = hooks.New(open("hook-store", hooks.Module))
 	var err error
-	stores.snapshots, err = snapshotstore.New(open("snapshot-store", snapshotstore.Module), snapshotstore.Config{GitDir: cfg.SnapshotStoreGit})
+	stores.snapshots, err = snapshots.New(open("snapshot-store", snapshots.Module), snapshots.Config{GitDir: cfg.SnapshotStoreGit})
 	if err != nil {
 		stores.close()
 		log.Fatalf("snapshot-store: %v", err)
@@ -118,16 +118,16 @@ func importBridgeOwnStoreCmd(command string, args []string, describe func() (pos
 func runBridgeOwnStoreImportCommand(command string, args []string) bool {
 	switch command {
 	case "import-harness-store":
-		importBridgeOwnStoreCmd(command, args, harnessstore.Module, func(ctx context.Context, db *sql.DB, path string) (any, error) {
-			return harnessstore.ImportStandaloneDatabase(ctx, db, path)
+		importBridgeOwnStoreCmd(command, args, machines.Module, func(ctx context.Context, db *sql.DB, path string) (any, error) {
+			return machines.ImportStandaloneDatabase(ctx, db, path)
 		})
 	case "import-hook-store":
 		importBridgeOwnStoreCmd(command, args, hooks.Module, func(ctx context.Context, db *sql.DB, path string) (any, error) {
 			return hooks.ImportStandaloneDatabase(ctx, db, path)
 		})
 	case "import-snapshot-store":
-		importBridgeOwnStoreCmd(command, args, snapshotstore.Module, func(ctx context.Context, db *sql.DB, path string) (any, error) {
-			return snapshotstore.ImportStandaloneDatabase(ctx, db, path)
+		importBridgeOwnStoreCmd(command, args, snapshots.Module, func(ctx context.Context, db *sql.DB, path string) (any, error) {
+			return snapshots.ImportStandaloneDatabase(ctx, db, path)
 		})
 	case "import-operations":
 		importBridgeOwnStoreCmd(command, args, operationstore.Module, func(ctx context.Context, db *sql.DB, path string) (any, error) {

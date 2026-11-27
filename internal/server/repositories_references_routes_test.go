@@ -13,10 +13,10 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
-	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
-	"github.com/kayushkin/llm-bridge-server/internal/references/referencestore"
-	"github.com/kayushkin/llm-bridge-server/internal/repositories/repostore"
-	"github.com/kayushkin/llm-bridge-server/internal/repositories/workgraphstore"
+	"github.com/kayushkin/llm-bridge-server/internal/filestorage/files"
+	"github.com/kayushkin/llm-bridge-server/internal/references"
+	"github.com/kayushkin/llm-bridge-server/internal/repositories/gitactivity"
+	"github.com/kayushkin/llm-bridge-server/internal/repositories/repos"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 )
 
@@ -25,52 +25,52 @@ import (
 // holds can_see_references on the repo type, and the first holds nothing.
 type testReferenceAccess struct{}
 
-func (testReferenceAccess) Standing(_ context.Context, principalID string) (referencestore.PrincipalStanding, error) {
-	return referencestore.PrincipalStanding{IsAdministrator: principalID == administratorTestPrincipalID}, nil
+func (testReferenceAccess) Standing(_ context.Context, principalID string) (references.PrincipalStanding, error) {
+	return references.PrincipalStanding{IsAdministrator: principalID == administratorTestPrincipalID}, nil
 }
 
-func (testReferenceAccess) Grants(_ context.Context, principalID string) ([]referencestore.HeldGrant, error) {
+func (testReferenceAccess) Grants(_ context.Context, principalID string) ([]references.HeldGrant, error) {
 	if principalID != secondTestPrincipalID {
 		return nil, nil
 	}
-	return []referencestore.HeldGrant{{Relation: referencestore.RelationCanSeeReferences, ResourceType: referencestore.ResourceTypeReferenceType, ResourceID: "repo"}}, nil
+	return []references.HeldGrant{{Relation: references.RelationCanSeeReferences, ResourceType: references.ResourceTypeReferenceType, ResourceID: "repo"}}, nil
 }
 
 // testRepositoryModules are the three modules' pools and stores a test
 // server serves.
 type testRepositoryModules struct {
 	repoStoreDB, workGraphStoreDB, fileStoreDB *sql.DB
-	repos                                      *repostore.Store
-	files                                      *filestore.Store
+	repos                                      *repos.Store
+	files                                      *files.Store
 }
 
 // enableRepositoriesAndReferencesOnTestDatabase opens repo-store,
 // work-graph-store and file-store on a Postgres database of the test's own,
 // builds reference-store over this server, and serves all four.
-func enableRepositoriesAndReferencesOnTestDatabase(t *testing.T, server *Server) *repostore.Store {
+func enableRepositoriesAndReferencesOnTestDatabase(t *testing.T, server *Server) *repos.Store {
 	return enableRepositoryModulesOnTestDatabase(t, server).repos
 }
 
 func enableRepositoryModulesOnTestDatabase(t *testing.T, server *Server) testRepositoryModules {
 	t.Helper()
-	repoModule, err := repostore.Module()
+	repoModule, err := repos.Module()
 	if err != nil {
 		t.Fatal(err)
 	}
-	workGraphModule, err := workgraphstore.Module()
+	workGraphModule, err := gitactivity.Module()
 	if err != nil {
 		t.Fatal(err)
 	}
-	fileModule, err := filestore.Module()
+	fileModule, err := files.Module()
 	if err != nil {
 		t.Fatal(err)
 	}
 	database := postgrestest.NewDatabase(t, repoModule, workGraphModule, fileModule)
 	modules := testRepositoryModules{repoStoreDB: database.Open(repoModule), workGraphStoreDB: database.Open(workGraphModule), fileStoreDB: database.Open(fileModule)}
-	repos := repostore.New(modules.repoStoreDB)
+	repos := repos.New(modules.repoStoreDB)
 	modules.repos = repos
-	server.EnableRepositories(repos, nil, "no gh in tests", workgraphstore.New(modules.workGraphStoreDB))
-	files, err := filestore.New(modules.fileStoreDB, t.TempDir())
+	server.EnableRepositories(repos, nil, "no gh in tests", gitactivity.New(modules.workGraphStoreDB))
+	files, err := files.New(modules.fileStoreDB, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,10 +78,10 @@ func enableRepositoryModulesOnTestDatabase(t *testing.T, server *Server) testRep
 		t.Fatal(err)
 	}
 	modules.files = files
-	if err := server.EnableReferenceStore(&referencestore.Resolver{
-		Types:       referencestore.Types,
-		Credentials: &referencestore.Credentials{HTTPClient: http.DefaultClient},
-		Access:      &referencestore.AccessChecker{Directory: testReferenceAccess{}, TTL: time.Minute},
+	if err := server.EnableReferenceStore(&references.Resolver{
+		Types:       references.Types,
+		Credentials: &references.Credentials{HTTPClient: http.DefaultClient},
+		Access:      &references.AccessChecker{Directory: testReferenceAccess{}, TTL: time.Minute},
 		HTTPClient:  http.DefaultClient,
 		InProcess:   server.InProcessReferenceReaders(),
 		RecordTTL:   time.Minute, MissTTL: time.Second, LookupTimeout: 5 * time.Second, Concurrency: 4,
@@ -132,7 +132,7 @@ func TestRepoStoreWorkGraphStoreAndFileStoreAreTheOperators(t *testing.T) {
 func TestSessionFilesGoToTheFileStoreModule(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
 	enableRepositoriesAndReferencesOnTestDatabase(t, gated.server)
-	stored, err := gated.server.fileStore.Accept(strings.NewReader("the bytes"), 9, "text/plain", filestore.NewFile{Filename: "note.txt", OwnerService: sessionFileOwnerService, OwnerRef: "br_files"})
+	stored, err := gated.server.fileStore.Accept(strings.NewReader("the bytes"), 9, "text/plain", files.NewFile{Filename: "note.txt", OwnerService: sessionFileOwnerService, OwnerRef: "br_files"})
 	if err != nil || stored.ID != "file_000001" || stored.SizeBytes != 9 {
 		t.Fatalf("upload: %v %+v", err, stored)
 	}
@@ -155,11 +155,11 @@ func TestSessionFilesGoToTheFileStoreModule(t *testing.T) {
 	if missing.Code != http.StatusNotFound || !strings.Contains(missing.Body.String(), `"error":"not found"`) {
 		t.Fatalf("an unknown file = %d %s", missing.Code, missing.Body)
 	}
-	var refusal *filestore.Refusal
-	if _, err := gated.server.fileStore.Accept(strings.NewReader("x"), 1, "text/plain", filestore.NewFile{Filename: "../x", OwnerService: sessionFileOwnerService, OwnerRef: "br_files"}); !errors.As(err, &refusal) || refusal.Status != http.StatusBadRequest {
+	var refusal *files.Refusal
+	if _, err := gated.server.fileStore.Accept(strings.NewReader("x"), 1, "text/plain", files.NewFile{Filename: "../x", OwnerService: sessionFileOwnerService, OwnerRef: "br_files"}); !errors.As(err, &refusal) || refusal.Status != http.StatusBadRequest {
 		t.Fatalf("a name with a path separator: %v", err)
 	}
-	if _, err := gated.server.fileStore.Accept(strings.NewReader("x"), 26*1024*1024, "text/plain", filestore.NewFile{Filename: "big", OwnerService: sessionFileOwnerService, OwnerRef: "br_files"}); !errors.As(err, &refusal) || refusal.Status != http.StatusRequestEntityTooLarge {
+	if _, err := gated.server.fileStore.Accept(strings.NewReader("x"), 26*1024*1024, "text/plain", files.NewFile{Filename: "big", OwnerService: sessionFileOwnerService, OwnerRef: "br_files"}); !errors.As(err, &refusal) || refusal.Status != http.StatusRequestEntityTooLarge {
 		t.Fatalf("a file over the limit: %v", err)
 	}
 	listed := gated.requestAsService(t, "GET", "/file-store/files?owner_service=llm-bridge-server&owner_ref=br_files")
@@ -171,7 +171,7 @@ func TestSessionFilesGoToTheFileStoreModule(t *testing.T) {
 	}
 }
 
-func resolveThroughTheServer(t *testing.T, gated *gatedTestServer, principalID string, ids ...string) (int, map[string][]referencestore.Match) {
+func resolveThroughTheServer(t *testing.T, gated *gatedTestServer, principalID string, ids ...string) (int, map[string][]references.Match) {
 	t.Helper()
 	body, _ := json.Marshal(map[string][]string{"ids": ids})
 	request := httptest.NewRequest(http.MethodPost, "/reference-store/resolve", strings.NewReader(string(body)))
@@ -182,8 +182,8 @@ func resolveThroughTheServer(t *testing.T, gated *gatedTestServer, principalID s
 	}
 	response := serve(gated.server, request)
 	var answer struct {
-		Results map[string][]referencestore.Match `json:"results"`
-		Errors  []referencestore.LookupError      `json:"errors"`
+		Results map[string][]references.Match `json:"results"`
+		Errors  []references.LookupError      `json:"errors"`
 	}
 	if response.Code == http.StatusOK {
 		if err := json.Unmarshal(response.Body.Bytes(), &answer); err != nil {
@@ -202,8 +202,8 @@ func resolveThroughTheServer(t *testing.T, gated *gatedTestServer, principalID s
 // stores in this process.
 func TestReferenceStoreResolvesInProcessAsTheCaller(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
-	repos := enableRepositoriesAndReferencesOnTestDatabase(t, gated.server)
-	if _, err := repos.UpsertRepo(&repostore.Repo{Name: "webapp", GitRemote: "git@github.com:example-owner/webapp.git"}); err != nil {
+	repoStore := enableRepositoriesAndReferencesOnTestDatabase(t, gated.server)
+	if _, err := repoStore.UpsertRepo(&repos.Repo{Name: "webapp", GitRemote: "git@github.com:example-owner/webapp.git"}); err != nil {
 		t.Fatal(err)
 	}
 	if response := gated.requestAs(t, nil, "GET", "/reference-store/types/repo", nil); response.Code != http.StatusOK {
@@ -241,11 +241,11 @@ func TestReferenceStoreResolvesInProcessAsTheCaller(t *testing.T) {
 // readers pass the check EnableReferenceStore makes at start.
 func TestEveryInProcessReferenceTypeHasAReader(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
-	if err := referencestore.ValidateInProcessReaders(referencestore.Types, gated.server.InProcessReferenceReaders()); err != nil {
+	if err := references.ValidateInProcessReaders(references.Types, gated.server.InProcessReferenceReaders()); err != nil {
 		t.Fatal(err)
 	}
 	inProcessTypes := 0
-	for _, row := range referencestore.Types {
+	for _, row := range references.Types {
 		if slices.Contains(InProcessReferenceServices, row.Service) && row.Get != "" {
 			inProcessTypes++
 		}
@@ -259,8 +259,8 @@ func TestEveryInProcessReferenceTypeHasAReader(t *testing.T) {
 // this process.
 func TestAGrantOnAReferenceIsCheckedInProcess(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
-	repos := enableRepositoriesAndReferencesOnTestDatabase(t, gated.server)
-	if _, err := repos.UpsertRepo(&repostore.Repo{Name: "webapp"}); err != nil {
+	repoStore := enableRepositoriesAndReferencesOnTestDatabase(t, gated.server)
+	if _, err := repoStore.UpsertRepo(&repos.Repo{Name: "webapp"}); err != nil {
 		t.Fatal(err)
 	}
 	checker := inProcessResourceChecker{server: gated.server}

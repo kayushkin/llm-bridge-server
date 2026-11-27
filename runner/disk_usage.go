@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
-	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/runnerprotocol"
+	"github.com/kayushkin/llm-bridge-server/internal/machines/runnerprotocol"
 	"github.com/kayushkin/llm-bridge-server/runner/internal/diskusage"
 	"github.com/kayushkin/llm-bridge/msg"
 )

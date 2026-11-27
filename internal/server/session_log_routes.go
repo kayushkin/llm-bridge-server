@@ -6,7 +6,7 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/inprocesshttp"
-	"github.com/kayushkin/llm-bridge-server/internal/sessionlog/sessionevents"
+	"github.com/kayushkin/llm-bridge-server/internal/sessionlog"
 )
 
 // The session event log, moved in from the standalone log-store: its routes
@@ -43,7 +43,7 @@ func (s *Server) EnableSessionLog(handler http.Handler, events harness.SessionEv
 // recovery, the renamer, the brief pass, the reaper and wakeup redelivery:
 // the session log, the only copy. main calls it once, after EnableSessionLog
 // and before any session starts or resumes.
-func (s *Server) UseSessionEventStore(events sessionevents.Store) {
+func (s *Server) UseSessionEventStore(events sessionlog.Store) {
 	s.harness.SetSessionEventStore(events)
 }
 

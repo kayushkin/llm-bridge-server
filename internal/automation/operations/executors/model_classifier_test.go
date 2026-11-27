@@ -1,0 +1,256 @@
+package executors_test
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelrouting"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/operations"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/executors"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/executors/executorstest"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/operationstore"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/operationstore/operationstoretest"
+	"github.com/kayushkin/llm-bridge/msg"
+)
+
+var boardTaxonomy = msg.ClassificationTaxonomy{Name: "logistics-support", Domain: "support mail to a logistics company", Axes: []msg.ClassificationAxis{
+	{Name: "category", Required: true, Values: []msg.ClassificationValue{{Name: "delivery"}, {Name: "invoice"}}},
+	{Name: "urgency", Values: []msg.ClassificationValue{{Name: "today"}}},
+	{Name: "topics", AllowMultiple: true, Values: []msg.ClassificationValue{{Name: "pallet"}, {Name: "customs"}}},
+}}
+
+type classifierHarness struct {
+	store       *operationstore.Store
+	coordinator *operations.Coordinator
+}
+
+func newClassifierHarness(t *testing.T, caller executors.OneShotCaller, taxonomies executors.TaxonomyReader) *classifierHarness {
+	t.Helper()
+	store := operationstoretest.NewStore(t)
+	coordinator, err := operations.NewCoordinator(store, operations.Config{WorkerCount: 1, LeaseDuration: 3 * time.Second, LeaseOwner: "test",
+		ModelListPrice: listPrice}, executors.ModelClassifier{Caller: caller, Taxonomies: taxonomies})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &classifierHarness{store: store, coordinator: coordinator}
+}
+
+func (h *classifierHarness) classify(t *testing.T, principalID string, input msg.ClassificationRunInput) msg.OperationReceipt {
+	t.Helper()
+	encoded, _ := json.Marshal(input)
+	receipt, _, err := h.coordinator.Submit(msg.OperationIntent{Type: msg.OperationTypeClassificationRun, OrganizationID: "principal_000006",
+		PrincipalID: principalID, IdempotencyKey: fmt.Sprint(time.Now().UnixNano()), Input: encoded})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		ran, err := h.coordinator.RunNext(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ran {
+			break
+		}
+	}
+	operation, err := h.store.Get(receipt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return operation.Receipt
+}
+
+func decodeClassification(t *testing.T, receipt msg.OperationReceipt) msg.ClassificationRunResult {
+	t.Helper()
+	var result msg.ClassificationRunResult
+	if err := json.Unmarshal(receipt.Result, &result); err != nil {
+		t.Fatalf("result of %s (%s, %+v): %v", receipt.ID, receipt.State, receipt.Error, err)
+	}
+	return result
+}
+
+func TestABoardsTaxonomyIsReadAsTheOperationsPrincipalAndRecorded(t *testing.T) {
+	caller := &executorstest.FakeOneShot{InstanceID: "inst", DefaultModel: "claude-haiku-4-5", Usage: msg.TokenUsage{InputTokens: 100, OutputTokens: 10}}
+	taxonomies := executorstest.FakeTaxonomies{
+		Boards:         map[string]*msg.ClassificationTaxonomy{"board-support": &boardTaxonomy, "board-empty": nil},
+		ViewersByBoard: map[string][]string{"board-support": {"principal_000004"}},
+	}
+	h := newClassifierHarness(t, caller, taxonomies)
+	items := []msg.ClassificationItem{{ID: "m1", Text: "Pallet stuck in customs, need delivery today"}}
+
+	receipt := h.classify(t, "principal_000004", msg.ClassificationRunInput{TaxonomyBoardID: "board-support", Items: items})
+	result := decodeClassification(t, receipt)
+	values := result.Items[0].Values
+	if receipt.State != msg.OperationStateSucceeded || result.Taxonomy.Name != "logistics-support" ||
+		result.TaxonomySource == nil || result.TaxonomySource.EntityID != "board-support" || result.TaxonomySource.Version == "" ||
+		strings.Join(values["category"], ",") != "delivery" || strings.Join(values["urgency"], ",") != "today" {
+		t.Fatalf("receipt %s %+v result %+v", receipt.State, receipt.Error, result)
+	}
+	if !strings.Contains(caller.Calls()[0].SystemPrompt, "support mail to a logistics company") {
+		t.Fatalf("the taxonomy's domain did not reach the model:\n%s", caller.Calls()[0].SystemPrompt)
+	}
+	var sawSource bool
+	for _, evidence := range receipt.Evidence {
+		sawSource = sawSource || evidence.Kind == "taxonomy_source"
+	}
+	if !sawSource || receipt.Usage == nil || receipt.Usage.Calls != 1 {
+		t.Fatalf("evidence %+v usage %+v", receipt.Evidence, receipt.Usage)
+	}
+
+	for _, check := range []struct{ principal, board, code string }{
+		{"principal_000099", "board-support", "taxonomy_board_not_found"},
+		{"principal_000004", "board-missing", "taxonomy_board_not_found"},
+		{"principal_000004", "board-empty", "board_has_no_taxonomy"},
+	} {
+		refused := h.classify(t, check.principal, msg.ClassificationRunInput{TaxonomyBoardID: check.board, Items: items})
+		if refused.State != msg.OperationStateFailed || refused.Error.Code != check.code {
+			t.Errorf("%s on %s: %s %+v, want failed %s", check.principal, check.board, refused.State, refused.Error, check.code)
+		}
+	}
+}
+
+func TestArchivedAxesAndValuesAreNeverOfferedToTheModel(t *testing.T) {
+	caller := &executorstest.FakeOneShot{InstanceID: "inst", DefaultModel: "claude-haiku-4-5", Usage: msg.TokenUsage{InputTokens: 100, OutputTokens: 10}}
+	withRetired := boardTaxonomy
+	withRetired.Axes = append([]msg.ClassificationAxis(nil), boardTaxonomy.Axes...)
+	withRetired.Axes[0].Values = append(append([]msg.ClassificationValue(nil), boardTaxonomy.Axes[0].Values...),
+		msg.ClassificationValue{Name: "retired-freight-class", Description: "no longer used", Archived: true})
+	withRetired.Axes = append(withRetired.Axes, msg.ClassificationAxis{Name: "retired-axis", Archived: true,
+		Values: []msg.ClassificationValue{{Name: "gone"}}})
+	h := newClassifierHarness(t, caller, executorstest.FakeTaxonomies{Boards: map[string]*msg.ClassificationTaxonomy{"board-support": &withRetired}})
+
+	receipt := h.classify(t, "principal_000004", msg.ClassificationRunInput{TaxonomyBoardID: "board-support",
+		Items: []msg.ClassificationItem{{ID: "m1", Text: "Pallet stuck in customs"}}})
+	if receipt.State != msg.OperationStateSucceeded {
+		t.Fatalf("receipt %s %+v", receipt.State, receipt.Error)
+	}
+	call := caller.Calls()[0]
+	for _, retired := range []string{"retired-freight-class", "retired-axis"} {
+		if strings.Contains(call.SystemPrompt, retired) || strings.Contains(string(call.Schema), retired) {
+			t.Fatalf("%s reached the model", retired)
+		}
+	}
+	result := decodeClassification(t, receipt)
+	if _, present := result.Items[0].Values["retired-axis"]; present || len(result.Taxonomy.Axes) != len(boardTaxonomy.Axes) {
+		t.Fatalf("the result carries the archived axis: %+v", result)
+	}
+}
+
+func TestItemsGoToTheModelInBatches(t *testing.T) {
+	caller := &executorstest.FakeOneShot{InstanceID: "inst", DefaultModel: "m"}
+	h := newClassifierHarness(t, caller, executorstest.FakeTaxonomies{})
+	items := make([]msg.ClassificationItem, 45)
+	for index := range items {
+		items[index] = msg.ClassificationItem{ID: fmt.Sprintf("m%02d", index), Text: "an invoice"}
+	}
+	receipt := h.classify(t, "", msg.ClassificationRunInput{Taxonomy: &boardTaxonomy, Items: items})
+	result := decodeClassification(t, receipt)
+	if len(caller.Calls()) != 3 || len(result.Items) != 45 || receipt.Progress.Completed != 45 || result.Items[44].ID != "m44" {
+		t.Fatalf("calls %d items %d progress %+v", len(caller.Calls()), len(result.Items), receipt.Progress)
+	}
+}
+
+// scriptedAnswer answers every call with the same parsed JSON.
+type scriptedAnswer struct{ parsed string }
+
+func (s scriptedAnswer) OneShotRoute(string) (modelrouting.Route, error) {
+	return modelrouting.Route{Requested: "m", Candidates: []modelrouting.Candidate{{ModelID: "m", Provider: "test"}}}, nil
+}
+func (s scriptedAnswer) RunOneShotRoute(context.Context, modelrouting.Route, msg.OneShotRequest, func(modelrouting.Candidate) string) (msg.OneShotResponse, error) {
+	return msg.OneShotResponse{Parsed: json.RawMessage(s.parsed), Model: "m", InstanceID: "inst"}, nil
+}
+
+func TestAnswersOutsideTheTaxonomyAreDroppedAndMarkedForReview(t *testing.T) {
+	h := newClassifierHarness(t, scriptedAnswer{`{"items":[
+		{"id":"m1","values":{"category":["refund"],"urgency":["today"],"topics":["pallet","pallet","customs"]},"confidence":1.4,"rationale":"x"},
+		{"id":"m2","values":{"category":["delivery","invoice"],"urgency":[],"topics":[]},"confidence":0.5,"rationale":"y"}]}`}, executorstest.FakeTaxonomies{})
+	receipt := h.classify(t, "", msg.ClassificationRunInput{Taxonomy: &boardTaxonomy, Items: []msg.ClassificationItem{
+		{ID: "m1", Text: "a"}, {ID: "m2", Text: "b"}, {ID: "m3", Text: "c"}}})
+	result := decodeClassification(t, receipt)
+	first, second, third := result.Items[0], result.Items[1], result.Items[2]
+	kinds := func(item msg.ClassificationItemResult) string {
+		var names []string
+		for _, evidence := range item.Evidence {
+			names = append(names, evidence.Kind)
+		}
+		return strings.Join(names, ",")
+	}
+	if !first.NeedsReview || len(first.Values["category"]) != 0 || strings.Join(first.Values["topics"], ",") != "customs,pallet" ||
+		first.Confidence != 1 || kinds(first) != "rejected_value,required_axis_empty" {
+		t.Fatalf("first %+v evidence %s", first, kinds(first))
+	}
+	if !second.NeedsReview || kinds(second) != "too_many_values" {
+		t.Fatalf("second %+v evidence %s", second, kinds(second))
+	}
+	if !third.NeedsReview || kinds(third) != "no_answer" || third.Values["category"] == nil {
+		t.Fatalf("third %+v evidence %s", third, kinds(third))
+	}
+}
+
+func TestAnAnswerNamingAnItemNotAskedAboutIsNotTrusted(t *testing.T) {
+	h := newClassifierHarness(t, scriptedAnswer{`{"items":[{"id":"stranger","values":{},"confidence":1,"rationale":""}]}`}, executorstest.FakeTaxonomies{})
+	receipt := h.classify(t, "", msg.ClassificationRunInput{Taxonomy: &boardTaxonomy, Items: []msg.ClassificationItem{{ID: "m1", Text: "a"}}})
+	if receipt.State != msg.OperationStateFailed || receipt.Error.Code != "schema_not_followed" || !receipt.Error.Retryable || receipt.Attempt != 2 {
+		t.Fatalf("state %s error %+v attempt %d", receipt.State, receipt.Error, receipt.Attempt)
+	}
+}
+
+func TestClassificationInputIsChecked(t *testing.T) {
+	h := newClassifierHarness(t, scriptedAnswer{}, executorstest.FakeTaxonomies{})
+	taxonomy := `{"name":"t","axes":[{"name":"a","values":[{"name":"b"}]}]}`
+	for name, raw := range map[string]string{
+		"both":             `{"taxonomy":` + taxonomy + `,"taxonomy_board_id":"b","items":[{"id":"1","text":"x"}]}`,
+		"neither":          `{"items":[{"id":"1","text":"x"}]}`,
+		"invalid taxonomy": `{"taxonomy":{"name":"t","axes":[]},"items":[{"id":"1","text":"x"}]}`,
+		"no items":         `{"taxonomy":` + taxonomy + `,"items":[]}`,
+		"repeated id":      `{"taxonomy":` + taxonomy + `,"items":[{"id":"1","text":"x"},{"id":"1","text":"y"}]}`,
+		"empty text":       `{"taxonomy":` + taxonomy + `,"items":[{"id":"1","text":" "}]}`,
+	} {
+		_, _, err := h.coordinator.Submit(msg.OperationIntent{Type: msg.OperationTypeClassificationRun, OrganizationID: "o", IdempotencyKey: name, Input: json.RawMessage(raw)})
+		var intentError *operations.IntentError
+		if !errors.As(err, &intentError) || intentError.Code != "invalid_input" {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+func TestClassificationStopsBeforeAModelCallWhenTheBudgetIsSpent(t *testing.T) {
+	caller := &executorstest.FakeOneShot{InstanceID: "inst", DefaultModel: "claude-haiku-4-5"}
+	h := newClassifierHarness(t, caller, executorstest.FakeTaxonomies{})
+	if err := h.store.SetOrganizationBudget("principal_000006", 0, "", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	// Submitting is refused outright once the month is spent.
+	encoded, _ := json.Marshal(msg.ClassificationRunInput{Taxonomy: &boardTaxonomy, Items: []msg.ClassificationItem{{ID: "m1", Text: "a"}}})
+	_, _, err := h.coordinator.Submit(msg.OperationIntent{Type: msg.OperationTypeClassificationRun, OrganizationID: "principal_000006", IdempotencyKey: "k", Input: encoded})
+	var budgetError *operations.BudgetError
+	if !errors.As(err, &budgetError) || len(caller.Calls()) != 0 {
+		t.Fatalf("submit under a spent budget: %v, %d calls", err, len(caller.Calls()))
+	}
+}
+
+func TestClassificationPreservesTheEntireItemText(t *testing.T) {
+	caller := &executorstest.FakeOneShot{InstanceID: "inst", DefaultModel: "claude-haiku-4-5"}
+	h := newClassifierHarness(t, caller, executorstest.FakeTaxonomies{})
+	text := "  " + strings.Repeat("界\n", 3000) + "invoice\t "
+	receipt := h.classify(t, "principal_000004", msg.ClassificationRunInput{Taxonomy: &boardTaxonomy, Items: []msg.ClassificationItem{{ID: "long-mail", Text: text}}})
+	result := decodeClassification(t, receipt)
+	if receipt.State != msg.OperationStateSucceeded || strings.Join(result.Items[0].Values["category"], ",") != "invoice" {
+		t.Fatalf("classification lost the instruction-relevant tail: %+v", result)
+	}
+	calls := caller.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("calls = %d", len(calls))
+	}
+	var items []msg.ClassificationItem
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(calls[0].Prompt, "Classify these items:\n")), &items); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Text != text {
+		t.Fatal("item text changed in transit")
+	}
+}

@@ -18,11 +18,11 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/agents/hooks"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/operations"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/operationstore"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore"
-	"github.com/kayushkin/llm-bridge-server/internal/operations"
-	"github.com/kayushkin/llm-bridge-server/internal/operationstore"
-	"github.com/kayushkin/llm-bridge-server/internal/sessions/snapshotstore"
+	"github.com/kayushkin/llm-bridge-server/internal/machines"
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/snapshots"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 	_ "modernc.org/sqlite"
 )
@@ -81,7 +81,7 @@ func TestTheImportedBridgeOwnStoresAnswerAsTheLiveServer(t *testing.T) {
 	liveToken := strings.TrimSpace(string(tokenBytes))
 	ctx := context.Background()
 
-	harnessModule, err := harnessstore.Module()
+	harnessModule, err := machines.Module()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestTheImportedBridgeOwnStoresAnswerAsTheLiveServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshotModule, err := snapshotstore.Module()
+	snapshotModule, err := snapshots.Module()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,10 +100,10 @@ func TestTheImportedBridgeOwnStoresAnswerAsTheLiveServer(t *testing.T) {
 	database := postgrestest.NewDatabase(t, harnessModule, hookModule, snapshotModule, operationModule)
 	harnessDB, hookDB, snapshotDB, operationDB := database.Open(harnessModule), database.Open(hookModule), database.Open(snapshotModule), database.Open(operationModule)
 	for name, run := range map[string]func() (any, error){
-		"harness-store": func() (any, error) { return harnessstore.ImportStandaloneDatabase(ctx, harnessDB, *harnessStoreCopy) },
+		"harness-store": func() (any, error) { return machines.ImportStandaloneDatabase(ctx, harnessDB, *harnessStoreCopy) },
 		"hook-store":    func() (any, error) { return hooks.ImportStandaloneDatabase(ctx, hookDB, *hookStoreCopy) },
 		"snapshot-store": func() (any, error) {
-			return snapshotstore.ImportStandaloneDatabase(ctx, snapshotDB, *snapshotStoreCopy)
+			return snapshots.ImportStandaloneDatabase(ctx, snapshotDB, *snapshotStoreCopy)
 		},
 		"operations": func() (any, error) { return operationstore.ImportStandaloneDatabase(ctx, operationDB, *operationsCopy) },
 	} {
@@ -117,13 +117,13 @@ func TestTheImportedBridgeOwnStoresAnswerAsTheLiveServer(t *testing.T) {
 
 	directory := t.TempDir()
 	bridgeStore := newTestBridgeStore(t)
-	snapshots, err := snapshotstore.New(snapshotDB, snapshotstore.Config{GitDir: filepath.Join(directory, "snapshots.git")})
+	snapshotStore, err := snapshots.New(snapshotDB, snapshots.Config{GitDir: filepath.Join(directory, "snapshots.git")})
 	if err != nil {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{ImagesDir: filepath.Join(directory, "images"), BridgePrefsPath: filepath.Join(directory, "prefs.json")}
 	testAuthorizationConfig(cfg)
-	srv := New(bridgeStore, nil, nil, harnessstore.New(harnessDB), hooks.New(hookDB), nil, snapshots, cfg)
+	srv := New(bridgeStore, nil, nil, machines.New(harnessDB), hooks.New(hookDB), nil, snapshotStore, cfg)
 	operationStore := operationstore.New(operationDB)
 	coordinator, err := operations.NewCoordinator(operationStore, operations.Config{WorkerCount: 1, LeaseDuration: time.Minute, LeaseOwner: "import check"})
 	if err != nil {
@@ -254,7 +254,7 @@ func TestTheImportedBridgeOwnStoresAnswerAsTheLiveServer(t *testing.T) {
 	defer source.Close()
 	for _, call := range snapshotCalls {
 		sessionID, toolUseID, _ := strings.Cut(call, "\t")
-		importedRows, err := snapshots.Get(sessionID, toolUseID)
+		importedRows, err := snapshotStore.Get(sessionID, toolUseID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -263,19 +263,19 @@ func TestTheImportedBridgeOwnStoresAnswerAsTheLiveServer(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := map[string]snapshotstore.Snapshot{}
+		want := map[string]snapshots.Snapshot{}
 		for rows.Next() {
-			var snapshot snapshotstore.Snapshot
+			var snapshot snapshots.Snapshot
 			var phase string
 			if err := rows.Scan(&phase, &snapshot.FilePath, &snapshot.BlobSHA, &snapshot.Size, &snapshot.IsBinary, &snapshot.TooLarge, &snapshot.Missing, &snapshot.CreatedAt); err != nil {
 				t.Fatal(err)
 			}
-			snapshot.SessionID, snapshot.ToolUseID, snapshot.Phase = sessionID, toolUseID, snapshotstore.Phase(phase)
+			snapshot.SessionID, snapshot.ToolUseID, snapshot.Phase = sessionID, toolUseID, snapshots.Phase(phase)
 			snapshot.CreatedAt = snapshot.CreatedAt.UTC().Truncate(time.Microsecond)
 			want[phase+"\t"+snapshot.FilePath] = snapshot
 		}
 		rows.Close()
-		got := map[string]snapshotstore.Snapshot{}
+		got := map[string]snapshots.Snapshot{}
 		for _, snapshot := range importedRows {
 			got[string(snapshot.Phase)+"\t"+snapshot.FilePath] = snapshot
 		}

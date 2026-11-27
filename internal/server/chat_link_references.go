@@ -28,7 +28,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	"github.com/kayushkin/llm-bridge-server/internal/references/referencestore"
+	"github.com/kayushkin/llm-bridge-server/internal/references"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 )
 
@@ -46,7 +46,7 @@ type chatLinkReferencePatterns struct {
 	fetchedAt    time.Time
 }
 
-func (p *chatLinkReferencePatterns) get(types []referencestore.ReferenceType, now time.Time) (*regexp.Regexp, map[string]bool, error) {
+func (p *chatLinkReferencePatterns) get(types []references.ReferenceType, now time.Time) (*regexp.Regexp, map[string]bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.pattern != nil && now.Sub(p.fetchedAt) < chatLinkReferencePatternsLifetime {
@@ -189,9 +189,9 @@ type linkedReference struct {
 // pictureOfReferenceAs asks reference-store for a picture of the record, as
 // principalID. A record with none, or one the principal may not see, is no
 // picture, not a failure.
-func pictureOfReferenceAs(ctx context.Context, resolver *referencestore.Resolver, principalID, id string) (chatLinkFile, bool, error) {
-	contentType, data, err := resolver.Attachment(ctx, referencestore.Caller{PrincipalID: principalID}, id)
-	if errors.Is(err, referencestore.ErrNoAttachment) {
+func pictureOfReferenceAs(ctx context.Context, resolver *references.Resolver, principalID, id string) (chatLinkFile, bool, error) {
+	contentType, data, err := resolver.Attachment(ctx, references.Caller{PrincipalID: principalID}, id)
+	if errors.Is(err, references.ErrNoAttachment) {
 		return chatLinkFile{}, false, nil
 	}
 	if err != nil {
@@ -299,8 +299,8 @@ func referencePageForChat(pageURL, id, pageBaseURL string) string {
 // resolveReferencesAs asks reference-store what each id names, as
 // principalID. A store that could not answer is logged and its ids stay as
 // written, as when reference-store ran apart and listed it in errors.
-func resolveReferencesAs(ctx context.Context, resolver *referencestore.Resolver, principalID string, ids []string) (map[string][]referenceMatch, error) {
-	results, lookupErrors := resolver.Resolve(ctx, referencestore.Caller{PrincipalID: principalID}, ids)
+func resolveReferencesAs(ctx context.Context, resolver *references.Resolver, principalID string, ids []string) (map[string][]referenceMatch, error) {
+	results, lookupErrors := resolver.Resolve(ctx, references.Caller{PrincipalID: principalID}, ids)
 	for _, lookupError := range lookupErrors {
 		log.Printf("[chat-links] ERROR: reference-store could not say what %s names as %s (%s): %s", lookupError.ID, lookupError.Type, principalID, lookupError.Error)
 	}

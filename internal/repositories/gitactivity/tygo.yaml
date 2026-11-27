@@ -1,0 +1,13 @@
+# TypeScript types generated from this store's Go wire types. The Go structs
+# are the source of truth; ts/ is a render of them. Regenerate with
+# ./generate-ts.sh after changing a wire type. Only the files that declare
+# wire types are read; the rest hold internals.
+packages:
+  - path: "github.com/kayushkin/llm-bridge-server/internal/repositories/gitactivity"
+    output_path: "ts/model.ts"
+    include_files:
+      - "graph.go"
+      - "store.go"
+      - "server.go"
+      - "ingest.go"
+      - "commit.go"

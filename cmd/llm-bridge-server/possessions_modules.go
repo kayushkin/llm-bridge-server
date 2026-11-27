@@ -12,7 +12,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessions"
-	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
+	"github.com/kayushkin/llm-bridge-server/internal/filestorage/files"
 	"github.com/kayushkin/llm-bridge-server/internal/server"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 )
@@ -86,7 +86,7 @@ func importPossessionStoreCmd(args []string) {
 	flags := flag.NewFlagSet("import-possession-store", flag.ExitOnError)
 	sqlitePath := flags.String("sqlite", "", "the standalone possession-store database to copy (a copy of it, made with sqlite3 .backup, while the store runs)")
 	originals := flags.String("originals", "", "the standalone store's originals directory (its data directory's originals/), which is only read")
-	carry := flags.String("carry", string(filestore.CopyBlobs), "how each original is put in file-store: copy, or link (a hard link, on one file system, which takes no room)")
+	carry := flags.String("carry", string(files.CopyBlobs), "how each original is put in file-store: copy, or link (a hard link, on one file system, which takes no room)")
 	owner := flags.String("owner", "", "the principal-store id of the person who owns every record copied (principal_000001)")
 	if err := flags.Parse(args); err != nil {
 		os.Exit(2)
@@ -104,18 +104,18 @@ func importPossessionStoreCmd(args []string) {
 	if err := checkOwnerIsAPerson(ctx, url, *owner); err != nil {
 		importFailed(err)
 	}
-	fileStoreDB, err := openModuleDescribedBy(ctx, url, filestore.Module)
+	fileStoreDB, err := openModuleDescribedBy(ctx, url, files.Module)
 	if err != nil {
 		importFailed(err)
 	}
 	defer fileStoreDB.Close()
 	dataDirectory := cfg.Settings.String(config.SettingFileStoreDataDirectory)
-	files, err := filestore.New(fileStoreDB, dataDirectory)
+	fileStore, err := files.New(fileStoreDB, dataDirectory)
 	if err != nil {
 		importFailed(err)
 	}
-	limits := func() filestore.Limits {
-		return filestore.Limits{MaximumFileBytes: int64(cfg.Settings.Integer(config.SettingFileStoreMaximumFileBytes))}
+	limits := func() files.Limits {
+		return files.Limits{MaximumFileBytes: int64(cfg.Settings.Integer(config.SettingFileStoreMaximumFileBytes))}
 	}
 	open, err := openPossessionStore(ctx, url)
 	if err != nil {
@@ -123,7 +123,7 @@ func importPossessionStoreCmd(args []string) {
 	}
 	// The import checks no reference: every id it copies was checked when
 	// the standalone store wrote it.
-	root, err := possessions.New(open, possessions.ServiceReferences{}, server.PossessionOriginalFilesCarrying(files, limits, filestore.BlobCarry(*carry)))
+	root, err := possessions.New(open, possessions.ServiceReferences{}, server.PossessionOriginalFilesCarrying(fileStore, limits, files.BlobCarry(*carry)))
 	if err != nil {
 		importFailed(err)
 	}

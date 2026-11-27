@@ -12,7 +12,7 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 
-	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/runnerprotocol"
+	"github.com/kayushkin/llm-bridge-server/internal/machines/runnerprotocol"
 )
 
 // The computer-use tool a runner can hand to a session.

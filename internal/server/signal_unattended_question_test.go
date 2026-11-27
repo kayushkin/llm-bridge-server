@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient/kanbanclienttest"
-	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/backend"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/backend"
 	"github.com/kayushkin/llm-bridge-server/internal/mailstackclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	issuesmodel "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/model"

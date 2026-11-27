@@ -9,7 +9,7 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessions"
-	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack"
+	"github.com/kayushkin/llm-bridge-server/internal/mail"
 )
 
 func asPossessionOwner(principalID string) context.Context {
@@ -116,23 +116,23 @@ func TestPossessionStoresCallsReachOnlyTheirOwnersRecords(t *testing.T) {
 // mailstack's grants and cards as that owner's own request is.
 func TestPossessionStoreReadsMailAsItsOwner(t *testing.T) {
 	test := newMailstackTestServer(t)
-	mail := possessionMail{server: test.server}
+	mailbox := possessionMail{server: test.server}
 	member, administrator := asPossessionOwner(accessTestMemberID), asPossessionOwner(accessTestAdministratorID)
 
-	if message, err := mail.Message(member, "desk", test.linkedMessageID); err != nil || message.Subject != "Printer jammed again" || message.From != "pat@demo.invalid" {
+	if message, err := mailbox.Message(member, "desk", test.linkedMessageID); err != nil || message.Subject != "Printer jammed again" || message.From != "pat@demo.invalid" {
 		t.Errorf("the member's message on its card = %+v, %v", message, err)
 	}
-	var refused *mailstack.MailRefusal
-	if _, err := mail.Message(member, "desk", test.unlinkedMessageID); !errors.As(err, &refused) || refused.Status != http.StatusNotFound {
+	var refused *mail.MailRefusal
+	if _, err := mailbox.Message(member, "desk", test.unlinkedMessageID); !errors.As(err, &refused) || refused.Status != http.StatusNotFound {
 		t.Errorf("a message on a card the member cannot see = %v, want 404", err)
 	}
-	if _, _, err := mail.Search(member, "desk", "", ""); !errors.As(err, &refused) || refused.Status != http.StatusForbidden {
+	if _, _, err := mailbox.Search(member, "desk", "", ""); !errors.As(err, &refused) || refused.Status != http.StatusForbidden {
 		t.Errorf("the member listing an account it holds no grant on = %v, want 403", err)
 	}
-	if ids, _, err := mail.Search(administrator, "desk", "", ""); err != nil || len(ids) != 2 {
+	if ids, _, err := mailbox.Search(administrator, "desk", "", ""); err != nil || len(ids) != 2 {
 		t.Errorf("the administrator's list = %v, %v", ids, err)
 	}
-	if _, err := mail.Message(context.Background(), "desk", test.linkedMessageID); err == nil {
+	if _, err := mailbox.Message(context.Background(), "desk", test.linkedMessageID); err == nil {
 		t.Error("mail was read for nobody")
 	}
 }

@@ -17,7 +17,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/bundleclient"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
-	harnessstore "github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore"
+	"github.com/kayushkin/llm-bridge-server/internal/machines"
 	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge-server/internal/textutil"
@@ -701,7 +701,7 @@ type httpErr struct {
 // Callers pass an explicit instance_id or "" to auto-pick any enabled instance
 // for the given harness type. Returns an error suitable for http.Error when
 // no usable instance is found.
-func resolveInstance(hs *harnessstore.Store, instanceID string, h msg.Harness) (*msg.Instance, *httpErr) {
+func resolveInstance(hs *machines.Store, instanceID string, h msg.Harness) (*msg.Instance, *httpErr) {
 	if instanceID != "" {
 		inst, err := hs.GetInstance(instanceID)
 		if err != nil {
@@ -1735,7 +1735,7 @@ func generateBridgeID() string {
 
 // resolveCredential returns the highest-priority enabled credential ID for an instance,
 // or empty string if none are bound.
-func resolveCredential(hs *harnessstore.Store, instanceID string) string {
+func resolveCredential(hs *machines.Store, instanceID string) string {
 	bindings, err := hs.ListInstanceCredentials(instanceID)
 	if err != nil || len(bindings) == 0 {
 		return ""

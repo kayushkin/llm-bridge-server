@@ -8,7 +8,7 @@ import (
 	"sort"
 	"time"
 
-	snapshotstore "github.com/kayushkin/llm-bridge-server/internal/sessions/snapshotstore"
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/snapshots"
 )
 
 // snapshotRetention is how long captured snapshot rows are kept before the
@@ -194,12 +194,12 @@ func (s *Server) startSnapshotGC() {
 	}()
 }
 
-func phaseForEvent(event string) (snapshotstore.Phase, bool) {
+func phaseForEvent(event string) (snapshots.Phase, bool) {
 	switch event {
 	case "PreToolUse":
-		return snapshotstore.PhaseBefore, true
+		return snapshots.PhaseBefore, true
 	case "PostToolUse":
-		return snapshotstore.PhaseAfter, true
+		return snapshots.PhaseAfter, true
 	default:
 		return "", false
 	}
@@ -217,7 +217,7 @@ type fileSnapshots struct {
 // groupSnapshotsByFile collapses the flat snapshot rows for one tool call
 // into one entry per file_path with paired before/after metadata. Files are
 // returned sorted by path so the API response is deterministic.
-func groupSnapshotsByFile(snaps []snapshotstore.Snapshot) []fileSnapshots {
+func groupSnapshotsByFile(snaps []snapshots.Snapshot) []fileSnapshots {
 	if len(snaps) == 0 {
 		return []fileSnapshots{}
 	}
@@ -230,9 +230,9 @@ func groupSnapshotsByFile(snaps []snapshotstore.Snapshot) []fileSnapshots {
 			byPath[snap.FilePath] = entry
 		}
 		switch snap.Phase {
-		case snapshotstore.PhaseBefore:
+		case snapshots.PhaseBefore:
 			entry.Before = marshalSnapshot(snap)
-		case snapshotstore.PhaseAfter:
+		case snapshots.PhaseAfter:
 			entry.After = marshalSnapshot(snap)
 		}
 	}
@@ -244,7 +244,7 @@ func groupSnapshotsByFile(snaps []snapshotstore.Snapshot) []fileSnapshots {
 	return out
 }
 
-func marshalSnapshot(snap *snapshotstore.Snapshot) any {
+func marshalSnapshot(snap *snapshots.Snapshot) any {
 	if snap == nil {
 		return nil
 	}

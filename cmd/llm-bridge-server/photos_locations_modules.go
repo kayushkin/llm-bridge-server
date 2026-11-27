@@ -12,7 +12,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locations"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photos"
-	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
+	"github.com/kayushkin/llm-bridge-server/internal/filestorage/files"
 	"github.com/kayushkin/llm-bridge-server/internal/server"
 )
 
@@ -56,7 +56,7 @@ func importPhotoStoreCmd(args []string) {
 	flags := flag.NewFlagSet("import-photo-store", flag.ExitOnError)
 	sqlitePath := flags.String("sqlite", "", "the standalone photo-store database to copy (a copy of it, made with sqlite3 .backup, while the store runs)")
 	thumbnails := flags.String("thumbnails", "", "the standalone store's thumbnails directory (its data directory's thumbnails/), which is only read")
-	carry := flags.String("carry", string(filestore.CopyBlobs), "how each thumbnail is put in file-store: copy, or link (a hard link, on one file system, which takes no room)")
+	carry := flags.String("carry", string(files.CopyBlobs), "how each thumbnail is put in file-store: copy, or link (a hard link, on one file system, which takes no room)")
 	owner := flags.String("owner", "", "the principal-store id of the person who owns every record copied (principal_000001)")
 	if err := flags.Parse(args); err != nil {
 		os.Exit(2)
@@ -74,25 +74,25 @@ func importPhotoStoreCmd(args []string) {
 	if err := checkOwnerIsAPerson(ctx, url, *owner); err != nil {
 		importFailed(err)
 	}
-	fileStoreDB, err := openModuleDescribedBy(ctx, url, filestore.Module)
+	fileStoreDB, err := openModuleDescribedBy(ctx, url, files.Module)
 	if err != nil {
 		importFailed(err)
 	}
 	defer fileStoreDB.Close()
 	dataDirectory := cfg.Settings.String(config.SettingFileStoreDataDirectory)
-	files, err := filestore.New(fileStoreDB, dataDirectory)
+	fileStore, err := files.New(fileStoreDB, dataDirectory)
 	if err != nil {
 		importFailed(err)
 	}
-	limits := func() filestore.Limits {
-		return filestore.Limits{MaximumFileBytes: int64(cfg.Settings.Integer(config.SettingFileStoreMaximumFileBytes))}
+	limits := func() files.Limits {
+		return files.Limits{MaximumFileBytes: int64(cfg.Settings.Integer(config.SettingFileStoreMaximumFileBytes))}
 	}
 	db, err := openModuleDescribedBy(ctx, url, photos.Module)
 	if err != nil {
 		importFailed(err)
 	}
 	defer db.Close()
-	counts, err := photos.ImportStandaloneDatabase(ctx, db, server.PhotoThumbnailFilesCarrying(files, limits, filestore.BlobCarry(*carry)), *sqlitePath, *thumbnails, *owner)
+	counts, err := photos.ImportStandaloneDatabase(ctx, db, server.PhotoThumbnailFilesCarrying(fileStore, limits, files.BlobCarry(*carry)), *sqlitePath, *thumbnails, *owner)
 	if err != nil {
 		importFailed(fmt.Errorf("nothing was imported: %w", err))
 	}

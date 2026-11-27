@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/references/referencestore"
-	"github.com/kayushkin/llm-bridge-server/internal/repositories/repostore"
+	"github.com/kayushkin/llm-bridge-server/internal/references"
+	"github.com/kayushkin/llm-bridge-server/internal/repositories/repos"
 )
 
 // referenceMountPrefixes is where each in-process service's routes are
@@ -62,8 +62,8 @@ func createdID(t *testing.T, gated *gatedTestServer, principalID, path string, b
 	return ""
 }
 
-func ownerDecides(row *referencestore.ReferenceType) bool {
-	return row.Access == referencestore.AccessByOwner || row.Access == referencestore.AccessByGrantAndOwner
+func ownerDecides(row *references.ReferenceType) bool {
+	return row.Access == references.AccessByOwner || row.Access == references.AccessByGrantAndOwner
 }
 
 // Each in-process reader answers what its type's route answers: the same
@@ -76,7 +76,7 @@ func TestEveryInProcessReaderAnswersWhatItsRouteAnswers(t *testing.T) {
 	enableMessageActivityAndTimeLedgerModulesOnTestDatabase(t, gated)
 	enablePredictionStoreOnTestDatabase(t, gated.server)
 	enableSchedulerOnTestDatabase(t, gated.server)
-	if _, err := gated.server.referenceReadable.repos.Load().UpsertRepo(&repostore.Repo{Name: "webapp", GitRemote: "git@github.com:example-owner/webapp.git"}); err != nil {
+	if _, err := gated.server.referenceReadable.repos.Load().UpsertRepo(&repos.Repo{Name: "webapp", GitRemote: "git@github.com:example-owner/webapp.git"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -102,7 +102,7 @@ func TestEveryInProcessReaderAnswersWhatItsRouteAnswers(t *testing.T) {
 	ctx := context.Background()
 	answersByStatus := map[int]int{}
 	for typeName, ids := range asked {
-		row := referencestore.TypeNamed(typeName)
+		row := references.TypeNamed(typeName)
 		if row == nil {
 			t.Fatalf("no type %s", typeName)
 		}
@@ -117,7 +117,7 @@ func TestEveryInProcessReaderAnswersWhatItsRouteAnswers(t *testing.T) {
 				if asker != "" {
 					route = gated.requestAsServiceAssertingPrincipal(t, asker, http.MethodGet, path)
 				}
-				data, err := readers.Readers[typeName].Record(ctx, id, referencestore.InProcessAsker{PrincipalID: asker})
+				data, err := readers.Readers[typeName].Record(ctx, id, references.InProcessAsker{PrincipalID: asker})
 				answersByStatus[route.Code]++
 				switch route.Code {
 				case http.StatusOK:
@@ -126,15 +126,15 @@ func TestEveryInProcessReaderAnswersWhatItsRouteAnswers(t *testing.T) {
 						t.Errorf("%s %s as %q: the route answered %s, the reader %s, %v", typeName, id, asker, route.Body, data, err)
 					}
 				case http.StatusNotFound:
-					if !errors.Is(err, referencestore.ErrRecordNotFound) {
+					if !errors.Is(err, references.ErrRecordNotFound) {
 						t.Errorf("%s %s as %q: the route answered 404, the reader %s, %v", typeName, id, asker, data, err)
 					}
 				case http.StatusForbidden:
-					if !errors.Is(err, referencestore.ErrRefusedByOwner) && !(asker == "" && err != nil) {
+					if !errors.Is(err, references.ErrRefusedByOwner) && !(asker == "" && err != nil) {
 						t.Errorf("%s %s as %q: the route answered 403 %s, the reader %s, %v", typeName, id, asker, route.Body, data, err)
 					}
 				default:
-					if err == nil || errors.Is(err, referencestore.ErrRecordNotFound) || errors.Is(err, referencestore.ErrRefusedByOwner) {
+					if err == nil || errors.Is(err, references.ErrRecordNotFound) || errors.Is(err, references.ErrRefusedByOwner) {
 						t.Errorf("%s %s as %q: the route answered %d %s, the reader %s, %v", typeName, id, asker, route.Code, route.Body, data, err)
 					}
 				}
@@ -152,7 +152,7 @@ func TestEveryInProcessReaderAnswersWhatItsRouteAnswers(t *testing.T) {
 
 	// A search answers what the type's search route answers.
 	for typeName, query := range map[string]string{"note": "Printer", "project": "Inbox", "prediction": "rains", "person": "Sam", "entry": "Errands"} {
-		row := referencestore.TypeNamed(typeName)
+		row := references.TypeNamed(typeName)
 		path := referenceMountPrefixes[row.Service] + row.Search + url.QueryEscape(query)
 		askers := []string{""}
 		if ownerDecides(row) {
@@ -163,7 +163,7 @@ func TestEveryInProcessReaderAnswersWhatItsRouteAnswers(t *testing.T) {
 			if asker != "" {
 				route = gated.requestAsServiceAssertingPrincipal(t, asker, http.MethodGet, path)
 			}
-			data, err := readers.Readers[typeName].Search(ctx, query, referencestore.InProcessAsker{PrincipalID: asker})
+			data, err := readers.Readers[typeName].Search(ctx, query, references.InProcessAsker{PrincipalID: asker})
 			var fromRoute, fromReader any
 			if route.Code != http.StatusOK || err != nil || json.Unmarshal(route.Body.Bytes(), &fromRoute) != nil || json.Unmarshal(data, &fromReader) != nil || !reflect.DeepEqual(fromRoute, fromReader) {
 				t.Errorf("search %s %q as %q: the route answered %d %s, the reader %s, %v", typeName, query, asker, route.Code, route.Body, data, err)
@@ -180,9 +180,9 @@ func TestThePrincipalReaderAnswersWhatItsRoutesAnswer(t *testing.T) {
 	ctx := context.Background()
 	for _, id := range []string{accessTestMemberID, "principal_000099"} {
 		route := test.call(t, callerServiceTokenAlone, http.MethodGet, "/principal-store/principals/"+id, "")
-		data, err := readers.Readers["principal"].Record(ctx, id, referencestore.InProcessAsker{})
+		data, err := readers.Readers["principal"].Record(ctx, id, references.InProcessAsker{})
 		if route.Code == http.StatusNotFound {
-			if !errors.Is(err, referencestore.ErrRecordNotFound) {
+			if !errors.Is(err, references.ErrRecordNotFound) {
 				t.Errorf("%s: the route answered 404, the reader %s, %v", id, data, err)
 			}
 			continue
@@ -193,7 +193,7 @@ func TestThePrincipalReaderAnswersWhatItsRoutesAnswer(t *testing.T) {
 		}
 	}
 	route := test.call(t, callerServiceTokenAlone, http.MethodGet, "/principal-store/principals?q=Member", "")
-	data, err := readers.Readers["principal"].Search(ctx, "Member", referencestore.InProcessAsker{})
+	data, err := readers.Readers["principal"].Search(ctx, "Member", references.InProcessAsker{})
 	var fromRoute, fromReader any
 	if route.Code != http.StatusOK || err != nil || json.Unmarshal(route.Body.Bytes(), &fromRoute) != nil || json.Unmarshal(data, &fromReader) != nil || !reflect.DeepEqual(fromRoute, fromReader) {
 		t.Errorf("search: the route answered %d %s, the reader %s, %v", route.Code, route.Body, data, err)

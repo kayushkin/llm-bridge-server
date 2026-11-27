@@ -16,7 +16,7 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 
-	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/runnerprotocol"
+	"github.com/kayushkin/llm-bridge-server/internal/machines/runnerprotocol"
 )
 
 // Subprocess wraps a single harness binary spawned for a session. The

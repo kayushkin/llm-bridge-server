@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/repositories/repostore"
+	"github.com/kayushkin/llm-bridge-server/internal/repositories/repos"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/projects"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -19,9 +19,9 @@ func TestProjectStoreOwnersAnswerInProcess(t *testing.T) {
 	ctx := context.Background()
 	test := newKanbanTestServer(t)
 	srv := test.server
-	repos := enableRepositoriesAndReferencesOnTestDatabase(t, srv)
-	repo := &repostore.Repo{Name: "webapp", GitRemote: "git@github.com:example-owner/webapp.git"}
-	if _, err := repos.UpsertRepo(repo); err != nil {
+	repoStore := enableRepositoriesAndReferencesOnTestDatabase(t, srv)
+	repo := &repos.Repo{Name: "webapp", GitRemote: "git@github.com:example-owner/webapp.git"}
+	if _, err := repoStore.UpsertRepo(repo); err != nil {
 		t.Fatal(err)
 	}
 

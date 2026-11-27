@@ -16,12 +16,12 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelrouting"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/executors"
 	schedulerapi "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/api"
 	schedulerdb "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/db"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	"github.com/kayushkin/llm-bridge-server/internal/executors"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
-	"github.com/kayushkin/llm-bridge-server/internal/repositories/repostore"
+	"github.com/kayushkin/llm-bridge-server/internal/repositories/repos"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -61,14 +61,14 @@ func (fake *fakeSessionActionStores) RunJobNow(id int64) (*schedulerdb.Run, erro
 }
 
 // GetRepo is repo-store's registry as a deploy action reads it.
-func (fake *fakeSessionActionStores) GetRepo(id int64) (*repostore.Repo, error) {
+func (fake *fakeSessionActionStores) GetRepo(id int64) (*repos.Repo, error) {
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
 	path, ok := fake.repoPaths[id]
 	if !ok {
-		return nil, repostore.ErrNotFound
+		return nil, repos.ErrNotFound
 	}
-	return &repostore.Repo{ID: id, Name: filepath.Base(path), Path: path}, nil
+	return &repos.Repo{ID: id, Name: filepath.Base(path), Path: path}, nil
 }
 
 func testServerForSessionActions(t *testing.T) (*Server, *store.Store, *fakeSessionActionStores) {

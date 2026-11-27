@@ -21,7 +21,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photos"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessions"
-	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack"
+	"github.com/kayushkin/llm-bridge-server/internal/mail"
 )
 
 // possessionReadScope is the read scope of the caller possession-store put
@@ -342,16 +342,16 @@ var _ possessions.MailSource = possessionMail{}
 // search did.
 const mailSearchPage = 100
 
-func (mail possessionMail) caller(ctx context.Context) (*mailstack.Server, mailstack.Caller, error) {
-	module := mail.server.mailstack.Load()
+func (mailbox possessionMail) caller(ctx context.Context) (*mail.Server, mail.Caller, error) {
+	module := mailbox.server.mailstack.Load()
 	if module == nil {
-		return nil, mailstack.Caller{}, errMailstackOff
+		return nil, mail.Caller{}, errMailstackOff
 	}
 	owner, err := possessionOwner(ctx, "mailstack")
 	if err != nil {
-		return nil, mailstack.Caller{}, err
+		return nil, mail.Caller{}, err
 	}
-	return module, mailstack.Caller{PrincipalID: owner}, nil
+	return module, mail.Caller{PrincipalID: owner}, nil
 }
 
 func (mail possessionMail) Search(ctx context.Context, account, query, cursor string) ([]string, string, error) {

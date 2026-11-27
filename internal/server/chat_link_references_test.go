@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/references/referencestore"
+	"github.com/kayushkin/llm-bridge-server/internal/references"
 )
 
 func TestAReplyDrawsOnlyTheRecordsItsRecipientMaySee(t *testing.T) {
@@ -72,11 +72,11 @@ func TestAnIdTwoStoresClaimStaysAsWritten(t *testing.T) {
 // and every other principal someone who holds no grant.
 type administratorOnlyReferenceAccess struct{}
 
-func (administratorOnlyReferenceAccess) Standing(_ context.Context, principalID string) (referencestore.PrincipalStanding, error) {
-	return referencestore.PrincipalStanding{IsAdministrator: principalID == "principal_000009"}, nil
+func (administratorOnlyReferenceAccess) Standing(_ context.Context, principalID string) (references.PrincipalStanding, error) {
+	return references.PrincipalStanding{IsAdministrator: principalID == "principal_000009"}, nil
 }
 
-func (administratorOnlyReferenceAccess) Grants(context.Context, string) ([]referencestore.HeldGrant, error) {
+func (administratorOnlyReferenceAccess) Grants(context.Context, string) ([]references.HeldGrant, error) {
 	return nil, nil
 }
 
@@ -93,10 +93,10 @@ func TestAPictureIsFetchedAsTheRecipientAndNamedByItsType(t *testing.T) {
 		}
 	}))
 	defer photos.Close()
-	resolver := &referencestore.Resolver{
-		Types: referencestore.Types, ServiceURLs: map[string]string{"photo-store": photos.URL},
-		Credentials: &referencestore.Credentials{HTTPClient: http.DefaultClient},
-		Access:      &referencestore.AccessChecker{Directory: administratorOnlyReferenceAccess{}, TTL: time.Minute},
+	resolver := &references.Resolver{
+		Types: references.Types, ServiceURLs: map[string]string{"photo-store": photos.URL},
+		Credentials: &references.Credentials{HTTPClient: http.DefaultClient},
+		Access:      &references.AccessChecker{Directory: administratorOnlyReferenceAccess{}, TTL: time.Minute},
 		HTTPClient:  http.DefaultClient, RecordTTL: time.Minute, MissTTL: time.Minute, LookupTimeout: 5 * time.Second, Concurrency: 2,
 	}
 	file, found, err := pictureOfReferenceAs(context.Background(), resolver, "principal_000009", "photo_000009")

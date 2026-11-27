@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/kayushkin/llm-bridge-server/internal/references/referencestore"
+	"github.com/kayushkin/llm-bridge-server/internal/references"
 	issuesreferences "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/referencestore"
 )
 
@@ -16,12 +16,12 @@ type kanbanReferenceTypes struct {
 	server *Server
 }
 
-func (references kanbanReferenceTypes) list() (*issuesreferences.List, error) {
-	resolver := references.server.referenceResolver.Load()
+func (referenceTypes kanbanReferenceTypes) list() (*issuesreferences.List, error) {
+	resolver := referenceTypes.server.referenceResolver.Load()
 	if resolver == nil {
 		return nil, errors.New("reference-store is not open on this server")
 	}
-	rows, err := referencestore.TypeRows(resolver.Types)
+	rows, err := references.TypeRows(resolver.Types)
 	if err != nil {
 		return nil, err
 	}

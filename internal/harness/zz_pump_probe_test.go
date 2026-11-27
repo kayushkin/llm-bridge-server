@@ -6,13 +6,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/sessionlog/sessionevents"
+	"github.com/kayushkin/llm-bridge-server/internal/sessionlog"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
 type timedEvents struct {
-	sessionevents.Store
+	sessionlog.Store
 	mu    sync.Mutex
 	spent map[string]time.Duration
 	count map[string]int

@@ -8,22 +8,22 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/server"
-	logstack "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/logstack"
-	logstoreserver "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/server"
-	logstorestore "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/store"
-	"github.com/kayushkin/llm-bridge-server/internal/sessionlog/sessionevents"
+	"github.com/kayushkin/llm-bridge-server/internal/sessionlog"
+	logstack "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstack"
+	sessionlogserver "github.com/kayushkin/llm-bridge-server/internal/sessionlog/server"
+	sessionlogstore "github.com/kayushkin/llm-bridge-server/internal/sessionlog/store"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 )
 
 // openSessionLogStore provisions, migrates and opens the session_log module
 // (log-store) on the Postgres at url: its writer pool, and a read-only pool
 // beside it.
-func openSessionLogStore(ctx context.Context, url string, asynchronousCommit bool) (*logstorestore.Store, error) {
-	module, err := logstorestore.Module()
+func openSessionLogStore(ctx context.Context, url string, asynchronousCommit bool) (*sessionlogstore.Store, error) {
+	module, err := sessionlogstore.Module()
 	if err != nil {
 		return nil, err
 	}
-	writerURL, err := logstorestore.WriterURL(url, asynchronousCommit)
+	writerURL, err := sessionlogstore.WriterURL(url, asynchronousCommit)
 	if err != nil {
 		return nil, err
 	}
@@ -31,12 +31,12 @@ func openSessionLogStore(ctx context.Context, url string, asynchronousCommit boo
 	if err != nil {
 		return nil, err
 	}
-	reader, err := logstorestore.OpenReader(ctx, url, module)
+	reader, err := sessionlogstore.OpenReader(ctx, url, module)
 	if err != nil {
 		writer.Close()
 		return nil, err
 	}
-	return logstorestore.New(writer, reader), nil
+	return sessionlogstore.New(writer, reader), nil
 }
 
 // enableSessionLog opens log-store in Postgres and makes it this server's
@@ -52,7 +52,7 @@ func enableSessionLog(ctx context.Context, cfg *config.Config, srv *server.Serve
 	if err != nil {
 		return nil, fmt.Errorf("log-store: %w", err)
 	}
-	module, err := logstorestore.Module()
+	module, err := sessionlogstore.Module()
 	if err != nil {
 		sessionLogStore.Close()
 		return nil, err
@@ -70,10 +70,10 @@ func enableSessionLog(ctx context.Context, cfg *config.Config, srv *server.Serve
 		// is otherwise invisible until it has dropped thousands of results.
 		forwarder.Preflight()
 	}
-	logServer := logstoreserver.New(sessionLogStore, forwarder)
+	logServer := sessionlogserver.New(sessionLogStore, forwarder)
 	srv.EnableSessionLog(logServer, logServer)
 	log.Printf("postgres: log-store open, served at /log-store/ and as the session event log")
-	singleCopy, err := sessionevents.OpenSingleCopy(ctx, bridge, logServer)
+	singleCopy, err := sessionlog.OpenSingleCopy(ctx, bridge, logServer)
 	if err != nil {
 		sessionLogStore.Close()
 		return nil, fmt.Errorf("session events: %w", err)
@@ -110,7 +110,7 @@ func enableSessionLog(ctx context.Context, cfg *config.Config, srv *server.Serve
 func importLogStoreCmd(args []string) {
 	sqlitePath := importArguments("import-log-store", "log-store", args)
 	ctx := context.Background()
-	module, err := logstorestore.Module()
+	module, err := sessionlogstore.Module()
 	if err != nil {
 		importFailed(err)
 	}
@@ -119,7 +119,7 @@ func importLogStoreCmd(args []string) {
 		importFailed(err)
 	}
 	defer db.Close()
-	counts, err := logstorestore.ImportStandaloneDatabase(ctx, db, sqlitePath)
+	counts, err := sessionlogstore.ImportStandaloneDatabase(ctx, db, sqlitePath)
 	if err != nil {
 		importFailed(fmt.Errorf("nothing was imported: %w", err))
 	}

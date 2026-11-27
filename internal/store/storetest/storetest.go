@@ -12,8 +12,8 @@ import (
 	"database/sql"
 	"testing"
 
-	logstoreserver "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/server"
-	logstorestore "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/store"
+	sessionlogserver "github.com/kayushkin/llm-bridge-server/internal/sessionlog/server"
+	sessionlogstore "github.com/kayushkin/llm-bridge-server/internal/sessionlog/store"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
@@ -34,7 +34,7 @@ func NewDatabase(t testing.TB) *Database {
 	if err != nil {
 		t.Fatalf("storetest: %v", err)
 	}
-	sessionLogModule, err := logstorestore.Module()
+	sessionLogModule, err := sessionlogstore.Module()
 	if err != nil {
 		t.Fatalf("storetest: %v", err)
 	}
@@ -66,7 +66,7 @@ func (database *Database) OpenStore() *store.Store {
 // on the database, as a server opens them. They are closed when the test ends.
 func (database *Database) OpenSessionLogPools(asynchronousCommit bool) (writer, reader *sql.DB) {
 	database.t.Helper()
-	writerURL, err := logstorestore.WriterURL(database.URL(), asynchronousCommit)
+	writerURL, err := sessionlogstore.WriterURL(database.URL(), asynchronousCommit)
 	if err != nil {
 		database.t.Fatalf("storetest: %v", err)
 	}
@@ -75,7 +75,7 @@ func (database *Database) OpenSessionLogPools(asynchronousCommit bool) (writer, 
 		database.t.Fatalf("storetest: %v", err)
 	}
 	database.t.Cleanup(func() { writer.Close() })
-	reader, err = logstorestore.OpenReader(context.Background(), database.URL(), database.sessionLogModule)
+	reader, err = sessionlogstore.OpenReader(context.Background(), database.URL(), database.sessionLogModule)
 	if err != nil {
 		database.t.Fatalf("storetest: %v", err)
 	}
@@ -85,10 +85,10 @@ func (database *Database) OpenSessionLogPools(asynchronousCommit bool) (writer, 
 
 // OpenSessionLog opens the session log module on the database as the server
 // runs it, with no logstack forwarder.
-func (database *Database) OpenSessionLog(asynchronousCommit bool) *logstoreserver.Server {
+func (database *Database) OpenSessionLog(asynchronousCommit bool) *sessionlogserver.Server {
 	database.t.Helper()
 	writer, reader := database.OpenSessionLogPools(asynchronousCommit)
-	return logstoreserver.New(logstorestore.New(writer, reader), nil)
+	return sessionlogserver.New(sessionlogstore.New(writer, reader), nil)
 }
 
 // RecordArchivedEventNumbering records highest as the highest id the archived

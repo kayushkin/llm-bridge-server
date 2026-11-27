@@ -29,7 +29,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messages"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/onlineactivity"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/timeledger"
-	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
+	"github.com/kayushkin/llm-bridge-server/internal/filestorage/files"
 )
 
 // Where each store is mounted.
@@ -123,12 +123,12 @@ const activityAttachmentOwnerService = "activity-store"
 // in Go, as activity-store keeps attachment bytes: each file is owned by
 // activity-store and the activity it came with. Each call goes through the
 // same checks and size limit as file-store's own routes.
-func ActivityAttachmentFilesIn(files *filestore.Server) onlineactivity.AttachmentFiles {
+func ActivityAttachmentFilesIn(files *files.Server) onlineactivity.AttachmentFiles {
 	return activityAttachmentFiles{files: files}
 }
 
 type activityAttachmentFiles struct {
-	files *filestore.Server
+	files *files.Server
 }
 
 func (attachments activityAttachmentFiles) Put(_ context.Context, content io.Reader, file onlineactivity.AttachmentFile) (string, error) {
@@ -139,8 +139,8 @@ func (attachments activityAttachmentFiles) Put(_ context.Context, content io.Rea
 		return "", fmt.Errorf("reading attachment %s: %w", file.FileName, err)
 	}
 	kept, err := attachments.files.Accept(bytes.NewReader(body), int64(len(body)), file.ContentType,
-		filestore.NewFile{Filename: file.FileName, OwnerService: activityAttachmentOwnerService, OwnerRef: file.ActivityID})
-	var refusal *filestore.Refusal
+		files.NewFile{Filename: file.FileName, OwnerService: activityAttachmentOwnerService, OwnerRef: file.ActivityID})
+	var refusal *files.Refusal
 	if errors.As(err, &refusal) {
 		return "", fmt.Errorf("file-store answered %d keeping attachment %s: %s", refusal.Status, file.FileName, refusal.Message)
 	}

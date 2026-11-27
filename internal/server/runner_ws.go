@@ -9,7 +9,7 @@ import (
 	"database/sql"
 
 	"github.com/gorilla/websocket"
-	harnessstore "github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore"
+	"github.com/kayushkin/llm-bridge-server/internal/machines"
 )
 
 var runnerUpgrader = websocket.Upgrader{
@@ -42,7 +42,7 @@ func (s *Server) handleRunnerWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	machine, err := s.harnessStore.GetMachineByRunnerTokenHash(harnessstore.HashRunnerToken(token))
+	machine, err := s.harnessStore.GetMachineByRunnerTokenHash(machines.HashRunnerToken(token))
 	if errors.Is(err, sql.ErrNoRows) {
 		http.Error(w, "unknown token", http.StatusUnauthorized)
 		return

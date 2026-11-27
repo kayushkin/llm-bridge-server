@@ -14,7 +14,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/onlineactivity"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/timeledger"
-	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
+	"github.com/kayushkin/llm-bridge-server/internal/filestorage/files"
 	"github.com/kayushkin/llm-bridge-server/internal/server"
 )
 
@@ -110,17 +110,17 @@ func importActivityStoreCmd(args []string) {
 	if err := checkOwnerIsAPerson(ctx, url, *owner); err != nil {
 		importFailed(err)
 	}
-	fileStoreDB, err := openModuleDescribedBy(ctx, url, filestore.Module)
+	fileStoreDB, err := openModuleDescribedBy(ctx, url, files.Module)
 	if err != nil {
 		importFailed(err)
 	}
 	defer fileStoreDB.Close()
-	files, err := filestore.New(fileStoreDB, cfg.Settings.String(config.SettingFileStoreDataDirectory))
+	fileStore, err := files.New(fileStoreDB, cfg.Settings.String(config.SettingFileStoreDataDirectory))
 	if err != nil {
 		importFailed(err)
 	}
-	fileStoreCalls := filestore.NewServer(files, func() filestore.Limits {
-		return filestore.Limits{
+	fileStoreCalls := files.NewServer(fileStore, func() files.Limits {
+		return files.Limits{
 			MaximumFileBytes:   int64(cfg.Settings.Integer(config.SettingFileStoreMaximumFileBytes)),
 			InlineContentTypes: cfg.Settings.StringList(config.SettingFileStoreInlineContentTypes),
 		}

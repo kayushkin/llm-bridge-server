@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/runnerprotocol"
+	"github.com/kayushkin/llm-bridge-server/internal/machines/runnerprotocol"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 

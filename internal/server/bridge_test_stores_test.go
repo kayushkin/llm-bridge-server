@@ -6,8 +6,8 @@ import (
 	"sync"
 	"testing"
 
-	logstoreserver "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/server"
-	"github.com/kayushkin/llm-bridge-server/internal/sessionlog/sessionevents"
+	"github.com/kayushkin/llm-bridge-server/internal/sessionlog"
+	sessionlogserver "github.com/kayushkin/llm-bridge-server/internal/sessionlog/server"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge-server/internal/store/storetest"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -21,7 +21,7 @@ var testBridgeDatabases sync.Map // *store.Store → *storetest.Database
 
 // testSessionEventStores is the session event store enableTestSessionEvents
 // gave each test's server, by its bridge store.
-var testSessionEventStores sync.Map // *store.Store → *sessionevents.SingleCopy
+var testSessionEventStores sync.Map // *store.Store → *sessionlog.SingleCopy
 
 // newTestBridgeStore is the bridge's own records in a Postgres database of
 // the test's own, holding the session log module too.
@@ -38,7 +38,7 @@ func newTestBridgeStore(t testing.TB) *store.Store {
 // session event log and the only copy of its events, as main does
 // (enableSessionLog): its routes, the harness manager's reads and every event
 // store. It answers the session log, for a test that reads it directly.
-func enableTestSessionEvents(t testing.TB, srv *Server, st *store.Store) *logstoreserver.Server {
+func enableTestSessionEvents(t testing.TB, srv *Server, st *store.Store) *sessionlogserver.Server {
 	t.Helper()
 	held, ok := testBridgeDatabases.Load(st)
 	if !ok {
@@ -47,7 +47,7 @@ func enableTestSessionEvents(t testing.TB, srv *Server, st *store.Store) *logsto
 	database := held.(*storetest.Database)
 	sessionLog := database.OpenSessionLog(false)
 	srv.EnableSessionLog(sessionLog, sessionLog)
-	singleCopy, err := sessionevents.OpenSingleCopy(context.Background(), st, sessionLog)
+	singleCopy, err := sessionlog.OpenSingleCopy(context.Background(), st, sessionLog)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,13 +58,13 @@ func enableTestSessionEvents(t testing.TB, srv *Server, st *store.Store) *logsto
 }
 
 // testSessionEventsOf is where the server built over st stores its events.
-func testSessionEventsOf(t testing.TB, st *store.Store) sessionevents.Store {
+func testSessionEventsOf(t testing.TB, st *store.Store) sessionlog.Store {
 	t.Helper()
 	held, ok := testSessionEventStores.Load(st)
 	if !ok {
 		t.Fatal("testSessionEventsOf: no server over this store has its session events enabled")
 	}
-	return held.(*sessionevents.SingleCopy)
+	return held.(*sessionlog.SingleCopy)
 }
 
 // storeTestEvent stores one event of sessionID, its body data as written, in

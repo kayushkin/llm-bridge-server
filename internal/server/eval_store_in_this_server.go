@@ -8,7 +8,7 @@ import (
 	"net/http"
 
 	"github.com/kayushkin/llm-bridge-server/internal/agents/evaluations"
-	"github.com/kayushkin/llm-bridge-server/internal/operationstore"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/operationstore"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 

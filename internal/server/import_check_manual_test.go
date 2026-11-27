@@ -10,9 +10,9 @@ import (
 	"testing"
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	logstoreserver "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/server"
-	logstorestore "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/store"
-	"github.com/kayushkin/llm-bridge-server/internal/sessionlog/sessionevents"
+	"github.com/kayushkin/llm-bridge-server/internal/sessionlog"
+	sessionlogserver "github.com/kayushkin/llm-bridge-server/internal/sessionlog/server"
+	sessionlogstore "github.com/kayushkin/llm-bridge-server/internal/sessionlog/store"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 )
@@ -52,7 +52,7 @@ func TestImportedBridgeDatabaseAnswersTheCoreRoutes(t *testing.T) {
 	}
 	defer st.Close()
 
-	sessionLogModule, err := logstorestore.Module()
+	sessionLogModule, err := sessionlogstore.Module()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,11 +71,11 @@ func TestImportedBridgeDatabaseAnswersTheCoreRoutes(t *testing.T) {
 	if _, err := postgresstorage.Migrate(ctx, sessionLogWriter, sessionLogModule); err != nil {
 		t.Fatal(err)
 	}
-	sessionLogReader, err := logstorestore.OpenReader(ctx, postgresURL, sessionLogModule)
+	sessionLogReader, err := sessionlogstore.OpenReader(ctx, postgresURL, sessionLogModule)
 	if err != nil {
 		t.Fatal(err)
 	}
-	logServer := logstoreserver.New(logstorestore.New(sessionLogWriter, sessionLogReader), nil)
+	logServer := sessionlogserver.New(sessionlogstore.New(sessionLogWriter, sessionLogReader), nil)
 	if err := st.GrantSessionLogWrites(ctx, sessionLogModule.Role); err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestImportedBridgeDatabaseAnswersTheCoreRoutes(t *testing.T) {
 	testAuthorizationConfig(cfg)
 	srv := New(st, nil, nil, nil, nil, testModelStore(t), nil, cfg)
 	srv.EnableSessionLog(logServer, logServer)
-	singleCopy, err := sessionevents.OpenSingleCopy(ctx, st, logServer)
+	singleCopy, err := sessionlog.OpenSingleCopy(ctx, st, logServer)
 	if err != nil {
 		t.Fatal(err)
 	}

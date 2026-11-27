@@ -9,7 +9,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 	"github.com/kayushkin/llm-bridge/msg"
 
-	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/runnerprotocol"
+	"github.com/kayushkin/llm-bridge-server/internal/machines/runnerprotocol"
 )
 
 // ManifestContext is the bridge-side state a manifest builder needs to

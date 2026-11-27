@@ -3,7 +3,7 @@ package server
 // file-store as the other modules in this process call it, in Go: kanban-store
 // keeps card attachments there and mailstack keeps mail attachments there.
 // Each call goes through the module's own checks and limit
-// (filestore.Server.Accept and the rest), as a request to its routes did.
+// (files.Server.Accept and the rest), as a request to its routes did.
 // Until EnableFileStore has run each call fails naming that, as the routes
 // answered 503, and kanban-store and mailstack answer it as a file-store that
 // could not be reached.
@@ -18,8 +18,8 @@ import (
 	"net/http"
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
-	mailfilestore "github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/filestore"
+	"github.com/kayushkin/llm-bridge-server/internal/filestorage/files"
+	mailfilestore "github.com/kayushkin/llm-bridge-server/internal/mail/filestore"
 	issuesfiles "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/filestore"
 )
 
@@ -27,7 +27,7 @@ import (
 var errFileStoreOff = errors.New("file-store is off: " + config.PostgresURLEnvironmentVariable + " is not set, so this server keeps no files")
 
 // fileStoreModule is the module the calls go to, or errFileStoreOff.
-func (s *Server) fileStoreModuleForCalls() (*filestore.Server, error) {
+func (s *Server) fileStoreModuleForCalls() (*files.Server, error) {
 	files := s.fileStoreCalls.Load()
 	if files == nil {
 		return nil, errFileStoreOff
@@ -54,12 +54,12 @@ func requestForFileStore(ctx context.Context, reader *http.Request) *http.Reques
 // serveFileStoreContent serves a live file onto w, or answers ErrNotFound
 // (as notFound) with nothing written.
 func (s *Server) serveFileStoreContent(w http.ResponseWriter, reader *http.Request, fileID string, inline bool, notFound error) error {
-	files, err := s.fileStoreModuleForCalls()
+	fileServer, err := s.fileStoreModuleForCalls()
 	if err != nil {
 		return err
 	}
-	file, err := files.LiveFile(fileID)
-	if errors.Is(err, filestore.ErrNotFound) {
+	file, err := fileServer.LiveFile(fileID)
+	if errors.Is(err, files.ErrNotFound) {
 		return notFound
 	}
 	if err != nil {
@@ -69,7 +69,7 @@ func (s *Server) serveFileStoreContent(w http.ResponseWriter, reader *http.Reque
 	if inline {
 		inlineQuery = "true"
 	}
-	files.ServeLiveFile(w, requestForFileStore(reader.Context(), reader), file, inlineQuery)
+	fileServer.ServeLiveFile(w, requestForFileStore(reader.Context(), reader), file, inlineQuery)
 	return nil
 }
 
@@ -80,7 +80,7 @@ type kanbanFileStore struct {
 
 // kanbanFileRecord is file-store's record as kanban-store passes it on: the
 // whole record, encoded as file-store's routes encode it.
-func kanbanFileRecord(file *filestore.File) (*issuesfiles.File, error) {
+func kanbanFileRecord(file *files.File) (*issuesfiles.File, error) {
 	encoded, err := json.Marshal(file)
 	if err != nil {
 		return nil, err
@@ -88,15 +88,15 @@ func kanbanFileRecord(file *filestore.File) (*issuesfiles.File, error) {
 	return issuesfiles.FileOfRecord(encoded)
 }
 
-func (files kanbanFileStore) Upload(content io.Reader, contentLength int64, contentType, filename, cardID, uploadedByPrincipalID string) (*issuesfiles.File, error) {
-	module, err := files.server.fileStoreModuleForCalls()
+func (fileStore kanbanFileStore) Upload(content io.Reader, contentLength int64, contentType, filename, cardID, uploadedByPrincipalID string) (*issuesfiles.File, error) {
+	module, err := fileStore.server.fileStoreModuleForCalls()
 	if err != nil {
 		return nil, err
 	}
-	stored, err := module.Accept(content, contentLength, contentType, filestore.NewFile{
+	stored, err := module.Accept(content, contentLength, contentType, files.NewFile{
 		Filename: filename, OwnerService: issuesfiles.OwnerService, OwnerRef: cardID, UploadedByPrincipalID: uploadedByPrincipalID,
 	})
-	var refusal *filestore.Refusal
+	var refusal *files.Refusal
 	if errors.As(err, &refusal) {
 		return nil, &issuesfiles.RefusalError{Status: refusal.Status, Body: refusal.Body()}
 	}
@@ -114,15 +114,15 @@ func (files kanbanFileStore) EveryFileOfCard(cardID string) (map[string]*issuesf
 	return files.filesOfCard(cardID, true)
 }
 
-func (files kanbanFileStore) filesOfCard(cardID string, includeDeleted bool) (map[string]*issuesfiles.File, error) {
-	module, err := files.server.fileStoreModuleForCalls()
+func (fileStore kanbanFileStore) filesOfCard(cardID string, includeDeleted bool) (map[string]*issuesfiles.File, error) {
+	module, err := fileStore.server.fileStoreModuleForCalls()
 	if err != nil {
 		return nil, err
 	}
 	byID := map[string]*issuesfiles.File{}
-	for offset := 0; ; offset += filestore.MaximumFilesListed {
-		page, err := module.ListFiles(filestore.Filter{OwnerService: issuesfiles.OwnerService, OwnerRef: cardID,
-			IncludeDeleted: includeDeleted, Limit: filestore.MaximumFilesListed, Offset: offset})
+	for offset := 0; ; offset += files.MaximumFilesListed {
+		page, err := module.ListFiles(files.Filter{OwnerService: issuesfiles.OwnerService, OwnerRef: cardID,
+			IncludeDeleted: includeDeleted, Limit: files.MaximumFilesListed, Offset: offset})
 		if err != nil {
 			return nil, err
 		}
@@ -133,7 +133,7 @@ func (files kanbanFileStore) filesOfCard(cardID string, includeDeleted bool) (ma
 			}
 			byID[file.ID] = file
 		}
-		if len(page) < filestore.MaximumFilesListed {
+		if len(page) < files.MaximumFilesListed {
 			return byID, nil
 		}
 	}
@@ -143,8 +143,8 @@ func (files kanbanFileStore) ServeContent(w http.ResponseWriter, r *http.Request
 	return files.server.serveFileStoreContent(w, r, fileID, inline, issuesfiles.ErrNotFound)
 }
 
-func (files kanbanFileStore) Delete(fileID string, purge bool) error {
-	module, err := files.server.fileStoreModuleForCalls()
+func (fileStore kanbanFileStore) Delete(fileID string, purge bool) error {
+	module, err := fileStore.server.fileStoreModuleForCalls()
 	if err != nil {
 		return err
 	}
@@ -153,7 +153,7 @@ func (files kanbanFileStore) Delete(fileID string, purge bool) error {
 	} else {
 		err = module.DeleteFile(fileID)
 	}
-	if errors.Is(err, filestore.ErrNotFound) {
+	if errors.Is(err, files.ErrNotFound) {
 		return issuesfiles.ErrNotFound
 	}
 	return err
@@ -164,15 +164,15 @@ type mailstackFileStore struct {
 	server *Server
 }
 
-func (files mailstackFileStore) Upload(content []byte, contentType, filename, ownerRef string) (*mailfilestore.File, error) {
-	module, err := files.server.fileStoreModuleForCalls()
+func (fileStore mailstackFileStore) Upload(content []byte, contentType, filename, ownerRef string) (*mailfilestore.File, error) {
+	module, err := fileStore.server.fileStoreModuleForCalls()
 	if err != nil {
 		return nil, err
 	}
-	stored, err := module.Accept(bytes.NewReader(content), int64(len(content)), contentType, filestore.NewFile{
+	stored, err := module.Accept(bytes.NewReader(content), int64(len(content)), contentType, files.NewFile{
 		Filename: filename, OwnerService: mailfilestore.OwnerService, OwnerRef: ownerRef,
 	})
-	var refusal *filestore.Refusal
+	var refusal *files.Refusal
 	if errors.As(err, &refusal) {
 		return nil, &mailfilestore.RefusalError{Status: refusal.Status, Body: refusal.Body()}
 	}
@@ -186,13 +186,13 @@ func (files mailstackFileStore) ServeContent(w http.ResponseWriter, r *http.Requ
 	return files.server.serveFileStoreContent(w, r, fileID, inline, mailfilestore.ErrNotFound)
 }
 
-func (files mailstackFileStore) Purge(fileID string) error {
-	module, err := files.server.fileStoreModuleForCalls()
+func (fileStore mailstackFileStore) Purge(fileID string) error {
+	module, err := fileStore.server.fileStoreModuleForCalls()
 	if err != nil {
 		return err
 	}
 	err = module.PurgeFile(fileID)
-	if errors.Is(err, filestore.ErrNotFound) {
+	if errors.Is(err, files.ErrNotFound) {
 		return mailfilestore.ErrNotFound
 	}
 	if err != nil {

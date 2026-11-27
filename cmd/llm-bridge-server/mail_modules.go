@@ -11,11 +11,11 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/access"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack"
-	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/accounts"
-	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/apiauth"
-	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/localmail"
-	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/mailmodule"
+	"github.com/kayushkin/llm-bridge-server/internal/mail"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/accounts"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/apiauth"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/localmail"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailmodule"
 	"github.com/kayushkin/llm-bridge-server/internal/server"
 )
 
@@ -32,7 +32,7 @@ func openMailModule(ctx context.Context, url string) (*sql.DB, error) {
 // kanban-store in this process, and keeps attachment bytes in the file-store
 // module in this process, so it runs after both are enabled. Gmail, Outlook
 // and IMAP accounts reach their providers only when
-// mailstack.provider_connections.enabled is on; nothing here runs on its own
+// mail.provider_connections.enabled is on; nothing here runs on its own
 // — mailstack fetches mail only when a request asks for it, and sends none.
 // The returned function closes the pool.
 func enableMail(ctx context.Context, cfg *config.Config, srv *server.Server, accessStores *access.Stores) (func(), error) {
@@ -45,7 +45,7 @@ func enableMail(ctx context.Context, cfg *config.Config, srv *server.Server, acc
 		return nil, fmt.Errorf("mailstack: %w", err)
 	}
 	db := mailmodule.New(pool)
-	parts := mailstack.ServerParts{
+	parts := mail.ServerParts{
 		Accounts:                   accounts.New(db),
 		LocalMail:                  localmail.New(db),
 		ProviderConnectionsEnabled: providerConnections,
@@ -55,7 +55,7 @@ func enableMail(ctx context.Context, cfg *config.Config, srv *server.Server, acc
 	if providerConnections {
 		parts.Tokens = apiauth.New(cfg.AuthStoreURL, cfg.AuthStoreToken)
 	}
-	mail := mailstack.NewServer(parts)
+	mail := mail.NewServer(parts)
 	srv.EnableMailstack(mail)
 	if providerConnections {
 		log.Printf("postgres: mailstack open, served at /mailstack/; Gmail, Outlook and IMAP accounts reach their providers, with tokens from auth-store at %s", cfg.AuthStoreURL)

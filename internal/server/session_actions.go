@@ -35,7 +35,7 @@ import (
 	schedulerapi "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/api"
 	schedulerdb "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/db"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	"github.com/kayushkin/llm-bridge-server/internal/repositories/repostore"
+	"github.com/kayushkin/llm-bridge-server/internal/repositories/repos"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -476,7 +476,7 @@ func (s *Server) deployableRepo(ctx context.Context, repoID int64) (repoStoreRep
 			config.PostgresURLEnvironmentVariable + " is not set, so this server keeps no repos and cannot find one to deploy"}
 	}
 	stored, err := s.repoRegistryForDeploys.GetRepo(repoID)
-	if errors.Is(err, repostore.ErrNotFound) {
+	if errors.Is(err, repos.ErrNotFound) {
 		return repoStoreRepo{}, &sessionActionRefusal{http.StatusUnprocessableEntity, "unknown_record", fmt.Sprintf("repo-store has no repo %d", repoID)}
 	}
 	if err != nil {

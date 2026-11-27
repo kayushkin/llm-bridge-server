@@ -20,7 +20,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/skills"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/tools"
-	"github.com/kayushkin/llm-bridge-server/internal/references/referencestore"
+	"github.com/kayushkin/llm-bridge-server/internal/references"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 )
 
@@ -129,7 +129,7 @@ func (checker inProcessResourceChecker) CheckResourceExists(ctx context.Context,
 		if resolver == nil {
 			return fmt.Errorf("this server's reference-store is off, so reference type %q cannot be checked", resourceID)
 		}
-		if referencestore.TypeNamed(resourceID) == nil {
+		if references.TypeNamed(resourceID) == nil {
 			return notFound("reference-store")
 		}
 		return nil
@@ -140,7 +140,7 @@ func (checker inProcessResourceChecker) CheckResourceExists(ctx context.Context,
 		}
 		// Asked for nobody, so a record exists whoever may see it; a store
 		// that could not say is a failure, never "does not exist".
-		results, lookupErrors := resolver.Resolve(ctx, referencestore.Caller{Unchecked: true}, []string{resourceID})
+		results, lookupErrors := resolver.Resolve(ctx, references.Caller{Unchecked: true}, []string{resourceID})
 		if len(results[resourceID]) > 0 {
 			return nil
 		}

@@ -21,10 +21,10 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
 	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
-	"github.com/kayushkin/llm-bridge-server/internal/references/referencestore"
-	"github.com/kayushkin/llm-bridge-server/internal/repositories/repostore"
-	"github.com/kayushkin/llm-bridge-server/internal/repositories/workgraphstore"
+	"github.com/kayushkin/llm-bridge-server/internal/filestorage/files"
+	"github.com/kayushkin/llm-bridge-server/internal/references"
+	"github.com/kayushkin/llm-bridge-server/internal/repositories/gitactivity"
+	"github.com/kayushkin/llm-bridge-server/internal/repositories/repos"
 )
 
 // Where each store is mounted.
@@ -64,35 +64,35 @@ type repositoryStores struct {
 	repoStore      http.Handler
 	workGraphStore http.Handler
 	// The stores themselves, for project-store's reads in process.
-	repos          *repostore.Store
-	workGraph      *workgraphstore.Store
-	workGraphRepos workgraphstore.RepoDirectory
+	repos          *repos.Store
+	workGraph      *gitactivity.Store
+	workGraphRepos gitactivity.RepoDirectory
 }
 
 // repoRegistry is repo-store as a deploy action reads it; the repo-store
 // module in this process is the one in production.
 type repoRegistry interface {
-	GetRepo(id int64) (*repostore.Repo, error)
+	GetRepo(id int64) (*repos.Repo, error)
 }
 
 // EnableRepositories serves repo-store and work-graph-store from their
 // modules. syncer is nil when this server cannot run gh, and then
 // POST /repo-store/repos/{id}/pull-requests/sync answers 503 with
 // syncerOffReason. main calls it once, before the server listens.
-func (s *Server) EnableRepositories(repos *repostore.Store, syncer *repostore.PullRequestSyncer, syncerOffReason string, workGraph *workgraphstore.Store) {
+func (s *Server) EnableRepositories(repoStore *repos.Store, syncer *repos.PullRequestSyncer, syncerOffReason string, workGraph *gitactivity.Store) {
 	repoStoreMux := http.NewServeMux()
-	repostore.RegisterHandlers(repoStoreMux, repos)
+	repos.RegisterHandlers(repoStoreMux, repoStore)
 	if syncer != nil {
-		repostore.RegisterPullRequestHandlers(repoStoreMux, repos, syncer)
+		repos.RegisterPullRequestHandlers(repoStoreMux, repoStore, syncer)
 	} else {
-		repostore.RegisterPullRequestHandlersWithoutSync(repoStoreMux, repos, syncerOffReason)
+		repos.RegisterPullRequestHandlersWithoutSync(repoStoreMux, repoStore, syncerOffReason)
 	}
 	workGraphStoreMux := http.NewServeMux()
-	workGraphRepos := workgraphstore.RepoStoreModule{Store: repos}
-	workgraphstore.RegisterHandlers(workGraphStoreMux, &workgraphstore.Handlers{Store: workGraph, RepoStore: workGraphRepos})
-	s.repoRegistryForDeploys = repos
-	s.repositories.Store(&repositoryStores{repoStore: repoStoreMux, workGraphStore: workGraphStoreMux, repos: repos, workGraph: workGraph, workGraphRepos: workGraphRepos})
-	s.referenceReadable.repos.Store(repos)
+	workGraphRepos := gitactivity.RepoStoreModule{Store: repoStore}
+	gitactivity.RegisterHandlers(workGraphStoreMux, &gitactivity.Handlers{Store: workGraph, RepoStore: workGraphRepos})
+	s.repoRegistryForDeploys = repoStore
+	s.repositories.Store(&repositoryStores{repoStore: repoStoreMux, workGraphStore: workGraphStoreMux, repos: repoStore, workGraph: workGraph, workGraphRepos: workGraphRepos})
+	s.referenceReadable.repos.Store(repoStore)
 	s.referenceReadable.workGraph.Store(workGraph)
 }
 
@@ -102,25 +102,25 @@ func (s *Server) EnableRepositories(repos *repostore.Store, syncer *repostore.Pu
 // PUT /settings is judged by file-store's own validators, and the values in
 // force are judged now, since a value seeded from the environment never
 // passed through PUT. main calls it once, before the server listens.
-func (s *Server) EnableFileStore(files *filestore.Store) error {
-	s.settings.SetValidator(config.SettingFileStoreMaximumFileBytes, filestore.ValidateMaximumFileBytes)
-	s.settings.SetValidator(config.SettingFileStoreInlineContentTypes, filestore.ValidateInlineContentTypes)
+func (s *Server) EnableFileStore(fileStore *files.Store) error {
+	s.settings.SetValidator(config.SettingFileStoreMaximumFileBytes, files.ValidateMaximumFileBytes)
+	s.settings.SetValidator(config.SettingFileStoreInlineContentTypes, files.ValidateInlineContentTypes)
 	if err := s.checkFileStoreSettings(); err != nil {
 		return err
 	}
-	module := filestore.NewServer(files, s.fileStoreLimits)
+	module := files.NewServer(fileStore, s.fileStoreLimits)
 	handler := module.Handler()
 	s.fileStore = module
 	s.fileStoreCalls.Store(module)
-	s.fileStoreModule.Store(files)
+	s.fileStoreModule.Store(fileStore)
 	s.fileStoreHandler.Store(&mountedStore{handler: handler})
 	return nil
 }
 
 // fileStoreLimits is the size limit and inline list in force, read from the
 // stored settings at the time of each request.
-func (s *Server) fileStoreLimits() filestore.Limits {
-	return filestore.Limits{
+func (s *Server) fileStoreLimits() files.Limits {
+	return files.Limits{
 		MaximumFileBytes:   int64(s.settings.Integer(config.SettingFileStoreMaximumFileBytes)),
 		InlineContentTypes: s.settings.StringList(config.SettingFileStoreInlineContentTypes),
 	}
@@ -130,10 +130,10 @@ func (s *Server) fileStoreLimits() filestore.Limits {
 // the API would refuse them.
 func (s *Server) checkFileStoreSettings() error {
 	limits := s.fileStoreLimits()
-	if err := filestore.ValidateMaximumFileBytes(fmt.Sprint(limits.MaximumFileBytes)); err != nil {
+	if err := files.ValidateMaximumFileBytes(fmt.Sprint(limits.MaximumFileBytes)); err != nil {
 		return fmt.Errorf("%s: %w", config.SettingFileStoreMaximumFileBytes, err)
 	}
-	if err := filestore.ValidateInlineContentTypes(strings.Join(limits.InlineContentTypes, ",")); err != nil {
+	if err := files.ValidateInlineContentTypes(strings.Join(limits.InlineContentTypes, ",")); err != nil {
 		return fmt.Errorf("%s: %w", config.SettingFileStoreInlineContentTypes, err)
 	}
 	return nil
@@ -142,20 +142,20 @@ func (s *Server) checkFileStoreSettings() error {
 // EnableReferenceStore serves reference-store from resolver, and makes the
 // chat links' references and grant-store's reference checks call it in
 // process. main calls it once, after EnableAccess.
-func (s *Server) EnableReferenceStore(resolver *referencestore.Resolver) error {
-	if err := referencestore.ValidateInProcessReaders(resolver.Types, resolver.InProcess); err != nil {
+func (s *Server) EnableReferenceStore(resolver *references.Resolver) error {
+	if err := references.ValidateInProcessReaders(resolver.Types, resolver.InProcess); err != nil {
 		return err
 	}
 	s.referenceResolver.Store(resolver)
 	mux := http.NewServeMux()
-	referencestore.RegisterHandlers(mux, &referencestore.Server{Resolver: resolver})
+	references.RegisterHandlers(mux, &references.Server{Resolver: resolver})
 	s.referenceStoreHandler.Store(&mountedStore{handler: mux})
 	return nil
 }
 
 // ReferenceAccessDirectory is what reference-store's access check reads,
 // from principal-store and grant-store in this process.
-func ReferenceAccessDirectory(principals *principals.Store, grants *grants.Store, directory grants.PrincipalDirectory) referencestore.AccessDirectory {
+func ReferenceAccessDirectory(principals *principals.Store, grants *grants.Store, directory grants.PrincipalDirectory) references.AccessDirectory {
 	return referenceAccessDirectory{principals: principals, grants: grants, directory: directory}
 }
 
@@ -165,25 +165,25 @@ type referenceAccessDirectory struct {
 	directory  grants.PrincipalDirectory
 }
 
-func (d referenceAccessDirectory) Standing(ctx context.Context, principalID string) (referencestore.PrincipalStanding, error) {
+func (d referenceAccessDirectory) Standing(ctx context.Context, principalID string) (references.PrincipalStanding, error) {
 	principal, err := d.principals.Get(ctx, principalID, false)
 	if errors.Is(err, principals.ErrNotFound) {
-		return referencestore.PrincipalStanding{}, fmt.Errorf("no principal %s", principalID)
+		return references.PrincipalStanding{}, fmt.Errorf("no principal %s", principalID)
 	}
 	if err != nil {
-		return referencestore.PrincipalStanding{}, err
+		return references.PrincipalStanding{}, err
 	}
-	return referencestore.PrincipalStanding{IsAdministrator: principal.IsAdministrator, Disabled: principal.DisabledAt != 0}, nil
+	return references.PrincipalStanding{IsAdministrator: principal.IsAdministrator, Disabled: principal.DisabledAt != 0}, nil
 }
 
-func (d referenceAccessDirectory) Grants(ctx context.Context, principalID string) ([]referencestore.HeldGrant, error) {
-	grants, err := d.grants.Effective(ctx, d.directory, principalID, referencestore.RelationCanSeeReferences, "")
+func (d referenceAccessDirectory) Grants(ctx context.Context, principalID string) ([]references.HeldGrant, error) {
+	grants, err := d.grants.Effective(ctx, d.directory, principalID, references.RelationCanSeeReferences, "")
 	if err != nil {
 		return nil, err
 	}
-	held := make([]referencestore.HeldGrant, 0, len(grants))
+	held := make([]references.HeldGrant, 0, len(grants))
 	for _, grant := range grants {
-		held = append(held, referencestore.HeldGrant{Relation: grant.Relation, ResourceType: grant.ResourceType,
+		held = append(held, references.HeldGrant{Relation: grant.Relation, ResourceType: grant.ResourceType,
 			ResourceID: grant.ResourceID, Revoked: grant.RevokedAt != 0})
 	}
 	return held, nil
@@ -202,9 +202,9 @@ func (s *Server) referenceStoreRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	if principalID, identified := principalIdentityOfRequest(r); identified {
-		ctx = referencestore.ContextWithCaller(ctx, referencestore.Caller{PrincipalID: principalID})
+		ctx = references.ContextWithCaller(ctx, references.Caller{PrincipalID: principalID})
 	} else if s.requestIsTheInternalServiceActingAsItself(r) {
-		ctx = referencestore.ContextWithCaller(ctx, referencestore.Caller{Unchecked: true})
+		ctx = references.ContextWithCaller(ctx, references.Caller{Unchecked: true})
 	}
 	http.StripPrefix(referenceStoreMountPrefix, store.handler).ServeHTTP(w, r.WithContext(ctx))
 }

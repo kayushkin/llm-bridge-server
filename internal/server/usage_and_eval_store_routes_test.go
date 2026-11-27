@@ -12,9 +12,9 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/usage"
 	usagestorehttpapi "github.com/kayushkin/llm-bridge-server/internal/agents/usage/httpapi"
-	"github.com/kayushkin/llm-bridge-server/internal/executors"
-	"github.com/kayushkin/llm-bridge-server/internal/operations"
-	"github.com/kayushkin/llm-bridge-server/internal/operationstore/operationstoretest"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/operations"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/executors"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/operationstore/operationstoretest"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 	"github.com/kayushkin/llm-bridge/msg"
 )

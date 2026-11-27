@@ -33,8 +33,8 @@ import (
 	"testing"
 	"time"
 
-	logstoreserver "github.com/kayushkin/llm-bridge-server/internal/sessionlog/logstore/server"
-	"github.com/kayushkin/llm-bridge-server/internal/sessionlog/sessionevents"
+	"github.com/kayushkin/llm-bridge-server/internal/sessionlog"
+	sessionlogserver "github.com/kayushkin/llm-bridge-server/internal/sessionlog/server"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge-server/internal/store/storetest"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -222,7 +222,7 @@ type benchmarkBench struct {
 	manager     *Manager
 	bridgeStore *store.Store
 	reads       sessionEventReads
-	sessionLog  *logstoreserver.Server
+	sessionLog  *sessionlogserver.Server
 	// restart makes a new manager over the same stores, as a restarted
 	// server would have.
 	restart func() *Manager
@@ -245,7 +245,7 @@ func singleCopyPathWith(name string, asynchronousCommit bool) sessionEventPath {
 			database := storetest.NewDatabase(b)
 			bridgeStore := database.OpenStore()
 			sessionLog := database.OpenSessionLog(asynchronousCommit)
-			singleCopy, err := sessionevents.OpenSingleCopy(context.Background(), bridgeStore, sessionLog)
+			singleCopy, err := sessionlog.OpenSingleCopy(context.Background(), bridgeStore, sessionLog)
 			if err != nil {
 				b.Fatal(err)
 			}

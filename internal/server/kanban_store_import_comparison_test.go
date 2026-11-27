@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
-	"github.com/kayushkin/llm-bridge-server/internal/references/referencestore"
+	"github.com/kayushkin/llm-bridge-server/internal/references"
 	"net/http/httptest"
 	"os"
 	"strings"
@@ -54,7 +54,7 @@ func TestImportedStandaloneKanbanStoreAnswers(t *testing.T) {
 	server, _, _ := testServerWithInstance(t, msg.HarnessMock)
 	// GET /api/entity-types serves reference-store's list of types, from
 	// reference-store in this process.
-	if err := server.EnableReferenceStore(&referencestore.Resolver{Types: referencestore.Types, Credentials: &referencestore.Credentials{}}); err != nil {
+	if err := server.EnableReferenceStore(&references.Resolver{Types: references.Types, Credentials: &references.Credentials{}}); err != nil {
 		t.Fatal(err)
 	}
 

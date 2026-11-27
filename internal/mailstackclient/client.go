@@ -2,7 +2,7 @@
 // question triage to address a drafted reply to the person who sent the mail
 // a card was filed from.
 //
-// mailstack runs in this process (internal/mail/mailstack); the client calls
+// mailstack runs in this process (internal/mail); the client calls
 // it in Go, as the internal service, which is past every per-person check, as
 // the standalone service's bearer token was.
 //
@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/backend"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/backend"
 )
 
 // MessageReader is mailstack as the client reads it: *mailstack.Server's

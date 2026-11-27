@@ -38,7 +38,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessions"
-	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
+	"github.com/kayushkin/llm-bridge-server/internal/filestorage/files"
 )
 
 // possessionStoreMountPrefix is where possession-store is mounted.
@@ -181,28 +181,28 @@ func (machines possessionHarnessMachines) MachineExists(_ context.Context, machi
 // PossessionOriginalFiles is file-store, in this process, as possession-store
 // keeps originals: one file per original an owner keeps, owner service
 // possession-store, owner ref the original's sha256, uploaded by the owner.
-func PossessionOriginalFiles(files *filestore.Store, limits func() filestore.Limits) possessions.OriginalFiles {
-	return possessionOriginalFiles{files: files, limits: limits, carry: filestore.CopyBlobs}
+func PossessionOriginalFiles(fileStore *files.Store, limits func() files.Limits) possessions.OriginalFiles {
+	return possessionOriginalFiles{files: fileStore, limits: limits, carry: files.CopyBlobs}
 }
 
 // PossessionOriginalFilesCarrying is PossessionOriginalFiles with KeepCopyOf
-// putting each file in by carry: an import passes filestore.LinkBlobs to bring
+// putting each file in by carry: an import passes files.LinkBlobs to bring
 // a standalone store's originals in as hard links, which take no room.
-func PossessionOriginalFilesCarrying(files *filestore.Store, limits func() filestore.Limits, carry filestore.BlobCarry) possessions.OriginalFiles {
+func PossessionOriginalFilesCarrying(files *files.Store, limits func() files.Limits, carry files.BlobCarry) possessions.OriginalFiles {
 	return possessionOriginalFiles{files: files, limits: limits, carry: carry}
 }
 
 type possessionOriginalFiles struct {
-	files  *filestore.Store
-	limits func() filestore.Limits
-	carry  filestore.BlobCarry
+	files  *files.Store
+	limits func() files.Limits
+	carry  files.BlobCarry
 }
 
 // possessionOriginalOwnerService is the owner_service of every original's file.
 const possessionOriginalOwnerService = "possession-store"
 
-func (originals possessionOriginalFiles) newFile(ownerPrincipalID, sum, mediaType string) filestore.NewFile {
-	return filestore.NewFile{ContentType: mediaType, Filename: sum,
+func (originals possessionOriginalFiles) newFile(ownerPrincipalID, sum, mediaType string) files.NewFile {
+	return files.NewFile{ContentType: mediaType, Filename: sum,
 		OwnerService: possessionOriginalOwnerService, OwnerRef: sum, UploadedByPrincipalID: ownerPrincipalID}
 }
 

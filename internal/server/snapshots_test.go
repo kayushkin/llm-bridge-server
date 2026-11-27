@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/sessions/snapshotstore/snapshotstoretest"
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/snapshots/snapshotstest"
 
-	snapshotstore "github.com/kayushkin/llm-bridge-server/internal/sessions/snapshotstore"
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/snapshots"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -37,7 +37,7 @@ func snapshotTestServer(t *testing.T) (*Server, *store.Store) {
 	t.Helper()
 	srv, st, _ := testServerWithInstance(t, msg.HarnessClaudeCode)
 
-	srv.snapshotStore = snapshotstoretest.NewStore(t)
+	srv.snapshotStore = snapshotstest.NewStore(t)
 	return srv, st
 }
 
@@ -67,13 +67,13 @@ func captureUnderHarnessID(t *testing.T, srv *Server, harnessID string) string {
 	if err := os.WriteFile(path, []byte("package before\n"), 0o644); err != nil {
 		t.Fatalf("write subject: %v", err)
 	}
-	if _, err := srv.snapshotStore.Capture(harnessID, snapTestToolUseID, snapshotstore.PhaseBefore, path); err != nil {
+	if _, err := srv.snapshotStore.Capture(harnessID, snapTestToolUseID, snapshots.PhaseBefore, path); err != nil {
 		t.Fatalf("capture before: %v", err)
 	}
 	if err := os.WriteFile(path, []byte("package after\n"), 0o644); err != nil {
 		t.Fatalf("rewrite subject: %v", err)
 	}
-	if _, err := srv.snapshotStore.Capture(harnessID, snapTestToolUseID, snapshotstore.PhaseAfter, path); err != nil {
+	if _, err := srv.snapshotStore.Capture(harnessID, snapTestToolUseID, snapshots.PhaseAfter, path); err != nil {
 		t.Fatalf("capture after: %v", err)
 	}
 	return path

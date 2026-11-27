@@ -11,8 +11,8 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelrouting"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/executors"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	"github.com/kayushkin/llm-bridge-server/internal/executors"
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )

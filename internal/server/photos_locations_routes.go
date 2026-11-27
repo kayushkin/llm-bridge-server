@@ -24,7 +24,7 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locations"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photos"
-	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
+	"github.com/kayushkin/llm-bridge-server/internal/filestorage/files"
 )
 
 // Where each store is mounted.
@@ -88,28 +88,28 @@ func (s *Server) EnablePhotosAndLocations(modules PhotosAndLocationsModules) err
 // its thumbnails: one file per photo, owner service photo-store, owner ref
 // the photo's id, uploaded by the photo's owner. limits is file-store's size
 // limit in force.
-func PhotoThumbnailFiles(files *filestore.Store, limits func() filestore.Limits) photos.ThumbnailFiles {
-	return photoThumbnailFiles{files: files, limits: limits, carry: filestore.CopyBlobs}
+func PhotoThumbnailFiles(fileStore *files.Store, limits func() files.Limits) photos.ThumbnailFiles {
+	return photoThumbnailFiles{files: fileStore, limits: limits, carry: files.CopyBlobs}
 }
 
 // PhotoThumbnailFilesCarrying is PhotoThumbnailFiles with KeepCopyOf putting
-// each file in by carry: an import passes filestore.LinkBlobs to bring a
+// each file in by carry: an import passes files.LinkBlobs to bring a
 // standalone store's thumbnails in as hard links, which take no room.
-func PhotoThumbnailFilesCarrying(files *filestore.Store, limits func() filestore.Limits, carry filestore.BlobCarry) photos.ThumbnailFiles {
+func PhotoThumbnailFilesCarrying(files *files.Store, limits func() files.Limits, carry files.BlobCarry) photos.ThumbnailFiles {
 	return photoThumbnailFiles{files: files, limits: limits, carry: carry}
 }
 
 type photoThumbnailFiles struct {
-	files  *filestore.Store
-	limits func() filestore.Limits
-	carry  filestore.BlobCarry
+	files  *files.Store
+	limits func() files.Limits
+	carry  files.BlobCarry
 }
 
 // photoThumbnailOwnerService is the owner_service of every thumbnail file.
 const photoThumbnailOwnerService = "photo-store"
 
-func (thumbnails photoThumbnailFiles) newFile(ownerPrincipalID, photoID string) filestore.NewFile {
-	return filestore.NewFile{ContentType: "image/jpeg", Filename: photoID + ".jpg",
+func (thumbnails photoThumbnailFiles) newFile(ownerPrincipalID, photoID string) files.NewFile {
+	return files.NewFile{ContentType: "image/jpeg", Filename: photoID + ".jpg",
 		OwnerService: photoThumbnailOwnerService, OwnerRef: photoID, UploadedByPrincipalID: ownerPrincipalID}
 }
 

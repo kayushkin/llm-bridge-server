@@ -13,7 +13,7 @@ import (
 
 	natsbus "github.com/kayushkin/bus"
 
-	"github.com/kayushkin/llm-bridge-server/internal/automation/rulestore"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/rules"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/api"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/bus"
 	schedulerconfig "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/config"
@@ -206,7 +206,7 @@ func importSchedulerCmd(args []string) {
 const ruleStoreEffectCallTimeout = 30 * time.Second
 
 func openRuleStoreModule(ctx context.Context, url string) (*sql.DB, error) {
-	module, err := rulestore.Module()
+	module, err := rules.Module()
 	if err != nil {
 		return nil, err
 	}
@@ -233,7 +233,7 @@ func enableRuleStore(ctx context.Context, cfg *config.Config, srv *server.Server
 	if err != nil {
 		return nil, fmt.Errorf("rule-store: %w", err)
 	}
-	store := rulestore.New(pool)
+	store := rules.New(pool)
 
 	// Sessions, cards and entity tags are read through the stores' Go
 	// methods. The session feed is this server's /session-events, a stream
@@ -243,16 +243,16 @@ func enableRuleStore(ctx context.Context, cfg *config.Config, srv *server.Server
 	// kanban-store's handlers in this process, as the internal service.
 	bridgeBaseURL, _ := srv.HTTPClientToThisServer(0)
 	_, bridgeStream := srv.HTTPClientToThisServer(0)
-	feed := &rulestore.LLMBridge{BaseURL: bridgeBaseURL, Stream: bridgeStream}
+	feed := &rules.LLMBridge{BaseURL: bridgeBaseURL, Stream: bridgeStream}
 	sessions := srv.RuleStoreSessions(feed)
 	kanban := srv.RuleStoreKanban()
 	_, effectsOnThisServer := srv.HTTPClientToThisServer(0)
-	owners := rulestore.NewOwnerCalls(feed, &rulestore.KanbanStore{BaseURL: server.KanbanStoreInProcessBaseURL})
+	owners := rules.NewOwnerCalls(feed, &rules.KanbanStore{BaseURL: server.KanbanStoreInProcessBaseURL})
 	owners.Client = &http.Client{Timeout: ruleStoreEffectCallTimeout, Transport: transportByHost{
 		hostOf(bridgeBaseURL):                      effectsOnThisServer.Transport,
 		hostOf(server.KanbanStoreInProcessBaseURL): kanbanClient.Transport,
 	}}
-	reactor := rulestore.NewReactor(store, sessions, kanban, owners, sweepInterval)
+	reactor := rules.NewReactor(store, sessions, kanban, owners, sweepInterval)
 
 	lifetime, stop := context.WithCancel(ctx)
 	if reactorEnabled {
@@ -270,7 +270,7 @@ func enableRuleStore(ctx context.Context, cfg *config.Config, srv *server.Server
 		reactor.SwitchOff(config.SettingRuleStoreReactorEnabled + " is off on this server")
 	}
 	routes := http.NewServeMux()
-	rulestore.RegisterHandlers(lifetime, routes, store, reactor, kanban)
+	rules.RegisterHandlers(lifetime, routes, store, reactor, kanban)
 	srv.EnableRuleStore(routes)
 	if reactorEnabled {
 		log.Printf("postgres: rule-store open, served at /rule-store/; its reactor runs here")
@@ -315,7 +315,7 @@ func importRuleStoreCmd(args []string) {
 		importFailed(err)
 	}
 	defer pool.Close()
-	counts, err := rulestore.ImportStandaloneDatabase(ctx, pool, path)
+	counts, err := rules.ImportStandaloneDatabase(ctx, pool, path)
 	if err != nil {
 		importFailed(fmt.Errorf("nothing was imported: %w", err))
 	}

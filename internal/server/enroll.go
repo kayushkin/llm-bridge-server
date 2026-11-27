@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	harnessstore "github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore"
+	"github.com/kayushkin/llm-bridge-server/internal/machines"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -91,7 +91,7 @@ func (s *Server) handleEnrollRunner(w http.ResponseWriter, r *http.Request) {
 			_ = s.harnessStore.DeleteMachine(machine.ID)
 		}
 		switch {
-		case errors.Is(err, harnessstore.ErrEnrollmentExpired):
+		case errors.Is(err, machines.ErrEnrollmentExpired):
 			http.Error(w, err.Error(), http.StatusGone)
 		default:
 			http.Error(w, fmt.Sprintf("consume enrollment: %v", err), http.StatusUnauthorized)
@@ -100,12 +100,12 @@ func (s *Server) handleEnrollRunner(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Mint and store the runner token.
-	token, err := harnessstore.GenerateRunnerToken()
+	token, err := machines.GenerateRunnerToken()
 	if err != nil {
 		http.Error(w, fmt.Sprintf("mint token: %v", err), http.StatusInternalServerError)
 		return
 	}
-	if err := s.harnessStore.SetMachineRunnerTokenHash(machine.ID, harnessstore.HashRunnerToken(token)); err != nil {
+	if err := s.harnessStore.SetMachineRunnerTokenHash(machine.ID, machines.HashRunnerToken(token)); err != nil {
 		http.Error(w, fmt.Sprintf("store token: %v", err), http.StatusInternalServerError)
 		return
 	}

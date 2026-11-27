@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"github.com/kayushkin/llm-bridge-server/internal/agents/hooks/hookstest"
-	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore/harnessstoretest"
-	"github.com/kayushkin/llm-bridge-server/internal/sessions/snapshotstore/snapshotstoretest"
+	"github.com/kayushkin/llm-bridge-server/internal/machines/machinestest"
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/snapshots/snapshotstest"
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 )
@@ -117,13 +117,13 @@ func newServerWithAllStoresConfigured(t *testing.T, adjustConfig func(*config.Co
 	as := openTestAgentStore(t)
 	ms := openTestMemoryStore(t)
 
-	hs := harnessstoretest.NewStore(t)
+	hs := machinestest.NewStore(t)
 
 	hks := hookstest.NewStore(t)
 
 	mds := openTestModelStore(t)
 
-	ss := snapshotstoretest.NewStore(t)
+	ss := snapshotstest.NewStore(t)
 
 	cfg := &config.Config{
 		ImagesDir:       filepath.Join(dir, "images"),

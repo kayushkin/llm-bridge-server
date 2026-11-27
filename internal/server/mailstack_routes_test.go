@@ -10,12 +10,12 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
-	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
-	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack"
-	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/accounts"
-	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/backend"
-	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/localmail"
-	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/mailmodule"
+	"github.com/kayushkin/llm-bridge-server/internal/filestorage/files"
+	"github.com/kayushkin/llm-bridge-server/internal/mail"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/accounts"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/backend"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/localmail"
+	"github.com/kayushkin/llm-bridge-server/internal/mail/mailmodule"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/model"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 )
@@ -35,13 +35,13 @@ func newMailstackTestServer(t *testing.T) *mailstackTestServer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fileModule, err := filestore.Module()
+	fileModule, err := files.Module()
 	if err != nil {
 		t.Fatal(err)
 	}
 	database := postgrestest.NewDatabase(t, module, fileModule)
 	db := mailmodule.New(database.Open(module))
-	files, err := filestore.New(database.Open(fileModule), t.TempDir())
+	files, err := files.New(database.Open(fileModule), t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func newMailstackTestServer(t *testing.T) *mailstackTestServer {
 		t.Fatal(err)
 	}
 	local := localmail.New(db)
-	test.server.EnableMailstack(mailstack.NewServer(mailstack.ServerParts{
+	test.server.EnableMailstack(mail.NewServer(mail.ServerParts{
 		Accounts: mailAccounts, LocalMail: local, People: test.server.MailstackPeopleDirectory(test.stores),
 		Files: test.server.MailstackFileStore(),
 	}))
@@ -173,7 +173,7 @@ func TestMailstackTakesAPushedDeliveryWithAnIngressCredentialAndNoLogin(t *testi
 	body := `{"deliveries":[{"delivery_id":"d1","account_id":"desk","message":{"provider_message_id":"SRC-9","source_revision":"r1",
 		"subject":"Pushed","from":{"email":"pat@demo.invalid"},"received_at":"2026-10-02T09:30:00Z","body_text":"hello"}}]}`
 	response := test.call(t, callerWithNoCredential, "POST", path, body)
-	if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), mailstack.IngressTokenHeader) {
+	if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), mail.IngressTokenHeader) {
 		t.Fatalf("no ingress token: %d %s, want mailstack's 401 naming its header", response.Code, response.Body)
 	}
 
@@ -185,7 +185,7 @@ func TestMailstackTakesAPushedDeliveryWithAnIngressCredentialAndNoLogin(t *testi
 		t.Fatalf("mint a credential: %d %s", minted.Code, minted.Body)
 	}
 	delivering := accessTestCaller{"a sender with an ingress credential", func(_ *accessTestServer, request *http.Request) {
-		request.Header.Set(mailstack.IngressTokenHeader, credential.Token)
+		request.Header.Set(mail.IngressTokenHeader, credential.Token)
 	}}
 	response = test.call(t, delivering, "POST", path, body)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"accepted"`) {

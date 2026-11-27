@@ -3,7 +3,7 @@ package harness
 import (
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/sessionlog/sessionevents"
+	"github.com/kayushkin/llm-bridge-server/internal/sessionlog"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -12,7 +12,7 @@ import (
 // SetSessionEventStore names one: every store and read fails.
 type sessionEventsNotEnabled struct{}
 
-var _ sessionevents.Store = sessionEventsNotEnabled{}
+var _ sessionlog.Store = sessionEventsNotEnabled{}
 
 func (sessionEventsNotEnabled) StoreSessionEvent(store.SessionEventRecord) (int64, error) {
 	return 0, ErrSessionEventLogNotEnabled

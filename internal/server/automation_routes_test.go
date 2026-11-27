@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/automation/rulestore"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/rules"
 	schedulerapi "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/api"
 	schedulerconfig "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/config"
 	schedulercron "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/cron"
@@ -103,24 +103,24 @@ func TestRuleStoreRoutesAnswerAndDecideNothingWhileTheReactorIsOff(t *testing.T)
 	if off := gated.requestAsService(t, "GET", "/rule-store/rules"); off.Code != http.StatusServiceUnavailable || !strings.Contains(off.Body.String(), "rule_store_off") {
 		t.Fatalf("before the module opens = %d %s, want 503 rule_store_off", off.Code, off.Body)
 	}
-	module, err := rulestore.Module()
+	module, err := rules.Module()
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := rulestore.New(postgrestest.NewDatabase(t, module).Open(module))
-	subjects, err := store.ObserveSubjects([]rulestore.SubjectObservation{{Type: rulestore.SubjectTypeSession, ID: "br_1", State: "completed", Snapshot: json.RawMessage(`{"session_id":"br_1","state":"completed"}`)}})
+	store := rules.New(postgrestest.NewDatabase(t, module).Open(module))
+	subjects, err := store.ObserveSubjects([]rules.SubjectObservation{{Type: rules.SubjectTypeSession, ID: "br_1", State: "completed", Snapshot: json.RawMessage(`{"session_id":"br_1","state":"completed"}`)}})
 	if err != nil || len(subjects) != 1 {
 		t.Fatalf("ObserveSubjects = %v, %v", subjects, err)
 	}
-	bridge := &rulestore.LLMBridge{}
-	kanban := &rulestore.KanbanStore{}
-	reactor := rulestore.NewReactor(store, bridge, kanban, rulestore.NewOwnerCalls(bridge, kanban), 0)
+	bridge := &rules.LLMBridge{}
+	kanban := &rules.KanbanStore{}
+	reactor := rules.NewReactor(store, bridge, kanban, rules.NewOwnerCalls(bridge, kanban), 0)
 	reactor.SwitchOff("the reactor is off in this test")
 	routes := http.NewServeMux()
-	rulestore.RegisterHandlers(context.Background(), routes, store, reactor, kanban)
+	rules.RegisterHandlers(context.Background(), routes, store, reactor, kanban)
 	gated.server.EnableRuleStore(routes)
 
-	created := gated.requestAsServiceWithJSON(t, "POST", "/rule-store/rules", map[string]any{"name": "completed sessions", "source": rulestore.SourceSession, "created_by": "principal_000001"})
+	created := gated.requestAsServiceWithJSON(t, "POST", "/rule-store/rules", map[string]any{"name": "completed sessions", "source": rules.SourceSession, "created_by": "principal_000001"})
 	if created.Code != http.StatusCreated || !strings.Contains(created.Body.String(), `"id":"rule_000001"`) {
 		t.Fatalf("POST a rule = %d %s", created.Code, created.Body)
 	}
@@ -146,7 +146,7 @@ func TestRuleStoreRoutesAnswerAndDecideNothingWhileTheReactorIsOff(t *testing.T)
 func TestRuleStoreReadsSessionsAndTheirFeedFromThisServerInProcess(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
 	baseURL, client := gated.server.HTTPClientToThisServer(0)
-	bridge := gated.server.RuleStoreSessions(&rulestore.LLMBridge{BaseURL: baseURL, Stream: client})
+	bridge := gated.server.RuleStoreSessions(&rules.LLMBridge{BaseURL: baseURL, Stream: client})
 	newSessionForSignals(t, gated.store, "br_ruled", msg.SessionTypeAutonomous)
 	if sessions, err := bridge.ListSessions(context.Background()); err != nil || len(sessions) != 1 || !strings.Contains(string(sessions[0]), `"session_id":"br_ruled"`) {
 		t.Fatalf("ListSessions = %s, %v", sessions, err)
@@ -159,11 +159,11 @@ func TestRuleStoreReadsSessionsAndTheirFeedFromThisServerInProcess(t *testing.T)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	hello := make(chan rulestore.FeedHello, 1)
+	hello := make(chan rules.FeedHello, 1)
 	followed := make(chan error, 1)
 	go func() {
-		_, err := bridge.FollowSessions(ctx, "", rulestore.FeedHandler{
-			Hello:   func(frame rulestore.FeedHello) error { hello <- frame; return nil },
+		_, err := bridge.FollowSessions(ctx, "", rules.FeedHandler{
+			Hello:   func(frame rules.FeedHello) error { hello <- frame; return nil },
 			Upsert:  func(json.RawMessage) error { return nil },
 			Delete:  func(string) error { return nil },
 			Unknown: func(string) error { return nil },
@@ -195,7 +195,7 @@ func TestRuleStoreReadsKanbanInProcess(t *testing.T) {
 	if err != nil || len(card.Placements) != 1 || card.Placements[0].BoardID != test.unseenBoardID || card.Placements[0].UpdatedAt == "" {
 		t.Fatalf("Card = %+v, %v", card, err)
 	}
-	if _, err := kanban.Card(ctx, "card-nobody-has"); !errors.Is(err, rulestore.ErrKanbanNotFound) {
+	if _, err := kanban.Card(ctx, "card-nobody-has"); !errors.Is(err, rules.ErrKanbanNotFound) {
 		t.Errorf("a card on no board: %v, want ErrKanbanNotFound", err)
 	}
 	arrivals, err := kanban.ColumnCards(ctx, test.unseenBoardID, test.unseenColumnID)

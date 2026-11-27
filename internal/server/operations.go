@@ -11,17 +11,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/automation/operations"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/executors"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/operationstore"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	"github.com/kayushkin/llm-bridge-server/internal/executors"
 	"github.com/kayushkin/llm-bridge-server/internal/grantclient"
-	"github.com/kayushkin/llm-bridge-server/internal/operations"
-	"github.com/kayushkin/llm-bridge-server/internal/operationstore"
 	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
-// The operation routes. The coordinator (internal/operations) does the work;
+// The operation routes. The coordinator (internal/automation/operations) does the work;
 // these handlers decide who is asking, check the organization with
 // principal-store, and translate the coordinator's answers to HTTP. The
 // contract is docs/OPERATIONS.md in llm-bridge.

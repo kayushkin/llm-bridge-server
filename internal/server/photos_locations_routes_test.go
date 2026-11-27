@@ -11,7 +11,7 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locations"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photos"
-	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
+	"github.com/kayushkin/llm-bridge-server/internal/filestorage/files"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 )
 
@@ -86,9 +86,9 @@ func TestAPhotoAndItsThumbnailAreReachedOnlyByItsOwnerAndAnAdministrator(t *test
 	if thumbnail.Code != http.StatusOK || !bytes.Equal(thumbnail.Body.Bytes(), testThumbnail) {
 		t.Fatalf("the owner's thumbnail = %d, %d bytes", thumbnail.Code, thumbnail.Body.Len())
 	}
-	files, err := gated.server.fileStoreModule.Load().List(filestore.Filter{OwnerService: photoThumbnailOwnerService, Limit: 100})
-	if err != nil || len(files) != 1 || files[0].OwnerRef != id || files[0].UploadedByPrincipalID != firstTestPrincipalID {
-		t.Fatalf("file-store holds %d thumbnail files (%v), want one for %s", len(files), err, id)
+	storedFiles, err := gated.server.fileStoreModule.Load().List(files.Filter{OwnerService: photoThumbnailOwnerService, Limit: 100})
+	if err != nil || len(storedFiles) != 1 || storedFiles[0].OwnerRef != id || storedFiles[0].UploadedByPrincipalID != firstTestPrincipalID {
+		t.Fatalf("file-store holds %d thumbnail files (%v), want one for %s", len(storedFiles), err, id)
 	}
 
 	for _, denied := range []string{path, path + "/thumbnail"} {
@@ -141,7 +141,7 @@ func TestAPhotoAndItsThumbnailAreReachedOnlyByItsOwnerAndAnAdministrator(t *test
 	if response := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", path+"/purge", nil); response.Code != http.StatusOK {
 		t.Fatalf("purge = %d %s", response.Code, response.Body)
 	}
-	if files, err := gated.server.fileStoreModule.Load().List(filestore.Filter{OwnerService: photoThumbnailOwnerService, Limit: 100}); err != nil || len(files) != 0 {
+	if files, err := gated.server.fileStoreModule.Load().List(files.Filter{OwnerService: photoThumbnailOwnerService, Limit: 100}); err != nil || len(files) != 0 {
 		t.Errorf("after the purge file-store holds %d thumbnail files (%v), want none", len(files), err)
 	}
 }

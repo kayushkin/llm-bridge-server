@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
-	"github.com/kayushkin/llm-bridge-server/internal/references/referencestore"
-	"github.com/kayushkin/llm-bridge-server/internal/repositories/repostore"
+	"github.com/kayushkin/llm-bridge-server/internal/filestorage/files"
+	"github.com/kayushkin/llm-bridge-server/internal/references"
+	"github.com/kayushkin/llm-bridge-server/internal/repositories/repos"
 )
 
 // The five busiest calls this server makes to the stores inside it, timed
@@ -68,8 +68,8 @@ func TestInternalCallTimings(t *testing.T) {
 
 	t.Run("reference resolve", func(t *testing.T) {
 		gated := newGatedTestServer(t, nil)
-		repos := enableRepositoriesAndReferencesOnTestDatabase(t, gated.server)
-		if _, err := repos.UpsertRepo(&repostore.Repo{Name: "webapp", GitRemote: "git@github.com:example-owner/webapp.git"}); err != nil {
+		repoStore := enableRepositoriesAndReferencesOnTestDatabase(t, gated.server)
+		if _, err := repoStore.UpsertRepo(&repos.Repo{Name: "webapp", GitRemote: "git@github.com:example-owner/webapp.git"}); err != nil {
 			t.Fatal(err)
 		}
 		resolver := gated.server.referenceResolver.Load()
@@ -78,7 +78,7 @@ func TestInternalCallTimings(t *testing.T) {
 		reportInternalCallTiming(t, func(b *testing.B) {
 			b.ReportAllocs()
 			for range b.N {
-				results, lookupErrors := resolver.Resolve(ctx, referencestore.Caller{Unchecked: true}, []string{"repo:webapp"})
+				results, lookupErrors := resolver.Resolve(ctx, references.Caller{Unchecked: true}, []string{"repo:webapp"})
 				if len(lookupErrors) > 0 || len(results["repo:webapp"]) != 1 {
 					b.Fatalf("Resolve = %+v, %+v", results, lookupErrors)
 				}
@@ -91,7 +91,7 @@ func TestInternalCallTimings(t *testing.T) {
 		enableRepositoriesAndReferencesOnTestDatabase(t, gated.server)
 		content := strings.Repeat("a session file's bytes\n", 2800) // about 64 KB
 		stored, err := gated.server.fileStore.Accept(strings.NewReader(content), int64(len(content)), "text/plain",
-			filestore.NewFile{Filename: "notes.txt", OwnerService: sessionFileOwnerService, OwnerRef: "br_timed"})
+			files.NewFile{Filename: "notes.txt", OwnerService: sessionFileOwnerService, OwnerRef: "br_timed"})
 		if err != nil {
 			t.Fatal(err)
 		}

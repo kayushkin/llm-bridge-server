@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore/harnessstoretest"
+	"github.com/kayushkin/llm-bridge-server/internal/machines/machinestest"
 
 	"github.com/gorilla/websocket"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models"
@@ -345,7 +345,7 @@ func newLiveBridge(t *testing.T, h liveHarness) *liveBridge {
 	dir := t.TempDir()
 	st := newTestBridgeStore(t)
 
-	hs := harnessstoretest.NewStore(t)
+	hs := machinestest.NewStore(t)
 	mach := &msg.Machine{ID: "m_live", Name: "live-machine", Hostname: "localhost", Transport: msg.TransportLocal}
 	if err := hs.CreateMachine(mach); err != nil {
 		t.Fatalf("seed machine: %v", err)

@@ -9,7 +9,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 	"github.com/kayushkin/llm-bridge/msg"
 
-	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/runnerprotocol"
+	"github.com/kayushkin/llm-bridge-server/internal/machines/runnerprotocol"
 )
 
 // These two tests pin the premise that pickAnthropicKey's doc comment now
