@@ -8,6 +8,8 @@ import (
 	"sort"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/snapshots"
 )
 
@@ -59,7 +61,7 @@ func (s *Server) handleGetSnapshots(w http.ResponseWriter, r *http.Request) {
 	// A session that never reached its harness has no harness id and so cannot
 	// have captured anything. Empty is the honest answer, not an error.
 	if sess.HarnessSessionID == "" {
-		writeJSON(w, map[string]any{"files": []fileSnapshots{}})
+		httpjson.WriteJSON(w, map[string]any{"files": []fileSnapshots{}})
 		return
 	}
 
@@ -68,7 +70,7 @@ func (s *Server) handleGetSnapshots(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, map[string]any{"files": groupSnapshotsByFile(snaps)})
+	httpjson.WriteJSON(w, map[string]any{"files": groupSnapshotsByFile(snaps)})
 }
 
 // handleGetSnapshotBlob streams the raw bytes of a stored blob. Content is

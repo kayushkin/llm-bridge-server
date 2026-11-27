@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -68,7 +70,7 @@ func (s *Server) handleSwitchMode(w http.ResponseWriter, r *http.Request) {
 	// 200 with the unchanged session instead so callers can always
 	// JSON.parse the response.
 	if sess.Mode == req.Mode {
-		writeJSON(w, sess)
+		httpjson.WriteJSON(w, sess)
 		return
 	}
 
@@ -132,9 +134,9 @@ func (s *Server) handleSwitchMode(w http.ResponseWriter, r *http.Request) {
 	// the session JSON — matches the create-session response shape.
 	if sess.Mode == msg.SessionModePTY {
 		if hub := s.harness.AttachHubFor(bridgeID); hub != nil {
-			writeJSON(w, createSessionResponse{Session: sess, AttachToken: hub.Token()})
+			httpjson.WriteJSON(w, createSessionResponse{Session: sess, AttachToken: hub.Token()})
 			return
 		}
 	}
-	writeJSON(w, sess)
+	httpjson.WriteJSON(w, sess)
 }

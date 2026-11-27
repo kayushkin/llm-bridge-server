@@ -30,6 +30,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -39,7 +41,7 @@ import (
 func (s *Server) serveDelegatingAgent(w http.ResponseWriter, r *http.Request, pattern string, rule routeAccessRule) {
 	scheme, token, _ := strings.Cut(r.Header.Get("Authorization"), " ")
 	if !strings.EqualFold(scheme, "Bearer") || strings.TrimSpace(token) == "" {
-		writeJSONError(w, http.StatusUnauthorized, "invalid_session_posting_token",
+		httpjson.WriteJSONError(w, http.StatusUnauthorized, "invalid_session_posting_token",
 			"the Authorization header must be \"Bearer <session posting token>\"")
 		return
 	}
@@ -58,12 +60,12 @@ func (s *Server) serveDelegatingAgent(w http.ResponseWriter, r *http.Request, pa
 	if slices.Contains(sessionStatesThatEndSessionAgentTokens, msg.SessionState(agentSession.State)) {
 		buttonRunning, err := s.store.SessionHasRunningCommandAction(agentSessionID)
 		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "session_actions_unreadable", fmt.Sprintf(
+			httpjson.WriteJSONError(w, http.StatusInternalServerError, "session_actions_unreadable", fmt.Sprintf(
 				"could not read whether session %s has a button running: %v", agentSessionID, err))
 			return
 		}
 		if !buttonRunning {
-			writeJSONError(w, http.StatusForbidden, "delegating_session_ended", fmt.Sprintf(
+			httpjson.WriteJSONError(w, http.StatusForbidden, "delegating_session_ended", fmt.Sprintf(
 				"session %s is %s, so its agent may not start or drive delegates", agentSessionID, agentSession.State))
 			return
 		}
@@ -93,7 +95,7 @@ func (s *Server) serveDelegatingAgent(w http.ResponseWriter, r *http.Request, pa
 	case sessionAgentReachesItsDelegate, sessionAgentReachesItsDelegateOrItself:
 		targetSessionID, err := pathValueForPattern(pattern, r.URL.EscapedPath(), rule.ownedResourcePathValueName)
 		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "route_rule_invalid", err.Error())
+			httpjson.WriteJSONError(w, http.StatusInternalServerError, "route_rule_invalid", err.Error())
 			return
 		}
 		ownSession := rule.sessionAgentAccess == sessionAgentReachesItsDelegateOrItself && targetSessionID == agentSessionID
@@ -104,17 +106,17 @@ func (s *Server) serveDelegatingAgent(w http.ResponseWriter, r *http.Request, pa
 	case sessionAgentReadsCatalog:
 	case sessionAgentUsesPeerMessaging:
 		if requestCameThroughPublicProxy(r) {
-			writeJSONError(w, http.StatusForbidden, "session_posting_token_not_public", fmt.Sprintf(
+			httpjson.WriteJSONError(w, http.StatusForbidden, "session_posting_token_not_public", fmt.Sprintf(
 				"%s takes a session posting token only from this server's own harness children, never through the public proxy", pattern))
 			return
 		}
 		if agentSession.PrincipalID != "" && !caller.isAdministrator {
-			writeJSONError(w, http.StatusForbidden, "peer_messaging_needs_an_administrator", fmt.Sprintf(
+			httpjson.WriteJSONError(w, http.StatusForbidden, "peer_messaging_needs_an_administrator", fmt.Sprintf(
 				"session %s runs as %s, who is not an administrator here, so its agent may not message connected servers", agentSessionID, agentSession.PrincipalID))
 			return
 		}
 	default:
-		writeJSONError(w, http.StatusInternalServerError, "route_rule_invalid", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "route_rule_invalid", fmt.Sprintf(
 			"route %q lets a session's agent in with a kind of access this server does not handle", pattern))
 		return
 	}
@@ -169,7 +171,7 @@ func delegateRequestRefusal(req *CreateSessionRequest, agentSessionID, agentPrin
 // anything is read.
 func (s *Server) serveSessionReadingAgent(w http.ResponseWriter, r *http.Request, pattern string, rule routeAccessRule, agentSession *store.Session, caller requestCaller) {
 	if requestCameThroughPublicProxy(r) {
-		writeJSONError(w, http.StatusForbidden, "session_posting_token_not_public", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusForbidden, "session_posting_token_not_public", fmt.Sprintf(
 			"%s takes a session posting token only from this server's own harness children, never through the public proxy", pattern))
 		return
 	}
@@ -179,7 +181,7 @@ func (s *Server) serveSessionReadingAgent(w http.ResponseWriter, r *http.Request
 	}
 	origin, throughPeer, err := s.store.SessionPeerOriginOfLineage(agentSession.SessionID)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "session_peer_origin_unreadable", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "session_peer_origin_unreadable", err.Error())
 		return
 	}
 	if throughPeer {

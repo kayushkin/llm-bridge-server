@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -31,7 +33,7 @@ func (s *Server) handleListPendingHooks(w http.ResponseWriter, r *http.Request) 
 	if pending == nil {
 		pending = []msg.Event{}
 	}
-	writeJSON(w, pending)
+	httpjson.WriteJSON(w, pending)
 }
 
 // handleResolveHook delivers a decision for an awaiting_resolution hook to
@@ -81,7 +83,7 @@ func (s *Server) handleResolveHook(w http.ResponseWriter, r *http.Request) {
 		s.broadcastStaleResolution(bridgeID, requestID, stale)
 	}
 
-	writeJSON(w, map[string]any{
+	httpjson.WriteJSON(w, map[string]any{
 		"status":          "resolved",
 		"parked_delivery": delivered,
 	})
@@ -197,7 +199,7 @@ func (s *Server) handleSetGlobalPermissionMode(w http.ResponseWriter, r *http.Re
 
 	s.bridgePrefs.setPermissionMode(req.Mode)
 
-	writeJSON(w, map[string]any{
+	httpjson.WriteJSON(w, map[string]any{
 		"status": "ok",
 		"mode":   req.Mode,
 	})
@@ -289,7 +291,7 @@ func (s *Server) handleSetSessionPermissionMode(w http.ResponseWriter, r *http.R
 	if req.DisableNetwork != nil {
 		resp["disable_network"] = *req.DisableNetwork
 	}
-	writeJSON(w, resp)
+	httpjson.WriteJSON(w, resp)
 }
 
 // autoAllowParkedPermissionAsks delivers an "allow" verdict to every
@@ -341,7 +343,7 @@ func (s *Server) handleSetBypassPermissions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	s.bridgePrefs.setPermissionMode(bypassBoolToMode(req.Enabled))
-	writeJSON(w, map[string]any{
+	httpjson.WriteJSON(w, map[string]any{
 		"status":  "ok",
 		"enabled": req.Enabled,
 	})
@@ -382,7 +384,7 @@ func (s *Server) handleSetSessionBypass(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	writeJSON(w, map[string]any{
+	httpjson.WriteJSON(w, map[string]any{
 		"status":             "ok",
 		"bridge_id":          bridgeID,
 		"bypass_permissions": req.Enabled,

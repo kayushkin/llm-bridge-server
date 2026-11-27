@@ -11,6 +11,8 @@ import (
 	"os/exec"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/agents/hooks"
 	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 	"github.com/kayushkin/llm-bridge-server/internal/ids"
@@ -42,7 +44,7 @@ func (s *Server) handleCreateHook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusCreated)
-	writeJSON(w, req)
+	httpjson.WriteJSON(w, req)
 }
 
 // hookMatcherHelpByHarness says what Hook.Matcher means to each wired harness.
@@ -76,7 +78,7 @@ func (s *Server) handleHookOptions(w http.ResponseWriter, r *http.Request) {
 			Harness: harness, ConfigKey: configKey, KnownEvents: events, MatcherHelp: hookMatcherHelpByHarness[harness],
 		})
 	}
-	writeJSON(w, options)
+	httpjson.WriteJSON(w, options)
 }
 
 // handleListHooks lists hooks. Query params (all optional): harness, event,
@@ -101,7 +103,7 @@ func (s *Server) handleListHooks(w http.ResponseWriter, r *http.Request) {
 	if hooks == nil {
 		hooks = []msg.Hook{}
 	}
-	writeJSON(w, hooks)
+	httpjson.WriteJSON(w, hooks)
 }
 
 func (s *Server) handleGetHook(w http.ResponseWriter, r *http.Request) {
@@ -115,7 +117,7 @@ func (s *Server) handleGetHook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, hook)
+	httpjson.WriteJSON(w, hook)
 }
 
 // handleUpdateHook merges the supplied fields onto an existing hook. Fields
@@ -175,7 +177,7 @@ func (s *Server) handleUpdateHook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, existing)
+	httpjson.WriteJSON(w, existing)
 }
 
 func (s *Server) handleDeleteHook(w http.ResponseWriter, r *http.Request) {

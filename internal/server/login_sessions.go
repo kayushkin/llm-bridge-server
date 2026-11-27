@@ -33,6 +33,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 )
 
@@ -223,7 +225,7 @@ func (s *Server) handleGetLoggedInPrincipal(w http.ResponseWriter, r *http.Reque
 		refusal.write(w)
 		return
 	}
-	writeJSON(w, loggedInPrincipalResponseOf(session))
+	httpjson.WriteJSON(w, loggedInPrincipalResponseOf(session))
 }
 
 // handleLogout revokes the caller's login session on the server and clears
@@ -241,7 +243,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		}
 		if _, err := s.store.RevokeLoginSession(session.ID, session.PrincipalID, "logout", s.loginClock()); err != nil &&
 			!errors.Is(err, store.ErrLoginSessionAlreadyRevoked) {
-			writeJSONError(w, http.StatusInternalServerError, "logout_failed", fmt.Sprintf(
+			httpjson.WriteJSONError(w, http.StatusInternalServerError, "logout_failed", fmt.Sprintf(
 				"could not revoke login session %s, so it is still live: %v", session.ID, err))
 			return
 		}
@@ -288,26 +290,26 @@ func (s *Server) handleListLoginSessions(w http.ResponseWriter, r *http.Request)
 	principalID := r.URL.Query().Get("principal_id")
 	switch {
 	case principalID == "" && !callerIsPrincipal:
-		writeJSONError(w, http.StatusBadRequest, "principal_id_required",
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "principal_id_required",
 			"the service token acting as itself has no login sessions of its own; name whose to list with ?principal_id=")
 		return
 	case principalID == "":
 		principalID = caller.principalID
 	case principalID != caller.principalID && !mayReadAnyone:
-		writeJSONError(w, http.StatusForbidden, "not_administrator", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusForbidden, "not_administrator", fmt.Sprintf(
 			"only an administrator may list another principal's login sessions; %s is not one", caller.principalID))
 		return
 	}
 	sessions, err := s.store.ListLoginSessionsOfPrincipal(principalID)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "login_sessions_unreadable", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "login_sessions_unreadable", err.Error())
 		return
 	}
 	views := make([]loginSessionView, 0, len(sessions))
 	for _, session := range sessions {
 		views = append(views, s.loginSessionViewOf(session, caller.loginSessionID))
 	}
-	writeJSON(w, views)
+	httpjson.WriteJSON(w, views)
 }
 
 type revokeLoginSessionRequest struct {
@@ -322,7 +324,7 @@ type revokeLoginSessionRequest struct {
 func (s *Server) handleRevokeLoginSession(w http.ResponseWriter, r *http.Request) {
 	caller, callerIsPrincipal := callerOfRequest(r)
 	if !callerIsPrincipal {
-		writeJSONError(w, http.StatusForbidden, "revoke_requires_a_principal", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusForbidden, "revoke_requires_a_principal", fmt.Sprintf(
 			"a revocation records who made it; send %s with the service token", principalIdentityHeader))
 		return
 	}
@@ -330,21 +332,21 @@ func (s *Server) handleRevokeLoginSession(w http.ResponseWriter, r *http.Request
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&request); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_request", fmt.Sprintf("body must be {\"reason\":\"…\"}: %v", err))
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_request", fmt.Sprintf("body must be {\"reason\":\"…\"}: %v", err))
 		return
 	}
 	if request.Reason == "" {
-		writeJSONError(w, http.StatusBadRequest, "reason_required", "say why the login session is being revoked; the reason is kept on the record")
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "reason_required", "say why the login session is being revoked; the reason is kept on the record")
 		return
 	}
 	loginSessionID := r.PathValue("id")
 	session, err := s.store.GetLoginSession(loginSessionID)
 	if errors.Is(err, store.ErrLoginSessionNotFound) || (err == nil && session.PrincipalID != caller.principalID && !caller.isAdministrator) {
-		writeJSONError(w, http.StatusNotFound, "login_session_not_found", fmt.Sprintf("no login session %s", loginSessionID))
+		httpjson.WriteJSONError(w, http.StatusNotFound, "login_session_not_found", fmt.Sprintf("no login session %s", loginSessionID))
 		return
 	}
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "login_session_unreadable", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "login_session_unreadable", err.Error())
 		return
 	}
 	revoked, err := s.store.RevokeLoginSession(session.ID, caller.principalID, request.Reason, s.loginClock())
@@ -358,8 +360,8 @@ func (s *Server) handleRevokeLoginSession(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "login_session_not_revoked", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "login_session_not_revoked", err.Error())
 		return
 	}
-	writeJSON(w, s.loginSessionViewOf(revoked, caller.loginSessionID))
+	httpjson.WriteJSON(w, s.loginSessionViewOf(revoked, caller.loginSessionID))
 }

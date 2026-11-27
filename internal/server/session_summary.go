@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 )
 
@@ -239,7 +241,7 @@ func (s *Server) serveSessionsValidators(w http.ResponseWriter, r *http.Request,
 		ids = strings.Join(owned, ",")
 	}
 	if strings.TrimSpace(ids) == "" {
-		writeJSON(w, map[string]Validator{})
+		httpjson.WriteJSON(w, map[string]Validator{})
 		return
 	}
 	// url.Values, not concatenation: `ids` is whatever the caller sent, and an

@@ -22,6 +22,8 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/filestorage/files"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -32,7 +34,7 @@ import (
 // them. Answers 201 and the msg.SessionFile.
 func (s *Server) handleShareSessionFile(w http.ResponseWriter, r *http.Request) {
 	if s.fileStore == nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "session_files_off", "LLMBRIDGE_FILE_STORE_URL is not set, so this server keeps no session files")
+		httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "session_files_off", "LLMBRIDGE_FILE_STORE_URL is not set, so this server keeps no session files")
 		return
 	}
 	sessionID := r.PathValue("id")
@@ -43,16 +45,16 @@ func (s *Server) handleShareSessionFile(w http.ResponseWriter, r *http.Request) 
 	}
 	filename := r.URL.Query().Get("filename")
 	if problem := plainFilenameProblem(filename); problem != "" {
-		writeJSONError(w, http.StatusBadRequest, "invalid_filename", problem)
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_filename", problem)
 		return
 	}
 	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_content_type", "Content-Type must say what the bytes are: "+err.Error())
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_content_type", "Content-Type must say what the bytes are: "+err.Error())
 		return
 	}
 	if _, err := s.sessionFilesDirectoryOf(session.SessionID); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_session_id", err.Error())
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_session_id", err.Error())
 		return
 	}
 
@@ -66,12 +68,12 @@ func (s *Server) handleShareSessionFile(w http.ResponseWriter, r *http.Request) 
 	var origin sessionFileOrigin
 	if r.URL.Query().Has("source_path") {
 		if sharedBy != msg.SessionFileSharedByAgent {
-			writeJSONError(w, http.StatusBadRequest, "source_path_not_accepted", "source_path is taken only from the session's own agent, with its session posting token")
+			httpjson.WriteJSONError(w, http.StatusBadRequest, "source_path_not_accepted", "source_path is taken only from the session's own agent, with its session posting token")
 			return
 		}
 		origin.sourcePath = r.URL.Query().Get("source_path")
 		if problem := sourcePathProblem(origin.sourcePath); problem != "" {
-			writeJSONError(w, http.StatusBadRequest, "invalid_source_path", problem)
+			httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_source_path", problem)
 			return
 		}
 	}
@@ -79,7 +81,7 @@ func (s *Server) handleShareSessionFile(w http.ResponseWriter, r *http.Request) 
 	var sender messageSender
 	if sharedBy == msg.SessionFileSharedByUser {
 		if sender, err = s.messageSenderOfRequest(r); err != nil {
-			writeJSONError(w, http.StatusBadGateway, "principal_store_unavailable", err.Error())
+			httpjson.WriteJSONError(w, http.StatusBadGateway, "principal_store_unavailable", err.Error())
 			return
 		}
 	}
@@ -122,7 +124,7 @@ func (failure *sessionFileShareFailure) write(w http.ResponseWriter) {
 		writeFileStoreError(w, failure.fileStoreError)
 		return
 	}
-	writeJSONError(w, failure.status, failure.code, failure.message)
+	httpjson.WriteJSONError(w, failure.status, failure.code, failure.message)
 }
 
 // sessionFileOrigin is where a shared file came from, recorded as it was
@@ -254,10 +256,10 @@ func (s *Server) handleListSessionFiles(w http.ResponseWriter, r *http.Request) 
 	}
 	files, err := s.store.ListSessionFiles(session.SessionID)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "list_session_files", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "list_session_files", err.Error())
 		return
 	}
-	writeJSON(w, files)
+	httpjson.WriteJSON(w, files)
 }
 
 // handleSessionFileContent is GET /sessions/{id}/files/{file_id}/content,
@@ -267,7 +269,7 @@ func (s *Server) handleListSessionFiles(w http.ResponseWriter, r *http.Request) 
 // and the type is on file-store's inline list), so none is dropped or added.
 func (s *Server) handleSessionFileContent(w http.ResponseWriter, r *http.Request) {
 	if s.fileStore == nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "session_files_off", "LLMBRIDGE_FILE_STORE_URL is not set, so this server keeps no session files")
+		httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "session_files_off", "LLMBRIDGE_FILE_STORE_URL is not set, so this server keeps no session files")
 		return
 	}
 	session, err := s.store.GetSession(r.PathValue("id"))
@@ -281,7 +283,7 @@ func (s *Server) handleSessionFileContent(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "read_session_file", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "read_session_file", err.Error())
 		return
 	}
 	// file-store sees the client's Range and nothing else of its request, as

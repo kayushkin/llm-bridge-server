@@ -14,6 +14,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"mvdan.cc/sh/v3/syntax"
 
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
@@ -84,7 +86,7 @@ func (s *Server) handleFilesNamedByTools(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	writeJSON(w, map[string]any{"files": files})
+	httpjson.WriteJSON(w, map[string]any{"files": files})
 }
 
 // handleFileNamedByToolsContent returns one file's current content, but only
@@ -95,20 +97,20 @@ func (s *Server) handleFileNamedByToolsContent(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if found.Size > maximumFileNamedByToolsBytes {
-		writeJSONError(w, http.StatusRequestEntityTooLarge, "file_too_large",
+		httpjson.WriteJSONError(w, http.StatusRequestEntityTooLarge, "file_too_large",
 			fmt.Sprintf("the file is %d bytes; this route returns at most %d", found.Size, maximumFileNamedByToolsBytes))
 		return
 	}
 	content, err := os.ReadFile(found.Path)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "read_file", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "read_file", err.Error())
 		return
 	}
 	if !utf8.Valid(content) || strings.ContainsRune(string(content), 0) {
-		writeJSONError(w, http.StatusUnsupportedMediaType, "file_not_text", "the file is not UTF-8 text")
+		httpjson.WriteJSONError(w, http.StatusUnsupportedMediaType, "file_not_text", "the file is not UTF-8 text")
 		return
 	}
-	writeJSON(w, FileNamedByToolsContent{FileNamedByTools: *found, Content: string(content)})
+	httpjson.WriteJSON(w, FileNamedByToolsContent{FileNamedByTools: *found, Content: string(content)})
 }
 
 // fileNamedByToolsOrWriteError finds the request's ?path= on the session's
@@ -116,7 +118,7 @@ func (s *Server) handleFileNamedByToolsContent(w http.ResponseWriter, r *http.Re
 func (s *Server) fileNamedByToolsOrWriteError(w http.ResponseWriter, r *http.Request) (*FileNamedByTools, bool) {
 	requested := r.URL.Query().Get("path")
 	if requested == "" || !filepath.IsAbs(requested) {
-		writeJSONError(w, http.StatusBadRequest, "path_not_absolute", "path must be an absolute path from files-named-by-tools")
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "path_not_absolute", "path must be an absolute path from files-named-by-tools")
 		return nil, false
 	}
 	files, ok := s.filesNamedByToolsOrWriteError(w, r.PathValue("id"))
@@ -128,7 +130,7 @@ func (s *Server) fileNamedByToolsOrWriteError(w http.ResponseWriter, r *http.Req
 			return &files[i], true
 		}
 	}
-	writeJSONError(w, http.StatusNotFound, "file_not_named_by_session_tools", "no tool in this session named that file, or it no longer exists")
+	httpjson.WriteJSONError(w, http.StatusNotFound, "file_not_named_by_session_tools", "no tool in this session named that file, or it no longer exists")
 	return nil, false
 }
 
@@ -139,22 +141,22 @@ func (s *Server) filesNamedByToolsOrWriteError(w http.ResponseWriter, sessionID 
 		return nil, false
 	}
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "read_session", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "read_session", err.Error())
 		return nil, false
 	}
 	deniedReadPaths, err := sessionDeniedReadPaths(session)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "read_denied_read_paths", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "read_denied_read_paths", err.Error())
 		return nil, false
 	}
 	events, err := s.harness.ListToolEventsInOrder(session.SessionID)
 	if err != nil {
-		writeJSONError(w, http.StatusBadGateway, "list_tool_events", err.Error())
+		httpjson.WriteJSONError(w, http.StatusBadGateway, "list_tool_events", err.Error())
 		return nil, false
 	}
 	homeDirectory, err := os.UserHomeDir()
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "home_directory", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "home_directory", err.Error())
 		return nil, false
 	}
 	workingDirectory := ""
@@ -218,20 +220,20 @@ func (s *Server) handleImageNamedByTools(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if found.ServedAs != fileServedAsImage {
-		writeJSONError(w, http.StatusUnsupportedMediaType, "file_not_image",
+		httpjson.WriteJSONError(w, http.StatusUnsupportedMediaType, "file_not_image",
 			fmt.Sprintf("the file looks like %s; this route returns images of at most %d bytes", found.MediaType, maximumImageNamedByToolsBytes))
 		return
 	}
 	content, err := os.ReadFile(found.Path)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "read_file", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "read_file", err.Error())
 		return
 	}
 	// Sniffed again from what is sent, so a file replaced since the list was
 	// read is labelled by its own bytes.
 	mediaType := http.DetectContentType(content)
 	if !strings.HasPrefix(mediaType, "image/") {
-		writeJSONError(w, http.StatusUnsupportedMediaType, "file_not_image", "the file changed and is no longer an image: "+mediaType)
+		httpjson.WriteJSONError(w, http.StatusUnsupportedMediaType, "file_not_image", "the file changed and is no longer an image: "+mediaType)
 		return
 	}
 	w.Header().Set("Content-Type", mediaType)

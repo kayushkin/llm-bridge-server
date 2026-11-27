@@ -19,6 +19,8 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/keepawake"
@@ -75,7 +77,7 @@ func checkKeepAwakeGraceMinutesValue(value string) error {
 
 // handleGetServer: GET /server.
 func (s *Server) handleGetServer(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, msg.ServerDescription{ID: s.store.ThisServerID(), Name: s.thisServerName(), KeepAwake: s.keepAwakeState()})
+	httpjson.WriteJSON(w, msg.ServerDescription{ID: s.store.ThisServerID(), Name: s.thisServerName(), KeepAwake: s.keepAwakeState()})
 }
 
 func (s *Server) keepAwakeSettings() keepawake.Settings {

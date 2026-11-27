@@ -53,6 +53,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
 	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
@@ -150,7 +152,7 @@ func (s *Server) refuseWhileDemoLoginIsOn(w http.ResponseWriter, what string) bo
 	if !s.cfg.DemoLoginEnabled {
 		return false
 	}
-	writeJSONError(w, http.StatusConflict, "demo_login_enabled", fmt.Sprintf(
+	httpjson.WriteJSONError(w, http.StatusConflict, "demo_login_enabled", fmt.Sprintf(
 		"%s is refused while demo login is on: it means taking calls from another machine, and demo login signs anyone in as any human by naming an id. Set LLMBRIDGE_DEMO_LOGIN_ENABLED=false and restart, or connect from this server to one with an address without giving this server's own", what))
 	return true
 }
@@ -159,7 +161,7 @@ func (s *Server) refuseWhileDemoLoginIsOn(w http.ResponseWriter, what string) bo
 func administratorMakingPeerChange(w http.ResponseWriter, r *http.Request) (string, bool) {
 	principalID, identified := principalIdentityOfRequest(r)
 	if !identified {
-		writeJSONError(w, http.StatusForbidden, "peer_change_requires_a_principal", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusForbidden, "peer_change_requires_a_principal", fmt.Sprintf(
 			"a change to a peer connection records which administrator made it; send %s with the service token", principalIdentityHeader))
 		return "", false
 	}
@@ -212,13 +214,13 @@ func (s *Server) handleCreatePeerConnectionInvite(w http.ResponseWriter, r *http
 		lifetime = time.Duration(request.ExpiresInSeconds) * time.Second
 	}
 	if lifetime <= 0 || lifetime > peerInviteLongestLifetime {
-		writeJSONError(w, http.StatusBadRequest, "invalid_expiry", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_expiry", fmt.Sprintf(
 			"expires_in_seconds must be between 1 and %d, or left out for %d", int64(peerInviteLongestLifetime/time.Second), int64(peerInviteDefaultLifetime/time.Second)))
 		return
 	}
 	passphrase, err := randomURLSafeToken(peerSecretRandomBytes)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "random_source_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "random_source_failed", err.Error())
 		return
 	}
 	now := time.Now().UTC()
@@ -227,7 +229,7 @@ func (s *Server) handleCreatePeerConnectionInvite(w http.ResponseWriter, r *http
 		PassphraseHash:       hashPeerSecret(passphrase),
 	}
 	if err := s.store.InsertPeerConnectionInvite(&invite); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	writeJSONStatus(w, http.StatusCreated, msg.PeerConnectionInviteCreated{Invite: invite.PeerConnectionInvite, Passphrase: passphrase})
@@ -237,14 +239,14 @@ func (s *Server) handleCreatePeerConnectionInvite(w http.ResponseWriter, r *http
 func (s *Server) handleListPeerConnectionInvites(w http.ResponseWriter, r *http.Request) {
 	invites, err := s.store.ListPeerConnectionInvites()
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	records := make([]msg.PeerConnectionInvite, 0, len(invites))
 	for _, invite := range invites {
 		records = append(records, invite.PeerConnectionInvite)
 	}
-	writeJSON(w, records)
+	httpjson.WriteJSON(w, records)
 }
 
 // handleCreatePeerConnection: POST /peer-connections. This server's
@@ -260,7 +262,7 @@ func (s *Server) handleCreatePeerConnection(w http.ResponseWriter, r *http.Reque
 	}
 	remoteBaseURL, err := peerBaseURLOf("base_url", request.BaseURL)
 	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_base_url", err.Error())
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_base_url", err.Error())
 		return
 	}
 	displayName := strings.TrimSpace(request.DisplayName)
@@ -273,11 +275,11 @@ func (s *Server) handleCreatePeerConnection(w http.ResponseWriter, r *http.Reque
 		nameForThisServer = ownServerName
 	}
 	if request.Passphrase == "" {
-		writeJSONError(w, http.StatusBadRequest, "invalid_request", "passphrase is required")
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_request", "passphrase is required")
 		return
 	}
 	if nameForThisServer == "" {
-		writeJSONError(w, http.StatusBadRequest, "this_server_has_no_name", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "this_server_has_no_name", fmt.Sprintf(
 			"this server has no %s, so the other server would have nothing to call it: set it on the settings page, or send name_for_this_server", config.SettingServerName))
 		return
 	}
@@ -286,7 +288,7 @@ func (s *Server) handleCreatePeerConnection(w http.ResponseWriter, r *http.Reque
 	if strings.TrimSpace(request.ThisServerBaseURL) != "" {
 		thisServerBaseURL, err = peerBaseURLOf("this_server_base_url", request.ThisServerBaseURL)
 		if err != nil {
-			writeJSONError(w, http.StatusBadRequest, "invalid_base_url", err.Error())
+			httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_base_url", err.Error())
 			return
 		}
 		if s.refuseWhileDemoLoginIsOn(w, "giving this server's own address to a peer") {
@@ -296,18 +298,18 @@ func (s *Server) handleCreatePeerConnection(w http.ResponseWriter, r *http.Reque
 	}
 	inboundCredential, err := randomURLSafeToken(peerSecretRandomBytes)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "random_source_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "random_source_failed", err.Error())
 		return
 	}
 	var answer msg.PeerConnectAnswer
 	if err := postJSONToPeer(r.Context(), remoteBaseURL+peerConnectPath, nil, msg.PeerConnectCall{
 		Passphrase: request.Passphrase, ServerName: nameForThisServer, OwnServerName: ownServerName, BaseURL: thisServerBaseURL, Credential: inboundCredential,
 	}, http.StatusCreated, &answer); err != nil {
-		writeJSONError(w, http.StatusBadGateway, "peer_connect_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusBadGateway, "peer_connect_failed", err.Error())
 		return
 	}
 	if answer.ConnectionID == "" || answer.Credential == "" || answer.Transport != transport {
-		writeJSONError(w, http.StatusBadGateway, "peer_connect_failed", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusBadGateway, "peer_connect_failed", fmt.Sprintf(
 			"%s answered with connection %q, transport %q and a credential set: %t; this server asked for %s", remoteBaseURL, answer.ConnectionID, answer.Transport, answer.Credential != "", transport))
 		return
 	}
@@ -321,7 +323,7 @@ func (s *Server) handleCreatePeerConnection(w http.ResponseWriter, r *http.Reque
 		IntendedApp: "llm-bridge-server", AuthType: "token", RefreshMode: "none", Token: answer.Credential, BaseURL: remoteBaseURL,
 	})
 	if err != nil {
-		writeJSONError(w, http.StatusBadGateway, "auth_store_failed", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusBadGateway, "auth_store_failed", fmt.Sprintf(
 			"%s recorded connection %s, and auth-store would not keep its credential, so nothing was recorded here: %v. Ask that server's administrator to remove %s", remoteBaseURL, answer.ConnectionID, err, answer.ConnectionID))
 		return
 	}
@@ -338,7 +340,7 @@ func (s *Server) handleCreatePeerConnection(w http.ResponseWriter, r *http.Reque
 		connection.OtherServerName, connection.OtherServerNameReportedAt = otherServerName, &reportedAt
 	}
 	if err := s.store.InsertPeerConnection(&connection); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", fmt.Sprintf(
 			"%s recorded connection %s and auth-store keeps its credential as %s, and the connection could not be recorded here: %v", remoteBaseURL, answer.ConnectionID, credential.ID, err))
 		return
 	}
@@ -371,7 +373,7 @@ func (s *Server) handlePeerConnect(w http.ResponseWriter, r *http.Request) {
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&call); err != nil || call.Passphrase == "" || call.Credential == "" ||
 		(strings.TrimSpace(call.ServerName) == "" && strings.TrimSpace(call.OwnServerName) == "") {
-		writeJSONError(w, http.StatusBadRequest, "invalid_request", "send the passphrase from POST /peer-connection-invites, own_server_name or server_name, and credential")
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_request", "send the passphrase from POST /peer-connection-invites, own_server_name or server_name, and credential")
 		return
 	}
 	otherServerName := strings.TrimSpace(call.OwnServerName)
@@ -385,7 +387,7 @@ func (s *Server) handlePeerConnect(w http.ResponseWriter, r *http.Request) {
 	if call.BaseURL != "" {
 		var err error
 		if remoteBaseURL, err = peerBaseURLOf("base_url", call.BaseURL); err != nil {
-			writeJSONError(w, http.StatusBadRequest, "invalid_base_url", err.Error())
+			httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_base_url", err.Error())
 			return
 		}
 		transport = msg.PeerTransportDirect
@@ -399,7 +401,7 @@ func (s *Server) handlePeerConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	credentialForThem, err := randomURLSafeToken(peerSecretRandomBytes)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "random_source_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "random_source_failed", err.Error())
 		return
 	}
 	outbound, err := s.authClient.Create(r.Context(), authstoreclient.CredentialInput{
@@ -407,7 +409,7 @@ func (s *Server) handlePeerConnect(w http.ResponseWriter, r *http.Request) {
 		IntendedApp: "llm-bridge-server", AuthType: "token", RefreshMode: "none", Token: call.Credential, BaseURL: remoteBaseURL,
 	})
 	if err != nil {
-		writeJSONError(w, http.StatusBadGateway, "auth_store_failed", fmt.Sprintf("auth-store would not keep the connection's credential, so no connection was made: %v", err))
+		httpjson.WriteJSONError(w, http.StatusBadGateway, "auth_store_failed", fmt.Sprintf("auth-store would not keep the connection's credential, so no connection was made: %v", err))
 		return
 	}
 	connection := store.PeerConnection{
@@ -430,7 +432,7 @@ func (s *Server) handlePeerConnect(w http.ResponseWriter, r *http.Request) {
 			inviteError.write(w)
 			return
 		}
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	writeJSONStatus(w, http.StatusCreated, msg.PeerConnectAnswer{ConnectionID: connection.ID, Transport: transport, Credential: credentialForThem, OwnServerName: s.thisServerName()})
@@ -484,12 +486,12 @@ func (s *Server) peerConnectionView(connection store.PeerConnection) msg.PeerCon
 func (s *Server) handleListPeerConnections(w http.ResponseWriter, r *http.Request) {
 	connections, err := s.store.ListPeerConnections()
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	callThrough, narrowed, err := s.callThroughGrantsOfRequest(r)
 	if err != nil {
-		writeJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
+		httpjson.WriteJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
 		return
 	}
 	views := make([]msg.PeerConnectionView, 0, len(connections))
@@ -499,7 +501,7 @@ func (s *Server) handleListPeerConnections(w http.ResponseWriter, r *http.Reques
 		}
 		views = append(views, s.peerConnectionView(connection))
 	}
-	writeJSON(w, views)
+	httpjson.WriteJSON(w, views)
 }
 
 // callThroughGrantsOfRequest reads the caller's can_call_through grants on
@@ -519,15 +521,15 @@ func (s *Server) callThroughGrantsOfRequest(r *http.Request) (grantedResources, 
 func (s *Server) livePeerConnectionOf(w http.ResponseWriter, r *http.Request) (store.PeerConnection, bool) {
 	connection, err := s.store.GetPeerConnection(r.PathValue("id"))
 	if errors.Is(err, store.ErrPeerConnectionNotFound) {
-		writeJSONError(w, http.StatusNotFound, "peer_connection_not_found", "no peer connection has id "+r.PathValue("id"))
+		httpjson.WriteJSONError(w, http.StatusNotFound, "peer_connection_not_found", "no peer connection has id "+r.PathValue("id"))
 		return store.PeerConnection{}, false
 	}
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return store.PeerConnection{}, false
 	}
 	if connection.RemovedAt != nil {
-		writeJSONError(w, http.StatusConflict, "peer_connection_removed", fmt.Sprintf("%s was removed at %s by %s: %s",
+		httpjson.WriteJSONError(w, http.StatusConflict, "peer_connection_removed", fmt.Sprintf("%s was removed at %s by %s: %s",
 			connection.ID, connection.RemovedAt.UTC().Format(time.RFC3339), connection.RemovedBy, connection.RemoveReason))
 		return store.PeerConnection{}, false
 	}
@@ -538,23 +540,23 @@ func (s *Server) livePeerConnectionOf(w http.ResponseWriter, r *http.Request) (s
 func (s *Server) handleGetPeerConnection(w http.ResponseWriter, r *http.Request) {
 	callThrough, narrowed, err := s.callThroughGrantsOfRequest(r)
 	if err != nil {
-		writeJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
+		httpjson.WriteJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
 		return
 	}
 	if narrowed && !callThrough.requiresAGrantAndNames(r.PathValue("id")) {
-		writeJSONError(w, http.StatusNotFound, "peer_connection_not_found", "no peer connection has id "+r.PathValue("id"))
+		httpjson.WriteJSONError(w, http.StatusNotFound, "peer_connection_not_found", "no peer connection has id "+r.PathValue("id"))
 		return
 	}
 	connection, err := s.store.GetPeerConnection(r.PathValue("id"))
 	if errors.Is(err, store.ErrPeerConnectionNotFound) {
-		writeJSONError(w, http.StatusNotFound, "peer_connection_not_found", "no peer connection has id "+r.PathValue("id"))
+		httpjson.WriteJSONError(w, http.StatusNotFound, "peer_connection_not_found", "no peer connection has id "+r.PathValue("id"))
 		return
 	}
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
-	writeJSON(w, s.peerConnectionView(connection))
+	httpjson.WriteJSON(w, s.peerConnectionView(connection))
 }
 
 // handleListPeerAccessLevels: GET /peer-access-levels.
@@ -569,7 +571,7 @@ func (s *Server) handleListPeerAccessLevels(w http.ResponseWriter, r *http.Reque
 		case err == nil:
 			level.GroupPrincipalID = groupID
 		case !errors.Is(err, store.ErrPeerAccessLevelNotProvisioned):
-			writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+			httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 			return
 		}
 		levels = append(levels, level)
@@ -578,7 +580,7 @@ func (s *Server) handleListPeerAccessLevels(w http.ResponseWriter, r *http.Reque
 		msg.PeerAccessLevel{Key: msg.PeerAccessLevelAdministrator, DisplayName: "Administrator", Description: "Everything, operator routes included: principal-store marks the peer an administrator."},
 		msg.PeerAccessLevel{Key: msg.PeerAccessLevelGroup, DisplayName: "A group's grants", Description: "Whatever the principal-store group named in group_principal_id is granted.", NeedsGroup: true},
 	)
-	writeJSON(w, levels)
+	httpjson.WriteJSON(w, levels)
 }
 
 // handleProvisionPeerAccessLevel: POST /peer-access-levels/{key}/provision.
@@ -591,19 +593,19 @@ func (s *Server) handleProvisionPeerAccessLevel(w http.ResponseWriter, r *http.R
 	}
 	definition, known := peerAccessLevelDefinitionOf(r.PathValue("key"))
 	if !known {
-		writeJSONError(w, http.StatusNotFound, "peer_access_level_not_found", fmt.Sprintf("%q is not a level that needs provisioning; GET /peer-access-levels lists them", r.PathValue("key")))
+		httpjson.WriteJSONError(w, http.StatusNotFound, "peer_access_level_not_found", fmt.Sprintf("%q is not a level that needs provisioning; GET /peer-access-levels lists them", r.PathValue("key")))
 		return
 	}
 	if groupID, err := s.store.PeerAccessLevelGroup(definition.key); err == nil {
-		writeJSONError(w, http.StatusConflict, "peer_access_level_already_provisioned", fmt.Sprintf("%s is provisioned as group %s", definition.key, groupID))
+		httpjson.WriteJSONError(w, http.StatusConflict, "peer_access_level_already_provisioned", fmt.Sprintf("%s is provisioned as group %s", definition.key, groupID))
 		return
 	} else if !errors.Is(err, store.ErrPeerAccessLevelNotProvisioned) {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	group, err := s.principalStore.Create(r.Context(), &principals.Principal{Kind: principals.KindGroup, DisplayName: "Linked servers: " + strings.ToLower(definition.displayName)})
 	if err != nil {
-		writeJSONError(w, http.StatusBadGateway, "principal_store_failed", fmt.Sprintf("principal-store: creating a %s principal: %v", principals.KindGroup, err))
+		httpjson.WriteJSONError(w, http.StatusBadGateway, "principal_store_failed", fmt.Sprintf("principal-store: creating a %s principal: %v", principals.KindGroup, err))
 		return
 	}
 	groupID := group.ID
@@ -612,12 +614,12 @@ func (s *Server) handleProvisionPeerAccessLevel(w http.ResponseWriter, r *http.R
 			PrincipalID: groupID, Relation: levelGrant.Relation, ResourceType: levelGrant.ResourceType, ResourceID: levelGrant.ResourceID,
 			Note: "peer access level " + definition.key + ", provisioned by " + administratorID,
 		}); err != nil {
-			writeJSONError(w, http.StatusBadGateway, "grant_store_failed", fmt.Sprintf("group %s was made and a grant failed, so the level is not recorded: %v", groupID, err))
+			httpjson.WriteJSONError(w, http.StatusBadGateway, "grant_store_failed", fmt.Sprintf("group %s was made and a grant failed, so the level is not recorded: %v", groupID, err))
 			return
 		}
 	}
 	if err := s.store.RecordPeerAccessLevelGroup(definition.key, groupID, administratorID, time.Now().UTC()); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	writeJSONStatus(w, http.StatusCreated, msg.PeerAccessLevel{Key: definition.key, DisplayName: definition.displayName, Description: definition.description,
@@ -753,31 +755,31 @@ func (s *Server) handleGrantPeerAccess(w http.ResponseWriter, r *http.Request) {
 	}
 	peerPrincipalID, err := s.peerPrincipalOfConnection(r.Context(), connection)
 	if err != nil {
-		writeJSONError(w, http.StatusBadGateway, "principal_store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusBadGateway, "principal_store_failed", err.Error())
 		return
 	}
 	now := time.Now().UTC()
 	if previous, err := s.store.LivePeerGrantOfConnection(connection.ID); err == nil {
 		if _, err := s.store.RevokePeerGrant(previous.ID, administratorID, "replaced by a grant at level "+request.Level, now); err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+			httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 			return
 		}
 		s.endRequestsServedUnderGrant(previous.ID)
 		if err := s.undoPeerLevelEffect(r.Context(), previous); err != nil {
-			writeJSONError(w, http.StatusBadGateway, "principal_store_failed", fmt.Sprintf("%s is revoked and its level could not be taken back from %s: %v", previous.ID, peerPrincipalID, err))
+			httpjson.WriteJSONError(w, http.StatusBadGateway, "principal_store_failed", fmt.Sprintf("%s is revoked and its level could not be taken back from %s: %v", previous.ID, peerPrincipalID, err))
 			return
 		}
 	} else if !errors.Is(err, store.ErrPeerGrantNotFound) {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	if err := s.applyPeerLevelEffect(r.Context(), peerPrincipalID, effect); err != nil {
-		writeJSONError(w, http.StatusBadGateway, "principal_store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusBadGateway, "principal_store_failed", err.Error())
 		return
 	}
 	token, err := randomURLSafeToken(peerSecretRandomBytes)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "random_source_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "random_source_failed", err.Error())
 		return
 	}
 	grant := store.PeerGrant{
@@ -786,7 +788,7 @@ func (s *Server) handleGrantPeerAccess(w http.ResponseWriter, r *http.Request) {
 		TokenHash: hashPeerSecret(token),
 	}
 	if err := s.store.InsertPeerGrant(&grant); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	deliveryErr := s.callPeerConnection(r.Context(), connection, http.MethodPost, peerAccessPath, msg.PeerAccessDelivery{
@@ -799,7 +801,7 @@ func (s *Server) handleGrantPeerAccess(w http.ResponseWriter, r *http.Request) {
 		if err := s.undoPeerLevelEffect(r.Context(), grant); err != nil {
 			log.Printf("[peers] ERROR: take back undelivered %s's level from %s: %v", grant.ID, peerPrincipalID, err)
 		}
-		writeJSONError(w, http.StatusBadGateway, "peer_access_not_delivered", fmt.Sprintf("%s was made and the other server did not take it, so it is revoked: %v", grant.ID, deliveryErr))
+		httpjson.WriteJSONError(w, http.StatusBadGateway, "peer_access_not_delivered", fmt.Sprintf("%s was made and the other server did not take it, so it is revoked: %v", grant.ID, deliveryErr))
 		return
 	}
 	delivered := time.Now().UTC()
@@ -823,16 +825,16 @@ func (s *Server) handleRevokePeerGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.TrimSpace(request.Reason) == "" {
-		writeJSONError(w, http.StatusBadRequest, "reason_required", "say why; the reason stays on the row")
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "reason_required", "say why; the reason stays on the row")
 		return
 	}
 	connection, err := s.store.GetPeerConnection(r.PathValue("id"))
 	if errors.Is(err, store.ErrPeerConnectionNotFound) {
-		writeJSONError(w, http.StatusNotFound, "peer_connection_not_found", "no peer connection has id "+r.PathValue("id"))
+		httpjson.WriteJSONError(w, http.StatusNotFound, "peer_connection_not_found", "no peer connection has id "+r.PathValue("id"))
 		return
 	}
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	revoked, notice, failure := s.revokeLivePeerGrant(r.Context(), connection, administratorID, request.Reason)
@@ -840,7 +842,7 @@ func (s *Server) handleRevokePeerGrant(w http.ResponseWriter, r *http.Request) {
 		failure.write(w)
 		return
 	}
-	writeJSON(w, msg.PeerGrantRevoked{Grant: revoked.PeerGrant, Notice: notice})
+	httpjson.WriteJSON(w, msg.PeerGrantRevoked{Grant: revoked.PeerGrant, Notice: notice})
 }
 
 // revokeLivePeerGrant revokes the connection's live grant, takes its level
@@ -940,7 +942,7 @@ func (s *Server) handleReceivePeerAccess(w http.ResponseWriter, r *http.Request)
 	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&delivery); err != nil || delivery.GrantID == "" || delivery.PeerPrincipalID == "" || delivery.Level == "" || delivery.Token == "" {
-		writeJSONError(w, http.StatusBadRequest, "invalid_request", "send grant_id, peer_principal_id, level and token")
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_request", "send grant_id, peer_principal_id, level and token")
 		return
 	}
 	credential, err := s.authClient.Create(r.Context(), authstoreclient.CredentialInput{
@@ -948,7 +950,7 @@ func (s *Server) handleReceivePeerAccess(w http.ResponseWriter, r *http.Request)
 		IntendedApp: "llm-bridge-server", AuthType: "token", RefreshMode: "none", Token: delivery.Token, BaseURL: connection.RemoteBaseURL,
 	})
 	if err != nil {
-		writeJSONError(w, http.StatusBadGateway, "auth_store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusBadGateway, "auth_store_failed", err.Error())
 		return
 	}
 	access := store.PeerAccess{ConnectionID: connection.ID, RemoteGrantID: delivery.GrantID, RemotePeerPrincipalID: delivery.PeerPrincipalID,
@@ -958,7 +960,7 @@ func (s *Server) handleReceivePeerAccess(w http.ResponseWriter, r *http.Request)
 		if deleteErr := s.authClient.Delete(r.Context(), credential.ID); deleteErr != nil {
 			log.Printf("[peers] ERROR: delete auth-store credential %s after a failed access record: %v", credential.ID, deleteErr)
 		}
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	for _, previous := range replaced {
@@ -982,32 +984,32 @@ func (s *Server) handleReceivePeerAccessRevoked(w http.ResponseWriter, r *http.R
 	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&revocation); err != nil || revocation.GrantID == "" {
-		writeJSONError(w, http.StatusBadRequest, "invalid_request", "send grant_id and reason")
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_request", "send grant_id and reason")
 		return
 	}
 	ended, err := s.store.EndPeerAccess(connection.ID, revocation.GrantID, "revoked by the other server: "+revocation.Reason, time.Now().UTC())
 	if errors.Is(err, store.ErrPeerAccessNotFound) {
-		writeJSONError(w, http.StatusNotFound, "peer_access_not_found", err.Error())
+		httpjson.WriteJSONError(w, http.StatusNotFound, "peer_access_not_found", err.Error())
 		return
 	}
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	if err := s.authClient.Delete(r.Context(), ended.CredentialID); err != nil {
 		log.Printf("[peers] ERROR: delete revoked access %s's credential %s: %v", ended.ID, ended.CredentialID, err)
 	}
-	writeJSON(w, ended)
+	httpjson.WriteJSON(w, ended)
 }
 
 // handlePeerSelf: GET /peer/self. Tells a peer who its token acts as here.
 func (s *Server) handlePeerSelf(w http.ResponseWriter, r *http.Request) {
 	caller, ok := callerOfRequest(r)
 	if !ok || caller.peer == nil {
-		writeJSONError(w, http.StatusBadRequest, "not_a_peer", fmt.Sprintf("GET %s answers a caller presenting %s", peerSelfPath, peerTokenHeader))
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "not_a_peer", fmt.Sprintf("GET %s answers a caller presenting %s", peerSelfPath, peerTokenHeader))
 		return
 	}
-	writeJSON(w, msg.PeerGrantSelf{GrantID: caller.peer.grantID, ConnectionID: caller.peer.connectionID, PeerPrincipalID: caller.principalID,
+	httpjson.WriteJSON(w, msg.PeerGrantSelf{GrantID: caller.peer.grantID, ConnectionID: caller.peer.connectionID, PeerPrincipalID: caller.principalID,
 		Level: caller.peer.level, IsAdministrator: caller.isAdministrator})
 }
 
@@ -1044,7 +1046,7 @@ func (s *Server) handleRemovePeerConnection(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if strings.TrimSpace(request.Reason) == "" {
-		writeJSONError(w, http.StatusBadRequest, "reason_required", "say why; the reason stays on the row")
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "reason_required", "say why; the reason stays on the row")
 		return
 	}
 	connection, ok := s.livePeerConnectionOf(w, r)
@@ -1060,7 +1062,7 @@ func (s *Server) handleRemovePeerConnection(w http.ResponseWriter, r *http.Reque
 			log.Printf("[peers] ERROR: delete ended access %s's credential %s: %v", ended.ID, ended.CredentialID, err)
 		}
 	} else if !errors.Is(err, store.ErrPeerAccessNotFound) {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	// Told before the socket closes and the credential goes, which are what
@@ -1074,19 +1076,19 @@ func (s *Server) handleRemovePeerConnection(w http.ResponseWriter, r *http.Reque
 	s.peerSockets.stop(connection.ID)
 	removed, err := s.store.RemovePeerConnection(connection.ID, administratorID, request.Reason, time.Now().UTC())
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	if err := s.store.RecordPeerConnectionRemovalNotice(connection.ID, removalNotice); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	removed.RemovalNotice = removalNotice
 	if err := s.authClient.Delete(r.Context(), connection.OutboundCredentialID); err != nil {
-		writeJSONError(w, http.StatusBadGateway, "auth_store_failed", fmt.Sprintf("%s is removed, and auth-store credential %s could not be deleted: %v", connection.ID, connection.OutboundCredentialID, err))
+		httpjson.WriteJSONError(w, http.StatusBadGateway, "auth_store_failed", fmt.Sprintf("%s is removed, and auth-store credential %s could not be deleted: %v", connection.ID, connection.OutboundCredentialID, err))
 		return
 	}
-	writeJSON(w, s.peerConnectionView(removed))
+	httpjson.WriteJSON(w, s.peerConnectionView(removed))
 }
 
 // handleReceivePeerConnectionRemoved: POST /peer/connection/removed. The
@@ -1104,7 +1106,7 @@ func (s *Server) handleReceivePeerConnectionRemoved(w http.ResponseWriter, r *ht
 	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&notice); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_request", "send reason")
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_request", "send reason")
 		return
 	}
 	reason := "removed by the other server: " + notice.Reason
@@ -1117,12 +1119,12 @@ func (s *Server) handleReceivePeerConnectionRemoved(w http.ResponseWriter, r *ht
 			log.Printf("[peers] ERROR: delete ended access %s's credential %s: %v", ended.ID, ended.CredentialID, err)
 		}
 	} else if !errors.Is(err, store.ErrPeerAccessNotFound) {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	removed, err := s.store.RemovePeerConnectionByOtherServer(connection.ID, notice.Reason, time.Now().UTC())
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	if err := s.authClient.Delete(r.Context(), connection.OutboundCredentialID); err != nil {
@@ -1130,7 +1132,7 @@ func (s *Server) handleReceivePeerConnectionRemoved(w http.ResponseWriter, r *ht
 	}
 	// Answered before the socket closes: the answer travels over it. The
 	// dialer must not reopen it, so it is stopped once this answer is out.
-	writeJSON(w, s.peerConnectionView(removed))
+	httpjson.WriteJSON(w, s.peerConnectionView(removed))
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()
 	}
@@ -1154,18 +1156,18 @@ var errPeerAccessNotHeld = errors.New("the other server has given this server no
 func writePeerCallError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, errPeerAccessNotHeld):
-		writeJSONError(w, http.StatusConflict, "peer_access_not_held", err.Error())
+		httpjson.WriteJSONError(w, http.StatusConflict, "peer_access_not_held", err.Error())
 	case errors.Is(err, errPeerCallLimit):
 		w.Header().Set("Retry-After", "1")
-		writeJSONError(w, http.StatusTooManyRequests, "peer_call_limit", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusTooManyRequests, "peer_call_limit", fmt.Sprintf(
 			"%v: at most %g calls a second to one connected server, %d at once in a burst; ask again in a second",
 			err, peerProxyCallsPerSecond, peerProxyCallBurst))
 	case errors.Is(err, errPeerNotConnected):
-		writeJSONError(w, http.StatusServiceUnavailable, "peer_not_connected", err.Error())
+		httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "peer_not_connected", err.Error())
 	case errors.As(err, new(*errPeerNotAnswering)):
-		writeJSONError(w, http.StatusServiceUnavailable, "peer_not_answering", err.Error())
+		httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "peer_not_answering", err.Error())
 	default:
-		writeJSONError(w, http.StatusBadGateway, "peer_unreachable", err.Error())
+		httpjson.WriteJSONError(w, http.StatusBadGateway, "peer_unreachable", err.Error())
 	}
 }
 

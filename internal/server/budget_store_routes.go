@@ -14,6 +14,8 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/budget"
 )
 
@@ -45,7 +47,7 @@ func (s *Server) budgetStoreRoute() http.HandlerFunc {
 			module := s.budgetStore.Load()
 			if module == nil {
 				return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-					writeJSONError(w, http.StatusServiceUnavailable, "budget_store_off", "budget-store is not open on this server: EnableBudget was never called")
+					httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "budget_store_off", "budget-store is not open on this server: EnableBudget was never called")
 				})
 			}
 			return module.handler

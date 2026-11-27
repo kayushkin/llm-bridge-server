@@ -21,6 +21,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	serverids "github.com/kayushkin/llm-bridge-server/internal/ids"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -75,21 +77,21 @@ func (s *Server) handleStartRestartDrain(w http.ResponseWriter, r *http.Request)
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&request); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_body", err.Error())
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_body", err.Error())
 		return
 	}
 	limit := time.Duration(request.MaximumSeconds) * time.Second
 	if limit <= 0 || limit > maximumRestartDrain {
-		writeJSONError(w, http.StatusBadRequest, "invalid_maximum_seconds",
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_maximum_seconds",
 			fmt.Sprintf("maximum_seconds must be between 1 and %d", int(maximumRestartDrain.Seconds())))
 		return
 	}
 	if request.Reason == "" {
-		writeJSONError(w, http.StatusBadRequest, "reason_required", "say why the server is draining; the log keeps it")
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "reason_required", "say why the server is draining; the log keeps it")
 		return
 	}
 	s.startRestartDrain(limit, request.Reason)
-	writeJSON(w, s.restartDrainView())
+	httpjson.WriteJSON(w, s.restartDrainView())
 }
 
 func (s *Server) startRestartDrain(limit time.Duration, reason string) {
@@ -114,7 +116,7 @@ func (s *Server) startRestartDrain(limit time.Duration, reason string) {
 // and send the messages held so far.
 func (s *Server) handleEndRestartDrain(w http.ResponseWriter, r *http.Request) {
 	s.endRestartDrain("the caller ended it")
-	writeJSON(w, s.restartDrainView())
+	httpjson.WriteJSON(w, s.restartDrainView())
 }
 
 func (s *Server) endRestartDrain(why string) {

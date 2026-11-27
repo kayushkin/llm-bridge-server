@@ -35,6 +35,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/gorilla/websocket"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -542,7 +544,7 @@ func (socket *peerSocket) serveRequest(frame peerSocketFrame) {
 		cancel()
 		log.Printf("[peer-socket] %s: refused stream %d: %s", socket.connectionID, frame.Stream, refusal)
 		writer := &peerSocketResponseWriter{socket: socket, stream: frame.Stream, header: http.Header{peerSocketBusyHeader: {"true"}}}
-		writeJSONError(writer, http.StatusServiceUnavailable, "peer_socket_busy", refusal)
+		httpjson.WriteJSONError(writer, http.StatusServiceUnavailable, "peer_socket_busy", refusal)
 		writer.finish()
 		return
 	}
@@ -558,7 +560,7 @@ func (socket *peerSocket) serveRequest(frame peerSocketFrame) {
 		socket.server.stampThisServersIdentity(writer.header)
 		request, err := requestCarriedOverPeerSocket(ctx, frame)
 		if err != nil {
-			writeJSONError(writer, http.StatusBadRequest, "invalid_peer_socket_request", err.Error())
+			httpjson.WriteJSONError(writer, http.StatusBadRequest, "invalid_peer_socket_request", err.Error())
 		} else {
 			socket.server.ServeHTTP(writer, request)
 		}
@@ -808,7 +810,7 @@ func (s *Server) handlePeerSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if connection.Transport != msg.PeerTransportDialOut || connection.Role != msg.PeerConnectionRoleAccepting {
-		writeJSONError(w, http.StatusConflict, "peer_connection_has_no_socket", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusConflict, "peer_connection_has_no_socket", fmt.Sprintf(
 			"%s is %s and this server %s it, so no socket is opened to this server for it", connection.ID, connection.Transport, connection.Role))
 		return
 	}

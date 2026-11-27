@@ -5,6 +5,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	schedulerapi "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/api"
 	schedulerdb "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/db"
 	"github.com/kayushkin/llm-bridge-server/internal/inprocesshttp"
@@ -71,7 +73,7 @@ func (s *Server) schedulerHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		routes := s.automationStores.scheduler.Load()
 		if routes == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "scheduler_off", "this server's scheduler module is not open")
+			httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "scheduler_off", "this server's scheduler module is not open")
 			return
 		}
 		(*routes).ServeHTTP(w, r)
@@ -82,7 +84,7 @@ func (s *Server) ruleStoreHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		routes := s.automationStores.ruleStore.Load()
 		if routes == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "rule_store_off", "this server's rule-store module is not open")
+			httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "rule_store_off", "this server's rule-store module is not open")
 			return
 		}
 		(*routes).ServeHTTP(w, r)

@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -260,7 +262,7 @@ func (s *Server) sendIntoSessionAsTheServer(sessionID string, request msg.SendMe
 
 func (s *Server) chatLinksOrRefuse(w http.ResponseWriter) bool {
 	if s.chatLinks == nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "chat_links_off", errChatLinksOff.Error())
+		httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "chat_links_off", errChatLinksOff.Error())
 		return false
 	}
 	return true
@@ -280,18 +282,18 @@ func (s *Server) handleCreateChatLink(w http.ResponseWriter, r *http.Request) {
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&create); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_chat_link", "body is not a chat link: "+err.Error())
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_chat_link", "body is not a chat link: "+err.Error())
 		return
 	}
 	for field, value := range map[string]string{"account_id": create.AccountID, "platform": create.Platform,
 		"conversation_id": create.ConversationID, "person_display_name": create.PersonDisplayName} {
 		if strings.TrimSpace(value) == "" {
-			writeJSONError(w, http.StatusBadRequest, "invalid_chat_link", field+" is required")
+			httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_chat_link", field+" is required")
 			return
 		}
 	}
 	if _, err := s.chatLinks.botAccountName(r.Context(), create.AccountID, create.Platform); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "unknown_account", err.Error())
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "unknown_account", err.Error())
 		return
 	}
 	caller, _ := callerOfRequest(r)
@@ -306,25 +308,25 @@ func (s *Server) handleCreateChatLink(w http.ResponseWriter, r *http.Request) {
 	}
 	created, err := s.store.CreateChatLink(link)
 	if errors.Is(err, store.ErrChatLinkConversationTaken) {
-		writeJSONError(w, http.StatusConflict, "conversation_taken", err.Error()+"; end that link first")
+		httpjson.WriteJSONError(w, http.StatusConflict, "conversation_taken", err.Error()+"; end that link first")
 		return
 	}
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	log.Printf("[chat-links] %s: session %s linked to %s %s conversation %s (%s)", created.ID, created.SessionID, created.Platform, created.AccountID, created.ConversationID, created.PersonDisplayName)
-	writeJSON(w, created)
+	httpjson.WriteJSON(w, created)
 }
 
 // handleListChatLinks: GET /sessions/{id}/chat-links.
 func (s *Server) handleListChatLinks(w http.ResponseWriter, r *http.Request) {
 	links, err := s.store.ListChatLinks(r.PathValue("id"))
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
-	writeJSON(w, links)
+	httpjson.WriteJSON(w, links)
 }
 
 // handleGetChatLink: GET /sessions/{id}/chat-links/{link_id}, with its log.
@@ -335,14 +337,14 @@ func (s *Server) handleGetChatLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	if link.Messages, err = s.store.ChatLinkMessages(link.ID); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
-	writeJSON(w, link)
+	httpjson.WriteJSON(w, link)
 }
 
 // handleEndChatLink: POST /sessions/{id}/chat-links/{link_id}/end. What the
@@ -354,11 +356,11 @@ func (s *Server) handleEndChatLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	log.Printf("[chat-links] %s ended", link.ID)
-	writeJSON(w, link)
+	httpjson.WriteJSON(w, link)
 }
 
 // --- inbound ---

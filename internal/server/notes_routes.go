@@ -3,6 +3,8 @@ package server
 import (
 	"net/http"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/items"
 	itemsapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/items/api"
@@ -39,7 +41,7 @@ func itemsRoute(api interface{ Load() *itemsapi.API }, offCode, module string, r
 	return func(w http.ResponseWriter, r *http.Request) {
 		handlers := api.Load()
 		if handlers == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, offCode,
+			httpjson.WriteJSONError(w, http.StatusServiceUnavailable, offCode,
 				config.PostgresURLEnvironmentVariable+" is not set, or the "+module+" module is not open, so this server keeps no "+module)
 			return
 		}

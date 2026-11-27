@@ -22,6 +22,8 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/locations"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/photos"
 	"github.com/kayushkin/llm-bridge-server/internal/filestorage/files"
@@ -155,7 +157,7 @@ func (thumbnails photoThumbnailFiles) Destroy(_ context.Context, fileID string) 
 // opened.
 func photosAndLocationsOff(storeName, offCode string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		writeJSONError(w, http.StatusServiceUnavailable, offCode, storeName+" is not open on this server: EnablePhotosAndLocations was never called")
+		httpjson.WriteJSONError(w, http.StatusServiceUnavailable, offCode, storeName+" is not open on this server: EnablePhotosAndLocations was never called")
 	})
 }
 

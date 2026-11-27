@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
 	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/operations"
@@ -34,7 +36,7 @@ func (s *Server) EnableOperations(coordinator *operations.Coordinator) {
 
 func (s *Server) operationsOrRefuse(w http.ResponseWriter) (*operations.Coordinator, bool) {
 	if s.operations == nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "operations_not_configured", "this server was started without an operations coordinator")
+		httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "operations_not_configured", "this server was started without an operations coordinator")
 		return nil, false
 	}
 	return s.operations, true
@@ -52,13 +54,13 @@ func (s *Server) handleCreateOperation(w http.ResponseWriter, r *http.Request) {
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maximumOperationIntentBytes))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&intent); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_intent", "body is not an operation intent: "+err.Error())
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_intent", "body is not an operation intent: "+err.Error())
 		return
 	}
 	caller, _ := callerOfRequest(r)
 	receipt, created, refusal := s.submitOperation(r.Context(), caller, intent)
 	if refusal != nil {
-		writeJSONError(w, refusal.status, refusal.code, refusal.message)
+		httpjson.WriteJSONError(w, refusal.status, refusal.code, refusal.message)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -177,7 +179,7 @@ func (s *Server) handleGetOperation(w http.ResponseWriter, r *http.Request) {
 	if writeOperationStoreError(w, err) {
 		return
 	}
-	writeJSON(w, operation.Receipt)
+	httpjson.WriteJSON(w, operation.Receipt)
 }
 
 func (s *Server) handleCancelOperation(w http.ResponseWriter, r *http.Request) {
@@ -202,7 +204,7 @@ func (s *Server) handleCancelOperation(w http.ResponseWriter, r *http.Request) {
 	if writeOperationStoreError(w, err) {
 		return
 	}
-	writeJSON(w, receipt)
+	httpjson.WriteJSON(w, receipt)
 }
 
 // maximumOperationListLimit bounds GET /operations and the children route.
@@ -221,7 +223,7 @@ func (s *Server) handleListOperationChildren(w http.ResponseWriter, r *http.Requ
 	if writeOperationStoreError(w, err) {
 		return
 	}
-	writeJSON(w, children)
+	httpjson.WriteJSON(w, children)
 }
 
 func (s *Server) handleListOperations(w http.ResponseWriter, r *http.Request) {
@@ -238,12 +240,12 @@ func (s *Server) handleListOperations(w http.ResponseWriter, r *http.Request) {
 		Limit:          100,
 	}
 	if filter.State != "" && !filter.State.IsKnown() {
-		writeJSONError(w, http.StatusBadRequest, "unknown_state", fmt.Sprintf("state %q is not one of %v", filter.State, msg.AllOperationStates))
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "unknown_state", fmt.Sprintf("state %q is not one of %v", filter.State, msg.AllOperationStates))
 		return
 	}
 	if principalID, restricted := principalRestrictingRequest(r); restricted {
 		if filter.PrincipalID != "" && filter.PrincipalID != principalID {
-			writeJSON(w, []msg.OperationReceipt{})
+			httpjson.WriteJSON(w, []msg.OperationReceipt{})
 			return
 		}
 		filter.PrincipalID = principalID
@@ -252,7 +254,7 @@ func (s *Server) handleListOperations(w http.ResponseWriter, r *http.Request) {
 		if value := query.Get(name); value != "" {
 			parsed, err := time.Parse(time.RFC3339, value)
 			if err != nil {
-				writeJSONError(w, http.StatusBadRequest, "invalid_"+name, fmt.Sprintf("%s must be an RFC 3339 time: %v", name, err))
+				httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_"+name, fmt.Sprintf("%s must be an RFC 3339 time: %v", name, err))
 				return
 			}
 			*target = parsed
@@ -261,7 +263,7 @@ func (s *Server) handleListOperations(w http.ResponseWriter, r *http.Request) {
 	if value := query.Get("limit"); value != "" {
 		limit, err := strconv.Atoi(value)
 		if err != nil || limit < 1 || limit > maximumOperationListLimit {
-			writeJSONError(w, http.StatusBadRequest, "invalid_limit", fmt.Sprintf("limit must be between 1 and %d", maximumOperationListLimit))
+			httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_limit", fmt.Sprintf("limit must be between 1 and %d", maximumOperationListLimit))
 			return
 		}
 		filter.Limit = limit
@@ -270,7 +272,7 @@ func (s *Server) handleListOperations(w http.ResponseWriter, r *http.Request) {
 	if writeOperationStoreError(w, err) {
 		return
 	}
-	writeJSON(w, receipts)
+	httpjson.WriteJSON(w, receipts)
 }
 
 func (s *Server) handleOperationTypes(w http.ResponseWriter, r *http.Request) {
@@ -278,7 +280,7 @@ func (s *Server) handleOperationTypes(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, coordinator.Types())
+	httpjson.WriteJSON(w, coordinator.Types())
 }
 
 // handleOperationEvents streams an operation's events: every stored one after
@@ -298,7 +300,7 @@ func (s *Server) handleOperationEvents(w http.ResponseWriter, r *http.Request) {
 	if value := r.Header.Get("Last-Event-ID"); value != "" {
 		parsed, err := strconv.ParseInt(value, 10, 64)
 		if err != nil || parsed < 0 {
-			writeJSONError(w, http.StatusBadRequest, "invalid_last_event_id", "Last-Event-ID must be an event sequence number")
+			httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_last_event_id", "Last-Event-ID must be an event sequence number")
 			return
 		}
 		lastSequence = parsed
@@ -387,7 +389,7 @@ func writeOperationStoreError(w http.ResponseWriter, err error) bool {
 		http.Error(w, "operation not found", http.StatusNotFound)
 	default:
 		log.Printf("operations: %v", err)
-		writeJSONError(w, http.StatusInternalServerError, "operation_store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "operation_store_failed", err.Error())
 	}
 	return true
 }
@@ -525,7 +527,7 @@ func (s *Server) handleListOperationBudgets(w http.ResponseWriter, r *http.Reque
 	if writeOperationStoreError(w, err) {
 		return
 	}
-	writeJSON(w, budgets)
+	httpjson.WriteJSON(w, budgets)
 }
 
 func (s *Server) handleGetOperationBudget(w http.ResponseWriter, r *http.Request) {
@@ -541,7 +543,7 @@ func (s *Server) handleGetOperationBudget(w http.ResponseWriter, r *http.Request
 		http.Error(w, "organization has no budget", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, budget)
+	httpjson.WriteJSON(w, budget)
 }
 
 func (s *Server) handlePutOperationBudget(w http.ResponseWriter, r *http.Request) {
@@ -555,12 +557,12 @@ func (s *Server) handlePutOperationBudget(w http.ResponseWriter, r *http.Request
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&body); err != nil || body.MonthlyLimitUSD == nil || *body.MonthlyLimitUSD < 0 {
-		writeJSONError(w, http.StatusBadRequest, "invalid_budget", `body must be {"monthly_limit_usd": <dollars, 0 or more>}`)
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_budget", `body must be {"monthly_limit_usd": <dollars, 0 or more>}`)
 		return
 	}
 	organizationID := r.PathValue("organization_id")
 	if status, code, message := s.checkOrganizationIsAnActiveGroup(r.Context(), organizationID); status != 0 {
-		writeJSONError(w, status, code, message)
+		httpjson.WriteJSONError(w, status, code, message)
 		return
 	}
 	updatedBy, _ := principalIdentityOfRequest(r)

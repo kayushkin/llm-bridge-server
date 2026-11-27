@@ -26,6 +26,8 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messages"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/onlineactivity"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/timeledger"
@@ -93,7 +95,7 @@ func (s *Server) messageActivityOrTimeLedgerRoute(mountPrefix, storeName, offCod
 		stores := s.messageActivityAndTimeLedger.Load()
 		if stores == nil {
 			return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				writeJSONError(w, http.StatusServiceUnavailable, offCode, storeName+" is not open on this server: EnableMessagesOnlineActivityAndTimeLedger was never called")
+				httpjson.WriteJSONError(w, http.StatusServiceUnavailable, offCode, storeName+" is not open on this server: EnableMessagesOnlineActivityAndTimeLedger was never called")
 			})
 		}
 		return handlerOf(stores)

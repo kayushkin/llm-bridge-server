@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/conformance"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -178,7 +180,7 @@ func (s *Server) handleConformanceGet(w http.ResponseWriter, r *http.Request) {
 
 	// matrix may be nil (never run, nothing persisted). last_run_error is what
 	// distinguishes that from a run that executed but failed outright.
-	writeJSON(w, map[string]any{
+	httpjson.WriteJSON(w, map[string]any{
 		"running":        running,
 		"matrix":         matrix,
 		"last_run_error": lastRunError,
@@ -237,7 +239,7 @@ func (s *Server) handleConformanceRun(w http.ResponseWriter, r *http.Request) {
 			len(matrix.Harnesses), len(outcome.harnessErrors), len(outcome.missingBinaries))
 	}()
 
-	writeJSON(w, map[string]any{"status": "started"})
+	httpjson.WriteJSON(w, map[string]any{"status": "started"})
 }
 
 // harnessTarget is an enabled harness whose wrapper binary was found on PATH.

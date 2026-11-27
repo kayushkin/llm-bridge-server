@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -51,7 +53,7 @@ func (s *Server) handleListSourceFolders(w http.ResponseWriter, r *http.Request)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Purpose < out[j].Purpose })
 
-	writeJSON(w, out)
+	httpjson.WriteJSON(w, out)
 }
 
 // syncSourceFolderRegistry ensures every folder referenced by either the
@@ -150,7 +152,7 @@ func (s *Server) handlePutSourceFolder(w http.ResponseWriter, r *http.Request) {
 		}
 		result.Updated = updated
 	}
-	writeJSON(w, result)
+	httpjson.WriteJSON(w, result)
 }
 
 // handleDeleteSourceFolder removes the runtime override; the env default

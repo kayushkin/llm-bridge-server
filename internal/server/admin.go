@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -34,7 +36,7 @@ func (s *Server) handleFileInactive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("[admin] file-inactive: moved %d sessions (older than %dd) into %q", len(ids), req.InactiveDays, req.Folder)
-	writeJSON(w, msg.FileInactiveResponse{
+	httpjson.WriteJSON(w, msg.FileInactiveResponse{
 		Moved:  len(ids),
 		Folder: req.Folder,
 		IDs:    ids,
@@ -62,7 +64,7 @@ func (s *Server) handleArchiveOld(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("[admin] archive-old: archived %d sessions (older than %dd)", len(ids), req.InactiveDays)
-	writeJSON(w, msg.ArchiveOldResponse{
+	httpjson.WriteJSON(w, msg.ArchiveOldResponse{
 		Moved: len(ids),
 		IDs:   ids,
 	})

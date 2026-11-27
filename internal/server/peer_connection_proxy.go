@@ -40,6 +40,8 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 )
 
 // requestHeadersForwardedToPeers is every header a proxied request carries to
@@ -112,7 +114,7 @@ func (s *Server) handlePeerConnectionProxy(w http.ResponseWriter, r *http.Reques
 	}
 	if caller, ok := callerOfRequest(r); ok {
 		if caller.peer != nil {
-			writeJSONError(w, http.StatusForbidden, "route_not_for_peers", "a connected server may not go on through this server to another")
+			httpjson.WriteJSONError(w, http.StatusForbidden, "route_not_for_peers", "a connected server may not go on through this server to another")
 			return
 		}
 		if caller.principalID != "" && (!caller.isAdministrator || startsASession) {
@@ -123,10 +125,10 @@ func (s *Server) handlePeerConnectionProxy(w http.ResponseWriter, r *http.Reques
 	// only a connection its can_call_through grants name; a person holding
 	// none is not restricted, as before the relation existed.
 	if callThrough, narrowed, err := s.callThroughGrantsOfRequest(r); err != nil {
-		writeJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
+		httpjson.WriteJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
 		return
 	} else if narrowed && !callThrough.permits(connection.ID) {
-		writeJSONError(w, http.StatusForbidden, "peer_connection_not_granted", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusForbidden, "peer_connection_not_granted", fmt.Sprintf(
 			"%s; grant can_call_through on peer_connection %s to call through it", callThrough.describe(), connection.ID))
 		return
 	}

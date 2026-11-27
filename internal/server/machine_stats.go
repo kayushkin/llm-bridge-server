@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge/machinestats"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -103,12 +105,12 @@ func (s *Server) pruneMachineStats() {
 func (s *Server) handleMachineStatsOverview(w http.ResponseWriter, r *http.Request) {
 	machines, err := s.harnessStore.ListMachines()
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "machine_stats_unavailable", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "machine_stats_unavailable", err.Error())
 		return
 	}
 	latest, err := s.store.LatestMachineStats()
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "machine_stats_unavailable", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "machine_stats_unavailable", err.Error())
 		return
 	}
 	runners := s.harness.Runners()
@@ -125,7 +127,7 @@ func (s *Server) handleMachineStatsOverview(w http.ResponseWriter, r *http.Reque
 		overviews = append(overviews, overview)
 	}
 	sort.Slice(overviews, func(i, j int) bool { return overviews[i].Machine.Name < overviews[j].Machine.Name })
-	writeJSON(w, overviews)
+	httpjson.WriteJSON(w, overviews)
 }
 
 // handleMachineStatsHistory serves GET /machines/{id}/stats/history.
@@ -134,20 +136,20 @@ func (s *Server) handleMachineStatsOverview(w http.ResponseWriter, r *http.Reque
 func (s *Server) handleMachineStatsHistory(w http.ResponseWriter, r *http.Request) {
 	machineID := r.PathValue("id")
 	if _, err := s.harnessStore.GetMachine(machineID); err != nil {
-		writeJSONError(w, http.StatusNotFound, "machine_not_found", "machine not found")
+		httpjson.WriteJSONError(w, http.StatusNotFound, "machine_not_found", "machine not found")
 		return
 	}
 	since, until, step, err := parseMachineStatsHistoryQuery(r, time.Now().UTC())
 	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_machine_stats_query", err.Error())
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_machine_stats_query", err.Error())
 		return
 	}
 	samples, err := s.store.MachineStatsSamplesBetween(machineID, since, until)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "machine_stats_unavailable", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "machine_stats_unavailable", err.Error())
 		return
 	}
-	writeJSON(w, msg.MachineStatsHistory{
+	httpjson.WriteJSON(w, msg.MachineStatsHistory{
 		MachineID:   machineID,
 		Since:       since,
 		Until:       until,

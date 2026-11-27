@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
@@ -853,23 +852,6 @@ func (s *Server) proxyToLogStore(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
-}
-
-func writeJSON(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(v)
-}
-
-// writeJSONError writes the {"error":{"code":…,"message":…}} envelope the
-// pty_unsupported and invalid_max_budget rejections already use, so a client
-// can branch on a stable code instead of matching prose. The message is for
-// a human reading a log and should say how to fix the request.
-func writeJSONError(w http.ResponseWriter, status int, code, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]any{
-		"error": map[string]string{"code": code, "message": message},
-	})
 }
 
 // ReconcileAndResume clears stale 'running' state left over from the previous

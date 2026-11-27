@@ -48,6 +48,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/ids"
@@ -232,11 +234,11 @@ func (s *Server) handleCreatePeerMessage(w http.ResponseWriter, r *http.Request)
 	decoder := json.NewDecoder(io.LimitReader(r.Body, peerMessageBodyLimit+4096))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&request); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_request", "send {kind, body, in_reply_to?, attachment_ids?, supersedes?}: "+err.Error())
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_request", "send {kind, body, in_reply_to?, attachment_ids?, supersedes?}: "+err.Error())
 		return
 	}
 	if err := validatePeerMessageBody(request.Kind, request.Body); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_peer_message", err.Error())
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_peer_message", err.Error())
 		return
 	}
 	if !s.stagedPeerAttachmentsFor(w, request.Kind, request.AttachmentIDs, createdBy) {
@@ -245,29 +247,29 @@ func (s *Server) handleCreatePeerMessage(w http.ResponseWriter, r *http.Request)
 	if request.InReplyTo != "" {
 		answered, err := s.store.GetPeerMessage(request.InReplyTo)
 		if err != nil || answered.ConnectionID != connection.ID {
-			writeJSONError(w, http.StatusBadRequest, "unknown_reply_target", fmt.Sprintf(
+			httpjson.WriteJSONError(w, http.StatusBadRequest, "unknown_reply_target", fmt.Sprintf(
 				"in_reply_to %q names no message on %s here; it is the id, on this server, of the message this one answers", request.InReplyTo, connection.ID))
 			return
 		}
 		if answered.RemoteMessageID == "" {
-			writeJSONError(w, http.StatusConflict, "reply_target_not_delivered", fmt.Sprintf(
+			httpjson.WriteJSONError(w, http.StatusConflict, "reply_target_not_delivered", fmt.Sprintf(
 				"%s has not reached the other server yet, so it has no id there to answer", answered.ID))
 			return
 		}
 	}
 	supersedes, refusal := s.outgoingMessagesASendMaySupersede(connection, request.Kind, request.Supersedes)
 	if refusal != "" {
-		writeJSONError(w, http.StatusBadRequest, "invalid_supersedes", refusal)
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_supersedes", refusal)
 		return
 	}
 	message, err := s.queuePeerMessage(r.Context(), connection, request.Kind, request.Body, request.InReplyTo, createdBy, supersedes, request.AttachmentIDs...)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	if request.InReplyTo != "" {
 		if err := s.finishApprovedPeerMessageAnsweredBy(request.InReplyTo, message); err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+			httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 			return
 		}
 	}
@@ -551,15 +553,15 @@ func (s *Server) handleReceivePeerMessage(w http.ResponseWriter, r *http.Request
 	decoder := json.NewDecoder(io.LimitReader(r.Body, peerMessageBodyLimit+4096))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&delivery); err != nil || delivery.ID == "" {
-		writeJSONError(w, http.StatusBadRequest, "invalid_request", "send {id, kind, body, in_reply_to?, created_at, attachments?, supersedes?}")
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_request", "send {id, kind, body, in_reply_to?, created_at, attachments?, supersedes?}")
 		return
 	}
 	if err := validatePeerMessageBody(delivery.Kind, delivery.Body); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_peer_message", err.Error())
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_peer_message", err.Error())
 		return
 	}
 	if err := s.checkIncomingPeerAttachments(delivery.Kind, delivery.Attachments); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_peer_attachments", err.Error())
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_peer_attachments", err.Error())
 		return
 	}
 	// The same message delivered again, because the acknowledgement was lost,
@@ -568,14 +570,14 @@ func (s *Server) handleReceivePeerMessage(w http.ResponseWriter, r *http.Request
 		writeJSONStatus(w, http.StatusCreated, msg.PeerMessageAcknowledgement{ID: existing.ID})
 		return
 	} else if !errors.Is(err, store.ErrPeerMessageNotFound) {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	var answered *store.PeerMessage
 	if delivery.InReplyTo != "" {
 		found, err := s.store.GetPeerMessage(delivery.InReplyTo)
 		if err != nil || found.ConnectionID != connection.ID {
-			writeJSONError(w, http.StatusBadRequest, "unknown_reply_target", fmt.Sprintf(
+			httpjson.WriteJSONError(w, http.StatusBadRequest, "unknown_reply_target", fmt.Sprintf(
 				"in_reply_to %q names no message of %s on this server", delivery.InReplyTo, connection.ID))
 			return
 		}
@@ -583,28 +585,28 @@ func (s *Server) handleReceivePeerMessage(w http.ResponseWriter, r *http.Request
 	}
 	replaced, refusal := s.incomingMessagesADeliveryMaySupersede(connection, delivery)
 	if refusal != "" {
-		writeJSONError(w, http.StatusBadRequest, "invalid_supersedes", refusal)
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_supersedes", refusal)
 		return
 	}
 	answersOwnMessage := answered != nil && answered.Direction == msg.PeerMessageDirectionOutgoing
 	if delivery.Kind != msg.PeerMessageKindStatus || !answersOwnMessage {
 		grant, err := s.store.LivePeerGrantOfConnection(connection.ID)
 		if errors.Is(err, store.ErrPeerGrantNotFound) {
-			writeJSONError(w, http.StatusForbidden, "peer_messages_not_granted", fmt.Sprintf(
+			httpjson.WriteJSONError(w, http.StatusForbidden, "peer_messages_not_granted", fmt.Sprintf(
 				"this server gave %s no access, so it takes no requests or notices from it; an administrator here grants the %q level (or administrator) to allow them", connection.ID, peerMessagesLevelKey))
 			return
 		}
 		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+			httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 			return
 		}
 		mayMessage, err := s.peerGrantMayMessage(grant)
 		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+			httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 			return
 		}
 		if !mayMessage {
-			writeJSONError(w, http.StatusForbidden, "peer_messages_not_granted", fmt.Sprintf(
+			httpjson.WriteJSONError(w, http.StatusForbidden, "peer_messages_not_granted", fmt.Sprintf(
 				"%s's level here is %q, which may not send requests or notices; an administrator here grants the %q level (or administrator) to allow them", connection.ID, grant.Level, peerMessagesLevelKey))
 			return
 		}
@@ -619,15 +621,15 @@ func (s *Server) handleReceivePeerMessage(w http.ResponseWriter, r *http.Request
 		message.Supersedes = append(message.Supersedes, earlier.ID)
 	}
 	if err := s.store.InsertPeerMessage(&message); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	if err := s.closeIncomingMessagesReplacedBy(message, replaced, connection); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	if err := s.recordIncomingPeerAttachments(message, delivery.Attachments); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	log.Printf("[peer-messages] %s (%s, %d files) received on %s from %s as its %s", message.ID, message.Kind, len(delivery.Attachments), connection.ID, otherServerLabel(connection), delivery.ID)
@@ -816,34 +818,34 @@ func peerMessageFilterFromQuery(r *http.Request) (store.PeerMessageFilter, error
 func (s *Server) handleListPeerMessages(w http.ResponseWriter, r *http.Request) {
 	filter, err := peerMessageFilterFromQuery(r)
 	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_filter", err.Error())
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_filter", err.Error())
 		return
 	}
 	var messages []store.PeerMessage
 	switch open := r.URL.Query().Get("open"); open {
 	case "true":
 		if filter.Direction != "" || filter.State != "" || filter.Kind != "" {
-			writeJSONError(w, http.StatusBadRequest, "invalid_filter", "open=true lists outgoing messages still waiting, and takes only connection_id beside it")
+			httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_filter", "open=true lists outgoing messages still waiting, and takes only connection_id beside it")
 			return
 		}
 		messages, err = s.store.OpenOutgoingPeerMessages(filter.ConnectionID)
 	case "", "false":
 		messages, err = s.store.ListPeerMessages(filter)
 	default:
-		writeJSONError(w, http.StatusBadRequest, "invalid_filter", errBadEnum("open", open, "true, false").Error())
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_filter", errBadEnum("open", open, "true, false").Error())
 		return
 	}
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	for index := range messages {
 		if messages[index], err = s.withPeerAttachments(messages[index]); err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+			httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 			return
 		}
 	}
-	writeJSON(w, messages)
+	httpjson.WriteJSON(w, messages)
 }
 
 // handleGetPeerMessage: GET /peer-messages/{id}.
@@ -854,20 +856,20 @@ func (s *Server) handleGetPeerMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	decorated, err := s.withPeerAttachments(message)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
-	writeJSON(w, decorated)
+	httpjson.WriteJSON(w, decorated)
 }
 
 func (s *Server) peerMessageOf(w http.ResponseWriter, r *http.Request) (store.PeerMessage, bool) {
 	message, err := s.store.GetPeerMessage(r.PathValue("id"))
 	if errors.Is(err, store.ErrPeerMessageNotFound) {
-		writeJSONError(w, http.StatusNotFound, "peer_message_not_found", r.PathValue("id")+" names no message here")
+		httpjson.WriteJSONError(w, http.StatusNotFound, "peer_message_not_found", r.PathValue("id")+" names no message here")
 		return store.PeerMessage{}, false
 	}
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return store.PeerMessage{}, false
 	}
 	return message, true
@@ -881,21 +883,21 @@ func (s *Server) pendingIncomingPeerMessageOf(w http.ResponseWriter, r *http.Req
 		return store.PeerMessage{}, store.PeerConnection{}, false
 	}
 	if message.Direction != msg.PeerMessageDirectionIncoming || message.Kind == msg.PeerMessageKindStatus {
-		writeJSONError(w, http.StatusConflict, "peer_message_not_decidable", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusConflict, "peer_message_not_decidable", fmt.Sprintf(
 			"%s is an %s %s; only an incoming request or notice waits for a decision", message.ID, message.Direction, message.Kind))
 		return store.PeerMessage{}, store.PeerConnection{}, false
 	}
 	if message.State != msg.PeerMessageStatePending {
-		writeJSONError(w, http.StatusConflict, "peer_message_not_pending", fmt.Sprintf("%s is %s, not pending", message.ID, message.State))
+		httpjson.WriteJSONError(w, http.StatusConflict, "peer_message_not_pending", fmt.Sprintf("%s is %s, not pending", message.ID, message.State))
 		return store.PeerMessage{}, store.PeerConnection{}, false
 	}
 	connection, err := s.store.GetPeerConnection(message.ConnectionID)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return store.PeerMessage{}, store.PeerConnection{}, false
 	}
 	if connection.RemovedAt != nil {
-		writeJSONError(w, http.StatusConflict, "peer_connection_removed", connection.ID+" was removed, so its messages can no longer be answered")
+		httpjson.WriteJSONError(w, http.StatusConflict, "peer_connection_removed", connection.ID+" was removed, so its messages can no longer be answered")
 		return store.PeerMessage{}, store.PeerConnection{}, false
 	}
 	return message, connection, true
@@ -905,11 +907,11 @@ func (s *Server) pendingIncomingPeerMessageOf(w http.ResponseWriter, r *http.Req
 func (s *Server) decidePeerMessage(w http.ResponseWriter, message store.PeerMessage, to msg.PeerMessageState, administratorID, reason string) (store.PeerMessage, bool) {
 	decided, err := s.store.DecidePeerMessage(message.ID, to, administratorID, reason, time.Now())
 	if errors.Is(err, store.ErrPeerMessageNotPending) {
-		writeJSONError(w, http.StatusConflict, "peer_message_not_pending", message.ID+" was decided already")
+		httpjson.WriteJSONError(w, http.StatusConflict, "peer_message_not_pending", message.ID+" was decided already")
 		return store.PeerMessage{}, false
 	}
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return store.PeerMessage{}, false
 	}
 	return decided, true
@@ -921,7 +923,7 @@ func (s *Server) undoApproval(w http.ResponseWriter, message store.PeerMessage, 
 	if err := s.store.ReturnPeerMessageToPending(message.ID); err != nil {
 		log.Printf("[peer-messages] ERROR: return %s to pending after %s: %v", message.ID, code, err)
 	}
-	writeJSONError(w, status, code, detail)
+	httpjson.WriteJSONError(w, status, code, detail)
 }
 
 // orchestratorBaseURL is the orchestrator approved requests and patches are
@@ -948,16 +950,16 @@ func (s *Server) handleApprovePeerMessage(w http.ResponseWriter, r *http.Request
 	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<16))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&approval); err != nil && !errors.Is(err, io.EOF) {
-		writeJSONError(w, http.StatusBadRequest, "invalid_request", "send {} (or {instance_id} on a server with no orchestrator) for a request or patch, {} for a notice: "+err.Error())
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_request", "send {} (or {instance_id} on a server with no orchestrator) for a request or patch, {} for a notice: "+err.Error())
 		return
 	}
 	attachments, err := s.store.PeerAttachmentsOfMessage(message.ID)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	if !peerAttachmentsAllHere(attachments) {
-		writeJSONError(w, http.StatusConflict, "peer_attachments_not_fetched", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusConflict, "peer_attachments_not_fetched", fmt.Sprintf(
 			"%s's files have not all arrived and been verified here yet; approve it once they have (GET /peer-messages/%s shows each, and POST …/attachments/{id}/retry fetches one again)", message.ID, message.ID))
 		return
 	}
@@ -965,28 +967,28 @@ func (s *Server) handleApprovePeerMessage(w http.ResponseWriter, r *http.Request
 	switch message.Kind {
 	case msg.PeerMessageKindRequest, msg.PeerMessageKindPatch:
 		if orchestrator != "" && approval.InstanceID != "" {
-			writeJSONError(w, http.StatusConflict, "orchestrator_places_sessions", fmt.Sprintf(
+			httpjson.WriteJSONError(w, http.StatusConflict, "orchestrator_places_sessions", fmt.Sprintf(
 				"this server hands approved requests and patches to its orchestrator (%s), which chooses the instance; approve with {}", config.SettingOrchestratorURL))
 			return
 		}
 		if orchestrator == "" && approval.InstanceID == "" {
-			writeJSONError(w, http.StatusBadRequest, "invalid_request", fmt.Sprintf(
+			httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_request", fmt.Sprintf(
 				"%s is empty, so approving a request or patch here takes {instance_id}", config.SettingOrchestratorURL))
 			return
 		}
 		if approval.InstanceID != "" {
 			if status, code, detail := s.checkPeerMessageMayStartOn(message, approval.InstanceID); code != "" {
-				writeJSONError(w, status, code, detail)
+				httpjson.WriteJSONError(w, status, code, detail)
 				return
 			}
 		}
 	case msg.PeerMessageKindNotice:
 		if approval.InstanceID != "" {
-			writeJSONError(w, http.StatusBadRequest, "invalid_request", "approving a notice takes no instance_id")
+			httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_request", "approving a notice takes no instance_id")
 			return
 		}
 		if strings.TrimSpace(s.settings.String(config.SettingSelfUpdateCommand)) == "" {
-			writeJSONError(w, http.StatusConflict, "self_update_not_configured", config.SettingSelfUpdateCommand+" is empty, so this server has no update to run; set it on /settings")
+			httpjson.WriteJSONError(w, http.StatusConflict, "self_update_not_configured", config.SettingSelfUpdateCommand+" is empty, so this server has no update to run; set it on /settings")
 			return
 		}
 	}
@@ -1003,7 +1005,7 @@ func (s *Server) handleApprovePeerMessage(w http.ResponseWriter, r *http.Request
 				return
 			}
 			if err := s.store.SetPeerMessagePlacementSession(message.ID, placementSessionID); err != nil {
-				writeJSONError(w, http.StatusInternalServerError, "store_failed", fmt.Sprintf("the orchestrator's session %s was asked to place %s but that could not be recorded: %v", placementSessionID, message.ID, err))
+				httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", fmt.Sprintf("the orchestrator's session %s was asked to place %s but that could not be recorded: %v", placementSessionID, message.ID, err))
 				return
 			}
 			log.Printf("[peer-messages] %s approved by %s: handed to the orchestrator's session %s to place", message.ID, administratorID, placementSessionID)
@@ -1015,7 +1017,7 @@ func (s *Server) handleApprovePeerMessage(w http.ResponseWriter, r *http.Request
 			return
 		}
 		if err := s.store.SetPeerMessageSession(message.ID, sessionID); err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "store_failed", fmt.Sprintf("session %s was started for %s but could not be recorded: %v", sessionID, message.ID, err))
+			httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", fmt.Sprintf("session %s was started for %s but could not be recorded: %v", sessionID, message.ID, err))
 			return
 		}
 		log.Printf("[peer-messages] %s approved by %s: session %s", message.ID, administratorID, sessionID)
@@ -1037,10 +1039,10 @@ func (s *Server) writePeerMessage(w http.ResponseWriter, id string) {
 		current, err = s.withPeerAttachments(current)
 	}
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
-	writeJSON(w, current)
+	httpjson.WriteJSON(w, current)
 }
 
 // handlePlacePeerMessage: POST /peer-messages/{id}/place {instance_id,
@@ -1056,41 +1058,41 @@ func (s *Server) handlePlacePeerMessage(w http.ResponseWriter, r *http.Request) 
 	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<16))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&placement); err != nil || strings.TrimSpace(placement.InstanceID) == "" || strings.TrimSpace(placement.Reason) == "" {
-		writeJSONError(w, http.StatusBadRequest, "invalid_request", "send {instance_id, reason}: the instance the session starts on, and why that one")
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_request", "send {instance_id, reason}: the instance the session starts on, and why that one")
 		return
 	}
 	message, err := s.store.GetPeerMessage(r.PathValue("id"))
 	if errors.Is(err, store.ErrPeerMessageNotFound) {
-		writeJSONError(w, http.StatusNotFound, "peer_message_not_found", "no message "+r.PathValue("id"))
+		httpjson.WriteJSONError(w, http.StatusNotFound, "peer_message_not_found", "no message "+r.PathValue("id"))
 		return
 	}
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	if strings.HasPrefix(placedBy, "session:") && placedBy != "session:"+message.PlacementSessionID {
-		writeJSONError(w, http.StatusForbidden, "not_the_placing_session", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusForbidden, "not_the_placing_session", fmt.Sprintf(
 			"%s was handed to session %q to place; only that session's agent or an administrator may place it", message.ID, message.PlacementSessionID))
 		return
 	}
 	if status, code, detail := s.checkPeerMessageMayStartOn(message, placement.InstanceID); code != "" {
-		writeJSONError(w, status, code, detail)
+		httpjson.WriteJSONError(w, status, code, detail)
 		return
 	}
 	connection, err := s.store.GetPeerConnection(message.ConnectionID)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", fmt.Sprintf("read %s's connection %s: %v", message.ID, message.ConnectionID, err))
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", fmt.Sprintf("read %s's connection %s: %v", message.ID, message.ConnectionID, err))
 		return
 	}
 	claimed, err := s.store.ClaimPeerMessagePlacement(message.ID, placedBy, strings.TrimSpace(placement.Reason), time.Now())
 	if errors.Is(err, store.ErrPeerMessageNotAwaitingPlacement) {
-		writeJSONError(w, http.StatusConflict, "peer_message_not_awaiting_placement", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusConflict, "peer_message_not_awaiting_placement", fmt.Sprintf(
 			"%s is %s, kind %s, handed to %q, session %q: only an approved request or patch handed to the orchestrator and not yet placed can be placed",
 			message.ID, message.State, message.Kind, message.PlacementSessionID, message.SessionID))
 		return
 	}
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	sessionID, status, code, detail := s.startPeerMessageSessionOnInstance(claimed, connection, placement.InstanceID)
@@ -1098,11 +1100,11 @@ func (s *Server) handlePlacePeerMessage(w http.ResponseWriter, r *http.Request) 
 		if err := s.store.ReleasePeerMessagePlacement(message.ID); err != nil {
 			log.Printf("[peer-messages] ERROR: release the placement of %s after %s: %v", message.ID, code, err)
 		}
-		writeJSONError(w, status, code, detail)
+		httpjson.WriteJSONError(w, status, code, detail)
 		return
 	}
 	if err := s.store.SetPeerMessageSession(message.ID, sessionID); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", fmt.Sprintf("session %s was started for %s but could not be recorded: %v", sessionID, message.ID, err))
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", fmt.Sprintf("session %s was started for %s but could not be recorded: %v", sessionID, message.ID, err))
 		return
 	}
 	log.Printf("[peer-messages] %s placed by %s on %s: session %s (%s)", message.ID, placedBy, placement.InstanceID, sessionID, placement.Reason)
@@ -1291,7 +1293,7 @@ func (s *Server) handleDeclinePeerMessage(w http.ResponseWriter, r *http.Request
 	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<16))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&decline); err != nil || strings.TrimSpace(decline.Reason) == "" {
-		writeJSONError(w, http.StatusBadRequest, "invalid_request", "send {reason}; the other server is told it")
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_request", "send {reason}; the other server is told it")
 		return
 	}
 	message, connection, ok := s.pendingIncomingPeerMessageOf(w, r)
@@ -1311,10 +1313,10 @@ func (s *Server) handleDeclinePeerMessage(w http.ResponseWriter, r *http.Request
 	}
 	current, err := s.store.GetPeerMessage(message.ID)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
-	writeJSON(w, current)
+	httpjson.WriteJSON(w, current)
 }
 
 // sendPeerStatus answers an incoming message with a status, through the

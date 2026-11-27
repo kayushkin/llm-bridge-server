@@ -41,6 +41,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"golang.org/x/time/rate"
 )
@@ -208,11 +210,11 @@ func (s *Server) serveSharedProxiedRead(w http.ResponseWriter, r *http.Request, 
 	if r.Method != http.MethodGet && r.ContentLength != 0 {
 		read, err := io.ReadAll(io.LimitReader(r.Body, peerProxyLargestSharedReadBody+1))
 		if err != nil {
-			writeJSONError(w, http.StatusBadRequest, "unreadable_body", err.Error())
+			httpjson.WriteJSONError(w, http.StatusBadRequest, "unreadable_body", err.Error())
 			return
 		}
 		if int64(len(read)) > peerProxyLargestSharedReadBody {
-			writeJSONError(w, http.StatusRequestEntityTooLarge, "body_too_large",
+			httpjson.WriteJSONError(w, http.StatusRequestEntityTooLarge, "body_too_large",
 				fmt.Sprintf("a read through the proxy carries at most %d bytes", peerProxyLargestSharedReadBody))
 			return
 		}

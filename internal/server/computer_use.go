@@ -10,6 +10,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 
@@ -207,5 +209,5 @@ func (s *Server) handleSetMachineComputerUse(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	log.Printf("[computer-use] machine %s (%s): computer use allowed=%v", machine.Name, machine.ID, machine.ComputerUseAllowed)
-	writeJSON(w, machine)
+	httpjson.WriteJSON(w, machine)
 }

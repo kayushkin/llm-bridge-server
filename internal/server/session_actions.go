@@ -32,6 +32,8 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	schedulerapi "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/api"
 	schedulerdb "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/db"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
@@ -65,11 +67,11 @@ func (s *Server) handleOfferSessionAction(w http.ResponseWriter, r *http.Request
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maximumSessionActionOfferBytes))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&offer); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_session_action_offer", "body is not a session action offer: "+err.Error())
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_session_action_offer", "body is not a session action offer: "+err.Error())
 		return
 	}
 	if problem := sessionActionOfferProblem(offer); problem != "" {
-		writeJSONError(w, http.StatusBadRequest, "invalid_session_action_offer", problem)
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_session_action_offer", problem)
 		return
 	}
 	command, refusal := s.describeSessionAction(r.Context(), session, offer)
@@ -103,12 +105,12 @@ func (s *Server) handleOfferSessionAction(w http.ResponseWriter, r *http.Request
 		Review:    review,
 	}
 	if err := s.store.InsertSessionAction(&action); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "record_session_action", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "record_session_action", err.Error())
 		return
 	}
 	log.Printf("[session-actions] %s offered in %s: %q, %s%s", action.ActionID, session.SessionID, offer.Label, command, describeReviewForLog(review))
 	if err := s.broadcastSessionAction(action); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "record_session_action_event", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "record_session_action_event", fmt.Sprintf(
 			"%s is stored and listed at GET /sessions/%s/actions, but its session_action event was not written, so the chat does not show it: %v",
 			action.ActionID, session.SessionID, err))
 		return
@@ -130,10 +132,10 @@ func (s *Server) handleListSessionActions(w http.ResponseWriter, r *http.Request
 	}
 	actions, err := s.store.ListSessionActions(session.SessionID)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "list_session_actions", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "list_session_actions", err.Error())
 		return
 	}
-	writeJSON(w, actions)
+	httpjson.WriteJSON(w, actions)
 }
 
 // handleRunSessionAction is POST /sessions/{id}/actions/{action_id}/run: a
@@ -153,7 +155,7 @@ func (s *Server) handleRunSessionAction(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "read_session_action", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "read_session_action", err.Error())
 		return
 	}
 	// What a confirm runs is what the person was shown. Described again now,
@@ -165,7 +167,7 @@ func (s *Server) handleRunSessionAction(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if offered.Review != nil && offered.Review.Verdict == msg.SessionActionReviewReject {
-		writeJSONError(w, http.StatusConflict, "session_action_rejected_by_review", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusConflict, "session_action_rejected_by_review", fmt.Sprintf(
 			"%s's command was rejected by its reviewer (%s): %s", actionID, offered.Review.Model, offered.Review.Reasons))
 		return
 	}
@@ -175,7 +177,7 @@ func (s *Server) handleRunSessionAction(w http.ResponseWriter, r *http.Request) 
 	// describe above has already checked the target is still there and still
 	// the offering session's principal's.
 	if command != offered.Command && !sessionActionTypeActsOnAnotherSession(offered.Offer.Type) {
-		writeJSONError(w, http.StatusConflict, "session_action_changed", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusConflict, "session_action_changed", fmt.Sprintf(
 			"what %s would run has changed since it was offered, so it was not run. It was offered as: %s. It would now run: %s. Ask the agent to offer it again.",
 			actionID, offered.Command, command))
 		return
@@ -184,7 +186,7 @@ func (s *Server) handleRunSessionAction(w http.ResponseWriter, r *http.Request) 
 	// missing one is a refusal the person can fix rather than a failed run.
 	inputValues, err := readSessionActionRunInputs(r, w, offered.Offer.Inputs)
 	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_session_action_inputs", err.Error())
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_session_action_inputs", err.Error())
 		return
 	}
 
@@ -193,15 +195,15 @@ func (s *Server) handleRunSessionAction(w http.ResponseWriter, r *http.Request) 
 	if errors.Is(err, store.ErrSessionActionNotOffered) {
 		current, readErr := s.store.GetSessionAction(session.SessionID, actionID)
 		if readErr != nil {
-			writeJSONError(w, http.StatusInternalServerError, "read_session_action", readErr.Error())
+			httpjson.WriteJSONError(w, http.StatusInternalServerError, "read_session_action", readErr.Error())
 			return
 		}
-		writeJSONError(w, http.StatusConflict, "session_action_already_run", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusConflict, "session_action_already_run", fmt.Sprintf(
 			"%s is %s, not waiting to be confirmed; an action runs once", actionID, current.State))
 		return
 	}
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "start_session_action", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "start_session_action", err.Error())
 		return
 	}
 	log.Printf("[session-actions] %s in %s confirmed by %s: running %s", actionID, session.SessionID, describePrincipalForLog(runByPrincipalID), running.Command)
@@ -391,7 +393,7 @@ type sessionActionRefusal struct {
 }
 
 func (refusal *sessionActionRefusal) write(w http.ResponseWriter) {
-	writeJSONError(w, refusal.status, refusal.code, refusal.message)
+	httpjson.WriteJSONError(w, refusal.status, refusal.code, refusal.message)
 }
 
 // describeSessionAction writes Command for an offer: exactly what confirming

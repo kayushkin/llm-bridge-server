@@ -29,6 +29,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -202,10 +204,10 @@ func routeClassIsRefusedToPeerUsers(class routeAccessClass) bool {
 func (s *Server) handleListPeerUserMappings(w http.ResponseWriter, r *http.Request) {
 	mappings, err := s.store.ListPeerUserMappings(strings.TrimSpace(r.URL.Query().Get("peer_principal_id")))
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
-	writeJSON(w, mappings)
+	httpjson.WriteJSON(w, mappings)
 }
 
 // handleCreatePeerUserMapping: POST /peer-user-mappings. The peer principal
@@ -225,32 +227,32 @@ func (s *Server) handleCreatePeerUserMapping(w http.ResponseWriter, r *http.Requ
 	request.RemotePrincipalID = strings.TrimSpace(request.RemotePrincipalID)
 	request.LocalPrincipalID = strings.TrimSpace(request.LocalPrincipalID)
 	if request.PeerPrincipalID == "" || request.RemotePrincipalID == "" || request.LocalPrincipalID == "" {
-		writeJSONError(w, http.StatusBadRequest, "mapping_incomplete", "peer_principal_id, remote_principal_id and local_principal_id are all required")
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "mapping_incomplete", "peer_principal_id, remote_principal_id and local_principal_id are all required")
 		return
 	}
 	if !s.peerPrincipalIsOneOfOurs(request.PeerPrincipalID) {
-		writeJSONError(w, http.StatusBadRequest, "unknown_peer_principal", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "unknown_peer_principal", fmt.Sprintf(
 			"%s is not a peer principal this server made for a connected server; GET /peer-connections names them", request.PeerPrincipalID))
 		return
 	}
 	local, err := s.principalLookupCache.lookUp(r.Context(), request.LocalPrincipalID)
 	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "unknown_local_principal", fmt.Sprintf("principal-store does not know %s: %v", request.LocalPrincipalID, err))
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "unknown_local_principal", fmt.Sprintf("principal-store does not know %s: %v", request.LocalPrincipalID, err))
 		return
 	}
 	if !local.ActsAsCaller || local.Kind == "peer" {
-		writeJSONError(w, http.StatusBadRequest, "local_principal_cannot_act", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "local_principal_cannot_act", fmt.Sprintf(
 			"%s is a %q principal; a connected server's user is mapped to a principal that acts as a caller and is not itself a peer", request.LocalPrincipalID, local.Kind))
 		return
 	}
 	mapping := msg.PeerUserMapping{PeerPrincipalID: request.PeerPrincipalID, RemotePrincipalID: request.RemotePrincipalID,
 		LocalPrincipalID: request.LocalPrincipalID, CreatedBy: administratorID}
 	if err := s.store.InsertPeerUserMapping(&mapping); errors.Is(err, store.ErrPeerUserMappingExists) {
-		writeJSONError(w, http.StatusConflict, "peer_user_mapping_exists", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusConflict, "peer_user_mapping_exists", fmt.Sprintf(
 			"%s's user %s is already mapped; remove that mapping first", request.PeerPrincipalID, request.RemotePrincipalID))
 		return
 	} else if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	writeJSONStatus(w, http.StatusCreated, mapping)
@@ -267,22 +269,22 @@ func (s *Server) handleRemovePeerUserMapping(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if strings.TrimSpace(request.Reason) == "" {
-		writeJSONError(w, http.StatusBadRequest, "reason_required", "say why; the reason stays on the row")
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "reason_required", "say why; the reason stays on the row")
 		return
 	}
 	removed, err := s.store.RemovePeerUserMapping(r.PathValue("id"), administratorID, request.Reason)
 	if errors.Is(err, store.ErrPeerUserMappingNotFound) {
-		writeJSONError(w, http.StatusNotFound, "peer_user_mapping_not_found", fmt.Sprintf("%s is not a live mapping", r.PathValue("id")))
+		httpjson.WriteJSONError(w, http.StatusNotFound, "peer_user_mapping_not_found", fmt.Sprintf("%s is not a live mapping", r.PathValue("id")))
 		return
 	}
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	if ended := s.peerRequestsInFlight.cancelMapping(removed.ID); ended > 0 {
 		log.Printf("[peers] user mapping %s was removed; ended %d request(s) still acting through it", removed.ID, ended)
 	}
-	writeJSON(w, removed)
+	httpjson.WriteJSON(w, removed)
 }
 
 // peerPrincipalIsOneOfOurs reports whether a connection here names this peer

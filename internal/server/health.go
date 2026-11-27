@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -404,7 +406,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		status = "degraded"
 	}
 
-	writeJSON(w, HealthResponse{
+	httpjson.WriteJSON(w, HealthResponse{
 		Status:    status,
 		Harnesses: harnesses,
 		Sessions:  counts,
@@ -412,7 +414,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleHarnesses(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, s.discoverHarnesses())
+	httpjson.WriteJSON(w, s.discoverHarnesses())
 }
 
 // handleHarnessCapabilities returns the capability summary for a single
@@ -427,7 +429,7 @@ func (s *Server) handleHarnessCapabilities(w http.ResponseWriter, r *http.Reques
 	}
 	for _, info := range s.discoverHarnesses() {
 		if info.Name == string(name) {
-			writeJSON(w, info)
+			httpjson.WriteJSON(w, info)
 			return
 		}
 	}
@@ -467,7 +469,7 @@ func (s *Server) handleHarnessAgents(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
-	writeJSON(w, agents)
+	httpjson.WriteJSON(w, agents)
 }
 
 // harnessImageURL is the address of a harness's logo under /images/, or empty

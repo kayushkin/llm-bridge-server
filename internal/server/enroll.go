@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/machines"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -163,5 +165,5 @@ func (s *Server) handleEnrollRunner(w http.ResponseWriter, r *http.Request) {
 		InstanceIDs: instanceIDs,
 	}
 	w.WriteHeader(http.StatusCreated)
-	writeJSON(w, resp)
+	httpjson.WriteJSON(w, resp)
 }

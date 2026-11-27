@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/gorilla/websocket"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -65,7 +67,7 @@ func (s *Server) handleGetAttachToken(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session has no live pty hub", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, map[string]string{"attach_token": hub.Token()})
+	httpjson.WriteJSON(w, map[string]string{"attach_token": hub.Token()})
 }
 
 // handleAttachSession upgrades to a WebSocket and joins the session's

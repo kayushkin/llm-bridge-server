@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models"
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 )
@@ -50,7 +52,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		result = append(result, mc)
 	}
 
-	writeJSON(w, result)
+	httpjson.WriteJSON(w, result)
 }
 
 // modelWithCredentials is one row of GET /models: model-store's model and the

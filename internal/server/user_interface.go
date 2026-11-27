@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 )
 
 // The front end this server serves itself, so an install needs no other web
@@ -30,12 +32,12 @@ const (
 func (s *Server) handleUserInterface(w http.ResponseWriter, r *http.Request) {
 	index, err := fs.ReadFile(s.userInterfaceBuild, userInterfaceIndexFile)
 	if errors.Is(err, fs.ErrNotExist) {
-		writeJSONError(w, http.StatusServiceUnavailable, "user_interface_not_built",
+		httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "user_interface_not_built",
 			"this server was compiled without its front end; run scripts/build-ui.sh, then build and install the server again")
 		return
 	}
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "user_interface_unreadable", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "user_interface_unreadable", err.Error())
 		return
 	}
 
@@ -50,7 +52,7 @@ func (s *Server) handleUserInterface(w http.ResponseWriter, r *http.Request) {
 			http.ServeFileFS(w, r, s.userInterfaceBuild, name)
 			return
 		case statErr != nil && !errors.Is(statErr, fs.ErrNotExist):
-			writeJSONError(w, http.StatusInternalServerError, "user_interface_unreadable", statErr.Error())
+			httpjson.WriteJSONError(w, http.StatusInternalServerError, "user_interface_unreadable", statErr.Error())
 			return
 		case strings.HasPrefix(name, userInterfaceAssetsPrefix):
 			http.NotFound(w, r)

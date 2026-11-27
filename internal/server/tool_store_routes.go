@@ -3,6 +3,8 @@ package server
 import (
 	"net/http"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/agents/tools"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 )
@@ -40,7 +42,7 @@ func (s *Server) toolStoreRoute(route func(*tools.Handlers, http.ResponseWriter,
 	return func(w http.ResponseWriter, r *http.Request) {
 		handlers := s.toolStoreHandlers.Load()
 		if handlers == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "tool_store_off",
+			httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "tool_store_off",
 				config.PostgresURLEnvironmentVariable+" is not set, so this server keeps no tool registry")
 			return
 		}

@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -28,7 +30,7 @@ func (s *Server) handleListFolders(w http.ResponseWriter, r *http.Request) {
 	if folders == nil {
 		folders = []string{}
 	}
-	writeJSON(w, msg.FolderList{FolderOrder: folders})
+	httpjson.WriteJSON(w, msg.FolderList{FolderOrder: folders})
 }
 
 func (s *Server) handleCreateFolder(w http.ResponseWriter, r *http.Request) {

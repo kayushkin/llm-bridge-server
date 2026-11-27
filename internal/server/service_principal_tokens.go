@@ -34,6 +34,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -117,7 +119,7 @@ func (s *Server) principalThatHoldsServicePrincipalTokens(ctx context.Context, p
 func administratorMakingServicePrincipalChange(w http.ResponseWriter, r *http.Request) (string, bool) {
 	principalID, identified := principalIdentityOfRequest(r)
 	if !identified {
-		writeJSONError(w, http.StatusForbidden, "service_principal_change_requires_a_principal", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusForbidden, "service_principal_change_requires_a_principal", fmt.Sprintf(
 			"a change to service principal tokens or session starters records which administrator made it; send %s with the service token", principalIdentityHeader))
 		return "", false
 	}
@@ -128,7 +130,7 @@ func decodeStrictJSONBody(w http.ResponseWriter, r *http.Request, target any) bo
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return false
 	}
 	return true
@@ -157,7 +159,7 @@ func (s *Server) handleIssueServicePrincipalToken(w http.ResponseWriter, r *http
 	}
 	request.Description = strings.TrimSpace(request.Description)
 	if !strings.HasPrefix(request.PrincipalID, "principal_") || request.Description == "" {
-		writeJSONError(w, http.StatusBadRequest, "invalid_request",
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_request",
 			"principal_id (a principal-store id, principal_000001) and description (what will hold the token) are both required")
 		return
 	}
@@ -167,33 +169,33 @@ func (s *Server) handleIssueServicePrincipalToken(w http.ResponseWriter, r *http
 		return
 	}
 	if principal.DisabledAt != 0 {
-		writeJSONError(w, http.StatusBadRequest, "principal_disabled", fmt.Sprintf("principal %s is disabled", principal.ID))
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "principal_disabled", fmt.Sprintf("principal %s is disabled", principal.ID))
 		return
 	}
 	token, err := mintServicePrincipalToken()
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "token_not_minted", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "token_not_minted", err.Error())
 		return
 	}
 	record := store.ServicePrincipalToken{PrincipalID: principal.ID, Description: request.Description, CreatedBy: administratorID}
 	if err := s.store.InsertServicePrincipalToken(&record, hashOfServicePrincipalToken(token)); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	log.Printf("[service-principal-token] %s issued %s for %s (%s)", administratorID, record.ID, record.PrincipalID, record.Description)
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusCreated)
-	writeJSON(w, issuedServicePrincipalToken{Token: token, Record: record})
+	httpjson.WriteJSON(w, issuedServicePrincipalToken{Token: token, Record: record})
 }
 
 // handleListServicePrincipalTokens: GET /service-principal-tokens.
 func (s *Server) handleListServicePrincipalTokens(w http.ResponseWriter, r *http.Request) {
 	tokens, err := s.store.ListServicePrincipalTokens()
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
-	writeJSON(w, tokens)
+	httpjson.WriteJSON(w, tokens)
 }
 
 // handleRevokeServicePrincipalToken: POST /service-principal-tokens/{id}/revoke
@@ -210,23 +212,23 @@ func (s *Server) handleRevokeServicePrincipalToken(w http.ResponseWriter, r *htt
 		return
 	}
 	if strings.TrimSpace(request.Reason) == "" {
-		writeJSONError(w, http.StatusBadRequest, "invalid_request", "reason is required: it says why the token stopped working")
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_request", "reason is required: it says why the token stopped working")
 		return
 	}
 	record, err := s.store.RevokeServicePrincipalToken(r.PathValue("id"), administratorID, strings.TrimSpace(request.Reason))
 	switch {
 	case errors.Is(err, store.ErrServicePrincipalTokenNotFound):
-		writeJSONError(w, http.StatusNotFound, "service_principal_token_not_found", "no service principal token has id "+r.PathValue("id"))
+		httpjson.WriteJSONError(w, http.StatusNotFound, "service_principal_token_not_found", "no service principal token has id "+r.PathValue("id"))
 		return
 	case errors.Is(err, store.ErrServicePrincipalTokenAlreadyRevoked):
-		writeJSONError(w, http.StatusConflict, "service_principal_token_already_revoked", fmt.Sprintf("%s was revoked at %s", record.ID, record.RevokedAt.Format(time.RFC3339)))
+		httpjson.WriteJSONError(w, http.StatusConflict, "service_principal_token_already_revoked", fmt.Sprintf("%s was revoked at %s", record.ID, record.RevokedAt.Format(time.RFC3339)))
 		return
 	case err != nil:
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	log.Printf("[service-principal-token] %s revoked %s for %s: %s", administratorID, record.ID, record.PrincipalID, record.RevokeReason)
-	writeJSON(w, record)
+	httpjson.WriteJSON(w, record)
 }
 
 // mayStartSessionsAs reports whether the subject holds can_start_sessions_as
@@ -286,40 +288,40 @@ func (s *Server) handleRecordSessionStarter(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if session.PrincipalID == "" || request.PrincipalID == "" || request.PrincipalID == session.PrincipalID {
-		writeJSONError(w, http.StatusBadRequest, "invalid_request", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_request", fmt.Sprintf(
 			"a starter is another principal than the one session %s runs as (%q); principal_id %q is not one", session.SessionID, session.PrincipalID, request.PrincipalID))
 		return
 	}
 	if existing, found, err := s.store.SessionStarterOf(session.SessionID); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	} else if found {
-		writeJSONError(w, http.StatusConflict, "session_starter_already_recorded", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusConflict, "session_starter_already_recorded", fmt.Sprintf(
 			"session %s's starter is already recorded as %s", session.SessionID, existing.PrincipalID))
 		return
 	}
 	allowed, err := s.mayStartSessionsAs(r.Context(), grantSubject{principalID: request.PrincipalID}, session.PrincipalID)
 	if err != nil {
-		writeJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
+		httpjson.WriteJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
 		return
 	}
 	if !allowed {
-		writeJSONError(w, http.StatusConflict, "not_granted", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusConflict, "not_granted", fmt.Sprintf(
 			"%s holds no %s grant on %s, so recording it as session %s's starter would let it do nothing", request.PrincipalID, startSessionsAsRelation, session.PrincipalID, session.SessionID))
 		return
 	}
 	starter := store.SessionStarter{SessionID: session.SessionID, PrincipalID: request.PrincipalID, RecordedBy: administratorID, Backfilled: true}
 	if err := s.store.RecordSessionStarter(starter); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	recorded, _, err := s.store.SessionStarterOf(session.SessionID)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	log.Printf("[service-principal-token] %s recorded %s as the starter of session %s (runs as %s)", administratorID, request.PrincipalID, session.SessionID, session.PrincipalID)
-	writeJSON(w, recorded)
+	httpjson.WriteJSON(w, recorded)
 }
 
 // handleSelf: GET /self. Who the request acts as, so a service learns its own
@@ -327,8 +329,8 @@ func (s *Server) handleRecordSessionStarter(w http.ResponseWriter, r *http.Reque
 func (s *Server) handleSelf(w http.ResponseWriter, r *http.Request) {
 	caller, ok := callerOfRequest(r)
 	if !ok || caller.principalID == "" {
-		writeJSON(w, msg.CallerSelf{InternalService: true})
+		httpjson.WriteJSON(w, msg.CallerSelf{InternalService: true})
 		return
 	}
-	writeJSON(w, msg.CallerSelf{PrincipalID: caller.principalID, IsAdministrator: caller.isAdministrator})
+	httpjson.WriteJSON(w, msg.CallerSelf{PrincipalID: caller.principalID, IsAdministrator: caller.isAdministrator})
 }

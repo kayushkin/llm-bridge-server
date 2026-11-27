@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -53,12 +55,12 @@ func (s *Server) handleAnswerSignal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if signal.Kind != msg.SignalKindQuestion {
-		writeJSONError(w, http.StatusBadRequest, "not_a_question",
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "not_a_question",
 			fmt.Sprintf("signal %s is a %s; only a question can be answered (acknowledge or dismiss a notification)", signalID, signal.Kind))
 		return
 	}
 	if signal.State != msg.SignalStateOpen {
-		writeJSONError(w, http.StatusConflict, "already_resolved",
+		httpjson.WriteJSONError(w, http.StatusConflict, "already_resolved",
 			fmt.Sprintf("signal %s is already %s", signalID, signal.State))
 		return
 	}
@@ -92,7 +94,7 @@ func (s *Server) handleAnswerSignal(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(missing) > 0 {
-		writeJSONError(w, http.StatusBadRequest, "incomplete_answer",
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "incomplete_answer",
 			fmt.Sprintf("this request carries %d questions and resolves once; unanswered: %v", len(group), missing))
 		return
 	}
@@ -100,7 +102,7 @@ func (s *Server) handleAnswerSignal(w http.ResponseWriter, r *http.Request) {
 	if signal.RequestID != "" && s.parkedAsks.isParked(signal.SessionID, signal.RequestID) {
 		if s.answerThroughParkedHook(signal, group, req) {
 			s.recordCardWaitingEndedForSignal(signal, "Question answered; the worker has the ball again")
-			writeJSON(w, map[string]any{"status": "answered", "delivered_via": "parked_hook"})
+			httpjson.WriteJSON(w, map[string]any{"status": "answered", "delivered_via": "parked_hook"})
 			return
 		}
 		// The park drained between isParked and deliver. Not an error — it is
@@ -114,7 +116,7 @@ func (s *Server) handleAnswerSignal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.recordCardWaitingEndedForSignal(signal, "Question answered; the worker has the ball again")
-	writeJSON(w, map[string]any{"status": "answered", "delivered_via": "message"})
+	httpjson.WriteJSON(w, map[string]any{"status": "answered", "delivered_via": "message"})
 }
 
 // recordCardWaitingEndedForSignal closes the card's waiting period for a

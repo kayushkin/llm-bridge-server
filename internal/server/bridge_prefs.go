@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -139,7 +141,7 @@ func (s *bridgePrefsStore) set(prefs BridgePrefs) {
 func (s *Server) handleBridgePrefs(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, s.bridgePrefs.get())
+		httpjson.WriteJSON(w, s.bridgePrefs.get())
 	case http.MethodPut:
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -152,7 +154,7 @@ func (s *Server) handleBridgePrefs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.bridgePrefs.set(prefs)
-		writeJSON(w, map[string]string{"status": "ok"})
+		httpjson.WriteJSON(w, map[string]string{"status": "ok"})
 	default:
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 	}

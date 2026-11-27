@@ -22,6 +22,8 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access"
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
 	"github.com/kayushkin/llm-bridge-server/internal/access/permissions"
@@ -143,7 +145,7 @@ func (s *Server) signInConfiguration() (signin.DirectoryConfig, signin.HandlersC
 func (s *Server) accessHandlersOrRefuse(w http.ResponseWriter) (*accessRouteHandlers, bool) {
 	handlers := s.access.Load()
 	if handlers == nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "access_off", errAccessOff.Error())
+		httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "access_off", errAccessOff.Error())
 		return nil, false
 	}
 	return handlers, true
@@ -212,7 +214,7 @@ func (s *Server) signInStoreRoute(route func(*signin.Handlers, http.ResponseWrit
 			return
 		}
 		if handlers.signIn == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "sign_in_off", handlers.signInOffReason)
+			httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "sign_in_off", handlers.signInOffReason)
 			return
 		}
 		route(handlers.signIn, w, r)
@@ -319,8 +321,8 @@ func (s *Server) registerAccessRoutes() {
 // reach its handler: 503 when access is off, 500 otherwise.
 func writePrincipalStoreCallError(w http.ResponseWriter, err error) {
 	if errors.Is(err, errAccessOff) {
-		writeJSONError(w, http.StatusServiceUnavailable, "access_off", err.Error())
+		httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "access_off", err.Error())
 		return
 	}
-	writeJSONError(w, http.StatusInternalServerError, "principal_store_call_failed", err.Error())
+	httpjson.WriteJSONError(w, http.StatusInternalServerError, "principal_store_call_failed", err.Error())
 }

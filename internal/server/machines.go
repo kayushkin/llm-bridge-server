@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -19,7 +21,7 @@ func (s *Server) handleListMachines(w http.ResponseWriter, r *http.Request) {
 	if machines == nil {
 		machines = []msg.Machine{}
 	}
-	writeJSON(w, machines)
+	httpjson.WriteJSON(w, machines)
 }
 
 func (s *Server) handleGetMachine(w http.ResponseWriter, r *http.Request) {
@@ -29,7 +31,7 @@ func (s *Server) handleGetMachine(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "machine not found", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, m)
+	httpjson.WriteJSON(w, m)
 }
 
 func (s *Server) handleCreateMachine(w http.ResponseWriter, r *http.Request) {
@@ -68,7 +70,7 @@ func (s *Server) handleCreateMachine(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusCreated)
-	writeJSON(w, m)
+	httpjson.WriteJSON(w, m)
 }
 
 func (s *Server) handleUpdateMachine(w http.ResponseWriter, r *http.Request) {
@@ -120,7 +122,7 @@ func (s *Server) handleUpdateMachine(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, existing)
+	httpjson.WriteJSON(w, existing)
 }
 
 func (s *Server) handleDeleteMachine(w http.ResponseWriter, r *http.Request) {

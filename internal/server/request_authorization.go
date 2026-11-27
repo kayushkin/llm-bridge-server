@@ -43,6 +43,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 )
 
 // serviceTokenHeader carries LLMBRIDGE_SERVICE_TOKEN from an internal service.
@@ -967,19 +969,19 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 	presentedPeerTokens, peerTokenPresent := r.Header[http.CanonicalHeaderKey(peerTokenHeader)]
 	presentedPeerUsers, peerUserPresent := r.Header[http.CanonicalHeaderKey(peerUserHeader)]
 	if peerUserPresent && !peerTokenPresent {
-		writeJSONError(w, http.StatusBadRequest, "peer_user_without_peer_token", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "peer_user_without_peer_token", fmt.Sprintf(
 			"%s names a connected server's user and means nothing without %s", peerUserHeader, peerTokenHeader))
 		return
 	}
 	if _, serviceTokenPresent := r.Header[http.CanonicalHeaderKey(serviceTokenHeader)]; peerTokenPresent && serviceTokenPresent {
-		writeJSONError(w, http.StatusBadRequest, "ambiguous_credentials", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "ambiguous_credentials", fmt.Sprintf(
 			"%s and %s were both sent; a request comes from one caller", serviceTokenHeader, peerTokenHeader))
 		return
 	}
 
 	if presentedServiceToken, present := r.Header[http.CanonicalHeaderKey(serviceTokenHeader)]; present {
 		if len(presentedServiceToken) != 1 || subtle.ConstantTimeCompare([]byte(presentedServiceToken[0]), []byte(s.cfg.ServiceToken)) != 1 {
-			writeJSONError(w, http.StatusUnauthorized, "invalid_service_token", serviceTokenHeader+" does not match this server's service token")
+			httpjson.WriteJSONError(w, http.StatusUnauthorized, "invalid_service_token", serviceTokenHeader+" does not match this server's service token")
 			return
 		}
 		assertedPrincipalHeaderName := principalIdentityHeaderNameIn(r.Header)
@@ -991,7 +993,7 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 		}
 		assertedPrincipalIDs := r.Header[assertedPrincipalHeaderName]
 		if len(assertedPrincipalIDs) != 1 {
-			writeJSONError(w, http.StatusBadRequest, "ambiguous_principal_header", fmt.Sprintf(
+			httpjson.WriteJSONError(w, http.StatusBadRequest, "ambiguous_principal_header", fmt.Sprintf(
 				"%s was sent %d times (%v); a request acts as one principal", assertedPrincipalHeaderName, len(assertedPrincipalIDs), assertedPrincipalIDs))
 			return
 		}
@@ -1017,7 +1019,7 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 	// token makes it believable. Refused here, before the route's class is
 	// looked at, so there is no route on which it could be believed.
 	if headerName := principalIdentityHeaderNameIn(r.Header); headerName != "" {
-		writeJSONError(w, http.StatusUnauthorized, "principal_header_without_service_token", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusUnauthorized, "principal_header_without_service_token", fmt.Sprintf(
 			"%s says which principal a request acts as and is believed only from a caller presenting %s; sign in with GET /auth/entra/start or POST /auth/demo-login instead",
 			headerName, serviceTokenHeader))
 		return
@@ -1035,7 +1037,7 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 	// whatever else it presents, so a mistake in the proxy's rules cannot open
 	// them. The runner's own routes are exempt (answersThroughPublicProxy).
 	if rule.class == routeHarnessCallback && !rule.answersThroughPublicProxy && requestCameThroughPublicProxy(r) {
-		writeJSONError(w, http.StatusForbidden, "harness_callback_not_public", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusForbidden, "harness_callback_not_public", fmt.Sprintf(
 			"%s is called by this host's own processes and is not answered through the public proxy", pattern))
 		return
 	}
@@ -1046,7 +1048,7 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 	// peer, however it arrived.
 	socketConnectionID, arrivedOverPeerSocket := peerSocketConnectionOfRequest(r)
 	if arrivedOverPeerSocket && !peerTokenPresent && rule.class != routePeerConnectionCall {
-		writeJSONError(w, http.StatusForbidden, "peer_socket_requires_peer_token", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusForbidden, "peer_socket_requires_peer_token", fmt.Sprintf(
 			"a request over a peer socket must present %s, or be a connection call; %s is neither", peerTokenHeader, pattern))
 		return
 	}
@@ -1056,27 +1058,27 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 	// signed in as that principal would be.
 	if peerTokenPresent {
 		if len(presentedPeerTokens) != 1 || strings.TrimSpace(presentedPeerTokens[0]) == "" {
-			writeJSONError(w, http.StatusBadRequest, "ambiguous_peer_token", fmt.Sprintf(
+			httpjson.WriteJSONError(w, http.StatusBadRequest, "ambiguous_peer_token", fmt.Sprintf(
 				"%s was sent %d times or empty; a request presents one peer token", peerTokenHeader, len(presentedPeerTokens)))
 			return
 		}
 		if _, hasAuthorization := r.Header["Authorization"]; hasAuthorization {
-			writeJSONError(w, http.StatusBadRequest, "ambiguous_credentials", fmt.Sprintf(
+			httpjson.WriteJSONError(w, http.StatusBadRequest, "ambiguous_credentials", fmt.Sprintf(
 				"%s and an Authorization header were both sent; a request comes from one caller", peerTokenHeader))
 			return
 		}
 		if !arrivedOverPeerSocket && s.cfg.DemoLoginEnabled {
-			writeJSONError(w, http.StatusConflict, "demo_login_enabled",
+			httpjson.WriteJSONError(w, http.StatusConflict, "demo_login_enabled",
 				"a peer token by https is refused while demo login is on: it is a call from another machine, and demo login signs anyone in as anyone; a peer reaches this server over the socket this server dialed")
 			return
 		}
 		if rule.class == routeHarnessCallback || rule.class == routePeerConnectionCall {
-			writeJSONError(w, http.StatusForbidden, "route_not_for_peers", fmt.Sprintf(
+			httpjson.WriteJSONError(w, http.StatusForbidden, "route_not_for_peers", fmt.Sprintf(
 				"%s is called by this host's own processes or as a connection call, never with a peer token", pattern))
 			return
 		}
 		if rule.signsIn {
-			writeJSONError(w, http.StatusForbidden, "route_not_for_peers", fmt.Sprintf(
+			httpjson.WriteJSONError(w, http.StatusForbidden, "route_not_for_peers", fmt.Sprintf(
 				"%s signs a person in or out of this server, and another server never does that", pattern))
 			return
 		}
@@ -1092,7 +1094,7 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 		}
 		if peerUserPresent {
 			if len(presentedPeerUsers) != 1 || strings.TrimSpace(presentedPeerUsers[0]) == "" {
-				writeJSONError(w, http.StatusBadRequest, "ambiguous_peer_user", fmt.Sprintf(
+				httpjson.WriteJSONError(w, http.StatusBadRequest, "ambiguous_peer_user", fmt.Sprintf(
 					"%s was sent %d times or empty; a request names one user", peerUserHeader, len(presentedPeerUsers)))
 				return
 			}
@@ -1208,7 +1210,7 @@ func requestCameThroughPublicProxy(r *http.Request) bool {
 
 // refuseUnclassifiedRoute answers a route nobody has written a rule for.
 func refuseUnclassifiedRoute(w http.ResponseWriter, pattern string) {
-	writeJSONError(w, http.StatusForbidden, "route_not_classified", fmt.Sprintf(
+	httpjson.WriteJSONError(w, http.StatusForbidden, "route_not_classified", fmt.Sprintf(
 		"route %q has no access rule, so only the service token may call it", pattern))
 }
 
@@ -1221,7 +1223,7 @@ func (s *Server) serveAsCaller(w http.ResponseWriter, r *http.Request, pattern s
 		return
 	}
 	if caller.peer != nil && rule.class == routePrincipalActsThroughPeerConnection {
-		writeJSONError(w, http.StatusForbidden, "route_not_for_peers", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusForbidden, "route_not_for_peers", fmt.Sprintf(
 			"%s reaches a server connected to this one, and a connected server may not go on through it to another", pattern))
 		return
 	}
@@ -1234,28 +1236,28 @@ func (s *Server) serveAsCaller(w http.ResponseWriter, r *http.Request, pattern s
 		return
 	}
 	if caller.peer.actsForRemoteUser() && routeClassIsRefusedToPeerUsers(rule.class) {
-		writeJSONError(w, http.StatusForbidden, "route_not_for_peer_users", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusForbidden, "route_not_for_peer_users", fmt.Sprintf(
 			"%s answers as one principal from a store or record this server cannot narrow to what both the connected server and its mapped user may do, so a connected server's user is refused it (%s)", pattern, rule.reason))
 		return
 	}
 	switch rule.class {
 	case routeOperatorOnly:
-		writeJSONError(w, http.StatusForbidden, "operator_route", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusForbidden, "operator_route", fmt.Sprintf(
 			"operator route: use the service token (%s: %s)", pattern, rule.reason))
 		return
 	case routePrincipalRefusedCannotBeFiltered:
-		writeJSONError(w, http.StatusForbidden, "route_not_available_to_principals", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusForbidden, "route_not_available_to_principals", fmt.Sprintf(
 			"%s cannot be narrowed to one principal's sessions (%s), so it is refused rather than answered across principals; use the service token", pattern, rule.reason))
 		return
 	case routePrincipalOwnsSession, routeSessionOwnerOrItsAgentPostsIntoSession:
 		sessionID, err := pathValueForPattern(pattern, r.URL.EscapedPath(), rule.ownedResourcePathValueName)
 		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "route_rule_invalid", err.Error())
+			httpjson.WriteJSONError(w, http.StatusInternalServerError, "route_rule_invalid", err.Error())
 			return
 		}
 		reached, err := s.sessionReachedByCaller(r.Context(), caller, sessionID, requestOnlyReads(r, pattern))
 		if err != nil {
-			writeJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
+			httpjson.WriteJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
 			return
 		}
 		if !reached {
@@ -1265,7 +1267,7 @@ func (s *Server) serveAsCaller(w http.ResponseWriter, r *http.Request, pattern s
 	case routePrincipalOwnsSignal:
 		signalID, err := pathValueForPattern(pattern, r.URL.EscapedPath(), rule.ownedResourcePathValueName)
 		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "route_rule_invalid", err.Error())
+			httpjson.WriteJSONError(w, http.StatusInternalServerError, "route_rule_invalid", err.Error())
 			return
 		}
 		signal, err := s.store.GetSignal(signalID)
@@ -1277,7 +1279,7 @@ func (s *Server) serveAsCaller(w http.ResponseWriter, r *http.Request, pattern s
 			observes := false
 			if requestOnlyReads(r, pattern) {
 				if observes, err = s.mayObserveSession(r.Context(), caller, signal.SessionID); err != nil {
-					writeJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
+					httpjson.WriteJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
 					return
 				}
 			}
@@ -1289,7 +1291,7 @@ func (s *Server) serveAsCaller(w http.ResponseWriter, r *http.Request, pattern s
 	case routePrincipalOwnsOperation:
 		operationID, err := pathValueForPattern(pattern, r.URL.EscapedPath(), rule.ownedResourcePathValueName)
 		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "route_rule_invalid", err.Error())
+			httpjson.WriteJSONError(w, http.StatusInternalServerError, "route_rule_invalid", err.Error())
 			return
 		}
 		if s.operations != nil && !s.operationIsOwnedByPrincipal(operationID, caller.principalID) {
@@ -1300,7 +1302,7 @@ func (s *Server) serveAsCaller(w http.ResponseWriter, r *http.Request, pattern s
 		if requestOnlyReads(r, pattern) {
 			observes, err := s.mayObserveEverySession(r, caller)
 			if err != nil {
-				writeJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
+				httpjson.WriteJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
 				return
 			}
 			caller.observesEverySession = observes
@@ -1309,7 +1311,7 @@ func (s *Server) serveAsCaller(w http.ResponseWriter, r *http.Request, pattern s
 		routePrincipalOrSessionAgentThroughStoreProxy, routePrincipalCreatesOperation, routePrincipalSeesOwnOperationsOnly,
 		routePrincipalManagesOwnLoginSessions, routePrincipalSeesPeerConnectionsItMayCallThrough:
 	default:
-		writeJSONError(w, http.StatusInternalServerError, "route_rule_invalid", fmt.Sprintf("route %q has an access class this server does not handle", pattern))
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "route_rule_invalid", fmt.Sprintf("route %q has an access class this server does not handle", pattern))
 		return
 	}
 	s.mux.ServeHTTP(w, withRequestCaller(r, caller))
@@ -1342,7 +1344,7 @@ type requestCredentialError struct {
 }
 
 func (e *requestCredentialError) write(w http.ResponseWriter) {
-	writeJSONError(w, e.status, e.code, e.message)
+	httpjson.WriteJSONError(w, e.status, e.code, e.message)
 }
 
 // principalOfRequest establishes which principal a request acts as, from its

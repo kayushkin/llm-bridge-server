@@ -4,6 +4,8 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/inprocesshttp"
 	"github.com/kayushkin/llm-bridge-server/internal/sessionlog"
@@ -66,7 +68,7 @@ const logStoreBaseURL = inprocesshttp.BaseURL
 func (s *Server) serveLogStoreMount(w http.ResponseWriter, r *http.Request) {
 	module := s.sessionLog.Load()
 	if module == nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "log_store_off", errSessionLogOff.Error())
+		httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "log_store_off", errSessionLogOff.Error())
 		return
 	}
 	http.StripPrefix("/session-log", module.handler).ServeHTTP(w, r)

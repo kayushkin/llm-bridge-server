@@ -47,6 +47,8 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -141,22 +143,22 @@ func (s *Server) handleUploadPeerAttachment(w http.ResponseWriter, r *http.Reque
 	}
 	name, err := peerAttachmentNameOf(r.URL.Query().Get("name"))
 	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_attachment_name", err.Error()+"; send ?name=")
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_attachment_name", err.Error()+"; send ?name=")
 		return
 	}
 	limit := int64(s.settings.Integer(config.SettingPeerAttachmentMaximumBytes))
 	if r.ContentLength > limit {
-		writeJSONError(w, http.StatusRequestEntityTooLarge, "attachment_too_large", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusRequestEntityTooLarge, "attachment_too_large", fmt.Sprintf(
 			"%s is %d bytes; the most a file here may be is %d (%s)", name, r.ContentLength, limit, config.SettingPeerAttachmentMaximumBytes))
 		return
 	}
 	if err := os.MkdirAll(s.peerAttachmentDirectory(), 0o700); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	temporary, err := os.CreateTemp(s.peerAttachmentDirectory(), ".upload-*")
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	defer os.Remove(temporary.Name())
@@ -164,27 +166,27 @@ func (s *Server) handleUploadPeerAttachment(w http.ResponseWriter, r *http.Reque
 	written, copyErr := io.Copy(io.MultiWriter(temporary, hash), io.LimitReader(r.Body, limit+1))
 	closeErr := temporary.Close()
 	if copyErr != nil || closeErr != nil {
-		writeJSONError(w, http.StatusBadRequest, "upload_failed", fmt.Sprintf("read the file: %v %v", copyErr, closeErr))
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "upload_failed", fmt.Sprintf("read the file: %v %v", copyErr, closeErr))
 		return
 	}
 	if written > limit {
-		writeJSONError(w, http.StatusRequestEntityTooLarge, "attachment_too_large", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusRequestEntityTooLarge, "attachment_too_large", fmt.Sprintf(
 			"%s is over %d bytes, the most a file here may be (%s)", name, limit, config.SettingPeerAttachmentMaximumBytes))
 		return
 	}
 	if written == 0 {
-		writeJSONError(w, http.StatusBadRequest, "empty_attachment", name+" is empty")
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "empty_attachment", name+" is empty")
 		return
 	}
 	attachment := store.PeerMessageAttachment{Name: name, MediaType: peerAttachmentMediaTypeOf(r.URL.Query().Get("media_type")),
 		Size: written, SHA256: hex.EncodeToString(hash.Sum(nil))}
 	if err := s.store.InsertStagedPeerAttachment(&attachment, uploadedBy); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	if err := os.Rename(temporary.Name(), s.peerAttachmentPath(attachment.ID)); err != nil {
 		_ = s.store.DeletePeerAttachment(attachment.ID)
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	log.Printf("[peer-messages] %s uploaded %s (%s, %d bytes, sha256 %s)", uploadedBy, attachment.ID, attachment.Name, attachment.Size, attachment.SHA256)
@@ -196,32 +198,32 @@ func (s *Server) handleUploadPeerAttachment(w http.ResponseWriter, r *http.Reque
 // at least one. It answers the refusal itself.
 func (s *Server) stagedPeerAttachmentsFor(w http.ResponseWriter, kind msg.PeerMessageKind, ids []string, sender string) bool {
 	if kind == msg.PeerMessageKindPatch && len(ids) == 0 {
-		writeJSONError(w, http.StatusBadRequest, "patch_needs_attachments", "a patch carries its git format-patch files as attachments; upload them to POST /peer-message-attachments and name them in attachment_ids")
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "patch_needs_attachments", "a patch carries its git format-patch files as attachments; upload them to POST /peer-message-attachments and name them in attachment_ids")
 		return false
 	}
 	if len(ids) > peerAttachmentsPerMessage {
-		writeJSONError(w, http.StatusBadRequest, "too_many_attachments", fmt.Sprintf("a message carries at most %d files, not %d", peerAttachmentsPerMessage, len(ids)))
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "too_many_attachments", fmt.Sprintf("a message carries at most %d files, not %d", peerAttachmentsPerMessage, len(ids)))
 		return false
 	}
 	var total int64
 	for index, id := range ids {
 		if slices.Contains(ids[:index], id) {
-			writeJSONError(w, http.StatusBadRequest, "duplicate_attachment", id+" is named twice")
+			httpjson.WriteJSONError(w, http.StatusBadRequest, "duplicate_attachment", id+" is named twice")
 			return false
 		}
 		attachment, err := s.store.StagedPeerAttachment(id, sender)
 		if errors.Is(err, store.ErrPeerAttachmentNotFound) {
-			writeJSONError(w, http.StatusBadRequest, "unknown_attachment", fmt.Sprintf("%s is not an upload of %s waiting to be sent", id, sender))
+			httpjson.WriteJSONError(w, http.StatusBadRequest, "unknown_attachment", fmt.Sprintf("%s is not an upload of %s waiting to be sent", id, sender))
 			return false
 		}
 		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+			httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 			return false
 		}
 		total += attachment.Size
 	}
 	if limit := int64(s.settings.Integer(config.SettingPeerAttachmentsMaximumTotalBytes)); total > limit {
-		writeJSONError(w, http.StatusRequestEntityTooLarge, "attachments_too_large", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusRequestEntityTooLarge, "attachments_too_large", fmt.Sprintf(
 			"the files come to %d bytes; the most one message may carry here is %d (%s)", total, limit, config.SettingPeerAttachmentsMaximumTotalBytes))
 		return false
 	}
@@ -424,12 +426,12 @@ func (s *Server) handleServePeerAttachment(w http.ResponseWriter, r *http.Reques
 	}
 	message, err := s.store.GetPeerMessage(r.PathValue("message_id"))
 	if err != nil || message.ConnectionID != connection.ID || message.Direction != msg.PeerMessageDirectionOutgoing {
-		writeJSONError(w, http.StatusNotFound, "peer_message_not_found", r.PathValue("message_id")+" names no message this server sent on "+connection.ID)
+		httpjson.WriteJSONError(w, http.StatusNotFound, "peer_message_not_found", r.PathValue("message_id")+" names no message this server sent on "+connection.ID)
 		return
 	}
 	attachment, err := s.store.GetPeerAttachment(r.PathValue("attachment_id"))
 	if err != nil || attachment.MessageID != message.ID {
-		writeJSONError(w, http.StatusNotFound, "peer_attachment_not_found", r.PathValue("attachment_id")+" is not a file of "+message.ID)
+		httpjson.WriteJSONError(w, http.StatusNotFound, "peer_attachment_not_found", r.PathValue("attachment_id")+" is not a file of "+message.ID)
 		return
 	}
 	s.servePeerAttachmentFile(w, attachment)
@@ -439,7 +441,7 @@ func (s *Server) handleServePeerAttachment(w http.ResponseWriter, r *http.Reques
 func (s *Server) servePeerAttachmentFile(w http.ResponseWriter, attachment store.PeerMessageAttachment) {
 	file, err := os.Open(s.peerAttachmentPath(attachment.ID))
 	if err != nil {
-		writeJSONError(w, http.StatusGone, "peer_attachment_missing", fmt.Sprintf("%s's bytes are not on this server: %v", attachment.ID, err))
+		httpjson.WriteJSONError(w, http.StatusGone, "peer_attachment_missing", fmt.Sprintf("%s's bytes are not on this server: %v", attachment.ID, err))
 		return
 	}
 	defer file.Close()
@@ -465,7 +467,7 @@ func (s *Server) peerMessageAttachmentOf(w http.ResponseWriter, r *http.Request)
 	}
 	attachment, err := s.store.GetPeerAttachment(r.PathValue("attachment_id"))
 	if err != nil || attachment.MessageID != message.ID {
-		writeJSONError(w, http.StatusNotFound, "peer_attachment_not_found", r.PathValue("attachment_id")+" is not a file of "+message.ID)
+		httpjson.WriteJSONError(w, http.StatusNotFound, "peer_attachment_not_found", r.PathValue("attachment_id")+" is not a file of "+message.ID)
 		return store.PeerMessage{}, store.PeerMessageAttachment{}, false
 	}
 	return message, attachment, true
@@ -482,7 +484,7 @@ func (s *Server) handleDownloadPeerAttachment(w http.ResponseWriter, r *http.Req
 	if caller, isAgent := callerOfRequest(r); isAgent && caller.delegatingAgentOfSessionID != "" {
 		agentSession := caller.delegatingAgentOfSessionID
 		if message.CreatedBy != "session:"+agentSession && message.SessionID != agentSession {
-			writeJSONError(w, http.StatusNotFound, "peer_attachment_not_found", fmt.Sprintf(
+			httpjson.WriteJSONError(w, http.StatusNotFound, "peer_attachment_not_found", fmt.Sprintf(
 				"session %s neither sent %s nor was started by approving it", agentSession, message.ID))
 			return
 		}
@@ -490,7 +492,7 @@ func (s *Server) handleDownloadPeerAttachment(w http.ResponseWriter, r *http.Req
 	switch attachment.State {
 	case msg.PeerMessageAttachmentStored, msg.PeerMessageAttachmentFetched:
 	default:
-		writeJSONError(w, http.StatusConflict, "peer_attachment_not_fetched", fmt.Sprintf("%s is %s here: its bytes have not arrived and been verified (%s)", attachment.ID, attachment.State, attachment.LastError))
+		httpjson.WriteJSONError(w, http.StatusConflict, "peer_attachment_not_fetched", fmt.Sprintf("%s is %s here: its bytes have not arrived and been verified (%s)", attachment.ID, attachment.State, attachment.LastError))
 		return
 	}
 	s.servePeerAttachmentFile(w, attachment)
@@ -504,25 +506,25 @@ func (s *Server) handleRetryPeerAttachment(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if message.Direction != msg.PeerMessageDirectionIncoming || attachment.State == msg.PeerMessageAttachmentFetched {
-		writeJSONError(w, http.StatusConflict, "peer_attachment_not_retryable", fmt.Sprintf("%s is a file of an %s message, %s; only an incoming file not yet fetched is fetched again", attachment.ID, message.Direction, attachment.State))
+		httpjson.WriteJSONError(w, http.StatusConflict, "peer_attachment_not_retryable", fmt.Sprintf("%s is a file of an %s message, %s; only an incoming file not yet fetched is fetched again", attachment.ID, message.Direction, attachment.State))
 		return
 	}
 	if err := s.store.RetryPeerAttachment(attachment.ID); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	refreshed, err := s.store.GetPeerAttachment(attachment.ID)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	s.fetchPeerAttachment(refreshed)
 	after, err := s.store.GetPeerAttachment(attachment.ID)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
-	writeJSON(w, after)
+	httpjson.WriteJSON(w, after)
 }
 
 // removeUnclaimedPeerAttachmentUploads deletes uploads no message sent within

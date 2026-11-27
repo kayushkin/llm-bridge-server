@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/executors"
@@ -115,7 +117,7 @@ func (s *Server) handleRoutedOneShot(w http.ResponseWriter, r *http.Request) {
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&request); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_body", "invalid request body: "+err.Error())
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_body", "invalid request body: "+err.Error())
 		return
 	}
 	response, refusal := s.routedOneShot(r.Context(), request)
@@ -129,10 +131,10 @@ func (s *Server) handleRoutedOneShot(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		writeJSONError(w, refusal.status, refusal.code, refusal.message)
+		httpjson.WriteJSONError(w, refusal.status, refusal.code, refusal.message)
 		return
 	}
-	writeJSON(w, response)
+	httpjson.WriteJSON(w, response)
 }
 
 // oneShotRefusal is the one-shot router refusing a call, with the status and

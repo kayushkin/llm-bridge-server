@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -58,7 +60,7 @@ func (s *Server) handleSessionGitRepos(w http.ResponseWriter, r *http.Request) {
 	for _, p := range repos {
 		out = append(out, GitRepo{Path: p, Name: filepath.Base(p)})
 	}
-	writeJSON(w, map[string]any{"repos": out})
+	httpjson.WriteJSON(w, map[string]any{"repos": out})
 }
 
 // handleSessionGit returns status/diff/staged/log for a single repo.
@@ -106,7 +108,7 @@ func (s *Server) handleSessionGit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, view)
+	httpjson.WriteJSON(w, view)
 }
 
 // discoverGitRepos returns the deduped, sorted set of git repos this session

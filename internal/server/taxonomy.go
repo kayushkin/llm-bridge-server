@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"sort"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -75,7 +77,7 @@ func (s *Server) handleSessionTaxonomy(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	writeJSON(w, map[string]any{
+	httpjson.WriteJSON(w, map[string]any{
 		"types":         types,
 		"purposes":      purposes,
 		"state_reasons": msg.SessionStateReasons(),
@@ -164,7 +166,7 @@ func (s *Server) handleSessionTaxonomyReport(w http.ResponseWriter, r *http.Requ
 	// Worst first: the triple with the most sessions behind it.
 	sort.SliceStable(findings, func(i, j int) bool { return findings[i].Sessions > findings[j].Sessions })
 
-	writeJSON(w, map[string]any{
+	httpjson.WriteJSON(w, map[string]any{
 		"sessions_total":   sessionsTotal,
 		"sessions_flagged": sessionsBad,
 		"triples_total":    len(counts),

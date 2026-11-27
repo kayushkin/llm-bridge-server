@@ -23,6 +23,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
@@ -130,11 +132,11 @@ func (s *Server) handleGenerateImages(w http.ResponseWriter, r *http.Request) {
 		var response msg.ImageGenerationResponse
 		response, failure = s.generateImages(r.Context(), request)
 		if failure == nil {
-			writeJSON(w, response)
+			httpjson.WriteJSON(w, response)
 			return
 		}
 	}
-	writeJSONError(w, failure.status, failure.code, failure.message)
+	httpjson.WriteJSONError(w, failure.status, failure.code, failure.message)
 }
 
 // handleGenerateImagesIntoSession is POST /sessions/{id}/images: make images
@@ -142,7 +144,7 @@ func (s *Server) handleGenerateImages(w http.ResponseWriter, r *http.Request) {
 // session's posting token. Answers with the images and their session files.
 func (s *Server) handleGenerateImagesIntoSession(w http.ResponseWriter, r *http.Request) {
 	if s.fileStore == nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "session_files_off",
+		httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "session_files_off",
 			"LLMBRIDGE_FILE_STORE_URL is not set, so this server cannot share images into a session; POST /images makes them without sharing")
 		return
 	}
@@ -153,7 +155,7 @@ func (s *Server) handleGenerateImagesIntoSession(w http.ResponseWriter, r *http.
 	}
 	request, failure := decodeImageGenerationRequest(r)
 	if failure != nil {
-		writeJSONError(w, failure.status, failure.code, failure.message)
+		httpjson.WriteJSONError(w, failure.status, failure.code, failure.message)
 		return
 	}
 	if request.Caller == "" {
@@ -161,7 +163,7 @@ func (s *Server) handleGenerateImagesIntoSession(w http.ResponseWriter, r *http.
 	}
 	response, failure := s.generateImages(r.Context(), request)
 	if failure != nil {
-		writeJSONError(w, failure.status, failure.code, failure.message)
+		httpjson.WriteJSONError(w, failure.status, failure.code, failure.message)
 		return
 	}
 
@@ -190,7 +192,7 @@ func (s *Server) handleGenerateImagesIntoSession(w http.ResponseWriter, r *http.
 		}
 		response.SessionFiles = append(response.SessionFiles, record)
 	}
-	writeJSON(w, response)
+	httpjson.WriteJSON(w, response)
 }
 
 // shareGeneratedImageIntoSession shares one image file the harness saved,

@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/serviceinventory"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -66,10 +68,10 @@ func (s *Server) databaseIsOpenBySomeService(ctx context.Context, path string) (
 func (s *Server) handleListServices(w http.ResponseWriter, r *http.Request) {
 	inv, err := s.currentServiceInventory(r.Context(), r.URL.Query().Get("refresh") == "1")
 	if err != nil {
-		writeJSONError(w, http.StatusBadGateway, "healthcheck_unreachable", err.Error())
+		httpjson.WriteJSONError(w, http.StatusBadGateway, "healthcheck_unreachable", err.Error())
 		return
 	}
-	writeJSON(w, inv.Response)
+	httpjson.WriteJSON(w, inv.Response)
 }
 
 // requireOpenDatabase reads and checks the path parameter, writing the
@@ -77,16 +79,16 @@ func (s *Server) handleListServices(w http.ResponseWriter, r *http.Request) {
 func (s *Server) requireOpenDatabase(w http.ResponseWriter, r *http.Request) string {
 	path := r.URL.Query().Get("path")
 	if path == "" {
-		writeJSONError(w, http.StatusBadRequest, "path_required", "path is required: the file as GET /services lists it")
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "path_required", "path is required: the file as GET /services lists it")
 		return ""
 	}
 	open, err := s.databaseIsOpenBySomeService(r.Context(), path)
 	if err != nil {
-		writeJSONError(w, http.StatusBadGateway, "healthcheck_unreachable", err.Error())
+		httpjson.WriteJSONError(w, http.StatusBadGateway, "healthcheck_unreachable", err.Error())
 		return ""
 	}
 	if !open {
-		writeJSONError(w, http.StatusNotFound, "unknown_database", "no watched service holds "+path+" open; only a file listed by GET /services can be read")
+		httpjson.WriteJSONError(w, http.StatusNotFound, "unknown_database", "no watched service holds "+path+" open; only a file listed by GET /services can be read")
 		return ""
 	}
 	return path
@@ -99,10 +101,10 @@ func (s *Server) handleDatabaseSchema(w http.ResponseWriter, r *http.Request) {
 	}
 	schema, err := serviceinventory.ReadSchema(r.Context(), path)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "database_read_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "database_read_failed", err.Error())
 		return
 	}
-	writeJSON(w, schema)
+	httpjson.WriteJSON(w, schema)
 }
 
 func (s *Server) handleDatabaseRows(w http.ResponseWriter, r *http.Request) {
@@ -119,13 +121,13 @@ func (s *Server) handleDatabaseRows(w http.ResponseWriter, r *http.Request) {
 		Filters:    []msg.DatabaseRowFilter{},
 	}
 	if q.Table == "" {
-		writeJSONError(w, http.StatusBadRequest, "table_required", "table is required")
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "table_required", "table is required")
 		return
 	}
 	if text := query.Get("limit"); text != "" {
 		limit, err := strconv.Atoi(text)
 		if err != nil || limit < 1 || limit > databaseRowsMaxLimit {
-			writeJSONError(w, http.StatusBadRequest, "invalid_limit", "limit must be an integer from 1 to "+strconv.Itoa(databaseRowsMaxLimit))
+			httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_limit", "limit must be an integer from 1 to "+strconv.Itoa(databaseRowsMaxLimit))
 			return
 		}
 		q.Limit = limit
@@ -135,13 +137,13 @@ func (s *Server) handleDatabaseRows(w http.ResponseWriter, r *http.Request) {
 	case "asc":
 		q.Descending = false
 	default:
-		writeJSONError(w, http.StatusBadRequest, "invalid_order", "order must be asc or desc")
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_order", "order must be asc or desc")
 		return
 	}
 	for _, text := range query["filter"] {
 		f, err := serviceinventory.ParseFilter(text)
 		if err != nil {
-			writeJSONError(w, http.StatusBadRequest, "invalid_filter", err.Error())
+			httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_filter", err.Error())
 			return
 		}
 		q.Filters = append(q.Filters, f)
@@ -150,11 +152,11 @@ func (s *Server) handleDatabaseRows(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var requestErr *serviceinventory.RequestError
 		if errors.As(err, &requestErr) {
-			writeJSONError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		}
-		writeJSONError(w, http.StatusInternalServerError, "database_read_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "database_read_failed", err.Error())
 		return
 	}
-	writeJSON(w, rows)
+	httpjson.WriteJSON(w, rows)
 }

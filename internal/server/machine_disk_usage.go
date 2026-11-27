@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -86,7 +88,7 @@ func (s *Server) runnerConnectionOfMachineID(machineID string) *harness.RunnerCo
 func (s *Server) diskUsageRunner(w http.ResponseWriter, r *http.Request) (*msg.Machine, *harness.RunnerConnection, string) {
 	machine, err := s.harnessStore.GetMachine(r.PathValue("id"))
 	if err != nil || machine == nil {
-		writeJSONError(w, http.StatusNotFound, "machine_not_found", "no machine "+r.PathValue("id"))
+		httpjson.WriteJSONError(w, http.StatusNotFound, "machine_not_found", "no machine "+r.PathValue("id"))
 		return nil, nil, ""
 	}
 	if machine.Transport != msg.TransportRunner {
@@ -112,11 +114,11 @@ func (s *Server) askDiskUsage(r *http.Request, connection *harness.RunnerConnect
 // could not be asked, 409 when it answered that it could not.
 func writeDiskUsageAnswerError(w http.ResponseWriter, answer *msg.DiskUsageAnswer, err error) bool {
 	if err != nil {
-		writeJSONError(w, http.StatusBadGateway, "runner_did_not_answer", err.Error())
+		httpjson.WriteJSONError(w, http.StatusBadGateway, "runner_did_not_answer", err.Error())
 		return true
 	}
 	if answer.Error != "" {
-		writeJSONError(w, http.StatusConflict, "runner_refused", answer.Error)
+		httpjson.WriteJSONError(w, http.StatusConflict, "runner_refused", answer.Error)
 		return true
 	}
 	return false
@@ -131,7 +133,7 @@ func (s *Server) handleMachineDiskUsage(w http.ResponseWriter, r *http.Request) 
 	view := MachineDiskUsageView{MachineID: machine.ID, UnavailableReason: unavailable}
 	deletions, err := s.store.MachineDiskDeletions(machine.ID, machineDiskDeletionsShown)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "disk_deletions_unreadable", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "disk_deletions_unreadable", err.Error())
 		return
 	}
 	view.Deletions = deletions
@@ -148,7 +150,7 @@ func (s *Server) handleMachineDiskUsage(w http.ResponseWriter, r *http.Request) 
 			view.Status = answer.Status
 		}
 	}
-	writeJSON(w, view)
+	httpjson.WriteJSON(w, view)
 }
 
 // handleStartMachineDiskScan serves POST /machines/{id}/disk-usage/scans {"drive":"C:"}.
@@ -158,14 +160,14 @@ func (s *Server) handleStartMachineDiskScan(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if connection == nil {
-		writeJSONError(w, http.StatusConflict, "disk_usage_unavailable", unavailable)
+		httpjson.WriteJSONError(w, http.StatusConflict, "disk_usage_unavailable", unavailable)
 		return
 	}
 	var body struct {
 		Drive string `json:"drive"`
 	}
 	if err := decodeStrictJSON(r, &body); err != nil || body.Drive == "" {
-		writeJSONError(w, http.StatusBadRequest, "invalid_body", `send {"drive":"C:"}`)
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_body", `send {"drive":"C:"}`)
 		return
 	}
 	answer, err := s.askDiskUsage(r, connection, msg.DiskUsageRequest{Action: msg.DiskUsageActionStartScan, Drive: body.Drive})
@@ -185,19 +187,19 @@ func (s *Server) handleMachineDiskEntries(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if connection == nil {
-		writeJSONError(w, http.StatusConflict, "disk_usage_unavailable", unavailable)
+		httpjson.WriteJSONError(w, http.StatusConflict, "disk_usage_unavailable", unavailable)
 		return
 	}
 	path := r.URL.Query().Get("path")
 	if path == "" {
-		writeJSONError(w, http.StatusBadRequest, "path_required", `send ?path=C:\ for a drive's root`)
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "path_required", `send ?path=C:\ for a drive's root`)
 		return
 	}
 	answer, err := s.askDiskUsage(r, connection, msg.DiskUsageRequest{Action: msg.DiskUsageActionListChildren, Path: path})
 	if writeDiskUsageAnswerError(w, answer, err) {
 		return
 	}
-	writeJSON(w, answer.Children)
+	httpjson.WriteJSON(w, answer.Children)
 }
 
 // handleCheckMachineDiskDeletion serves POST /machines/{id}/disk-usage/deletion-checks {"path"}:
@@ -208,21 +210,21 @@ func (s *Server) handleCheckMachineDiskDeletion(w http.ResponseWriter, r *http.R
 		return
 	}
 	if connection == nil {
-		writeJSONError(w, http.StatusConflict, "disk_usage_unavailable", unavailable)
+		httpjson.WriteJSONError(w, http.StatusConflict, "disk_usage_unavailable", unavailable)
 		return
 	}
 	var body struct {
 		Path string `json:"path"`
 	}
 	if err := decodeStrictJSON(r, &body); err != nil || body.Path == "" {
-		writeJSONError(w, http.StatusBadRequest, "invalid_body", `send {"path":"D:\\Games\\Old"}`)
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_body", `send {"path":"D:\\Games\\Old"}`)
 		return
 	}
 	answer, err := s.askDiskUsage(r, connection, msg.DiskUsageRequest{Action: msg.DiskUsageActionCheckDeletion, Path: body.Path})
 	if writeDiskUsageAnswerError(w, answer, err) {
 		return
 	}
-	writeJSON(w, answer.DeletionCheck)
+	httpjson.WriteJSON(w, answer.DeletionCheck)
 }
 
 // MachineDiskDeletionRequest is the body of POST /machines/{id}/disk-usage/deletions.
@@ -250,21 +252,21 @@ func (s *Server) handleDeleteFromMachineDisk(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if connection == nil {
-		writeJSONError(w, http.StatusConflict, "disk_usage_unavailable", unavailable)
+		httpjson.WriteJSONError(w, http.StatusConflict, "disk_usage_unavailable", unavailable)
 		return
 	}
 	var body MachineDiskDeletionRequest
 	if err := decodeStrictJSON(r, &body); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_body", err.Error())
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_body", err.Error())
 		return
 	}
 	if body.Kind != msg.DiskUsageEntryFile && body.Kind != msg.DiskUsageEntryDirectory {
-		writeJSONError(w, http.StatusBadRequest, "invalid_kind", `kind must be "file" or "directory"`)
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_kind", `kind must be "file" or "directory"`)
 		return
 	}
 	name := diskPathName(body.Path)
 	if name == "" || body.ConfirmationName != name {
-		writeJSONError(w, http.StatusBadRequest, "confirmation_mismatch", fmt.Sprintf("confirmation_name must be exactly %q, the name of what is deleted", name))
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "confirmation_mismatch", fmt.Sprintf("confirmation_name must be exactly %q, the name of what is deleted", name))
 		return
 	}
 	requestedBy, _ := principalIdentityOfRequest(r)
@@ -276,7 +278,7 @@ func (s *Server) handleDeleteFromMachineDisk(w http.ResponseWriter, r *http.Requ
 		RequestedByPrincipalID: requestedBy,
 	})
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "disk_deletion_not_recorded", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "disk_deletion_not_recorded", err.Error())
 		return
 	}
 	log.Printf("[disk-usage] %s asked to delete %s (%s, %d bytes) on %s as %s", principalLabel(requestedBy), body.Path, body.Kind, body.ExpectedSizeBytes, machine.Name, deletion.ID)
@@ -297,11 +299,11 @@ func (s *Server) handleDeleteFromMachineDisk(w http.ResponseWriter, r *http.Requ
 		if markErr := s.store.UpdateMachineDiskDeletion(machine.ID, deletion.ID, msg.DiskUsageDeletion{DeletionID: deletion.ID, State: msg.DiskUsageDeletionLost}, ""); markErr != nil {
 			log.Printf("[disk-usage] ERROR: record deletion %s as lost: %v", deletion.ID, markErr)
 		}
-		writeJSONError(w, http.StatusBadGateway, "runner_did_not_answer", err.Error()+"; scan again to see whether anything was deleted")
+		httpjson.WriteJSONError(w, http.StatusBadGateway, "runner_did_not_answer", err.Error()+"; scan again to see whether anything was deleted")
 		return
 	case answer.Error != "":
 		settle(msg.DiskUsageDeletionRefused, answer.Error)
-		writeJSONError(w, http.StatusConflict, "runner_refused", answer.Error)
+		httpjson.WriteJSONError(w, http.StatusConflict, "runner_refused", answer.Error)
 		return
 	case answer.DeletionCheck != nil && !answer.DeletionCheck.Allowed:
 		settle(msg.DiskUsageDeletionRefused, answer.DeletionCheck.RefusalReason)
@@ -311,7 +313,7 @@ func (s *Server) handleDeleteFromMachineDisk(w http.ResponseWriter, r *http.Requ
 		return
 	case answer.Status == nil || answer.Status.Deletion == nil || answer.Status.Deletion.DeletionID != deletion.ID:
 		settle(msg.DiskUsageDeletionFailed, "the runner answered without starting this deletion")
-		writeJSONError(w, http.StatusBadGateway, "runner_answer_unexpected", "the runner answered without starting this deletion")
+		httpjson.WriteJSONError(w, http.StatusBadGateway, "runner_answer_unexpected", "the runner answered without starting this deletion")
 		return
 	}
 	// The runner may already have reported the end; record running only over requested.
@@ -329,15 +331,15 @@ func (s *Server) handleDeleteFromMachineDisk(w http.ResponseWriter, r *http.Requ
 func (s *Server) handleMachineDiskDeletions(w http.ResponseWriter, r *http.Request) {
 	machine, err := s.harnessStore.GetMachine(r.PathValue("id"))
 	if err != nil || machine == nil {
-		writeJSONError(w, http.StatusNotFound, "machine_not_found", "no machine "+r.PathValue("id"))
+		httpjson.WriteJSONError(w, http.StatusNotFound, "machine_not_found", "no machine "+r.PathValue("id"))
 		return
 	}
 	deletions, err := s.store.MachineDiskDeletions(machine.ID, 500)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "disk_deletions_unreadable", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "disk_deletions_unreadable", err.Error())
 		return
 	}
-	writeJSON(w, deletions)
+	httpjson.WriteJSON(w, deletions)
 }
 
 func principalLabel(principalID string) string {

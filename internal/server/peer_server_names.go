@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/ids"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -111,7 +113,7 @@ func (s *Server) handlePeerServerIdentity(w http.ResponseWriter, r *http.Request
 		return
 	}
 	s.stampThisServersIdentity(w.Header())
-	writeJSON(w, msg.PeerServerIdentity{ID: s.store.ThisServerID(), Name: s.thisServerName()})
+	httpjson.WriteJSON(w, msg.PeerServerIdentity{ID: s.store.ThisServerID(), Name: s.thisServerName()})
 }
 
 // exchangeServerIdentities tells the other server this one's id and name, and

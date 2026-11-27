@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/ids"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -337,7 +339,7 @@ func (s *Server) handleResolveSignal(w http.ResponseWriter, r *http.Request) {
 			ResolvedBy: "user",
 		}
 		if s.parkedAsks.deliver(signal.SessionID, signal.RequestID, decision) {
-			writeJSON(w, map[string]any{
+			httpjson.WriteJSON(w, map[string]any{
 				"status":        string(msg.SignalStateDismissed),
 				"delivered_via": "parked_hook",
 			})
@@ -375,7 +377,7 @@ func (s *Server) handleResolveSignal(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, resolved)
+	httpjson.WriteJSON(w, resolved)
 }
 
 func writeSignals(w http.ResponseWriter, signals []store.Signal, err error) {
@@ -386,7 +388,7 @@ func writeSignals(w http.ResponseWriter, signals []store.Signal, err error) {
 	if signals == nil {
 		signals = []store.Signal{}
 	}
-	writeJSON(w, signals)
+	httpjson.WriteJSON(w, signals)
 }
 
 // signalFilterFromQuery reads the shared filter params. Unknown enum values

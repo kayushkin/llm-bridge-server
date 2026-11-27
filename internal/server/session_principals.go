@@ -2,6 +2,8 @@ package server
 
 import (
 	"net/http"
+
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 )
 
 // SessionPrincipal is one principal sessions were started as, among the
@@ -22,7 +24,7 @@ func (s *Server) handleSessionPrincipals(w http.ResponseWriter, r *http.Request)
 	ownedBy, throughPeer := sessionScopeFilterOfRequest(r)
 	counts, err := s.store.SessionCountsByPrincipal(ownedBy, throughPeer)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "count_sessions", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "count_sessions", err.Error())
 		return
 	}
 	principals := make([]SessionPrincipal, 0, len(counts))
@@ -30,17 +32,17 @@ func (s *Server) handleSessionPrincipals(w http.ResponseWriter, r *http.Request)
 		row := SessionPrincipal{PrincipalID: count.PrincipalID, SessionCount: count.SessionCount}
 		if count.PrincipalID != "" {
 			if s.principalLookupCache == nil {
-				writeJSONError(w, http.StatusServiceUnavailable, "principal_store_not_configured", "names come from principal-store, and this server has no principal lookup")
+				httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "principal_store_not_configured", "names come from principal-store, and this server has no principal lookup")
 				return
 			}
 			principal, err := s.principalLookupCache.lookUp(r.Context(), count.PrincipalID)
 			if err != nil {
-				writeJSONError(w, http.StatusBadGateway, "principal_store_unavailable", "read "+count.PrincipalID+" from principal-store: "+err.Error())
+				httpjson.WriteJSONError(w, http.StatusBadGateway, "principal_store_unavailable", "read "+count.PrincipalID+" from principal-store: "+err.Error())
 				return
 			}
 			row.DisplayName = principal.DisplayName
 		}
 		principals = append(principals, row)
 	}
-	writeJSON(w, map[string]any{"principals": principals})
+	httpjson.WriteJSON(w, map[string]any{"principals": principals})
 }

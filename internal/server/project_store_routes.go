@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/projects"
 )
@@ -25,7 +27,7 @@ func (s *Server) projectStoreRoute(route func(*projects.Handlers, http.ResponseW
 	return func(w http.ResponseWriter, r *http.Request) {
 		handlers := s.projectStore.Load()
 		if handlers == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "project_store_off",
+			httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "project_store_off",
 				config.PostgresURLEnvironmentVariable+" is not set, so this server keeps no projects")
 			return
 		}

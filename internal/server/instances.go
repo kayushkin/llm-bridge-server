@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -52,11 +54,11 @@ func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
 		caller, _ := callerOfRequest(r)
 		instances, err = s.instancesPrincipalMayDispatchOn(r.Context(), grantSubjectOfCaller(caller), instances)
 		if err != nil {
-			writeJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
+			httpjson.WriteJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
 			return
 		}
 	}
-	writeJSON(w, instances)
+	httpjson.WriteJSON(w, instances)
 }
 
 // instancesPrincipalMayDispatchOn narrows instances to the ones a principal
@@ -87,7 +89,7 @@ func (s *Server) handleGetInstance(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "instance not found", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, inst)
+	httpjson.WriteJSON(w, inst)
 }
 
 func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
@@ -134,7 +136,7 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	inst.Machine = machine
 
 	w.WriteHeader(http.StatusCreated)
-	writeJSON(w, inst)
+	httpjson.WriteJSON(w, inst)
 }
 
 func (s *Server) handleUpdateInstance(w http.ResponseWriter, r *http.Request) {
@@ -178,7 +180,7 @@ func (s *Server) handleUpdateInstance(w http.ResponseWriter, r *http.Request) {
 	if m, err := s.harnessStore.GetMachine(existing.MachineID); err == nil {
 		existing.Machine = m
 	}
-	writeJSON(w, existing)
+	httpjson.WriteJSON(w, existing)
 }
 
 func (s *Server) handleDeleteInstance(w http.ResponseWriter, r *http.Request) {
@@ -205,7 +207,7 @@ func (s *Server) handleListInstanceCredentials(w http.ResponseWriter, r *http.Re
 	if creds == nil {
 		creds = []msg.InstanceCredential{}
 	}
-	writeJSON(w, creds)
+	httpjson.WriteJSON(w, creds)
 }
 
 func (s *Server) handleBindCredential(w http.ResponseWriter, r *http.Request) {
@@ -236,7 +238,7 @@ func (s *Server) handleBindCredential(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusCreated)
-	writeJSON(w, ic)
+	httpjson.WriteJSON(w, ic)
 }
 
 func (s *Server) handleUnbindCredential(w http.ResponseWriter, r *http.Request) {
@@ -271,7 +273,7 @@ func (s *Server) handleInstanceStatus(w http.ResponseWriter, r *http.Request) {
 		Reachable:   reachable,
 		LastChecked: checkedAt,
 	}
-	writeJSON(w, status)
+	httpjson.WriteJSON(w, status)
 }
 
 func (s *Server) handleListInstanceSessions(w http.ResponseWriter, r *http.Request) {
@@ -296,5 +298,5 @@ func (s *Server) handleListInstanceSessions(w http.ResponseWriter, r *http.Reque
 	if instanceSessions == nil {
 		instanceSessions = []interface{}{}
 	}
-	writeJSON(w, instanceSessions)
+	httpjson.WriteJSON(w, instanceSessions)
 }

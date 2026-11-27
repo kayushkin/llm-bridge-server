@@ -32,6 +32,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
 
@@ -192,25 +194,25 @@ func returnToWithLoginError(returnTo, code string) string {
 func (s *Server) handleEntraSignInStart(w http.ResponseWriter, r *http.Request) {
 	entra := s.entraSignIn
 	if entra == nil {
-		writeJSONError(w, http.StatusNotFound, "entra_sign_in_not_configured",
+		httpjson.WriteJSONError(w, http.StatusNotFound, "entra_sign_in_not_configured",
 			"Entra ID sign-in is not configured on this server (LLMBRIDGE_ENTRA_TENANT_ID, _CLIENT_ID, _CLIENT_SECRET, _REDIRECT_URL)")
 		return
 	}
 	returnTo := r.URL.Query().Get("return_to")
 	if err := validReturnToPath(returnTo); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_return_to", err.Error())
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_return_to", err.Error())
 		return
 	}
 	provider, err := entra.discoveredProvider(r.Context())
 	if err != nil {
-		writeJSONError(w, http.StatusBadGateway, "entra_discovery_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusBadGateway, "entra_discovery_failed", err.Error())
 		return
 	}
 	state, stateErr := randomURLSafeToken(loginSessionRandomBytes)
 	nonce, nonceErr := randomURLSafeToken(loginSessionRandomBytes)
 	browserBinding, bindingErr := randomURLSafeToken(loginSessionRandomBytes)
 	if err := errors.Join(stateErr, nonceErr, bindingErr); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "random_source_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "random_source_failed", err.Error())
 		return
 	}
 	verifier := oauth2.GenerateVerifier()
@@ -228,7 +230,7 @@ func (s *Server) handleEntraSignInStart(w http.ResponseWriter, r *http.Request) 
 		RemoteAddress:      r.RemoteAddr,
 	}
 	if err := s.store.InsertLoginAttempt(&attempt); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "login_attempt_not_recorded", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "login_attempt_not_recorded", err.Error())
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
@@ -262,28 +264,28 @@ type entraIDTokenClaims struct {
 func (s *Server) handleEntraSignInCallback(w http.ResponseWriter, r *http.Request) {
 	entra := s.entraSignIn
 	if entra == nil {
-		writeJSONError(w, http.StatusNotFound, "entra_sign_in_not_configured", "Entra ID sign-in is not configured on this server")
+		httpjson.WriteJSONError(w, http.StatusNotFound, "entra_sign_in_not_configured", "Entra ID sign-in is not configured on this server")
 		return
 	}
 	query := r.URL.Query()
 	state := query.Get("state")
 	if state == "" {
-		writeJSONError(w, http.StatusBadRequest, "state_missing", "the callback carries no state, so it belongs to no sign-in this server started")
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "state_missing", "the callback carries no state, so it belongs to no sign-in this server started")
 		return
 	}
 	now := s.loginClock().UTC()
 	attempt, err := s.store.ConsumeLoginAttemptByStateHash(sha256Hex(state), now)
 	switch {
 	case errors.Is(err, store.ErrLoginAttemptNotFound):
-		writeJSONError(w, http.StatusBadRequest, "login_attempt_unknown", "the callback's state names no sign-in this server started")
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "login_attempt_unknown", "the callback's state names no sign-in this server started")
 		return
 	case errors.Is(err, store.ErrLoginAttemptAlreadyConsumed):
 		log.Printf("[login] refused a second callback for %s (state replayed); its outcome was %q", attempt.ID, attempt.Outcome)
-		writeJSONError(w, http.StatusBadRequest, "login_attempt_already_used", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "login_attempt_already_used", fmt.Sprintf(
 			"sign-in %s was already completed or refused; start again", attempt.ID))
 		return
 	case err != nil:
-		writeJSONError(w, http.StatusInternalServerError, "login_attempt_unreadable", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "login_attempt_unreadable", err.Error())
 		return
 	}
 	// From here on the attempt is consumed, and every way out records how it
@@ -295,7 +297,7 @@ func (s *Server) handleEntraSignInCallback(w http.ResponseWriter, r *http.Reques
 		if !s.recordLoginAttemptEnd(w, attempt.ID, end) {
 			return
 		}
-		writeJSONError(w, status, outcome, detail)
+		httpjson.WriteJSONError(w, status, outcome, detail)
 	}
 	refuseByRedirect := func(outcome, detail string) {
 		end.Outcome, end.OutcomeDetail = outcome, detail
@@ -430,7 +432,7 @@ func (s *Server) handleEntraSignInCallback(w http.ResponseWriter, r *http.Reques
 		if _, revokeErr := s.store.RevokeLoginSession(session.ID, session.PrincipalID, "sign-in could not be recorded", s.loginClock()); revokeErr != nil {
 			log.Printf("[login] ERROR: login session %s left live after its sign-in failed to record: %v", session.ID, revokeErr)
 		}
-		writeJSONError(w, http.StatusInternalServerError, "login_attempt_not_recorded", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "login_attempt_not_recorded", fmt.Sprintf(
 			"sign-in %s could not be recorded, so no login was issued: %v", attempt.ID, err))
 		return
 	}
@@ -444,7 +446,7 @@ func (s *Server) handleEntraSignInCallback(w http.ResponseWriter, r *http.Reques
 func (s *Server) recordLoginAttemptEnd(w http.ResponseWriter, attemptID string, end store.LoginAttemptEnd) bool {
 	if _, err := s.store.FinishLoginAttempt(attemptID, end); err != nil {
 		log.Printf("[login] ERROR: sign-in %s refused as %s, and the refusal could not be recorded: %v", attemptID, end.Outcome, err)
-		writeJSONError(w, http.StatusInternalServerError, "login_attempt_not_recorded", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "login_attempt_not_recorded", fmt.Sprintf(
 			"sign-in %s was refused (%s: %s), and the refusal could not be recorded: %v", attemptID, end.Outcome, end.OutcomeDetail, err))
 		return false
 	}
@@ -480,17 +482,17 @@ func (s *Server) handleListLoginAttempts(w http.ResponseWriter, r *http.Request)
 	if raw := r.URL.Query().Get("limit"); raw != "" {
 		parsed, err := strconv.Atoi(raw)
 		if err != nil || parsed < 1 || parsed > loginAttemptListMaximumLimit {
-			writeJSONError(w, http.StatusBadRequest, "invalid_limit", fmt.Sprintf("limit %q must be a whole number from 1 to %d", raw, loginAttemptListMaximumLimit))
+			httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_limit", fmt.Sprintf("limit %q must be a whole number from 1 to %d", raw, loginAttemptListMaximumLimit))
 			return
 		}
 		limit = parsed
 	}
 	attempts, err := s.store.ListLoginAttempts(r.URL.Query().Get("outcome"), limit)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "login_attempts_unreadable", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "login_attempts_unreadable", err.Error())
 		return
 	}
-	writeJSON(w, attempts)
+	httpjson.WriteJSON(w, attempts)
 }
 
 // resolveIdentityBinding asks principal-store which principal an outside

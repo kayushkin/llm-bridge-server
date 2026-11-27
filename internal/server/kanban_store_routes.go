@@ -23,6 +23,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access"
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
 	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
@@ -134,7 +136,7 @@ var errKanbanStoreOff = errors.New("kanban-store is off: EnableIssues was never 
 func (s *Server) serveKanbanStore(w http.ResponseWriter, r *http.Request, mountPrefix string) {
 	handlers := s.kanbanStore.Load()
 	if handlers == nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "kanban_store_off", errKanbanStoreOff.Error())
+		httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "kanban_store_off", errKanbanStoreOff.Error())
 		return
 	}
 	var caller issuesapi.Caller
@@ -144,13 +146,13 @@ func (s *Server) serveKanbanStore(w http.ResponseWriter, r *http.Request, mountP
 		caller = issuesapi.Caller{InternalService: true}
 	} else {
 		// Request authorization lets nothing else through to a store route.
-		writeJSONError(w, http.StatusUnauthorized, "kanban_store_requires_a_caller",
+		httpjson.WriteJSONError(w, http.StatusUnauthorized, "kanban_store_requires_a_caller",
 			mountPrefix+"/ answers a principal or this server's service token")
 		return
 	}
 	storePath, err := url.Parse(escapedPathAfterPrefix(r.URL, mountPrefix))
 	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_path", fmt.Sprintf("the path after %s/ is not one kanban-store can read: %v", mountPrefix, err))
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_path", fmt.Sprintf("the path after %s/ is not one kanban-store can read: %v", mountPrefix, err))
 		return
 	}
 	served := r.Clone(issuesapi.ContextWithCaller(r.Context(), caller))

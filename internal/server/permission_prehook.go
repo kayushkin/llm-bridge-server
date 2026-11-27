@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access/permissions"
 	"github.com/kayushkin/llm-bridge-server/internal/ids"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -511,7 +513,7 @@ func writeHookDecision(w http.ResponseWriter, decision, reason string, updatedIn
 	if len(updatedInput) > 0 {
 		hookOut["updatedInput"] = updatedInput
 	}
-	writeJSON(w, map[string]any{
+	httpjson.WriteJSON(w, map[string]any{
 		"hookSpecificOutput": hookOut,
 	})
 }

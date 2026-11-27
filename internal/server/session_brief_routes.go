@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -33,7 +35,7 @@ func (s *Server) handleGetSessionBrief(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, view)
+	httpjson.WriteJSON(w, view)
 }
 
 // handleListSessionBriefs serves GET /session-briefs: the briefs of the
@@ -48,7 +50,7 @@ func (s *Server) handleListSessionBriefs(w http.ResponseWriter, r *http.Request)
 	filter := store.SessionBriefFilter{SessionIDs: query["session_id"]}
 	if state := query.Get("loose_end_state"); state != "" {
 		if !slices.Contains(msg.LooseEndStates, msg.LooseEndState(state)) {
-			writeJSONError(w, http.StatusBadRequest, "invalid_loose_end_state",
+			httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_loose_end_state",
 				fmt.Sprintf("loose_end_state %q is not one of %v", state, msg.LooseEndStates))
 			return
 		}
@@ -57,7 +59,7 @@ func (s *Server) handleListSessionBriefs(w http.ResponseWriter, r *http.Request)
 	if since := query.Get("updated_since"); since != "" {
 		parsed, err := time.Parse(time.RFC3339, since)
 		if err != nil {
-			writeJSONError(w, http.StatusBadRequest, "invalid_updated_since", "updated_since must be an RFC 3339 time: "+err.Error())
+			httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_updated_since", "updated_since must be an RFC 3339 time: "+err.Error())
 			return
 		}
 		filter.UpdatedSince = parsed
@@ -65,7 +67,7 @@ func (s *Server) handleListSessionBriefs(w http.ResponseWriter, r *http.Request)
 	if limit := query.Get("limit"); limit != "" {
 		parsed, err := strconv.Atoi(limit)
 		if err != nil || parsed < 1 {
-			writeJSONError(w, http.StatusBadRequest, "invalid_limit", "limit must be a positive whole number")
+			httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_limit", "limit must be a positive whole number")
 			return
 		}
 		filter.Limit = parsed
@@ -76,7 +78,7 @@ func (s *Server) handleListSessionBriefs(w http.ResponseWriter, r *http.Request)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, views)
+	httpjson.WriteJSON(w, views)
 }
 
 // looseEndOfSession reads the loose end a path names and checks it belongs to
@@ -93,7 +95,7 @@ func (s *Server) looseEndOfSession(w http.ResponseWriter, r *http.Request) *msg.
 		return nil
 	}
 	if looseEnd.State != msg.LooseEndOpen {
-		writeJSONError(w, http.StatusConflict, "loose_end_not_open", fmt.Sprintf("loose end %s is already %s", looseEnd.ID, looseEnd.State))
+		httpjson.WriteJSONError(w, http.StatusConflict, "loose_end_not_open", fmt.Sprintf("loose end %s is already %s", looseEnd.ID, looseEnd.State))
 		return nil
 	}
 	return looseEnd
@@ -117,12 +119,12 @@ func looseEndAnswerMessage(looseEnd *msg.LooseEnd, answer string) string {
 func (s *Server) handleAnswerLooseEnd(w http.ResponseWriter, r *http.Request) {
 	var request looseEndAnswerRequest
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_body", err.Error())
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_body", err.Error())
 		return
 	}
 	answer := strings.TrimSpace(request.Text)
 	if answer == "" {
-		writeJSONError(w, http.StatusBadRequest, "answer_required", "text is the answer and may not be empty")
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "answer_required", "text is the answer and may not be empty")
 		return
 	}
 	looseEnd := s.looseEndOfSession(w, r)
@@ -131,7 +133,7 @@ func (s *Server) handleAnswerLooseEnd(w http.ResponseWriter, r *http.Request) {
 	}
 	sent := s.sendMessageFromThisServer(r.Context(), looseEnd.SessionID, SendMessageRequest{Message: looseEndAnswerMessage(looseEnd, answer)}, "")
 	if !sent.sent() {
-		writeJSONError(w, http.StatusBadGateway, "send_failed",
+		httpjson.WriteJSONError(w, http.StatusBadGateway, "send_failed",
 			fmt.Sprintf("sending the answer to the session answered %d: %s", sent.status, strings.TrimSpace(string(sent.body))))
 		return
 	}
@@ -141,7 +143,7 @@ func (s *Server) handleAnswerLooseEnd(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "the answer was sent, but closing the loose end failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, map[string]any{"status": "answered"})
+	httpjson.WriteJSON(w, map[string]any{"status": "answered"})
 }
 
 // handleDismissLooseEnd serves POST /sessions/{id}/loose-ends/{loose_end_id}/dismiss.
@@ -152,11 +154,11 @@ func (s *Server) handleDismissLooseEnd(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.store.CloseLooseEnd(looseEnd.ID, msg.LooseEndDismissed, ""); err != nil {
 		if errors.Is(err, store.ErrLooseEndNotOpen) {
-			writeJSONError(w, http.StatusConflict, "loose_end_not_open", err.Error())
+			httpjson.WriteJSONError(w, http.StatusConflict, "loose_end_not_open", err.Error())
 			return
 		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, map[string]any{"status": "dismissed"})
+	httpjson.WriteJSON(w, map[string]any{"status": "dismissed"})
 }

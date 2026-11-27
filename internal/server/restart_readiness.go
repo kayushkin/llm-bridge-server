@@ -3,6 +3,8 @@ package server
 import (
 	"net/http"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -44,15 +46,15 @@ type restartReadiness struct {
 func (s *Server) handleRestartReadiness(w http.ResponseWriter, r *http.Request) {
 	busy, err := s.sessionsARestartWouldCutOff(s.harness.HasProcess)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "session_store_unreadable", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "session_store_unreadable", err.Error())
 		return
 	}
 	held, err := s.store.UnclaimedHeldMessages()
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "session_store_unreadable", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "session_store_unreadable", err.Error())
 		return
 	}
-	writeJSON(w, restartReadiness{Ready: len(busy) == 0, BusySessions: busy, Drain: s.restartDrainView(), HeldMessages: len(held)})
+	httpjson.WriteJSON(w, restartReadiness{Ready: len(busy) == 0, BusySessions: busy, Drain: s.restartDrainView(), HeldMessages: len(held)})
 }
 
 // sessionsARestartWouldCutOff lists the sessions in a busy state whose harness

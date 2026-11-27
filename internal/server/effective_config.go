@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	issuesmodel "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/model"
@@ -518,7 +520,7 @@ func (s *Server) handleSessionEffectiveConfig(w http.ResponseWriter, r *http.Req
 	sessionID := r.PathValue("id")
 	sess, err := s.store.GetSession(sessionID)
 	if err != nil {
-		writeJSONError(w, http.StatusNotFound, "session_not_found", fmt.Sprintf("no session %s", sessionID))
+		httpjson.WriteJSONError(w, http.StatusNotFound, "session_not_found", fmt.Sprintf("no session %s", sessionID))
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
@@ -527,7 +529,7 @@ func (s *Server) handleSessionEffectiveConfig(w http.ResponseWriter, r *http.Req
 		SessionID: sess.SessionID, Harness: sess.Harness, InstanceID: sess.InstanceID,
 		PrincipalID: sess.PrincipalID, AgentID: sess.AgentID, BundleID: sess.BundleID, CardID: sess.CardID,
 	}
-	writeJSON(w, s.effectiveConfigFor(ctx, sess, subject, nil))
+	httpjson.WriteJSON(w, s.effectiveConfigFor(ctx, sess, subject, nil))
 }
 
 // handleDryRunEffectiveConfig: GET /effective-config?harness=…&instance_id=…
@@ -559,12 +561,12 @@ func (s *Server) handleDryRunEffectiveConfig(w http.ResponseWriter, r *http.Requ
 
 	if subject.BoardID != "" {
 		if s.issueReads == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "kanban_store_not_configured", "board_id was given but this server has no kanban-store to read the board's defaults from (kanban-store is off)")
+			httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "kanban_store_not_configured", "board_id was given but this server has no kanban-store to read the board's defaults from (kanban-store is off)")
 			return
 		}
 		resolved, err := s.issueReads.EffectiveDefaults(ctx, subject.BoardID, subject.CardID, subject.Tags)
 		if err != nil {
-			writeJSONError(w, http.StatusBadGateway, "kanban_store_unavailable", fmt.Sprintf("kanban-store could not answer for board %s: %v", subject.BoardID, err))
+			httpjson.WriteJSONError(w, http.StatusBadGateway, "kanban_store_unavailable", fmt.Sprintf("kanban-store could not answer for board %s: %v", subject.BoardID, err))
 			return
 		}
 		apply := func(key msg.EffectiveSettingKey, field issuesmodel.DefaultField, target *string) {
@@ -594,24 +596,24 @@ func (s *Server) handleDryRunEffectiveConfig(w http.ResponseWriter, r *http.Requ
 	}
 
 	if s.harnessStore == nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "harness_store_not_configured", "harness-store not configured")
+		httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "harness_store_not_configured", "harness-store not configured")
 		return
 	}
 	if subject.InstanceID != "" && subject.Harness == "" {
 		inst, err := s.harnessStore.GetInstance(subject.InstanceID)
 		if err != nil {
-			writeJSONError(w, http.StatusNotFound, "instance_not_found", fmt.Sprintf("instance %s is not in harness-store", subject.InstanceID))
+			httpjson.WriteJSONError(w, http.StatusNotFound, "instance_not_found", fmt.Sprintf("instance %s is not in harness-store", subject.InstanceID))
 			return
 		}
 		subject.Harness = inst.HarnessType
 	}
 	if !isValidHarness(subject.Harness) {
-		writeJSONError(w, http.StatusBadRequest, "invalid_harness", "harness is required (or an instance_id to take it from)")
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_harness", "harness is required (or an instance_id to take it from)")
 		return
 	}
 	inst, herr := resolveInstance(s.harnessStore, subject.InstanceID, subject.Harness)
 	if herr != nil {
-		writeJSONError(w, herr.status, "instance_unresolvable", herr.message)
+		httpjson.WriteJSONError(w, herr.status, "instance_unresolvable", herr.message)
 		return
 	}
 	if subject.InstanceID == "" {
@@ -644,5 +646,5 @@ func (s *Server) handleDryRunEffectiveConfig(w http.ResponseWriter, r *http.Requ
 			answer.Warnings = append(answer.Warnings, fmt.Sprintf("POST /sessions would refuse this session: card_id %q is not a card kanban-store has: %v", subject.CardID, err))
 		}
 	}
-	writeJSON(w, answer)
+	httpjson.WriteJSON(w, answer)
 }

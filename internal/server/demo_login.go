@@ -31,6 +31,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 )
@@ -124,7 +126,7 @@ type demoLoginRequest struct {
 // principal-store has, unless demo login is switched off.
 func (s *Server) handleDemoLogin(w http.ResponseWriter, r *http.Request) {
 	if !s.cfg.DemoLoginEnabled {
-		writeJSONError(w, http.StatusNotFound, "demo_login_disabled",
+		httpjson.WriteJSONError(w, http.StatusNotFound, "demo_login_disabled",
 			"demo login is switched off on this server (LLMBRIDGE_DEMO_LOGIN_ENABLED=false); sign in with GET /auth/entra/start")
 		return
 	}
@@ -132,32 +134,32 @@ func (s *Server) handleDemoLogin(w http.ResponseWriter, r *http.Request) {
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&request); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_request", fmt.Sprintf("body must be {\"principal_id\":\"principal_000001\"}: %v", err))
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_request", fmt.Sprintf("body must be {\"principal_id\":\"principal_000001\"}: %v", err))
 		return
 	}
 	if !isWellFormedPrincipalID(request.PrincipalID) {
-		writeJSONError(w, http.StatusBadRequest, "invalid_principal_id", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_principal_id", fmt.Sprintf(
 			"principal_id %q is not a principal-store id (principal_000001); a name or email is not accepted, because neither is unique", request.PrincipalID))
 		return
 	}
 	principal, err := s.principalStore.Get(r.Context(), request.PrincipalID, false)
 	if err != nil {
 		if errors.Is(err, principals.ErrNotFound) {
-			writeJSONError(w, http.StatusBadRequest, "unknown_principal", fmt.Sprintf(
+			httpjson.WriteJSONError(w, http.StatusBadRequest, "unknown_principal", fmt.Sprintf(
 				"principal_id %s does not exist in principal-store: %v", request.PrincipalID, err))
 			return
 		}
-		writeJSONError(w, http.StatusBadGateway, "principal_store_unavailable", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusBadGateway, "principal_store_unavailable", fmt.Sprintf(
 			"could not confirm principal_id %s with principal-store, so no login was issued: %v", request.PrincipalID, err))
 		return
 	}
 	if principal.Kind != "human" {
-		writeJSONError(w, http.StatusBadRequest, "principal_not_human", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "principal_not_human", fmt.Sprintf(
 			"principal_id %s is a %q principal; only a human principal can log in — a group is a set of people, not someone who acts", request.PrincipalID, principal.Kind))
 		return
 	}
 	if principal.DisabledAt != 0 {
-		writeJSONError(w, http.StatusBadRequest, "principal_disabled", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "principal_disabled", fmt.Sprintf(
 			"principal_id %s was disabled in principal-store at %s and cannot log in",
 			request.PrincipalID, time.Unix(principal.DisabledAt, 0).UTC().Format(time.RFC3339)))
 		return
@@ -165,11 +167,11 @@ func (s *Server) handleDemoLogin(w http.ResponseWriter, r *http.Request) {
 
 	session, token, err := s.recordLoginSession(r, principal.ID, store.LoginSessionMethodDemo, "")
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "login_session_not_recorded", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "login_session_not_recorded", err.Error())
 		return
 	}
 	setLoginSessionCookie(w, r, session, token)
-	writeJSON(w, loggedInPrincipalResponseOf(session))
+	httpjson.WriteJSON(w, loggedInPrincipalResponseOf(session))
 }
 
 // requestArrivedOverHTTPS reports whether the cookie can be marked Secure: the

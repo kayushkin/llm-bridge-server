@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/conformance"
 	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/bundles"
@@ -229,7 +231,7 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	if sessions == nil {
 		sessions = []store.Session{}
 	}
-	writeJSON(w, sessions)
+	httpjson.WriteJSON(w, sessions)
 }
 
 func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
@@ -239,7 +241,7 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, sess)
+	httpjson.WriteJSON(w, sess)
 }
 
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
@@ -286,12 +288,12 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 			if caller.peer == nil && caller.delegatingAgentOfSessionID == "" {
 				var err error
 				if allowed, err = s.mayStartSessionsAs(r.Context(), grantSubjectOfCaller(caller), req.PrincipalID); err != nil {
-					writeJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
+					httpjson.WriteJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
 					return
 				}
 			}
 			if !allowed {
-				writeJSONError(w, http.StatusForbidden, "principal_mismatch", fmt.Sprintf(
+				httpjson.WriteJSONError(w, http.StatusForbidden, "principal_mismatch", fmt.Sprintf(
 					"principal_id %q is not the logged-in principal %s, which holds no %s grant on it; a session can only be created as yourself (omit principal_id)", req.PrincipalID, callerPrincipalID, startSessionsAsRelation))
 				return
 			}
@@ -306,7 +308,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// server's ids.
 	if caller, ok := callerOfRequest(r); ok && caller.peer.actsForRemoteUser() {
 		if req.PrincipalID != "" && req.PrincipalID != caller.principalID {
-			writeJSONError(w, http.StatusForbidden, "principal_mismatch", fmt.Sprintf(
+			httpjson.WriteJSONError(w, http.StatusForbidden, "principal_mismatch", fmt.Sprintf(
 				"principal_id %q is not %s, the principal this connected server's user is mapped to; omit principal_id", req.PrincipalID, caller.principalID))
 			return
 		}
@@ -333,7 +335,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		case caller.delegatingAgentOfSessionID != "":
 			origin, found, err := s.store.SessionPeerOriginOfLineage(caller.delegatingAgentOfSessionID)
 			if err != nil {
-				writeJSONError(w, http.StatusInternalServerError, "session_peer_origin_lookup_failed", err.Error())
+				httpjson.WriteJSONError(w, http.StatusInternalServerError, "session_peer_origin_lookup_failed", err.Error())
 				return
 			}
 			if found {
@@ -351,7 +353,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if reason, oneShotOnly := oneShotOnlyHarnesses[h]; oneShotOnly {
-		writeJSONError(w, http.StatusBadRequest, "harness_has_no_sessions", reason)
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "harness_has_no_sessions", reason)
 		return
 	}
 
@@ -370,13 +372,13 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// So an unknown purpose is stored and logged, and session-taxonomy-guard
 	// reports it — visible, not fatal.
 	if !msg.ValidSessionType(req.Type) {
-		writeJSONError(w, http.StatusBadRequest, "invalid_session_type", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_session_type", fmt.Sprintf(
 			"type must be one of %v, got %q — see SessionType in llm-bridge/msg/server.go",
 			msg.SessionTypes(), req.Type))
 		return
 	}
 	if strings.TrimSpace(req.Origin) == "" {
-		writeJSONError(w, http.StatusBadRequest, "missing_origin",
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "missing_origin",
 			"origin is required: name the service or script creating this session (e.g. \"scheduler\", \"healthcheck\", \"frontend-dash\")")
 		return
 	}
@@ -441,22 +443,22 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// display name or email is refused by shape: neither is unique.
 	if req.PrincipalID != "" {
 		if !strings.HasPrefix(req.PrincipalID, "principal_") {
-			writeJSONError(w, http.StatusBadRequest, "invalid_principal_id", fmt.Sprintf(
+			httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_principal_id", fmt.Sprintf(
 				"principal_id %q is not a principal-store id (principal_000001); a name or email is not accepted, because neither is unique", req.PrincipalID))
 			return
 		}
 		if s.principalStore == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "principal_store_not_configured",
+			httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "principal_store_not_configured",
 				"principal_id was given but this server has no principal-store to check it with (LLMBRIDGE_PRINCIPAL_STORE_URL)")
 			return
 		}
 		if _, err := s.principalStore.Get(r.Context(), req.PrincipalID, false); err != nil {
 			if errors.Is(err, principals.ErrNotFound) {
-				writeJSONError(w, http.StatusBadRequest, "unknown_principal", fmt.Sprintf(
+				httpjson.WriteJSONError(w, http.StatusBadRequest, "unknown_principal", fmt.Sprintf(
 					"principal_id %s does not exist in principal-store: %v", req.PrincipalID, err))
 				return
 			}
-			writeJSONError(w, http.StatusBadGateway, "principal_store_unavailable", fmt.Sprintf(
+			httpjson.WriteJSONError(w, http.StatusBadGateway, "principal_store_unavailable", fmt.Sprintf(
 				"could not confirm principal_id %s with principal-store, so the session was not created: %v", req.PrincipalID, err))
 			return
 		}
@@ -469,17 +471,17 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// it. A bundle's name is refused by shape: it is renameable.
 	if req.BundleID != "" {
 		if s.bundleStore == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "bundle_store_not_configured",
+			httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "bundle_store_not_configured",
 				"bundle_id was given but "+bundleStoreOffMessage+", so it cannot be checked")
 			return
 		}
 		if err := s.bundleStore.CheckSessionBundleExists(r.Context(), req.BundleID); err != nil {
 			if errors.Is(err, bundles.ErrSessionBundleNotFound) {
-				writeJSONError(w, http.StatusBadRequest, "unknown_bundle", fmt.Sprintf(
+				httpjson.WriteJSONError(w, http.StatusBadRequest, "unknown_bundle", fmt.Sprintf(
 					"bundle_id %q is not a bundle bundle-store has: %v", req.BundleID, err))
 				return
 			}
-			writeJSONError(w, http.StatusBadGateway, "bundle_store_unavailable", fmt.Sprintf(
+			httpjson.WriteJSONError(w, http.StatusBadGateway, "bundle_store_unavailable", fmt.Sprintf(
 				"could not confirm bundle_id %s with bundle-store, so the session was not created: %v", req.BundleID, err))
 			return
 		}
@@ -491,11 +493,11 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		if err := s.checkAgentExists(req.AgentID); err != nil {
 			switch {
 			case errors.Is(err, errUnknownAgent):
-				writeJSONError(w, http.StatusBadRequest, "unknown_agent", err.Error())
+				httpjson.WriteJSONError(w, http.StatusBadRequest, "unknown_agent", err.Error())
 			case errors.Is(err, errAgentStoreNotConfigured):
-				writeJSONError(w, http.StatusServiceUnavailable, "agent_store_not_configured", err.Error())
+				httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "agent_store_not_configured", err.Error())
 			default:
-				writeJSONError(w, http.StatusInternalServerError, "agent_store_unavailable", fmt.Sprintf(
+				httpjson.WriteJSONError(w, http.StatusInternalServerError, "agent_store_unavailable", fmt.Sprintf(
 					"could not confirm agent_id %s, so the session was not created: %v", req.AgentID, err))
 			}
 			return
@@ -508,17 +510,17 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// spawn without them, far from the request that caused it.
 	if req.CardID != "" {
 		if s.issueReads == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "kanban_store_not_configured",
+			httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "kanban_store_not_configured",
 				"card_id was given but this server has no kanban-store to check it with (kanban-store is off)")
 			return
 		}
 		if _, err := s.issueReads.CardTags(r.Context(), req.CardID); err != nil {
 			if errors.Is(err, errIssueNotFound) {
-				writeJSONError(w, http.StatusBadRequest, "unknown_card", fmt.Sprintf(
+				httpjson.WriteJSONError(w, http.StatusBadRequest, "unknown_card", fmt.Sprintf(
 					"card_id %q is not a card kanban-store has: %v", req.CardID, err))
 				return
 			}
-			writeJSONError(w, http.StatusBadGateway, "kanban_store_unavailable", fmt.Sprintf(
+			httpjson.WriteJSONError(w, http.StatusBadGateway, "kanban_store_unavailable", fmt.Sprintf(
 				"could not confirm card_id %s with kanban-store, so the session was not created: %v", req.CardID, err))
 			return
 		}
@@ -530,12 +532,12 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	if req.ManagerSessionID != "" {
 		parent, err := s.store.GetSession(req.ManagerSessionID)
 		if errors.Is(err, sql.ErrNoRows) {
-			writeJSONError(w, http.StatusBadRequest, "unknown_manager_session", fmt.Sprintf(
+			httpjson.WriteJSONError(w, http.StatusBadRequest, "unknown_manager_session", fmt.Sprintf(
 				"manager_session_id %q is not a session this server has", req.ManagerSessionID))
 			return
 		}
 		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "manager_session_lookup_failed", fmt.Sprintf(
+			httpjson.WriteJSONError(w, http.StatusInternalServerError, "manager_session_lookup_failed", fmt.Sprintf(
 				"could not read manager_session_id %s, so the session was not created: %v", req.ManagerSessionID, err))
 			return
 		}
@@ -543,11 +545,11 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 			caller, _ := callerOfRequest(r)
 			drives, err := s.callerStartedSessionAndMayDriveIt(r.Context(), caller, parent)
 			if err != nil {
-				writeJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
+				httpjson.WriteJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
 				return
 			}
 			if !drives {
-				writeJSONError(w, http.StatusBadRequest, "unknown_manager_session", fmt.Sprintf(
+				httpjson.WriteJSONError(w, http.StatusBadRequest, "unknown_manager_session", fmt.Sprintf(
 					"manager_session_id %q is not a session this server has", req.ManagerSessionID))
 				return
 			}
@@ -570,7 +572,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	if req.PrincipalID != "" {
 		if err := s.checkPrincipalMayRunHere(r.Context(), creatorSubject, &store.Session{SessionID: bridgeID, PrincipalID: req.PrincipalID, AgentID: req.AgentID}, inst); err != nil {
 			status, code := grantGateStatus(err)
-			writeJSONError(w, status, code, err.Error())
+			httpjson.WriteJSONError(w, status, code, err.Error())
 			return
 		}
 	}
@@ -636,7 +638,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		origin := *creatorPeerOrigin
 		origin.SessionID = sess.SessionID
 		if err := s.store.RecordSessionPeerOrigin(origin); err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "session_peer_origin_not_recorded", err.Error())
+			httpjson.WriteJSONError(w, http.StatusInternalServerError, "session_peer_origin_not_recorded", err.Error())
 			return
 		}
 	}
@@ -644,7 +646,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// another principal ever exists without saying who may drive it.
 	if startedAsAnotherPrincipalBy != "" {
 		if err := s.store.RecordSessionStarter(store.SessionStarter{SessionID: sess.SessionID, PrincipalID: startedAsAnotherPrincipalBy, RecordedBy: startedAsAnotherPrincipalBy}); err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "session_starter_not_recorded", err.Error())
+			httpjson.WriteJSONError(w, http.StatusInternalServerError, "session_starter_not_recorded", err.Error())
 			return
 		}
 	}
@@ -675,11 +677,11 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// field to ManagedSession.
 	if sess.Mode == msg.SessionModePTY {
 		if hub := s.harness.AttachHubFor(sess.SessionID); hub != nil {
-			writeJSON(w, createSessionResponse{Session: sess, AttachToken: hub.Token()})
+			httpjson.WriteJSON(w, createSessionResponse{Session: sess, AttachToken: hub.Token()})
 			return
 		}
 	}
-	writeJSON(w, sess)
+	httpjson.WriteJSON(w, sess)
 }
 
 // createSessionResponse is the JSON shape returned by POST /sessions. It
@@ -755,7 +757,7 @@ func (s *Server) handleRenameSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.broadcastDisplayNameChanged(bridgeID, sess.DisplayName)
-	writeJSON(w, sess)
+	httpjson.WriteJSON(w, sess)
 }
 
 func (s *Server) handleStopSession(w http.ResponseWriter, r *http.Request) {
@@ -770,7 +772,7 @@ func (s *Server) handleStopSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sess.State = string(msg.SessionAborted)
-	writeJSON(w, sess)
+	httpjson.WriteJSON(w, sess)
 }
 
 // recordSpawnFailure records that a harness process could not be started for
@@ -1200,7 +1202,7 @@ func (s *Server) handleInterruptSession(w http.ResponseWriter, r *http.Request) 
 	s.harness.ForceSessionState(bridgeID, msg.SessionPaused, msg.ReasonUserInterrupt)
 
 	sess.State = string(msg.SessionPaused)
-	writeJSON(w, sess)
+	httpjson.WriteJSON(w, sess)
 }
 
 func (s *Server) handleResumeSession(w http.ResponseWriter, r *http.Request) {
@@ -1232,7 +1234,7 @@ func (s *Server) handleResumeSession(w http.ResponseWriter, r *http.Request) {
 	// discovery converges on. Observed in production via the watchdog, which is
 	// gated in autoResume for the same reason.
 	if sess.ControlledBy == msg.ControlledByHarness {
-		writeJSONError(w, http.StatusConflict, "not_bridge_controlled",
+		httpjson.WriteJSONError(w, http.StatusConflict, "not_bridge_controlled",
 			"this session is controlled by its parent harness process and cannot be resumed directly; resume the session that spawned it")
 		return
 	}
@@ -1259,7 +1261,7 @@ func (s *Server) handleResumeSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sess.State = string(msg.SessionStarting)
-	writeJSON(w, sess)
+	httpjson.WriteJSON(w, sess)
 }
 
 func (s *Server) handleCompactSession(w http.ResponseWriter, r *http.Request) {
@@ -1283,7 +1285,7 @@ func (s *Server) handleCompactSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, sess)
+	httpjson.WriteJSON(w, sess)
 }
 
 func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
@@ -1375,7 +1377,7 @@ func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := s.store.CopySessionPeerOrigin(parent.SessionID, forked.SessionID); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "session_peer_origin_not_recorded", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "session_peer_origin_not_recorded", err.Error())
 		return
 	}
 	if err := s.store.CreateSession(forked); err != nil {
@@ -1391,7 +1393,7 @@ func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusCreated)
-	writeJSON(w, forked)
+	httpjson.WriteJSON(w, forked)
 }
 
 // carriesHarnessConfig reports whether a config request asks the harness to
@@ -1453,7 +1455,7 @@ func (s *Server) handleConfigSession(w http.ResponseWriter, r *http.Request) {
 		// anyway would fail with "session not running" and report the
 		// revival as an error even though the ceiling was saved.
 		if !carriesHarnessConfig(req) && s.harness.Get(bridgeID) == nil {
-			writeJSON(w, sess)
+			httpjson.WriteJSON(w, sess)
 			return
 		}
 	}
@@ -1528,7 +1530,7 @@ func (s *Server) handleConfigSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, sess)
+	httpjson.WriteJSON(w, sess)
 }
 
 // mergeHarnessConfig folds the harness-facing fields of a config request into a
@@ -1686,7 +1688,7 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 			held, err := s.harness.SessionsHoldingHarnessSessionID(ds.HarnessSessionID)
 			if err != nil {
 				log.Printf("[discover] cannot check stored history for %s: %v", ds.HarnessSessionID, err)
-				writeJSONError(w, http.StatusBadGateway, "log_store_unavailable", err.Error())
+				httpjson.WriteJSONError(w, http.StatusBadGateway, "log_store_unavailable", err.Error())
 				return
 			}
 			needsImport = len(held) == 0
@@ -1725,7 +1727,7 @@ func (s *Server) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 		log.Printf("[discover] linked %d sessions to the parent that spawned them", linkedCount)
 	}
 
-	writeJSON(w, sessions)
+	httpjson.WriteJSON(w, sessions)
 }
 
 func generateBridgeID() string {

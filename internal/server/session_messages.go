@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 )
 
 // The materialized-page response, and the one fact the bridge adds to it.
@@ -72,7 +74,7 @@ type StreamResumePoint struct {
 func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if _, err := s.harness.SyncCodexHistory(r.Context(), id); err != nil {
-		writeJSONError(w, http.StatusBadGateway, "codex_history_sync_failed", err.Error())
+		httpjson.WriteJSONError(w, http.StatusBadGateway, "codex_history_sync_failed", err.Error())
 		return
 	}
 
@@ -111,7 +113,7 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, SessionMessagesResponse{
+	httpjson.WriteJSON(w, SessionMessagesResponse{
 		Model:  page.Model,
 		Stream: StreamResumePoint{Head: head},
 	})
