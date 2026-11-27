@@ -11,7 +11,7 @@ package server
 //
 //   - acts as the mapped principal, an administrator only when the peer is
 //     one too;
-//   - is allowed only what both principals' grants allow (grantSubject,
+//   - is allowed only what both principals' grants allow (GrantSubject,
 //     principal_grants.go);
 //   - reaches only the sessions that principal started through this peer
 //     (SessionScope), plus what both may observe;
@@ -28,6 +28,8 @@ import (
 	"log"
 	"net/http"
 	"strings"
+
+	"github.com/kayushkin/llm-bridge-server/internal/access/grantcheck"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
 
@@ -118,32 +120,32 @@ func (s *Server) mayObserveSession(ctx context.Context, caller requestcaller.Cal
 			machineID = instance.MachineID
 		}
 	}
-	subject := grantSubjectOfCaller(caller)
-	instances, err := s.grantedResourcesOf(ctx, subject, observeSessionsRelation, "instance")
+	subject := grantcheck.SubjectOfCaller(caller)
+	instances, err := s.grantChecker.GrantedResourcesOf(ctx, subject, observeSessionsRelation, "instance")
 	if err != nil {
 		return false, err
 	}
-	if session.InstanceID != "" && instances.requiresAGrantAndNames(session.InstanceID) {
+	if session.InstanceID != "" && instances.RequiresAGrantAndNames(session.InstanceID) {
 		return true, nil
 	}
 	if machineID == "" {
 		return false, nil
 	}
-	machines, err := s.grantedResourcesOf(ctx, subject, observeSessionsRelation, "machine")
+	machines, err := s.grantChecker.GrantedResourcesOf(ctx, subject, observeSessionsRelation, "machine")
 	if err != nil {
 		return false, err
 	}
-	return machines.requiresAGrantAndNames(machineID), nil
+	return machines.RequiresAGrantAndNames(machineID), nil
 }
 
 // mayObserveEverySession reports whether the caller's grants name every
 // instance for observation, which is what lets a list answer every session.
 func (s *Server) mayObserveEverySession(r *http.Request, caller requestcaller.Caller) (bool, error) {
-	granted, err := s.grantedResourcesOf(r.Context(), grantSubjectOfCaller(caller), observeSessionsRelation, "instance")
+	granted, err := s.grantChecker.GrantedResourcesOf(r.Context(), grantcheck.SubjectOfCaller(caller), observeSessionsRelation, "instance")
 	if err != nil {
 		return false, err
 	}
-	return granted.requiresAGrantAndNames("*"), nil
+	return granted.RequiresAGrantAndNames("*"), nil
 }
 
 // routeClassesRefusedToPeerUsers are the classes whose answer comes from a
@@ -203,7 +205,7 @@ func (s *Server) handleCreatePeerUserMapping(w http.ResponseWriter, r *http.Requ
 			"%s is not a peer principal this server made for a connected server; GET /peer-connections names them", request.PeerPrincipalID))
 		return
 	}
-	local, err := s.principalLookupCache.lookUp(r.Context(), request.LocalPrincipalID)
+	local, err := s.principalLookupCache.LookUp(r.Context(), request.LocalPrincipalID)
 	if err != nil {
 		httpjson.WriteJSONError(w, http.StatusBadRequest, "unknown_local_principal", fmt.Sprintf("principal-store does not know %s: %v", request.LocalPrincipalID, err))
 		return

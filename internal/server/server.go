@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/grantcheck"
+
 	"github.com/kayushkin/llm-bridge-server/internal/chatlinks"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
@@ -101,7 +103,7 @@ type Server struct {
 	// principal behind every request. EnableAccess sets them; nil until then,
 	// and every use of a nil one answers that access is off.
 	permissionEngine permissionEvaluator
-	grantStore       grantReader
+	grantStore       grantcheck.GrantReader
 	principalStore   principalDirectory
 	// grantsPrincipalDirectory and grantsResourceChecker are what grant-store
 	// asks about principals and resources when this server reads or writes
@@ -256,7 +258,10 @@ type Server struct {
 	renamesInFlight sync.Map
 	// ChatLinks is nil when chat links are off (chat_links.go).
 	chatLinkService *chatlinks.Service
-	briefService    *briefs.Service
+	// grantChecker answers what a principal's grants allow; it reads
+	// grantStore and principalLookupCache as they are when it is asked.
+	grantChecker *grantcheck.Checker
+	briefService *briefs.Service
 }
 
 func New(st *store.Store, as *agents.Store, ms *memories.Store, hs *machines.Store, hks *hooks.Store, mds *models.Store, ss *snapshots.Store, cfg *config.Config) *Server {
@@ -306,6 +311,16 @@ func New(st *store.Store, as *agents.Store, ms *memories.Store, hs *machines.Sto
 	// machine.
 	srv.harness.SetTurnEndObserver(srv.onTurnEnd)
 	srv.harness.SetUnpromptedTurnStartObserver(srv.onUnpromptedTurnStart)
+	srv.grantChecker = &grantcheck.Checker{Dependencies: grantcheck.Dependencies{
+		GrantStore:               func() grantcheck.GrantReader { return srv.grantStore },
+		GrantsPrincipalDirectory: func() grants.PrincipalDirectory { return srv.grantsPrincipalDirectory },
+		PrincipalLookupCache: func() grantcheck.PrincipalLookupCache {
+			if srv.principalLookupCache == nil {
+				return nil
+			}
+			return srv.principalLookupCache
+		},
+	}}
 	srv.briefService = &briefs.Service{Dependencies: briefs.Dependencies{
 		Harness:        srv.harness,
 		Store:          st,

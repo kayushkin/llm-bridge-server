@@ -3,7 +3,7 @@ package server
 // Test stand-ins for the access stores. Before they moved into this process
 // principal-store, grant-store and permission-store were reached over HTTP,
 // and many tests here were written against small HTTP fakes of them. These
-// types answer this server's interfaces (principalDirectory, grantReader,
+// types answer this server's interfaces (principalDirectory, GrantReader,
 // permissionEvaluator) from such a fake, decoding its answers the way the
 // HTTP clients did, so those tests keep exercising what they were about. The
 // in-process stores themselves are tested on Postgres (access_routes_test.go

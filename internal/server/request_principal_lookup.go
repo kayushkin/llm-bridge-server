@@ -78,9 +78,9 @@ func newPrincipalLookupCache(server *Server) *principalLookupCache {
 	}
 }
 
-// lookUp returns principal-store's record for principalID, from the cache when
+// LookUp returns principal-store's record for principalID, from the cache when
 // it was read less than lifetime ago and from principal-store otherwise.
-func (cache *principalLookupCache) lookUp(ctx context.Context, principalID string) (principals.Principal, error) {
+func (cache *principalLookupCache) LookUp(ctx context.Context, principalID string) (principals.Principal, error) {
 	cache.mutex.Lock()
 	cached, known := cache.principalsByID[principalID]
 	fresh := known && cache.now().Sub(cached.readAt) < cache.lifetime
@@ -125,7 +125,7 @@ func (s *Server) callerAssertedByInternalService(ctx context.Context, principalI
 func (s *Server) callerForPrincipalID(ctx context.Context, principalID, subjectDescription string) (requestcaller.Caller, *requestCredentialError) {
 	// New always builds the cache, right beside the cookie codec, so there is
 	// no server that gates a request and cannot read the caller's principal.
-	principal, err := s.principalLookupCache.lookUp(ctx, principalID)
+	principal, err := s.principalLookupCache.LookUp(ctx, principalID)
 	if err != nil {
 		if errors.Is(err, principals.ErrNotFound) {
 			return requestcaller.Caller{}, &requestCredentialError{http.StatusBadRequest, "unknown_principal", fmt.Sprintf(

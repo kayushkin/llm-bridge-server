@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/grantcheck"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
 
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
@@ -501,7 +503,7 @@ func (s *Server) checkOperationGrant(ctx context.Context, caller requestcaller.C
 		return http.StatusInternalServerError, "grant_enforcement_misconfigured", fmt.Sprintf(
 			"operations.grant_enforcement is %q, not one of %v", enforcement, config.OperationsGrantEnforcementValues)
 	}
-	granted, err := s.grantedResourcesOf(ctx, grantSubjectOfCaller(caller), operationRunGrantRelation, operationTypeResourceType)
+	granted, err := s.grantChecker.GrantedResourcesOf(ctx, grantcheck.SubjectOfCaller(caller), operationRunGrantRelation, operationTypeResourceType)
 	switch {
 	case errors.Is(err, grants.ErrNotFound):
 		return http.StatusBadRequest, "unknown_principal", err.Error()
@@ -511,13 +513,13 @@ func (s *Server) checkOperationGrant(ctx context.Context, caller requestcaller.C
 	// strict refuses a principal holding no grant whatever its kind; lenient
 	// leaves that to the kind, as every other relation does.
 	if enforcement == config.OperationsGrantEnforcementStrict {
-		granted.restrictedToItsGrants = true
+		granted.RestrictedToItsGrants = true
 	}
-	if granted.permits(string(operationType)) {
+	if granted.Permits(string(operationType)) {
 		return 0, "", ""
 	}
 	return http.StatusForbidden, "not_granted", fmt.Sprintf("%s may not start %s %s (enforcement %s): %s",
-		principalID, operationTypeResourceType, operationType, enforcement, granted.describe())
+		principalID, operationTypeResourceType, operationType, enforcement, granted.Describe())
 }
 
 func (s *Server) handleListOperationBudgets(w http.ResponseWriter, r *http.Request) {

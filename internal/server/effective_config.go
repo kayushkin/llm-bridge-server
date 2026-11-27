@@ -473,18 +473,18 @@ func (s *Server) noteDispatchGrants(ctx context.Context, sess *store.Session, in
 		warn("a spawn would be refused: %v", err)
 		return
 	}
-	dispatch, err := s.dispatchGrantsOf(ctx, subject)
+	dispatch, err := s.grantChecker.DispatchGrantsOf(ctx, subject)
 	if err != nil {
 		warn("a spawn would be refused: %v", err)
 		return
 	}
 	switch {
-	case !dispatch.restricts():
-		setting.Notes = append(setting.Notes, dispatch.describe())
-	case dispatch.permits(inst.ID, inst.MachineID):
-		setting.Notes = append(setting.Notes, "allowed: "+dispatch.describe())
+	case !dispatch.Restricts():
+		setting.Notes = append(setting.Notes, dispatch.Describe())
+	case dispatch.Permits(inst.ID, inst.MachineID):
+		setting.Notes = append(setting.Notes, "allowed: "+dispatch.Describe())
 	default:
-		warn("a spawn would be refused: %s may not start a session on instance %s (machine %s); %s", sess.PrincipalID, inst.ID, inst.MachineID, dispatch.describe())
+		warn("a spawn would be refused: %s may not start a session on instance %s (machine %s); %s", sess.PrincipalID, inst.ID, inst.MachineID, dispatch.Describe())
 	}
 }
 
@@ -494,24 +494,24 @@ func (s *Server) noteRunAsGrants(ctx context.Context, sess *store.Session, setti
 		warn("a spawn would be refused: %v", err)
 		return
 	}
-	runAs, err := s.grantedResourcesOf(ctx, subject, "can_run_as", "agent")
+	runAs, err := s.grantChecker.GrantedResourcesOf(ctx, subject, "can_run_as", "agent")
 	if err != nil {
 		warn("a spawn would be refused: %v", err)
 		return
 	}
-	if !runAs.restricts() || runAs.namesAll() {
-		setting.Notes = append(setting.Notes, runAs.describe())
+	if !runAs.Restricts() || runAs.NamesAll() {
+		setting.Notes = append(setting.Notes, runAs.Describe())
 		return
 	}
 	agentID, err := s.resolveAgentID(sess.AgentID)
 	if err != nil {
-		warn("a spawn would be refused: %s, and agent %q could not be resolved to an agent-store id: %v", runAs.describe(), sess.AgentID, err)
+		warn("a spawn would be refused: %s, and agent %q could not be resolved to an agent-store id: %v", runAs.Describe(), sess.AgentID, err)
 		return
 	}
-	if runAs.permits(agentID) {
-		setting.Notes = append(setting.Notes, fmt.Sprintf("allowed (agent-store id %s): %s", agentID, runAs.describe()))
+	if runAs.Permits(agentID) {
+		setting.Notes = append(setting.Notes, fmt.Sprintf("allowed (agent-store id %s): %s", agentID, runAs.Describe()))
 	} else {
-		warn("a spawn would be refused: %s may not run as agent %s (agent-store id %s); %s", sess.PrincipalID, sess.AgentID, agentID, runAs.describe())
+		warn("a spawn would be refused: %s may not run as agent %s (agent-store id %s); %s", sess.PrincipalID, sess.AgentID, agentID, runAs.Describe())
 	}
 }
 

@@ -51,7 +51,7 @@ func (s *Server) messageSenderOf(ctx context.Context, principalID string) (messa
 	if s.principalLookupCache == nil {
 		return messageSender{}, fmt.Errorf("the sender %s is named from principal-store, and this server has no principal lookup", principalID)
 	}
-	principal, err := s.principalLookupCache.lookUp(ctx, principalID)
+	principal, err := s.principalLookupCache.LookUp(ctx, principalID)
 	if err != nil {
 		return messageSender{}, fmt.Errorf("read the sender %s from principal-store: %w", principalID, err)
 	}

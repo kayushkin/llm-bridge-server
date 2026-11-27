@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/grantcheck"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -42,38 +44,38 @@ var ErrNotGranted = errors.New("not granted")
 //
 // subject is whose grants decide: the session's principal, and the peer it
 // was started through for one of that peer's users (grantSubjectOfSession).
-func (s *Server) checkPrincipalMayRunHere(ctx context.Context, subject grantSubject, sess *store.Session, inst *msg.Instance) error {
+func (s *Server) checkPrincipalMayRunHere(ctx context.Context, subject grantcheck.Subject, sess *store.Session, inst *msg.Instance) error {
 	if sess.PrincipalID == "" {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	dispatch, err := s.dispatchGrantsOf(ctx, subject)
+	dispatch, err := s.grantChecker.DispatchGrantsOf(ctx, subject)
 	if err != nil {
 		return err
 	}
-	if !dispatch.permits(inst.ID, inst.MachineID) {
+	if !dispatch.Permits(inst.ID, inst.MachineID) {
 		return fmt.Errorf("%w: %s may not start a session on instance %s (machine %s); %s",
-			ErrNotGranted, subject, inst.ID, inst.MachineID, dispatch.describe())
+			ErrNotGranted, subject, inst.ID, inst.MachineID, dispatch.Describe())
 	}
 	if sess.AgentID == "" {
 		return nil
 	}
-	runAs, err := s.grantedResourcesOf(ctx, subject, "can_run_as", "agent")
+	runAs, err := s.grantChecker.GrantedResourcesOf(ctx, subject, "can_run_as", "agent")
 	if err != nil {
 		return err
 	}
-	if !runAs.restricts() || runAs.namesAll() {
+	if !runAs.Restricts() || runAs.NamesAll() {
 		return nil
 	}
 	agentID, err := s.resolveAgentID(sess.AgentID)
 	if err != nil {
 		return fmt.Errorf("%w: %s, and the session's agent %q could not be resolved to an agent-store id: %v",
-			ErrNotGranted, runAs.describe(), sess.AgentID, err)
+			ErrNotGranted, runAs.Describe(), sess.AgentID, err)
 	}
-	if !runAs.permits(agentID) {
+	if !runAs.Permits(agentID) {
 		return fmt.Errorf("%w: %s may not start a session as agent %s (agent-store id %s); %s",
-			ErrNotGranted, subject, sess.AgentID, agentID, runAs.describe())
+			ErrNotGranted, subject, sess.AgentID, agentID, runAs.Describe())
 	}
 	return nil
 }
@@ -83,18 +85,18 @@ func (s *Server) checkPrincipalMayRunHere(ctx context.Context, subject grantSubj
 // started it for one of its users (store.SessionPeerOrigin). A session that
 // does not exist yet, as at create, has no origin row; the caller passes the
 // request's subject instead.
-func (s *Server) grantSubjectOfSession(sess *store.Session) (grantSubject, error) {
-	subject := grantSubject{principalID: sess.PrincipalID}
+func (s *Server) grantSubjectOfSession(sess *store.Session) (grantcheck.Subject, error) {
+	subject := grantcheck.Subject{PrincipalID: sess.PrincipalID}
 	// A server built with no session store (some tests) has no origins.
 	if sess.SessionID == "" || sess.PrincipalID == "" || s.store == nil {
 		return subject, nil
 	}
 	origin, found, err := s.store.SessionPeerOriginOfLineage(sess.SessionID)
 	if err != nil {
-		return grantSubject{}, fmt.Errorf("read session %s's peer origin: %w", sess.SessionID, err)
+		return grantcheck.Subject{}, fmt.Errorf("read session %s's peer origin: %w", sess.SessionID, err)
 	}
 	if found {
-		subject.throughPeerPrincipalID = origin.PeerPrincipalID
+		subject.ThroughPeerPrincipalID = origin.PeerPrincipalID
 	}
 	return subject, nil
 }

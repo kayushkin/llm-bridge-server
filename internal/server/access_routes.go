@@ -55,15 +55,6 @@ type principalDirectory interface {
 	RemoveMember(ctx context.Context, groupID, memberID string) error
 }
 
-// grantReader is grant-store as this server reads and writes it:
-// *grants.Store in production, a fake in tests. Effective answers
-// grants.ErrNotFound for a principal principal-store does not have, never an
-// empty list, so a spawn can tell "nothing granted" from "no such principal".
-type grantReader interface {
-	Effective(ctx context.Context, directory grants.PrincipalDirectory, principalID, relation, resourceType string) ([]*grants.Grant, error)
-	Create(ctx context.Context, directory grants.PrincipalDirectory, checker grants.ResourceChecker, request grants.GrantRequest) (*grants.Grant, bool, error)
-}
-
 // permissionEvaluator is permission-store's verdict on one tool call;
 // *permissions.Engine is the one in production. A failure is an error, never a
 // verdict: no rule was consulted.

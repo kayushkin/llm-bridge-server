@@ -34,6 +34,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/grantcheck"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
 
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
@@ -101,7 +103,7 @@ func (s *Server) principalOfServicePrincipalToken(ctx context.Context, r *http.R
 // principalThatHoldsServicePrincipalTokens reads a principal and refuses one
 // whose kind principal-store says may not hold a service principal token.
 func (s *Server) principalThatHoldsServicePrincipalTokens(ctx context.Context, principalID string) (principals.Principal, *requestCredentialError) {
-	principal, err := s.principalLookupCache.lookUp(ctx, principalID)
+	principal, err := s.principalLookupCache.LookUp(ctx, principalID)
 	if errors.Is(err, principals.ErrNotFound) {
 		return principals.Principal{}, &requestCredentialError{http.StatusBadRequest, "unknown_principal", fmt.Sprintf(
 			"principal %s is not in principal-store", principalID)}
@@ -235,12 +237,12 @@ func (s *Server) handleRevokeServicePrincipalToken(w http.ResponseWriter, r *htt
 
 // mayStartSessionsAs reports whether the subject holds can_start_sessions_as
 // on principalID. Holding none allows nothing, whatever the kind.
-func (s *Server) mayStartSessionsAs(ctx context.Context, subject grantSubject, principalID string) (bool, error) {
-	granted, err := s.grantedResourcesOf(ctx, subject, startSessionsAsRelation, "principal")
+func (s *Server) mayStartSessionsAs(ctx context.Context, subject grantcheck.Subject, principalID string) (bool, error) {
+	granted, err := s.grantChecker.GrantedResourcesOf(ctx, subject, startSessionsAsRelation, "principal")
 	if err != nil {
 		return false, err
 	}
-	return granted.requiresAGrantAndNames(principalID), nil
+	return granted.RequiresAGrantAndNames(principalID), nil
 }
 
 // callerStartedSessionAndMayDriveIt reports whether the caller started this
@@ -256,7 +258,7 @@ func (s *Server) callerStartedSessionAndMayDriveIt(ctx context.Context, caller r
 	if !found || starter.PrincipalID != caller.PrincipalID {
 		return false, nil
 	}
-	return s.mayStartSessionsAs(ctx, grantSubjectOfCaller(caller), session.PrincipalID)
+	return s.mayStartSessionsAs(ctx, grantcheck.SubjectOfCaller(caller), session.PrincipalID)
 }
 
 // callerStartedSessionIDAndMayDriveIt is callerStartedSessionAndMayDriveIt
@@ -302,7 +304,7 @@ func (s *Server) handleRecordSessionStarter(w http.ResponseWriter, r *http.Reque
 			"session %s's starter is already recorded as %s", session.SessionID, existing.PrincipalID))
 		return
 	}
-	allowed, err := s.mayStartSessionsAs(r.Context(), grantSubject{principalID: request.PrincipalID}, session.PrincipalID)
+	allowed, err := s.mayStartSessionsAs(r.Context(), grantcheck.Subject{PrincipalID: request.PrincipalID}, session.PrincipalID)
 	if err != nil {
 		httpjson.WriteJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
 		return

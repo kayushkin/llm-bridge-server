@@ -37,7 +37,7 @@ func (s *Server) handleSessionPrincipals(w http.ResponseWriter, r *http.Request)
 				httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "principal_store_not_configured", "names come from principal-store, and this server has no principal lookup")
 				return
 			}
-			principal, err := s.principalLookupCache.lookUp(r.Context(), count.PrincipalID)
+			principal, err := s.principalLookupCache.LookUp(r.Context(), count.PrincipalID)
 			if err != nil {
 				httpjson.WriteJSONError(w, http.StatusBadGateway, "principal_store_unavailable", "read "+count.PrincipalID+" from principal-store: "+err.Error())
 				return

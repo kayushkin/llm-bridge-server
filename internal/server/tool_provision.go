@@ -173,22 +173,22 @@ func (s *Server) resolveBundleToolOffer(ctx context.Context, sess *store.Session
 		if err != nil {
 			return nil, err
 		}
-		canUse, err := s.grantedResourcesOf(ctx, subject, "can_use", "tool")
+		canUse, err := s.grantChecker.GrantedResourcesOf(ctx, subject, "can_use", "tool")
 		if err != nil {
 			return nil, fmt.Errorf("session %s is started as %s and its grants could not be read, so it was not started: %w", sess.SessionID, sess.PrincipalID, err)
 		}
-		if !canUse.restricts() {
-			offer.Notes = append(offer.Notes, fmt.Sprintf("%s; the bundle's tools are offered unchanged (operator's choice 2026-09-11)", canUse.describe()))
+		if !canUse.Restricts() {
+			offer.Notes = append(offer.Notes, fmt.Sprintf("%s; the bundle's tools are offered unchanged (operator's choice 2026-09-11)", canUse.Describe()))
 		} else {
 			narrowed := make([]int64, 0, len(offer.IDs))
 			for _, id := range offer.IDs {
-				if canUse.permitsTool(id) {
+				if canUse.PermitsTool(id) {
 					narrowed = append(narrowed, id)
 				}
 			}
 			if len(narrowed) < len(offer.IDs) {
 				offer.NarrowedByGrants = true
-				offer.Notes = append(offer.Notes, fmt.Sprintf("bundle %s names tools %v; %s; offering %v", sess.BundleID, offer.IDs, canUse.describe(), narrowed))
+				offer.Notes = append(offer.Notes, fmt.Sprintf("bundle %s names tools %v; %s; offering %v", sess.BundleID, offer.IDs, canUse.Describe(), narrowed))
 			}
 			offer.IDs = narrowed
 		}
@@ -208,11 +208,11 @@ func (s *Server) resolveGrantedToolOffer(ctx context.Context, sess *store.Sessio
 	if err != nil {
 		return nil, err
 	}
-	canUse, err := s.grantedResourcesOf(ctx, subject, "can_use", "tool")
+	canUse, err := s.grantChecker.GrantedResourcesOf(ctx, subject, "can_use", "tool")
 	if err != nil {
 		return nil, fmt.Errorf("session %s is started as %s and its grants could not be read, so it was not started: %w", sess.SessionID, sess.PrincipalID, err)
 	}
-	if !canUse.restricts() {
+	if !canUse.Restricts() {
 		return nil, nil
 	}
 	offer := &toolOffer{Source: toolOfferGrants}
@@ -224,15 +224,15 @@ func (s *Server) resolveGrantedToolOffer(ctx context.Context, sess *store.Sessio
 	var optedInIDs []int64
 	for _, t := range optedIn {
 		optedInIDs = append(optedInIDs, t.ID)
-		if canUse.namesTool(t.ID) {
+		if canUse.NamesTool(t.ID) {
 			offer.IDs = append(offer.IDs, t.ID)
 		}
 	}
 	offer.NarrowedByGrants = len(offer.IDs) < len(optedInIDs)
 	if len(offer.IDs) == 0 {
-		offer.Notes = append(offer.Notes, fmt.Sprintf("%s, and instance %s's opt-ins %v share nothing with them; the session starts with no MCP servers", canUse.describe(), sess.InstanceID, optedInIDs))
+		offer.Notes = append(offer.Notes, fmt.Sprintf("%s, and instance %s's opt-ins %v share nothing with them; the session starts with no MCP servers", canUse.Describe(), sess.InstanceID, optedInIDs))
 	} else {
-		offer.Notes = append(offer.Notes, fmt.Sprintf("%s ∩ instance %s opt-ins %v", canUse.describe(), sess.InstanceID, optedInIDs))
+		offer.Notes = append(offer.Notes, fmt.Sprintf("%s ∩ instance %s opt-ins %v", canUse.Describe(), sess.InstanceID, optedInIDs))
 	}
 	return offer, nil
 }

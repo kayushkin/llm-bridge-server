@@ -129,9 +129,9 @@ func (s *Server) handlePeerConnectionProxy(w http.ResponseWriter, r *http.Reques
 	if callThrough, narrowed, err := s.callThroughGrantsOfRequest(r); err != nil {
 		httpjson.WriteJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
 		return
-	} else if narrowed && !callThrough.permits(connection.ID) {
+	} else if narrowed && !callThrough.Permits(connection.ID) {
 		httpjson.WriteJSONError(w, http.StatusForbidden, "peer_connection_not_granted", fmt.Sprintf(
-			"%s; grant can_call_through on peer_connection %s to call through it", callThrough.describe(), connection.ID))
+			"%s; grant can_call_through on peer_connection %s to call through it", callThrough.Describe(), connection.ID))
 		return
 	}
 	if proxiedRequestOnlyReads(r.Method, escapedPathAfterPrefix(r.URL, peerConnectionProxyMountPrefix(connection.ID)), header) {

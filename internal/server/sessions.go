@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/grantcheck"
+
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/sendanswer"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
@@ -290,7 +292,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 			allowed := false
 			if caller.Peer == nil && caller.DelegatingAgentOfSessionID == "" {
 				var err error
-				if allowed, err = s.mayStartSessionsAs(r.Context(), grantSubjectOfCaller(caller), req.PrincipalID); err != nil {
+				if allowed, err = s.mayStartSessionsAs(r.Context(), grantcheck.SubjectOfCaller(caller), req.PrincipalID); err != nil {
 					httpjson.WriteJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
 					return
 				}
@@ -329,7 +331,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// origin the new session keeps: a connected server acting for one of its
 	// users starts it limited by that server's grants too, and so does an
 	// agent whose own session was started that way.
-	creatorSubject := grantSubject{principalID: req.PrincipalID}
+	creatorSubject := grantcheck.Subject{PrincipalID: req.PrincipalID}
 	var creatorPeerOrigin *store.SessionPeerOrigin
 	if caller, ok := requestcaller.FromRequest(r); ok {
 		switch {
@@ -347,7 +349,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if creatorPeerOrigin != nil {
-		creatorSubject.throughPeerPrincipalID = creatorPeerOrigin.PeerPrincipalID
+		creatorSubject.ThroughPeerPrincipalID = creatorPeerOrigin.PeerPrincipalID
 	}
 
 	h := msg.Harness(req.Harness)

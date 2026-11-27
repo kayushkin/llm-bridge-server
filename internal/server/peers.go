@@ -53,6 +53,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/grantcheck"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
 
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
@@ -498,7 +500,7 @@ func (s *Server) handleListPeerConnections(w http.ResponseWriter, r *http.Reques
 	}
 	views := make([]msg.PeerConnectionView, 0, len(connections))
 	for _, connection := range connections {
-		if narrowed && !callThrough.requiresAGrantAndNames(connection.ID) {
+		if narrowed && !callThrough.RequiresAGrantAndNames(connection.ID) {
 			continue
 		}
 		views = append(views, s.peerConnectionView(connection))
@@ -509,12 +511,12 @@ func (s *Server) handleListPeerConnections(w http.ResponseWriter, r *http.Reques
 // callThroughGrantsOfRequest reads the caller's can_call_through grants on
 // peer connections, and false when the caller is not narrowed by them: the
 // service token, or an administrator.
-func (s *Server) callThroughGrantsOfRequest(r *http.Request) (grantedResources, bool, error) {
+func (s *Server) callThroughGrantsOfRequest(r *http.Request) (grantcheck.Resources, bool, error) {
 	if _, restricted := requestcaller.PrincipalRestrictingRequest(r); !restricted {
-		return grantedResources{}, false, nil
+		return grantcheck.Resources{}, false, nil
 	}
 	caller, _ := requestcaller.FromRequest(r)
-	granted, err := s.grantedResourcesOf(r.Context(), grantSubjectOfCaller(caller), callThroughRelation, "peer_connection")
+	granted, err := s.grantChecker.GrantedResourcesOf(r.Context(), grantcheck.SubjectOfCaller(caller), callThroughRelation, "peer_connection")
 	return granted, true, err
 }
 
@@ -545,7 +547,7 @@ func (s *Server) handleGetPeerConnection(w http.ResponseWriter, r *http.Request)
 		httpjson.WriteJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
 		return
 	}
-	if narrowed && !callThrough.requiresAGrantAndNames(r.PathValue("id")) {
+	if narrowed && !callThrough.RequiresAGrantAndNames(r.PathValue("id")) {
 		httpjson.WriteJSONError(w, http.StatusNotFound, "peer_connection_not_found", "no peer connection has id "+r.PathValue("id"))
 		return
 	}

@@ -268,7 +268,7 @@ func TestOnlyAnAdministratorOrTheInternalServiceChangesAGrant(t *testing.T) {
 	}
 
 	// The grant is read in process at spawn: the member is now held to it.
-	ids, err := test.server.effectiveGrantResourceIDs(ctx, accessTestMemberID, "can_dispatch_on", "instance")
+	ids, err := test.server.grantChecker.EffectiveGrantResourceIDs(ctx, accessTestMemberID, "can_dispatch_on", "instance")
 	if err != nil || len(ids) != 1 || ids[0] != test.instanceID {
 		t.Fatalf("the member's effective can_dispatch_on = %v %v, want [%s]", ids, err, test.instanceID)
 	}

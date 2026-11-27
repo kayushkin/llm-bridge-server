@@ -1,6 +1,4 @@
-package server
-
-// What a principal's grants allow, decided in one place.
+// Package grantcheck decides what a principal's grants allow, in one place.
 //
 // Every check this server makes against grant-store — where a session may
 // start, as which agent, which tools it is offered, which operations a
@@ -26,6 +24,8 @@ package server
 // is allowed only when each principal's grants allow it by the rules above,
 // a side principal-store marks an administrator restricting nothing.
 
+package grantcheck
+
 import (
 	"context"
 	"errors"
@@ -37,63 +37,72 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
 )
 
-// grantSubject is whose grants decide: a principal, and, when a connected
+// GrantReader is grant-store as this server reads and writes it:
+// *grants.Store in production, a fake in tests. Effective answers
+// grants.ErrNotFound for a principal principal-store does not have, never an
+// empty list, so a spawn can tell "nothing granted" from "no such principal".
+type GrantReader interface {
+	Effective(ctx context.Context, directory grants.PrincipalDirectory, principalID, relation, resourceType string) ([]*grants.Grant, error)
+	Create(ctx context.Context, directory grants.PrincipalDirectory, checker grants.ResourceChecker, request grants.GrantRequest) (*grants.Grant, bool, error)
+}
+
+// Subject is whose grants decide: a principal, and, when a connected
 // server acts for one of its users, the peer principal that server acts as.
-type grantSubject struct {
-	principalID string
-	// throughPeerPrincipalID is the peer principal, empty for a principal
+type Subject struct {
+	PrincipalID string
+	// ThroughPeerPrincipalID is the peer principal, empty for a principal
 	// acting on its own.
-	throughPeerPrincipalID string
+	ThroughPeerPrincipalID string
 }
 
-func (subject grantSubject) String() string {
-	if subject.throughPeerPrincipalID == "" {
-		return subject.principalID
+func (subject Subject) String() string {
+	if subject.ThroughPeerPrincipalID == "" {
+		return subject.PrincipalID
 	}
-	return subject.principalID + " through peer " + subject.throughPeerPrincipalID
+	return subject.PrincipalID + " through peer " + subject.ThroughPeerPrincipalID
 }
 
-// grantSubjectOfCaller is whose grants decide for an authorized request.
-func grantSubjectOfCaller(caller requestcaller.Caller) grantSubject {
-	subject := grantSubject{principalID: caller.PrincipalID}
+// SubjectOfCaller is whose grants decide for an authorized request.
+func SubjectOfCaller(caller requestcaller.Caller) Subject {
+	subject := Subject{PrincipalID: caller.PrincipalID}
 	if caller.Peer.ActsForRemoteUser() {
-		subject.throughPeerPrincipalID = caller.Peer.PeerPrincipalID
+		subject.ThroughPeerPrincipalID = caller.Peer.PeerPrincipalID
 	}
 	return subject
 }
 
-// grantedResources is what one principal's effective grants of one relation
+// Resources is what one principal's effective grants of one relation
 // say about one resource type, and, for a subject acting through a peer,
 // what the peer's say too (alsoLimitedBy).
-type grantedResources struct {
+type Resources struct {
 	principalID  string
 	relation     string
 	resourceType string
 	// resourceIDs is every id the grants name, "*" included, as grant-store
 	// answered them.
 	resourceIDs []string
-	// restrictedToItsGrants is principal-store's answer for the principal's
+	// RestrictedToItsGrants is principal-store's answer for the principal's
 	// kind: holding no grant of a relation refuses it.
-	restrictedToItsGrants bool
+	RestrictedToItsGrants bool
 	// administratorInIntersection is set on a side of an intersection that
 	// principal-store marks an administrator: that side restricts nothing.
 	administratorInIntersection bool
 	// alsoLimitedBy is the peer's grants when the subject acts through a
 	// peer: the answer is allowed only where both allow it.
-	alsoLimitedBy *grantedResources
+	alsoLimitedBy *Resources
 }
 
 // restrictsOnItsOwn reports whether this one principal's grants limit it.
-func (granted grantedResources) restrictsOnItsOwn() bool {
+func (granted Resources) restrictsOnItsOwn() bool {
 	if granted.administratorInIntersection {
 		return false
 	}
-	return len(granted.resourceIDs) > 0 || granted.restrictedToItsGrants
+	return len(granted.resourceIDs) > 0 || granted.RestrictedToItsGrants
 }
 
 // namesOnItsOwn reports whether one of this principal's grants names the
 // resource, directly or as "*".
-func (granted grantedResources) namesOnItsOwn(resourceID string) bool {
+func (granted Resources) namesOnItsOwn(resourceID string) bool {
 	for _, grantedID := range granted.resourceIDs {
 		if grantedID == grants.AllResources || grantedID == resourceID {
 			return true
@@ -104,141 +113,141 @@ func (granted grantedResources) namesOnItsOwn(resourceID string) bool {
 
 // allowsOnItsOwn reports whether this one principal's grants allow the
 // resource.
-func (granted grantedResources) allowsOnItsOwn(resourceID string) bool {
+func (granted Resources) allowsOnItsOwn(resourceID string) bool {
 	return !granted.restrictsOnItsOwn() || granted.namesOnItsOwn(resourceID)
 }
 
-// restricts reports whether the relation limits the subject at all.
-func (granted grantedResources) restricts() bool {
+// Restricts reports whether the relation limits the subject at all.
+func (granted Resources) Restricts() bool {
 	return granted.restrictsOnItsOwn() || (granted.alsoLimitedBy != nil && granted.alsoLimitedBy.restrictsOnItsOwn())
 }
 
 // names reports whether the subject's grants name this resource, directly or
 // as "*": every side that restricts names it, and at least one restricts.
-func (granted grantedResources) names(resourceID string) bool {
-	if !granted.restricts() {
+func (granted Resources) names(resourceID string) bool {
+	if !granted.Restricts() {
 		return false
 	}
 	return granted.allowsOnItsOwn(resourceID) && (granted.alsoLimitedBy == nil || granted.alsoLimitedBy.allowsOnItsOwn(resourceID))
 }
 
-// requiresAGrantAndNames reports whether every side names the resource,
+// RequiresAGrantAndNames reports whether every side names the resource,
 // for a relation where holding no grant allows nothing whatever the kind,
 // such as can_observe_sessions_on. A side principal-store marks an
 // administrator needs no grant.
-func (granted grantedResources) requiresAGrantAndNames(resourceID string) bool {
-	side := func(one grantedResources) bool {
+func (granted Resources) RequiresAGrantAndNames(resourceID string) bool {
+	side := func(one Resources) bool {
 		return one.administratorInIntersection || one.namesOnItsOwn(resourceID)
 	}
 	return side(granted) && (granted.alsoLimitedBy == nil || side(*granted.alsoLimitedBy))
 }
 
-// permits reports whether the subject may use this resource by this
+// Permits reports whether the subject may use this resource by this
 // relation.
-func (granted grantedResources) permits(resourceID string) bool {
+func (granted Resources) Permits(resourceID string) bool {
 	return granted.allowsOnItsOwn(resourceID) && (granted.alsoLimitedBy == nil || granted.alsoLimitedBy.allowsOnItsOwn(resourceID))
 }
 
-// namesAll reports whether a grant names every resource of the type.
-func (granted grantedResources) namesAll() bool {
+// NamesAll reports whether a grant names every resource of the type.
+func (granted Resources) NamesAll() bool {
 	return granted.names(grants.AllResources)
 }
 
-// describe says what the grants are, for a refusal or a note.
-func (granted grantedResources) describe() string {
+// Describe says what the grants are, for a refusal or a note.
+func (granted Resources) Describe() string {
 	if granted.alsoLimitedBy != nil {
 		return granted.describeOnItsOwn() + "; and, acting through that peer, " + granted.alsoLimitedBy.describeOnItsOwn()
 	}
 	return granted.describeOnItsOwn()
 }
 
-func (granted grantedResources) describeOnItsOwn() string {
+func (granted Resources) describeOnItsOwn() string {
 	switch {
 	case granted.administratorInIntersection:
 		return fmt.Sprintf("%s is an administrator, so its own grants restrict nothing here", granted.principalID)
 	case len(granted.resourceIDs) > 0:
 		return fmt.Sprintf("%s's %s grants name %ss %v", granted.principalID, granted.relation, granted.resourceType, granted.resourceIDs)
-	case granted.restrictedToItsGrants:
+	case granted.RestrictedToItsGrants:
 		return fmt.Sprintf("%s holds no %s grant on a %s, and principal-store marks its kind restricted to its grants, so it may use none", granted.principalID, granted.relation, granted.resourceType)
 	default:
 		return fmt.Sprintf("%s holds no %s grant on a %s, so any is allowed (lenient)", granted.principalID, granted.relation, granted.resourceType)
 	}
 }
 
-// grantedResourcesOf reads a subject's effective grants of one relation: its
+// GrantedResourcesOf reads a subject's effective grants of one relation: its
 // principal's, and the peer's when it acts through one, each with whether
 // principal-store marks it restricted to its grants. Any store failing is an
 // error: an unread grant set is never treated as an empty one.
-func (s *Server) grantedResourcesOf(ctx context.Context, subject grantSubject, relation, resourceType string) (grantedResources, error) {
-	own, err := s.grantedResourcesOfOnePrincipal(ctx, subject.principalID, relation, resourceType, subject.throughPeerPrincipalID != "")
+func (s *Checker) GrantedResourcesOf(ctx context.Context, subject Subject, relation, resourceType string) (Resources, error) {
+	own, err := s.grantedResourcesOfOnePrincipal(ctx, subject.PrincipalID, relation, resourceType, subject.ThroughPeerPrincipalID != "")
 	if err != nil {
-		return grantedResources{}, err
+		return Resources{}, err
 	}
-	if subject.throughPeerPrincipalID == "" {
+	if subject.ThroughPeerPrincipalID == "" {
 		return own, nil
 	}
-	peer, err := s.grantedResourcesOfOnePrincipal(ctx, subject.throughPeerPrincipalID, relation, resourceType, true)
+	peer, err := s.grantedResourcesOfOnePrincipal(ctx, subject.ThroughPeerPrincipalID, relation, resourceType, true)
 	if err != nil {
-		return grantedResources{}, err
+		return Resources{}, err
 	}
 	own.alsoLimitedBy = &peer
 	return own, nil
 }
 
-func (s *Server) grantedResourcesOfOnePrincipal(ctx context.Context, principalID, relation, resourceType string, partOfIntersection bool) (grantedResources, error) {
-	if s.grantStore == nil {
-		return grantedResources{}, fmt.Errorf("%s's %s grants are read from grant-store, and this server has none (LLMBRIDGE_GRANT_STORE_URL)", principalID, relation)
+func (s *Checker) grantedResourcesOfOnePrincipal(ctx context.Context, principalID, relation, resourceType string, partOfIntersection bool) (Resources, error) {
+	if s.GrantStore() == nil {
+		return Resources{}, fmt.Errorf("%s's %s grants are read from grant-store, and this server has none (LLMBRIDGE_GRANT_STORE_URL)", principalID, relation)
 	}
-	resourceIDs, err := s.effectiveGrantResourceIDs(ctx, principalID, relation, resourceType)
+	resourceIDs, err := s.EffectiveGrantResourceIDs(ctx, principalID, relation, resourceType)
 	if err != nil {
-		return grantedResources{}, fmt.Errorf("could not read %s's %s grants: %w", principalID, relation, err)
+		return Resources{}, fmt.Errorf("could not read %s's %s grants: %w", principalID, relation, err)
 	}
-	if s.principalLookupCache == nil {
-		return grantedResources{}, fmt.Errorf("%s's %s grants depend on what principal-store says its kind is, and this server has no principal lookup", principalID, relation)
+	if s.PrincipalLookupCache() == nil {
+		return Resources{}, fmt.Errorf("%s's %s grants depend on what principal-store says its kind is, and this server has no principal lookup", principalID, relation)
 	}
-	principal, err := s.principalLookupCache.lookUp(ctx, principalID)
+	principal, err := s.PrincipalLookupCache().LookUp(ctx, principalID)
 	if err != nil {
-		return grantedResources{}, fmt.Errorf("could not read principal %s from principal-store to know whether its grants restrict it: %w", principalID, err)
+		return Resources{}, fmt.Errorf("could not read principal %s from principal-store to know whether its grants restrict it: %w", principalID, err)
 	}
-	return grantedResources{
+	return Resources{
 		principalID:                 principalID,
 		relation:                    relation,
 		resourceType:                resourceType,
 		resourceIDs:                 resourceIDs,
-		restrictedToItsGrants:       principal.RestrictedToItsGrants,
+		RestrictedToItsGrants:       principal.RestrictedToItsGrants,
 		administratorInIntersection: partOfIntersection && principal.IsAdministrator,
 	}, nil
 }
 
-// dispatchGrants is a principal's can_dispatch_on grants on instances and on
+// DispatchGrants is a principal's can_dispatch_on grants on instances and on
 // machines, which together say where its sessions may start.
-type dispatchGrants struct {
-	instances grantedResources
-	machines  grantedResources
+type DispatchGrants struct {
+	instances Resources
+	machines  Resources
 }
 
-func (s *Server) dispatchGrantsOf(ctx context.Context, subject grantSubject) (dispatchGrants, error) {
-	instances, err := s.grantedResourcesOf(ctx, subject, "can_dispatch_on", "instance")
+func (s *Checker) DispatchGrantsOf(ctx context.Context, subject Subject) (DispatchGrants, error) {
+	instances, err := s.GrantedResourcesOf(ctx, subject, "can_dispatch_on", "instance")
 	if err != nil {
-		return dispatchGrants{}, err
+		return DispatchGrants{}, err
 	}
-	machines, err := s.grantedResourcesOf(ctx, subject, "can_dispatch_on", "machine")
+	machines, err := s.GrantedResourcesOf(ctx, subject, "can_dispatch_on", "machine")
 	if err != nil {
-		return dispatchGrants{}, err
+		return DispatchGrants{}, err
 	}
-	return dispatchGrants{instances: instances, machines: machines}, nil
+	return DispatchGrants{instances: instances, machines: machines}, nil
 }
 
-// restricts reports whether the grants limit where sessions start. Grants on
+// Restricts reports whether the grants limit where sessions start. Grants on
 // instances and on machines are one relation, so holding either restricts.
-func (granted dispatchGrants) restricts() bool {
-	return granted.instances.restricts() || granted.machines.restricts()
+func (granted DispatchGrants) Restricts() bool {
+	return granted.instances.Restricts() || granted.machines.Restricts()
 }
 
-// permits reports whether a session may start on this instance: for each
+// Permits reports whether a session may start on this instance: for each
 // principal of the subject, its grants on the instance or on its machine
 // allow it.
-func (granted dispatchGrants) permits(instanceID, machineID string) bool {
+func (granted DispatchGrants) Permits(instanceID, machineID string) bool {
 	if !granted.allowsOnItsOwn(granted.instances, granted.machines, instanceID, machineID) {
 		return false
 	}
@@ -250,41 +259,41 @@ func (granted dispatchGrants) permits(instanceID, machineID string) bool {
 
 // allowsOnItsOwn applies one principal's instance and machine grants, which
 // are one relation: holding either restricts, and either naming allows.
-func (dispatchGrants) allowsOnItsOwn(instances, machines grantedResources, instanceID, machineID string) bool {
+func (DispatchGrants) allowsOnItsOwn(instances, machines Resources, instanceID, machineID string) bool {
 	if !instances.restrictsOnItsOwn() && !machines.restrictsOnItsOwn() {
 		return true
 	}
 	return instances.namesOnItsOwn(instanceID) || machines.namesOnItsOwn(machineID)
 }
 
-func (granted dispatchGrants) describe() string {
-	if !granted.restricts() {
-		return granted.instances.describe()
+func (granted DispatchGrants) Describe() string {
+	if !granted.Restricts() {
+		return granted.instances.Describe()
 	}
 	return fmt.Sprintf("%s's can_dispatch_on grants name instances %v and machines %v (restricted to its grants: %t)",
-		granted.instances.principalID, granted.instances.resourceIDs, granted.machines.resourceIDs, granted.instances.restrictedToItsGrants)
+		granted.instances.principalID, granted.instances.resourceIDs, granted.machines.resourceIDs, granted.instances.RestrictedToItsGrants)
 }
 
-// permitsTool reports whether a can_use grant set allows a tool-store id.
-func (granted grantedResources) permitsTool(toolID int64) bool {
-	return granted.permits(strconv.FormatInt(toolID, 10))
+// PermitsTool reports whether a can_use grant set allows a tool-store id.
+func (granted Resources) PermitsTool(toolID int64) bool {
+	return granted.Permits(strconv.FormatInt(toolID, 10))
 }
 
-// namesTool reports whether a can_use grant names a tool-store id, directly
+// NamesTool reports whether a can_use grant names a tool-store id, directly
 // or as "*".
-func (granted grantedResources) namesTool(toolID int64) bool {
+func (granted Resources) NamesTool(toolID int64) bool {
 	return granted.names(strconv.FormatInt(toolID, 10))
 }
 
-// effectiveGrantResourceIDs returns the resource ids the principal's effective
+// EffectiveGrantResourceIDs returns the resource ids the principal's effective
 // grants of one relation name, for one resource type: its own active grants
 // and every active group's, with the groups read from principal-store on each
 // call, so a membership change is visible at the next spawn. An empty answer
 // means the principal and every group it is in hold no such grant; a
 // principal principal-store does not have is an error wrapping
 // grants.ErrNotFound.
-func (s *Server) effectiveGrantResourceIDs(ctx context.Context, principalID, relation, resourceType string) ([]string, error) {
-	effective, err := s.grantStore.Effective(ctx, s.grantsPrincipalDirectory, principalID, relation, resourceType)
+func (s *Checker) EffectiveGrantResourceIDs(ctx context.Context, principalID, relation, resourceType string) ([]string, error) {
+	effective, err := s.GrantStore().Effective(ctx, s.GrantsPrincipalDirectory(), principalID, relation, resourceType)
 	if errors.Is(err, grants.ErrNotFound) {
 		return nil, fmt.Errorf("principal unknown: %w", err)
 	}

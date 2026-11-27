@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/grantcheck"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
 
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
@@ -54,7 +56,7 @@ func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, restricted := requestcaller.PrincipalRestrictingRequest(r); restricted {
 		caller, _ := requestcaller.FromRequest(r)
-		instances, err = s.instancesPrincipalMayDispatchOn(r.Context(), grantSubjectOfCaller(caller), instances)
+		instances, err = s.instancesPrincipalMayDispatchOn(r.Context(), grantcheck.SubjectOfCaller(caller), instances)
 		if err != nil {
 			httpjson.WriteJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
 			return
@@ -68,14 +70,14 @@ func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
 // checkPrincipalMayRunHere enforces at creation (principal_grants.go). Machine
 // details (hostname, SSH user and key path) are the operator's and are left
 // out; machine_id stays.
-func (s *Server) instancesPrincipalMayDispatchOn(ctx context.Context, subject grantSubject, instances []msg.Instance) ([]msg.Instance, error) {
-	dispatch, err := s.dispatchGrantsOf(ctx, subject)
+func (s *Server) instancesPrincipalMayDispatchOn(ctx context.Context, subject grantcheck.Subject, instances []msg.Instance) ([]msg.Instance, error) {
+	dispatch, err := s.grantChecker.DispatchGrantsOf(ctx, subject)
 	if err != nil {
 		return nil, err
 	}
 	visible := make([]msg.Instance, 0, len(instances))
 	for _, instance := range instances {
-		if !dispatch.permits(instance.ID, instance.MachineID) {
+		if !dispatch.Permits(instance.ID, instance.MachineID) {
 			continue
 		}
 		instance.Machine = nil
