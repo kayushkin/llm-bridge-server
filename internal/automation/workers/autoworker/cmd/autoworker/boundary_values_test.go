@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
 // The numbers in this binary, as opposed to the mechanisms that read them.
@@ -199,10 +199,10 @@ func TestUsageExactlyOnTheSlackEdgeDoesNotFire(t *testing.T) {
 // session that simply ran long.
 func TestACardWhoseSpendExactlyEqualsItsCeilingIsHeld(t *testing.T) {
 	f := &fakeKanban{
-		queued: []kanbanclient.CardView{
+		queued: []issuesclient.CardView{
 			card("exact", map[string]any{"title": "spent to the cent", "auto_hold_at_usd": 5.0}),
 		},
-		links: map[string][]kanbanclient.CardLink{
+		links: map[string][]issuesclient.CardLink{
 			"exact": {{CardID: "exact", EntityType: "session", EntityRef: "sess-1"}},
 		},
 	}

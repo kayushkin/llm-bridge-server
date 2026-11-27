@@ -43,10 +43,10 @@ import (
 	"github.com/kayushkin/bus/messages"
 	schedulerconfig "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/config"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/sessionmodelrole"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/boardvocabulary"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgeauth"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/degradations"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanvocab"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/schedulerjobs"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/schedulersettings"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -54,16 +54,16 @@ import (
 )
 
 const (
-	kanbanBoardName    = kanbanvocab.BoardAgentRuns
-	kanbanColumnTarget = kanbanvocab.ColumnInProgress
+	kanbanBoardName    = boardvocabulary.BoardAgentRuns
+	kanbanColumnTarget = boardvocabulary.ColumnInProgress
 	kanbanCardOrigin   = "autoworker"
 
 	// Queue-backed dispatch source: human (or curator) drops cards into the
 	// Queued column; the worker picks the top eligible card on each fire and
 	// uses its title/body as the worker prompt.
-	autoworkerQueueBoard            = kanbanvocab.BoardAutoworkerQueue
-	autoworkerQueueColumnFrom       = kanbanvocab.ColumnQueued
-	autoworkerQueueColumnInProgress = kanbanvocab.ColumnInProgress
+	autoworkerQueueBoard            = boardvocabulary.BoardAutoworkerQueue
+	autoworkerQueueColumnFrom       = boardvocabulary.ColumnQueued
+	autoworkerQueueColumnInProgress = boardvocabulary.ColumnInProgress
 )
 
 type limitWindow struct {
@@ -432,8 +432,8 @@ func run(cfg config, modelRoleFor laneModelRoleReader, publish workerPublisher) 
 	// Lazy kanban-store clients; only initialized when actually needed so
 	// dry-run passes and skip-everything ticks don't hit kanban-store.
 	var (
-		kc          *kanbanclient.Client // "Agent runs" telemetry board
-		queueClient *kanbanclient.Client // "Autoworker queue" dispatch source
+		kc          *issuesclient.Client // "Agent runs" telemetry board
+		queueClient *issuesclient.Client // "Autoworker queue" dispatch source
 		queueTried  bool                 // avoid re-attempting bootstrap each provider
 	)
 
@@ -522,8 +522,8 @@ func run(cfg config, modelRoleFor laneModelRoleReader, publish workerPublisher) 
 		}
 
 		if kc == nil {
-			kc = kanbanclient.New(cfg.kanbanStoreURL, cfg.kanbanStoreServiceToken)
-			if err := kc.EnsureBoard(kanbanBoardName, kanbanvocab.AgentRunsColumns()); err != nil {
+			kc = issuesclient.New(cfg.kanbanStoreURL, cfg.kanbanStoreServiceToken)
+			if err := kc.EnsureBoard(kanbanBoardName, boardvocabulary.AgentRunsColumns()); err != nil {
 				log.Printf("kanban: bootstrap %q failed: %v (continuing)", kanbanBoardName, err)
 				degraded.Record("the %q board could not be reached (%v), so this tick's dispatches have no telemetry card", kanbanBoardName, err)
 				kc = nil // disable for the rest of this tick
@@ -538,7 +538,7 @@ func run(cfg config, modelRoleFor laneModelRoleReader, publish workerPublisher) 
 			if queueCard != nil {
 				body += fmt.Sprintf("- queue_card: `%s` — %s\n", queueCard.cardID, queueCard.title)
 			}
-			cardID, err := kc.CreateCard(kanbanclient.CreateCardArgs{
+			cardID, err := kc.CreateCard(issuesclient.CreateCardArgs{
 				ColumnName: kanbanColumnTarget,
 				Title:      title,
 				Body:       body,
@@ -588,7 +588,7 @@ func run(cfg config, modelRoleFor laneModelRoleReader, publish workerPublisher) 
 	return degraded.ExitCode()
 }
 
-// initQueueClient resolves the Autoworker queue board into a kanbanclient
+// initQueueClient resolves the Autoworker queue board into an issuesclient
 // configured with BoardID + ColumnsByName ready for selection / move /
 // link calls. On real runs the board is created lazily via EnsureBoard.
 // On dry-run the bootstrap is read-only via FindBoard so a fresh install
@@ -605,8 +605,8 @@ func run(cfg config, modelRoleFor laneModelRoleReader, publish workerPublisher) 
 // nil client and nothing recorded. Returning an error for that case would make
 // every caller re-derive which errors count, which is the distinction this
 // function is already making.
-func initQueueClient(kanbanStoreURL, kanbanStoreServiceToken string, dryRun bool) (*kanbanclient.Client, string) {
-	qc := kanbanclient.New(kanbanStoreURL, kanbanStoreServiceToken)
+func initQueueClient(kanbanStoreURL, kanbanStoreServiceToken string, dryRun bool) (*issuesclient.Client, string) {
+	qc := issuesclient.New(kanbanStoreURL, kanbanStoreServiceToken)
 	if dryRun {
 		board, err := qc.FindBoard(autoworkerQueueBoard)
 		if err != nil {
@@ -631,7 +631,7 @@ func initQueueClient(kanbanStoreURL, kanbanStoreServiceToken string, dryRun bool
 		}
 		return qc, ""
 	}
-	if err := qc.EnsureBoard(autoworkerQueueBoard, kanbanvocab.AutoworkerQueueColumns()); err != nil {
+	if err := qc.EnsureBoard(autoworkerQueueBoard, boardvocabulary.AutoworkerQueueColumns()); err != nil {
 		log.Printf("queue: bootstrap %q: %v (using default prompt)", autoworkerQueueBoard, err)
 		return nil, fmt.Sprintf("the %q board could not be reached (%v), so this tick dispatches the default prompt instead of queued work", autoworkerQueueBoard, err)
 	}
@@ -675,12 +675,12 @@ func queueCardLogID(c *queueCandidate) string {
 // markQueueCardDispatched performs the post-publish side-effects: attach a
 // session card link, move the card to In Progress, and append a short dispatch
 // note to the noteboard body so the card carries its own audit trail.
-func markQueueCardDispatched(qc *kanbanclient.Client, cand *queueCandidate, p providerSpec, sessionID string, now time.Time) error {
+func markQueueCardDispatched(qc *issuesclient.Client, cand *queueCandidate, p providerSpec, sessionID string, now time.Time) error {
 	inProgressID, ok := qc.ColumnsByName[autoworkerQueueColumnInProgress]
 	if !ok {
 		return fmt.Errorf("column %q missing on queue board", autoworkerQueueColumnInProgress)
 	}
-	if err := qc.AddCardLink(cand.cardID, kanbanvocab.LinkTypeSession, sessionID, kanbanCardOrigin); err != nil {
+	if err := qc.AddCardLink(cand.cardID, boardvocabulary.LinkTypeSession, sessionID, kanbanCardOrigin); err != nil {
 		return fmt.Errorf("add session link: %w", err)
 	}
 	moveResult, err := qc.MoveCard(cand.cardID, qc.BoardID, inProgressID, 0)
@@ -733,12 +733,12 @@ Be self-contained. No chat; just work and close out the task.`,
 // degraded may be nil, which means the caller is peeking rather than
 // dispatching: the observability read at the end of a quiet tick wants the same
 // selection logic and has nothing to fall short of.
-func selectQueuedCard(qc *kanbanclient.Client, cfg config, degraded *degradations.Recorder) (*queueCandidate, error) {
+func selectQueuedCard(qc *issuesclient.Client, cfg config, degraded *degradations.Recorder) (*queueCandidate, error) {
 	view, err := qc.GetBoardView(qc.BoardID)
 	if err != nil {
 		return nil, err
 	}
-	var queued []kanbanclient.CardView
+	var queued []issuesclient.CardView
 	for _, cv := range view.Columns {
 		if cv.Column.Name == autoworkerQueueColumnFrom {
 			queued = cv.Cards
@@ -1184,7 +1184,7 @@ Be self-contained. No chat; just work and close out the todo.`
 // keeps the dispatch path from failing because a registry it does not otherwise
 // need happens to be down. Two links are still refused: a card that names two
 // identities does not say which one did the work.
-func sessionAgentSlug(links []kanbanclient.CardLink) (string, error) {
+func sessionAgentSlug(links []issuesclient.CardLink) (string, error) {
 	var found []string
 	for _, l := range links {
 		if l.EntityType == "agent" && strings.TrimSpace(l.EntityRef) != "" {
@@ -1214,7 +1214,7 @@ func sessionAgentSlug(links []kanbanclient.CardLink) (string, error) {
 // directory on this host cannot be worked in at all. Either would otherwise
 // land an agent in an arbitrary tree holding a prompt that tells it to change
 // things, which does not fail — it succeeds against the wrong repo.
-func repoWorkingDir(links []kanbanclient.CardLink) (string, error) {
+func repoWorkingDir(links []issuesclient.CardLink) (string, error) {
 	var found []string
 	for _, l := range links {
 		if l.EntityType == "repo" && strings.TrimSpace(l.EntityRef) != "" {
@@ -1256,7 +1256,7 @@ func repoWorkingDir(links []kanbanclient.CardLink) (string, error) {
 // a68ad12c-28c4-4514-bbe7-75994e305367: one such card sat In Progress from
 // 2026-07-13 through roughly 13,000 curator ticks, unnamed by anything.
 func cardCreationLogLine(provider, sessionID, cardID string, err error) string {
-	if stranded, ok := kanbanclient.StrandedCardID(err); ok {
+	if stranded, ok := issuesclient.StrandedCardID(err); ok {
 		return fmt.Sprintf("[%s] kanban: card %s created but STRANDED with incomplete links "+
 			"(session %s) — the curator cannot close it, attach its links by hand: %v",
 			provider, stranded, sessionID, err)

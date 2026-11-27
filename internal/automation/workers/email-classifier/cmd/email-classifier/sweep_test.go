@@ -8,12 +8,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
 // recordingKanban is a fake kanban-store that remembers every card move it was
 // asked for, keyed by card id, and answers 200 to everything else.
-func recordingKanban(t *testing.T) (*kanbanclient.Client, map[string]string, func()) {
+func recordingKanban(t *testing.T) (*issuesclient.Client, map[string]string, func()) {
 	t.Helper()
 	moves := map[string]string{} // card id -> column id
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -31,7 +31,7 @@ func recordingKanban(t *testing.T) (*kanbanclient.Client, map[string]string, fun
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{}`))
 	}))
-	kc := kanbanclient.New(srv.URL, "")
+	kc := issuesclient.New(srv.URL, "")
 	kc.BoardID = "board-1"
 	kc.ColumnsByName = map[string]string{
 		columnNoAction:        "col-none",

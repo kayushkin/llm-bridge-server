@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/degradations"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
 // Ported from 18ecd596 and f119a711 (test/the-mint-site-truncates-a-long-parent-
@@ -18,9 +18,9 @@ import (
 // drifted wire value in main.go goes red here instead of moving the fixture
 // with it.
 
-func instanceOnly() kanbanclient.EffectiveDefaults {
-	return kanbanclient.EffectiveDefaults{Defaults: map[kanbanclient.DefaultField]kanbanclient.EffectiveDefault{
-		kanbanclient.DefaultFieldInstance: fromBoard("inst-cc-local"),
+func instanceOnly() issuesclient.EffectiveDefaults {
+	return issuesclient.EffectiveDefaults{Defaults: map[issuesclient.DefaultField]issuesclient.EffectiveDefault{
+		issuesclient.DefaultFieldInstance: fromBoard("inst-cc-local"),
 	}}
 }
 
@@ -38,7 +38,7 @@ func TestATickThatCannotReadItsBoardFailsAndPublishesNothing(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			kanban := scopedBoard(t, map[string][]kanbanclient.CardView{columnBacklog: {testCard("card-a", "group:a")}})
+			kanban := scopedBoard(t, map[string][]issuesclient.CardView{columnBacklog: {testCard("card-a", "group:a")}})
 			kanban.effective["card-a"] = instanceOnly()
 			kanban.failures[tc.route] = tc.status
 			err, published := tick(t, kanban, nil)
@@ -65,7 +65,7 @@ func TestABoardMissingALifecycleColumnFailsTheTick(t *testing.T) {
 
 // A goal nobody has decomposed yet has no scoped tag, and its cards must wait.
 func TestAGoalWithoutTheScopedTagHasNothingDispatched(t *testing.T) {
-	kanban := scopedBoard(t, map[string][]kanbanclient.CardView{columnBacklog: {testCard("card-a", "group:a")}})
+	kanban := scopedBoard(t, map[string][]issuesclient.CardView{columnBacklog: {testCard("card-a", "group:a")}})
 	kanban.effective["card-a"] = instanceOnly()
 	kanban.scoped = map[string]bool{}
 	err, published := tick(t, kanban, nil)
@@ -78,7 +78,7 @@ func TestAGoalWithoutTheScopedTagHasNothingDispatched(t *testing.T) {
 }
 
 func TestADispatchedCardIsLinkedToItsSessionAndMovedToInProgress(t *testing.T) {
-	kanban := scopedBoard(t, map[string][]kanbanclient.CardView{columnBacklog: {testCard("card-a", "group:a")}})
+	kanban := scopedBoard(t, map[string][]issuesclient.CardView{columnBacklog: {testCard("card-a", "group:a")}})
 	kanban.effective["card-a"] = instanceOnly()
 	err, published := tick(t, kanban, nil)
 	if err != nil || len(published) != 1 {
@@ -105,7 +105,7 @@ func TestADispatchedCardIsLinkedToItsSessionAndMovedToInProgress(t *testing.T) {
 }
 
 func TestACardWhoseSessionLinkFailedIsNotMoved(t *testing.T) {
-	kanban := scopedBoard(t, map[string][]kanbanclient.CardView{columnBacklog: {testCard("card-a", "group:a")}})
+	kanban := scopedBoard(t, map[string][]issuesclient.CardView{columnBacklog: {testCard("card-a", "group:a")}})
 	kanban.effective["card-a"] = instanceOnly()
 	kanban.failures["link"] = http.StatusServiceUnavailable
 	err, _ := tick(t, kanban, nil)
@@ -126,13 +126,13 @@ func TestASiblingSessionOfUnknownAgeIsNotRevived(t *testing.T) {
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
-			kanban := scopedBoard(t, map[string][]kanbanclient.CardView{
+			kanban := scopedBoard(t, map[string][]issuesclient.CardView{
 				columnBacklog: {testCard("card-next", "group:a", "cat:product")},
 				columnDone:    {testCard("card-finished", "group:a", "cat:product")},
 			})
 			kanban.effective["card-next"] = productCardDefaults()
 			kanban.status["card-finished"] = "done"
-			kanban.links = map[string][]kanbanclient.CardLink{
+			kanban.links = map[string][]issuesclient.CardLink{
 				"card-finished": {{CardID: "card-finished", EntityType: "session", EntityRef: "sess-sibling"}},
 			}
 			err, published := tick(t, kanban, map[string]string{"sess-sibling": body})
@@ -149,8 +149,8 @@ func TestASiblingSessionOfUnknownAgeIsNotRevived(t *testing.T) {
 func TestGroupSiblingsAreTheParentsCardsInTheSameGroupOnly(t *testing.T) {
 	kanban := &fakeKanban{
 		t:     t,
-		board: kanbanclient.Board{ID: testBoardID},
-		view: kanbanclient.BoardView{Columns: []kanbanclient.ColumnView{
+		board: issuesclient.Board{ID: testBoardID},
+		view: issuesclient.BoardView{Columns: []issuesclient.ColumnView{
 			column(columnBacklog, testCard("card-next", "group:a")),
 			column(columnDone, testCard("sibling", "group:a"), testCard("other-group", "group:b"), testCard("other-goal", "group:a")),
 		}},
@@ -158,7 +158,7 @@ func TestGroupSiblingsAreTheParentsCardsInTheSameGroupOnly(t *testing.T) {
 	}
 	server := httptest.NewServer(kanban)
 	defer server.Close()
-	got := groupSiblings(kanbanclient.New(server.URL, ""), &kanban.view, groupOf("parent", testCard("card-next", "group:a")), degradations.New("dispatcher"))
+	got := groupSiblings(issuesclient.New(server.URL, ""), &kanban.view, groupOf("parent", testCard("card-next", "group:a")), degradations.New("dispatcher"))
 	var ids []string
 	for _, c := range got {
 		ids = append(ids, c.Placement.CardID)
@@ -171,7 +171,7 @@ func TestGroupSiblingsAreTheParentsCardsInTheSameGroupOnly(t *testing.T) {
 // ============================ closure and rollup ============================
 
 func TestTheClosurePassMovesEachSettledChildToItsOwnColumn(t *testing.T) {
-	kanban := scopedBoard(t, map[string][]kanbanclient.CardView{
+	kanban := scopedBoard(t, map[string][]issuesclient.CardView{
 		columnInProgress: {testCard("card-done", "group:a"), testCard("card-archived", "group:b"), testCard("card-open", "group:c")},
 	})
 	kanban.status["card-done"] = "done"
@@ -196,7 +196,7 @@ func TestTheClosurePassMovesEachSettledChildToItsOwnColumn(t *testing.T) {
 }
 
 func TestTheRollupAppendsItsNoteAndCountsFailedChildrenApart(t *testing.T) {
-	kanban := scopedBoard(t, map[string][]kanbanclient.CardView{columnDone: {testCard("card-a")}, columnFailed: {testCard("card-b")}})
+	kanban := scopedBoard(t, map[string][]issuesclient.CardView{columnDone: {testCard("card-a")}, columnFailed: {testCard("card-b")}})
 	kanban.view.Columns[0].Cards[0].Item["body"] = "The goal as written."
 	kanban.status["card-a"] = "done"
 	kanban.status["card-b"] = "archived"
@@ -225,7 +225,7 @@ func TestCurrentPlacementAnswersForTheBoardAskedAbout(t *testing.T) {
 		w.Write([]byte(`[{"card_id":"c1","board_id":"board-elsewhere","column_id":"col-x"},{"card_id":"c1","board_id":"` + testBoardID + `","column_id":"col-done"}]`))
 	}))
 	defer server.Close()
-	column, err := currentPlacement(kanbanclient.New(server.URL, ""), "c1", testBoardID)
+	column, err := currentPlacement(issuesclient.New(server.URL, ""), "c1", testBoardID)
 	if err != nil || column != "col-done" {
 		t.Errorf("currentPlacement = %q, %v; want col-done, the column on %s", column, err, testBoardID)
 	}
@@ -234,13 +234,13 @@ func TestCurrentPlacementAnswersForTheBoardAskedAbout(t *testing.T) {
 // The session read's updated_at is stamped by the bridge in RFC 3339; a sibling
 // updated a minute ago must still be revived after the stricter age check.
 func TestAFreshIdleSiblingIsStillRevived(t *testing.T) {
-	kanban := scopedBoard(t, map[string][]kanbanclient.CardView{
+	kanban := scopedBoard(t, map[string][]issuesclient.CardView{
 		columnBacklog: {testCard("card-next", "group:a", "cat:product")},
 		columnDone:    {testCard("card-finished", "group:a", "cat:product")},
 	})
 	kanban.effective["card-next"] = productCardDefaults()
 	kanban.status["card-finished"] = "done"
-	kanban.links = map[string][]kanbanclient.CardLink{
+	kanban.links = map[string][]issuesclient.CardLink{
 		"card-finished": {{CardID: "card-finished", EntityType: "session", EntityRef: "sess-sibling"}},
 	}
 	body := `{"state":"idle","updated_at":"` + time.Now().Add(-time.Minute).UTC().Format(time.RFC3339) + `","instance_id":"inst-codex-local","agent_id":"northwind-builder","bundle_id":"6"}`

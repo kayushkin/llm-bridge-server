@@ -1,4 +1,4 @@
-package kanbanclient
+package issuesclient
 
 // Protocol tests for the kanban-store client: does it speak the protocol
 // kanban-store actually serves?

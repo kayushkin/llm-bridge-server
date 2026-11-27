@@ -6,13 +6,13 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/demo-worker/demosession"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/boardvocabulary"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/demoteam"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanvocab"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
 // dispatch turns queued cards into real agent sessions.
-func dispatch(kc *kanbanclient.Client, cfg config) error {
+func dispatch(kc *issuesclient.Client, cfg config) error {
 	identity, err := requireIdentity(cfg.BuilderSlug, demoteam.RoleBuilder)
 	if err != nil {
 		return err
@@ -101,7 +101,7 @@ func dispatch(kc *kanbanclient.Client, cfg config) error {
 			//
 			// The actor rides on the query string, which is how kanban-store reads
 			// it, so the one event has both who acted and what it acted on.
-			if err := linkAs(cfg.KanbanURL, cardID, kanbanvocab.LinkTypeSession, sessionID,
+			if err := linkAs(cfg.KanbanURL, cardID, boardvocabulary.LinkTypeSession, sessionID,
 				"demo-worker", actorPrefixAgent+identity.Slug); err != nil {
 				return fmt.Errorf("link session %s: %w", sessionID, err)
 			}
@@ -122,9 +122,9 @@ func dispatch(kc *kanbanclient.Client, cfg config) error {
 	return nil
 }
 
-func hasSession(card kanbanclient.CardView) bool {
+func hasSession(card issuesclient.CardView) bool {
 	for _, l := range card.Links {
-		if l.EntityType == kanbanvocab.LinkTypeSession {
+		if l.EntityType == boardvocabulary.LinkTypeSession {
 			return true
 		}
 	}
@@ -134,7 +134,7 @@ func hasSession(card kanbanclient.CardView) bool {
 // cardRepo reads the working directory the promoter recorded. A queued card
 // without one is a promotion bug, not something to dispatch into ~/repos and
 // hope.
-func cardRepo(card kanbanclient.CardView) (string, error) {
+func cardRepo(card issuesclient.CardView) (string, error) {
 	for _, l := range card.Links {
 		if l.EntityType == "repo" && l.EntityRef != "" {
 			return l.EntityRef, nil

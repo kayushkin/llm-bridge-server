@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
 // Ported from 145c5bae (test/the-no-secret-rule-is-pinned-by-its-message). On
@@ -140,7 +140,7 @@ type dispatchRecorder struct {
 	failOn string
 }
 
-func (d *dispatchRecorder) start(t *testing.T) *kanbanclient.Client {
+func (d *dispatchRecorder) start(t *testing.T) *issuesclient.Client {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if d.failOn != "" && strings.Contains(r.URL.Path, d.failOn) {
@@ -167,7 +167,7 @@ func (d *dispatchRecorder) start(t *testing.T) *kanbanclient.Client {
 	}))
 	t.Cleanup(srv.Close)
 
-	qc := kanbanclient.New(srv.URL, "")
+	qc := issuesclient.New(srv.URL, "")
 	qc.BoardID = "board-1"
 	qc.ColumnsByName = map[string]string{
 		"Queued":      "col-queued",

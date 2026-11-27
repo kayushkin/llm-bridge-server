@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
 // TestRetiringACardRecordsWhatMovedSoTheMergeCanBeUndone pins the record that
@@ -32,10 +32,10 @@ func TestRetiringACardRecordsWhatMovedSoTheMergeCanBeUndone(t *testing.T) {
 	}))
 	defer kanban.Close()
 
-	kc := kanbanclient.New(kanban.URL, "")
+	kc := issuesclient.New(kanban.URL, "")
 	kc.BoardID = "board-1"
 
-	moved := []kanbanclient.CardLink{
+	moved := []issuesclient.CardLink{
 		{EntityType: linkTypeEmail, EntityRef: "imap-pretender:23166", Label: "Deals eligibility notice"},
 		{EntityType: linkTypeEmailMessageID, EntityRef: "1516356665@wellsfargo.com"},
 		{EntityType: linkTypeEmailSender, EntityRef: "wellsfargoonline@mail1.wellsfargo.com", Label: "Deals"},

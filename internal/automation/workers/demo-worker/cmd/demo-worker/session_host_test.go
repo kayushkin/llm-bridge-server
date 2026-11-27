@@ -4,11 +4,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
 func TestASessionHostComesFromTheWorkBoardAndNeedsAnInstance(t *testing.T) {
-	host, err := sessionHostFromBoard(&kanbanclient.Board{
+	host, err := sessionHostFromBoard(&issuesclient.Board{
 		ID: "board-1", Name: "Northwind work", DefaultInstanceID: "inst-cc-local", DefaultBundleID: "6",
 	})
 	if err != nil {
@@ -18,12 +18,12 @@ func TestASessionHostComesFromTheWorkBoardAndNeedsAnInstance(t *testing.T) {
 		t.Errorf("host = %+v, want the board's instance and bundle verbatim", host)
 	}
 
-	host, err = sessionHostFromBoard(&kanbanclient.Board{ID: "board-1", Name: "Northwind work", DefaultInstanceID: "inst-cc-local"})
+	host, err = sessionHostFromBoard(&issuesclient.Board{ID: "board-1", Name: "Northwind work", DefaultInstanceID: "inst-cc-local"})
 	if err != nil || host.BundleID != "" {
 		t.Errorf("a board with no bundle must spawn with none, got %+v %v", host, err)
 	}
 
-	_, err = sessionHostFromBoard(&kanbanclient.Board{ID: "board-1", Name: "Northwind work"})
+	_, err = sessionHostFromBoard(&issuesclient.Board{ID: "board-1", Name: "Northwind work"})
 	if err == nil {
 		t.Fatal("a board with no default_instance_id spawned somewhere; there is no fallback instance")
 	}

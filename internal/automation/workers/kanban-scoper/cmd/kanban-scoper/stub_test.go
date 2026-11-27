@@ -113,7 +113,7 @@ func (k *stubKanban) serve(w http.ResponseWriter, r *http.Request) {
 			"columns": colViews,
 		})
 
-	// createSubcard posts here directly rather than through kanbanclient.
+	// createSubcard posts here directly rather than through issuesclient.
 	case r.Method == "POST" && p == "/api/boards/"+stubBoardID+"/cards":
 		if k.failCreate != 0 {
 			w.WriteHeader(k.failCreate)

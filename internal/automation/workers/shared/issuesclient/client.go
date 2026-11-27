@@ -2,7 +2,7 @@
 // (default :8305). Used by autoworker (creates cards) and kanban-curator
 // (closes them). Intentionally narrow — only the calls the scheduler binaries
 // need; not a general-purpose SDK.
-package kanbanclient
+package issuesclient
 
 import (
 	"bytes"
@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanvocab"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/boardvocabulary"
 )
 
 type Client struct {
@@ -156,7 +156,7 @@ var ErrBoardNotFound = errors.New("kanban board not found")
 // GetBoard fetches one board by id, settings included.
 func (c *Client) GetBoard(id string) (*Board, error) {
 	if id == "" {
-		return nil, errors.New("kanbanclient: GetBoard called with an empty board id")
+		return nil, errors.New("issuesclient: GetBoard called with an empty board id")
 	}
 	resp, err := c.HTTP.Get(fmt.Sprintf("%s/api/boards/%s", c.BaseURL, escapePathSegment(id)))
 	if err != nil {
@@ -262,7 +262,7 @@ var ErrCardNotFound = errors.New("kanban card not found")
 // card from noteboard — is an error carrying the body.
 func (c *Client) GetCardEffectiveDefaults(boardID, cardID string) (*EffectiveDefaults, error) {
 	if boardID == "" || cardID == "" {
-		return nil, fmt.Errorf("kanbanclient: GetCardEffectiveDefaults needs a board id and a card id, got board %q card %q", boardID, cardID)
+		return nil, fmt.Errorf("issuesclient: GetCardEffectiveDefaults needs a board id and a card id, got board %q card %q", boardID, cardID)
 	}
 	resp, err := c.HTTP.Get(fmt.Sprintf("%s/api/boards/%s/cards/%s/effective-defaults", c.BaseURL, escapePathSegment(boardID), escapePathSegment(cardID)))
 	if err != nil {
@@ -345,10 +345,10 @@ func (c *Client) ensureColumns(boardID string, wantColumns []string) error {
 		}
 		var autoStatus *string
 		switch want {
-		case kanbanvocab.ColumnDone:
+		case boardvocabulary.ColumnDone:
 			s := "done"
 			autoStatus = &s
-		case kanbanvocab.ColumnFailed:
+		case boardvocabulary.ColumnFailed:
 			s := "archived"
 			autoStatus = &s
 		}
@@ -551,7 +551,7 @@ type CreateCardArgs struct {
 // standard autoworker links. EnsureBoard must have been called first.
 func (c *Client) CreateCard(a CreateCardArgs) (cardID string, err error) {
 	if c.BoardID == "" {
-		return "", errors.New("kanbanclient: EnsureBoard not called")
+		return "", errors.New("issuesclient: EnsureBoard not called")
 	}
 	colID, ok := c.ColumnsByName[a.ColumnName]
 	if !ok {
@@ -597,7 +597,7 @@ func (c *Client) CreateCard(a CreateCardArgs) (cardID string, err error) {
 
 	type linkSpec struct{ entityType, entityRef, label string }
 	links := []linkSpec{
-		{kanbanvocab.LinkTypeSession, a.SessionID, "autoworker"},
+		{boardvocabulary.LinkTypeSession, a.SessionID, "autoworker"},
 		{"autoworker_provider", a.Provider, ""},
 	}
 	for _, l := range links {
@@ -1049,7 +1049,7 @@ func StampRequestsToKanbanStore(kanbanURL, serviceToken string) error {
 	}
 	parsed, err := url.Parse(kanbanURL)
 	if err != nil || parsed.Host == "" {
-		return fmt.Errorf("kanbanclient: %q is not a URL with a host, so requests to kanban-store cannot be authenticated: %v", kanbanURL, err)
+		return fmt.Errorf("issuesclient: %q is not a URL with a host, so requests to kanban-store cannot be authenticated: %v", kanbanURL, err)
 	}
 	http.DefaultTransport = &hostScopedServiceTokenTransport{host: parsed.Host, token: serviceToken, base: http.DefaultTransport}
 	http.DefaultClient.Transport = http.DefaultTransport

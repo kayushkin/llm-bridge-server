@@ -6,9 +6,9 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/demo-worker/demosession"
 
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/boardvocabulary"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/demoteam"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanvocab"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
 // review dispatches a reviewer for work that has produced a pull request and
@@ -19,7 +19,7 @@ import (
 // it, which agent wrote it, under which budget. Polling GitHub for open pull
 // requests instead would pick up anything anybody opened by hand and review it
 // with no idea what it was for.
-func review(kc *kanbanclient.Client, cfg config) error {
+func review(kc *issuesclient.Client, cfg config) error {
 	reviewer, err := requireIdentity(cfg.ReviewerSlug, demoteam.RoleReviewer)
 	if err != nil {
 		return err
@@ -102,7 +102,7 @@ func review(kc *kanbanclient.Client, cfg config) error {
 			// Linking the session records the dispatch, attributed to the
 			// reviewer — the same one call that carries both who acted and what
 			// they acted on.
-			if err := linkAs(cfg.KanbanURL, cardID, kanbanvocab.LinkTypeSession, sessionID,
+			if err := linkAs(cfg.KanbanURL, cardID, boardvocabulary.LinkTypeSession, sessionID,
 				"demo-worker review", actorPrefixAgent+reviewer.Slug); err != nil {
 				return fmt.Errorf("link reviewer session: %w", err)
 			}
@@ -121,7 +121,7 @@ func review(kc *kanbanclient.Client, cfg config) error {
 // A card carrying two is left alone rather than reviewed twice or half: it does
 // not say which one the review is of, and guessing would put a review on a diff
 // nobody asked about.
-func pullRequestRef(card kanbanclient.CardView) string {
+func pullRequestRef(card issuesclient.CardView) string {
 	var found []string
 	for _, l := range card.Links {
 		if l.EntityType == "pull_request" && l.EntityRef != "" {

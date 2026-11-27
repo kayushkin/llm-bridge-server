@@ -5,7 +5,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
 // ============================ the re-score sweep ============================
@@ -43,7 +43,7 @@ type sweepResult struct {
 // tag is left exactly as the model wrote it, because there is no date to derive
 // a better one from. That is what keeps this safe to run against the cards that
 // predate due_at.
-func rescoreBoard(kc *kanbanclient.Client, state *boardState, gate *sessionGate, now time.Time, dryRun bool) sweepResult {
+func rescoreBoard(kc *issuesclient.Client, state *boardState, gate *sessionGate, now time.Time, dryRun bool) sweepResult {
 	var result sweepResult
 
 	for _, card := range state.Cards {
@@ -165,7 +165,7 @@ type reconcileResult struct {
 //
 // Moving into Action completed makes kanban-store re-apply that column's
 // auto_status, which is done already; the write is idempotent.
-func reconcileStatusWithColumn(kc *kanbanclient.Client, state *boardState, gate *sessionGate, dryRun bool) reconcileResult {
+func reconcileStatusWithColumn(kc *issuesclient.Client, state *boardState, gate *sessionGate, dryRun bool) reconcileResult {
 	var result reconcileResult
 
 	for _, card := range state.Cards {

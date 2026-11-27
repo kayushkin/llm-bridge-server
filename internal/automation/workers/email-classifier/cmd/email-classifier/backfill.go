@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
 // ============================ due-date backfill ============================
@@ -116,7 +116,7 @@ func summaryOf(body string) string {
 }
 
 // runBackfillPass recovers deadlines for every candidate card and re-scores it.
-func runBackfillPass(ctx context.Context, cfg config, kc *kanbanclient.Client, state *boardState, gate *sessionGate) error {
+func runBackfillPass(ctx context.Context, cfg config, kc *issuesclient.Client, state *boardState, gate *sessionGate) error {
 	candidates := backfillCandidates(state)
 	log.Printf("[email] backfill: %d cards have no deadline and could carry one (of %d on the board)",
 		len(candidates), len(state.Cards))

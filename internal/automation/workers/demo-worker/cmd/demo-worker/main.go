@@ -36,17 +36,17 @@ import (
 
 	schedulerconfig "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/config"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/sessionmodelrole"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/boardvocabulary"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgeauth"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/demoteam"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanvocab"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/schedulersettings"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
 const (
-	columnQueued     = kanbanvocab.ColumnQueued
-	columnInProgress = kanbanvocab.ColumnInProgress
+	columnQueued     = boardvocabulary.ColumnQueued
+	columnInProgress = boardvocabulary.ColumnInProgress
 	columnActionNeed = "Action needed"
 
 	// tagWorkNotStarted is the seam email-classifier already writes on every
@@ -113,8 +113,8 @@ func main() {
 		os.Exit(1)
 	}
 	// kanban-store gates every route too, and this binary writes cards with its
-	// own client as well as through kanbanclient. Host-scoped, like the above.
-	if err := kanbanclient.StampRequestsToKanbanStore(cfg.KanbanURL, cfg.KanbanServiceToken); err != nil {
+	// own client as well as through issuesclient. Host-scoped, like the above.
+	if err := issuesclient.StampRequestsToKanbanStore(cfg.KanbanURL, cfg.KanbanServiceToken); err != nil {
 		fmt.Fprintf(os.Stderr, "demo-worker: %v\n", err)
 		os.Exit(1)
 	}
@@ -179,7 +179,7 @@ func run(cfg config) error {
 		fmt.Println("DRY RUN — nothing will be written or spawned")
 	}
 
-	kc := kanbanclient.New(cfg.KanbanURL, cfg.KanbanServiceToken)
+	kc := issuesclient.New(cfg.KanbanURL, cfg.KanbanServiceToken)
 	if cfg.Promote {
 		if err := promote(kc, cfg); err != nil {
 			return err
@@ -235,7 +235,7 @@ type sessionHost struct {
 // requireIdentity) — because the prompt each gets is written for that role and
 // the card's attribution names it. One board-wide default agent would put the
 // reviewer's session under the builder's name, or the other way round.
-func sessionHostFromBoard(board *kanbanclient.Board) (sessionHost, error) {
+func sessionHostFromBoard(board *issuesclient.Board) (sessionHost, error) {
 	if board.DefaultInstanceID == "" {
 		return sessionHost{}, fmt.Errorf("board %q (%s) has no default_instance_id — set it (PATCH /api/boards/%s {\"default_instance_id\":…}); sessions have nowhere to run",
 			board.Name, board.ID, board.ID)

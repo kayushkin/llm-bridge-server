@@ -32,7 +32,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/degradations"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
 // ============================ Reading the four authorings ============================
@@ -277,7 +277,7 @@ func TestTheTitleBoundTheBoardEnforcesIsTheOneTheSchemaAdvertises(t *testing.T) 
 	}))
 	defer srv.Close()
 
-	kc := kanbanclient.New(srv.URL, "")
+	kc := issuesclient.New(srv.URL, "")
 	kc.BoardID = "board-1"
 	kc.ColumnsByName = map[string]string{}
 	for _, s := range schemaStateEnum(t, "new_tasks") {

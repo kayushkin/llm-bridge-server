@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
 // This file states what a classifier state update does to a card body. It
@@ -48,7 +48,7 @@ type bodyReplacementStub struct {
 	failMoves     bool
 }
 
-func newBodyReplacementStub(t *testing.T) (*kanbanclient.Client, *bodyReplacementStub) {
+func newBodyReplacementStub(t *testing.T) (*issuesclient.Client, *bodyReplacementStub) {
 	t.Helper()
 	rec := &bodyReplacementStub{
 		patchedBodies: map[string]string{},
@@ -93,7 +93,7 @@ func newBodyReplacementStub(t *testing.T) (*kanbanclient.Client, *bodyReplacemen
 	}))
 	t.Cleanup(srv.Close)
 
-	kc := kanbanclient.New(srv.URL, "")
+	kc := issuesclient.New(srv.URL, "")
 	kc.BoardID = "board-1"
 	kc.ColumnsByName = map[string]string{
 		"Backlog": "col-backlog", "In Progress": "col-inprogress",
@@ -316,7 +316,7 @@ func TestTheModelIsShownAtMost400CharactersOfTheBodyItWillReplace(t *testing.T) 
 	tail := "TAIL-OF-THE-OLD-BODY"
 	old := head + strings.Repeat("x", 400-len(head)) + tail
 
-	section := buildExistingCardsSection([]kanbanclient.EntityCardEntry{{
+	section := buildExistingCardsSection([]issuesclient.EntityCardEntry{{
 		CardID: "card-1",
 		Item:   map[string]any{"title": "Port the resolver", "status": "open", "body": old},
 	}}, 8000)
@@ -338,9 +338,9 @@ func TestTheModelIsShownAtMost400CharactersOfTheBodyItWillReplace(t *testing.T) 
 // The existing digest test pins the shedding; this one names what is being shed
 // and states that the cards themselves survive it.
 func TestUnderBudgetPressureTheModelIsShownNoneOfTheBodyAtAll(t *testing.T) {
-	var cards []kanbanclient.EntityCardEntry
+	var cards []issuesclient.EntityCardEntry
 	for i := 0; i < 30; i++ {
-		cards = append(cards, kanbanclient.EntityCardEntry{
+		cards = append(cards, issuesclient.EntityCardEntry{
 			CardID: fmt.Sprintf("card-%d", i),
 			Item: map[string]any{
 				"title":  fmt.Sprintf("Task %d", i),
@@ -369,9 +369,9 @@ func TestBodiesSurviveNineteenCardsOnASessionAndAreGoneAtTwenty(t *testing.T) {
 	body := "A-BODY-A-HUMAN-WROTE " + strings.Repeat("y", 379) // 400 chars, the most the digest carries
 
 	build := func(n int) string {
-		var cards []kanbanclient.EntityCardEntry
+		var cards []issuesclient.EntityCardEntry
 		for i := 0; i < n; i++ {
-			cards = append(cards, kanbanclient.EntityCardEntry{
+			cards = append(cards, issuesclient.EntityCardEntry{
 				CardID: fmt.Sprintf("card-%d", i),
 				Item:   map[string]any{"title": fmt.Sprintf("Task %d", i), "status": "open", "body": body},
 			})

@@ -5,15 +5,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
-func repoLink(ref string) kanbanclient.CardLink {
-	return kanbanclient.CardLink{EntityType: "repo", EntityRef: ref}
+func repoLink(ref string) issuesclient.CardLink {
+	return issuesclient.CardLink{EntityType: "repo", EntityRef: ref}
 }
 
 func TestACardWithNoRepoLinkLeavesTheWorkingDirToTheInstance(t *testing.T) {
-	got, err := repoWorkingDir([]kanbanclient.CardLink{
+	got, err := repoWorkingDir([]issuesclient.CardLink{
 		{EntityType: "session", EntityRef: "autoworker-x-1"},
 		{EntityType: "email", EntityRef: "demo-work:lm1"},
 	})
@@ -27,7 +27,7 @@ func TestACardWithNoRepoLinkLeavesTheWorkingDirToTheInstance(t *testing.T) {
 
 func TestARepoLinkBecomesTheWorkingDir(t *testing.T) {
 	dir := t.TempDir()
-	got, err := repoWorkingDir([]kanbanclient.CardLink{repoLink(dir)})
+	got, err := repoWorkingDir([]issuesclient.CardLink{repoLink(dir)})
 	if err != nil {
 		t.Fatalf("repoWorkingDir: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestARepoLinkBecomesTheWorkingDir(t *testing.T) {
 // agent in an arbitrary repo holding a prompt telling it to change things.
 func TestTwoRepoLinksAreRefusedRatherThanPicked(t *testing.T) {
 	a, b := t.TempDir(), t.TempDir()
-	_, err := repoWorkingDir([]kanbanclient.CardLink{repoLink(a), repoLink(b)})
+	_, err := repoWorkingDir([]issuesclient.CardLink{repoLink(a), repoLink(b)})
 	if err == nil {
 		t.Fatal("a card with two repo links was given one of them")
 	}
@@ -50,7 +50,7 @@ func TestTwoRepoLinksAreRefusedRatherThanPicked(t *testing.T) {
 }
 
 func TestAPathThatIsNotThereIsRefused(t *testing.T) {
-	if _, err := repoWorkingDir([]kanbanclient.CardLink{repoLink("/nowhere/at/all")}); err == nil {
+	if _, err := repoWorkingDir([]issuesclient.CardLink{repoLink("/nowhere/at/all")}); err == nil {
 		t.Fatal("a repo link to a missing path was accepted")
 	}
 }
@@ -60,13 +60,13 @@ func TestAPathThatIsAFileIsRefused(t *testing.T) {
 	if err := writeFileForTest(file); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	if _, err := repoWorkingDir([]kanbanclient.CardLink{repoLink(file)}); err == nil {
+	if _, err := repoWorkingDir([]issuesclient.CardLink{repoLink(file)}); err == nil {
 		t.Fatal("a repo link to a plain file was accepted")
 	}
 }
 
 func TestAnEmptyRefIsIgnoredRatherThanUsed(t *testing.T) {
-	got, err := repoWorkingDir([]kanbanclient.CardLink{repoLink("   ")})
+	got, err := repoWorkingDir([]issuesclient.CardLink{repoLink("   ")})
 	if err != nil {
 		t.Fatalf("repoWorkingDir: %v", err)
 	}
@@ -75,12 +75,12 @@ func TestAnEmptyRefIsIgnoredRatherThanUsed(t *testing.T) {
 	}
 }
 
-func agentLink(ref string) kanbanclient.CardLink {
-	return kanbanclient.CardLink{EntityType: "agent", EntityRef: ref}
+func agentLink(ref string) issuesclient.CardLink {
+	return issuesclient.CardLink{EntityType: "agent", EntityRef: ref}
 }
 
 func TestACardWithNoAgentLinkStaysUnattributed(t *testing.T) {
-	got, err := sessionAgentSlug([]kanbanclient.CardLink{repoLink("/tmp")})
+	got, err := sessionAgentSlug([]issuesclient.CardLink{repoLink("/tmp")})
 	if err != nil {
 		t.Fatalf("sessionAgentSlug: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestACardWithNoAgentLinkStaysUnattributed(t *testing.T) {
 }
 
 func TestAnAgentLinkBecomesTheSessionIdentity(t *testing.T) {
-	got, err := sessionAgentSlug([]kanbanclient.CardLink{agentLink("northwind-builder")})
+	got, err := sessionAgentSlug([]issuesclient.CardLink{agentLink("northwind-builder")})
 	if err != nil {
 		t.Fatalf("sessionAgentSlug: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestAnAgentLinkBecomesTheSessionIdentity(t *testing.T) {
 // A card naming two identities does not say which one did the work, and
 // attribution that picks one is worse than none.
 func TestTwoAgentLinksAreRefused(t *testing.T) {
-	_, err := sessionAgentSlug([]kanbanclient.CardLink{
+	_, err := sessionAgentSlug([]issuesclient.CardLink{
 		agentLink("northwind-builder"), agentLink("northwind-reviewer"),
 	})
 	if err == nil {
@@ -114,7 +114,7 @@ func TestTwoAgentLinksAreRefused(t *testing.T) {
 }
 
 func TestTheTwoLinkKindsAreReadIndependently(t *testing.T) {
-	links := []kanbanclient.CardLink{
+	links := []issuesclient.CardLink{
 		agentLink("northwind-reviewer"),
 		repoLink(t.TempDir()),
 		{EntityType: "session", EntityRef: "autoworker-x-1"},

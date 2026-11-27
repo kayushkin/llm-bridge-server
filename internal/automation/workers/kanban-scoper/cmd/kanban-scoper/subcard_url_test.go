@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
 // TestCreateSubcardKeepsTheBoardIDOnePathSegment pins that a board id holding
@@ -27,7 +27,7 @@ func TestCreateSubcardKeepsTheBoardIDOnePathSegment(t *testing.T) {
 	}))
 	defer server.Close()
 
-	kc := &kanbanclient.Client{BaseURL: server.URL, HTTP: server.Client(), BoardID: "board/with?query"}
+	kc := &issuesclient.Client{BaseURL: server.URL, HTTP: server.Client(), BoardID: "board/with?query"}
 	if _, err := createSubcard(kc, "column-1", "title", "body", nil, "parent-1"); err != nil {
 		t.Fatalf("createSubcard: %v", err)
 	}

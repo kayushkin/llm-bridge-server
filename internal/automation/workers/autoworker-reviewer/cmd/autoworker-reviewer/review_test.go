@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
 // ============================ the fake store ============================
@@ -15,7 +15,7 @@ import (
 // ANSWERS ListEntityTags and REFUSES AddEntityTag, which is what a partly-sick
 // service does and what a fake that is simply "up" or "down" cannot express.
 type fakeStore struct {
-	tags []kanbanclient.EntityTag
+	tags []issuesclient.EntityTag
 
 	readErr error
 	// writeErrFor returns the error to fail a tag write with, or nil to let it
@@ -28,12 +28,12 @@ type fakeStore struct {
 	writes int
 }
 
-func (f *fakeStore) ListEntityTags(entityType, entityRef string) ([]kanbanclient.EntityTag, error) {
+func (f *fakeStore) ListEntityTags(entityType, entityRef string) ([]issuesclient.EntityTag, error) {
 	f.reads++
 	if f.readErr != nil {
 		return nil, f.readErr
 	}
-	out := make([]kanbanclient.EntityTag, len(f.tags))
+	out := make([]issuesclient.EntityTag, len(f.tags))
 	copy(out, f.tags)
 	return out, nil
 }
@@ -45,7 +45,7 @@ func (f *fakeStore) AddEntityTag(entityType, entityRef, tag string) error {
 			return err
 		}
 	}
-	f.tags = append(f.tags, kanbanclient.EntityTag{
+	f.tags = append(f.tags, issuesclient.EntityTag{
 		EntityType: entityType, EntityRef: entityRef, Tag: tag,
 	})
 	return nil
@@ -320,7 +320,7 @@ func TestAnUnreadableStoreSkipsWithoutSending(t *testing.T) {
 func TestDryRunSpendsNothing(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		tags []kanbanclient.EntityTag
+		tags []issuesclient.EntityTag
 	}{
 		{"would nudge", nil},
 		{"would settle", entityTags(tagPassPrefix+"1", tagPassPrefix+"2")},

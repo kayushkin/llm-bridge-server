@@ -154,7 +154,7 @@ func TestTheTwoValuesThatDecideSpend(t *testing.T) {
 //
 // Three variables land in this config and all are strings that would be
 // accepted in each other's place — base URLs. Nothing downstream would reject
-// a swap: kanbanclient.New takes the kanban URL positionally, and oneshot.Call
+// a swap: issuesclient.New takes the kanban URL positionally, and oneshot.Call
 // and listSessions both take the bridge URL. Giving each variable a
 // distinct value and asserting the field it lands in is what makes a swap
 // fail.

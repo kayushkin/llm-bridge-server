@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
 // The digest is the whole of what this binary buys. Every tick it does not
@@ -109,7 +109,7 @@ func TestTheMetaSectionCountsTheMessagesItWasGiven(t *testing.T) {
 // it the meta section's last field and the [EXISTING CARDS] header share a
 // line, and the header stops being a header.
 func TestASectionHeaderAlwaysStartsItsOwnLine(t *testing.T) {
-	digest := buildDigest(sampleSession(), longSession(3, 40), []kanbanclient.EntityCardEntry{
+	digest := buildDigest(sampleSession(), longSession(3, 40), []issuesclient.EntityCardEntry{
 		card("card-1", "a card", "a body"),
 	}, digestCharBudget)
 
@@ -249,7 +249,7 @@ func TestTheShedDecisionIsMeasuredInCharactersNotInCards(t *testing.T) {
 	// Three cards whose TITLES fit the reserve comfortably but whose BODIES do
 	// not. Measured in characters the bodies are shed; counted as three
 	// entries against a character budget, they never are.
-	cards := []kanbanclient.EntityCardEntry{
+	cards := []issuesclient.EntityCardEntry{
 		card("card-1", "first", strings.Repeat("b", 4000)),
 		card("card-2", "second", strings.Repeat("b", 4000)),
 		card("card-3", "third", strings.Repeat("b", 4000)),

@@ -60,12 +60,12 @@ import (
 	"github.com/kayushkin/bus/messages"
 	schedulerconfig "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/config"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/sessionmodelrole"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/boardvocabulary"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgeauth"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgeclient"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgesession"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/degradations"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanvocab"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/schedulerjobs"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/schedulersettings"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/textcut"
@@ -78,16 +78,16 @@ import (
 // "session" once bus_session_id became the bridge session_id.
 
 const (
-	columnGoals        = kanbanvocab.ColumnGoals
-	columnBacklog      = kanbanvocab.ColumnBacklog
-	columnInProgress   = kanbanvocab.ColumnInProgress
-	columnDone         = kanbanvocab.ColumnDone
-	columnFailed       = kanbanvocab.ColumnFailed
-	tagSubtask         = kanbanvocab.TagSubtask
-	tagScoped          = kanbanvocab.TagScoped
-	tagGroupPrefix     = kanbanvocab.TagGroupPrefix
-	linkTypeParent     = kanbanvocab.LinkTypeParentCard
-	linkTypeSession    = kanbanvocab.LinkTypeSession
+	columnGoals        = boardvocabulary.ColumnGoals
+	columnBacklog      = boardvocabulary.ColumnBacklog
+	columnInProgress   = boardvocabulary.ColumnInProgress
+	columnDone         = boardvocabulary.ColumnDone
+	columnFailed       = boardvocabulary.ColumnFailed
+	tagSubtask         = boardvocabulary.TagSubtask
+	tagScoped          = boardvocabulary.TagScoped
+	tagGroupPrefix     = boardvocabulary.TagGroupPrefix
+	linkTypeParent     = boardvocabulary.LinkTypeParentCard
+	linkTypeSession    = boardvocabulary.LinkTypeSession
 	reviveWindow       = time.Hour
 	maxDispatchPerTick = 3
 
@@ -101,7 +101,7 @@ const (
 	//
 	// These are dispatcher-internal identity machinery, not wire vocabulary:
 	// they are never sent to kanban-store and never parsed back off a card, so
-	// they stay here rather than in internal/kanbanvocab.
+	// they stay here rather than in internal/boardvocabulary.
 	contextKeyNamespaceTag  = "tag:"
 	contextKeyNamespaceCard = "card:"
 	// ungroupedDisplayPrefix labels a substituted key in output — log lines,
@@ -215,9 +215,9 @@ func run(options runOptions) error {
 		return fmt.Errorf("no model role to start sessions on: a session that names none runs on whatever the bridge's harness default is")
 	}
 	degraded := degradations.New("dispatcher")
-	kc := kanbanclient.New(options.KanbanURL, options.KanbanServiceToken)
+	kc := issuesclient.New(options.KanbanURL, options.KanbanServiceToken)
 	board, err := kc.GetBoard(options.BoardID)
-	if errors.Is(err, kanbanclient.ErrBoardNotFound) {
+	if errors.Is(err, issuesclient.ErrBoardNotFound) {
 		return fmt.Errorf("board %s does not exist — refusing to create a replacement, since a second board is exactly the fork pinning the id prevents", options.BoardID)
 	}
 	if err != nil {
@@ -388,7 +388,7 @@ func run(options runOptions) error {
 // It used to be a bare http.Get, which kanban-store answers 401 — and because
 // the closure pass treated a failed read as "nothing to move", every closure
 // was skipped in silence.
-func currentPlacement(kc *kanbanclient.Client, cardID, boardID string) (string, error) {
+func currentPlacement(kc *issuesclient.Client, cardID, boardID string) (string, error) {
 	placements, err := kc.ListCardPlacements(cardID)
 	if err != nil {
 		return "", err
@@ -405,10 +405,10 @@ func currentPlacement(kc *kanbanclient.Client, cardID, boardID string) (string, 
 
 // backlogDispatcher is one tick's dispatch pass over a board's Backlog.
 type backlogDispatcher struct {
-	kanban             *kanbanclient.Client
+	kanban             *issuesclient.Client
 	bridgeURL          string
-	board              *kanbanclient.Board
-	view               *kanbanclient.BoardView
+	board              *issuesclient.Board
+	view               *issuesclient.BoardView
 	inProgressColumnID string
 	// publish sends one BridgeInbound. Nil on a dry run, which publishes nothing.
 	publish     func(messages.BridgeInbound) error
@@ -532,8 +532,8 @@ func (p scopedParent) title() string {
 // A Goals card whose tags cannot be read is dropped here, before the caller
 // counts what came back, so the count alone cannot tell "nothing is scoped"
 // from "nothing could be read"; the shortfall is recorded instead.
-func scopedParents(view *kanbanclient.BoardView, kc *kanbanclient.Client, degraded *degradations.Recorder) []scopedParent {
-	var goalsCards []kanbanclient.CardView
+func scopedParents(view *issuesclient.BoardView, kc *issuesclient.Client, degraded *degradations.Recorder) []scopedParent {
+	var goalsCards []issuesclient.CardView
 	for _, cv := range view.Columns {
 		if cv.Column.Name == columnGoals {
 			goalsCards = cv.Cards
@@ -545,7 +545,7 @@ func scopedParents(view *kanbanclient.BoardView, kc *kanbanclient.Client, degrad
 		if c.Item == nil {
 			continue
 		}
-		etags, err := kc.ListEntityTags(kanbanvocab.EntityTypeNote, c.Placement.CardID)
+		etags, err := kc.ListEntityTags(boardvocabulary.EntityTypeNote, c.Placement.CardID)
 		if err != nil {
 			log.Printf("[%s] list entity tags: %v — skip", c.Placement.CardID, err)
 			degraded.Record("goal %s (%q): its scoped tag could not be read (%v), so it was never considered and none of its Backlog children were dispatched",
@@ -567,7 +567,7 @@ type backlogGroup struct {
 	// group: tag the scoper wrote — see contextGroupKey. Such a group always
 	// holds exactly one card and can never match a sibling.
 	keyWasSubstituted bool
-	cards             []kanbanclient.CardView // sorted by placement position
+	cards             []issuesclient.CardView // sorted by placement position
 }
 
 // displayKey renders the group key for people: log lines, the session display
@@ -585,15 +585,15 @@ func (g backlogGroup) displayKey() string {
 // A child counts as "in this parent" when it has a card_link with
 // entity_type=parent_card pointing to parent_id. The group key comes from
 // contextGroupKey, so a child with no group: tag is a group of its own.
-func backlogGroups(kc *kanbanclient.Client, view *kanbanclient.BoardView, parentID string, degraded *degradations.Recorder) []backlogGroup {
-	var backlogCards []kanbanclient.CardView
+func backlogGroups(kc *issuesclient.Client, view *issuesclient.BoardView, parentID string, degraded *degradations.Recorder) []backlogGroup {
+	var backlogCards []issuesclient.CardView
 	for _, cv := range view.Columns {
 		if cv.Column.Name == columnBacklog {
 			backlogCards = cv.Cards
 			break
 		}
 	}
-	byKey := map[string][]kanbanclient.CardView{}
+	byKey := map[string][]issuesclient.CardView{}
 	substitutedKeys := map[string]bool{}
 	// List the cards linked to this parent_card entity, then intersect with
 	// Backlog placements in the view.
@@ -640,7 +640,7 @@ func backlogGroups(kc *kanbanclient.Client, view *kanbanclient.BoardView, parent
 
 // listChildCardIDs returns the ids of the cards linked to a parent card, read
 // from the kanban-store the -kanban-url flag names.
-func listChildCardIDs(kc *kanbanclient.Client, parentID string) ([]string, error) {
+func listChildCardIDs(kc *issuesclient.Client, parentID string) ([]string, error) {
 	entries, err := kc.ListCardsForEntity(linkTypeParent, parentID)
 	if err != nil {
 		return nil, err
@@ -671,7 +671,7 @@ func listChildCardIDs(kc *kanbanclient.Client, parentID string) ([]string, error
 // substituted reports whether the card id stood in for a missing tag, so
 // callers can name the substitution in their output instead of presenting it
 // as a key the scoper chose.
-func contextGroupKey(c kanbanclient.CardView) (key string, substituted bool) {
+func contextGroupKey(c issuesclient.CardView) (key string, substituted bool) {
 	for _, t := range stringSlice(c.Item["tags"]) {
 		if !strings.HasPrefix(t, tagGroupPrefix) {
 			continue
@@ -706,7 +706,7 @@ func contextGroupKey(c kanbanclient.CardView) (key string, substituted bool) {
 // cannot be revived, so the group may pay for a fresh session it did not need;
 // that is recorded. A sibling session that is busy, stale or gone is the answer
 // working, and is not.
-func reusableSiblingSession(kc *kanbanclient.Client, bridgeURL string, view *kanbanclient.BoardView, g backlogGroup, spec cardSessionSpec, degraded *degradations.Recorder) string {
+func reusableSiblingSession(kc *issuesclient.Client, bridgeURL string, view *issuesclient.BoardView, g backlogGroup, spec cardSessionSpec, degraded *degradations.Recorder) string {
 	candidateID := g.cards[0].Placement.CardID
 	siblings := groupSiblings(kc, view, g, degraded)
 	now := time.Now()
@@ -776,7 +776,7 @@ func reusableSiblingSession(kc *kanbanclient.Client, bridgeURL string, view *kan
 // link and the group's context key — across every column, so we can find a
 // freshly-completed sibling whose session is still idle. An ungrouped card's
 // key is its own id, so its only sibling is itself.
-func groupSiblings(kc *kanbanclient.Client, view *kanbanclient.BoardView, g backlogGroup, degraded *degradations.Recorder) []kanbanclient.CardView {
+func groupSiblings(kc *issuesclient.Client, view *issuesclient.BoardView, g backlogGroup, degraded *degradations.Recorder) []issuesclient.CardView {
 	parentID := g.parentID
 	parentChildren := map[string]bool{}
 	childIDs, err := listChildCardIDs(kc, parentID)
@@ -789,7 +789,7 @@ func groupSiblings(kc *kanbanclient.Client, view *kanbanclient.BoardView, g back
 	for _, id := range childIDs {
 		parentChildren[id] = true
 	}
-	var out []kanbanclient.CardView
+	var out []issuesclient.CardView
 	for _, cv := range view.Columns {
 		for _, c := range cv.Cards {
 			if !parentChildren[c.Placement.CardID] {
@@ -854,7 +854,7 @@ type cardSessionSpec struct {
 	CardID string
 	// Defaults is kanban-store's answer the spec was read from, kept so a log
 	// line can say where each value came from.
-	Defaults *kanbanclient.EffectiveDefaults
+	Defaults *issuesclient.EffectiveDefaults
 }
 
 // resolveCardSessionSpec asks kanban-store for the card's effective defaults
@@ -864,12 +864,12 @@ type cardSessionSpec struct {
 // agent-store's numeric agent id — and the bridge wants the harness type and
 // the agent's slug, so both are read from the bridge now rather than copied
 // anywhere earlier and trusted since.
-func resolveCardSessionSpec(kc *kanbanclient.Client, bridgeURL string, board *kanbanclient.Board, cardID string) (cardSessionSpec, error) {
+func resolveCardSessionSpec(kc *issuesclient.Client, bridgeURL string, board *issuesclient.Board, cardID string) (cardSessionSpec, error) {
 	defaults, err := kc.GetCardEffectiveDefaults(board.ID, cardID)
 	if err != nil {
 		return cardSessionSpec{}, fmt.Errorf("effective defaults: %w", err)
 	}
-	instance, ok := defaults.Default(kanbanclient.DefaultFieldInstance)
+	instance, ok := defaults.Default(issuesclient.DefaultFieldInstance)
 	if !ok {
 		return cardSessionSpec{}, fmt.Errorf("%w: neither a tag rule matching the card's tags %q nor board %q (%s) sets default_instance_id — add a tag rule (PUT /api/boards/%s/tag-rules) or set the board's (PATCH /api/boards/%s); there is no fallback instance",
 			errCardHasNoInstance, defaults.Tags, board.Name, board.ID, board.ID, board.ID)
@@ -879,10 +879,10 @@ func resolveCardSessionSpec(kc *kanbanclient.Client, bridgeURL string, board *ka
 		return cardSessionSpec{}, fmt.Errorf("default_instance_id from %s: %w", instance.Source.Describe(), err)
 	}
 	spec := cardSessionSpec{Harness: harness, InstanceID: instance.Value, CardID: cardID, Defaults: defaults}
-	if bundle, ok := defaults.Default(kanbanclient.DefaultFieldBundle); ok {
+	if bundle, ok := defaults.Default(issuesclient.DefaultFieldBundle); ok {
 		spec.BundleID = bundle.Value
 	}
-	if agent, ok := defaults.Default(kanbanclient.DefaultFieldAgent); ok {
+	if agent, ok := defaults.Default(issuesclient.DefaultFieldAgent); ok {
 		slug, err := bridgeclient.AgentSlugByID(bridgeURL, agent.Value)
 		if err != nil {
 			return cardSessionSpec{}, fmt.Errorf("default_agent_id from %s: %w", agent.Source.Describe(), err)
@@ -894,14 +894,14 @@ func resolveCardSessionSpec(kc *kanbanclient.Client, bridgeURL string, board *ka
 
 // describe renders the spec for a log line, naming where each value came from.
 func (s cardSessionSpec) describe() string {
-	instance, _ := s.Defaults.Default(kanbanclient.DefaultFieldInstance)
+	instance, _ := s.Defaults.Default(issuesclient.DefaultFieldInstance)
 	parts := []string{fmt.Sprintf("instance=%s harness=%s (from %s)", s.InstanceID, s.Harness, instance.Source.Describe())}
-	if agent, ok := s.Defaults.Default(kanbanclient.DefaultFieldAgent); ok {
+	if agent, ok := s.Defaults.Default(issuesclient.DefaultFieldAgent); ok {
 		parts = append(parts, fmt.Sprintf("agent=%s id=%s (from %s)", s.AgentSlug, agent.Value, agent.Source.Describe()))
 	} else {
 		parts = append(parts, "agent=none (nothing sets default_agent_id)")
 	}
-	if bundle, ok := s.Defaults.Default(kanbanclient.DefaultFieldBundle); ok {
+	if bundle, ok := s.Defaults.Default(issuesclient.DefaultFieldBundle); ok {
 		parts = append(parts, fmt.Sprintf("bundle=%s (from %s)", s.BundleID, bundle.Source.Describe()))
 	} else {
 		parts = append(parts, "bundle=none (nothing sets default_bundle_id)")
@@ -942,7 +942,7 @@ func buildBridgeInbound(sessionID, displayName, prompt string, fresh bool, spec 
 	return in, nil
 }
 
-func buildPrompt(p scopedParent, child kanbanclient.CardView, g backlogGroup, reusedSessionID string) string {
+func buildPrompt(p scopedParent, child issuesclient.CardView, g backlogGroup, reusedSessionID string) string {
 	childID := child.Placement.CardID
 	title := childTitle(child)
 	body, _ := child.Item["body"].(string)
@@ -982,7 +982,7 @@ Be self-contained. No chat; just work and close out the sub-task.`,
 		header, childID, title, body, p.title(), p.cardID, group, childID)
 }
 
-func childTitle(c kanbanclient.CardView) string {
+func childTitle(c issuesclient.CardView) string {
 	t, _ := c.Item["title"].(string)
 	if t == "" {
 		t = c.Placement.CardID
@@ -998,7 +998,7 @@ func childTitle(c kanbanclient.CardView) string {
 // A failed read is returned as an error, not folded into the summary: the
 // caller reads total == 0 as "nothing to roll up", so (0, 0, "rollup error: …")
 // made a failed read look like a parent with no children.
-func childrenSettlement(kc *kanbanclient.Client, parentID string) (int, int, string, error) {
+func childrenSettlement(kc *issuesclient.Client, parentID string) (int, int, string, error) {
 	entries, err := kc.ListCardsForEntity(linkTypeParent, parentID)
 	if err != nil {
 		return 0, 0, "", err
@@ -1112,7 +1112,7 @@ func stringSlice(v any) []string {
 	return out
 }
 
-func anyTagEquals(tags []kanbanclient.EntityTag, want string) bool {
+func anyTagEquals(tags []issuesclient.EntityTag, want string) bool {
 	for _, t := range tags {
 		if t.Tag == want {
 			return true

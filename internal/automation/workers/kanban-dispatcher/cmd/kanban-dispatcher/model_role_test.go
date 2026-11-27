@@ -8,7 +8,7 @@ import (
 
 	"github.com/kayushkin/bus/messages"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/sessionmodelrole"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -48,10 +48,10 @@ func TestAFreshSessionNamesTheModelRole(t *testing.T) {
 // A card whose harness cannot run the role's first model is not dispatched:
 // nothing is published, linked or moved, and the tick names the cause.
 func TestACardWhoseHarnessCannotRunTheRoleIsNotDispatched(t *testing.T) {
-	kanban := scopedBoard(t, map[string][]kanbanclient.CardView{
+	kanban := scopedBoard(t, map[string][]issuesclient.CardView{
 		columnBacklog: {testCard("card-a", "group:a")},
 	})
-	kanban.effective["card-a"] = kanbanclient.EffectiveDefaults{Defaults: map[kanbanclient.DefaultField]kanbanclient.EffectiveDefault{kanbanclient.DefaultFieldInstance: fromBoard("inst-cc-local")}}
+	kanban.effective["card-a"] = issuesclient.EffectiveDefaults{Defaults: map[issuesclient.DefaultField]issuesclient.EffectiveDefault{issuesclient.DefaultFieldInstance: fromBoard("inst-cc-local")}}
 	kanbanServer := httptest.NewServer(kanban)
 	defer kanbanServer.Close()
 	bridgeServer := fakeBridge(t, nil)

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
 // bridgeRequest is one request the stub bridge saw: which of its routes matched,
@@ -96,7 +96,7 @@ func cardWithSession(sessionID string) *cardState {
 	return &cardState{
 		ID:    "card-1",
 		Title: "A card",
-		AllLinks: []kanbanclient.CardLink{
+		AllLinks: []issuesclient.CardLink{
 			{EntityType: linkTypeSession, EntityRef: sessionID},
 		},
 	}
@@ -108,7 +108,7 @@ func TestCardWithoutSessionLinkIsNeverAgentOwned(t *testing.T) {
 	g := newSessionGate("http://127.0.0.1:1") // would fail if ever dialled
 	card := &cardState{
 		ID: "card-1",
-		AllLinks: []kanbanclient.CardLink{
+		AllLinks: []issuesclient.CardLink{
 			{EntityType: linkTypeEmail, EntityRef: "gmail-personal:abc"},
 			{EntityType: linkTypeEmailSender, EntityRef: "sender@example.com"},
 		},

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
 // ===================== what these tests are here to pin =====================
@@ -86,8 +86,8 @@ func newFakeKanban(t *testing.T) *fakeKanban {
 	return f
 }
 
-func (f *fakeKanban) client() *kanbanclient.Client {
-	return kanbanclient.New(f.server.URL, "")
+func (f *fakeKanban) client() *issuesclient.Client {
+	return issuesclient.New(f.server.URL, "")
 }
 
 func (f *fakeKanban) recorded() []patchRecord {
@@ -259,7 +259,7 @@ func TestACardAnAgentIsWorkingIsNeverRescored(t *testing.T) {
 	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
 	kanban := newFakeKanban(t)
 	card := overdueRentCard("card-held", now)
-	card.AllLinks = []kanbanclient.CardLink{
+	card.AllLinks = []issuesclient.CardLink{
 		{CardID: card.ID, EntityType: linkTypeSession, EntityRef: "sess-1"},
 	}
 

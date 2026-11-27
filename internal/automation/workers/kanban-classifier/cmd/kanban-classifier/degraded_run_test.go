@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/degradations"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
 // The body the Anthropic API really returned to this job on 2026-08-29, when
@@ -47,7 +47,7 @@ type bridgeAndBoard struct {
 	modelCalls int
 }
 
-func (b *bridgeAndBoard) start(t *testing.T) (config, *kanbanclient.Client) {
+func (b *bridgeAndBoard) start(t *testing.T) (config, *issuesclient.Client) {
 	t.Helper()
 	if b.moveStatus == 0 {
 		b.moveStatus = http.StatusOK
@@ -120,7 +120,7 @@ func (b *bridgeAndBoard) start(t *testing.T) (config, *kanbanclient.Client) {
 	}))
 	t.Cleanup(bridge.Close)
 
-	kc := kanbanclient.New(board.URL, "")
+	kc := issuesclient.New(board.URL, "")
 	kc.BoardID = "board-1"
 	kc.ColumnsByName = map[string]string{
 		"In Progress": "col-inprogress", "Blocked": "col-blocked",

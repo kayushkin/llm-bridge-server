@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -105,7 +105,7 @@ func TestAnUntitledCardIsNamedByItsID(t *testing.T) {
 	if got := (scopedParent{cardID: "goal-1", item: map[string]any{}}).title(); got != "goal-1" {
 		t.Errorf("an untitled parent's title = %q, want its id", got)
 	}
-	untitled := kanbanclient.CardView{Item: map[string]any{}}
+	untitled := issuesclient.CardView{Item: map[string]any{}}
 	untitled.Placement.CardID = "child-7"
 	if got := childTitle(untitled); got != "child-7" {
 		t.Errorf("an untitled child's title = %q, want its id", got)
@@ -113,13 +113,13 @@ func TestAnUntitledCardIsNamedByItsID(t *testing.T) {
 	// Ported from ef5bee2a: an empty or non-string title falls back to the id
 	// too, and a real one is used as written.
 	for name, title := range map[string]any{"empty": "", "non-string": 42} {
-		card := kanbanclient.CardView{Item: map[string]any{"title": title}}
+		card := issuesclient.CardView{Item: map[string]any{"title": title}}
 		card.Placement.CardID = "child-8"
 		if got := childTitle(card); got != "child-8" {
 			t.Errorf("a child with a %s title is called %q, want its id", name, got)
 		}
 	}
-	titled := kanbanclient.CardView{Item: map[string]any{"title": "Port the sidebar"}}
+	titled := issuesclient.CardView{Item: map[string]any{"title": "Port the sidebar"}}
 	titled.Placement.CardID = "child-9"
 	if got := childTitle(titled); got != "Port the sidebar" {
 		t.Errorf("a titled child is called %q, want its title", got)
@@ -199,11 +199,11 @@ func TestATagThatIsNotAStringDoesNotHideTheTagsAfterIt(t *testing.T) {
 }
 
 func TestTheScopedTagMatchesWhole(t *testing.T) {
-	tags := []kanbanclient.EntityTag{{Tag: "scoped-later"}}
+	tags := []issuesclient.EntityTag{{Tag: "scoped-later"}}
 	if anyTagEquals(tags, "scoped") {
 		t.Error("scoped-later is not the scoped tag")
 	}
-	if !anyTagEquals([]kanbanclient.EntityTag{{Tag: "x"}, {Tag: "scoped"}}, "scoped") {
+	if !anyTagEquals([]issuesclient.EntityTag{{Tag: "x"}, {Tag: "scoped"}}, "scoped") {
 		t.Error("the scoped tag must be found wherever it sits")
 	}
 }

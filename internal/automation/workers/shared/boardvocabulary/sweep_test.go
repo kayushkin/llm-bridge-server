@@ -1,4 +1,4 @@
-package kanbanvocab
+package boardvocabulary
 
 import (
 	"go/ast"
@@ -110,7 +110,7 @@ func TestNoBinarySpellsTheVocabularyItself(t *testing.T) {
 		}
 		rel = filepath.ToSlash(rel)
 		// This package is where the values are allowed to live.
-		if strings.HasPrefix(rel, "shared/kanbanvocab/") {
+		if strings.HasPrefix(rel, "shared/boardvocabulary/") {
 			return nil
 		}
 
@@ -139,7 +139,7 @@ func TestNoBinarySpellsTheVocabularyItself(t *testing.T) {
 			problems = append(problems, "\n  "+rel+":"+
 				strconv.Itoa(fset.Position(lit.Pos()).Line)+
 				"\n    spells "+strconv.Quote(value)+
-				" — use kanbanvocab."+constName+
+				" — use boardvocabulary."+constName+
 				",\n    or add it to this test's allowlist with the reason it is a different concept.")
 			return true
 		})
@@ -150,7 +150,7 @@ func TestNoBinarySpellsTheVocabularyItself(t *testing.T) {
 	}
 
 	if len(problems) > 0 {
-		t.Errorf("%d raw kanban wire value(s) outside internal/kanbanvocab:%s",
+		t.Errorf("%d raw kanban wire value(s) outside shared/boardvocabulary:%s",
 			len(problems), strings.Join(problems, ""))
 	}
 }

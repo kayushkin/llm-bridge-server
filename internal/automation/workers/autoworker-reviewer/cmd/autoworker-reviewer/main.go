@@ -55,20 +55,20 @@ import (
 	"time"
 
 	schedulerconfig "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/config"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/boardvocabulary"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgeauth"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgesession"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/degradations"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanvocab"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/schedulerjobs"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
 const (
-	defaultBoardName  = kanbanvocab.BoardAgentRuns
-	columnInProgress  = kanbanvocab.ColumnInProgress
-	linkTypeSession   = kanbanvocab.LinkTypeSession
-	entityTypeSession = kanbanvocab.EntityTypeSession
+	defaultBoardName  = boardvocabulary.BoardAgentRuns
+	columnInProgress  = boardvocabulary.ColumnInProgress
+	linkTypeSession   = boardvocabulary.LinkTypeSession
+	entityTypeSession = boardvocabulary.EntityTypeSession
 
 	// purposeAutoworker is the value llm-bridge-server stores in a session's
 	// "purpose" field for a session autoworker created. It is the origin gate:
@@ -170,7 +170,7 @@ func main() {
 func run(cfg config) int {
 	degraded := degradations.New("reviewer")
 
-	kc := kanbanclient.New(cfg.kanbanURL, cfg.kanbanServiceToken)
+	kc := issuesclient.New(cfg.kanbanURL, cfg.kanbanServiceToken)
 	board, err := kc.FindBoard(cfg.boardName)
 	if err != nil {
 		log.Fatalf("find board %q: %v", cfg.boardName, err)
@@ -185,7 +185,7 @@ func run(cfg config) int {
 		log.Fatalf("board view: %v", err)
 	}
 
-	var inProgress []kanbanclient.CardView
+	var inProgress []issuesclient.CardView
 	for _, cv := range view.Columns {
 		if cv.Column.Name == columnInProgress {
 			inProgress = cv.Cards
@@ -347,7 +347,7 @@ const (
 // a test can supply a store whose writes fail while its reads succeed — which is
 // the exact failure mode this function is shaped around.
 type reviewStore interface {
-	ListEntityTags(entityType, entityRef string) ([]kanbanclient.EntityTag, error)
+	ListEntityTags(entityType, entityRef string) ([]issuesclient.EntityTag, error)
 	AddEntityTag(entityType, entityRef, tag string) error
 }
 
@@ -502,7 +502,7 @@ func settleSession(store reviewStore, stamp func(note string), sessionID, reason
 // returns whether the board took it. A failed stamp never blocks the decision;
 // it is logged here, and the caller decides whether losing the note is a
 // shortfall, since Record does not log.
-func stampBody(kc *kanbanclient.Client, c kanbanclient.CardView, note string) error {
+func stampBody(kc *issuesclient.Client, c issuesclient.CardView, note string) error {
 	body, _ := c.Item["body"].(string)
 	suffix := fmt.Sprintf("\n\n---\n_autoworker-reviewer %s: %s_\n",
 		time.Now().UTC().Format(time.RFC3339), note)
@@ -514,7 +514,7 @@ func stampBody(kc *kanbanclient.Client, c kanbanclient.CardView, note string) er
 	return nil
 }
 
-func sessionLink(kc *kanbanclient.Client, cardID string) (string, error) {
+func sessionLink(kc *issuesclient.Client, cardID string) (string, error) {
 	links, err := kc.ListCardLinks(cardID)
 	if err != nil {
 		return "", err
@@ -527,7 +527,7 @@ func sessionLink(kc *kanbanclient.Client, cardID string) (string, error) {
 	return "", nil
 }
 
-func hasTag(tags []kanbanclient.EntityTag, want string) bool {
+func hasTag(tags []issuesclient.EntityTag, want string) bool {
 	for _, t := range tags {
 		if t.Tag == want {
 			return true
@@ -537,7 +537,7 @@ func hasTag(tags []kanbanclient.EntityTag, want string) bool {
 }
 
 // passCount returns how many review-pass-N tags are present on the session.
-func passCount(tags []kanbanclient.EntityTag) int {
+func passCount(tags []issuesclient.EntityTag) int {
 	n := 0
 	for _, t := range tags {
 		if strings.HasPrefix(t.Tag, tagPassPrefix) {

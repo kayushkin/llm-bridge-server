@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
 // applier turns filing decisions into kanban writes. It is the only place that
@@ -16,7 +16,7 @@ import (
 // the model skipped to the triage card before it can reach that refusal.
 type applier struct {
 	cfg   config
-	kc    *kanbanclient.Client
+	kc    *issuesclient.Client
 	state *boardState
 
 	// gate keeps the classifier off cards an agent is currently working on.
@@ -78,7 +78,7 @@ func (a *applier) linkEmail(cardIDs []string, em pendingEmail, label string) err
 		if err := a.kc.AddCardLink(cardID, linkTypeEmail, em.Locator, label); err != nil {
 			return fmt.Errorf("link %s to card %s: %w", em.Locator, cardID, err)
 		}
-		card.EmailLinks = append(card.EmailLinks, kanbanclient.CardLink{
+		card.EmailLinks = append(card.EmailLinks, issuesclient.CardLink{
 			CardID: cardID, EntityType: linkTypeEmail, EntityRef: em.Locator, Label: label,
 		})
 		a.state.FiledLocators[em.Locator] = true
@@ -333,7 +333,7 @@ func (a *applier) createCard(spec newCardSpec) (string, error) {
 		return id, nil
 	}
 
-	id, err := a.kc.CreateCard(kanbanclient.CreateCardArgs{
+	id, err := a.kc.CreateCard(issuesclient.CreateCardArgs{
 		ColumnName: column,
 		Title:      spec.Title,
 		Body:       spec.Summary,
@@ -553,7 +553,7 @@ func renderCardBody(card *cardState) string {
 	b.WriteString(evidenceMarker)
 	fmt.Fprintf(&b, "\n\n## Linked emails (%d)\n\n", len(card.EmailLinks))
 
-	links := make([]kanbanclient.CardLink, len(card.EmailLinks))
+	links := make([]issuesclient.CardLink, len(card.EmailLinks))
 	copy(links, card.EmailLinks)
 	sort.SliceStable(links, func(i, j int) bool { return links[i].Label < links[j].Label })
 	for _, l := range links {

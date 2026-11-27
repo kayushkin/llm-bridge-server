@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
 // The boundary VALUES, ported from 081b8ac6.
@@ -21,13 +21,13 @@ import (
 // last updated age ago, and a bridge that reports it so. Everything else is the
 // shape that IS revived, so the age alone decides.
 func siblingIdleFor(t *testing.T, age time.Duration) (*fakeKanban, map[string]string) {
-	kanban := scopedBoard(t, map[string][]kanbanclient.CardView{
+	kanban := scopedBoard(t, map[string][]issuesclient.CardView{
 		columnBacklog: {testCard("card-next", "group:a", "cat:product")},
 		columnDone:    {testCard("card-finished", "group:a", "cat:product")},
 	})
 	kanban.effective["card-next"] = productCardDefaults()
 	kanban.status["card-finished"] = "done"
-	kanban.links = map[string][]kanbanclient.CardLink{
+	kanban.links = map[string][]issuesclient.CardLink{
 		"card-finished": {{CardID: "card-finished", EntityType: "session", EntityRef: "sess-sibling"}},
 	}
 	body := `{"state":"idle","updated_at":"` + time.Now().Add(-age).UTC().Format(time.RFC3339) +

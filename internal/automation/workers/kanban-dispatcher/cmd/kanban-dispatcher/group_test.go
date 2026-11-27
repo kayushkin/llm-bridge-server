@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/degradations"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
 // These tests cover the context group key: the value that decides which
@@ -22,9 +22,9 @@ import (
 // its-own-group), which reconciled two earlier authorings of this fix.
 
 // groupOf is the group backlogGroups would build around one card.
-func groupOf(parentID string, card kanbanclient.CardView) backlogGroup {
+func groupOf(parentID string, card issuesclient.CardView) backlogGroup {
 	key, substituted := contextGroupKey(card)
-	return backlogGroup{parentID: parentID, key: key, keyWasSubstituted: substituted, cards: []kanbanclient.CardView{card}}
+	return backlogGroup{parentID: parentID, key: key, keyWasSubstituted: substituted, cards: []issuesclient.CardView{card}}
 }
 
 // ============================ the key itself ============================
@@ -69,12 +69,12 @@ func TestATagCannotForgeTheKeyOfAnUngroupedCard(t *testing.T) {
 
 // ============================ grouping ============================
 
-func backlogGroupsOf(t *testing.T, backlog ...kanbanclient.CardView) []backlogGroup {
+func backlogGroupsOf(t *testing.T, backlog ...issuesclient.CardView) []backlogGroup {
 	t.Helper()
-	kanban := scopedBoard(t, map[string][]kanbanclient.CardView{columnBacklog: backlog})
+	kanban := scopedBoard(t, map[string][]issuesclient.CardView{columnBacklog: backlog})
 	server := httptest.NewServer(kanban)
 	defer server.Close()
-	return backlogGroups(kanbanclient.New(server.URL, ""), &kanban.view, "parent", degradations.New("dispatcher"))
+	return backlogGroups(issuesclient.New(server.URL, ""), &kanban.view, "parent", degradations.New("dispatcher"))
 }
 
 func TestEachUngroupedChildIsAGroupOfOne(t *testing.T) {
@@ -111,13 +111,13 @@ func TestGroupsAreOrderedByBoardPositionNotByKey(t *testing.T) {
 // ============================ siblings and reuse ============================
 
 func TestAnUngroupedCardHasNoSiblingButItself(t *testing.T) {
-	kanban := scopedBoard(t, map[string][]kanbanclient.CardView{
+	kanban := scopedBoard(t, map[string][]issuesclient.CardView{
 		columnBacklog: {testCard("card-next")},
 		columnDone:    {testCard("card-finished"), testCard("card-grouped", "group:a")},
 	})
 	server := httptest.NewServer(kanban)
 	defer server.Close()
-	got := groupSiblings(kanbanclient.New(server.URL, ""), &kanban.view, groupOf("parent", testCard("card-next")), degradations.New("dispatcher"))
+	got := groupSiblings(issuesclient.New(server.URL, ""), &kanban.view, groupOf("parent", testCard("card-next")), degradations.New("dispatcher"))
 	if len(got) != 1 || got[0].Placement.CardID != "card-next" {
 		t.Errorf("siblings = %v, want card-next alone", got)
 	}
@@ -129,13 +129,13 @@ func TestAnUngroupedCardHasNoSiblingButItself(t *testing.T) {
 // Before the fix all three keyed on "", so one tick dispatched only one of the
 // two, straight into card-finished's session.
 func TestUngroupedCardsAreDispatchedTogetherIntoFreshSessions(t *testing.T) {
-	kanban := scopedBoard(t, map[string][]kanbanclient.CardView{
+	kanban := scopedBoard(t, map[string][]issuesclient.CardView{
 		columnBacklog: {testCard("card-a", "cat:product"), testCard("card-b", "cat:product")},
 		columnDone:    {testCard("card-finished", "cat:product")},
 	})
 	kanban.effective["card-a"], kanban.effective["card-b"] = productCardDefaults(), productCardDefaults()
 	kanban.status["card-finished"] = "done"
-	kanban.links = map[string][]kanbanclient.CardLink{
+	kanban.links = map[string][]issuesclient.CardLink{
 		"card-finished": {{CardID: "card-finished", EntityType: "session", EntityRef: "sess-sibling"}},
 	}
 	body := `{"state":"idle","updated_at":"` + time.Now().Add(-time.Minute).UTC().Format(time.RFC3339) + `","instance_id":"inst-codex-local","agent_id":"northwind-builder","bundle_id":"6"}`

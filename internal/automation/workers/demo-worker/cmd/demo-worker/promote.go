@@ -6,9 +6,9 @@ import (
 	neturl "net/url"
 	"strings"
 
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/boardvocabulary"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/demoteam"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanvocab"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
 // buildableActions are the work-vocabulary actions an agent can actually carry
@@ -28,7 +28,7 @@ var buildableActions = map[string]bool{
 // The card is not copied. It is PLACED on a second board — the same noteboard
 // item, two placements — so the email view and the work view are the same card
 // seen twice, and closing it in one closes it in the other.
-func promote(kc *kanbanclient.Client, cfg config) error {
+func promote(kc *issuesclient.Client, cfg config) error {
 	identity, err := requireIdentity(cfg.BuilderSlug, demoteam.RoleBuilder)
 	if err != nil {
 		return err
@@ -95,7 +95,7 @@ func promote(kc *kanbanclient.Client, cfg config) error {
 // eligible reports whether a card is work an agent can take, and says why not
 // when it is not. The reason is printed rather than swallowed: a board where
 // nothing is ever promoted and nothing says why is impossible to debug.
-func eligible(card kanbanclient.CardView) (string, bool) {
+func eligible(card issuesclient.CardView) (string, bool) {
 	item := card.Item
 	if heldAt, _ := item["held_at"].(string); heldAt != "" {
 		// A card parked BY the classifier is parked for this pipeline to pick
@@ -121,7 +121,7 @@ func eligible(card kanbanclient.CardView) (string, bool) {
 		return "action=" + action + " needs a person", false
 	}
 	for _, l := range card.Links {
-		if l.EntityType == kanbanvocab.LinkTypeSession {
+		if l.EntityType == boardvocabulary.LinkTypeSession {
 			return "already has a session", false
 		}
 	}
@@ -130,7 +130,7 @@ func eligible(card kanbanclient.CardView) (string, bool) {
 
 // place attaches the card to the work board and records what an agent needs to
 // know to act on it.
-func place(kc *kanbanclient.Client, cfg config, workBoardID, queuedColumn, cardID string, identity demoteam.Member) error {
+func place(kc *issuesclient.Client, cfg config, workBoardID, queuedColumn, cardID string, identity demoteam.Member) error {
 	// Released as it is taken. The card was parked so that whoever found it
 	// first would leave it alone; this pipeline is the one it was waiting for.
 	if err := unhold(cfg.KanbanURL, cardID); err != nil {
@@ -166,7 +166,7 @@ func place(kc *kanbanclient.Client, cfg config, workBoardID, queuedColumn, cardI
 			identity.Name, identity.Role, cfg.RepoPath, cfg.MaxBudget))
 }
 
-func columnID(kc *kanbanclient.Client, boardID, name string) (string, error) {
+func columnID(kc *issuesclient.Client, boardID, name string) (string, error) {
 	columns, err := kc.ListColumns(boardID)
 	if err != nil {
 		return "", fmt.Errorf("list columns: %w", err)

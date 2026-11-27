@@ -1,4 +1,4 @@
-package kanbanclient
+package issuesclient
 
 import (
 	"encoding/json"
@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanvocab"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/boardvocabulary"
 )
 
 // Ported from 8ff8f0b (sweep/board-vocabulary-in-ask-and-spend-ceiling-guard).
@@ -75,10 +75,10 @@ func TestSessionCardLinkSurvivesTheWriterToReaderRoundTrip(t *testing.T) {
 
 	c := New(srv.URL, "")
 	c.BoardID = "board-1"
-	c.ColumnsByName = map[string]string{kanbanvocab.ColumnInProgress: "col-1"}
+	c.ColumnsByName = map[string]string{boardvocabulary.ColumnInProgress: "col-1"}
 
 	got, err := c.CreateCard(CreateCardArgs{
-		ColumnName: kanbanvocab.ColumnInProgress,
+		ColumnName: boardvocabulary.ColumnInProgress,
 		Title:      "a task that costs money",
 		SessionID:  sessionID,
 		Provider:   "claude-code",
@@ -91,7 +91,7 @@ func TestSessionCardLinkSurvivesTheWriterToReaderRoundTrip(t *testing.T) {
 	}
 
 	// 1. The literal that crossed the wire. Spelled out rather than compared to
-	//    the constant: if someone changes kanbanvocab.LinkTypeSession, existing
+	//    the constant: if someone changes boardvocabulary.LinkTypeSession, existing
 	//    rows in kanban-store still say "session" and this must fail.
 	var sessionLinks int
 	for _, l := range stored {
@@ -114,7 +114,7 @@ func TestSessionCardLinkSurvivesTheWriterToReaderRoundTrip(t *testing.T) {
 	}
 	var sessions []string
 	for _, l := range links {
-		if l.EntityType == kanbanvocab.LinkTypeSession {
+		if l.EntityType == boardvocabulary.LinkTypeSession {
 			sessions = append(sessions, l.EntityRef)
 		}
 	}

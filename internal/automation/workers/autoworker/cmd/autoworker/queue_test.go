@@ -10,12 +10,12 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/noteboarditems"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issueitemsclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
 // Ported from e0f686a5 and 4e4a0b93 (test/first-tests-for-autoworker). Main has
-// no internal/kanbanvocab, so its names are written as the literals they stand
+// no shared/boardvocabulary, so its names are written as the literals they stand
 // for, and selectQueuedCard takes its URLs from a config.
 //
 // selectQueuedCard is the whole dispatch decision for a queued card: which card,
@@ -35,12 +35,12 @@ type fakeKanban struct {
 	mu sync.Mutex
 
 	// queued is the Queued column, in placement order.
-	queued []kanbanclient.CardView
+	queued []issuesclient.CardView
 	// inProgress is a second column, so a test can tell "read the right column"
 	// from "read any column".
-	inProgress []kanbanclient.CardView
+	inProgress []issuesclient.CardView
 	// links maps card id → its entity links.
-	links map[string][]kanbanclient.CardLink
+	links map[string][]issuesclient.CardLink
 
 	// linksFail makes ListCardLinks return 500, which is how a spend that cannot
 	// be read presents itself.
@@ -55,7 +55,7 @@ func (f *fakeKanban) heldCards() []string {
 	return append([]string(nil), f.held...)
 }
 
-func (f *fakeKanban) start(t *testing.T) *kanbanclient.Client {
+func (f *fakeKanban) start(t *testing.T) *issuesclient.Client {
 	t.Helper()
 	mux := http.NewServeMux()
 
@@ -66,11 +66,11 @@ func (f *fakeKanban) start(t *testing.T) *kanbanclient.Client {
 		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		view := kanbanclient.BoardView{
-			Board: kanbanclient.Board{ID: "board-1", Name: "Autoworker queue"},
-			Columns: []kanbanclient.ColumnView{
-				{Column: kanbanclient.Column{ID: "col-queued", Name: "Queued"}, Cards: f.queued},
-				{Column: kanbanclient.Column{ID: "col-wip", Name: "In Progress"}, Cards: f.inProgress},
+		view := issuesclient.BoardView{
+			Board: issuesclient.Board{ID: "board-1", Name: "Autoworker queue"},
+			Columns: []issuesclient.ColumnView{
+				{Column: issuesclient.Column{ID: "col-queued", Name: "Queued"}, Cards: f.queued},
+				{Column: issuesclient.Column{ID: "col-wip", Name: "In Progress"}, Cards: f.inProgress},
 			},
 		}
 		writeFakeJSON(w, view)
@@ -89,7 +89,7 @@ func (f *fakeKanban) start(t *testing.T) *kanbanclient.Client {
 			}
 			links := f.links[cardID]
 			if links == nil {
-				links = []kanbanclient.CardLink{}
+				links = []issuesclient.CardLink{}
 			}
 			writeFakeJSON(w, links)
 		case "hold":
@@ -103,7 +103,7 @@ func (f *fakeKanban) start(t *testing.T) *kanbanclient.Client {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	qc := kanbanclient.New(srv.URL, "")
+	qc := issuesclient.New(srv.URL, "")
 	qc.BoardID = "board-1"
 	qc.ColumnsByName = map[string]string{
 		"Queued":      "col-queued",
@@ -207,8 +207,8 @@ func writeFakeJSON(w http.ResponseWriter, v any) {
 
 // card builds a CardView. The item is a raw map because that is what the board
 // view actually hands us — an opaque noteboard item.
-func card(id string, item map[string]any) kanbanclient.CardView {
-	var cv kanbanclient.CardView
+func card(id string, item map[string]any) issuesclient.CardView {
+	var cv issuesclient.CardView
 	cv.Placement.CardID = id
 	cv.Placement.BoardID = "board-1"
 	cv.Placement.ColumnID = "col-queued"
@@ -234,7 +234,7 @@ func pointAtFakes(t *testing.T, bridgeURL, noteboardURL string) config {
 // card the user cannot see is a card they cannot press play on. So the queue path
 // has to apply the gate again, by hand, and this is the test that says so.
 func TestAHeldCardIsNeverDispatched(t *testing.T) {
-	f := &fakeKanban{queued: []kanbanclient.CardView{
+	f := &fakeKanban{queued: []issuesclient.CardView{
 		card("held-card", map[string]any{
 			"title":       "Something the user parked",
 			"held_at":     "2026-08-08T00:00:00Z",
@@ -256,7 +256,7 @@ func TestAHeldCardIsNeverDispatched(t *testing.T) {
 // The gate skips the held card and keeps looking. Stopping at the first held card
 // would let one parked card block the whole queue behind it.
 func TestAHeldCardIsSkippedAndTheNextOneIsTaken(t *testing.T) {
-	f := &fakeKanban{queued: []kanbanclient.CardView{
+	f := &fakeKanban{queued: []issuesclient.CardView{
 		card("held-card", map[string]any{"title": "parked", "held_at": "2026-08-08T00:00:00Z"}),
 		card("live-card", map[string]any{"title": "ready to go"}),
 	}}
@@ -279,7 +279,7 @@ func TestAHeldCardIsSkippedAndTheNextOneIsTaken(t *testing.T) {
 // An unheld card must still be dispatchable. Without this, a gate that rejected
 // everything would pass the two assertions above and dispatch nothing, forever.
 func TestAnUnheldCardIsDispatched(t *testing.T) {
-	f := &fakeKanban{queued: []kanbanclient.CardView{
+	f := &fakeKanban{queued: []issuesclient.CardView{
 		card("live-card", map[string]any{"title": "ready to go", "body": "do the thing"}),
 	}}
 	qc := f.start(t)
@@ -302,8 +302,8 @@ func TestAnUnheldCardIsDispatched(t *testing.T) {
 
 func TestSelectionReadsTheQueuedColumn(t *testing.T) {
 	f := &fakeKanban{
-		queued:     []kanbanclient.CardView{card("queued-card", map[string]any{"title": "waiting"})},
-		inProgress: []kanbanclient.CardView{card("wip-card", map[string]any{"title": "already running"})},
+		queued:     []issuesclient.CardView{card("queued-card", map[string]any{"title": "waiting"})},
+		inProgress: []issuesclient.CardView{card("wip-card", map[string]any{"title": "already running"})},
 	}
 	qc := f.start(t)
 	nb, _ := serveNoteboardItems(t, nil)
@@ -320,7 +320,7 @@ func TestSelectionReadsTheQueuedColumn(t *testing.T) {
 }
 
 func TestSelectionTakesTheHeadOfTheColumn(t *testing.T) {
-	f := &fakeKanban{queued: []kanbanclient.CardView{
+	f := &fakeKanban{queued: []issuesclient.CardView{
 		card("first", map[string]any{"title": "first"}),
 		card("second", map[string]any{"title": "second"}),
 	}}
@@ -335,7 +335,7 @@ func TestSelectionTakesTheHeadOfTheColumn(t *testing.T) {
 }
 
 func TestACardWithNoNoteboardItemIsSkipped(t *testing.T) {
-	f := &fakeKanban{queued: []kanbanclient.CardView{
+	f := &fakeKanban{queued: []issuesclient.CardView{
 		card("orphan", nil),
 		card("real", map[string]any{"title": "real work"}),
 	}}
@@ -350,7 +350,7 @@ func TestACardWithNoNoteboardItemIsSkipped(t *testing.T) {
 }
 
 func TestACardWithABlankTitleIsSkipped(t *testing.T) {
-	f := &fakeKanban{queued: []kanbanclient.CardView{
+	f := &fakeKanban{queued: []issuesclient.CardView{
 		card("blank", map[string]any{"title": "   "}),
 		card("real", map[string]any{"title": "real work"}),
 	}}
@@ -382,10 +382,10 @@ func TestAnEmptyQueueDispatchesNothing(t *testing.T) {
 // their ceiling stopped the work.
 func TestASpentOutCardIsHeldNotJustSkipped(t *testing.T) {
 	f := &fakeKanban{
-		queued: []kanbanclient.CardView{
+		queued: []issuesclient.CardView{
 			card("spent", map[string]any{"title": "expensive", "auto_hold_at_usd": 5.0}),
 		},
-		links: map[string][]kanbanclient.CardLink{
+		links: map[string][]issuesclient.CardLink{
 			"spent": {{CardID: "spent", EntityType: "session", EntityRef: "sess-1"}},
 		},
 	}
@@ -412,10 +412,10 @@ func TestASpentOutCardIsHeldNotJustSkipped(t *testing.T) {
 // the harness the full ceiling instead lets one task spend it twice.
 func TestTheDispatchedCapIsTheCeilingMinusWhatWasSpent(t *testing.T) {
 	f := &fakeKanban{
-		queued: []kanbanclient.CardView{
+		queued: []issuesclient.CardView{
 			card("task", map[string]any{"title": "work", "auto_hold_at_usd": 10.0}),
 		},
-		links: map[string][]kanbanclient.CardLink{
+		links: map[string][]issuesclient.CardLink{
 			"task": {{CardID: "task", EntityType: "session", EntityRef: "sess-1"}},
 		},
 	}
@@ -442,10 +442,10 @@ func TestTheDispatchedCapIsTheCeilingMinusWhatWasSpent(t *testing.T) {
 func TestSpendIsCountedOverTheCeilingOwnersWholeTree(t *testing.T) {
 	parentID := "parent"
 	f := &fakeKanban{
-		queued: []kanbanclient.CardView{
+		queued: []issuesclient.CardView{
 			card("child-b", map[string]any{"title": "second child"}),
 		},
-		links: map[string][]kanbanclient.CardLink{
+		links: map[string][]issuesclient.CardLink{
 			// The spend sits on the SIBLING, not on the card being dispatched.
 			"child-a": {{CardID: "child-a", EntityType: "session", EntityRef: "sess-a"}},
 		},
@@ -476,7 +476,7 @@ func TestSpendIsCountedOverTheCeilingOwnersWholeTree(t *testing.T) {
 // cap the user put on it, which is precisely the split this binary's own prompt
 // asks a worker to perform.
 func TestAChildInheritsItsAncestorsCeiling(t *testing.T) {
-	f := &fakeKanban{queued: []kanbanclient.CardView{
+	f := &fakeKanban{queued: []issuesclient.CardView{
 		card("child", map[string]any{"title": "split out of the parent"}),
 	}}
 	qc := f.start(t)
@@ -505,7 +505,7 @@ func TestAChildInheritsItsAncestorsCeiling(t *testing.T) {
 // held items. Noteboard hides them by default, and a parent missing from the tree
 // takes its ceiling with it.
 func TestTheItemFetchAsksForHeldAncestors(t *testing.T) {
-	f := &fakeKanban{queued: []kanbanclient.CardView{
+	f := &fakeKanban{queued: []issuesclient.CardView{
 		card("child", map[string]any{"title": "child of a parked parent"}),
 	}}
 	qc := f.start(t)
@@ -534,12 +534,12 @@ func TestTheItemFetchAsksForHeldAncestors(t *testing.T) {
 // EffectiveCeiling reads a missing ancestor as one that sets no ceiling. The
 // child then went out with no --max-budget-usd at all.
 func TestACeilingOwnerPastTheFirstPageStillCapsItsChild(t *testing.T) {
-	f := &fakeKanban{queued: []kanbanclient.CardView{
+	f := &fakeKanban{queued: []issuesclient.CardView{
 		card("child", map[string]any{"title": "child of an old parent"}),
 	}}
 	qc := f.start(t)
 	items := []map[string]any{{"id": "child", "parent_id": "old-parent"}}
-	for i := 0; i < noteboarditems.PageSize; i++ {
+	for i := 0; i < issueitemsclient.PageSize; i++ {
 		items = append(items, map[string]any{"id": fmt.Sprintf("newer-%d", i)})
 	}
 	items = append(items, map[string]any{"id": "old-parent", "auto_hold_at_usd": 7.0})
@@ -560,7 +560,7 @@ func TestACeilingOwnerPastTheFirstPageStillCapsItsChild(t *testing.T) {
 // bound. Asserting only that the read is complete would leave this unpinned: the
 // guard reports a truncated read, the autoworker has to refuse to act on one.
 func TestATruncatedItemReadDispatchesNothing(t *testing.T) {
-	f := &fakeKanban{queued: []kanbanclient.CardView{
+	f := &fakeKanban{queued: []issuesclient.CardView{
 		card("child", map[string]any{"title": "no ceiling of its own"}),
 	}}
 	qc := f.start(t)
@@ -602,7 +602,7 @@ func TestABridgeThatCannotReportSpendHoldsCappedWork(t *testing.T) {
 	}))
 	t.Cleanup(bridge.Close)
 
-	f := &fakeKanban{queued: []kanbanclient.CardView{
+	f := &fakeKanban{queued: []issuesclient.CardView{
 		card("capped", map[string]any{"title": "capped work", "auto_hold_at_usd": 5.0}),
 	}}
 	qc := f.start(t)
@@ -627,7 +627,7 @@ func TestAnUnreadableTreeHoldsCappedWorkAndPassesUncappedWorkThrough(t *testing.
 	broken := serveBroken(t)
 
 	t.Run("card with its own ceiling is held", func(t *testing.T) {
-		f := &fakeKanban{queued: []kanbanclient.CardView{
+		f := &fakeKanban{queued: []issuesclient.CardView{
 			card("capped", map[string]any{"title": "capped work", "auto_hold_at_usd": 5.0}),
 		}}
 		qc := f.start(t)
@@ -644,7 +644,7 @@ func TestAnUnreadableTreeHoldsCappedWorkAndPassesUncappedWorkThrough(t *testing.
 	})
 
 	t.Run("card with no ceiling is dispatched", func(t *testing.T) {
-		f := &fakeKanban{queued: []kanbanclient.CardView{
+		f := &fakeKanban{queued: []issuesclient.CardView{
 			card("uncapped", map[string]any{"title": "work that never had a ceiling"}),
 		}}
 		qc := f.start(t)
@@ -666,7 +666,7 @@ func TestAnUnreadableTreeHoldsCappedWorkAndPassesUncappedWorkThrough(t *testing.
 // against a ceiling nobody could measure.
 func TestACappedCardWhoseSpendIsUnreadableIsHeld(t *testing.T) {
 	f := &fakeKanban{
-		queued: []kanbanclient.CardView{
+		queued: []issuesclient.CardView{
 			card("capped", map[string]any{"title": "capped work", "auto_hold_at_usd": 5.0}),
 		},
 		linksFail: true,
@@ -698,10 +698,10 @@ func TestACappedCardWhoseSpendIsUnreadableIsHeld(t *testing.T) {
 // mutation walked straight through it.
 func TestOnlySessionLinksCountAsSpend(t *testing.T) {
 	f := &fakeKanban{
-		queued: []kanbanclient.CardView{
+		queued: []issuesclient.CardView{
 			card("task", map[string]any{"title": "work", "auto_hold_at_usd": 10.0}),
 		},
-		links: map[string][]kanbanclient.CardLink{
+		links: map[string][]issuesclient.CardLink{
 			"task": {
 				{CardID: "task", EntityType: "session", EntityRef: "sess-1"},
 				{CardID: "task", EntityType: "autoworker_provider", EntityRef: "not-a-session"},
@@ -731,7 +731,7 @@ func TestOnlySessionLinksCountAsSpend(t *testing.T) {
 // A card nothing has a ceiling for is dispatched with no cap of its own, leaving
 // the fleet default (resolveSessionBudget) as the only thing covering it.
 func TestACardWithNoCeilingAnywhereCarriesNoCapOfItsOwn(t *testing.T) {
-	f := &fakeKanban{queued: []kanbanclient.CardView{
+	f := &fakeKanban{queued: []issuesclient.CardView{
 		card("free", map[string]any{"title": "no ceiling anywhere"}),
 	}}
 	qc := f.start(t)

@@ -1,4 +1,4 @@
-package kanbanvocab
+package boardvocabulary
 
 import (
 	"strings"

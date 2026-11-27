@@ -1,4 +1,4 @@
-package kanbanclient
+package issuesclient
 
 import (
 	"encoding/json"
@@ -10,10 +10,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanvocab"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/boardvocabulary"
 )
 
-// This file pins what scripts/sabotage-kanbanclient.py found no other test in
+// This file pins what scripts/sabotage-issuesclient.py found no other test in
 // this package watching: board bootstrap (which board EnsureBoard binds, which
 // columns it creates, and the auto_status it gives Done and Failed), the two
 // CreateCard guards that run before any request, a create response carrying no
@@ -100,7 +100,7 @@ func (s *recordingStore) count() int {
 func (s *recordingStore) client() *Client {
 	c := New(s.server.URL, "")
 	c.BoardID = "board-1"
-	c.ColumnsByName = map[string]string{kanbanvocab.ColumnInProgress: "col-1"}
+	c.ColumnsByName = map[string]string{boardvocabulary.ColumnInProgress: "col-1"}
 	return c
 }
 
@@ -210,19 +210,19 @@ func TestEnsureBoardBindsTheBoardNamedAndFinishesItsColumnSet(t *testing.T) {
 		// The wanted board is listed second on purpose.
 		boards: []Board{
 			{ID: "board-other", Name: "Some Other Board"},
-			{ID: "board-wanted", Name: kanbanvocab.BoardAgentRuns},
+			{ID: "board-wanted", Name: boardvocabulary.BoardAgentRuns},
 		},
 		columns: map[string][]Column{
-			"board-other":  {{ID: "col-other", BoardID: "board-other", Name: kanbanvocab.ColumnQueued}},
-			"board-wanted": {{ID: "col-queued", BoardID: "board-wanted", Name: kanbanvocab.ColumnQueued}},
+			"board-other":  {{ID: "col-other", BoardID: "board-other", Name: boardvocabulary.ColumnQueued}},
+			"board-wanted": {{ID: "col-queued", BoardID: "board-wanted", Name: boardvocabulary.ColumnQueued}},
 		},
 	}
 	srv := httptest.NewServer(store.handler(t))
 	defer srv.Close()
 
 	c := New(srv.URL, "")
-	want := kanbanvocab.AgentRunsColumns()
-	if err := c.EnsureBoard(kanbanvocab.BoardAgentRuns, want); err != nil {
+	want := boardvocabulary.AgentRunsColumns()
+	if err := c.EnsureBoard(boardvocabulary.BoardAgentRuns, want); err != nil {
 		t.Fatalf("EnsureBoard: %v", err)
 	}
 
@@ -254,8 +254,8 @@ func TestEnsureBoardBindsTheBoardNamedAndFinishesItsColumnSet(t *testing.T) {
 	}
 
 	// The pre-existing column was reused rather than duplicated.
-	if _, created := store.columnCreatedAs(kanbanvocab.ColumnQueued); created {
-		t.Errorf("EnsureBoard created %q, which already existed — it must be idempotent", kanbanvocab.ColumnQueued)
+	if _, created := store.columnCreatedAs(boardvocabulary.ColumnQueued); created {
+		t.Errorf("EnsureBoard created %q, which already existed — it must be idempotent", boardvocabulary.ColumnQueued)
 	}
 	if got := len(store.createdColumns); got != len(want)-1 {
 		t.Errorf("created %d columns, want %d — one per column that was missing", got, len(want)-1)
@@ -279,22 +279,22 @@ func TestEnsureBoardBindsTheBoardNamedAndFinishesItsColumnSet(t *testing.T) {
 // kanban-store carry these strings, so renaming a constant must fail here.
 func TestEnsureBoardGivesDoneAndFailedTheAutoStatusesThatDecideWhatClosingACardDoes(t *testing.T) {
 	store := &fakeBoardStore{
-		boards:  []Board{{ID: "board-1", Name: kanbanvocab.BoardAgentRuns}},
+		boards:  []Board{{ID: "board-1", Name: boardvocabulary.BoardAgentRuns}},
 		columns: map[string][]Column{"board-1": nil},
 	}
 	srv := httptest.NewServer(store.handler(t))
 	defer srv.Close()
 
 	c := New(srv.URL, "")
-	if err := c.EnsureBoard(kanbanvocab.BoardAgentRuns, kanbanvocab.AgentRunsColumns()); err != nil {
+	if err := c.EnsureBoard(boardvocabulary.BoardAgentRuns, boardvocabulary.AgentRunsColumns()); err != nil {
 		t.Fatalf("EnsureBoard: %v", err)
 	}
 
 	wantAutoStatus := map[string]string{
-		kanbanvocab.ColumnDone:   "done",
-		kanbanvocab.ColumnFailed: "archived",
+		boardvocabulary.ColumnDone:   "done",
+		boardvocabulary.ColumnFailed: "archived",
 	}
-	for _, name := range kanbanvocab.AgentRunsColumns() {
+	for _, name := range boardvocabulary.AgentRunsColumns() {
 		payload, created := store.columnCreatedAs(name)
 		if !created {
 			t.Errorf("column %q was never created", name)
@@ -308,7 +308,7 @@ func TestEnsureBoardGivesDoneAndFailedTheAutoStatusesThatDecideWhatClosingACardD
 				name, got, want)
 		case !shouldHave && present:
 			t.Errorf("column %q was created with auto_status %v; only %q and %q may rewrite a noteboard item's status",
-				name, got, kanbanvocab.ColumnDone, kanbanvocab.ColumnFailed)
+				name, got, boardvocabulary.ColumnDone, boardvocabulary.ColumnFailed)
 		}
 	}
 }
@@ -325,15 +325,15 @@ func TestEnsureBoardCreatesAMissingBoardUnderTheNameItWasAskedFor(t *testing.T) 
 	defer srv.Close()
 
 	c := New(srv.URL, "")
-	if err := c.EnsureBoard(kanbanvocab.BoardAutoworkerQueue, []string{kanbanvocab.ColumnQueued}); err != nil {
+	if err := c.EnsureBoard(boardvocabulary.BoardAutoworkerQueue, []string{boardvocabulary.ColumnQueued}); err != nil {
 		t.Fatalf("EnsureBoard: %v", err)
 	}
 	if len(store.createdBoards) != 1 {
 		t.Fatalf("store was asked to create %d boards, want 1", len(store.createdBoards))
 	}
-	if got := store.createdBoards[0]["name"]; got != kanbanvocab.BoardAutoworkerQueue {
+	if got := store.createdBoards[0]["name"]; got != boardvocabulary.BoardAutoworkerQueue {
 		t.Errorf("created a board named %q, want %q — the next run looks it up by this name",
-			got, kanbanvocab.BoardAutoworkerQueue)
+			got, boardvocabulary.BoardAutoworkerQueue)
 	}
 }
 
@@ -351,7 +351,7 @@ func TestCreateCardRefusesAResponseThatNamesNoCard(t *testing.T) {
 	})
 
 	id, err := store.client().CreateCard(CreateCardArgs{
-		ColumnName: kanbanvocab.ColumnInProgress,
+		ColumnName: boardvocabulary.ColumnInProgress,
 		Title:      "a card the store did not name",
 		SessionID:  "sess-1",
 	})
@@ -377,7 +377,7 @@ func TestCreateCardFailsBeforeTheWireWhenTheBoardOrColumnIsUnresolved(t *testing
 			name: "EnsureBoard was never called",
 			setUp: func(c *Client) {
 				c.BoardID = ""
-				c.ColumnsByName = map[string]string{kanbanvocab.ColumnInProgress: "col-1"}
+				c.ColumnsByName = map[string]string{boardvocabulary.ColumnInProgress: "col-1"}
 			},
 		},
 		{
@@ -393,7 +393,7 @@ func TestCreateCardFailsBeforeTheWireWhenTheBoardOrColumnIsUnresolved(t *testing
 			tc.setUp(c)
 
 			if _, err := c.CreateCard(CreateCardArgs{
-				ColumnName: kanbanvocab.ColumnInProgress,
+				ColumnName: boardvocabulary.ColumnInProgress,
 				Title:      "a card with nowhere to go",
 			}); err == nil {
 				t.Error("CreateCard reported success")

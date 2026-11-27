@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
 // These tests pin what the curator DECIDES: which column a card goes to, which
@@ -183,7 +183,7 @@ func TestABoardThatNoLongerExistsIsRefusedNotReplaced(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	board, err := getPinnedBoard(kanbanclient.New(srv.URL, ""), "board-gone")
+	board, err := getPinnedBoard(issuesclient.New(srv.URL, ""), "board-gone")
 	if err == nil {
 		t.Fatalf("getPinnedBoard returned board %+v for an id kanban-store does not have", board)
 	}

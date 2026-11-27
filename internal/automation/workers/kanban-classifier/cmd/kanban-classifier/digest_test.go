@@ -5,11 +5,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
-func card(id, title, body string) kanbanclient.EntityCardEntry {
-	return kanbanclient.EntityCardEntry{
+func card(id, title, body string) issuesclient.EntityCardEntry {
+	return issuesclient.EntityCardEntry{
 		CardID: id,
 		Item: map[string]any{
 			"title":  title,
@@ -36,7 +36,7 @@ func longSession(prompts, promptLen int) []bridgeMessage {
 // the digest, so the model was asked not to duplicate cards it could not see.
 func TestBuildDigest_KeepsExistingCardsOnLongSession(t *testing.T) {
 	msgs := longSession(40, 1400)
-	cards := []kanbanclient.EntityCardEntry{
+	cards := []issuesclient.EntityCardEntry{
 		card("card-1", "Build orchestrator task summary split view", strings.Repeat("b", 900)),
 		card("card-2", "Fix orchestrator chat opening from sidebar", strings.Repeat("b", 900)),
 		card("card-3", "Design context injection strategy", strings.Repeat("b", 900)),
@@ -82,7 +82,7 @@ func TestBuildDigest_ShortSessionIsWhole(t *testing.T) {
 		{Role: "user", Content: "fix the login redirect"},
 		{Role: "assistant", Content: "done, pushed as abc123"},
 	}
-	digest := buildDigest(session{SessionID: "br_1"}, msgs, []kanbanclient.EntityCardEntry{card("card-1", "Fix login redirect", "in progress")}, digestCharBudget)
+	digest := buildDigest(session{SessionID: "br_1"}, msgs, []issuesclient.EntityCardEntry{card("card-1", "Fix login redirect", "in progress")}, digestCharBudget)
 
 	for _, want := range []string{"fix the login redirect", "done, pushed as abc123", "card-1", "Fix login redirect"} {
 		if !strings.Contains(digest, want) {
@@ -97,7 +97,7 @@ func TestBuildDigest_ShortSessionIsWhole(t *testing.T) {
 // Card identity survives even when the cards alone would blow the reserve:
 // bodies are shed first, titles last.
 func TestBuildExistingCardsSection_ShedsBodiesBeforeCards(t *testing.T) {
-	cards := []kanbanclient.EntityCardEntry{}
+	cards := []issuesclient.EntityCardEntry{}
 	for i := 0; i < 20; i++ {
 		cards = append(cards, card(fmt.Sprintf("card-%d", i), fmt.Sprintf("Task number %d", i), strings.Repeat("b", 400)))
 	}
@@ -217,7 +217,7 @@ func TestNormalizeTitle(t *testing.T) {
 func TestBuildDigest_PutsExistingCardsAheadOfTheConversation(t *testing.T) {
 	msgs := append(longSession(40, 1400), toolCall("Bash"))
 	digest := buildDigest(session{SessionID: "br_1"}, msgs,
-		[]kanbanclient.EntityCardEntry{card("card-1", "Existing work", "b")}, digestCharBudget)
+		[]issuesclient.EntityCardEntry{card("card-1", "Existing work", "b")}, digestCharBudget)
 
 	cardsAt := strings.Index(digest, "[EXISTING CARDS")
 	if cardsAt < 0 {

@@ -1,4 +1,4 @@
-package kanbanclient
+package issuesclient
 
 import (
 	"net/http"

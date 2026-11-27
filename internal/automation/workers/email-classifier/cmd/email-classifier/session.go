@@ -31,13 +31,13 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/boundedtext"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/boardvocabulary"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgesession"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanvocab"
 )
 
 // linkTypeSession is the entity_type that autoworker, kanban-dispatcher and the
 // dash dispatch button all write when they hand a card to an agent.
-const linkTypeSession = kanbanvocab.LinkTypeSession
+const linkTypeSession = boardvocabulary.LinkTypeSession
 
 // terminalSessionStates are the states that mean the agent is done and the card
 // is the classifier's again. Taken from kanban-curator, which already owns this

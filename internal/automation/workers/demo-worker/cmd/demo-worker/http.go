@@ -63,7 +63,7 @@ func addNote(kanbanURL, cardID, boardID, actor, body string) error {
 // linkAs creates a card link and says who created it.
 //
 // kanban-store reads the actor from the query string (body actor wins, else
-// ?actor=), and kanbanclient's AddCardLink has nowhere to put one — so the
+// ?actor=), and issuesclient's AddCardLink has nowhere to put one — so the
 // events its links generate have always been anonymous. This is the same call
 // with attribution attached.
 func linkAs(kanbanURL, cardID, entityType, entityRef, label, actor string) error {

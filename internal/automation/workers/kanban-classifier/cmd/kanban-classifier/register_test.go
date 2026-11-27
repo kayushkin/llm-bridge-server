@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
 // Ported 2026-09-25 from 348e0589 (test/classifier-register-hole). When it was
@@ -232,7 +232,7 @@ func TestAJobListThatIsNotAnArrayRefusesRatherThanRegisteringASecondTick(t *test
 // in, so a board missing one is a board where some classification has nowhere
 // to go — and the failure has to be at startup rather than per card.
 func TestABoardMissingALifecycleColumnIsNamedRatherThanDiscoveredPerCard(t *testing.T) {
-	kc := kanbanclient.New("http://unused", "")
+	kc := issuesclient.New("http://unused", "")
 	kc.BoardID = "board-1"
 	kc.ColumnsByName = map[string]string{
 		"In Progress": "col-1",
@@ -263,7 +263,7 @@ func TestABoardMissingALifecycleColumnIsNamedRatherThanDiscoveredPerCard(t *test
 // half-built board has, and it is not the same as an absent key — Go answers
 // "" to both, which is exactly why this is worth pinning rather than assuming.
 func TestAColumnWithNoIDIsAsMissingAsAnAbsentOne(t *testing.T) {
-	kc := kanbanclient.New("http://unused", "")
+	kc := issuesclient.New("http://unused", "")
 	kc.BoardID = "board-1"
 	kc.ColumnsByName = map[string]string{"In Progress": ""}
 

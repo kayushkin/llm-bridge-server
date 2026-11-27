@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/noteboarditems"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issueitemsclient"
 )
 
 // fleet stands up the three services one tick talks to — noteboard for the
@@ -248,7 +248,7 @@ func shortfallReport(out string) string {
 // never checked, so a short read can only price a ceiling too LOW.
 //
 // The bound is now loud rather than absent. This fixture never runs out of
-// items, so the read can only stop at noteboarditems.MaxPages.
+// items, so the read can only stop at issueitemsclient.MaxPages.
 func TestATruncatedItemReadDegradesTheRun(t *testing.T) {
 	f := &fleet{alwaysFullPages: true}
 	out := captureLog(t, func() {
@@ -259,9 +259,9 @@ func TestATruncatedItemReadDegradesTheRun(t *testing.T) {
 	if report := shortfallReport(out); !strings.Contains(report, "incomplete") {
 		t.Errorf("the shortfall report does not say the tree is incomplete: %q", report)
 	}
-	if len(f.itemRequests) != noteboarditems.MaxPages {
+	if len(f.itemRequests) != issueitemsclient.MaxPages {
 		t.Errorf("the read stopped after %d pages, want %d — the bound is not where the constant says it is",
-			len(f.itemRequests), noteboarditems.MaxPages)
+			len(f.itemRequests), issueitemsclient.MaxPages)
 	}
 }
 
@@ -271,7 +271,7 @@ func TestATruncatedItemReadDegradesTheRun(t *testing.T) {
 // nothing in the middle is dropped.
 func TestTheWholeItemListIsRead(t *testing.T) {
 	var items []noteboardItem
-	for i := 0; i < noteboarditems.PageSize*2+7; i++ {
+	for i := 0; i < issueitemsclient.PageSize*2+7; i++ {
 		items = append(items, noteboardItem{ID: fmt.Sprintf("item-%d", i)})
 	}
 	// The very last item on the very last page owns a ceiling it has breached.
@@ -290,7 +290,7 @@ func TestTheWholeItemListIsRead(t *testing.T) {
 	}
 	if len(f.itemRequests) != 3 {
 		t.Errorf("the guard made %d page requests for %d items at %d per page, want 3",
-			len(f.itemRequests), len(items), noteboarditems.PageSize)
+			len(f.itemRequests), len(items), issueitemsclient.PageSize)
 	}
 	if len(f.holdCalls) != 1 || f.holdCalls[0] != "last-row" {
 		t.Fatalf("the breached ceiling on the last page was not held: holds=%v", f.holdCalls)
@@ -302,20 +302,20 @@ func TestTheWholeItemListIsRead(t *testing.T) {
 // id back on both. Counting it twice would put a phantom parent edge in the tree.
 func TestAnItemHandedBackTwiceIsCountedOnce(t *testing.T) {
 	var items []noteboardItem
-	for i := 0; i < noteboarditems.PageSize; i++ {
+	for i := 0; i < issueitemsclient.PageSize; i++ {
 		items = append(items, noteboardItem{ID: fmt.Sprintf("item-%d", i)})
 	}
 	// The overlap: page two opens with a row page one already handed back.
-	items = append(items, items[noteboarditems.PageSize-1], noteboardItem{ID: "tail"})
+	items = append(items, items[issueitemsclient.PageSize-1], noteboardItem{ID: "tail"})
 
 	f := &fleet{items: items}
-	got, truncated, err := noteboarditems.FetchEveryItemIncludingHeld(f.start(t).noteboardURL)
+	got, truncated, err := issueitemsclient.FetchEveryItemIncludingHeld(f.start(t).noteboardURL)
 	if err != nil || truncated {
-		t.Fatalf("noteboarditems.FetchEveryItemIncludingHeld(err=%v, truncated=%v)", err, truncated)
+		t.Fatalf("issueitemsclient.FetchEveryItemIncludingHeld(err=%v, truncated=%v)", err, truncated)
 	}
-	if len(got) != noteboarditems.PageSize+1 {
+	if len(got) != issueitemsclient.PageSize+1 {
 		t.Errorf("read %d items from a list of %d rows holding %d distinct ids",
-			len(got), len(items), noteboarditems.PageSize+1)
+			len(got), len(items), issueitemsclient.PageSize+1)
 	}
 }
 

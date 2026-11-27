@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/degradations"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -54,7 +54,7 @@ func bridgeConfig(bridgeURL string) config {
 		BridgeURL:       bridgeURL,
 		FilingModelRole: "default",
 		RunID:           "email-classifier:test:1",
-		Classifier:      kanbanclient.ClassifierConfig{OrganizationID: "principal_000023"},
+		Classifier:      issuesclient.ClassifierConfig{OrganizationID: "principal_000023"},
 	}
 }
 

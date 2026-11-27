@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
 // ============================ card merge pass ============================
@@ -128,7 +128,7 @@ func buildMergeDigest(state *boardState, gate *sessionGate) string {
 	return b.String()
 }
 
-func runMergePass(ctx context.Context, cfg config, kc *kanbanclient.Client, state *boardState, gate *sessionGate) error {
+func runMergePass(ctx context.Context, cfg config, kc *issuesclient.Client, state *boardState, gate *sessionGate) error {
 	digest := buildMergeDigest(state, gate)
 	if cfg.DumpDigest {
 		fmt.Println(digest)
@@ -171,7 +171,7 @@ func runMergePass(ctx context.Context, cfg config, kc *kanbanclient.Client, stat
 
 // applyMerge validates one group and performs it. Returns false when the group
 // was refused, which is not an error — refusing is the safe outcome.
-func applyMerge(cfg config, kc *kanbanclient.Client, state *boardState, g mergeGroup, gate *sessionGate) (bool, error) {
+func applyMerge(cfg config, kc *issuesclient.Client, state *boardState, g mergeGroup, gate *sessionGate) (bool, error) {
 	members := make([]*cardState, 0, len(g.CardIDs))
 	seen := map[string]bool{}
 	for _, id := range g.CardIDs {
@@ -252,7 +252,7 @@ func applyMerge(cfg config, kc *kanbanclient.Client, state *boardState, g mergeG
 }
 
 // resolveSurvivor picks or creates the card the group folds into.
-func resolveSurvivor(cfg config, kc *kanbanclient.Client, state *boardState, g mergeGroup, members []*cardState, gate *sessionGate) (*cardState, []*cardState, error) {
+func resolveSurvivor(cfg config, kc *issuesclient.Client, state *boardState, g mergeGroup, members []*cardState, gate *sessionGate) (*cardState, []*cardState, error) {
 	if g.SurvivorCardID != "" {
 		survivor, ok := state.Cards[g.SurvivorCardID]
 		if !ok {
@@ -301,13 +301,13 @@ func resolveSurvivor(cfg config, kc *kanbanclient.Client, state *boardState, g m
 // that is no longer on the board, and the next filing tick — which reads the
 // board to learn what is already filed — would see that email as unfiled and
 // file it a second time.
-func moveLinks(cfg config, kc *kanbanclient.Client, loser, survivor *cardState) ([]kanbanclient.CardLink, error) {
+func moveLinks(cfg config, kc *issuesclient.Client, loser, survivor *cardState) ([]issuesclient.CardLink, error) {
 	existing := map[string]bool{}
 	for _, l := range survivor.AllLinks {
 		existing[l.EntityType+"\x00"+l.EntityRef] = true
 	}
 
-	var moved []kanbanclient.CardLink
+	var moved []issuesclient.CardLink
 	for _, l := range loser.AllLinks {
 		key := l.EntityType + "\x00" + l.EntityRef
 		if cfg.DryRun {
@@ -347,7 +347,7 @@ func moveLinks(cfg config, kc *kanbanclient.Client, loser, survivor *cardState) 
 // a board snapshot from before the pass ran, or reconstructing the split by
 // hand from the mail itself. Writing the links down costs a few lines in a body
 // nobody reads until the day they need it.
-func retireCard(cfg config, kc *kanbanclient.Client, loser, survivor *cardState, moved []kanbanclient.CardLink) error {
+func retireCard(cfg config, kc *issuesclient.Client, loser, survivor *cardState, moved []issuesclient.CardLink) error {
 	note := fmt.Sprintf("%s\n\n%s\n\nMerged into %q (card %s) by email-classifier -merge. "+
 		"Its linked emails were moved to that card; this one is kept for history.%s",
 		strings.TrimSpace(stripEvidence(loser.Body)), evidenceMarker, survivor.Title, survivor.ID,
@@ -365,13 +365,13 @@ func retireCard(cfg config, kc *kanbanclient.Client, loser, survivor *cardState,
 // renderMovedLinks writes the links this merge relocated, in the form an undo
 // needs: the type and the ref, which together are enough to re-attach each one,
 // plus the label so a human reading the card knows what it was.
-func renderMovedLinks(moved []kanbanclient.CardLink) string {
+func renderMovedLinks(moved []issuesclient.CardLink) string {
 	if len(moved) == 0 {
 		return ""
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "\n\n## Links moved to that card (%d)\n\n", len(moved))
-	sorted := make([]kanbanclient.CardLink, len(moved))
+	sorted := make([]issuesclient.CardLink, len(moved))
 	copy(sorted, moved)
 	sort.SliceStable(sorted, func(i, j int) bool {
 		if sorted[i].EntityType != sorted[j].EntityType {

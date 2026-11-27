@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
 // ============================ the -sender / -message pass ============================
@@ -26,7 +26,7 @@ import (
 // rather than sitting there for two minutes.
 const senderMessageScanCap = 120
 
-func runEntityPass(cfg config, kc *kanbanclient.Client, state *boardState) error {
+func runEntityPass(cfg config, kc *issuesclient.Client, state *boardState) error {
 	nb := newNoteboardClient(cfg.NoteboardURL)
 	notes, err := loadRoutingNotes(nb)
 	if err != nil {
@@ -111,7 +111,7 @@ func deleteNoteFor(nb *noteboardClient, notes *routingNotes, entityRef string, d
 }
 
 // reportEntity prints what is known about one address or message.
-func reportEntity(cfg config, kc *kanbanclient.Client, state *boardState, notes *routingNotes, entityRef string) error {
+func reportEntity(cfg config, kc *issuesclient.Client, state *boardState, notes *routingNotes, entityRef string) error {
 	etype, eref, _ := strings.Cut(entityRef, ":")
 	fmt.Printf("%s %s\n\n", strings.ToUpper(strings.ReplaceAll(etype, "_", " ")), eref)
 

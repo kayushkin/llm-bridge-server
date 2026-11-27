@@ -5,15 +5,15 @@ import (
 	"testing"
 
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/degradations"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
 // Ported from 0530193e (test/first-tests-for-kanban-classifier). applyNew's title
 // dedupe is what stops a session re-filing work it has already filed — the
 // defect that once minted six cards for one task in ninety minutes.
 
-func linkedCard(id, title string) kanbanclient.EntityCardEntry {
-	return kanbanclient.EntityCardEntry{
+func linkedCard(id, title string) issuesclient.EntityCardEntry {
+	return issuesclient.EntityCardEntry{
 		CardID: id,
 		Item:   map[string]any{"title": title, "status": "open", "body": "b"},
 	}
@@ -25,7 +25,7 @@ func TestANewTaskWhoseTitleIsAlreadyOnTheBoardIsNotFiledAgain(t *testing.T) {
 	kc, rec := newStubKanban(t)
 
 	applyNew(kc, testSession(),
-		[]kanbanclient.EntityCardEntry{linkedCard("card-1", "Build the split view")},
+		[]issuesclient.EntityCardEntry{linkedCard("card-1", "Build the split view")},
 		&Report{NewTasks: []NewRec{
 			{Title: "build the split view!", State: "in_progress", Summary: "ALREADY-FILED"},
 			{Title: "Something genuinely new", State: "in_progress", Summary: "GENUINELY-NEW"},

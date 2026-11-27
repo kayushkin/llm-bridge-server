@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
 // ============================ refile pass ============================
@@ -41,7 +41,7 @@ import (
 // being read.
 type refileCandidate struct {
 	Card *cardState
-	Link kanbanclient.CardLink
+	Link issuesclient.CardLink
 	// Subject and Sender come from the fetch this pass had to do anyway, and
 	// exist so the log names the mail rather than an opaque locator.
 	Subject string
@@ -123,7 +123,7 @@ func splitLocator(locator string) (accountID, messageID string, ok bool) {
 	return accountID, messageID, true
 }
 
-func runRefileUnreadPass(cfg config, kc *kanbanclient.Client, state *boardState, gate *sessionGate, since time.Time) error {
+func runRefileUnreadPass(cfg config, kc *issuesclient.Client, state *boardState, gate *sessionGate, since time.Time) error {
 	mc := newMailClient(cfg.MailURL, cfg.MailToken)
 
 	log.Printf("[refile] looking for mail filed without being read since %s", since.Format("2006-01-02"))
@@ -198,7 +198,7 @@ func reportEmptiedCards(state *boardState, byCard map[string]int) {
 	}
 }
 
-func removeLinkByID(links []kanbanclient.CardLink, id string) []kanbanclient.CardLink {
+func removeLinkByID(links []issuesclient.CardLink, id string) []issuesclient.CardLink {
 	out := links[:0]
 	for _, l := range links {
 		if l.ID != id {

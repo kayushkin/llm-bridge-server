@@ -1,4 +1,4 @@
-// Package kanbanvocab holds the strings the kanban binaries exchange through
+// Package boardvocabulary holds the strings the kanban binaries exchange through
 // kanban-store: entity types, card-link types, column names, and the tags that
 // make up the task-completion-loop protocol.
 //
@@ -12,7 +12,7 @@
 // # Column names are shared, column SETS are not
 //
 // A column name is only ever used to look up a column id on one specific
-// board (kanbanclient.Client.ColumnsByName). The name is therefore safe to
+// board (issuesclient.Client.ColumnsByName). The name is therefore safe to
 // share across boards; the set of columns a board has is not. There are four
 // live boards and they do not agree:
 //
@@ -28,7 +28,7 @@
 // kanban-curator genuinely runs against three of these boards from one binary
 // and needs the same three names on each; the per-board blocks are kept apart
 // on purpose.
-package kanbanvocab
+package boardvocabulary
 
 // Entity types. kanban-store stamps both entity tags and card links with an
 // entity_type naming what kind of thing the ref points at, and the two tables

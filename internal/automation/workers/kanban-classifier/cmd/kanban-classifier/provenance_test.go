@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/degradations"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
 // stubKanban stands in for kanban-store and records what the classifier wrote.
@@ -21,7 +21,7 @@ type stubKanban struct {
 	links         []string          // "entity_type=entity_ref" per AddCardLink
 }
 
-func newStubKanban(t *testing.T) (*kanbanclient.Client, *stubKanban) {
+func newStubKanban(t *testing.T) (*issuesclient.Client, *stubKanban) {
 	t.Helper()
 	rec := &stubKanban{patchedBodies: map[string]string{}}
 
@@ -63,7 +63,7 @@ func newStubKanban(t *testing.T) (*kanbanclient.Client, *stubKanban) {
 	}))
 	t.Cleanup(srv.Close)
 
-	kc := kanbanclient.New(srv.URL, "")
+	kc := issuesclient.New(srv.URL, "")
 	kc.BoardID = "board-1"
 	kc.ColumnsByName = map[string]string{
 		"Backlog": "col-backlog", "In Progress": "col-inprogress",

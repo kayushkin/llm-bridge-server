@@ -37,11 +37,11 @@ import (
 	"time"
 
 	schedulerconfig "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/config"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/boardvocabulary"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgeauth"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgesession"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/degradations"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanvocab"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/schedulerjobs"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )
@@ -53,12 +53,12 @@ const (
 	// job for that board keeps its original name ("kanban-curator-tick") and
 	// updates in place rather than registering a second job beside it. It is
 	// never used to find a board — boards are found by id.
-	agentRunsBoardName = kanbanvocab.BoardAgentRuns
-	columnInProgress   = kanbanvocab.ColumnInProgress
-	columnDone         = kanbanvocab.ColumnDone
-	columnFailed       = kanbanvocab.ColumnFailed
+	agentRunsBoardName = boardvocabulary.BoardAgentRuns
+	columnInProgress   = boardvocabulary.ColumnInProgress
+	columnDone         = boardvocabulary.ColumnDone
+	columnFailed       = boardvocabulary.ColumnFailed
 	tagAutoworker      = "autoworker"
-	linkTypeSession    = kanbanvocab.LinkTypeSession
+	linkTypeSession    = boardvocabulary.LinkTypeSession
 
 	// purposeAutoworker is the value llm-bridge-server stores in a session's
 	// "purpose" field for a session autoworker created. Cards whose session
@@ -76,7 +76,7 @@ const (
 	// 2026-04-23 and 2026-06-03, so the id convention changed under the gate
 	// once already and nothing here could see it happen.
 	purposeAutoworker = "autoworker"
-	entityTypeSession = kanbanvocab.EntityTypeSession
+	entityTypeSession = boardvocabulary.EntityTypeSession
 	tagReviewSettled  = "review-settled"
 
 	// reviewGrace is how long a completed autoworker session may sit unsettled
@@ -136,7 +136,7 @@ func main() {
 	}
 
 	if *registerFlag {
-		board, err := getPinnedBoard(kanbanclient.New(cfg.kanbanURL, cfg.kanbanServiceToken), cfg.boardID)
+		board, err := getPinnedBoard(issuesclient.New(cfg.kanbanURL, cfg.kanbanServiceToken), cfg.boardID)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -153,9 +153,9 @@ func main() {
 // error rather than something to create: kanban-store resolves boards by name
 // with no unique constraint, so a replacement is exactly the fork pinning the id
 // prevents.
-func getPinnedBoard(kc *kanbanclient.Client, boardID string) (*kanbanclient.Board, error) {
+func getPinnedBoard(kc *issuesclient.Client, boardID string) (*issuesclient.Board, error) {
 	board, err := kc.GetBoard(boardID)
-	if errors.Is(err, kanbanclient.ErrBoardNotFound) {
+	if errors.Is(err, issuesclient.ErrBoardNotFound) {
 		return nil, fmt.Errorf("board %s does not exist — refusing to create a replacement, since a second board is exactly the fork pinning the id prevents", boardID)
 	}
 	if err != nil {
@@ -190,7 +190,7 @@ func getPinnedBoard(kc *kanbanclient.Client, boardID string) (*kanbanclient.Boar
 func run(cfg config) int {
 	degraded := degradations.New("curator")
 
-	kc := kanbanclient.New(cfg.kanbanURL, cfg.kanbanServiceToken)
+	kc := issuesclient.New(cfg.kanbanURL, cfg.kanbanServiceToken)
 	board, err := getPinnedBoard(kc, cfg.boardID)
 	if err != nil {
 		log.Fatal(err)
@@ -211,7 +211,7 @@ func run(cfg config) int {
 		log.Fatalf("board %q missing required columns (Done=%v Failed=%v)", board.Name, ok1, ok2)
 	}
 
-	var inProgress []kanbanclient.CardView
+	var inProgress []issuesclient.CardView
 	for _, cv := range view.Columns {
 		if cv.Column.Name != columnInProgress {
 			continue
@@ -462,7 +462,7 @@ func stateLabel(state string, notFound bool) string {
 // hiccup, then decides — but the caller needs the error to say that this tick
 // deferred without ever asking. Folding the two into one bool is what made that
 // invisible.
-func reviewSettled(kc *kanbanclient.Client, sessionID string) (settled bool, err error) {
+func reviewSettled(kc *issuesclient.Client, sessionID string) (settled bool, err error) {
 	tags, err := kc.ListEntityTags(entityTypeSession, sessionID)
 	if err != nil {
 		log.Printf("[curator] list entity tags for %s: %v — treating as unsettled", sessionID, err)
@@ -504,7 +504,7 @@ func staleCompleted(updatedAt string) bool {
 //
 // The registered command always carries -board-id: the scheduler runs jobs as
 // `sh -c` with its own thin environment, so nothing else would deliver it.
-func registerSchedulerJob(schedURL string, board *kanbanclient.Board, jobName string) error {
+func registerSchedulerJob(schedURL string, board *issuesclient.Board, jobName string) error {
 	home, _ := os.UserHomeDir()
 	bin := filepath.Join(home, "bin", "kanban-curator")
 

@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/bus/messages"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
 // These tests drive whole ticks through run. Each failure the tick cannot do
@@ -18,15 +18,15 @@ import (
 
 // scopedBoard is a board with one scoped goal, "parent", and the given cards
 // placed in the given columns. Every card is a child of the goal.
-func scopedBoard(t *testing.T, columns map[string][]kanbanclient.CardView) *fakeKanban {
-	board := kanbanclient.Board{ID: testBoardID, Name: "Task completion loop"}
-	view := kanbanclient.BoardView{Board: board}
+func scopedBoard(t *testing.T, columns map[string][]issuesclient.CardView) *fakeKanban {
+	board := issuesclient.Board{ID: testBoardID, Name: "Task completion loop"}
+	view := issuesclient.BoardView{Board: board}
 	var children []string
-	placements := map[string][]kanbanclient.CardPlacement{}
+	placements := map[string][]issuesclient.CardPlacement{}
 	for _, name := range []string{columnGoals, columnBacklog, columnInProgress, columnDone, columnFailed} {
 		cards := columns[name]
 		if name == columnGoals {
-			cards = append([]kanbanclient.CardView{testCard("parent")}, cards...)
+			cards = append([]issuesclient.CardView{testCard("parent")}, cards...)
 		}
 		col := column(name, cards...)
 		view.Columns = append(view.Columns, col)
@@ -35,7 +35,7 @@ func scopedBoard(t *testing.T, columns map[string][]kanbanclient.CardView) *fake
 				continue
 			}
 			children = append(children, card.Placement.CardID)
-			placements[card.Placement.CardID] = []kanbanclient.CardPlacement{{CardID: card.Placement.CardID, BoardID: testBoardID, ColumnID: col.Column.ID}}
+			placements[card.Placement.CardID] = []issuesclient.CardPlacement{{CardID: card.Placement.CardID, BoardID: testBoardID, ColumnID: col.Column.ID}}
 		}
 	}
 	return &fakeKanban{
@@ -44,7 +44,7 @@ func scopedBoard(t *testing.T, columns map[string][]kanbanclient.CardView) *fake
 		view:       view,
 		scoped:     map[string]bool{"parent": true},
 		children:   map[string][]string{"parent": children},
-		effective:  map[string]kanbanclient.EffectiveDefaults{},
+		effective:  map[string]issuesclient.EffectiveDefaults{},
 		placements: placements,
 		status:     map[string]string{},
 		failures:   map[string]int{},
@@ -101,7 +101,7 @@ func TestAGoalWhoseScopedTagCannotBeReadFailsTheRun(t *testing.T) {
 }
 
 func TestAGoalWhoseChildrenCannotBeListedFailsTheRun(t *testing.T) {
-	kanban := scopedBoard(t, map[string][]kanbanclient.CardView{columnBacklog: {testCard("card-next", "group:a")}})
+	kanban := scopedBoard(t, map[string][]issuesclient.CardView{columnBacklog: {testCard("card-next", "group:a")}})
 	kanban.failures["children"] = http.StatusServiceUnavailable
 	err, published := tick(t, kanban, nil)
 	wantShortfall(t, err, "whole Backlog was invisible", "closure pass", "not rolled up")
@@ -114,13 +114,13 @@ func TestAGoalWhoseChildrenCannotBeListedFailsTheRun(t *testing.T) {
 // session — the run fails because that session may not have been needed.
 func TestASiblingThatCannotBeReadForReuseFailsTheRun(t *testing.T) {
 	board := func() *fakeKanban {
-		kanban := scopedBoard(t, map[string][]kanbanclient.CardView{
+		kanban := scopedBoard(t, map[string][]issuesclient.CardView{
 			columnBacklog: {testCard("card-next", "group:a", "cat:product")},
 			columnDone:    {testCard("card-finished", "group:a", "cat:product")},
 		})
 		kanban.effective["card-next"] = productCardDefaults()
 		kanban.status["card-finished"] = "done"
-		kanban.links = map[string][]kanbanclient.CardLink{
+		kanban.links = map[string][]issuesclient.CardLink{
 			"card-finished": {{CardID: "card-finished", EntityType: linkTypeSession, EntityRef: "sess-sibling"}},
 		}
 		return kanban
@@ -166,7 +166,7 @@ func TestASiblingThatCannotBeReadForReuseFailsTheRun(t *testing.T) {
 }
 
 func TestARefusedPublishFailsTheRun(t *testing.T) {
-	kanban := scopedBoard(t, map[string][]kanbanclient.CardView{columnBacklog: {testCard("card-next", "group:a", "cat:product")}})
+	kanban := scopedBoard(t, map[string][]issuesclient.CardView{columnBacklog: {testCard("card-next", "group:a", "cat:product")}})
 	kanban.effective["card-next"] = productCardDefaults()
 	kanbanServer := httptest.NewServer(kanban)
 	defer kanbanServer.Close()
@@ -185,7 +185,7 @@ func TestARefusedPublishFailsTheRun(t *testing.T) {
 func TestTheClosurePass(t *testing.T) {
 	// card-finished is done but still sits in In Progress; card-busy is open.
 	board := func() *fakeKanban {
-		kanban := scopedBoard(t, map[string][]kanbanclient.CardView{
+		kanban := scopedBoard(t, map[string][]issuesclient.CardView{
 			columnInProgress: {testCard("card-finished", "group:a"), testCard("card-busy", "group:b")},
 		})
 		kanban.status["card-finished"] = "done"
@@ -212,7 +212,7 @@ func TestTheClosurePass(t *testing.T) {
 	})
 	t.Run("not on this board", func(t *testing.T) {
 		kanban := board()
-		kanban.placements["card-finished"] = []kanbanclient.CardPlacement{{CardID: "card-finished", BoardID: "board-elsewhere", ColumnID: "col-x"}}
+		kanban.placements["card-finished"] = []issuesclient.CardPlacement{{CardID: "card-finished", BoardID: "board-elsewhere", ColumnID: "col-x"}}
 		if err, _ := tick(t, kanban, nil); err != nil {
 			t.Errorf("a child placed on another board has nothing here to correct, got %v", err)
 		}
@@ -230,7 +230,7 @@ func TestTheClosurePass(t *testing.T) {
 
 func TestTheRollup(t *testing.T) {
 	board := func() *fakeKanban {
-		kanban := scopedBoard(t, map[string][]kanbanclient.CardView{columnDone: {testCard("card-a")}, columnFailed: {testCard("card-b")}})
+		kanban := scopedBoard(t, map[string][]issuesclient.CardView{columnDone: {testCard("card-a")}, columnFailed: {testCard("card-b")}})
 		kanban.status["card-a"] = "done"
 		kanban.status["card-b"] = "archived"
 		return kanban
@@ -277,11 +277,11 @@ func TestTheRollup(t *testing.T) {
 func TestThePlacementReadCarriesTheServiceToken(t *testing.T) {
 	var authorization string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		authorization = r.Header.Get(kanbanclient.ServiceTokenHeader)
+		authorization = r.Header.Get(issuesclient.ServiceTokenHeader)
 		w.Write([]byte(`[{"card_id":"c1","board_id":"` + testBoardID + `","column_id":"col-done"}]`))
 	}))
 	defer server.Close()
-	column, err := currentPlacement(kanbanclient.New(server.URL, "secret-token"), "c1", testBoardID)
+	column, err := currentPlacement(issuesclient.New(server.URL, "secret-token"), "c1", testBoardID)
 	if err != nil || column != "col-done" {
 		t.Fatalf("currentPlacement = %q, %v; want col-done", column, err)
 	}
@@ -302,13 +302,13 @@ func TestABusyOrStaleSiblingSessionIsNotAShortfall(t *testing.T) {
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
-			kanban := scopedBoard(t, map[string][]kanbanclient.CardView{
+			kanban := scopedBoard(t, map[string][]issuesclient.CardView{
 				columnBacklog: {testCard("card-next", "group:a", "cat:product")},
 				columnDone:    {testCard("card-finished", "group:a", "cat:product")},
 			})
 			kanban.effective["card-next"] = productCardDefaults()
 			kanban.status["card-finished"] = "done"
-			kanban.links = map[string][]kanbanclient.CardLink{
+			kanban.links = map[string][]issuesclient.CardLink{
 				"card-finished": {{CardID: "card-finished", EntityType: linkTypeSession, EntityRef: "sess-sibling"}},
 			}
 			err, published := tick(t, kanban, map[string]string{"sess-sibling": body})
@@ -324,10 +324,10 @@ func TestABusyOrStaleSiblingSessionIsNotAShortfall(t *testing.T) {
 
 // Cards past the per-tick cap keep their Backlog placement for the next tick.
 func TestThePerTickCapIsNotAShortfall(t *testing.T) {
-	kanban := scopedBoard(t, map[string][]kanbanclient.CardView{
+	kanban := scopedBoard(t, map[string][]issuesclient.CardView{
 		columnBacklog: {testCard("card-a", "group:a"), testCard("card-b", "group:b")},
 	})
-	instance := kanbanclient.EffectiveDefaults{Defaults: map[kanbanclient.DefaultField]kanbanclient.EffectiveDefault{kanbanclient.DefaultFieldInstance: fromBoard("inst-cc-local")}}
+	instance := issuesclient.EffectiveDefaults{Defaults: map[issuesclient.DefaultField]issuesclient.EffectiveDefault{issuesclient.DefaultFieldInstance: fromBoard("inst-cc-local")}}
 	kanban.effective["card-a"], kanban.effective["card-b"] = instance, instance
 	kanbanServer := httptest.NewServer(kanban)
 	defer kanbanServer.Close()
@@ -350,7 +350,7 @@ func TestThePerTickCapIsNotAShortfall(t *testing.T) {
 }
 
 func TestADryRunWritesNothing(t *testing.T) {
-	kanban := scopedBoard(t, map[string][]kanbanclient.CardView{
+	kanban := scopedBoard(t, map[string][]issuesclient.CardView{
 		columnInProgress: {testCard("card-a")},
 		columnFailed:     {testCard("card-b")},
 	})

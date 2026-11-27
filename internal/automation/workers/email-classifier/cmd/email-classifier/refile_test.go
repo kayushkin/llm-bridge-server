@@ -4,15 +4,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
 // noAgentGate is a gate pointed at a port nothing listens on, so a test that
 // accidentally makes it dial fails loudly instead of hanging.
 func noAgentGate() *sessionGate { return newSessionGate("http://127.0.0.1:1") }
 
-func emailLink(id, locator string, at time.Time) kanbanclient.CardLink {
-	return kanbanclient.CardLink{ID: id, EntityType: linkTypeEmail, EntityRef: locator, CreatedAt: at}
+func emailLink(id, locator string, at time.Time) issuesclient.CardLink {
+	return issuesclient.CardLink{ID: id, EntityType: linkTypeEmail, EntityRef: locator, CreatedAt: at}
 }
 
 // TestRefileFindsOnlyTheMailItsCardNeverSaw pins the discriminator the whole
@@ -38,7 +38,7 @@ func TestRefileFindsOnlyTheMailItsCardNeverSaw(t *testing.T) {
 		ID:         "bucket",
 		Title:      "Bank marketing",
 		ColumnName: columnNoAction,
-		EmailLinks: []kanbanclient.CardLink{
+		EmailLinks: []issuesclient.CardLink{
 			emailLink("link-read", "gmail-personal:read", recent),
 			emailLink("link-unread", "gmail-personal:unread", recent),
 			emailLink("link-old", "gmail-personal:old-unread", ancient),
@@ -85,7 +85,7 @@ func TestRefileLeavesMailItCannotRefetch(t *testing.T) {
 
 	card := &cardState{
 		ID: "bucket", Title: "Bank marketing", ColumnName: columnNoAction,
-		EmailLinks: []kanbanclient.CardLink{emailLink("link-1", "imap-pretender:404", at)},
+		EmailLinks: []issuesclient.CardLink{emailLink("link-1", "imap-pretender:404", at)},
 	}
 	state := &boardState{
 		Cards:            map[string]*cardState{card.ID: card},
@@ -119,8 +119,8 @@ func TestRefileWillNotStripACardAnAgentIsWorkingOn(t *testing.T) {
 
 	card := &cardState{
 		ID: "held", Title: "Held card", ColumnName: columnNoAction,
-		EmailLinks: []kanbanclient.CardLink{emailLink("link-1", "gmail-personal:unread", at)},
-		AllLinks:   []kanbanclient.CardLink{{EntityType: linkTypeSession, EntityRef: "session-1"}},
+		EmailLinks: []issuesclient.CardLink{emailLink("link-1", "gmail-personal:unread", at)},
+		AllLinks:   []issuesclient.CardLink{{EntityType: linkTypeSession, EntityRef: "session-1"}},
 	}
 	state := &boardState{
 		Cards:            map[string]*cardState{card.ID: card},

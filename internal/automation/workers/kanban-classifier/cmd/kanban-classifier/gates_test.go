@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/degradations"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
 // Ported from 0530193e and 59414aad (test/first-tests-for-kanban-classifier),
@@ -53,7 +53,7 @@ type classifierWorld struct {
 	movedTo       map[string]string // card id -> column id
 
 	cfg      config
-	kc       *kanbanclient.Client
+	kc       *issuesclient.Client
 	degraded *degradations.Recorder
 }
 
@@ -165,7 +165,7 @@ func newWorld(t *testing.T) *classifierWorld {
 	}))
 	t.Cleanup(bridge.Close)
 
-	w.kc = kanbanclient.New(board.URL, "")
+	w.kc = issuesclient.New(board.URL, "")
 	w.kc.BoardID = "board-1"
 	w.kc.ColumnsByName = map[string]string{
 		"In Progress": "col-inprogress", "Blocked": "col-blocked",

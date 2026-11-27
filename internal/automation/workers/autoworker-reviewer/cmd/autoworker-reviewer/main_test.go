@@ -7,13 +7,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
-func entityTags(tags ...string) []kanbanclient.EntityTag {
-	out := make([]kanbanclient.EntityTag, 0, len(tags))
+func entityTags(tags ...string) []issuesclient.EntityTag {
+	out := make([]issuesclient.EntityTag, 0, len(tags))
 	for _, t := range tags {
-		out = append(out, kanbanclient.EntityTag{EntityType: entityTypeSession, EntityRef: "br_test", Tag: t})
+		out = append(out, issuesclient.EntityTag{EntityType: entityTypeSession, EntityRef: "br_test", Tag: t})
 	}
 	return out
 }

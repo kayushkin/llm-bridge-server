@@ -5,14 +5,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
 // TestAStrandedCardIsNamedAndNotCalledAFailure is the caller-side half of card
 // a68ad12c. The library can carry the id in its error and it buys nothing if the
 // one line that reaches the log still says "create card failed" and drops it.
 func TestAStrandedCardIsNamedAndNotCalledAFailure(t *testing.T) {
-	err := &kanbanclient.CardCreatedWithoutAllLinksError{
+	err := &issuesclient.CardCreatedWithoutAllLinksError{
 		CardID:     "f1107651-67dd-4be5-b03a-a9c964f5f4ce",
 		EntityType: "session", EntityRef: "autoworker-anthropic-1783943268421792246",
 		Cause: errors.New("400 Bad Request"),

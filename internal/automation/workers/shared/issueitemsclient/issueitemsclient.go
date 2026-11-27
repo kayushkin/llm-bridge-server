@@ -16,7 +16,7 @@
 //
 // Raising the constant would have bought the same defect a later date. So the
 // read pages, and the only remaining bound is reported to the caller.
-package noteboarditems
+package issueitemsclient
 
 import (
 	"encoding/json"

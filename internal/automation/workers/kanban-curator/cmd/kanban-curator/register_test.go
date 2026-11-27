@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
 // -register is how this binary gets onto the cron schedule at all, and it is run
@@ -89,7 +89,7 @@ func (s *stubScheduler) only(t *testing.T) map[string]any {
 func TestRegisteringPostsAFiveMinuteShellJobThatNamesTheBoardByID(t *testing.T) {
 	s := newStubScheduler(t, &stubScheduler{})
 
-	board := &kanbanclient.Board{ID: "board-7", Name: "Task completion loop"}
+	board := &issuesclient.Board{ID: "board-7", Name: "Task completion loop"}
 	if err := registerSchedulerJob(s.url, board, ""); err != nil {
 		t.Fatalf("registerSchedulerJob: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestRegisteringPostsAFiveMinuteShellJobThatNamesTheBoardByID(t *testing.T) 
 func TestAnExplicitJobNameOverridesTheDerivedOne(t *testing.T) {
 	s := newStubScheduler(t, &stubScheduler{})
 
-	board := &kanbanclient.Board{ID: "board-7", Name: "Agent runs"}
+	board := &issuesclient.Board{ID: "board-7", Name: "Agent runs"}
 	if err := registerSchedulerJob(s.url, board, "kanban-curator-tcl-tick"); err != nil {
 		t.Fatalf("registerSchedulerJob: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestAnExplicitJobNameOverridesTheDerivedOne(t *testing.T) {
 func TestAnAlreadyRegisteredJobIsNotRegisteredTwice(t *testing.T) {
 	s := newStubScheduler(t, &stubScheduler{existing: []string{"kanban-curator-tick"}})
 
-	board := &kanbanclient.Board{ID: "board-7", Name: "Agent runs"}
+	board := &issuesclient.Board{ID: "board-7", Name: "Agent runs"}
 	if err := registerSchedulerJob(s.url, board, ""); err != nil {
 		t.Fatalf("registerSchedulerJob: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestAnAlreadyRegisteredJobIsNotRegisteredTwice(t *testing.T) {
 func TestASchedulerThatRefusesTheJobIsReportedAsAnError(t *testing.T) {
 	s := newStubScheduler(t, &stubScheduler{refuse: true})
 
-	board := &kanbanclient.Board{ID: "board-7", Name: "Agent runs"}
+	board := &issuesclient.Board{ID: "board-7", Name: "Agent runs"}
 	err := registerSchedulerJob(s.url, board, "")
 	if err == nil {
 		t.Fatal("no error from a scheduler that refused the job; -register would exit 0 having registered nothing")
@@ -161,7 +161,7 @@ func TestASchedulerThatRefusesTheJobIsReportedAsAnError(t *testing.T) {
 func TestAJobListTheSchedulerCouldNotServeIsNotReadAsNoJobs(t *testing.T) {
 	s := newStubScheduler(t, &stubScheduler{failList: http.StatusInternalServerError})
 
-	board := &kanbanclient.Board{ID: "board-7", Name: "Agent runs"}
+	board := &issuesclient.Board{ID: "board-7", Name: "Agent runs"}
 	err := registerSchedulerJob(s.url, board, "")
 	if err == nil {
 		t.Fatal("no error from a scheduler that could not list its jobs; -register went on as if none existed")
@@ -179,7 +179,7 @@ func TestAJobListTheSchedulerCouldNotServeIsNotReadAsNoJobs(t *testing.T) {
 func TestAJobListThatIsNotAJSONArrayIsNotReadAsNoJobs(t *testing.T) {
 	s := newStubScheduler(t, &stubScheduler{listBody: `{"error":"not a list"}`})
 
-	board := &kanbanclient.Board{ID: "board-7", Name: "Agent runs"}
+	board := &issuesclient.Board{ID: "board-7", Name: "Agent runs"}
 	err := registerSchedulerJob(s.url, board, "")
 	if err == nil {
 		t.Fatal("no error from a job list that did not decode; -register went on as if no jobs existed")
@@ -212,7 +212,7 @@ func TestABoardNameBecomesAJobNameSlug(t *testing.T) {
 // one its threshold can be tested at: a check that slipped to 301 still rejects
 // every 4xx and 5xx the other tests serve. Ported from 63a7f704.
 func TestThreeHundredIsAlreadyARefusal(t *testing.T) {
-	board := &kanbanclient.Board{ID: "board-7", Name: "Agent runs"}
+	board := &issuesclient.Board{ID: "board-7", Name: "Agent runs"}
 
 	t.Run("300 is refused", func(t *testing.T) {
 		s := newStubScheduler(t, &stubScheduler{postStatus: 300})

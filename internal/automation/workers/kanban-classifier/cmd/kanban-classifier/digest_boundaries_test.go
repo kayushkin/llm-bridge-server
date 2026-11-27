@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
 // Every per-field bound in the digest was already exercised by the suite and
@@ -112,7 +112,7 @@ func TestAnAssistantTurnIsCutAtExactlySixHundredCharacters(t *testing.T) {
 // pinning independently of the shedding logic that may drop bodies entirely.
 func TestAnExistingCardsBodyIsCutAtExactlyFourHundredCharacters(t *testing.T) {
 	const bound = 400
-	cards := []kanbanclient.EntityCardEntry{
+	cards := []issuesclient.EntityCardEntry{
 		card("card-fits", "fits", endMarked(bound)),
 		card("card-over", "over", endMarked(bound+1)),
 	}
@@ -138,7 +138,7 @@ func TestAnExistingCardsBodyIsCutAtExactlyFourHundredCharacters(t *testing.T) {
 // scored; this pins the third site, the digest's own rendering.
 func TestAnExistingCardsTitleIsCutAtExactlyEightyCharacters(t *testing.T) {
 	const bound = 80
-	cards := []kanbanclient.EntityCardEntry{
+	cards := []issuesclient.EntityCardEntry{
 		card("card-fits", endMarked(bound), "body"),
 		card("card-over", endMarked(bound+1), "body"),
 	}

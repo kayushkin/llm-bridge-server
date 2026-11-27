@@ -12,7 +12,7 @@ import (
 
 	"github.com/kayushkin/bus/messages"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/degradations"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -54,20 +54,20 @@ const sessionUnreadable = "<unreadable>"
 // fakeKanban is the part of kanban-store a tick reads and writes.
 type fakeKanban struct {
 	t     *testing.T
-	board kanbanclient.Board
-	view  kanbanclient.BoardView
+	board issuesclient.Board
+	view  issuesclient.BoardView
 	// effective is each card's effective-defaults answer; a card absent here
 	// answers 404, as kanban-store does for an item noteboard lacks.
-	effective map[string]kanbanclient.EffectiveDefaults
+	effective map[string]issuesclient.EffectiveDefaults
 	children  map[string][]string // parent card id → child card ids
 	scoped    map[string]bool
-	links     map[string][]kanbanclient.CardLink
+	links     map[string][]issuesclient.CardLink
 	// status is a child's noteboard status as the parent_card listing reports
 	// it; a child absent here is "open".
 	status map[string]string
 	// placements is what GET /api/cards/{id}/placements answers per card; a
 	// card absent here has none.
-	placements map[string][]kanbanclient.CardPlacement
+	placements map[string][]issuesclient.CardPlacement
 	// failures makes one kind of request answer with the given status, keyed
 	// by the names fakeKanbanRoute returns.
 	failures map[string]int
@@ -155,26 +155,26 @@ func (f *fakeKanban) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(resolved)
 	case r.Method == "GET" && strings.HasPrefix(path, "/api/entities/note/") && strings.HasSuffix(path, "/tags"):
 		cardID := strings.TrimSuffix(strings.TrimPrefix(path, "/api/entities/note/"), "/tags")
-		tags := []kanbanclient.EntityTag{}
+		tags := []issuesclient.EntityTag{}
 		if f.scoped[cardID] {
-			tags = append(tags, kanbanclient.EntityTag{EntityType: "note", EntityRef: cardID, Tag: tagScoped})
+			tags = append(tags, issuesclient.EntityTag{EntityType: "note", EntityRef: cardID, Tag: tagScoped})
 		}
 		writeJSON(tags)
 	case r.Method == "GET" && strings.HasPrefix(path, "/api/entities/parent_card/") && strings.HasSuffix(path, "/cards"):
 		parentID := strings.TrimSuffix(strings.TrimPrefix(path, "/api/entities/parent_card/"), "/cards")
-		entries := []kanbanclient.EntityCardEntry{}
+		entries := []issuesclient.EntityCardEntry{}
 		for _, id := range f.children[parentID] {
 			status := f.status[id]
 			if status == "" {
 				status = "open"
 			}
-			entries = append(entries, kanbanclient.EntityCardEntry{CardID: id, Item: map[string]any{"id": id, "status": status}})
+			entries = append(entries, issuesclient.EntityCardEntry{CardID: id, Item: map[string]any{"id": id, "status": status}})
 		}
 		writeJSON(entries)
 	case r.Method == "GET" && strings.HasPrefix(path, "/api/cards/") && strings.HasSuffix(path, "/links"):
 		links := f.links[strings.TrimSuffix(strings.TrimPrefix(path, "/api/cards/"), "/links")]
 		if links == nil {
-			links = []kanbanclient.CardLink{}
+			links = []issuesclient.CardLink{}
 		}
 		writeJSON(links)
 	case r.Method == "POST" && strings.HasPrefix(path, "/api/cards/") && strings.HasSuffix(path, "/links"):
@@ -189,7 +189,7 @@ func (f *fakeKanban) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == "GET" && strings.HasPrefix(path, "/api/cards/") && strings.HasSuffix(path, "/placements"):
 		placements := f.placements[strings.TrimSuffix(strings.TrimPrefix(path, "/api/cards/"), "/placements")]
 		if placements == nil {
-			placements = []kanbanclient.CardPlacement{}
+			placements = []issuesclient.CardPlacement{}
 		}
 		writeJSON(placements)
 	case r.Method == "PATCH" && strings.HasPrefix(path, "/api/cards/"):
@@ -202,44 +202,44 @@ func (f *fakeKanban) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func testCard(id string, tags ...string) kanbanclient.CardView {
+func testCard(id string, tags ...string) issuesclient.CardView {
 	anyTags := make([]any, 0, len(tags))
 	for _, tag := range tags {
 		anyTags = append(anyTags, tag)
 	}
-	card := kanbanclient.CardView{Item: map[string]any{"id": id, "title": "card " + id, "tags": anyTags}}
+	card := issuesclient.CardView{Item: map[string]any{"id": id, "title": "card " + id, "tags": anyTags}}
 	card.Placement.CardID = id
 	return card
 }
 
-func column(name string, cards ...kanbanclient.CardView) kanbanclient.ColumnView {
-	return kanbanclient.ColumnView{Column: kanbanclient.Column{ID: "col-" + strings.ReplaceAll(strings.ToLower(name), " ", "-"), Name: name}, Cards: cards}
+func column(name string, cards ...issuesclient.CardView) issuesclient.ColumnView {
+	return issuesclient.ColumnView{Column: issuesclient.Column{ID: "col-" + strings.ReplaceAll(strings.ToLower(name), " ", "-"), Name: name}, Cards: cards}
 }
 
-func fromBoard(value string) kanbanclient.EffectiveDefault {
-	return kanbanclient.EffectiveDefault{Value: value, Source: kanbanclient.DefaultSource{Kind: kanbanclient.DefaultSourceKindBoard}}
+func fromBoard(value string) issuesclient.EffectiveDefault {
+	return issuesclient.EffectiveDefault{Value: value, Source: issuesclient.DefaultSource{Kind: issuesclient.DefaultSourceKindBoard}}
 }
 
-func fromRule(value, ruleID string, position int, tags ...string) kanbanclient.EffectiveDefault {
-	return kanbanclient.EffectiveDefault{Value: value, Source: kanbanclient.DefaultSource{
-		Kind: kanbanclient.DefaultSourceKindTagRule, RuleID: ruleID, RuleTags: tags, RulePosition: &position,
+func fromRule(value, ruleID string, position int, tags ...string) issuesclient.EffectiveDefault {
+	return issuesclient.EffectiveDefault{Value: value, Source: issuesclient.DefaultSource{
+		Kind: issuesclient.DefaultSourceKindTagRule, RuleID: ruleID, RuleTags: tags, RulePosition: &position,
 	}}
 }
 
 // productCardDefaults is what a card tagged cat:product gets from the rule
 // [cat:product] → inst-codex-local + bundle 6, on a board whose own agent is 65.
-func productCardDefaults() kanbanclient.EffectiveDefaults {
-	return kanbanclient.EffectiveDefaults{Tags: []string{"group:a", "cat:product"}, MatchedRuleIDs: []string{"rule-product"},
-		Defaults: map[kanbanclient.DefaultField]kanbanclient.EffectiveDefault{
-			kanbanclient.DefaultFieldInstance: fromRule("inst-codex-local", "rule-product", 0, "cat:product"),
-			kanbanclient.DefaultFieldBundle:   fromRule("6", "rule-product", 0, "cat:product"),
-			kanbanclient.DefaultFieldAgent:    fromBoard("65"),
+func productCardDefaults() issuesclient.EffectiveDefaults {
+	return issuesclient.EffectiveDefaults{Tags: []string{"group:a", "cat:product"}, MatchedRuleIDs: []string{"rule-product"},
+		Defaults: map[issuesclient.DefaultField]issuesclient.EffectiveDefault{
+			issuesclient.DefaultFieldInstance: fromRule("inst-codex-local", "rule-product", 0, "cat:product"),
+			issuesclient.DefaultFieldBundle:   fromRule("6", "rule-product", 0, "cat:product"),
+			issuesclient.DefaultFieldAgent:    fromBoard("65"),
 		}}
 }
 
 func newDispatcher(kanban *fakeKanban, kanbanURL, bridgeURL string, published *[]messages.BridgeInbound) *backlogDispatcher {
 	return &backlogDispatcher{
-		kanban:             kanbanclient.New(kanbanURL, ""),
+		kanban:             issuesclient.New(kanbanURL, ""),
 		bridgeURL:          bridgeURL,
 		board:              &kanban.board,
 		view:               &kanban.view,
@@ -258,19 +258,19 @@ func newDispatcher(kanban *fakeKanban, kanbanURL, bridgeURL string, published *[
 func TestEachCardIsDispatchedWithItsOwnEffectiveDefaults(t *testing.T) {
 	kanban := &fakeKanban{
 		t:     t,
-		board: kanbanclient.Board{ID: testBoardID, Name: "Task completion loop"},
-		view: kanbanclient.BoardView{Board: kanbanclient.Board{ID: testBoardID}, Columns: []kanbanclient.ColumnView{
+		board: issuesclient.Board{ID: testBoardID, Name: "Task completion loop"},
+		view: issuesclient.BoardView{Board: issuesclient.Board{ID: testBoardID}, Columns: []issuesclient.ColumnView{
 			column(columnBacklog, testCard("card-product", "group:a", "cat:product"), testCard("card-plain", "group:b"), testCard("card-nowhere", "group:c")),
 		}},
 		children: map[string][]string{"parent": {"card-product", "card-plain", "card-nowhere"}},
-		effective: map[string]kanbanclient.EffectiveDefaults{
+		effective: map[string]issuesclient.EffectiveDefaults{
 			"card-product": productCardDefaults(),
-			"card-plain": {Tags: []string{"group:b"}, MatchedRuleIDs: []string{}, Defaults: map[kanbanclient.DefaultField]kanbanclient.EffectiveDefault{
-				kanbanclient.DefaultFieldInstance: fromBoard("inst-cc-local"),
-				kanbanclient.DefaultFieldAgent:    fromBoard("65"),
+			"card-plain": {Tags: []string{"group:b"}, MatchedRuleIDs: []string{}, Defaults: map[issuesclient.DefaultField]issuesclient.EffectiveDefault{
+				issuesclient.DefaultFieldInstance: fromBoard("inst-cc-local"),
+				issuesclient.DefaultFieldAgent:    fromBoard("65"),
 			}},
 			// No rule matches and the board sets no instance.
-			"card-nowhere": {Tags: []string{"group:c"}, MatchedRuleIDs: []string{}, Defaults: map[kanbanclient.DefaultField]kanbanclient.EffectiveDefault{}},
+			"card-nowhere": {Tags: []string{"group:c"}, MatchedRuleIDs: []string{}, Defaults: map[issuesclient.DefaultField]issuesclient.EffectiveDefault{}},
 		},
 	}
 	kanbanServer := httptest.NewServer(kanban)
@@ -320,14 +320,14 @@ func TestEachCardIsDispatchedWithItsOwnEffectiveDefaults(t *testing.T) {
 func TestACardWhoseInstanceOrAgentTheBridgeLacksIsNotDispatched(t *testing.T) {
 	kanban := &fakeKanban{
 		t:     t,
-		board: kanbanclient.Board{ID: testBoardID, Name: "Task completion loop"},
-		effective: map[string]kanbanclient.EffectiveDefaults{
-			"card-gone-instance": {Defaults: map[kanbanclient.DefaultField]kanbanclient.EffectiveDefault{
-				kanbanclient.DefaultFieldInstance: fromRule("inst-gone", "rule-x", 2, "cat:x"),
+		board: issuesclient.Board{ID: testBoardID, Name: "Task completion loop"},
+		effective: map[string]issuesclient.EffectiveDefaults{
+			"card-gone-instance": {Defaults: map[issuesclient.DefaultField]issuesclient.EffectiveDefault{
+				issuesclient.DefaultFieldInstance: fromRule("inst-gone", "rule-x", 2, "cat:x"),
 			}},
-			"card-gone-agent": {Defaults: map[kanbanclient.DefaultField]kanbanclient.EffectiveDefault{
-				kanbanclient.DefaultFieldInstance: fromBoard("inst-cc-local"),
-				kanbanclient.DefaultFieldAgent:    fromBoard("404"),
+			"card-gone-agent": {Defaults: map[issuesclient.DefaultField]issuesclient.EffectiveDefault{
+				issuesclient.DefaultFieldInstance: fromBoard("inst-cc-local"),
+				issuesclient.DefaultFieldAgent:    fromBoard("404"),
 			}},
 		},
 	}
@@ -335,7 +335,7 @@ func TestACardWhoseInstanceOrAgentTheBridgeLacksIsNotDispatched(t *testing.T) {
 	defer kanbanServer.Close()
 	bridgeServer := fakeBridge(t, nil)
 	defer bridgeServer.Close()
-	kc := kanbanclient.New(kanbanServer.URL, "")
+	kc := issuesclient.New(kanbanServer.URL, "")
 
 	_, err := resolveCardSessionSpec(kc, bridgeServer.URL, &kanban.board, "card-gone-instance")
 	if err == nil || !strings.Contains(err.Error(), "inst-gone") || !strings.Contains(err.Error(), "cat:x") {
@@ -346,7 +346,7 @@ func TestACardWhoseInstanceOrAgentTheBridgeLacksIsNotDispatched(t *testing.T) {
 		t.Errorf("an agent id the bridge lacks must be refused naming it, got %v", err)
 	}
 	_, err = resolveCardSessionSpec(kc, bridgeServer.URL, &kanban.board, "card-not-in-noteboard")
-	if !errors.Is(err, kanbanclient.ErrCardNotFound) {
+	if !errors.Is(err, issuesclient.ErrCardNotFound) {
 		t.Errorf("a card kanban-store cannot find must say so, got %v", err)
 	}
 }
@@ -373,14 +373,14 @@ func TestASiblingSessionIsReusedOnlyWhenStartedWithWhatTheCardResolvesTo(t *test
 		t.Run(tc.name, func(t *testing.T) {
 			kanban := &fakeKanban{
 				t:     t,
-				board: kanbanclient.Board{ID: testBoardID, Name: "Task completion loop"},
-				view: kanbanclient.BoardView{Board: kanbanclient.Board{ID: testBoardID}, Columns: []kanbanclient.ColumnView{
+				board: issuesclient.Board{ID: testBoardID, Name: "Task completion loop"},
+				view: issuesclient.BoardView{Board: issuesclient.Board{ID: testBoardID}, Columns: []issuesclient.ColumnView{
 					column(columnBacklog, testCard("card-next", "group:a", "cat:product")),
 					column(columnDone, testCard("card-finished", "group:a", "cat:product")),
 				}},
 				children:  map[string][]string{"parent": {"card-next", "card-finished"}},
-				effective: map[string]kanbanclient.EffectiveDefaults{"card-next": productCardDefaults()},
-				links: map[string][]kanbanclient.CardLink{
+				effective: map[string]issuesclient.EffectiveDefaults{"card-next": productCardDefaults()},
+				links: map[string][]issuesclient.CardLink{
 					"card-finished": {{CardID: "card-finished", EntityType: linkTypeSession, EntityRef: "sess-sibling"}},
 				},
 			}
@@ -411,23 +411,23 @@ func TestASiblingSessionIsReusedOnlyWhenStartedWithWhatTheCardResolvesTo(t *test
 // scheduler records `error` rather than a green run that dispatched nothing.
 func TestARunThatLeftACardUndispatchedFails(t *testing.T) {
 	build := func(nowhereHasInstance bool) *fakeKanban {
-		nowhere := kanbanclient.EffectiveDefaults{Defaults: map[kanbanclient.DefaultField]kanbanclient.EffectiveDefault{}}
+		nowhere := issuesclient.EffectiveDefaults{Defaults: map[issuesclient.DefaultField]issuesclient.EffectiveDefault{}}
 		if nowhereHasInstance {
-			nowhere.Defaults[kanbanclient.DefaultFieldInstance] = fromBoard("inst-cc-local")
+			nowhere.Defaults[issuesclient.DefaultFieldInstance] = fromBoard("inst-cc-local")
 		}
-		board := kanbanclient.Board{ID: testBoardID, Name: "Task completion loop"}
+		board := issuesclient.Board{ID: testBoardID, Name: "Task completion loop"}
 		return &fakeKanban{
 			t:     t,
 			board: board,
-			view: kanbanclient.BoardView{Board: board, Columns: []kanbanclient.ColumnView{
+			view: issuesclient.BoardView{Board: board, Columns: []issuesclient.ColumnView{
 				column(columnGoals, testCard("parent")),
 				column(columnBacklog, testCard("card-plain", "group:a"), testCard("card-nowhere", "group:b")),
 				column(columnInProgress), column(columnDone), column(columnFailed),
 			}},
 			scoped:   map[string]bool{"parent": true},
 			children: map[string][]string{"parent": {"card-plain", "card-nowhere"}},
-			effective: map[string]kanbanclient.EffectiveDefaults{
-				"card-plain":   {Defaults: map[kanbanclient.DefaultField]kanbanclient.EffectiveDefault{kanbanclient.DefaultFieldInstance: fromBoard("inst-cc-local")}},
+			effective: map[string]issuesclient.EffectiveDefaults{
+				"card-plain":   {Defaults: map[issuesclient.DefaultField]issuesclient.EffectiveDefault{issuesclient.DefaultFieldInstance: fromBoard("inst-cc-local")}},
 				"card-nowhere": nowhere,
 			},
 		}

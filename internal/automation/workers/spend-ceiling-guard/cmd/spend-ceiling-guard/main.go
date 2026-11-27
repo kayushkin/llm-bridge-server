@@ -44,11 +44,11 @@ import (
 	"time"
 
 	schedulerconfig "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/config"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/boardvocabulary"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgeauth"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/degradations"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanvocab"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/noteboarditems"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issueitemsclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/spendtree"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )
@@ -58,7 +58,7 @@ type sessionAggregate struct {
 	CostUSD   float64 `json:"cost_usd"`
 }
 
-type noteboardItem = noteboarditems.Item
+type noteboardItem = issueitemsclient.Item
 
 // config names the three services this guard reads and whether it is allowed to
 // write. It exists so run can be given stubs by a test; main fills it from the
@@ -121,7 +121,7 @@ func run(cfg config) int {
 	// include_held=true: we must see parked items to build the tree. A held
 	// ancestor is exactly the thing whose descendants we need to reason about,
 	// and noteboard hides held items from discovery by default.
-	items, truncated, err := noteboarditems.FetchEveryItemIncludingHeld(cfg.noteboardURL)
+	items, truncated, err := issueitemsclient.FetchEveryItemIncludingHeld(cfg.noteboardURL)
 	if err != nil {
 		log.Fatalf("noteboard items: %v", err)
 	}
@@ -131,12 +131,12 @@ func run(cfg config) int {
 		// own, so a short read prices every ceiling too low — in the direction
 		// that lets a task keep running.
 		degraded.Record("read only %d noteboard items before hitting the %d-page safety bound: the spend tree is incomplete and every ceiling below it is priced too LOW",
-			len(items), noteboarditems.MaxPages)
+			len(items), issueitemsclient.MaxPages)
 	}
 	log.Printf("loaded cost for %d sessions, %d items", len(cost), len(items))
 
 	tree := spendtree.NewTree(toTreeItems(items))
-	qc := kanbanclient.New(cfg.kanbanURL, cfg.kanbanServiceToken)
+	qc := issuesclient.New(cfg.kanbanURL, cfg.kanbanServiceToken)
 
 	// A card's session links are how spend is attributed to an item. Cache per
 	// item: a subtree walk asks for the same parent's links once per descendant
@@ -152,7 +152,7 @@ func run(cfg config) int {
 		}
 		var sessions []string
 		for _, l := range links {
-			if l.EntityType == kanbanvocab.LinkTypeSession {
+			if l.EntityType == boardvocabulary.LinkTypeSession {
 				sessions = append(sessions, l.EntityRef)
 			}
 		}

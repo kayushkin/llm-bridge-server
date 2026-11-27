@@ -8,9 +8,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanvocab"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/noteboarditems"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/boardvocabulary"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issueitemsclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/spendtree"
 )
 
@@ -55,7 +55,7 @@ type sessionAggregate struct {
 // omits --max-budget-usd when the value is zero, which the CLI reads as
 // UNLIMITED. That inversion — the tightest possible ceiling becoming no ceiling
 // at all — is the one failure mode here that spends real money.
-func budgetForCard(qc *kanbanclient.Client, bridgeURL, noteboardURL string, cand *queueCandidate) (float64, bool) {
+func budgetForCard(qc *issuesclient.Client, bridgeURL, noteboardURL string, cand *queueCandidate) (float64, bool) {
 	tree, cost, err := loadSpendTree(bridgeURL, noteboardURL)
 	if errors.Is(err, errSpendTreeTruncated) {
 		// Unlike an unreadable tree, a truncated one says nothing about whether
@@ -111,7 +111,7 @@ func budgetForCard(qc *kanbanclient.Client, bridgeURL, noteboardURL string, cand
 // sessionsForItem maps an item to the bridge sessions that worked it, via its
 // card's session links. Memoised: a subtree walk would otherwise re-ask for the
 // same ancestor's links once per descendant.
-func sessionsForItem(qc *kanbanclient.Client) func(string) ([]string, error) {
+func sessionsForItem(qc *issuesclient.Client) func(string) ([]string, error) {
 	cache := map[string][]string{}
 	return func(itemID string) ([]string, error) {
 		if s, ok := cache[itemID]; ok {
@@ -123,7 +123,7 @@ func sessionsForItem(qc *kanbanclient.Client) func(string) ([]string, error) {
 		}
 		var sessions []string
 		for _, l := range links {
-			if l.EntityType == kanbanvocab.LinkTypeSession {
+			if l.EntityType == boardvocabulary.LinkTypeSession {
 				sessions = append(sessions, l.EntityRef)
 			}
 		}
@@ -138,13 +138,13 @@ func sessionsForItem(qc *kanbanclient.Client) func(string) ([]string, error) {
 var errSpendTreeTruncated = errors.New("spend tree truncated")
 
 func loadSpendTree(bridgeURL, noteboardURL string) (*spendtree.Tree, map[string]float64, error) {
-	items, truncated, err := noteboarditems.FetchEveryItemIncludingHeld(noteboardURL)
+	items, truncated, err := issueitemsclient.FetchEveryItemIncludingHeld(noteboardURL)
 	if err != nil {
 		return nil, nil, err
 	}
 	if truncated {
 		return nil, nil, fmt.Errorf("%w: read %d noteboard items and stopped at the %d-page bound; a ceiling owner past it would be invisible",
-			errSpendTreeTruncated, len(items), noteboarditems.MaxPages)
+			errSpendTreeTruncated, len(items), issueitemsclient.MaxPages)
 	}
 	aggs, err := fetchSessionAggregates(bridgeURL)
 	if err != nil {

@@ -56,7 +56,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/email-classifier/principalstore"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgeauth"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/degradations"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/schedulerjobs"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/schedulersettings"
 	"github.com/kayushkin/llm-bridge/servicesettings"
@@ -331,9 +331,9 @@ func run() int {
 	// rather than global so the failure sites stay testable in isolation.
 	degraded := degradations.New("email")
 
-	kc := kanbanclient.New(cfg.KanbanURL, cfg.KanbanServiceToken)
+	kc := issuesclient.New(cfg.KanbanURL, cfg.KanbanServiceToken)
 	board, err := kc.GetBoard(cfg.BoardID)
-	if errors.Is(err, kanbanclient.ErrBoardNotFound) {
+	if errors.Is(err, issuesclient.ErrBoardNotFound) {
 		// Fatal rather than re-created: kanban-store resolves boards by name
 		// with auto-create and no unique constraint on the name, so creating a
 		// replacement is exactly how a second board with the same name forks.
@@ -674,7 +674,7 @@ type config struct {
 	// the board after the flags are parsed. Not a flag: the board owns what a
 	// run files with, so a value here that disagreed with the board would be a
 	// second source of truth.
-	Classifier kanbanclient.ClassifierConfig
+	Classifier issuesclient.ClassifierConfig
 
 	// RunID names this process's run. It is the correlation id of every
 	// model call the run makes, and the stem of each call's idempotency key.
@@ -720,7 +720,7 @@ func selectMailAccounts(listed []mailAccount, wantIDs []string) ([]mailAccount, 
 	return out, nil
 }
 
-func requireColumns(kc *kanbanclient.Client, names []string) {
+func requireColumns(kc *issuesclient.Client, names []string) {
 	var missing []string
 	for _, n := range names {
 		if _, ok := kc.ColumnsByName[n]; !ok {
@@ -762,11 +762,11 @@ type cardState struct {
 	// score has not moved rather than PATCHing the whole board every tick.
 	Priority int
 	// EmailLinks is every email attached to this card, in link order.
-	EmailLinks []kanbanclient.CardLink
+	EmailLinks []issuesclient.CardLink
 	// AllLinks is every link of every type. The merge pass needs these to move
 	// a card's evidence onto its survivor, and they are already in the board
 	// view, so keeping them costs nothing.
-	AllLinks []kanbanclient.CardLink
+	AllLinks []issuesclient.CardLink
 	// Senders is the distinct addresses whose mail lands here. Evidence for the
 	// merge pass — two cards fed by the same addresses are candidates for one
 	// bucket — and for the never-actionable domain override. Not a routing rule;
@@ -794,7 +794,7 @@ type boardState struct {
 	CardsBySender map[string][]string
 }
 
-func loadBoardState(kc *kanbanclient.Client, boardID string) (*boardState, error) {
+func loadBoardState(kc *issuesclient.Client, boardID string) (*boardState, error) {
 	view, err := kc.GetBoardView(boardID)
 	if err != nil {
 		return nil, err

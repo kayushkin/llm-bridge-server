@@ -62,11 +62,11 @@ import (
 	"time"
 
 	schedulerconfig "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/config"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/boardvocabulary"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgeauth"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgesession"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/degradations"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanvocab"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/oneshot"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/schedulerjobs"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/schedulersettings"
@@ -76,7 +76,7 @@ import (
 )
 
 const (
-	defaultBoardName     = kanbanvocab.BoardAgentRuns
+	defaultBoardName     = boardvocabulary.BoardAgentRuns
 	tagDoNotTrack        = "kanban-do-not-track"
 	tagFinalClassified   = "kanban-final-classified"
 	tagCheckSigPrefix    = "kanban-check-sig:"
@@ -276,17 +276,17 @@ func run() int {
 		}
 	}
 
-	kc := kanbanclient.New(cfg.KanbanURL, cfg.KanbanServiceToken)
+	kc := issuesclient.New(cfg.KanbanURL, cfg.KanbanServiceToken)
 	board, err := kc.FindBoard(cfg.BoardName)
 	if err != nil {
 		log.Fatalf("find board %q: %v", cfg.BoardName, err)
 	}
 	if board == nil {
 		// First-ever invocation: bootstrap the board so cards have somewhere to go.
-		if err := kc.EnsureBoard(cfg.BoardName, kanbanvocab.AgentRunsColumns()); err != nil {
+		if err := kc.EnsureBoard(cfg.BoardName, boardvocabulary.AgentRunsColumns()); err != nil {
 			log.Fatalf("bootstrap board: %v", err)
 		}
-		board = &kanbanclient.Board{ID: kc.BoardID, Name: cfg.BoardName}
+		board = &issuesclient.Board{ID: kc.BoardID, Name: cfg.BoardName}
 	} else {
 		// Cache columns onto the client.
 		cols, err := kc.ListColumns(board.ID)
@@ -299,7 +299,7 @@ func run() int {
 			kc.ColumnsByName[col.Name] = col.ID
 		}
 	}
-	if err := requireColumns(kc, []string{kanbanvocab.ColumnInProgress, kanbanvocab.ColumnBlocked, kanbanvocab.ColumnDone, kanbanvocab.ColumnFailed}); err != nil {
+	if err := requireColumns(kc, []string{boardvocabulary.ColumnInProgress, boardvocabulary.ColumnBlocked, boardvocabulary.ColumnDone, boardvocabulary.ColumnFailed}); err != nil {
 		log.Fatalf("%v", err)
 	}
 
@@ -505,7 +505,7 @@ func turnInFlight(state msg.SessionState) bool {
 // land, records why — so a tick that classified nothing because the API refused
 // it is distinguishable from a tick that classified nothing because there was
 // nothing to do.
-func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, sess session, degraded *degradations.Recorder) bool {
+func processSession(ctx context.Context, cfg config, kc *issuesclient.Client, sess session, degraded *degradations.Recorder) bool {
 	tags, err := kc.ListEntityTags(cardLinkSession, sess.SessionID)
 	if err != nil {
 		log.Printf("[%s] list tags: %v", sess.SessionID, err)
@@ -675,7 +675,7 @@ func processSession(ctx context.Context, cfg config, kc *kanbanclient.Client, se
 
 // ============================ Tag helpers ============================
 
-func tagSet(tags []kanbanclient.EntityTag) map[string]bool {
+func tagSet(tags []issuesclient.EntityTag) map[string]bool {
 	out := map[string]bool{}
 	for _, t := range tags {
 		out[t.Tag] = true
@@ -802,7 +802,7 @@ func saidNothingSince(newestEntryAt, cutoff time.Time) bool {
 // signature is the whole dedupe gate, so a session whose tag did not land is
 // classified again on the next tick and every tick after it, at the price of a
 // model call each time.
-func writeSig(kc *kanbanclient.Client, sess session, oldTags map[string]bool, sig string, degraded *degradations.Recorder) {
+func writeSig(kc *issuesclient.Client, sess session, oldTags map[string]bool, sig string, degraded *degradations.Recorder) {
 	for tag := range oldTags {
 		if strings.HasPrefix(tag, tagCheckSigPrefix) && tag != sig {
 			// A delete that fails leaves two signatures behind. priorSigTag reads
@@ -827,7 +827,7 @@ func writeSig(kc *kanbanclient.Client, sess session, oldTags map[string]bool, si
 // into the check-sig tag — and priorEventCount reads it back out to measure the
 // doNotTrackReevalEvents delta. The coupling is real and invisible, so keep the writeSig
 // call next to the applyDoNotTrack call.
-func applyDoNotTrack(kc *kanbanclient.Client, sess session, degraded *degradations.Recorder) {
+func applyDoNotTrack(kc *issuesclient.Client, sess session, degraded *degradations.Recorder) {
 	if err := kc.AddEntityTag(cardLinkSession, sess.SessionID, tagDoNotTrack); err != nil {
 		log.Printf("[%s] add do-not-track: %v", sess.SessionID, err)
 		degraded.Record("session %s: do-not-track tag not written, it will be re-classified next tick", sess.SessionID)
@@ -859,7 +859,7 @@ func provenanceTrailer(action, sessionID, state string) string {
 // while a card left behind looks current. Measured on job 14's run history
 // 2026-08-29, one card had been failing to move with `404 Not Found` on eight of
 // the last sixty ticks — every one of those runs recorded `success`.
-func applyExisting(kc *kanbanclient.Client, sess session, report *Report, degraded *degradations.Recorder) {
+func applyExisting(kc *issuesclient.Client, sess session, report *Report, degraded *degradations.Recorder) {
 	for _, ec := range report.ExistingCards {
 		colName := stateToColumn(ec.State)
 		colID, ok := kc.ColumnsByName[colName]
@@ -889,7 +889,7 @@ func applyExisting(kc *kanbanclient.Client, sess session, report *Report, degrad
 	}
 }
 
-func applyNew(kc *kanbanclient.Client, sess session, existingCards []kanbanclient.EntityCardEntry, report *Report, degraded *degradations.Recorder) {
+func applyNew(kc *issuesclient.Client, sess session, existingCards []issuesclient.EntityCardEntry, report *Report, degraded *degradations.Recorder) {
 	filed := map[string]bool{}
 	for _, ec := range existingCards {
 		if title, _ := ec.Item["title"].(string); title != "" {
@@ -914,7 +914,7 @@ func applyNew(kc *kanbanclient.Client, sess session, existingCards []kanbanclien
 			body += "\n\n**Blocker:** " + nt.Blocker
 		}
 		body += "\n\n" + provenanceTrailer("created by", sess.SessionID, nt.State) + "\n"
-		args := kanbanclient.CreateCardArgs{
+		args := issuesclient.CreateCardArgs{
 			ColumnName: colName,
 			// 80 is the hard cut and matches the schema's maxLength; the prompt's
 			// "≤60 chars" is advice, not this number badly copied. See the note on
@@ -971,15 +971,15 @@ func normalizeTitle(title string) string {
 func stateToColumn(state string) string {
 	switch state {
 	case "in_progress":
-		return kanbanvocab.ColumnInProgress
+		return boardvocabulary.ColumnInProgress
 	case "blocked":
-		return kanbanvocab.ColumnBlocked
+		return boardvocabulary.ColumnBlocked
 	case "done":
-		return kanbanvocab.ColumnDone
+		return boardvocabulary.ColumnDone
 	case "abandoned":
-		return kanbanvocab.ColumnFailed
+		return boardvocabulary.ColumnFailed
 	default:
-		return kanbanvocab.ColumnInProgress
+		return boardvocabulary.ColumnInProgress
 	}
 }
 
@@ -990,7 +990,7 @@ func stateToColumn(state string) string {
 // binary runs at all was the one thing in it nothing could score. run() still
 // exits — the column set is not something a tick can work around — but it
 // exits at a call site that says so.
-func requireColumns(kc *kanbanclient.Client, names []string) error {
+func requireColumns(kc *issuesclient.Client, names []string) error {
 	for _, n := range names {
 		if kc.ColumnsByName[n] == "" {
 			return fmt.Errorf("column %q missing on board %s", n, kc.BoardID)
@@ -1275,7 +1275,7 @@ func digestMessages(page turnPage) []bridgeMessage {
 // because the recent turns carry the "is it done / is it blocked" signal.
 // Nothing is ever cut mid-section, and every drop is announced in the text
 // so the model (and a human reading a dump) can see what is missing.
-func buildDigest(sess session, msgs []bridgeMessage, existingCards []kanbanclient.EntityCardEntry, charBudget int) string {
+func buildDigest(sess session, msgs []bridgeMessage, existingCards []issuesclient.EntityCardEntry, charBudget int) string {
 	if charBudget <= 0 {
 		charBudget = digestCharBudget
 	}
@@ -1320,7 +1320,7 @@ func buildMetaSection(sess session, msgCount int) string {
 // Card identity (card_id + title) is what stops the model re-filing work, so
 // it is never dropped to save space: bodies are shed first, and only if the
 // titles alone still overflow are the oldest cards omitted — loudly.
-func buildExistingCardsSection(existingCards []kanbanclient.EntityCardEntry, budget int) string {
+func buildExistingCardsSection(existingCards []issuesclient.EntityCardEntry, budget int) string {
 	const header = "[EXISTING CARDS — already on the kanban for this session]\n"
 	if len(existingCards) == 0 {
 		return header + "(none)\n\n"

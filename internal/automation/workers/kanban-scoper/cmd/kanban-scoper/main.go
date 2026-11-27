@@ -43,10 +43,10 @@ import (
 	"time"
 
 	schedulerconfig "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/config"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/boardvocabulary"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgeauth"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/degradations"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanclient"
-	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/kanbanvocab"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/oneshot"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/schedulerjobs"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/schedulersettings"
@@ -54,20 +54,20 @@ import (
 )
 
 const (
-	columnGoals      = kanbanvocab.ColumnGoals
-	columnBacklog    = kanbanvocab.ColumnBacklog
-	columnInProgress = kanbanvocab.ColumnInProgress
-	columnDone       = kanbanvocab.ColumnDone
-	columnFailed     = kanbanvocab.ColumnFailed
-	tagTrigger       = kanbanvocab.TagTrigger
-	tagSubtask       = kanbanvocab.TagSubtask
+	columnGoals      = boardvocabulary.ColumnGoals
+	columnBacklog    = boardvocabulary.ColumnBacklog
+	columnInProgress = boardvocabulary.ColumnInProgress
+	columnDone       = boardvocabulary.ColumnDone
+	columnFailed     = boardvocabulary.ColumnFailed
+	tagTrigger       = boardvocabulary.TagTrigger
+	tagSubtask       = boardvocabulary.TagSubtask
 	tagScoped        = "scoped"
 	// tagGroupPrefix must stay identical to kanban-dispatcher's constant of the
 	// same name — this is the wire format between the two binaries. It is spelled
 	// out in both rather than shared, along with every other constant in this
 	// block; see the residual filed alongside this change.
-	tagGroupPrefix  = kanbanvocab.TagGroupPrefix
-	linkTypeParent  = kanbanvocab.LinkTypeParentCard
+	tagGroupPrefix  = boardvocabulary.TagGroupPrefix
+	linkTypeParent  = boardvocabulary.LinkTypeParentCard
 	maxScopePerTick = 5
 )
 
@@ -173,7 +173,7 @@ func run(cfg config) int {
 	degraded := degradations.New("scoper")
 	ctx := context.Background()
 
-	kc := kanbanclient.New(cfg.KanbanURL, cfg.KanbanServiceToken)
+	kc := issuesclient.New(cfg.KanbanURL, cfg.KanbanServiceToken)
 	board, err := kc.EnsureBoardColumns(cfg.BoardID, defaultColumns)
 	if err != nil {
 		log.Fatalf("board %s: %v", cfg.BoardID, err)
@@ -239,8 +239,8 @@ func (p parentCard) body() string {
 
 // pickParents returns Goals-column cards tagged with the trigger tag that
 // don't yet carry the "scoped" entity_tag.
-func pickParents(view *kanbanclient.BoardView, kc *kanbanclient.Client, degraded *degradations.Recorder) []parentCard {
-	var goalsCards []kanbanclient.CardView
+func pickParents(view *issuesclient.BoardView, kc *issuesclient.Client, degraded *degradations.Recorder) []parentCard {
+	var goalsCards []issuesclient.CardView
 	for _, cv := range view.Columns {
 		if cv.Column.Name == columnGoals {
 			goalsCards = cv.Cards
@@ -257,7 +257,7 @@ func pickParents(view *kanbanclient.BoardView, kc *kanbanclient.Client, degraded
 			continue
 		}
 		// Check entity_tags for "scoped".
-		etags, err := kc.ListEntityTags(kanbanvocab.EntityTypeNote, c.Placement.CardID)
+		etags, err := kc.ListEntityTags(boardvocabulary.EntityTypeNote, c.Placement.CardID)
 		if err != nil {
 			log.Printf("[%s] list entity tags: %v — skip", c.Placement.CardID, err)
 			degraded.Record("goal card %s (%s): its scoped tag could not be read (%v), so it was never considered for decomposition",
@@ -283,7 +283,7 @@ func pickParents(view *kanbanclient.BoardView, kc *kanbanclient.Client, degraded
 // it can fall short at the site where that happens, with the consequence
 // attached, and returns an error only as control flow for the caller's loop —
 // the caller must not record again.
-func scopeParent(ctx context.Context, cfg config, kc *kanbanclient.Client, p parentCard, degraded *degradations.Recorder) error {
+func scopeParent(ctx context.Context, cfg config, kc *issuesclient.Client, p parentCard, degraded *degradations.Recorder) error {
 	digest := buildDigest(p)
 	plan, err := decompose(ctx, cfg, digest)
 	if err != nil {
@@ -344,7 +344,7 @@ func scopeParent(ctx context.Context, cfg config, kc *kanbanclient.Client, p par
 		log.Printf("[%s] subcard %s → %q", p.title(), childID, draft.Title)
 	}
 
-	if err := kc.AddEntityTag(kanbanvocab.EntityTypeNote, p.cardID, tagScoped); err != nil {
+	if err := kc.AddEntityTag(boardvocabulary.EntityTypeNote, p.cardID, tagScoped); err != nil {
 		degraded.Record("goal card %s (%s): its %d sub-cards were written but the scoped stamp was refused (%v), so every later tick decomposes it again and writes a duplicate set",
 			p.cardID, p.title(), len(plan.Subtasks), err)
 		return fmt.Errorf("mark scoped: %w", err)
@@ -431,9 +431,9 @@ func buildSubcardDraft(p parentCard, st Subtask, roleTags bool) subcardDraft {
 }
 
 // createSubcard creates a card in the given column and attaches a parent_card
-// link in one go. We bypass kanbanclient.CreateCard because that helper
+// link in one go. We bypass issuesclient.CreateCard because that helper
 // hard-codes autoworker-specific links.
-func createSubcard(kc *kanbanclient.Client, columnID, title, body string, tags []string, parentID string) (string, error) {
+func createSubcard(kc *issuesclient.Client, columnID, title, body string, tags []string, parentID string) (string, error) {
 	payload := map[string]any{
 		"title":     title,
 		"body":      body,
@@ -450,7 +450,7 @@ func createSubcard(kc *kanbanclient.Client, columnID, title, body string, tags [
 		"parent_id": parentID,
 	}
 	bs, _ := json.Marshal(payload)
-	// PathEscape keeps the board id one path segment, as kanbanclient does for
+	// PathEscape keeps the board id one path segment, as issuesclient does for
 	// every board id it sends.
 	createCardURL := fmt.Sprintf("%s/api/boards/%s/cards", kc.BaseURL, url.PathEscape(kc.BoardID))
 	resp, err := kc.HTTP.Post(createCardURL, "application/json", bytes.NewReader(bs))
@@ -664,7 +664,7 @@ func contains(haystack []string, needle string) bool {
 	return false
 }
 
-func anyTagEquals(tags []kanbanclient.EntityTag, want string) bool {
+func anyTagEquals(tags []issuesclient.EntityTag, want string) bool {
 	for _, t := range tags {
 		if t.Tag == want {
 			return true
