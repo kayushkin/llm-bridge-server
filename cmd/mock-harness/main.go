@@ -251,8 +251,9 @@ var mockTurnNumber int
 
 func emitResult(emit func(msg.Event), harnessName, sessionID, userMessage string) {
 	// Two messages a turn, as a real agent writes them: one that calls the
-	// tool, then one that answers. Each carries a harness message id, so the
-	// server gives them two bridge message ids. In one message, the answer's
+	// tool, then one that answers. Each event carries its message's harness
+	// id where a real harness puts it (msg.HarnessMessageIDOf reads the
+	// variant fields), so the server gives the two bridge message ids. In one message, the answer's
 	// text block sat beside a tool call, which reads as narration (text that
 	// announces a tool), so the settled chat drew it as well as the result
 	// that repeats it.
@@ -277,12 +278,11 @@ func emitResult(emit func(msg.Event), harnessName, sessionID, userMessage string
 	// tool_call; the explicit session_state here is for consumers that read
 	// the mock's raw stream directly (the conformance suite).
 	emit(msg.Event{
-		Type:             msg.EventToolCall,
-		Harness:          msg.Harness(harnessName),
-		BridgeSessionID:  sessionID,
-		HarnessMessageID: toolMessageID,
-		Timestamp:        time.Now(),
-		ToolCall:         &msg.ToolCallEvent{ToolID: "mock-tool-1", Name: "mock_tool", Input: json.RawMessage(`{}`)},
+		Type:            msg.EventToolCall,
+		Harness:         msg.Harness(harnessName),
+		BridgeSessionID: sessionID,
+		Timestamp:       time.Now(),
+		ToolCall:        &msg.ToolCallEvent{ToolID: "mock-tool-1", Name: "mock_tool", Input: json.RawMessage(`{}`), MessageID: toolMessageID},
 	})
 	emit(msg.Event{
 		Type:            msg.EventSessionState,
@@ -305,24 +305,22 @@ func emitResult(emit func(msg.Event), harnessName, sessionID, userMessage string
 	}
 
 	emit(msg.Event{
-		Type:             msg.EventToolResult,
-		Harness:          msg.Harness(harnessName),
-		BridgeSessionID:  sessionID,
-		HarnessMessageID: toolMessageID,
-		Timestamp:        time.Now(),
-		ToolResult:       &msg.ToolResultEvent{ToolID: "mock-tool-1", Name: "mock_tool", Output: "mock tool output"},
+		Type:            msg.EventToolResult,
+		Harness:         msg.Harness(harnessName),
+		BridgeSessionID: sessionID,
+		Timestamp:       time.Now(),
+		ToolResult:      &msg.ToolResultEvent{ToolID: "mock-tool-1", Name: "mock_tool", Output: "mock tool output", MessageID: toolMessageID},
 	})
 
 	responseText := "Mock response to: " + userMessage
 
 	// Emit a stream event
 	emit(msg.Event{
-		Type:             msg.EventStream,
-		Harness:          msg.Harness(harnessName),
-		BridgeSessionID:  sessionID,
-		HarnessMessageID: answerMessageID,
-		Timestamp:        time.Now(),
-		Stream: &msg.HarnessStream{Delta: &msg.BlockDelta{
+		Type:            msg.EventStream,
+		Harness:         msg.Harness(harnessName),
+		BridgeSessionID: sessionID,
+		Timestamp:       time.Now(),
+		Stream: &msg.HarnessStream{MessageID: answerMessageID, Delta: &msg.BlockDelta{
 			Type: msg.DeltaText,
 			Text: responseText,
 		}},
@@ -333,14 +331,14 @@ func emitResult(emit func(msg.Event), harnessName, sessionID, userMessage string
 	// finished block. Consumers that prefer post-finalized content over
 	// streaming deltas listen on EventBlock.
 	emit(msg.Event{
-		Type:             msg.EventBlock,
-		Harness:          msg.Harness(harnessName),
-		BridgeSessionID:  sessionID,
-		HarnessMessageID: answerMessageID,
-		Timestamp:        time.Now(),
+		Type:            msg.EventBlock,
+		Harness:         msg.Harness(harnessName),
+		BridgeSessionID: sessionID,
+		Timestamp:       time.Now(),
 		Block: &msg.BlockEvent{
-			Index: 0,
-			Block: &msg.ContentBlock{Type: msg.BlockText, Text: &msg.TextBlock{Text: responseText}},
+			Index:     0,
+			MessageID: answerMessageID,
+			Block:     &msg.ContentBlock{Type: msg.BlockText, Text: &msg.TextBlock{Text: responseText}},
 		},
 	})
 
@@ -393,12 +391,11 @@ func emitResult(emit func(msg.Event), harnessName, sessionID, userMessage string
 
 	// Emit result
 	emit(msg.Event{
-		Type:             msg.EventResult,
-		Harness:          msg.Harness(harnessName),
-		BridgeSessionID:  sessionID,
-		HarnessMessageID: answerMessageID,
-		Timestamp:        time.Now(),
-		Result:           &msg.ResultEvent{Text: responseText},
+		Type:            msg.EventResult,
+		Harness:         msg.Harness(harnessName),
+		BridgeSessionID: sessionID,
+		Timestamp:       time.Now(),
+		Result:          &msg.ResultEvent{Text: responseText},
 	})
 
 	// Emit idle state
