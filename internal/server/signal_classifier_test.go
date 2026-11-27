@@ -69,7 +69,7 @@ func TestClassifierEnabledFor(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			c := newSignalClassifier(tc.model, time.Second, 100, tc.optOut, nil)
-			if got := c.enabledFor(tc.harness); got != tc.want {
+			if got := c.EnabledFor(tc.harness); got != tc.want {
 				t.Errorf("enabledFor(%q) = %v, want %v", tc.harness, got, tc.want)
 			}
 		})
@@ -87,7 +87,7 @@ func TestSkipClassifyReason(t *testing.T) {
 	}{
 		{"ordinary settled turn", plain, "Which database should I migrate first?", msg.SessionIdle, false},
 		{"heuristic already parked it", plain, "Which database should I migrate first?", msg.SessionAwaitingUser, false},
-		{"renamer helper", &store.Session{Purpose: renamerSourceTag}, "Renamed the session, done.", msg.SessionIdle, true},
+		{"renamer helper", &store.Session{Purpose: store.RenamerSessionPurpose}, "Renamed the session, done.", msg.SessionIdle, true},
 		// A signal exists to put something in front of a person. An autonomous
 		// session has nobody watching, so classifying one spends a model call
 		// on a row no one will read — and autonomous turns are most of the

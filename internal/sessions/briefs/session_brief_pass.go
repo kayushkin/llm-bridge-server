@@ -1,4 +1,4 @@
-package server
+package briefs
 
 import (
 	"context"
@@ -13,6 +13,10 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
+
+// OneShotCallerSessionBrief is the Caller the brief pass names on each
+// one-shot request it routes.
+const OneShotCallerSessionBrief = "session-brief"
 
 // The session brief pass: at the end of each chat turn, one cheap-model call
 // reads the brief as it stood, the loose ends still open, what the person said
@@ -132,7 +136,7 @@ func skipSessionBriefReason(sess *store.Session, state msg.SessionState) string 
 	if sess.Type != msg.SessionTypeInteractive {
 		return "not a chat: " + string(sess.Type)
 	}
-	if sess.Purpose == renamerSourceTag {
+	if sess.Purpose == store.RenamerSessionPurpose {
 		return "renamer session"
 	}
 	switch state {
@@ -143,18 +147,19 @@ func skipSessionBriefReason(sess *store.Session, state msg.SessionState) string 
 	}
 }
 
-// updateSessionBriefAtTurnEnd runs the brief pass for one finished turn. Like
+// UpdateSessionBriefAtTurnEnd runs the brief pass for one finished turn. Like
 // the classifier it is best effort: a failure is logged and the brief stays as
 // the previous turn left it.
-func (s *Server) updateSessionBriefAtTurnEnd(bridgeID string, state msg.SessionState) {
-	if s.signalClassifier == nil {
+func (s *Service) UpdateSessionBriefAtTurnEnd(bridgeID string, state msg.SessionState) {
+	classifier := s.TurnClassifier()
+	if classifier == nil {
 		return
 	}
-	sess, err := s.store.GetSession(bridgeID)
+	sess, err := s.Store.GetSession(bridgeID)
 	if err != nil {
 		return
 	}
-	if !s.signalClassifier.enabledFor(sess.Harness) {
+	if !classifier.EnabledFor(sess.Harness) {
 		return
 	}
 	if skipSessionBriefReason(sess, state) != "" {
@@ -165,12 +170,12 @@ func (s *Server) updateSessionBriefAtTurnEnd(bridgeID string, state msg.SessionS
 	lock.(*sync.Mutex).Lock()
 	defer lock.(*sync.Mutex).Unlock()
 
-	userMessage, assistantTexts, err := s.harness.SessionEvents().CurrentTurnText(bridgeID)
+	userMessage, assistantTexts, err := s.Harness.SessionEvents().CurrentTurnText(bridgeID)
 	if err != nil {
 		log.Printf("[session-brief] %s: ERROR read the turn: %v", bridgeID, err)
 		return
 	}
-	firstUserMessage, err := s.harness.SessionEvents().FirstUserMessage(bridgeID)
+	firstUserMessage, err := s.Harness.SessionEvents().FirstUserMessage(bridgeID)
 	if err != nil {
 		log.Printf("[session-brief] %s: ERROR read the first message: %v", bridgeID, err)
 		return
@@ -178,7 +183,7 @@ func (s *Server) updateSessionBriefAtTurnEnd(bridgeID string, state msg.SessionS
 	if len(assistantTexts) == 0 {
 		return
 	}
-	previous, err := s.store.GetSessionBriefView(bridgeID)
+	previous, err := s.Store.GetSessionBriefView(bridgeID)
 	if err != nil {
 		log.Printf("[session-brief] %s: ERROR read the brief: %v", bridgeID, err)
 		return
@@ -190,9 +195,9 @@ func (s *Server) updateSessionBriefAtTurnEnd(bridgeID string, state msg.SessionS
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), s.signalClassifier.currentTuning().timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), classifier.CurrentTimeout())
 	defer cancel()
-	verdict, err := s.askForSessionBrief(ctx, previous.Brief, openLooseEnds, firstUserMessage, userMessage, assistantTexts)
+	verdict, err := s.askForSessionBrief(ctx, classifier, previous.Brief, openLooseEnds, firstUserMessage, userMessage, assistantTexts)
 	if err != nil {
 		log.Printf("[session-brief] %s: ERROR %v", bridgeID, err)
 		return
@@ -202,7 +207,7 @@ func (s *Server) updateSessionBriefAtTurnEnd(bridgeID string, state msg.SessionS
 		log.Printf("[session-brief] %s: ERROR %v", bridgeID, err)
 		return
 	}
-	if err := s.store.ApplySessionBriefUpdate(update); err != nil {
+	if err := s.Store.ApplySessionBriefUpdate(update); err != nil {
 		log.Printf("[session-brief] %s: ERROR save: %v", bridgeID, err)
 		return
 	}
@@ -210,19 +215,16 @@ func (s *Server) updateSessionBriefAtTurnEnd(bridgeID string, state msg.SessionS
 }
 
 // askForSessionBrief makes the one model call.
-func (s *Server) askForSessionBrief(ctx context.Context, previous *msg.SessionBrief, openLooseEnds []msg.LooseEnd, firstUserMessage, userMessage string, assistantTexts []string) (*sessionBriefVerdict, error) {
-	if s.signalClassifier.runOneShot == nil {
-		return nil, fmt.Errorf("no oneshot runner wired")
-	}
+func (s *Service) askForSessionBrief(ctx context.Context, classifier TurnClassifier, previous *msg.SessionBrief, openLooseEnds []msg.LooseEnd, firstUserMessage, userMessage string, assistantTexts []string) (*sessionBriefVerdict, error) {
 	schema, err := json.Marshal(sessionBriefOutputSchema())
 	if err != nil {
 		return nil, fmt.Errorf("marshal brief schema: %w", err)
 	}
-	raw, err := s.signalClassifier.runOneShot(ctx, msg.OneShotRequest{
+	raw, err := classifier.RunOneShot(ctx, msg.OneShotRequest{
 		Prompt:       sessionBriefPrompt(previous, openLooseEnds, firstUserMessage, userMessage, assistantTexts),
 		SystemPrompt: sessionBriefSystemPrompt,
-		ModelRole:    s.signalClassifier.currentTuning().modelRole,
-		Caller:       oneShotCallerSessionBrief,
+		ModelRole:    classifier.CurrentModelRole(),
+		Caller:       OneShotCallerSessionBrief,
 		Schema:       schema,
 		MaxTokens:    sessionBriefMaximumTokens,
 	})

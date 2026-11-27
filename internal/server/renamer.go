@@ -33,10 +33,6 @@ const (
 	// recentTurnsForRename caps how many turns of transcript get included in
 	// the renamer's prompt. Each text is also truncated by the store helper.
 	recentTurnsForRename = 12
-	// renamerSourceTag is the purpose the renamer's own sessions carried
-	// before it became a one-shot call. Their rows remain, and their turns
-	// are still neither renamed nor classified.
-	renamerSourceTag = "renamer"
 	// renamerSlotPrefix starts the id a title call reserves the target's
 	// renamer slot under.
 	renamerSlotPrefix = "rename-call-"

@@ -135,6 +135,23 @@ func (c *signalClassifier) currentTuning() signalClassifierTuning {
 	return c.tuning
 }
 
+// CurrentModelRole is the model role the classifier calls now; the session
+// brief pass calls the same role.
+func (c *signalClassifier) CurrentModelRole() string { return c.currentTuning().modelRole }
+
+// CurrentTimeout is how long one classification may take now; the session
+// brief pass takes the same.
+func (c *signalClassifier) CurrentTimeout() time.Duration { return c.currentTuning().timeout }
+
+// RunOneShot makes one schema-forced call through the classifier's runner,
+// which the session brief pass shares.
+func (c *signalClassifier) RunOneShot(ctx context.Context, request msg.OneShotRequest) ([]byte, error) {
+	if c.runOneShot == nil {
+		return nil, fmt.Errorf("no oneshot runner wired")
+	}
+	return c.runOneShot(ctx, request)
+}
+
 // retune puts new settings in force for the next classification.
 func (c *signalClassifier) retune(tuning signalClassifierTuning) {
 	c.tuningMutex.Lock()
@@ -142,10 +159,10 @@ func (c *signalClassifier) retune(tuning signalClassifierTuning) {
 	c.tuning = tuning
 }
 
-// enabledFor reports whether the classifier runs for this harness. An empty
+// EnabledFor reports whether the classifier runs for this harness. An empty
 // model role disables it everywhere; the opt-out set is the per-harness escape
 // hatch the on-by-default decision was taken with.
-func (c *signalClassifier) enabledFor(harness msg.Harness) bool {
+func (c *signalClassifier) EnabledFor(harness msg.Harness) bool {
 	if c == nil {
 		return false
 	}
@@ -338,7 +355,7 @@ func (s *Server) classifyTurnEnd(bridgeID string, ev *msg.Event, state msg.Sessi
 	if err != nil {
 		return
 	}
-	if !s.signalClassifier.enabledFor(sess.Harness) {
+	if !s.signalClassifier.EnabledFor(sess.Harness) {
 		return
 	}
 	if skip := skipClassifyReason(sess, ev.Result.Text, state); skip != "" {
@@ -423,7 +440,7 @@ func skipClassifyReason(sess *store.Session, text string, state msg.SessionState
 	if sess != nil && sess.Type != "" && sess.Type != msg.SessionTypeInteractive && !sessionSurfacesQuestions(sess) {
 		return "not an interactive session: " + string(sess.Type)
 	}
-	if sess != nil && sess.Purpose == renamerSourceTag {
+	if sess != nil && sess.Purpose == store.RenamerSessionPurpose {
 		// The renamer is our own helper. Classifying its turns spends money
 		// on a session no human reads, and its sign-off looks enough like a
 		// notification to mint one every time.

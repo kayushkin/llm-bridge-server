@@ -129,7 +129,7 @@ func TestStoredSettingsMoveOffTheRetiredKeysAtStart(t *testing.T) {
 
 func TestAChangedClassifierSettingIsInForceWithoutARestart(t *testing.T) {
 	srv, _ := testServer(t)
-	if srv.signalClassifier.enabledFor(msg.HarnessClaudeCode) {
+	if srv.signalClassifier.EnabledFor(msg.HarnessClaudeCode) {
 		t.Fatal("the classifier is on with no model role in the Config literal")
 	}
 	for key, value := range map[string]string{
@@ -147,7 +147,7 @@ func TestAChangedClassifierSettingIsInForceWithoutARestart(t *testing.T) {
 	if tuning.modelRole != "efficient" || tuning.timeout != 45*time.Second || tuning.maxChars != 900 {
 		t.Errorf("classifier tuning = %+v", tuning)
 	}
-	if !srv.signalClassifier.enabledFor(msg.HarnessClaudeCode) || srv.signalClassifier.enabledFor(msg.HarnessCodex) {
+	if !srv.signalClassifier.EnabledFor(msg.HarnessClaudeCode) || srv.signalClassifier.EnabledFor(msg.HarnessCodex) {
 		t.Error("the classifier should now run for claude_code and skip codex")
 	}
 	// Triage follows the classifier's timeout but not its role: the two

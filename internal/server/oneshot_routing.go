@@ -31,7 +31,6 @@ const (
 	oneShotCallerSessionRenamer       = "session-renamer"
 	oneShotCallerSessionActionsReview = "session-actions-review"
 	oneShotCallerSessionActionModel   = "session-action-model-call"
-	oneShotCallerSessionBrief         = "session-brief"
 )
 
 // newOneShotRouter builds the router from the server's stores and settings.

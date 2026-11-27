@@ -9,6 +9,6 @@ func (s *Server) onTurnEnd(bridgeID string, ev *msg.Event, state msg.SessionStat
 	go s.maybeAutoRename(bridgeID)
 	go s.reportPeerRequestTurnEnd(bridgeID, ev, state)
 	go s.chatLinkService.OnTurnEnd(bridgeID, ev, state)
-	go s.updateSessionBriefAtTurnEnd(bridgeID, state)
+	go s.briefService.UpdateSessionBriefAtTurnEnd(bridgeID, state)
 	s.classifyTurnEnd(bridgeID, ev, state)
 }

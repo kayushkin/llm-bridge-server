@@ -1,4 +1,4 @@
-package server
+package briefs
 
 import (
 	"database/sql"
@@ -23,16 +23,16 @@ import (
 // or dismiss a loose end. The brief pass (session_brief_pass.go) is the only
 // writer of the brief itself.
 
-// handleGetSessionBrief serves GET /sessions/{id}/brief: the brief, its
+// HandleGetSessionBrief serves GET /sessions/{id}/brief: the brief, its
 // revisions and every loose end, open and closed. A chat no turn has briefed
 // yet answers with "brief": null.
-func (s *Server) handleGetSessionBrief(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleGetSessionBrief(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("id")
-	if _, err := s.store.GetSession(sessionID); err != nil {
+	if _, err := s.Store.GetSession(sessionID); err != nil {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
-	view, err := s.store.GetSessionBriefView(sessionID)
+	view, err := s.Store.GetSessionBriefView(sessionID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -40,14 +40,14 @@ func (s *Server) handleGetSessionBrief(w http.ResponseWriter, r *http.Request) {
 	httpjson.WriteJSON(w, view)
 }
 
-// handleListSessionBriefs serves GET /session-briefs: the briefs of the
+// HandleListSessionBriefs serves GET /session-briefs: the briefs of the
 // caller's sessions, most recently updated first.
 //
 //	session_id      repeatable; only these sessions
 //	loose_end_state only loose ends in this state beside each brief
 //	updated_since   RFC 3339; only briefs updated since
 //	limit           at most this many briefs
-func (s *Server) handleListSessionBriefs(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleListSessionBriefs(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	filter := store.SessionBriefFilter{SessionIDs: query["session_id"]}
 	if state := query.Get("loose_end_state"); state != "" {
@@ -75,7 +75,7 @@ func (s *Server) handleListSessionBriefs(w http.ResponseWriter, r *http.Request)
 		filter.Limit = parsed
 	}
 	filter.OwnedByPrincipalID, filter.OwnedThroughPeerPrincipalID = requestcaller.SessionScopeFilterOfRequest(r)
-	views, err := s.store.ListSessionBriefs(filter)
+	views, err := s.Store.ListSessionBriefs(filter)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -86,8 +86,8 @@ func (s *Server) handleListSessionBriefs(w http.ResponseWriter, r *http.Request)
 // looseEndOfSession reads the loose end a path names and checks it belongs to
 // the session the path names; the route's rule has already checked the
 // caller may act on that session. Writes the error and returns nil otherwise.
-func (s *Server) looseEndOfSession(w http.ResponseWriter, r *http.Request) *msg.LooseEnd {
-	looseEnd, err := s.store.GetLooseEnd(r.PathValue("loose_end_id"))
+func (s *Service) looseEndOfSession(w http.ResponseWriter, r *http.Request) *msg.LooseEnd {
+	looseEnd, err := s.Store.GetLooseEnd(r.PathValue("loose_end_id"))
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && looseEnd.SessionID != r.PathValue("id")) {
 		http.Error(w, "loose end not found", http.StatusNotFound)
 		return nil
@@ -115,10 +115,10 @@ func looseEndAnswerMessage(looseEnd *msg.LooseEnd, answer string) string {
 	return fmt.Sprintf("About something you said earlier: \"%s\"\n\n%s", looseEnd.Text, answer)
 }
 
-// handleAnswerLooseEnd serves POST /sessions/{id}/loose-ends/{loose_end_id}/answer:
+// HandleAnswerLooseEnd serves POST /sessions/{id}/loose-ends/{loose_end_id}/answer:
 // sends the answer to the session as a message, exactly as if the person typed
 // it, and closes the loose end with it.
-func (s *Server) handleAnswerLooseEnd(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleAnswerLooseEnd(w http.ResponseWriter, r *http.Request) {
 	var request looseEndAnswerRequest
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_body", err.Error())
@@ -133,13 +133,13 @@ func (s *Server) handleAnswerLooseEnd(w http.ResponseWriter, r *http.Request) {
 	if looseEnd == nil {
 		return
 	}
-	sent := s.SendMessageFromThisServer(r.Context(), looseEnd.SessionID, SendMessageRequest{Message: looseEndAnswerMessage(looseEnd, answer)}, "")
+	sent := s.Sessions.SendMessageFromThisServer(r.Context(), looseEnd.SessionID, msg.SendMessageRequest{Message: looseEndAnswerMessage(looseEnd, answer)}, "")
 	if !sent.Sent() {
 		httpjson.WriteJSONError(w, http.StatusBadGateway, "send_failed",
 			fmt.Sprintf("sending the answer to the session answered %d: %s", sent.Status, strings.TrimSpace(string(sent.Body))))
 		return
 	}
-	if err := s.store.CloseLooseEnd(looseEnd.ID, msg.LooseEndAnswered, answer); err != nil {
+	if err := s.Store.CloseLooseEnd(looseEnd.ID, msg.LooseEndAnswered, answer); err != nil {
 		// The message went; only the record of it failed. Say so rather than
 		// report a clean answer.
 		http.Error(w, "the answer was sent, but closing the loose end failed: "+err.Error(), http.StatusInternalServerError)
@@ -148,13 +148,13 @@ func (s *Server) handleAnswerLooseEnd(w http.ResponseWriter, r *http.Request) {
 	httpjson.WriteJSON(w, map[string]any{"status": "answered"})
 }
 
-// handleDismissLooseEnd serves POST /sessions/{id}/loose-ends/{loose_end_id}/dismiss.
-func (s *Server) handleDismissLooseEnd(w http.ResponseWriter, r *http.Request) {
+// HandleDismissLooseEnd serves POST /sessions/{id}/loose-ends/{loose_end_id}/dismiss.
+func (s *Service) HandleDismissLooseEnd(w http.ResponseWriter, r *http.Request) {
 	looseEnd := s.looseEndOfSession(w, r)
 	if looseEnd == nil {
 		return
 	}
-	if err := s.store.CloseLooseEnd(looseEnd.ID, msg.LooseEndDismissed, ""); err != nil {
+	if err := s.Store.CloseLooseEnd(looseEnd.ID, msg.LooseEndDismissed, ""); err != nil {
 		if errors.Is(err, store.ErrLooseEndNotOpen) {
 			httpjson.WriteJSONError(w, http.StatusConflict, "loose_end_not_open", err.Error())
 			return

@@ -35,6 +35,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/mail"
 	"github.com/kayushkin/llm-bridge-server/internal/references"
 	"github.com/kayushkin/llm-bridge-server/internal/serviceinventory"
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/briefs"
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/snapshots"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	itemsapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/items/api"
@@ -255,6 +256,7 @@ type Server struct {
 	renamesInFlight sync.Map
 	// ChatLinks is nil when chat links are off (chat_links.go).
 	chatLinkService *chatlinks.Service
+	briefService    *briefs.Service
 }
 
 func New(st *store.Store, as *agents.Store, ms *memories.Store, hs *machines.Store, hks *hooks.Store, mds *models.Store, ss *snapshots.Store, cfg *config.Config) *Server {
@@ -304,6 +306,12 @@ func New(st *store.Store, as *agents.Store, ms *memories.Store, hs *machines.Sto
 	// machine.
 	srv.harness.SetTurnEndObserver(srv.onTurnEnd)
 	srv.harness.SetUnpromptedTurnStartObserver(srv.onUnpromptedTurnStart)
+	srv.briefService = &briefs.Service{Dependencies: briefs.Dependencies{
+		Harness:        srv.harness,
+		Store:          st,
+		TurnClassifier: srv.turnClassifierForBriefs,
+		Sessions:       srv,
+	}}
 	srv.chatLinkService = &chatlinks.Service{Dependencies: chatlinks.Dependencies{
 		Store:             st,
 		Settings:          srv.settings,
@@ -524,12 +532,7 @@ func (s *Server) routes() {
 	// is still live. See signal_answer.go.
 	s.mux.HandleFunc("POST /signals/{id}/answer", s.handleAnswerSignal)
 
-	// Session briefs: what each chat is for, where it stands, what each turn
-	// changed, and what it said that nobody answered. See session_brief_pass.go.
-	s.mux.HandleFunc("GET /sessions/{id}/brief", s.handleGetSessionBrief)
-	s.mux.HandleFunc("GET /session-briefs", s.handleListSessionBriefs)
-	s.mux.HandleFunc("POST /sessions/{id}/loose-ends/{loose_end_id}/answer", s.handleAnswerLooseEnd)
-	s.mux.HandleFunc("POST /sessions/{id}/loose-ends/{loose_end_id}/dismiss", s.handleDismissLooseEnd)
+	s.briefService.Mount(s.mux)
 
 	// Operations: asynchronous work with a durable receipt. See operations.go
 	// and docs/OPERATIONS.md in llm-bridge.
@@ -1489,3 +1492,13 @@ type discoveredLink struct {
 // ChatLinks is the chat link service: a session talking with a person
 // through one of the bots multichat holds.
 func (s *Server) ChatLinks() *chatlinks.Service { return s.chatLinkService }
+
+// turnClassifierForBriefs is the signal classifier the brief pass rides on,
+// read at each turn end so a classifier set later is the one used, and nil
+// while there is none.
+func (s *Server) turnClassifierForBriefs() briefs.TurnClassifier {
+	if s.signalClassifier == nil {
+		return nil
+	}
+	return s.signalClassifier
+}

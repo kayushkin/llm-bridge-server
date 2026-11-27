@@ -19,6 +19,11 @@ import (
 // Kept as a type alias so existing store code compiles unchanged.
 type Session = msg.ManagedSession
 
+// RenamerSessionPurpose is the purpose the session renamer's own sessions
+// carried before it became a one-shot call. Their rows remain, and their
+// turns are still neither renamed, classified nor briefed.
+const RenamerSessionPurpose = "renamer"
+
 // Notifier receives session-row mutation signals from the store. Set via
 // SetNotifier; nil-safe. Implementations must be non-blocking (drop, don't
 // stall the writer).
