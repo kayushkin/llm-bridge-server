@@ -11,18 +11,20 @@ import (
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
-// Every directory under cmd/ is a declared job binary, so a binary added later
-// cannot escape the scan by being on no list. The service itself runs in
-// llm-bridge-server and has no command here.
+// Every command under workers/<name>/cmd/ is a declared job binary, so a
+// binary added later cannot escape the scan by being on no list. The service
+// itself runs in llm-bridge-server and has no command.
 func TestEveryBinaryInCmdIsADeclaredJob(t *testing.T) {
-	entries, err := os.ReadDir(filepath.Join("..", "cmd"))
+	commands, err := filepath.Glob(filepath.Join("..", "..", "workers", "*", "cmd", "*"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var directories []string
-	for _, entry := range entries {
-		if entry.IsDir() {
-			directories = append(directories, entry.Name())
+	for _, command := range commands {
+		if info, err := os.Stat(command); err != nil {
+			t.Fatal(err)
+		} else if info.IsDir() {
+			directories = append(directories, filepath.Base(command))
 		}
 	}
 	var declared []string
@@ -32,7 +34,7 @@ func TestEveryBinaryInCmdIsADeclaredJob(t *testing.T) {
 	sort.Strings(directories)
 	sort.Strings(declared)
 	if strings.Join(directories, " ") != strings.Join(declared, " ") {
-		t.Errorf("cmd/ holds %v; JobBinaries names %v", directories, declared)
+		t.Errorf("workers/*/cmd/ holds %v; JobBinaries names %v", directories, declared)
 	}
 }
 

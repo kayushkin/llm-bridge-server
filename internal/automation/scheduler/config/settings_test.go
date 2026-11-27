@@ -187,7 +187,7 @@ func TestTheRegistryRefusesAMisspellingAndNotTheVariableJobsUseToFindIt(t *testi
 // imports, directly or through another.
 func packageDirectoriesReachedFrom(t *testing.T, repositoryRoot, start string) []string {
 	t.Helper()
-	const module = "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/"
+	const module = "github.com/kayushkin/llm-bridge-server/internal/automation/"
 	seen := map[string]bool{}
 	queue := []string{start}
 	for len(queue) > 0 {
@@ -243,9 +243,10 @@ var notSettings = []string{"PATH"}
 // package it imports, is one that binary declares. A read that is not declared
 // escapes the startup check, and the binary's misspelling guard with it.
 func TestEveryEnvironmentVariableAJobBinaryReadsIsDeclared(t *testing.T) {
-	const repositoryRoot = ".."
-	if _, err := os.Stat(filepath.Join(repositoryRoot, "cron", "cron.go")); err != nil {
-		t.Fatalf("the scan starts somewhere that is not the repository root: %v", err)
+	// The scan covers internal/automation: the scheduler and the workers.
+	repositoryRoot := filepath.Join("..", "..")
+	if _, err := os.Stat(filepath.Join(repositoryRoot, "scheduler", "cron", "cron.go")); err != nil {
+		t.Fatalf("the scan starts somewhere that is not internal/automation: %v", err)
 	}
 	for _, binary := range JobBinaries {
 		declared := map[string]bool{}
@@ -255,10 +256,10 @@ func TestEveryEnvironmentVariableAJobBinaryReadsIsDeclared(t *testing.T) {
 		for _, name := range notSettings {
 			declared[name] = true
 		}
-		directories := packageDirectoriesReachedFrom(t, repositoryRoot, "cmd/"+binary.Name)
+		directories := packageDirectoriesReachedFrom(t, repositoryRoot, "workers/"+binary.Name+"/cmd/"+binary.Name)
 		// Every binary builds its registry from this package, so a walk that
 		// does not reach it is not following imports.
-		if !contains(directories, "config") {
+		if !contains(directories, "scheduler/config") {
 			t.Errorf("%s: the scan does not reach config; it reached %v", binary.Name, directories)
 		}
 		filesRead := 0
