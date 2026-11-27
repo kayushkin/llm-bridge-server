@@ -1,0 +1,151 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	neturl "net/url"
+	"strings"
+	"time"
+)
+
+var httpClient = &http.Client{Timeout: 20 * time.Second}
+
+// doJSON issues one request and insists on an expected status. Anything else is
+// an error carrying the body, because a silent non-2xx here means a card that
+// looks promoted and is not.
+func doJSON(method, url string, body any, okStatuses ...int) error {
+	var reader io.Reader
+	if body != nil {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		reader = bytes.NewReader(encoded)
+	}
+	req, err := http.NewRequest(method, url, reader)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	for _, want := range okStatuses {
+		if resp.StatusCode == want {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s %s returned %d: %s", method, url, resp.StatusCode, strings.TrimSpace(string(raw)))
+}
+
+// patchItem edits the issue behind a card, through its card route, which
+// forwards the patch unchanged.
+func patchItem(issuesURL, cardID string, patch map[string]any) error {
+	return doJSON(http.MethodPatch,
+		fmt.Sprintf("%s/cards/%s", strings.TrimRight(issuesURL, "/"), neturl.PathEscape(cardID)),
+		patch, http.StatusOK)
+}
+
+// addNote writes a note onto the card's timeline, attributed.
+func addNote(issuesURL, cardID, boardID, actor, body string) error {
+	return doJSON(http.MethodPost,
+		fmt.Sprintf("%s/cards/%s/notes", strings.TrimRight(issuesURL, "/"), neturl.PathEscape(cardID)),
+		map[string]any{"body": body, "board_id": boardID, "kind": "status", "actor": actor},
+		http.StatusCreated, http.StatusOK)
+}
+
+// linkAs creates a card link and says who created it.
+//
+// The card route reads the actor from the query string (body actor wins, else
+// ?actor=), and issuesclient's AddCardLink has nowhere to put one — so the
+// events its links generate have always been anonymous. This is the same call
+// with attribution attached.
+func linkAs(issuesURL, cardID, entityType, entityRef, label, actor string) error {
+	url := fmt.Sprintf("%s/cards/%s/links?actor=%s",
+		strings.TrimRight(issuesURL, "/"), neturl.PathEscape(cardID), neturl.QueryEscape(actor))
+	return doJSON(http.MethodPost, url, map[string]any{
+		"entity_type": entityType, "entity_ref": entityRef, "label": label,
+	}, http.StatusCreated, http.StatusOK)
+}
+
+// getItem reads the issue behind a card.
+//
+// From the issue's item route, because the card routes have no single-card
+// read — /issues/cards/{id} answers PATCH and DELETE and 405s everything
+// else. A card id IS its issue's id, so /issues/items/{id} is the same record.
+func getItem(issuesURL, cardID string) (map[string]any, error) {
+	url := fmt.Sprintf("%s/items/%s", strings.TrimRight(issuesURL, "/"), neturl.PathEscape(cardID))
+	resp, err := httpClient.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("read item %s: %w", cardID, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("read item %s: %d %s", cardID, resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	var item map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&item); err != nil {
+		return nil, fmt.Errorf("decode item %s: %w", cardID, err)
+	}
+	return item, nil
+}
+
+// unhold releases a parked card. Already-released is not an error: the point is
+// that it ends up runnable, not that we were the one to make it so.
+func unhold(issuesURL, cardID string) error {
+	return doJSON(http.MethodPost,
+		fmt.Sprintf("%s/cards/%s/unhold", strings.TrimRight(issuesURL, "/"), neturl.PathEscape(cardID)),
+		nil, http.StatusOK, http.StatusCreated, http.StatusConflict)
+}
+
+// cardEvent is the part of an event this tool reads.
+type cardEvent struct {
+	Kind  string `json:"kind"`
+	Actor string `json:"actor"`
+}
+
+// listEvents reads a card's action log.
+func listEvents(issuesURL, cardID string) ([]cardEvent, error) {
+	url := fmt.Sprintf("%s/cards/%s/events", strings.TrimRight(issuesURL, "/"), neturl.PathEscape(cardID))
+	resp, err := httpClient.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("read events for %s: %w", cardID, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("read events for %s: %d %s", cardID, resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	var events []cardEvent
+	if err := json.NewDecoder(resp.Body).Decode(&events); err != nil {
+		return nil, fmt.Errorf("decode events for %s: %w", cardID, err)
+	}
+	return events, nil
+}
+
+// retag swaps one tag for another, preserving the rest.
+//
+// It reads the card back rather than trusting a copy held from earlier in the
+// tick, because a tags patch REPLACES the whole list: writing a stale one
+// silently drops whatever the classifier added in between. An error is returned
+// rather than an empty list, since patching nil tags would erase them all.
+func retag(issuesURL, cardID, remove, add string) ([]string, error) {
+	item, err := getItem(issuesURL, cardID)
+	if err != nil {
+		return nil, err
+	}
+	out := []string{add}
+	for _, t := range tagsOf(item) {
+		if t != remove && t != add {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}

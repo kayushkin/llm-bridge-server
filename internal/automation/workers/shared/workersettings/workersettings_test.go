@@ -1,0 +1,140 @@
+package workersettings
+
+import (
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"testing"
+
+	"github.com/kayushkin/llm-bridge/msg"
+	"github.com/kayushkin/llm-bridge/servicesettings"
+
+	bridgeconfig "github.com/kayushkin/llm-bridge-server/internal/config"
+)
+
+// Every command under workers/<name>/cmd/ is a declared job binary, so a
+// binary added later cannot escape the scan by being on no list.
+func TestEveryBinaryInCmdIsADeclaredJob(t *testing.T) {
+	commands, err := filepath.Glob(filepath.Join("..", "..", "*", "cmd", "*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var directories []string
+	for _, command := range commands {
+		if info, err := os.Stat(command); err != nil {
+			t.Fatal(err)
+		} else if info.IsDir() {
+			directories = append(directories, filepath.Base(command))
+		}
+	}
+	var declared []string
+	for _, binary := range JobBinaries {
+		declared = append(declared, binary.Name)
+	}
+	sort.Strings(directories)
+	sort.Strings(declared)
+	if strings.Join(directories, " ") != strings.Join(declared, " ") {
+		t.Errorf("workers/*/cmd/ holds %v; JobBinaries names %v", directories, declared)
+	}
+}
+
+// Each binary's declarations build, and with nothing set every binary starts:
+// none of them has a setting it cannot run without.
+func TestEveryJobBinaryBuildsARegistryFromAnEmptyEnvironment(t *testing.T) {
+	for _, binary := range JobBinaries {
+		registry, err := binary.NewSettingsRegistry(servicesettings.MapEnvironment(map[string]string{}))
+		if err != nil {
+			t.Errorf("%s: %v", binary.Name, err)
+			continue
+		}
+		if err := registry.CheckRequired(); err != nil {
+			t.Errorf("%s: %v", binary.Name, err)
+		}
+	}
+}
+
+// A job's environment is the scheduler's, and the scheduler runs in
+// llm-bridge-server: it carries the server's variables (its secrets
+// stripped) and every other job's. No binary may refuse any of them.
+func TestNoJobBinaryRefusesAVariableAnotherBinaryOrTheServerDeclares(t *testing.T) {
+	everyone := map[string]string{}
+	for _, definition := range bridgeconfig.SettingDefinitions() {
+		everyone[definition.EnvironmentVariable] = valueOfItsType(definition)
+	}
+	for _, binary := range JobBinaries {
+		for _, definition := range binary.SettingDefinitions() {
+			everyone[definition.EnvironmentVariable] = valueOfItsType(definition)
+		}
+	}
+	for _, binary := range JobBinaries {
+		if _, err := binary.NewSettingsRegistry(servicesettings.MapEnvironment(everyone)); err != nil {
+			t.Errorf("%s refuses the fleet's environment: %v", binary.Name, err)
+		}
+	}
+}
+
+func valueOfItsType(definition servicesettings.Definition) string {
+	switch definition.ValueType {
+	case msg.ServiceSettingValueTypeBoolean:
+		return "true"
+	case msg.ServiceSettingValueTypeInteger:
+		return "1"
+	case msg.ServiceSettingValueTypeDecimal:
+		return "1.5"
+	}
+	return "x"
+}
+
+// A misspelling of a name a binary owns stops that binary.
+func TestAJobBinaryRefusesAMisspellingOfANameItOwns(t *testing.T) {
+	for binary, misspelled := range map[*JobBinary]string{
+		&Autoworker:          "AUTOWORKER_DEFAULT_MAX_BUDGET",
+		&DemoMailGenerator:   "DEMO_MAIL_MODLE",
+		&EmailClassifier:     "EMAIL_CLASSIFIER_MODLE",
+		&KanbanClassifier:    "KANBAN_CLASSIFIER_MODELS",
+		&KanbanScoper:        "KANBAN_SCOPER_ROLETAGS",
+		&ReminderCoordinator: "REMINDER_TIMEZONE",
+	} {
+		_, err := binary.NewSettingsRegistry(servicesettings.MapEnvironment(map[string]string{misspelled: "x"}))
+		if err == nil || !strings.Contains(err.Error(), misspelled+" is set and "+binary.Name+" declares no such setting") {
+			t.Errorf("%s with %s set = %v, want a refusal naming it", binary.Name, misspelled, err)
+		}
+	}
+	// EMAIL_BOARD_ID is owned as a whole name, not as EMAIL_.
+	if _, err := EmailClassifier.NewSettingsRegistry(servicesettings.MapEnvironment(map[string]string{"EMAIL_BOARD_IDS": "x"})); err == nil {
+		t.Error("email-classifier accepted EMAIL_BOARD_IDS")
+	}
+}
+
+// KANBAN_SCOPER_ROLE_TAGS used to read yes, on and anything unparseable as a
+// quiet default. Now a value that is not a boolean stops the binary.
+func TestKanbanScoperRefusesARoleTagsValueThatIsNotABoolean(t *testing.T) {
+	if _, err := KanbanScoper.NewSettingsRegistry(servicesettings.MapEnvironment(map[string]string{"KANBAN_SCOPER_ROLE_TAGS": "yes"})); err == nil {
+		t.Error("KANBAN_SCOPER_ROLE_TAGS=yes was accepted")
+	}
+	registry, err := KanbanScoper.NewSettingsRegistry(servicesettings.MapEnvironment(map[string]string{"KANBAN_SCOPER_ROLE_TAGS": "true"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !registry.Boolean(SettingRoleTags) {
+		t.Error("KANBAN_SCOPER_ROLE_TAGS=true read as false")
+	}
+}
+
+// A model or model role left in the environment under a name a binary owns
+// stops that binary: the role is the scheduler's stored setting now, and a
+// variable that looked like it chose the model would be a second source that
+// silently does nothing.
+func TestAJobBinaryRefusesTheModelVariablesItNoLongerReads(t *testing.T) {
+	for binary, leftover := range map[*JobBinary]string{
+		&DemoMailGenerator: "DEMO_MAIL_MODEL",
+		&EmailClassifier:   "EMAIL_CLASSIFIER_MERGE_MODEL",
+		&KanbanClassifier:  "KANBAN_CLASSIFIER_MODEL",
+		&KanbanScoper:      "KANBAN_SCOPER_MODEL",
+	} {
+		if _, err := binary.NewSettingsRegistry(servicesettings.MapEnvironment(map[string]string{leftover: "claude-haiku-4-5-20251001"})); err == nil {
+			t.Errorf("%s started with %s set", binary.Name, leftover)
+		}
+	}
+}
