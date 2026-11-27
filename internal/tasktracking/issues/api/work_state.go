@@ -3,8 +3,8 @@ package api
 import (
 	"net/http"
 
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuecontent"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/model"
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/noteboard"
 )
 
 // workStates serves the shared work-state vocabulary, each state with its
@@ -50,7 +50,7 @@ type cardWorkState struct {
 	Source *model.CardWorkStateSource
 }
 
-// entityCards is GET /api/entities/{type}/{ref}/cards: every card linked to
+// entityCards is GET /entities/{type}/{ref}/cards: every card linked to
 // the entity, oldest link first, each with its noteboard item and its shared
 // work_state — enough for a rollup (a project's cards, counted by state) in
 // one call. It costs one query here and one noteboard call, however many cards
@@ -86,11 +86,11 @@ func (a *API) entityCardsFor(access *PrincipalBoardAccess, entityType, entityRef
 	for i, card := range visible {
 		ids[i] = card.CardID
 	}
-	itemsByID := map[string]noteboard.Item{}
+	itemsByID := map[string]issuecontent.Item{}
 	if len(ids) > 0 {
 		// No filter and no sort: noteboard answers every live item named, held
 		// ones included, and lists the rest as missing_ids.
-		result, err := a.noteboard.QueryItems(noteboard.ItemsQuery{IDs: ids, IncludeItems: true})
+		result, err := a.issueContent.QueryItems(issuecontent.ItemsQuery{IDs: ids, IncludeItems: true})
 		if err != nil {
 			return nil, &Refusal{Status: 502, Message: err.Error()}
 		}

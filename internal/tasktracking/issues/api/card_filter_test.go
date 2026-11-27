@@ -19,19 +19,19 @@ func buildFilteredDesk(t *testing.T) (filteredDesk, func(query string) model.Boa
 	t.Helper()
 	h, _, _ := setupWithPrincipalEnforcement(t)
 	var d filteredDesk
-	w := requestAs(t, h, asService, "POST", "/api/boards", model.CreateBoardRequest{Name: "Support Desk"})
+	w := requestAs(t, h, asService, "POST", "/boards", model.CreateBoardRequest{Name: "Support Desk"})
 	mustStatus(t, w, 201, "board")
 	var board model.Board
 	decodeSuccessfulResponse(t, w, &board)
 	d.boardID = board.ID
-	w = requestAs(t, h, asService, "POST", "/api/boards/"+d.boardID+"/columns", model.CreateColumnRequest{Name: "New"})
+	w = requestAs(t, h, asService, "POST", "/boards/"+d.boardID+"/columns", model.CreateColumnRequest{Name: "New"})
 	mustStatus(t, w, 201, "column")
 	var column model.Column
 	decodeSuccessfulResponse(t, w, &column)
 	d.columnID = column.ID
 
 	makeCard := func(title string) string {
-		w := requestAs(t, h, asService, "POST", "/api/boards/"+d.boardID+"/cards", model.CreateCardRequest{Title: title, ColumnID: d.columnID})
+		w := requestAs(t, h, asService, "POST", "/boards/"+d.boardID+"/cards", model.CreateCardRequest{Title: title, ColumnID: d.columnID})
 		mustStatus(t, w, 201, "card "+title)
 		var card model.CardView
 		decodeSuccessfulResponse(t, w, &card)
@@ -41,21 +41,21 @@ func buildFilteredDesk(t *testing.T) (filteredDesk, func(query string) model.Boa
 	d.unassignedTicketByChat = makeCard("a chat ticket nobody has picked up")
 	d.carolOrdinaryCard = makeCard("carol's ordinary card")
 	for cardID, channel := range map[string]string{d.aliceTicketByEmail: "email", d.unassignedTicketByChat: "chat"} {
-		mustStatus(t, requestAs(t, h, asService, "PUT", "/api/cards/"+cardID+"/ticket",
+		mustStatus(t, requestAs(t, h, asService, "PUT", "/cards/"+cardID+"/ticket",
 			model.TicketWriteRequest{RequesterPrincipalID: requesterContact, Channel: channel}), 200, "ticket by "+channel)
 	}
-	mustStatus(t, requestAs(t, h, asService, "PUT", "/api/cards/"+d.aliceTicketByEmail+"/assignments/"+alice, nil), 201, "assign alice")
-	mustStatus(t, requestAs(t, h, asService, "PUT", "/api/cards/"+d.carolOrdinaryCard+"/assignments/"+carol, nil), 201, "assign carol")
+	mustStatus(t, requestAs(t, h, asService, "PUT", "/cards/"+d.aliceTicketByEmail+"/assignments/"+alice, nil), 201, "assign alice")
+	mustStatus(t, requestAs(t, h, asService, "PUT", "/cards/"+d.carolOrdinaryCard+"/assignments/"+carol, nil), 201, "assign carol")
 
 	board_ := func(query string) model.BoardView {
-		w := requestAs(t, h, asService, "GET", "/api/boards/"+d.boardID+"/cards"+query, nil)
+		w := requestAs(t, h, asService, "GET", "/boards/"+d.boardID+"/cards"+query, nil)
 		mustStatus(t, w, 200, "board read "+query)
 		var view model.BoardView
 		decodeSuccessfulResponse(t, w, &view)
 		return view
 	}
 	column_ := func(query string) model.ColumnView {
-		w := requestAs(t, h, asService, "GET", "/api/columns/"+d.columnID+"/cards"+query, nil)
+		w := requestAs(t, h, asService, "GET", "/columns/"+d.columnID+"/cards"+query, nil)
 		mustStatus(t, w, 200, "column read "+query)
 		var view model.ColumnView
 		decodeSuccessfulResponse(t, w, &view)
@@ -136,7 +136,7 @@ func TestAFilteredColumnIsPagedAfterTheFilter(t *testing.T) {
 // match". So a value that cannot mean anything is refused.
 func TestAFilterThatCannotMeanAnythingIsRefused(t *testing.T) {
 	h, _, _ := setupWithPrincipalEnforcement(t)
-	w := requestAs(t, h, asService, "POST", "/api/boards", model.CreateBoardRequest{Name: "Desk"})
+	w := requestAs(t, h, asService, "POST", "/boards", model.CreateBoardRequest{Name: "Desk"})
 	mustStatus(t, w, 201, "board")
 	var board model.Board
 	decodeSuccessfulResponse(t, w, &board)
@@ -144,6 +144,6 @@ func TestAFilterThatCannotMeanAnythingIsRefused(t *testing.T) {
 		"?assignee=alice", "?requester=someone@example.com", "?channel=carrier-pigeon",
 		"?unassigned=yes", "?tickets_only=1", "?unassigned=true&assignee=" + alice,
 	} {
-		mustStatus(t, requestAs(t, h, asService, "GET", "/api/boards/"+board.ID+"/cards"+query, nil), 400, "board read "+query)
+		mustStatus(t, requestAs(t, h, asService, "GET", "/boards/"+board.ID+"/cards"+query, nil), 400, "board read "+query)
 	}
 }

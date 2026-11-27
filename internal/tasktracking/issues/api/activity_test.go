@@ -18,7 +18,7 @@ func seconds(n int) *int { return &n }
 // mkColumnWithClock creates a column classified for the budget clock.
 func mkColumnWithClock(t *testing.T, h http.Handler, boardID, name string, state model.ClockState) string {
 	t.Helper()
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/columns", model.CreateColumnRequest{
+	w := do(t, h, "POST", "/boards/"+boardID+"/columns", model.CreateColumnRequest{
 		Name: name, BudgetClockState: clockState(state),
 	})
 	if w.Code != 201 {
@@ -51,7 +51,7 @@ func TestTimelineReplaysTheWorkedExample(t *testing.T) {
 
 	// P0 is the TOP rung, and the top rung is the highest stored value — not zero,
 	// which is where noteboard leaves everything nobody has ranked.
-	w := do(t, h, "PUT", "/api/boards/"+boardID+"/priority-levels", model.SetPriorityLadderRequest{
+	w := do(t, h, "PUT", "/boards/"+boardID+"/priority-levels", model.SetPriorityLadderRequest{
 		Levels: []model.BoardPriorityLevel{
 			{PriorityValue: 5, Label: "P0", BudgetSeconds: seconds(2 * 3600)},
 			{PriorityValue: 4, Label: "P1", BudgetSeconds: seconds(8 * 3600)},
@@ -65,7 +65,7 @@ func TestTimelineReplaysTheWorkedExample(t *testing.T) {
 	}
 
 	priority := 5
-	w = do(t, h, "POST", "/api/boards/"+boardID+"/cards", model.CreateCardRequest{
+	w = do(t, h, "POST", "/boards/"+boardID+"/cards", model.CreateCardRequest{
 		Title: "Contract question from the client", ColumnID: actionNeeded, Priority: &priority,
 	})
 	if w.Code != 201 {
@@ -86,34 +86,34 @@ func TestTimelineReplaysTheWorkedExample(t *testing.T) {
 			t.Fatalf("POST %s: %d %s", path, w.Code, w.Body.String())
 		}
 	}
-	post("/api/cards/"+cardID+"/events", model.CreateCardEventRequest{
+	post("/cards/"+cardID+"/events", model.CreateCardEventRequest{
 		Kind: model.EventEmailReceived, BoardID: boardID, Actor: "email-classifier",
 		Summary: "Client asks which contract clause applies", OccurredAt: at(0),
 	})
 	// Half an hour of work, recorded as a note — a summary of what was done, which
 	// is exactly the kind of thing D4 moved out of the noteboard body and onto the
 	// card as activity.
-	post("/api/cards/"+cardID+"/notes", model.CreateCardNoteRequest{
+	post("/cards/"+cardID+"/notes", model.CreateCardNoteRequest{
 		BoardID: boardID, Kind: "summary", Actor: "me",
 		Body: "Read the contract, drafted an answer, sent it for legal sign-off.", OccurredAt: at(30 * time.Minute),
 	})
 	// Ball handed over: the clock pauses even though the card stays open.
-	post("/api/cards/"+cardID+"/events", model.CreateCardEventRequest{
+	post("/cards/"+cardID+"/events", model.CreateCardEventRequest{
 		Kind: model.EventWaitingStarted, BoardID: boardID, Actor: "me",
 		Summary: "Waiting on legal", OccurredAt: at(30 * time.Minute),
 	})
 	// A day later the answer arrives and the clock runs again.
-	post("/api/cards/"+cardID+"/events", model.CreateCardEventRequest{
+	post("/cards/"+cardID+"/events", model.CreateCardEventRequest{
 		Kind: model.EventEmailReceived, BoardID: boardID, Actor: "email-classifier",
 		Summary: "Legal replied", OccurredAt: at(24*time.Hour + 30*time.Minute),
 	})
 	// An hour of work, then done.
-	post("/api/cards/"+cardID+"/events", model.CreateCardEventRequest{
+	post("/cards/"+cardID+"/events", model.CreateCardEventRequest{
 		Kind: model.EventCardCompleted, BoardID: boardID, Actor: "me",
 		Summary: "Answered the client", OccurredAt: at(25*time.Hour + 30*time.Minute),
 	})
 
-	w = do(t, h, "GET", "/api/cards/"+cardID+"/timeline?board_id="+boardID, nil)
+	w = do(t, h, "GET", "/cards/"+cardID+"/timeline?board_id="+boardID, nil)
 	if w.Code != 200 {
 		t.Fatalf("timeline: %d %s", w.Code, w.Body.String())
 	}
@@ -178,7 +178,7 @@ func TestTimelineReplaysTheWorkedExample(t *testing.T) {
 
 	// The board view answers the same question without a per-card round trip,
 	// because that badge is drawn for every card on screen.
-	w = do(t, h, "GET", "/api/boards/"+boardID+"/cards", nil)
+	w = do(t, h, "GET", "/boards/"+boardID+"/cards", nil)
 	var view model.BoardView
 	decodeSuccessfulResponse(t, w, &view)
 	if view.PriorityLadder == nil || len(view.PriorityLadder.Levels) != 5 {
@@ -222,21 +222,21 @@ func TestMovingIntoAColumnTakesItsClock(t *testing.T) {
 	inProgress := mkColumnWithClock(t, h, boardID, "In Progress", model.ClockRunning)
 	blocked := mkColumnWithClock(t, h, boardID, "Blocked", model.ClockPaused)
 
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/cards", model.CreateCardRequest{
+	w := do(t, h, "POST", "/boards/"+boardID+"/cards", model.CreateCardRequest{
 		Title: "Fix the deploy", ColumnID: inProgress,
 	})
 	var created model.CardView
 	decodeSuccessfulResponse(t, w, &created)
 	cardID := created.Placement.CardID
 
-	w = do(t, h, "POST", "/api/cards/"+cardID+"/move", model.MoveCardRequest{
+	w = do(t, h, "POST", "/cards/"+cardID+"/move", model.MoveCardRequest{
 		BoardID: boardID, ColumnID: blocked,
 	})
 	if w.Code != 200 {
 		t.Fatalf("move: %d %s", w.Code, w.Body.String())
 	}
 	var events []model.CardEvent
-	w = do(t, h, "GET", "/api/cards/"+cardID+"/events?board_id="+boardID, nil)
+	w = do(t, h, "GET", "/cards/"+cardID+"/events?board_id="+boardID, nil)
 	decodeSuccessfulResponse(t, w, &events)
 	if len(events) != 2 {
 		t.Fatalf("events = %d, want a creation and a move", len(events))
@@ -259,20 +259,20 @@ func TestUnclassifiedColumnLeavesTheClockAlone(t *testing.T) {
 
 	boardID := mkBoard(t, h, "Projects")
 	blocked := mkColumnWithClock(t, h, boardID, "Blocked", model.ClockPaused)
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/columns", model.CreateColumnRequest{Name: "Someday"})
+	w := do(t, h, "POST", "/boards/"+boardID+"/columns", model.CreateColumnRequest{Name: "Someday"})
 	var someday model.Column
 	decodeSuccessfulResponse(t, w, &someday)
 
-	w = do(t, h, "POST", "/api/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "Rewrite it", ColumnID: blocked})
+	w = do(t, h, "POST", "/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "Rewrite it", ColumnID: blocked})
 	var created model.CardView
 	decodeSuccessfulResponse(t, w, &created)
 	cardID := created.Placement.CardID
 
-	if w := do(t, h, "POST", "/api/cards/"+cardID+"/move", model.MoveCardRequest{BoardID: boardID, ColumnID: someday.ID}); w.Code != 200 {
+	if w := do(t, h, "POST", "/cards/"+cardID+"/move", model.MoveCardRequest{BoardID: boardID, ColumnID: someday.ID}); w.Code != 200 {
 		t.Fatalf("move: %d %s", w.Code, w.Body.String())
 	}
 	var events []model.CardEvent
-	decodeSuccessfulResponse(t, do(t, h, "GET", "/api/cards/"+cardID+"/events?board_id="+boardID, nil), &events)
+	decodeSuccessfulResponse(t, do(t, h, "GET", "/cards/"+cardID+"/events?board_id="+boardID, nil), &events)
 	last := events[len(events)-1]
 	if last.ClockState != model.ClockPaused {
 		t.Errorf("clock after moving into an unclassified column = %q, want the paused state it already had", last.ClockState)
@@ -288,16 +288,16 @@ func TestHoldPausesTheClockEverywhere(t *testing.T) {
 
 	boardID := mkBoard(t, h, "Agent runs")
 	col := mkColumnWithClock(t, h, boardID, "In Progress", model.ClockRunning)
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "Risky migration", ColumnID: col})
+	w := do(t, h, "POST", "/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "Risky migration", ColumnID: col})
 	var created model.CardView
 	decodeSuccessfulResponse(t, w, &created)
 	cardID := created.Placement.CardID
 
-	if w := do(t, h, "POST", "/api/cards/"+cardID+"/hold", map[string]string{"reason": "wait for me"}); w.Code != 200 {
+	if w := do(t, h, "POST", "/cards/"+cardID+"/hold", map[string]string{"reason": "wait for me"}); w.Code != 200 {
 		t.Fatalf("hold: %d %s", w.Code, w.Body.String())
 	}
 	var events []model.CardEvent
-	decodeSuccessfulResponse(t, do(t, h, "GET", "/api/cards/"+cardID+"/events", nil), &events)
+	decodeSuccessfulResponse(t, do(t, h, "GET", "/cards/"+cardID+"/events", nil), &events)
 	held := events[len(events)-1]
 	if held.Kind != model.EventCardHeld || held.ClockState != model.ClockPaused {
 		t.Errorf("hold recorded as %s/%s, want card_held/paused", held.Kind, held.ClockState)
@@ -309,10 +309,10 @@ func TestHoldPausesTheClockEverywhere(t *testing.T) {
 		t.Errorf("hold reason = %q, want it carried onto the timeline", held.Summary)
 	}
 
-	if w := do(t, h, "POST", "/api/cards/"+cardID+"/unhold", nil); w.Code != 200 {
+	if w := do(t, h, "POST", "/cards/"+cardID+"/unhold", nil); w.Code != 200 {
 		t.Fatalf("unhold: %d %s", w.Code, w.Body.String())
 	}
-	decodeSuccessfulResponse(t, do(t, h, "GET", "/api/cards/"+cardID+"/events", nil), &events)
+	decodeSuccessfulResponse(t, do(t, h, "GET", "/cards/"+cardID+"/events", nil), &events)
 	if resumed := events[len(events)-1]; resumed.ClockState != model.ClockRunning {
 		t.Errorf("clock after play = %q, want running", resumed.ClockState)
 	}
@@ -327,7 +327,7 @@ func TestMailAndAgentLinksLandOnTheTimeline(t *testing.T) {
 
 	boardID := mkBoard(t, h, "Email")
 	col := mkColumnWithClock(t, h, boardID, "Action needed", model.ClockRunning)
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "Invoice", ColumnID: col})
+	w := do(t, h, "POST", "/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "Invoice", ColumnID: col})
 	var created model.CardView
 	decodeSuccessfulResponse(t, w, &created)
 	cardID := created.Placement.CardID
@@ -339,13 +339,13 @@ func TestMailAndAgentLinksLandOnTheTimeline(t *testing.T) {
 		{EntityType: "session", EntityRef: "sess-1"},
 		{EntityType: "repo", EntityRef: "/home/me/repos/thing"},
 	} {
-		if w := do(t, h, "POST", "/api/cards/"+cardID+"/links", l); w.Code != 201 {
+		if w := do(t, h, "POST", "/cards/"+cardID+"/links", l); w.Code != 201 {
 			t.Fatalf("link %s: %d %s", l.EntityType, w.Code, w.Body.String())
 		}
 	}
 
 	var events []model.CardEvent
-	decodeSuccessfulResponse(t, do(t, h, "GET", "/api/cards/"+cardID+"/events", nil), &events)
+	decodeSuccessfulResponse(t, do(t, h, "GET", "/cards/"+cardID+"/events", nil), &events)
 	kinds := map[model.EventKind]int{}
 	for _, e := range events {
 		kinds[e.Kind]++
@@ -369,16 +369,16 @@ func TestCompletionStopsTheClockHoweverItIsExpressed(t *testing.T) {
 
 	boardID := mkBoard(t, h, "Projects")
 	col := mkColumnWithClock(t, h, boardID, "In Progress", model.ClockRunning)
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "Ship it", ColumnID: col})
+	w := do(t, h, "POST", "/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "Ship it", ColumnID: col})
 	var created model.CardView
 	decodeSuccessfulResponse(t, w, &created)
 	cardID := created.Placement.CardID
 
-	if w := do(t, h, "PATCH", "/api/cards/"+cardID, map[string]any{"status": "done"}); w.Code != 200 {
+	if w := do(t, h, "PATCH", "/cards/"+cardID, map[string]any{"status": "done"}); w.Code != 200 {
 		t.Fatalf("patch: %d %s", w.Code, w.Body.String())
 	}
 	var events []model.CardEvent
-	decodeSuccessfulResponse(t, do(t, h, "GET", "/api/cards/"+cardID+"/events", nil), &events)
+	decodeSuccessfulResponse(t, do(t, h, "GET", "/cards/"+cardID+"/events", nil), &events)
 	last := events[len(events)-1]
 	if last.Kind != model.EventCardCompleted || last.ClockState != model.ClockStopped {
 		t.Errorf("completion recorded as %s/%s, want card_completed/stopped", last.Kind, last.ClockState)
@@ -392,11 +392,11 @@ func TestUnknownEventKindDemandsAClockState(t *testing.T) {
 	h, _, cleanup := setup(t)
 	defer cleanup()
 
-	w := do(t, h, "POST", "/api/cards/whatever/events", model.CreateCardEventRequest{Kind: "shipped_a_pigeon"})
+	w := do(t, h, "POST", "/cards/whatever/events", model.CreateCardEventRequest{Kind: "shipped_a_pigeon"})
 	if w.Code != 400 {
 		t.Fatalf("unknown kind without a clock state: %d %s, want 400", w.Code, w.Body.String())
 	}
-	w = do(t, h, "POST", "/api/cards/whatever/events", model.CreateCardEventRequest{
+	w = do(t, h, "POST", "/cards/whatever/events", model.CreateCardEventRequest{
 		Kind: "shipped_a_pigeon", ClockState: model.ClockPaused,
 	})
 	if w.Code != 201 {
@@ -412,7 +412,7 @@ func TestLadderRefusesALevelAtZeroOverHTTP(t *testing.T) {
 	defer cleanup()
 
 	boardID := mkBoard(t, h, "Email")
-	w := do(t, h, "PUT", "/api/boards/"+boardID+"/priority-levels", model.SetPriorityLadderRequest{
+	w := do(t, h, "PUT", "/boards/"+boardID+"/priority-levels", model.SetPriorityLadderRequest{
 		Levels: []model.BoardPriorityLevel{{PriorityValue: 0, Label: "P0", BudgetSeconds: seconds(7200)}},
 	})
 	if w.Code != 400 {
@@ -430,14 +430,14 @@ func TestBoardWithoutALadderIgnoresPriorities(t *testing.T) {
 	boardID := mkBoard(t, h, "Ideas")
 	col := mkColumnWithClock(t, h, boardID, "Open", model.ClockRunning)
 	priority := 5
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/cards", model.CreateCardRequest{
+	w := do(t, h, "POST", "/boards/"+boardID+"/cards", model.CreateCardRequest{
 		Title: "Something urgent-looking", ColumnID: col, Priority: &priority,
 	})
 	var created model.CardView
 	decodeSuccessfulResponse(t, w, &created)
 
 	var view model.BoardView
-	decodeSuccessfulResponse(t, do(t, h, "GET", "/api/boards/"+boardID+"/cards", nil), &view)
+	decodeSuccessfulResponse(t, do(t, h, "GET", "/boards/"+boardID+"/cards", nil), &view)
 	card := view.Columns[0].Cards[0]
 	if card.Time.BudgetSeconds != nil || card.Time.PriorityLabel != "" {
 		t.Errorf("board with no ladder produced %+v, want no rung and no limit", card.Time)
@@ -456,25 +456,25 @@ func TestBusinessHoursAreReportedSeparately(t *testing.T) {
 
 	boardID := mkBoard(t, h, "Email")
 	col := mkColumnWithClock(t, h, boardID, "Action needed", model.ClockRunning)
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "Weekend mail", ColumnID: col})
+	w := do(t, h, "POST", "/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "Weekend mail", ColumnID: col})
 	var created model.CardView
 	decodeSuccessfulResponse(t, w, &created)
 	cardID := created.Placement.CardID
 
 	var view model.BoardView
-	decodeSuccessfulResponse(t, do(t, h, "GET", "/api/boards/"+boardID+"/cards", nil), &view)
+	decodeSuccessfulResponse(t, do(t, h, "GET", "/boards/"+boardID+"/cards", nil), &view)
 	if view.Columns[0].Cards[0].Time.BusinessHoursElapsedSeconds != nil {
 		t.Error("a board with no business hours reported a business figure")
 	}
 
-	if w := do(t, h, "PATCH", "/api/boards/"+boardID, map[string]any{
+	if w := do(t, h, "PATCH", "/boards/"+boardID, map[string]any{
 		"business_hours": model.BusinessHours{
 			TZID: "America/Los_Angeles", Days: []string{"MO", "TU", "WE", "TH", "FR"}, Start: "09:00", End: "17:00",
 		},
 	}); w.Code != 200 {
 		t.Fatalf("set business hours: %d %s", w.Code, w.Body.String())
 	}
-	decodeSuccessfulResponse(t, do(t, h, "GET", "/api/boards/"+boardID+"/cards", nil), &view)
+	decodeSuccessfulResponse(t, do(t, h, "GET", "/boards/"+boardID+"/cards", nil), &view)
 	if view.Columns[0].Cards[0].Time.BusinessHoursElapsedSeconds == nil {
 		t.Error("board with business hours reported no business figure")
 	}
@@ -483,7 +483,7 @@ func TestBusinessHoursAreReportedSeparately(t *testing.T) {
 	}
 
 	// A zone is mandatory, because hours without one drift twice a year.
-	if w := do(t, h, "PATCH", "/api/boards/"+boardID, map[string]any{
+	if w := do(t, h, "PATCH", "/boards/"+boardID, map[string]any{
 		"business_hours": map[string]any{"tzid": "Nowhere/Nothing", "days": []string{"MO"}, "start": "09:00", "end": "17:00"},
 	}); w.Code != 400 {
 		t.Fatalf("unknown zone: %d %s, want 400", w.Code, w.Body.String())
@@ -499,20 +499,20 @@ func TestDeletingANoteLeavesItsEventStanding(t *testing.T) {
 
 	boardID := mkBoard(t, h, "Projects")
 	col := mkColumnWithClock(t, h, boardID, "In Progress", model.ClockRunning)
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "Thing", ColumnID: col})
+	w := do(t, h, "POST", "/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "Thing", ColumnID: col})
 	var created model.CardView
 	decodeSuccessfulResponse(t, w, &created)
 	cardID := created.Placement.CardID
 
-	w = do(t, h, "POST", "/api/cards/"+cardID+"/notes", model.CreateCardNoteRequest{BoardID: boardID, Body: "half done"})
+	w = do(t, h, "POST", "/cards/"+cardID+"/notes", model.CreateCardNoteRequest{BoardID: boardID, Body: "half done"})
 	var note model.CardNote
 	decodeSuccessfulResponse(t, w, &note)
 
-	if w := do(t, h, "DELETE", "/api/notes/"+note.ID, nil); w.Code != 200 {
+	if w := do(t, h, "DELETE", "/notes/"+note.ID, nil); w.Code != 200 {
 		t.Fatalf("delete note: %d %s", w.Code, w.Body.String())
 	}
 	var events []model.CardEvent
-	decodeSuccessfulResponse(t, do(t, h, "GET", "/api/cards/"+cardID+"/events", nil), &events)
+	decodeSuccessfulResponse(t, do(t, h, "GET", "/cards/"+cardID+"/events", nil), &events)
 	var noteEvents int
 	for _, e := range events {
 		if e.Kind == model.EventNoteAdded {
@@ -523,7 +523,7 @@ func TestDeletingANoteLeavesItsEventStanding(t *testing.T) {
 		t.Errorf("note_added events after deleting the note = %d, want it left standing", noteEvents)
 	}
 	var notes []model.CardNote
-	decodeSuccessfulResponse(t, do(t, h, "GET", "/api/cards/"+cardID+"/notes", nil), &notes)
+	decodeSuccessfulResponse(t, do(t, h, "GET", "/cards/"+cardID+"/notes", nil), &notes)
 	if len(notes) != 0 {
 		t.Errorf("notes after delete = %d, want 0", len(notes))
 	}
@@ -537,12 +537,12 @@ func TestNotesCanHandOverTheBall(t *testing.T) {
 
 	boardID := mkBoard(t, h, "Email")
 	col := mkColumnWithClock(t, h, boardID, "Action needed", model.ClockRunning)
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "Question", ColumnID: col})
+	w := do(t, h, "POST", "/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "Question", ColumnID: col})
 	var created model.CardView
 	decodeSuccessfulResponse(t, w, &created)
 	cardID := created.Placement.CardID
 
-	if w := do(t, h, "POST", "/api/cards/"+cardID+"/notes", model.CreateCardNoteRequest{
+	if w := do(t, h, "POST", "/cards/"+cardID+"/notes", model.CreateCardNoteRequest{
 		BoardID: boardID, Body: "Replied, waiting on them", ClockState: model.ClockPaused,
 	}); w.Code != 201 {
 		t.Fatalf("note: %d %s", w.Code, w.Body.String())
@@ -550,7 +550,7 @@ func TestNotesCanHandOverTheBall(t *testing.T) {
 	var timeline struct {
 		Summary *model.CardTimeSummary `json:"summary"`
 	}
-	decodeSuccessfulResponse(t, do(t, h, "GET", "/api/cards/"+cardID+"/timeline?board_id="+boardID, nil), &timeline)
+	decodeSuccessfulResponse(t, do(t, h, "GET", "/cards/"+cardID+"/timeline?board_id="+boardID, nil), &timeline)
 	if timeline.Summary.ClockState != model.ClockPaused {
 		t.Errorf("clock after the handover note = %q, want paused", timeline.Summary.ClockState)
 	}
@@ -563,7 +563,7 @@ func TestEventLogIsAppendOnly(t *testing.T) {
 	defer cleanup()
 
 	for _, method := range []string{"PATCH", "DELETE", "PUT"} {
-		w := do(t, h, method, "/api/cards/some-card/events", json.RawMessage(`{}`))
+		w := do(t, h, method, "/cards/some-card/events", json.RawMessage(`{}`))
 		if w.Code != 405 {
 			t.Errorf("%s on the event log = %d, want 405", method, w.Code)
 		}
@@ -580,7 +580,7 @@ func TestBoardViewPagesEachColumn(t *testing.T) {
 	boardID := mkBoard(t, h, "Agent runs")
 	col := mkColumnWithClock(t, h, boardID, "Queued", model.ClockRunning)
 	for i := 0; i < 7; i++ {
-		if w := do(t, h, "POST", "/api/boards/"+boardID+"/cards", model.CreateCardRequest{
+		if w := do(t, h, "POST", "/boards/"+boardID+"/cards", model.CreateCardRequest{
 			Title: "card " + itoa(i), ColumnID: col,
 		}); w.Code != 201 {
 			t.Fatalf("create: %d %s", w.Code, w.Body.String())
@@ -588,7 +588,7 @@ func TestBoardViewPagesEachColumn(t *testing.T) {
 	}
 
 	var view model.BoardView
-	decodeSuccessfulResponse(t, do(t, h, "GET", "/api/boards/"+boardID+"/cards?limit=3", nil), &view)
+	decodeSuccessfulResponse(t, do(t, h, "GET", "/boards/"+boardID+"/cards?limit=3", nil), &view)
 	if got := len(view.Columns[0].Cards); got != 3 {
 		t.Errorf("page carried %d cards, want 3", got)
 	}
@@ -599,7 +599,7 @@ func TestBoardViewPagesEachColumn(t *testing.T) {
 	}
 
 	// No limit still means the whole board, so every existing caller is unaffected.
-	decodeSuccessfulResponse(t, do(t, h, "GET", "/api/boards/"+boardID+"/cards", nil), &view)
+	decodeSuccessfulResponse(t, do(t, h, "GET", "/boards/"+boardID+"/cards", nil), &view)
 	if got := len(view.Columns[0].Cards); got != 7 {
 		t.Errorf("unpaged read carried %d cards, want all 7", got)
 	}
@@ -615,7 +615,7 @@ func TestColumnCardsServesTheRest(t *testing.T) {
 	boardID := mkBoard(t, h, "Agent runs")
 	col := mkColumnWithClock(t, h, boardID, "Queued", model.ClockRunning)
 	for i := 0; i < 5; i++ {
-		if w := do(t, h, "POST", "/api/boards/"+boardID+"/cards", model.CreateCardRequest{
+		if w := do(t, h, "POST", "/boards/"+boardID+"/cards", model.CreateCardRequest{
 			Title: "card " + itoa(i), ColumnID: col,
 		}); w.Code != 201 {
 			t.Fatalf("create: %d %s", w.Code, w.Body.String())
@@ -623,9 +623,9 @@ func TestColumnCardsServesTheRest(t *testing.T) {
 	}
 
 	var first model.BoardView
-	decodeSuccessfulResponse(t, do(t, h, "GET", "/api/boards/"+boardID+"/cards?limit=2", nil), &first)
+	decodeSuccessfulResponse(t, do(t, h, "GET", "/boards/"+boardID+"/cards?limit=2", nil), &first)
 	var next model.ColumnView
-	decodeSuccessfulResponse(t, do(t, h, "GET", "/api/columns/"+col+"/cards?limit=2&offset=2", nil), &next)
+	decodeSuccessfulResponse(t, do(t, h, "GET", "/columns/"+col+"/cards?limit=2&offset=2", nil), &next)
 
 	if len(next.Cards) != 2 || next.Total != 5 {
 		t.Fatalf("next page carried %d of %d, want 2 of 5", len(next.Cards), next.Total)
@@ -652,7 +652,7 @@ func linkTestCard(t *testing.T, h http.Handler) string {
 	t.Helper()
 	boardID := mkBoard(t, h, "Links")
 	columnID := mkColumn(t, h, boardID, "Todo", "")
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/cards", model.CreateCardRequest{
+	w := do(t, h, "POST", "/boards/"+boardID+"/cards", model.CreateCardRequest{
 		Title: "A card with links", ColumnID: columnID,
 	})
 	if w.Code != 201 {
@@ -673,7 +673,7 @@ func TestABackdatedEmailLinkFilesTheArrivalWhenItHappened(t *testing.T) {
 	cardID := linkTestCard(t, h)
 
 	arrived := time.Now().UTC().Add(-72 * time.Hour).Truncate(time.Second)
-	w := do(t, h, "POST", "/api/cards/"+cardID+"/links", model.CreateCardLinkRequest{
+	w := do(t, h, "POST", "/cards/"+cardID+"/links", model.CreateCardLinkRequest{
 		EntityType: "email",
 		EntityRef:  "demo-work:lm0001",
 		OccurredAt: &arrived,
@@ -692,7 +692,7 @@ func TestABackdatedEmailLinkFilesTheArrivalWhenItHappened(t *testing.T) {
 	}
 
 	var events []model.CardEvent
-	w = do(t, h, "GET", "/api/cards/"+cardID+"/events", nil)
+	w = do(t, h, "GET", "/cards/"+cardID+"/events", nil)
 	if err := json.Unmarshal(w.Body.Bytes(), &events); err != nil {
 		t.Fatalf("decode events: %v", err)
 	}
@@ -723,7 +723,7 @@ func TestBackdatingAFactLinkIsRefused(t *testing.T) {
 	when := time.Now().UTC().Add(-time.Hour)
 	for _, entityType := range []string{"repo", "git_repo", "email_msgid", "email_sender"} {
 		t.Run(entityType, func(t *testing.T) {
-			w := do(t, h, "POST", "/api/cards/"+cardID+"/links", model.CreateCardLinkRequest{
+			w := do(t, h, "POST", "/cards/"+cardID+"/links", model.CreateCardLinkRequest{
 				EntityType: entityType,
 				EntityRef:  "something-" + entityType,
 				OccurredAt: &when,
@@ -742,14 +742,14 @@ func TestALinkWithoutOccurredAtStillStampsNow(t *testing.T) {
 	defer cleanup()
 	cardID := linkTestCard(t, h)
 
-	w := do(t, h, "POST", "/api/cards/"+cardID+"/links", model.CreateCardLinkRequest{
+	w := do(t, h, "POST", "/cards/"+cardID+"/links", model.CreateCardLinkRequest{
 		EntityType: "email", EntityRef: "demo-work:lm0002",
 	})
 	if w.Code != 201 {
 		t.Fatalf("status %d, want 201: %s", w.Code, w.Body)
 	}
 	var events []model.CardEvent
-	w = do(t, h, "GET", "/api/cards/"+cardID+"/events", nil)
+	w = do(t, h, "GET", "/cards/"+cardID+"/events", nil)
 	if err := json.Unmarshal(w.Body.Bytes(), &events); err != nil {
 		t.Fatalf("decode events: %v", err)
 	}
@@ -771,7 +771,7 @@ func TestAnArrivalCanBeFiledWithoutStartingTheClock(t *testing.T) {
 	cardID := linkTestCard(t, h)
 
 	arrived := time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Second)
-	w := do(t, h, "POST", "/api/cards/"+cardID+"/links", model.CreateCardLinkRequest{
+	w := do(t, h, "POST", "/cards/"+cardID+"/links", model.CreateCardLinkRequest{
 		EntityType: "email",
 		EntityRef:  "demo-work:lm-digest",
 		OccurredAt: &arrived,
@@ -782,7 +782,7 @@ func TestAnArrivalCanBeFiledWithoutStartingTheClock(t *testing.T) {
 	}
 
 	var events []model.CardEvent
-	w = do(t, h, "GET", "/api/cards/"+cardID+"/events", nil)
+	w = do(t, h, "GET", "/cards/"+cardID+"/events", nil)
 	if err := json.Unmarshal(w.Body.Bytes(), &events); err != nil {
 		t.Fatalf("decode events: %v", err)
 	}
@@ -802,13 +802,13 @@ func TestAnArrivalStillRunsTheClockByDefault(t *testing.T) {
 	defer cleanup()
 	cardID := linkTestCard(t, h)
 
-	if w := do(t, h, "POST", "/api/cards/"+cardID+"/links", model.CreateCardLinkRequest{
+	if w := do(t, h, "POST", "/cards/"+cardID+"/links", model.CreateCardLinkRequest{
 		EntityType: "email", EntityRef: "demo-work:lm-work",
 	}); w.Code != 201 {
 		t.Fatalf("status %d, want 201: %s", w.Code, w.Body)
 	}
 	var events []model.CardEvent
-	w := do(t, h, "GET", "/api/cards/"+cardID+"/events", nil)
+	w := do(t, h, "GET", "/cards/"+cardID+"/events", nil)
 	if err := json.Unmarshal(w.Body.Bytes(), &events); err != nil {
 		t.Fatalf("decode events: %v", err)
 	}
@@ -824,7 +824,7 @@ func TestAnUnknownClockStateOnALinkIsRefused(t *testing.T) {
 	defer cleanup()
 	cardID := linkTestCard(t, h)
 
-	if w := do(t, h, "POST", "/api/cards/"+cardID+"/links", model.CreateCardLinkRequest{
+	if w := do(t, h, "POST", "/cards/"+cardID+"/links", model.CreateCardLinkRequest{
 		EntityType: "email", EntityRef: "demo-work:lm-bad", ClockState: model.ClockState("dawdling"),
 	}); w.Code != 400 {
 		t.Fatalf("status %d, want 400", w.Code)
@@ -836,7 +836,7 @@ func TestClockStateOnAFactLinkIsRefused(t *testing.T) {
 	defer cleanup()
 	cardID := linkTestCard(t, h)
 
-	if w := do(t, h, "POST", "/api/cards/"+cardID+"/links", model.CreateCardLinkRequest{
+	if w := do(t, h, "POST", "/cards/"+cardID+"/links", model.CreateCardLinkRequest{
 		EntityType: "repo", EntityRef: "/tmp/x", ClockState: model.ClockStopped,
 	}); w.Code != 400 {
 		t.Fatalf("status %d, want 400", w.Code)

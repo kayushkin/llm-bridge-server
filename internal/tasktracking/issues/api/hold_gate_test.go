@@ -26,7 +26,7 @@ func TestHoldParksTheCardAndUnholdReleasesIt(t *testing.T) {
 	boardID := mkBoard(t, h, "Board")
 	colID := mkColumn(t, h, boardID, "Todo", "")
 
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/cards",
+	w := do(t, h, "POST", "/boards/"+boardID+"/cards",
 		model.CreateCardRequest{Title: "parked work", ColumnID: colID})
 	if w.Code != 201 {
 		t.Fatalf("create card: expected 201, got %d: %s", w.Code, w.Body.String())
@@ -40,7 +40,7 @@ func TestHoldParksTheCardAndUnholdReleasesIt(t *testing.T) {
 	}
 
 	// Hold: the item must come back held, carrying the stated reason.
-	if w := do(t, h, "POST", "/api/cards/"+cardID+"/hold",
+	if w := do(t, h, "POST", "/cards/"+cardID+"/hold",
 		map[string]string{"reason": "waiting on the user"}); w.Code != 200 {
 		t.Fatalf("hold: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
@@ -54,7 +54,7 @@ func TestHoldParksTheCardAndUnholdReleasesIt(t *testing.T) {
 	// Unhold: the gate must actually open again. This is the assertion that a
 	// hold-only implementation cannot pass, and the reason both directions are
 	// driven in one test rather than two.
-	if w := do(t, h, "POST", "/api/cards/"+cardID+"/unhold", nil); w.Code != 200 {
+	if w := do(t, h, "POST", "/cards/"+cardID+"/unhold", nil); w.Code != 200 {
 		t.Fatalf("unhold: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 	if got := nb.heldAt(cardID); got != "" {
@@ -68,7 +68,7 @@ func TestHoldGateRejectsNonPostAndSurfacesUpstreamFailure(t *testing.T) {
 
 	boardID := mkBoard(t, h, "Board")
 	colID := mkColumn(t, h, boardID, "Todo", "")
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/cards",
+	w := do(t, h, "POST", "/boards/"+boardID+"/cards",
 		model.CreateCardRequest{Title: "a card", ColumnID: colID})
 	var cv model.CardView
 	decodeSuccessfulResponse(t, w, &cv)
@@ -77,10 +77,10 @@ func TestHoldGateRejectsNonPostAndSurfacesUpstreamFailure(t *testing.T) {
 	// A gate a GET can close is not a gate: a link-follower or a prefetch would
 	// park work nobody asked to park.
 	for _, method := range []string{"GET", "DELETE", "PATCH"} {
-		if w := do(t, h, method, "/api/cards/"+cardID+"/hold", nil); w.Code != 405 {
+		if w := do(t, h, method, "/cards/"+cardID+"/hold", nil); w.Code != 405 {
 			t.Errorf("%s /hold: expected 405, got %d", method, w.Code)
 		}
-		if w := do(t, h, method, "/api/cards/"+cardID+"/unhold", nil); w.Code != 405 {
+		if w := do(t, h, method, "/cards/"+cardID+"/unhold", nil); w.Code != 405 {
 			t.Errorf("%s /unhold: expected 405, got %d", method, w.Code)
 		}
 	}
@@ -92,10 +92,10 @@ func TestHoldGateRejectsNonPostAndSurfacesUpstreamFailure(t *testing.T) {
 	// that reads to the caller as parked work that was never parked. An item
 	// noteboard does not have is a 404; noteboard failing is a 502, which
 	// TestCardWritesSayMissingAs404AndFailureAs502 covers.
-	if w := do(t, h, "POST", "/api/cards/nb-does-not-exist/hold", nil); w.Code != 404 {
+	if w := do(t, h, "POST", "/cards/nb-does-not-exist/hold", nil); w.Code != 404 {
 		t.Errorf("hold on a missing item: expected 404, got %d: %s", w.Code, w.Body.String())
 	}
-	if w := do(t, h, "POST", "/api/cards/nb-does-not-exist/unhold", nil); w.Code != 404 {
+	if w := do(t, h, "POST", "/cards/nb-does-not-exist/unhold", nil); w.Code != 404 {
 		t.Errorf("unhold on a missing item: expected 404, got %d: %s", w.Code, w.Body.String())
 	}
 }

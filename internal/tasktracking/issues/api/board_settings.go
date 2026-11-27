@@ -185,7 +185,7 @@ func (a *API) assigneeOnArrival(boardID string, cardTags []string) (*arrivalAssi
 	if pool != nil {
 		members, err := a.principals.ListAvailableMembers(pool.PrincipalID, time.Now())
 		if errors.Is(err, principalstore.ErrNotFound) {
-			return nil, &settingsCheckFailure{400, fmt.Sprintf("board %s assignment_pool.principal_id %s does not exist in principal-store; change it with PATCH /api/boards/%s", boardID, pool.PrincipalID, boardID)}
+			return nil, &settingsCheckFailure{400, fmt.Sprintf("board %s assignment_pool.principal_id %s does not exist in principal-store; change it with PATCH /boards/%s", boardID, pool.PrincipalID, boardID)}
 		}
 		if err != nil {
 			return nil, &settingsCheckFailure{502, fmt.Sprintf("principal-store could not say who in board %s's assignment pool %s is available: %s", boardID, pool.PrincipalID, err.Error())}
@@ -235,7 +235,7 @@ func (a *API) checkDefaultAssigneeIsAssignable(boardID string, chosen model.Effe
 	fix := "clear or change the board's default_principal_id"
 	if chosen.Source.Kind == model.DefaultSourceTagRule {
 		where = fmt.Sprintf("board %s tag rule %s (tags %s) default assignee", boardID, chosen.Source.RuleID, strings.Join(chosen.Source.RuleTags, " + "))
-		fix = fmt.Sprintf("change that rule's default_principal_id with PUT /api/boards/%s/tag-rules", boardID)
+		fix = fmt.Sprintf("change that rule's default_principal_id with PUT /boards/%s/tag-rules", boardID)
 	}
 	return &settingsCheckFailure{failure.status, fmt.Sprintf("%s cannot be applied — %s; %s", where, failure.message, fix)}
 }

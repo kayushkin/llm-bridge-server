@@ -15,7 +15,7 @@ import (
 // When it is written:
 //   - A card created on a board with a priority and no ceiling of its own.
 //   - A card attached to a board while it has a priority and no ceiling.
-//   - A priority change through PATCH /api/cards/{id} that does not also set
+//   - A priority change through PATCH /cards/{id} that does not also set
 //     auto_hold_at_usd, when the card has no ceiling or still carries the
 //     default of the rung it is leaving. A ceiling someone set by hand to any
 //     other number is left alone.
@@ -142,7 +142,7 @@ func (a *API) applyDefaultSpendCeilingOnAttach(cardID string, item map[string]an
 	if err != nil || defaultCeiling == nil {
 		return err
 	}
-	if _, err := a.noteboard.PatchItem(cardID, map[string]any{"auto_hold_at_usd": *defaultCeiling}); err != nil {
+	if _, err := a.issueContent.PatchItem(cardID, map[string]any{"auto_hold_at_usd": *defaultCeiling}); err != nil {
 		return fmt.Errorf("write default spend ceiling to card %s: %w", cardID, err)
 	}
 	return nil

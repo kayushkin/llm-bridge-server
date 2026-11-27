@@ -44,7 +44,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/references"
 	"github.com/kayushkin/llm-bridge-server/internal/repositories/gitactivity"
 	"github.com/kayushkin/llm-bridge-server/internal/repositories/repos"
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/items"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/items"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/predictions"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/projects"
 )
@@ -56,7 +56,7 @@ var InProcessReferenceServices = []string{
 	"llm-bridge-server",
 	"agent-store",
 	"prediction-store",
-	"noteboard",
+	"notes",
 	"project-store",
 	"tool-store",
 	"skill-store",
@@ -80,7 +80,8 @@ var InProcessReferenceServices = []string{
 // this server otherwise holds only as handlers. Each is set by the Enable
 // call that opens it; nil until then, and a read of it is an error naming it.
 type referenceReadableStores struct {
-	noteboard     atomic.Pointer[items.Store]
+	notes         atomic.Pointer[items.Store]
+	issueItems    atomic.Pointer[items.Store]
 	predictions   atomic.Pointer[predictions.Store]
 	principals    atomic.Pointer[principals.Store]
 	repos         atomic.Pointer[repos.Store]
@@ -480,21 +481,44 @@ func (s *Server) readCommitForReference(ctx context.Context, mention string, _ r
 	return referenceAnswer(answer, err, gitactivity.ErrNotFound)
 }
 
-func (s *Server) readNoteForReference(_ context.Context, id string, _ references.InProcessAsker) (json.RawMessage, error) {
-	notes, err := loaded(&s.referenceReadable.noteboard, "noteboard")
+// notesAndIssuesForReference are the two stores a bare uuid may name an item
+// of: notes, and the issues module's issues. A note and an issue share one id
+// space, as they did in noteboard.
+func (s *Server) notesAndIssuesForReference() ([]*items.Store, error) {
+	notes, err := loaded(&s.referenceReadable.notes, "notes")
 	if err != nil {
 		return nil, err
 	}
-	item, err := notes.GetItem(id)
-	return referenceAnswer(item, err, items.ErrItemNotFound)
+	issues, err := loaded(&s.referenceReadable.issueItems, "issues")
+	if err != nil {
+		return nil, err
+	}
+	return []*items.Store{notes, issues}, nil
 }
 
-func (s *Server) searchNotesForReference(_ context.Context, query string, _ references.InProcessAsker) (json.RawMessage, error) {
-	notes, err := loaded(&s.referenceReadable.noteboard, "noteboard")
+func (s *Server) readNoteForReference(_ context.Context, id string, _ references.InProcessAsker) (json.RawMessage, error) {
+	stores, err := s.notesAndIssuesForReference()
 	if err != nil {
 		return nil, err
 	}
-	found, err := notes.Search(items.SearchParams{Query: query})
+	for _, store := range stores {
+		item, err := store.GetItem(id)
+		if errors.Is(err, items.ErrItemNotFound) {
+			continue
+		}
+		return referenceAnswer(item, err, items.ErrItemNotFound)
+	}
+	return referenceAnswer(nil, items.ErrItemNotFound, items.ErrItemNotFound)
+}
+
+// searchNotesForReference searches notes and issues and answers both lists
+// together, newest first, as noteboard's one search did.
+func (s *Server) searchNotesForReference(_ context.Context, query string, _ references.InProcessAsker) (json.RawMessage, error) {
+	stores, err := s.notesAndIssuesForReference()
+	if err != nil {
+		return nil, err
+	}
+	found, err := items.SearchEach(stores, items.SearchParams{Query: query})
 	if err != nil {
 		return nil, err
 	}

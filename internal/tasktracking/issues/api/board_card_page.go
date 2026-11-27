@@ -2,8 +2,8 @@ package api
 
 import (
 	"fmt"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuecontent"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/model"
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/noteboard"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -48,7 +48,7 @@ func (a *API) boardCardPageFor(access *PrincipalBoardAccess, boardID string, q u
 	if err != nil {
 		return nil, &Refusal{Status: 400, Message: err.Error()}
 	}
-	query := noteboard.ItemsQuery{IDs: []string{}, Tags: content.Tags, Priorities: content.Priorities, Statuses: content.Statuses, DueBefore: content.DueBefore, Sort: content.Sort, Limit: limit, Offset: offset, IncludeItems: true, Q: q.Get("q"), CreatedFrom: q.Get("created_from"), CreatedTo: q.Get("created_to")}
+	query := issuecontent.ItemsQuery{IDs: []string{}, Tags: content.Tags, Priorities: content.Priorities, Statuses: content.Statuses, DueBefore: content.DueBefore, Sort: content.Sort, Limit: limit, Offset: offset, IncludeItems: true, Q: q.Get("q"), CreatedFrom: q.Get("created_from"), CreatedTo: q.Get("created_to")}
 	for name, value := range map[string]string{"created_from": query.CreatedFrom, "created_to": query.CreatedTo} {
 		if value != "" {
 			if _, err := time.Parse(time.RFC3339Nano, value); err != nil {
@@ -118,7 +118,7 @@ func (a *API) boardCardPageFor(access *PrincipalBoardAccess, boardID string, q u
 		}
 	}
 	// Even an empty set goes to the owner so an invalid content query is refused.
-	result, err := a.noteboard.QueryItems(query)
+	result, err := a.issueContent.QueryItems(query)
 	if err != nil {
 		return nil, cardReadRefusal(err)
 	}

@@ -6,10 +6,10 @@
 // binary on 2026-09-07, with a 5 000-byte value at each site and the same
 // request repeated with a 10-byte one:
 //
-//	PATCH /api/boards/{id}        business_hours.tzid       5 050 bytes    70
-//	PATCH /api/boards/{id}        business_hours.days[0]    5 055          65
-//	PATCH /api/boards/{id}        business_hours.start      5 036          46
-//	POST  /api/cards/{id}/events  kind                      5 077          87
+//	PATCH /boards/{id}        business_hours.tzid       5 050 bytes    70
+//	PATCH /boards/{id}        business_hours.days[0]    5 055          65
+//	PATCH /boards/{id}        business_hours.start      5 036          46
+//	POST  /cards/{id}/events  kind                      5 077          87
 //	PUT   .../priority-levels     duplicate label           5 033          43
 //
 // so the caller chose about 4 990 of those bytes at every site. Eight sites in

@@ -8,7 +8,7 @@ import (
 )
 
 // fakeReferenceStoreTypes is a few rows in reference-store's shape: enough for
-// the ticket source check and for GET /api/entity-types to pass through.
+// the ticket source check and for GET /entity-types to pass through.
 const fakeReferenceStoreTypes = `{"types":[
 	{"type":"session","service":"llm-bridge-server","get":"/sessions/{id}","id_patterns":["br_\\d{16,19}"],"access":"owner"},
 	{"type":"principal","service":"principal-store","search":"/principals?q=","get":"/principals/{id}","id_patterns":["principal_\\d{6,}"],"label_field":"display_name","access":"grant"},

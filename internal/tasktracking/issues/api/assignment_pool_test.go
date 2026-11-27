@@ -33,7 +33,7 @@ func pool(strategy model.AssignmentStrategy) *model.AssignmentPool {
 // createCard creates a card in the column and returns its view.
 func createCard(t *testing.T, h http.Handler, boardID, columnID, title string, tags ...string) model.CardView {
 	t.Helper()
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/cards", model.CreateCardRequest{Title: title, ColumnID: columnID, Tags: tags})
+	w := do(t, h, "POST", "/boards/"+boardID+"/cards", model.CreateCardRequest{Title: title, ColumnID: columnID, Tags: tags})
 	if w.Code != 201 {
 		t.Fatalf("create %q: %d %s", title, w.Code, w.Body.String())
 	}
@@ -46,7 +46,7 @@ func createCard(t *testing.T, h http.Handler, boardID, columnID, title string, t
 func assignByHand(t *testing.T, h http.Handler, boardID, columnID, principalID string) {
 	t.Helper()
 	cv := createCard(t, h, boardID, columnID, "already "+principalID+"'s")
-	if w := do(t, h, "PUT", "/api/cards/"+cv.Placement.CardID+"/assignments/"+principalID, nil); w.Code != 201 {
+	if w := do(t, h, "PUT", "/cards/"+cv.Placement.CardID+"/assignments/"+principalID, nil); w.Code != 201 {
 		t.Fatalf("assign by hand: %d %s", w.Code, w.Body.String())
 	}
 }
@@ -75,7 +75,7 @@ func assignedDetail(t *testing.T, h http.Handler, cardID string) map[string]any 
 func TestTheAssignmentStrategiesAreServed(t *testing.T) {
 	h, _, cleanup := setup(t)
 	defer cleanup()
-	w := do(t, h, "GET", "/api/assignment-strategies", nil)
+	w := do(t, h, "GET", "/assignment-strategies", nil)
 	var strategies []model.AssignmentStrategy
 	decodeSuccessfulResponse(t, w, &strategies)
 	if len(strategies) != 2 || strategies[0] != model.AssignmentStrategyLeastOpenCards || strategies[1] != model.AssignmentStrategyRoundRobin {
@@ -139,7 +139,7 @@ func TestThePoolHandsANewCardToTheAvailableMemberWithFewestOpenCards(t *testing.
 	boardID := mkBoard(t, h, "Desk")
 	open := mkColumn(t, h, boardID, "Open", "")
 	stopped := model.ClockStopped
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/columns", model.CreateColumnRequest{Name: "Done", BudgetClockState: &stopped})
+	w := do(t, h, "POST", "/boards/"+boardID+"/columns", model.CreateColumnRequest{Name: "Done", BudgetClockState: &stopped})
 	var done model.Column
 	decodeSuccessfulResponse(t, w, &done)
 	assignByHand(t, h, boardID, open, activePrincipal)
@@ -267,7 +267,7 @@ func TestAPrincipalStoreThatCannotSayWhoIsAvailableRefusesTheCard(t *testing.T) 
 	principals.membersStatus = 500
 
 	itemsBefore := len(nb.items)
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "lost?", ColumnID: columnID})
+	w := do(t, h, "POST", "/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "lost?", ColumnID: columnID})
 	if w.Code != 502 || !strings.Contains(w.Body.String(), "assignment pool") {
 		t.Fatalf("want 502 naming the pool, got %d %s", w.Code, w.Body.String())
 	}
@@ -285,10 +285,10 @@ func TestAttachingAnUnassignedCardAlsoDrawsFromThePool(t *testing.T) {
 	target := mkBoard(t, h, "Target")
 	targetColumn := mkColumn(t, h, target, "Inbox", "")
 	patchBoard(t, h, target, model.UpdateBoardRequest{AssignmentPool: pool(model.AssignmentStrategyLeastOpenCards)})
-	if w := do(t, h, "PUT", "/api/boards/"+target+"/cards/"+cv.Placement.CardID, model.AttachCardRequest{ColumnID: targetColumn}); w.Code != 201 {
+	if w := do(t, h, "PUT", "/boards/"+target+"/cards/"+cv.Placement.CardID, model.AttachCardRequest{ColumnID: targetColumn}); w.Code != 201 {
 		t.Fatalf("attach: %d %s", w.Code, w.Body.String())
 	}
-	w := do(t, h, "GET", "/api/cards/"+cv.Placement.CardID+"/assignments", nil)
+	w := do(t, h, "GET", "/cards/"+cv.Placement.CardID+"/assignments", nil)
 	var assignments []model.CardAssignment
 	decodeSuccessfulResponse(t, w, &assignments)
 	if len(assignments) != 1 || assignments[0].PrincipalID != otherActivePrincipal {

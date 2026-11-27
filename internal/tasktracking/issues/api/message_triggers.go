@@ -17,10 +17,10 @@ import (
 // Message triggers — board settings that send a text message through
 // multichat when a card action happens on the board.
 //
-//	GET, POST          /api/boards/{id}/message-triggers
-//	GET                /api/boards/{id}/message-deliveries?limit=100
-//	GET, PATCH, DELETE /api/message-triggers/{id}
-//	GET                /api/message-trigger-options
+//	GET, POST          /boards/{id}/message-triggers
+//	GET                /boards/{id}/message-deliveries?limit=100
+//	GET, PATCH, DELETE /message-triggers/{id}
+//	GET                /message-trigger-options
 
 // SetMessageSender connects the message-trigger dispatcher to a sender. Until
 // it is called every matching trigger records a not_configured delivery.
@@ -102,7 +102,7 @@ func (a *API) boardMessageTriggers(w http.ResponseWriter, r *http.Request, board
 }
 
 func (a *API) messageTriggerByID(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/api/message-triggers/")
+	id := strings.TrimPrefix(r.URL.Path, "/message-triggers/")
 	if id == "" || strings.Contains(id, "/") {
 		writeError(w, 404, "not found")
 		return

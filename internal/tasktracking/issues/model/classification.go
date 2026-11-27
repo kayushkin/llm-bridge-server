@@ -13,7 +13,7 @@ import (
 // msg.BoardClassificationDecisionPublication); the ones only this store and
 // its readers use are here.
 
-// TaxonomyUpdateRequest is the body of PUT /api/boards/{id}/classification/taxonomy.
+// TaxonomyUpdateRequest is the body of PUT /boards/{id}/classification/taxonomy.
 // Taxonomy is the whole taxonomy, archived entries included: an axis or value
 // that has an id keeps it, one without gets a new one, and an id the board's
 // current taxonomy has may not be left out — archive it instead. Null clears
@@ -42,7 +42,7 @@ type TaxonomyUpdateResult struct {
 	Preview        TaxonomyChangePreview   `json:"preview"`
 }
 
-// PolicyUpdateRequest is the body of PUT /api/boards/{id}/classification/policy:
+// PolicyUpdateRequest is the body of PUT /boards/{id}/classification/policy:
 // the whole policy, keyed by axis id. An axis left out is unconfigured, which
 // is off.
 type PolicyUpdateRequest struct {
@@ -132,7 +132,7 @@ const (
 var ClassificationReviewActions = []ClassificationReviewAction{ClassificationReviewActionAccept, ClassificationReviewActionCorrect, ClassificationReviewActionReject}
 
 // ClassificationReviewRequest is the body of
-// POST /api/boards/{id}/classification/decisions/{decision_id}/reviews.
+// POST /boards/{id}/classification/decisions/{decision_id}/reviews.
 type ClassificationReviewRequest struct {
 	// IdempotencyKey is the reviewer's own key for this review. Sending the
 	// same key and body again returns the first review; the same key with a

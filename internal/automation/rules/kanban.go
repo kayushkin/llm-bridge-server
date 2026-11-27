@@ -68,7 +68,7 @@ func (k *KanbanStore) LinkedCardPlacements(ctx context.Context, sessionID string
 	var linked []struct {
 		CardID string `json:"card_id"`
 	}
-	if err := k.getJSON(ctx, "/api/entities/session/"+url.PathEscape(sessionID)+"/cards", &linked); err != nil {
+	if err := k.getJSON(ctx, "/entities/session/"+url.PathEscape(sessionID)+"/cards", &linked); err != nil {
 		return nil, err
 	}
 	placements := []CardPlacement{}
@@ -79,7 +79,7 @@ func (k *KanbanStore) LinkedCardPlacements(ctx context.Context, sessionID string
 				ColumnID string `json:"column_id"`
 			} `json:"placements"`
 		}
-		err := k.getJSON(ctx, "/api/cards/"+url.PathEscape(l.CardID), &card)
+		err := k.getJSON(ctx, "/cards/"+url.PathEscape(l.CardID), &card)
 		// kanban-store answers 404 for a card that is on no board: linked,
 		// but detached from every board. It sits in no column, so it has no
 		// placement, which is an answer, not a failure.
@@ -102,7 +102,7 @@ func (k *KanbanStore) SessionTags(ctx context.Context, sessionID string) ([]stri
 	var tags []struct {
 		Tag string `json:"tag"`
 	}
-	if err := k.getJSON(ctx, "/api/entities/session/"+url.PathEscape(sessionID)+"/tags", &tags); err != nil {
+	if err := k.getJSON(ctx, "/entities/session/"+url.PathEscape(sessionID)+"/tags", &tags); err != nil {
 		return nil, err
 	}
 	names := make([]string, 0, len(tags))
@@ -120,7 +120,7 @@ type CardPlacementDetail struct {
 	UpdatedAt string `json:"updated_at"`
 }
 
-// CardDetail is the part of GET /api/cards/{id} a comparison reads.
+// CardDetail is the part of GET /cards/{id} a comparison reads.
 type CardDetail struct {
 	Placements []CardPlacementDetail `json:"placements"`
 	Links      []CardLinkRef         `json:"links"`
@@ -135,7 +135,7 @@ type CardLinkRef struct {
 // Card reads one card's placements and links.
 func (k *KanbanStore) Card(ctx context.Context, cardID string) (CardDetail, error) {
 	var card CardDetail
-	err := k.getJSON(ctx, "/api/cards/"+url.PathEscape(cardID), &card)
+	err := k.getJSON(ctx, "/cards/"+url.PathEscape(cardID), &card)
 	return card, err
 }
 
@@ -174,7 +174,7 @@ func (k *KanbanStore) ColumnCards(ctx context.Context, boardID, columnID string)
 				} `json:"links"`
 			} `json:"cards"`
 		}
-		path := fmt.Sprintf("/api/columns/%s/cards?limit=%d&offset=%d", url.PathEscape(columnID), columnPageSize, offset)
+		path := fmt.Sprintf("/columns/%s/cards?limit=%d&offset=%d", url.PathEscape(columnID), columnPageSize, offset)
 		if err := k.getJSON(ctx, path, &page); err != nil {
 			return nil, err
 		}

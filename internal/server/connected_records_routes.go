@@ -33,8 +33,8 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/people"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
-	noteboardapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/api"
-	noteboardmodel "github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/model"
+	itemsapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/items/api"
+	itemsmodel "github.com/kayushkin/llm-bridge-server/internal/tasktracking/items/model"
 )
 
 // Where each store is mounted.
@@ -62,8 +62,8 @@ type ConnectedRecordsModules struct {
 
 // EnableConnectedRecords serves people-store, calendar-store and journal-store
 // from their modules. main calls it once, after EnableAccess (people-store
-// checks a principal_id with principal-store), EnableNoteboard (journal-store's
-// promote-todo makes its todo there) and EnableReferences (journal-store
+// checks a principal_id with principal-store), EnableIssues (journal-store's
+// promote-todo makes its todo an issue) and EnableReferences (journal-store
 // types its mentions from reference-store's list), and before
 // the server listens. Until then their routes answer 503, and chat links and
 // sign-in cannot read who owns an account.
@@ -75,9 +75,9 @@ func (s *Server) EnableConnectedRecords(ctx context.Context, modules ConnectedRe
 	if resolver == nil {
 		return errors.New("connected records: EnableReferences must run first, since journal-store types its mentions from reference-store's list")
 	}
-	noteboard := s.noteboard.Load()
-	if noteboard == nil {
-		return errors.New("connected records: EnableNoteboard must run first, since journal-store's promote-todo makes its todo in noteboard")
+	issueItems := s.issueItems.Load()
+	if issueItems == nil {
+		return errors.New("connected records: EnableIssues must run first, since journal-store's promote-todo makes its todo an issue")
 	}
 
 	peopleStore := people.New(modules.People, peoplePrincipalChecker{principals: s.principalStore})
@@ -101,7 +101,7 @@ func (s *Server) EnableConnectedRecords(ctx context.Context, modules ConnectedRe
 	if err := registry.Refresh(ctx); err != nil {
 		return fmt.Errorf("journal-store: reading reference-store's list of types: %w", err)
 	}
-	journalStore := journal.New(modules.Journal, registry, journalNoteboard{notes: noteboard})
+	journalStore := journal.New(modules.Journal, registry, journalIssues{issues: issueItems})
 	typed, err := journalStore.BackfillMentionTypes(ctx)
 	if err != nil {
 		return fmt.Errorf("journal-store: typing the mentions stored untyped: %w", err)
@@ -347,21 +347,21 @@ func (directory signInPeople) PersonPointingAtPrincipal(ctx context.Context, pri
 	return nil, fmt.Errorf("%d people in administrators' records point at %s", len(trusted), principalID)
 }
 
-// journalNoteboard is noteboard, in this process, as journal-store's
-// promote-todo makes a todo: through noteboard's own Create, so the todo is
-// checked as any other.
-type journalNoteboard struct {
-	notes *noteboardapi.API
+// journalIssues is the issues module, in this process, as journal-store's
+// promote-todo makes a todo: through the issue items API's own Create, so the
+// issue is checked as one made at POST /issues/items.
+type journalIssues struct {
+	issues *itemsapi.API
 }
 
-func (noteboard journalNoteboard) CreateTodo(_ context.Context, title, body string, tags, links []string) (string, error) {
-	item, err := noteboard.notes.Create(&noteboardmodel.CreateItemRequest{Type: "todo", Title: title, Body: &body, Tags: tags, Links: links})
-	var refusal *noteboardapi.RequestRefusal
+func (issues journalIssues) CreateTodo(_ context.Context, title, body string, tags, links []string) (string, error) {
+	item, err := issues.issues.Create(&itemsmodel.CreateItemRequest{Type: itemsmodel.TypeTodo, Title: title, Body: &body, Tags: tags, Links: links})
+	var refusal *itemsapi.RequestRefusal
 	if errors.As(err, &refusal) {
-		return "", fmt.Errorf("%w: noteboard answered 400: %v", journal.ErrUpstream, refusal)
+		return "", fmt.Errorf("%w: issues answered 400: %v", journal.ErrUpstream, refusal)
 	}
 	if err != nil {
-		return "", fmt.Errorf("%w: noteboard: %v", journal.ErrUpstream, err)
+		return "", fmt.Errorf("%w: issues: %v", journal.ErrUpstream, err)
 	}
 	return item.ID, nil
 }

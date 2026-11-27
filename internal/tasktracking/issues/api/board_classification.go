@@ -13,7 +13,7 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// Board classification routes, under /api/boards/{id}/classification. The
+// Board classification routes, under /boards/{id}/classification. The
 // store's rules live in internal/db/classification.go; this file reads
 // requests, holds a publication's initiating principal to the board, and
 // turns refusals into statuses. Who may call which route is in
@@ -370,7 +370,7 @@ func (a *API) reviewClassificationDecision(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, status, result)
 }
 
-// cardClassificationLabels answers GET /api/boards/{id}/cards/{card_id}/classification.
+// cardClassificationLabels answers GET /boards/{id}/cards/{card_id}/classification.
 func (a *API) cardClassificationLabels(w http.ResponseWriter, r *http.Request, boardID, cardID string) {
 	if r.Method != http.MethodGet {
 		writeError(w, 405, "method not allowed")

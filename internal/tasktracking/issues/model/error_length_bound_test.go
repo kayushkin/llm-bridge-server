@@ -11,12 +11,12 @@ import (
 // measured live against the deployed binary on 2026-09-07 with a 5 000-byte
 // value:
 //
-//	PATCH /api/boards/{id}       business_hours.tzid       400,  5 050 bytes
-//	PATCH /api/boards/{id}       business_hours.days[0]    400,  5 055
-//	PATCH /api/boards/{id}       business_hours.start      400,  5 036
-//	PATCH /api/boards/{id}       business_hours.start hh   400,  5 042
-//	PATCH /api/boards/{id}       business_hours.start mm   400,  5 044
-//	POST  /api/cards/{id}/events kind                      400,  5 077
+//	PATCH /boards/{id}       business_hours.tzid       400,  5 050 bytes
+//	PATCH /boards/{id}       business_hours.days[0]    400,  5 055
+//	PATCH /boards/{id}       business_hours.start      400,  5 036
+//	PATCH /boards/{id}       business_hours.start hh   400,  5 042
+//	PATCH /boards/{id}       business_hours.start mm   400,  5 044
+//	POST  /cards/{id}/events kind                      400,  5 077
 //	PUT   .../priority-levels    duplicate label           400,  5 033
 //	PUT   .../priority-levels    budget_seconds label      400,  5 088
 //

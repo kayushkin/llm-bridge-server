@@ -10,7 +10,7 @@ import (
 
 func runBulk(t *testing.T, h http.Handler, who map[string]string, request model.BulkCardCommandRequest) model.BulkCardCommandResponse {
 	t.Helper()
-	w := requestAs(t, h, who, "POST", "/api/bulk-card-commands", request)
+	w := requestAs(t, h, who, "POST", "/bulk-card-commands", request)
 	mustStatus(t, w, 200, "bulk "+string(request.Command))
 	var response model.BulkCardCommandResponse
 	decodeSuccessfulResponse(t, w, &response)
@@ -32,7 +32,7 @@ func statusesOf(response model.BulkCardCommandResponse) map[string]int {
 func TestABulkCommandJudgesEachCardAsTheSingleCardRouteWould(t *testing.T) {
 	h, grants, _ := setupWithPrincipalEnforcement(t)
 	f := buildTwoBoards(t, h, grants)
-	w := requestAs(t, h, asService, "POST", "/api/boards/"+f.supportBoardID+"/columns", model.CreateColumnRequest{Name: "Resolved"})
+	w := requestAs(t, h, asService, "POST", "/boards/"+f.supportBoardID+"/columns", model.CreateColumnRequest{Name: "Resolved"})
 	mustStatus(t, w, 201, "a second Support column")
 	var resolved model.Column
 	decodeSuccessfulResponse(t, w, &resolved)
@@ -52,7 +52,7 @@ func TestABulkCommandJudgesEachCardAsTheSingleCardRouteWould(t *testing.T) {
 
 	// The card that moved did move, and its timeline names alice, not a
 	// service: the event is the single-card route's own.
-	w = requestAs(t, h, asService, "GET", "/api/cards/"+f.supportCardID+"/events", nil)
+	w = requestAs(t, h, asService, "GET", "/cards/"+f.supportCardID+"/events", nil)
 	mustStatus(t, w, 200, "events")
 	var events []model.CardEvent
 	decodeSuccessfulResponse(t, w, &events)
@@ -69,7 +69,7 @@ func TestABulkCommandJudgesEachCardAsTheSingleCardRouteWould(t *testing.T) {
 		t.Errorf("no card_moved event into Resolved: %+v", events)
 	}
 	// The refused shared card is where it was.
-	w = requestAs(t, h, asService, "GET", "/api/cards/"+f.sharedCardID+"/placements", nil)
+	w = requestAs(t, h, asService, "GET", "/cards/"+f.sharedCardID+"/placements", nil)
 	var placements []model.Placement
 	decodeSuccessfulResponse(t, w, &placements)
 	for _, placement := range placements {
@@ -85,7 +85,7 @@ func TestABulkMoveStopsAtTheColumnsLimit(t *testing.T) {
 	h, grants, _ := setupWithPrincipalEnforcement(t)
 	f := buildTwoBoards(t, h, grants)
 	limit := 1
-	w := requestAs(t, h, asService, "POST", "/api/boards/"+f.supportBoardID+"/columns", model.CreateColumnRequest{Name: "In progress", WIPLimit: &limit})
+	w := requestAs(t, h, asService, "POST", "/boards/"+f.supportBoardID+"/columns", model.CreateColumnRequest{Name: "In progress", WIPLimit: &limit})
 	mustStatus(t, w, 201, "a column that holds one card")
 	var narrow model.Column
 	decodeSuccessfulResponse(t, w, &narrow)
@@ -106,10 +106,10 @@ func TestABulkMoveStopsAtTheColumnsLimit(t *testing.T) {
 func TestBulkTagChangesLeaveACardsOtherTagsAlone(t *testing.T) {
 	h, grants, _ := setupWithPrincipalEnforcement(t)
 	f := buildTwoBoards(t, h, grants)
-	mustStatus(t, requestAs(t, h, asService, "PATCH", "/api/cards/"+f.supportCardID, map[string]any{"tags": []string{"hardware", "urgent"}}), 200, "seed tags")
+	mustStatus(t, requestAs(t, h, asService, "PATCH", "/cards/"+f.supportCardID, map[string]any{"tags": []string{"hardware", "urgent"}}), 200, "seed tags")
 
 	tagsOf := func(cardID string) []string {
-		w := requestAs(t, h, asService, "GET", "/api/cards/"+cardID, nil)
+		w := requestAs(t, h, asService, "GET", "/cards/"+cardID, nil)
 		mustStatus(t, w, 200, "read card")
 		var detail model.CardDetail
 		decodeSuccessfulResponse(t, w, &detail)
@@ -146,7 +146,7 @@ func TestBulkAssignAndHoldReachEveryCard(t *testing.T) {
 	if assigned.Succeeded != 2 {
 		t.Fatalf("assign: %+v", assigned.Results)
 	}
-	w := requestAs(t, h, asService, "GET", "/api/assignments?principal_id="+carol, nil)
+	w := requestAs(t, h, asService, "GET", "/assignments?principal_id="+carol, nil)
 	mustStatus(t, w, 200, "carol's cards")
 	var mine []map[string]any
 	decodeSuccessfulResponse(t, w, &mine)
@@ -183,10 +183,10 @@ func TestAMalformedBulkRequestIsRefusedWhole(t *testing.T) {
 		"a path for a card id":   {CardIDs: []string{"x/../../boards"}, Command: model.BulkCommandUnhold},
 		"too many cards":         {CardIDs: tooMany, Command: model.BulkCommandUnhold},
 	} {
-		mustStatus(t, requestAs(t, h, asService, "POST", "/api/bulk-card-commands", request), 400, what)
+		mustStatus(t, requestAs(t, h, asService, "POST", "/bulk-card-commands", request), 400, what)
 	}
 
-	w := requestAs(t, h, asPrincipal(alice), "GET", "/api/bulk-card-commands", nil)
+	w := requestAs(t, h, asPrincipal(alice), "GET", "/bulk-card-commands", nil)
 	mustStatus(t, w, 200, "the vocabulary")
 	var options model.BulkCardCommandOptions
 	decodeSuccessfulResponse(t, w, &options)

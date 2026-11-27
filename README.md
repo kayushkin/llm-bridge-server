@@ -412,7 +412,7 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `GET` | `/auth/principal` | Who the login cookie names, and the session's CSRF token | anyone |
 | `GET` | `/auth/sessions` | The caller's login sessions; an administrator names anyone's with principal_id | principal, own logins only |
 | `POST` | `/auth/sessions/{id}/revoke` | End a login session, with a reason | principal, own logins only |
-| `*` | `/issues/` | kanban-store at its root (`/api/…`, `/health`), as the caller | principal or session agent |
+| `*` | `/issues/` | The boards and cards of issues (`/boards`, `/cards/…`, `/health`), as the caller; `/issues/items` is the content of issues | principal or session agent |
 | `*` | `/mail/` | mailstack `/…`, in this process, as the caller, checked against their mail grants and tickets | principal or session agent |
 | `POST` | `/mail/api/ingress/deliveries` | Pushed mail delivery into mailstack's local accounts, with an ingress credential and no login | anyone |
 | `GET` | `/self` | Who the request acts as: its principal and whether it is an administrator, or the internal service | principal |
@@ -646,28 +646,50 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `GET` | `/bundles/member-effects` | The effects a bundle member may carry (`include`, `deny`) | operator |
 | `POST` | `/bundles/resolve` | Compose bundles by repo and task tags or `bundle_ids`: tools, skills, denials, model and effort | operator |
 
-### noteboard, mounted in this process
+### notes, mounted in this process
 
 | Method | Route | What it does | Who may call |
 |---|---|---|---|
-| `GET` | `/noteboard/api/items` | List items by `type`, `tag`, `exclude_tag`, `status`, `list_id`, `created_by`, `parent_id`, `sort`, `limit`; held and deleted items only when asked for | operator |
-| `POST` | `/noteboard/api/items` | Make an item: `type` and `title` required; `hold` makes it held from the start | operator |
-| `POST` | `/noteboard/api/items/batch` | The named items in the order named, `null` for one that names no live item | operator |
-| `POST` | `/noteboard/api/items/query` | Of these ids, which match the filters, in what order; held items answered, gone ones in `missing_ids` | operator |
-| `GET` | `/noteboard/api/items/query-options` | The sorts and limits `/noteboard/api/items/query` takes | operator |
-| `POST` | `/noteboard/api/items/rerank` | Set the `rank` of each named item | operator |
-| `DELETE` | `/noteboard/api/items/{id}` | Soft delete, after a revision; `?hard=true` purges the row | operator |
-| `GET` | `/noteboard/api/items/{id}` | One live item, its `updated_at` as the `ETag`; `?include_deleted=true` for a deleted one | operator |
-| `PATCH` | `/noteboard/api/items/{id}` | Change the fields sent, after a revision of the old state; `If-Match` makes it conditional (412 with the current item) | operator |
-| `POST` | `/noteboard/api/items/{id}/hold` | Hold an item, and with it its children, out of list and search; optional `reason` | operator |
-| `GET` | `/noteboard/api/items/{id}/occurrences` | When the item's recurrence rule falls due and nags between `from` and `to` | operator |
-| `POST` | `/noteboard/api/items/{id}/restore` | Undo a soft delete | operator |
-| `GET` | `/noteboard/api/items/{id}/revisions` | Every prior state, newest first; `limit` and `offset` page it | operator |
-| `POST` | `/noteboard/api/items/{id}/unhold` | Clear a hold | operator |
-| `GET` | `/noteboard/api/lists` | Every `list_id` with its count of live items | operator |
-| `GET` | `/noteboard/api/search` | Full-text search of title and body for `q`, every word in each term, newest first; held items only with `include_held=true` | operator |
-| `GET` | `/noteboard/api/tags` | Every tag on live items with its count, most used first | operator |
-| `GET` | `/noteboard/health` | `{"status":"ok","items":N}`, live items not archived; 500 when the store cannot be read | operator |
+| `GET` | `/notes/health` | `{"status":"ok","items":N}`, live items not archived; 500 when the store cannot be read | operator |
+| `GET` | `/notes/items` | List items by `type`, `tag`, `exclude_tag`, `status`, `list_id`, `created_by`, `parent_id`, `sort`, `limit`; held and deleted items only when asked for | operator |
+| `POST` | `/notes/items` | Make an item: `type` and `title` required; `hold` makes it held from the start | operator |
+| `POST` | `/notes/items/batch` | The named items in the order named, `null` for one that names no live item | operator |
+| `POST` | `/notes/items/query` | Of these ids, which match the filters, in what order; held items answered, gone ones in `missing_ids` | operator |
+| `GET` | `/notes/items/query-options` | The sorts and limits `/notes/items/query` takes | operator |
+| `POST` | `/notes/items/rerank` | Set the `rank` of each named item | operator |
+| `DELETE` | `/notes/items/{id}` | Soft delete, after a revision; `?hard=true` purges the row | operator |
+| `GET` | `/notes/items/{id}` | One live item, its `updated_at` as the `ETag`; `?include_deleted=true` for a deleted one | operator |
+| `PATCH` | `/notes/items/{id}` | Change the fields sent, after a revision of the old state; `If-Match` makes it conditional (412 with the current item) | operator |
+| `POST` | `/notes/items/{id}/hold` | Hold an item, and with it its children, out of list and search; optional `reason` | operator |
+| `GET` | `/notes/items/{id}/occurrences` | When the item's recurrence rule falls due and nags between `from` and `to` | operator |
+| `POST` | `/notes/items/{id}/restore` | Undo a soft delete | operator |
+| `GET` | `/notes/items/{id}/revisions` | Every prior state, newest first; `limit` and `offset` page it | operator |
+| `POST` | `/notes/items/{id}/unhold` | Clear a hold | operator |
+| `GET` | `/notes/lists` | Every `list_id` with its count of live items | operator |
+| `GET` | `/notes/search` | Full-text search of title and body for `q`, every word in each term, newest first; held items only with `include_held=true` | operator |
+| `GET` | `/notes/tags` | Every tag on live items with its count, most used first | operator |
+
+### issues: the content of each issue, mounted in this process
+
+| Method | Route | What it does | Who may call |
+|---|---|---|---|
+| `GET` | `/issues/items` | List items by `type`, `tag`, `exclude_tag`, `status`, `list_id`, `created_by`, `parent_id`, `sort`, `limit`; held and deleted items only when asked for | operator |
+| `POST` | `/issues/items` | Make an issue: `title` required, `type` todo when sent; `hold` makes it held from the start | operator |
+| `POST` | `/issues/items/batch` | The named items in the order named, `null` for one that names no live item | operator |
+| `GET` | `/issues/items/health` | `{"status":"ok","items":N}`, live issues not archived; 500 when the store cannot be read | operator |
+| `POST` | `/issues/items/query` | Of these ids, which match the filters, in what order; held items answered, gone ones in `missing_ids` | operator |
+| `GET` | `/issues/items/query-options` | The sorts and limits `/issues/items/query` takes | operator |
+| `POST` | `/issues/items/rerank` | Set the `rank` of each named item | operator |
+| `GET` | `/issues/items/search` | Full-text search of title and body for `q`, every word in each term, newest first; held items only with `include_held=true` | operator |
+| `GET` | `/issues/items/tags` | Every tag on live items with its count, most used first | operator |
+| `DELETE` | `/issues/items/{id}` | Soft delete, after a revision; `?hard=true` purges the row | operator |
+| `GET` | `/issues/items/{id}` | One live item, its `updated_at` as the `ETag`; `?include_deleted=true` for a deleted one | operator |
+| `PATCH` | `/issues/items/{id}` | Change the fields sent, after a revision of the old state; `If-Match` makes it conditional (412 with the current item) | operator |
+| `POST` | `/issues/items/{id}/hold` | Hold an item, and with it its children, out of list and search; optional `reason` | operator |
+| `GET` | `/issues/items/{id}/occurrences` | When the item's recurrence rule falls due and nags between `from` and `to` | operator |
+| `POST` | `/issues/items/{id}/restore` | Undo a soft delete | operator |
+| `GET` | `/issues/items/{id}/revisions` | Every prior state, newest first; `limit` and `offset` page it | operator |
+| `POST` | `/issues/items/{id}/unhold` | Clear a hold | operator |
 
 ### project-store, mounted in this process
 
@@ -695,7 +717,7 @@ go test ./internal/server -run TestReadmeRouteTable -update-readme-route-table
 | `GET` | `/projects/projects/{id}/links` | What the project owns; `entity_type` narrows | operator |
 | `POST` | `/projects/projects/{id}/links` | Link a record its own store has; 400 when it has none, 502 when it cannot answer, 409 when linked already | operator |
 | `DELETE` | `/projects/projects/{id}/links/{link_id}` | Remove one link | operator |
-| `POST` | `/projects/projects/{id}/next-steps` | Make a noteboard todo tagged `next-step` and link it to the project | operator |
+| `POST` | `/projects/projects/{id}/next-steps` | Make an issue tagged `next-step` and link it to the project | operator |
 | `GET` | `/projects/projects/{id}/rollup` | Worked out on request: children, links, cards, repos, notes, suggestions and goals | operator |
 | `GET` | `/projects/projects/{id}/suggestions` | The project's suggested next steps, oldest first; `status` narrows | operator |
 | `POST` | `/projects/projects/{id}/suggestions` | Ask a model for up to five next steps, superseding the undecided ones | operator |

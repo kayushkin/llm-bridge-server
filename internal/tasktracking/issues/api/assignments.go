@@ -16,9 +16,9 @@ import (
 
 // ============================ Card assignments ============================
 //
-//	/api/cards/:cardID/assignments                — GET
-//	/api/cards/:cardID/assignments/:principalID   — PUT (idempotent) | DELETE
-//	/api/assignments?principal_id=                — GET (reverse lookup)
+//	/cards/:cardID/assignments                — GET
+//	/cards/:cardID/assignments/:principalID   — PUT (idempotent) | DELETE
+//	/assignments?principal_id=                — GET (reverse lookup)
 //
 // An assignment is its own fact about a card — who is on it — and not a card
 // link: a link's label is a display name and its uniqueness is per entity ref,

@@ -184,7 +184,7 @@ func TestEvaluationMatchesTheCuratorRuleAndCallsKanbanOnlyWhenItMust(t *testing.
 	if err != nil || !match.Matched {
 		t.Fatalf("want a match: %+v %v", match, err)
 	}
-	if len(match.PlannedEffects) != 1 || match.PlannedEffects[0].Path != "/api/cards/card-a/move" {
+	if len(match.PlannedEffects) != 1 || match.PlannedEffects[0].Path != "/cards/card-a/move" {
 		t.Fatalf("only the card in the condition's column is moved, not the one already in Done: %+v", match.PlannedEffects)
 	}
 	other, err := EvaluateSession(context.Background(), definition, subject("other-session", "completed", "chat"), at, facts)
@@ -221,13 +221,13 @@ func TestUpdatedBeforeAndTagConditions(t *testing.T) {
 func TestALinkedCardOnNoBoardHasNoPlacement(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/entities/session/s1/cards":
+		case "/entities/session/s1/cards":
 			w.Write([]byte(`[{"card_id":"detached"},{"card_id":"placed"}]`))
-		case "/api/cards/detached":
+		case "/cards/detached":
 			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
-		case "/api/cards/placed":
+		case "/cards/placed":
 			w.Write([]byte(`{"placements":[{"board_id":"b","column_id":"c"}]}`))
-		case "/api/cards/broken":
+		case "/cards/broken":
 			http.Error(w, "boom", http.StatusInternalServerError)
 		default:
 			http.Error(w, "unexpected "+r.URL.Path, http.StatusTeapot)
@@ -243,7 +243,7 @@ func TestALinkedCardOnNoBoardHasNoPlacement(t *testing.T) {
 		t.Fatalf("placements %+v", placements)
 	}
 	var card CardDetail
-	if err := kanban.getJSON(context.Background(), "/api/cards/broken", &card); err == nil || errors.Is(err, ErrKanbanNotFound) {
+	if err := kanban.getJSON(context.Background(), "/cards/broken", &card); err == nil || errors.Is(err, ErrKanbanNotFound) {
 		t.Fatalf("a 500 must stay an error, got %v", err)
 	}
 }
@@ -272,7 +272,7 @@ func TestColumnCardsReadsEveryPageAndRefusesAnOversizedBody(t *testing.T) {
 	served := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/columns/col/cards":
+		case "/columns/col/cards":
 			served++
 			offset := r.URL.Query().Get("offset")
 			cards := `[{"item":{"id":"a"},"placement":{"updated_at":"2026-10-20T10:00:00Z"},"links":[{"entity_type":"session","entity_ref":"s1"},{"entity_type":"email","entity_ref":"x"}]}]`
@@ -280,7 +280,7 @@ func TestColumnCardsReadsEveryPageAndRefusesAnOversizedBody(t *testing.T) {
 				cards = `[{"item":{"id":"b"},"placement":{"updated_at":"2026-10-20T11:00:00Z"},"links":[]}]`
 			}
 			fmt.Fprintf(w, `{"column":{"board_id":"board"},"total":%d,"cards":%s}`, columnPageSize+1, cards)
-		case "/api/cards/huge":
+		case "/cards/huge":
 			w.Write([]byte(`{"pad":"` + strings.Repeat("x", kanbanResponseLimit) + `"}`))
 		}
 	}))

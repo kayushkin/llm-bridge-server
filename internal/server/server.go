@@ -35,7 +35,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/serviceinventory"
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/snapshots"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
-	noteboardapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/api"
+	itemsapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/items/api"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/predictions"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/projects"
 	"github.com/kayushkin/llm-bridge-server/ui"
@@ -76,9 +76,12 @@ type Server struct {
 	predictionStore atomic.Pointer[predictions.Handlers]
 	// sessionLog is log-store in this process; see EnableSessionLog.
 	sessionLog atomic.Pointer[sessionLogModule]
-	// noteboard answers /noteboard/ once its Postgres module is open
-	// (noteboard_routes.go); nil answers those routes 503.
-	noteboard atomic.Pointer[noteboardapi.API]
+	// notes answers /notes/ once its Postgres module is open
+	// (notes_routes.go); nil answers those routes 503.
+	notes atomic.Pointer[itemsapi.API]
+	// issueItems answers /issues/items, the content of issues, once the
+	// issues module is open (EnableIssues); nil answers those routes 503.
+	issueItems atomic.Pointer[itemsapi.API]
 	// projectStore answers /projects/ once its Postgres module is open
 	// (project_store_routes.go); nil answers those routes 503.
 	projectStore atomic.Pointer[projects.Handlers]
@@ -389,7 +392,8 @@ func (s *Server) routes() {
 	s.registerSkillStoreRoutes()
 	s.registerAgentsRegistryRoutes()
 	s.registerBundleStoreRoutes()
-	s.registerNoteboardRoutes()
+	s.registerNotesRoutes()
+	s.registerIssueItemsRoutes()
 	s.registerProjectStoreRoutes()
 	s.registerAccessRoutes()
 	s.registerRepositoriesAndReferencesRoutes()

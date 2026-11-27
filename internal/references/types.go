@@ -22,8 +22,8 @@ import (
 // Presentation here is only field names and format hints. The record itself is
 // passed through unchanged; the chip formats it.
 
-// UUIDPattern matches the canonical 8-4-4-4-12 hex form, the id shape
-// noteboard hands out.
+// UUIDPattern matches the canonical 8-4-4-4-12 hex form, the id shape notes
+// and issues hand out, as noteboard did.
 const UUIDPattern = `[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`
 
 // PrincipalIDPattern is principal-store's id shape.
@@ -219,11 +219,14 @@ func buildTypes() []ReferenceType {
 		},
 		{Type: "agent", Service: "agent-store", Search: "/api/agents?q=", Access: AccessByGrant, Description: "An agent identity in agent-store."},
 		{
-			// /api/search, not /api/items: /api/items ignores q. One id space
-			// for every noteboard item type; the item's own type says which.
-			Type: "note", Service: "noteboard", Glyph: "📝",
-			Description: "A noteboard item: a note, todo, ranked list or workspace.",
-			Search:      "/api/search?q=", Get: "/api/items/{id}", IDPatterns: []string{UUIDPattern},
+			// One id space for notes and issues, as noteboard had for every
+			// item type: a uuid names a note, ranked list entry or workspace
+			// in notes, or an issue (a todo) in issues, and the item's own
+			// type says which. Both are read in this process, which looks in
+			// notes and then issues, and searches both.
+			Type: "note", Service: "notes", Glyph: "📝",
+			Description: "A note, ranked list entry or workspace in notes, or an issue (type todo) in issues.",
+			Search:      "/search?q=", Get: "/items/{id}", IDPatterns: []string{UUIDPattern},
 			LabelField: "title",
 			Summary:    []SummaryField{text("type", "Kind"), text("status", "Status"), {"tags", "Tags", FormatText}},
 			Page:       "/notes?id={id}",

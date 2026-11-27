@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/items/model"
 )
 
 // ---------------------------------------------------------------- fakes

@@ -15,9 +15,9 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/db"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuecontent"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/model"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/multichat"
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/noteboard"
 )
 
 // Sender delivers one rendered message. *multichat.Client is the real one.
@@ -26,9 +26,9 @@ type Sender interface {
 }
 
 type Dispatcher struct {
-	store       *db.Store
-	noteboard   noteboard.Notes
-	sendTimeout time.Duration
+	store        *db.Store
+	issueContent issuecontent.Contents
+	sendTimeout  time.Duration
 
 	mu     sync.RWMutex
 	sender Sender
@@ -36,8 +36,8 @@ type Dispatcher struct {
 
 // NewDispatcher starts with no sender: every matching trigger records a
 // not_configured delivery until SetSender is called.
-func NewDispatcher(store *db.Store, nb noteboard.Notes) *Dispatcher {
-	return &Dispatcher{store: store, noteboard: nb, sendTimeout: 60 * time.Second}
+func NewDispatcher(store *db.Store, nb issuecontent.Contents) *Dispatcher {
+	return &Dispatcher{store: store, issueContent: nb, sendTimeout: 60 * time.Second}
 }
 
 func (d *Dispatcher) SetSender(sender Sender) {
@@ -157,7 +157,7 @@ type cardFacts struct {
 }
 
 func (d *Dispatcher) loadCard(cardID string) (*cardFacts, error) {
-	item, err := d.noteboard.GetItem(cardID)
+	item, err := d.issueContent.GetItem(cardID)
 	if err != nil {
 		return nil, fmt.Errorf("noteboard item %s: %w", cardID, err)
 	}

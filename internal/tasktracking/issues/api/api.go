@@ -15,18 +15,18 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/config"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/db"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/filestore"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuecontent"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/llmbridge"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/messaging"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/model"
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/noteboard"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/principalstore"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/referencestore"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/timeaccounting"
 )
 
 type API struct {
-	store     *db.Store
-	noteboard noteboard.Notes
+	store        *db.Store
+	issueContent issuecontent.Contents
 	// principals is consulted on exactly one write: assigning a principal to a
 	// card. See internal/principalstore for why this otherwise-dumb store checks
 	// that one reference.
@@ -55,8 +55,8 @@ type API struct {
 // New builds the API over its store and the owners it asks. What the process
 // was started with is the mounting server's to describe, so the store has no
 // /settings of its own.
-func New(store *db.Store, nb noteboard.Notes, principals principalstore.Directory, bridge llmbridge.AgentsAndInstances, bundles bundlestore.Bundles) *API {
-	return &API{store: store, noteboard: nb, principals: principals, bridge: bridge, bundles: bundles, messages: messaging.NewDispatcher(store, nb)}
+func New(store *db.Store, nb issuecontent.Contents, principals principalstore.Directory, bridge llmbridge.AgentsAndInstances, bundles bundlestore.Bundles) *API {
+	return &API{store: store, issueContent: nb, principals: principals, bridge: bridge, bundles: bundles, messages: messaging.NewDispatcher(store, nb)}
 }
 
 func (a *API) Handler() http.Handler {
@@ -71,55 +71,55 @@ func (a *API) routes() *http.ServeMux {
 	mux.HandleFunc("/health", a.health)
 
 	// boards
-	mux.HandleFunc("/api/boards", a.boards)
-	mux.HandleFunc("/api/boards/", a.boardsTree)
+	mux.HandleFunc("/boards", a.boards)
+	mux.HandleFunc("/boards/", a.boardsTree)
 
-	// message triggers (single-trigger ops; a board's list is under /api/boards/:id)
-	mux.HandleFunc("/api/message-triggers/", a.messageTriggerByID)
-	mux.HandleFunc("/api/message-trigger-options", a.messageTriggerOptions)
+	// message triggers (single-trigger ops; a board's list is under /boards/:id)
+	mux.HandleFunc("/message-triggers/", a.messageTriggerByID)
+	mux.HandleFunc("/message-trigger-options", a.messageTriggerOptions)
 
 	// columns (single-resource ops, and a column's cards a page at a time)
-	mux.HandleFunc("/api/columns/", a.columnScoped)
+	mux.HandleFunc("/columns/", a.columnScoped)
 
 	// cards (single-resource ops, including move + delete)
-	mux.HandleFunc("/api/cards/", a.cardScoped)
+	mux.HandleFunc("/cards/", a.cardScoped)
 
 	// links (delete by link id)
-	mux.HandleFunc("/api/links/", a.linkByID)
+	mux.HandleFunc("/links/", a.linkByID)
 
 	// card notes (delete by note id)
-	mux.HandleFunc("/api/notes/", a.notesByID)
+	mux.HandleFunc("/notes/", a.notesByID)
 
 	// reverse lookups by entity
-	mux.HandleFunc("/api/entities/", a.entityScoped)
+	mux.HandleFunc("/entities/", a.entityScoped)
 
 	// reverse lookup by principal: every card someone is assigned to
-	mux.HandleFunc("/api/assignments", a.assignmentsByPrincipal)
+	mux.HandleFunc("/assignments", a.assignmentsByPrincipal)
 
 	// tickets across every board, newest first; and the ticket vocabularies:
 	// what a channel and a lifecycle state may be
-	mux.HandleFunc("/api/tickets", a.listTickets)
-	mux.HandleFunc("/api/ticket-channels", a.ticketChannels)
-	mux.HandleFunc("/api/ticket-lifecycle-states", a.ticketLifecycleStates)
+	mux.HandleFunc("/tickets", a.listTickets)
+	mux.HandleFunc("/ticket-channels", a.ticketChannels)
+	mux.HandleFunc("/ticket-lifecycle-states", a.ticketLifecycleStates)
 
 	// note vocabulary: who a note may be written for
-	mux.HandleFunc("/api/note-visibilities", a.noteVisibilities)
+	mux.HandleFunc("/note-visibilities", a.noteVisibilities)
 
 	// work-state vocabulary: the states every board's columns map onto
-	mux.HandleFunc("/api/work-states", a.workStates)
+	mux.HandleFunc("/work-states", a.workStates)
 
 	// assignment pool vocabulary: how a board's pool chooses among its members
-	mux.HandleFunc("/api/assignment-strategies", a.assignmentStrategies)
+	mux.HandleFunc("/assignment-strategies", a.assignmentStrategies)
 
 	// entity-type registry & cross-entity tag listing
-	mux.HandleFunc("/api/entity-types", a.entityTypes)
-	mux.HandleFunc("/api/tags", a.allTags)
+	mux.HandleFunc("/entity-types", a.entityTypes)
+	mux.HandleFunc("/tags", a.allTags)
 
 	// search delegate
-	mux.HandleFunc("/api/search", a.search)
+	mux.HandleFunc("/search", a.search)
 
 	// one command applied to many cards, each through its single-card route
-	mux.HandleFunc("/api/bulk-card-commands", a.bulkCardCommands)
+	mux.HandleFunc("/bulk-card-commands", a.bulkCardCommands)
 
 	return mux
 }
@@ -217,15 +217,15 @@ func (a *API) boards(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// boardsTree handles /api/boards/:id and its sub-resources.
+// boardsTree handles /boards/:id and its sub-resources.
 //
-//	/api/boards/:id
-//	/api/boards/:id/columns
-//	/api/boards/:id/columns/reorder
-//	/api/boards/:id/cards
-//	/api/boards/:id/cards/:cardID   (PUT to attach existing card)
+//	/boards/:id
+//	/boards/:id/columns
+//	/boards/:id/columns/reorder
+//	/boards/:id/cards
+//	/boards/:id/cards/:cardID   (PUT to attach existing card)
 func (a *API) boardsTree(w http.ResponseWriter, r *http.Request) {
-	rest := strings.TrimPrefix(r.URL.Path, "/api/boards/")
+	rest := strings.TrimPrefix(r.URL.Path, "/boards/")
 	if rest == "" {
 		writeError(w, 400, "missing board id")
 		return
@@ -447,9 +447,9 @@ func (a *API) reorderColumns(w http.ResponseWriter, r *http.Request, boardID str
 	writeJSON(w, 200, cols)
 }
 
-// columnScoped routes /api/columns/:id and /api/columns/:id/cards.
+// columnScoped routes /columns/:id and /columns/:id/cards.
 func (a *API) columnScoped(w http.ResponseWriter, r *http.Request) {
-	rest := strings.TrimPrefix(r.URL.Path, "/api/columns/")
+	rest := strings.TrimPrefix(r.URL.Path, "/columns/")
 	if rest == "" {
 		writeError(w, 400, "missing column id")
 		return
@@ -560,7 +560,7 @@ func (a *API) boardCardByID(w http.ResponseWriter, r *http.Request, boardID, car
 		}
 		// Verify the card actually exists in noteboard, and read its tags: a
 		// tag rule may name who the card goes to on this board.
-		item, err := a.noteboard.GetItem(cardID)
+		item, err := a.issueContent.GetItem(cardID)
 		if err != nil {
 			writeNoteboardItemError(w, err)
 			return
@@ -661,7 +661,7 @@ func (a *API) createCardOnBoard(w http.ResponseWriter, r *http.Request, boardID 
 	}
 
 	// Create the noteboard item first — it's the source of truth.
-	item, err := a.noteboard.CreateItem(noteboard.CreateItemPayload{
+	item, err := a.issueContent.CreateItem(issuecontent.CreateItemPayload{
 		Type:          "todo",
 		Title:         req.Title,
 		Body:          req.Body,
@@ -701,7 +701,7 @@ func (a *API) createCardOnBoard(w http.ResponseWriter, r *http.Request, boardID 
 	// dropped write here hands already-finished work back to the queue.
 	var autoStatusApplied, autoStatusError string
 	if col.AutoStatus != nil && *col.AutoStatus != "" {
-		patched, perr := a.noteboard.PatchItem(cardID, map[string]any{"status": *col.AutoStatus})
+		patched, perr := a.issueContent.PatchItem(cardID, map[string]any{"status": *col.AutoStatus})
 		if perr != nil {
 			autoStatusError = perr.Error()
 		} else {
@@ -764,17 +764,17 @@ func (a *API) checkWIP(columnID string) error {
 
 // ============================ Cards (single-resource) ============================
 //
-//	/api/cards/:cardID                — PATCH (forward to noteboard) | DELETE (archive)
-//	/api/cards/:cardID/move           — POST  (move within/across columns)
-//	/api/cards/:cardID/placements     — GET   (all boards this card is on)
-//	/api/cards/:cardID/links          — GET, POST
-//	/api/cards/:cardID/events         — GET, POST  (the action log)
-//	/api/cards/:cardID/notes          — GET, POST  (status updates and summaries)
-//	/api/cards/:cardID/timeline       — GET   (events + notes + the time they took)
-//	/api/cards/:cardID/assignments    — GET   (who is on the card)
-//	/api/cards/:cardID/assignments/:principalID — PUT (idempotent) | DELETE
+//	/cards/:cardID                — PATCH (forward to noteboard) | DELETE (archive)
+//	/cards/:cardID/move           — POST  (move within/across columns)
+//	/cards/:cardID/placements     — GET   (all boards this card is on)
+//	/cards/:cardID/links          — GET, POST
+//	/cards/:cardID/events         — GET, POST  (the action log)
+//	/cards/:cardID/notes          — GET, POST  (status updates and summaries)
+//	/cards/:cardID/timeline       — GET   (events + notes + the time they took)
+//	/cards/:cardID/assignments    — GET   (who is on the card)
+//	/cards/:cardID/assignments/:principalID — PUT (idempotent) | DELETE
 func (a *API) cardScoped(w http.ResponseWriter, r *http.Request) {
-	rest := strings.TrimPrefix(r.URL.Path, "/api/cards/")
+	rest := strings.TrimPrefix(r.URL.Path, "/cards/")
 	if rest == "" {
 		writeError(w, 400, "missing card id")
 		return
@@ -854,7 +854,7 @@ func (a *API) holdCard(w http.ResponseWriter, r *http.Request, cardID string, ho
 		writeError(w, 405, "method not allowed")
 		return
 	}
-	var item noteboard.Item
+	var item issuecontent.Item
 	var err error
 	holdReason := ""
 	if hold {
@@ -863,9 +863,9 @@ func (a *API) holdCard(w http.ResponseWriter, r *http.Request, cardID string, ho
 		}
 		json.NewDecoder(r.Body).Decode(&req)
 		holdReason = req.Reason
-		item, err = a.noteboard.HoldItem(cardID, req.Reason)
+		item, err = a.issueContent.HoldItem(cardID, req.Reason)
 	} else {
-		item, err = a.noteboard.UnholdItem(cardID)
+		item, err = a.issueContent.UnholdItem(cardID)
 	}
 	if err != nil {
 		writeNoteboardItemError(w, err)
@@ -890,7 +890,7 @@ func (a *API) holdCard(w http.ResponseWriter, r *http.Request, cardID string, ho
 // when noteboard says the item does not exist, 502 when noteboard could not be
 // asked or failed. A caller told 502 retries; a caller told 404 stops.
 func writeNoteboardItemError(w http.ResponseWriter, err error) {
-	if noteboard.IsNotFound(err) {
+	if issuecontent.IsNotFound(err) {
 		writeError(w, 404, err.Error())
 		return
 	}
@@ -917,7 +917,7 @@ func (a *API) cardByID(w http.ResponseWriter, r *http.Request, cardID string) {
 					writeError(w, 400, err.Error())
 					return
 				}
-				itemBefore, err := a.noteboard.GetItem(cardID)
+				itemBefore, err := a.issueContent.GetItem(cardID)
 				if err != nil {
 					writeNoteboardItemError(w, err)
 					return
@@ -934,8 +934,8 @@ func (a *API) cardByID(w http.ResponseWriter, r *http.Request, cardID string) {
 		}
 		// If-Match goes to noteboard as sent: it owns the item and its version,
 		// and the check has to happen where the write does.
-		item, err := a.noteboard.PatchItemIfMatch(cardID, patch, r.Header.Get("If-Match"))
-		var changed *noteboard.ItemChangedError
+		item, err := a.issueContent.PatchItemIfMatch(cardID, patch, r.Header.Get("If-Match"))
+		var changed *issuecontent.ItemChangedError
 		if errors.As(err, &changed) {
 			// Someone else saved first. noteboard's answer carries the item as it
 			// is now, and is relayed unchanged.
@@ -980,7 +980,7 @@ func (a *API) cardByID(w http.ResponseWriter, r *http.Request, cardID string) {
 				return
 			}
 		}
-		if err := a.noteboard.DeleteItem(cardID, hard); err != nil {
+		if err := a.issueContent.DeleteItem(cardID, hard); err != nil {
 			writeNoteboardItemError(w, err)
 			return
 		}
@@ -1023,8 +1023,8 @@ func (a *API) cardDetail(w http.ResponseWriter, r *http.Request, cardID string) 
 		}
 		level = levelOnCard(access, boardIDs)
 	}
-	item, err := a.noteboard.GetItem(cardID)
-	if err != nil && !noteboard.IsNotFound(err) {
+	item, err := a.issueContent.GetItem(cardID)
+	if err != nil && !issuecontent.IsNotFound(err) {
 		writeError(w, 502, err.Error())
 		return
 	}
@@ -1112,7 +1112,7 @@ func (a *API) moveCard(w http.ResponseWriter, r *http.Request, cardID string) {
 	}
 	resp := map[string]any{"placement": p}
 	if col != nil && col.AutoStatus != nil && *col.AutoStatus != "" {
-		if _, err := a.noteboard.PatchItem(cardID, map[string]any{"status": *col.AutoStatus}); err != nil {
+		if _, err := a.issueContent.PatchItem(cardID, map[string]any{"status": *col.AutoStatus}); err != nil {
 			resp["auto_status_error"] = err.Error()
 		} else {
 			resp["auto_status_applied"] = *col.AutoStatus
@@ -1221,7 +1221,7 @@ func (a *API) cardLinksOf(cardID string) ([]model.CardLink, error) {
 }
 
 func (a *API) linkByID(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/api/links/")
+	id := strings.TrimPrefix(r.URL.Path, "/links/")
 	if id == "" {
 		writeError(w, 400, "missing link id")
 		return
@@ -1239,14 +1239,14 @@ func (a *API) linkByID(w http.ResponseWriter, r *http.Request) {
 
 // ============================ Entities ============================
 //
-//	/api/entities/:type/:ref/cards
-//	/api/entities/:type/:ref/tags
-//	/api/entities/:type/:ref/tags/:tag
+//	/entities/:type/:ref/cards
+//	/entities/:type/:ref/tags
+//	/entities/:type/:ref/tags/:tag
 func (a *API) entityScoped(w http.ResponseWriter, r *http.Request) {
-	rest := strings.TrimPrefix(r.URL.Path, "/api/entities/")
+	rest := strings.TrimPrefix(r.URL.Path, "/entities/")
 	parts := strings.Split(rest, "/")
 	if len(parts) < 3 {
-		writeError(w, 400, "expected /api/entities/:type/:ref/...")
+		writeError(w, 400, "expected /entities/:type/:ref/...")
 		return
 	}
 	etype, eref, sub := parts[0], parts[1], parts[2]
@@ -1371,7 +1371,7 @@ func (a *API) search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit, _ := strconv.Atoi(q.Get("limit"))
-	items, err := a.noteboard.Search(query, limit)
+	items, err := a.issueContent.Search(query, limit)
 	if err != nil {
 		writeError(w, 502, err.Error())
 		return
@@ -1485,7 +1485,7 @@ func (a *API) assembleBoardView(boardID string, limit int, filter db.CardFilter,
 	// arbitrary column, and so the count a client needs for "show more" is exact.
 	// columnPage cuts each page after every filter, this store's and noteboard's.
 	var placements []*model.Placement
-	var items []noteboard.Item
+	var items []issuecontent.Item
 	totals := map[string]int{}
 	for _, c := range cols {
 		page, pageItems, total, err := a.columnPage(c.ID, filter, content, limit, 0)
@@ -1521,7 +1521,7 @@ func (a *API) assembleBoardView(boardID string, limit int, filter db.CardFilter,
 }
 
 // assembleCards joins only the selected page, keeping content untouched.
-func (a *API) assembleCards(b *model.Board, placements []*model.Placement, items []noteboard.Item, ladder *model.PriorityLadder, access *PrincipalBoardAccess) ([]model.CardView, error) {
+func (a *API) assembleCards(b *model.Board, placements []*model.Placement, items []issuecontent.Item, ladder *model.PriorityLadder, access *PrincipalBoardAccess) ([]model.CardView, error) {
 	ids := make([]string, len(placements))
 	for i, p := range placements {
 		ids[i] = p.CardID

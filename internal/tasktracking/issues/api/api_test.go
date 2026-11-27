@@ -18,9 +18,9 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/db"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/db/dbtest"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/grantstore"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuecontent"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/llmbridge"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/model"
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/noteboard"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/principalstore"
 )
 
@@ -31,7 +31,7 @@ import (
 // so the tests need a stateful backend that creates items, applies PATCHes
 // (this is how auto_status is observed), serves GETs for board-view assembly,
 // and 404s on missing items. We mount it on an httptest.Server and point the
-// real noteboard.Client at it — no network, no real noteboard required.
+// real issuecontent.Client at it — no network, no real noteboard required.
 type fakeNoteboard struct {
 	mu    sync.Mutex
 	items map[string]map[string]any
@@ -43,10 +43,10 @@ type fakeNoteboard struct {
 	// failStatus, when non-zero, makes every request answer that status: the
 	// noteboard that is up for one call and failing for the next.
 	failStatus int
-	// queries counts POST /api/items/query calls, so a test can tell a read
+	// queries counts POST /items/query calls, so a test can tell a read
 	// that asked noteboard to filter from one that had no need to.
 	queries int
-	// itemReads counts GET /api/items/{id} calls, so a test can tell a read
+	// itemReads counts GET /items/{id} calls, so a test can tell a read
 	// that fetched items one by one from one that asked once.
 	itemReads int
 	// versions counts writes. An item's updated_at is its version, and the ids
@@ -92,7 +92,7 @@ func (f *fakeNoteboard) setHold(w http.ResponseWriter, id string, held bool, rea
 func (f *fakeNoteboard) handler() http.Handler {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("POST /api/items", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /items", func(w http.ResponseWriter, r *http.Request) {
 		var payload map[string]any
 		json.NewDecoder(r.Body).Decode(&payload)
 		f.mu.Lock()
@@ -110,7 +110,7 @@ func (f *fakeNoteboard) handler() http.Handler {
 		writeJSON(w, 201, out)
 	})
 
-	mux.HandleFunc("POST /api/items/batch", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /items/batch", func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
 			IDs []string `json:"ids"`
 		}
@@ -131,7 +131,7 @@ func (f *fakeNoteboard) handler() http.Handler {
 		writeJSON(w, 200, map[string]any{"items": items})
 	})
 
-	mux.HandleFunc("GET /api/items/{id}", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /items/{id}", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		includeDeleted := r.URL.Query().Get("include_deleted") == "true"
 		f.mu.Lock()
@@ -155,13 +155,13 @@ func (f *fakeNoteboard) handler() http.Handler {
 		writeJSON(w, 200, out)
 	})
 
-	// POST /api/items/query, as noteboard answers it (noteboard model/items_query.go
+	// POST /items/query, as noteboard answers it (noteboard model/items_query.go
 	// and internal/db/items_query.go at 41d488b, measured live 2026-09-20): an
 	// unknown field or sort is a 400; an item must carry ALL the tags and ANY of
 	// the priorities and statuses; a sort's ties fall back to the order the ids
 	// were sent in; the page is cut after the filter; total counts the matches;
 	// missing_ids are the ids naming no live item, whatever the filter.
-	mux.HandleFunc("POST /api/items/query", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /items/query", func(w http.ResponseWriter, r *http.Request) {
 		var query struct {
 			Q            string   `json:"q"`
 			CreatedFrom  string   `json:"created_from"`
@@ -184,7 +184,7 @@ func (f *fakeNoteboard) handler() http.Handler {
 		}
 		sorts := map[string]bool{"": true, "given": true, "priority": true, "due_at": true, "updated_at": true, "created_at": true, "updated_asc": true, "title": true}
 		if !sorts[query.Sort] {
-			writeJSON(w, 400, map[string]string{"error": fmt.Sprintf("sort %q is not one of [given priority due_at updated_at created_at title] (GET /api/items/query-options)", query.Sort)})
+			writeJSON(w, 400, map[string]string{"error": fmt.Sprintf("sort %q is not one of [given priority due_at updated_at created_at title] (GET /items/query-options)", query.Sort)})
 			return
 		}
 		f.mu.Lock()
@@ -294,7 +294,7 @@ func (f *fakeNoteboard) handler() http.Handler {
 		writeJSON(w, 200, answer)
 	})
 
-	mux.HandleFunc("PATCH /api/items/{id}", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("PATCH /items/{id}", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		var patch map[string]any
 		json.NewDecoder(r.Body).Decode(&patch)
@@ -346,7 +346,7 @@ func (f *fakeNoteboard) handler() http.Handler {
 	// noteboard binary on 2026-08-10). The row stops being visible: a later GET
 	// answers 404. This fake previously flipped status to "archived", which no
 	// version of noteboard has ever done, and a green test asserted it.
-	mux.HandleFunc("DELETE /api/items/{id}", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("DELETE /items/{id}", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		hard := r.URL.Query().Get("hard") == "true"
 		f.mu.Lock()
@@ -372,7 +372,7 @@ func (f *fakeNoteboard) handler() http.Handler {
 	// The hold gate. noteboard parks an item by stamping held_at and clears it
 	// on unhold; kanban-store keeps no hold of its own, it forwards. So these
 	// two endpoints are where the gate's two directions can be observed at all.
-	mux.HandleFunc("POST /api/items/{id}/hold", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /items/{id}/hold", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Reason string `json:"reason"`
 		}
@@ -380,11 +380,11 @@ func (f *fakeNoteboard) handler() http.Handler {
 		f.setHold(w, r.PathValue("id"), true, req.Reason)
 	})
 
-	mux.HandleFunc("POST /api/items/{id}/unhold", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /items/{id}/unhold", func(w http.ResponseWriter, r *http.Request) {
 		f.setHold(w, r.PathValue("id"), false, "")
 	})
 
-	mux.HandleFunc("GET /api/search", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /search", func(w http.ResponseWriter, r *http.Request) {
 		q := strings.ToLower(r.URL.Query().Get("q"))
 		if q == "" {
 			writeJSON(w, 400, map[string]string{"error": "q parameter is required"})
@@ -549,7 +549,7 @@ func setupWithOwners(t *testing.T, principalStoreURL, llmBridgeServerURL, bundle
 	store := dbtest.NewStore(t)
 	nb := newFakeNoteboard()
 	srv := httptest.NewServer(nb.handler())
-	a := api.New(store, noteboard.New(srv.URL), principalstore.New(principalStoreURL), llmbridge.New(llmBridgeServerURL), bundlestore.New(bundleStoreURL))
+	a := api.New(store, issuecontent.New(srv.URL), principalstore.New(principalStoreURL), llmbridge.New(llmBridgeServerURL), bundlestore.New(bundleStoreURL))
 	a.SetReferenceStore(fakeReferenceStore(t))
 	// Registered after t.TempDir, so it runs before the directory is removed —
 	// and here rather than only in the returned cleanup, which some callers
@@ -611,7 +611,7 @@ func decodeSuccessfulResponse(t *testing.T, w *httptest.ResponseRecorder, v any)
 // mkBoard creates a board and returns its id.
 func mkBoard(t *testing.T, h http.Handler, name string) string {
 	t.Helper()
-	w := do(t, h, "POST", "/api/boards", model.CreateBoardRequest{Name: name})
+	w := do(t, h, "POST", "/boards", model.CreateBoardRequest{Name: name})
 	if w.Code != 201 {
 		t.Fatalf("create board: expected 201, got %d: %s", w.Code, w.Body.String())
 	}
@@ -628,7 +628,7 @@ func mkColumn(t *testing.T, h http.Handler, boardID, name, autoStatus string) st
 	if autoStatus != "" {
 		req.AutoStatus = &autoStatus
 	}
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/columns", req)
+	w := do(t, h, "POST", "/boards/"+boardID+"/columns", req)
 	if w.Code != 201 {
 		t.Fatalf("create column: expected 201, got %d: %s", w.Code, w.Body.String())
 	}
@@ -662,7 +662,7 @@ func TestBoardCRUD(t *testing.T) {
 
 	// Create
 	desc := "my board"
-	w := do(t, h, "POST", "/api/boards", model.CreateBoardRequest{Name: "Board A", Description: &desc})
+	w := do(t, h, "POST", "/boards", model.CreateBoardRequest{Name: "Board A", Description: &desc})
 	if w.Code != 201 {
 		t.Fatalf("create: expected 201, got %d: %s", w.Code, w.Body.String())
 	}
@@ -673,13 +673,13 @@ func TestBoardCRUD(t *testing.T) {
 	}
 
 	// Get
-	w = do(t, h, "GET", "/api/boards/"+b.ID, nil)
+	w = do(t, h, "GET", "/boards/"+b.ID, nil)
 	if w.Code != 200 {
 		t.Fatalf("get: expected 200, got %d", w.Code)
 	}
 
 	// List
-	w = do(t, h, "GET", "/api/boards", nil)
+	w = do(t, h, "GET", "/boards", nil)
 	if w.Code != 200 {
 		t.Fatalf("list: expected 200, got %d", w.Code)
 	}
@@ -692,7 +692,7 @@ func TestBoardCRUD(t *testing.T) {
 	// Patch (rename + archive)
 	newName := "Board A2"
 	archived := true
-	w = do(t, h, "PATCH", "/api/boards/"+b.ID, model.UpdateBoardRequest{Name: &newName, Archived: &archived})
+	w = do(t, h, "PATCH", "/boards/"+b.ID, model.UpdateBoardRequest{Name: &newName, Archived: &archived})
 	if w.Code != 200 {
 		t.Fatalf("patch: expected 200, got %d", w.Code)
 	}
@@ -703,23 +703,23 @@ func TestBoardCRUD(t *testing.T) {
 	}
 
 	// Archived board is excluded from the default list but included with include_archived.
-	w = do(t, h, "GET", "/api/boards", nil)
+	w = do(t, h, "GET", "/boards", nil)
 	decodeSuccessfulResponse(t, w, &boards)
 	if len(boards) != 0 {
 		t.Fatalf("archived board should be hidden, got %d", len(boards))
 	}
-	w = do(t, h, "GET", "/api/boards?include_archived=true", nil)
+	w = do(t, h, "GET", "/boards?include_archived=true", nil)
 	decodeSuccessfulResponse(t, w, &boards)
 	if len(boards) != 1 {
 		t.Fatalf("include_archived should show board, got %d", len(boards))
 	}
 
 	// Delete
-	w = do(t, h, "DELETE", "/api/boards/"+b.ID, nil)
+	w = do(t, h, "DELETE", "/boards/"+b.ID, nil)
 	if w.Code != 200 {
 		t.Fatalf("delete: expected 200, got %d", w.Code)
 	}
-	w = do(t, h, "GET", "/api/boards/"+b.ID, nil)
+	w = do(t, h, "GET", "/boards/"+b.ID, nil)
 	if w.Code != 404 {
 		t.Fatalf("get after delete: expected 404, got %d", w.Code)
 	}
@@ -730,11 +730,11 @@ func TestBoardErrors(t *testing.T) {
 	defer cleanup()
 
 	// Missing name → 400
-	if w := do(t, h, "POST", "/api/boards", model.CreateBoardRequest{}); w.Code != 400 {
+	if w := do(t, h, "POST", "/boards", model.CreateBoardRequest{}); w.Code != 400 {
 		t.Fatalf("empty name: expected 400, got %d", w.Code)
 	}
 	// Invalid JSON → 400
-	req := httptest.NewRequest("POST", "/api/boards", strings.NewReader("{not json"))
+	req := httptest.NewRequest("POST", "/boards", strings.NewReader("{not json"))
 	req.Header.Set(testServiceTokenHeader, testServiceToken)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -742,11 +742,11 @@ func TestBoardErrors(t *testing.T) {
 		t.Fatalf("bad json: expected 400, got %d", w.Code)
 	}
 	// Unknown board → 404
-	if w := do(t, h, "GET", "/api/boards/nope", nil); w.Code != 404 {
+	if w := do(t, h, "GET", "/boards/nope", nil); w.Code != 404 {
 		t.Fatalf("unknown board: expected 404, got %d", w.Code)
 	}
 	// Unsupported method → 405
-	if w := do(t, h, "DELETE", "/api/boards", nil); w.Code != 405 {
+	if w := do(t, h, "DELETE", "/boards", nil); w.Code != 405 {
 		t.Fatalf("delete collection: expected 405, got %d", w.Code)
 	}
 }
@@ -759,7 +759,7 @@ func TestColumnCRUD(t *testing.T) {
 	boardID := mkBoard(t, h, "Board")
 
 	// Create
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/columns", model.CreateColumnRequest{Name: "Todo"})
+	w := do(t, h, "POST", "/boards/"+boardID+"/columns", model.CreateColumnRequest{Name: "Todo"})
 	if w.Code != 201 {
 		t.Fatalf("create column: expected 201, got %d: %s", w.Code, w.Body.String())
 	}
@@ -770,7 +770,7 @@ func TestColumnCRUD(t *testing.T) {
 	}
 
 	// List
-	w = do(t, h, "GET", "/api/boards/"+boardID+"/columns", nil)
+	w = do(t, h, "GET", "/boards/"+boardID+"/columns", nil)
 	var cols []model.Column
 	decodeSuccessfulResponse(t, w, &cols)
 	if len(cols) != 1 {
@@ -778,14 +778,14 @@ func TestColumnCRUD(t *testing.T) {
 	}
 
 	// Get
-	if w := do(t, h, "GET", "/api/columns/"+c.ID, nil); w.Code != 200 {
+	if w := do(t, h, "GET", "/columns/"+c.ID, nil); w.Code != 200 {
 		t.Fatalf("get column: expected 200, got %d", w.Code)
 	}
 
 	// Patch
 	name := "In Progress"
 	auto := "open"
-	w = do(t, h, "PATCH", "/api/columns/"+c.ID, model.UpdateColumnRequest{Name: &name, AutoStatus: &auto})
+	w = do(t, h, "PATCH", "/columns/"+c.ID, model.UpdateColumnRequest{Name: &name, AutoStatus: &auto})
 	if w.Code != 200 {
 		t.Fatalf("patch column: expected 200, got %d", w.Code)
 	}
@@ -795,10 +795,10 @@ func TestColumnCRUD(t *testing.T) {
 	}
 
 	// Delete
-	if w := do(t, h, "DELETE", "/api/columns/"+c.ID, nil); w.Code != 200 {
+	if w := do(t, h, "DELETE", "/columns/"+c.ID, nil); w.Code != 200 {
 		t.Fatalf("delete column: expected 200, got %d", w.Code)
 	}
-	if w := do(t, h, "GET", "/api/columns/"+c.ID, nil); w.Code != 404 {
+	if w := do(t, h, "GET", "/columns/"+c.ID, nil); w.Code != 404 {
 		t.Fatalf("get after delete: expected 404, got %d", w.Code)
 	}
 }
@@ -809,21 +809,21 @@ func TestColumnErrors(t *testing.T) {
 	boardID := mkBoard(t, h, "Board")
 
 	// Missing name → 400
-	if w := do(t, h, "POST", "/api/boards/"+boardID+"/columns", model.CreateColumnRequest{}); w.Code != 400 {
+	if w := do(t, h, "POST", "/boards/"+boardID+"/columns", model.CreateColumnRequest{}); w.Code != 400 {
 		t.Fatalf("empty name: expected 400, got %d", w.Code)
 	}
 	// Invalid auto_status at create → 400
 	bad := "nonsense"
-	if w := do(t, h, "POST", "/api/boards/"+boardID+"/columns", model.CreateColumnRequest{Name: "X", AutoStatus: &bad}); w.Code != 400 {
+	if w := do(t, h, "POST", "/boards/"+boardID+"/columns", model.CreateColumnRequest{Name: "X", AutoStatus: &bad}); w.Code != 400 {
 		t.Fatalf("bad auto_status create: expected 400, got %d", w.Code)
 	}
 	// Invalid auto_status at patch → 400
 	colID := mkColumn(t, h, boardID, "C", "")
-	if w := do(t, h, "PATCH", "/api/columns/"+colID, model.UpdateColumnRequest{AutoStatus: &bad}); w.Code != 400 {
+	if w := do(t, h, "PATCH", "/columns/"+colID, model.UpdateColumnRequest{AutoStatus: &bad}); w.Code != 400 {
 		t.Fatalf("bad auto_status patch: expected 400, got %d", w.Code)
 	}
 	// Column on a missing board → 404 (board lookup fails in store).
-	if w := do(t, h, "POST", "/api/boards/missing/columns", model.CreateColumnRequest{Name: "X"}); w.Code != 404 {
+	if w := do(t, h, "POST", "/boards/missing/columns", model.CreateColumnRequest{Name: "X"}); w.Code != 404 {
 		t.Fatalf("column on missing board: expected 404, got %d", w.Code)
 	}
 }
@@ -842,7 +842,7 @@ func TestReorderColumns(t *testing.T) {
 		{"id": c2, "position": 2.0},
 		{"id": c3, "position": 1.0},
 	}}
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/columns/reorder", body)
+	w := do(t, h, "POST", "/boards/"+boardID+"/columns/reorder", body)
 	if w.Code != 200 {
 		t.Fatalf("reorder: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
@@ -866,7 +866,7 @@ func TestCardCreateAndDelete(t *testing.T) {
 	colID := mkColumn(t, h, boardID, "Todo", "")
 
 	// Create a card → creates a noteboard item, then attaches it.
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/cards", model.CreateCardRequest{
+	w := do(t, h, "POST", "/boards/"+boardID+"/cards", model.CreateCardRequest{
 		Title: "First card", ColumnID: colID, Tags: []string{"x"},
 	})
 	if w.Code != 201 {
@@ -883,7 +883,7 @@ func TestCardCreateAndDelete(t *testing.T) {
 	}
 
 	// Board view should now contain the card in its column.
-	w = do(t, h, "GET", "/api/boards/"+boardID+"/cards", nil)
+	w = do(t, h, "GET", "/boards/"+boardID+"/cards", nil)
 	if w.Code != 200 {
 		t.Fatalf("board view: expected 200, got %d", w.Code)
 	}
@@ -897,7 +897,7 @@ func TestCardCreateAndDelete(t *testing.T) {
 	// item flips to archived", and it passed, because the fake it ran against
 	// had been written from this repo's comments instead of from noteboard's
 	// routes. noteboard stamps deleted_at and never touches status.
-	if w := do(t, h, "DELETE", "/api/cards/"+cardID, nil); w.Code != 200 {
+	if w := do(t, h, "DELETE", "/cards/"+cardID, nil); w.Code != 200 {
 		t.Fatalf("delete card: expected 200, got %d", w.Code)
 	}
 	if got := nb.status(cardID); got != "open" {
@@ -910,7 +910,7 @@ func TestCardCreateAndDelete(t *testing.T) {
 	// survives, the item read 404s, so the card leaves its column and lands in
 	// the orphan bucket. Nothing hides it as an archived card, because nothing
 	// ever marks it archived.
-	w = do(t, h, "GET", "/api/boards/"+boardID+"/cards", nil)
+	w = do(t, h, "GET", "/boards/"+boardID+"/cards", nil)
 	if w.Code != 200 {
 		t.Fatalf("board view: expected 200, got %d", w.Code)
 	}
@@ -932,7 +932,7 @@ func TestCardCreateAutoStatus(t *testing.T) {
 	boardID := mkBoard(t, h, "Board")
 	doneCol := mkColumn(t, h, boardID, "Done", "done")
 
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/cards", model.CreateCardRequest{
+	w := do(t, h, "POST", "/boards/"+boardID+"/cards", model.CreateCardRequest{
 		Title: "Born done", ColumnID: doneCol,
 	})
 	if w.Code != 201 {
@@ -955,7 +955,7 @@ func TestCardMoveAutoStatus(t *testing.T) {
 	done := mkColumn(t, h, boardID, "Done", "done")
 
 	// Create a card in Todo.
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "Move me", ColumnID: todo})
+	w := do(t, h, "POST", "/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "Move me", ColumnID: todo})
 	var cv model.CardView
 	decodeSuccessfulResponse(t, w, &cv)
 	cardID := cv.Placement.CardID
@@ -964,7 +964,7 @@ func TestCardMoveAutoStatus(t *testing.T) {
 	}
 
 	// Move it into Done.
-	w = do(t, h, "POST", "/api/cards/"+cardID+"/move", model.MoveCardRequest{
+	w = do(t, h, "POST", "/cards/"+cardID+"/move", model.MoveCardRequest{
 		BoardID: boardID, ColumnID: done, Position: 1.0,
 	})
 	if w.Code != 200 {
@@ -980,7 +980,7 @@ func TestCardMoveAutoStatus(t *testing.T) {
 	}
 
 	// Placements lookup should reflect the new column.
-	w = do(t, h, "GET", "/api/cards/"+cardID+"/placements", nil)
+	w = do(t, h, "GET", "/cards/"+cardID+"/placements", nil)
 	var ps []model.Placement
 	decodeSuccessfulResponse(t, w, &ps)
 	if len(ps) != 1 || ps[0].ColumnID != done {
@@ -996,19 +996,19 @@ func TestAttachExistingCard(t *testing.T) {
 
 	// A noteboard item that already exists, independent of kanban.
 	existing := nb.seedItem("Pre-existing item")
-	w := do(t, h, "PUT", "/api/boards/"+boardID+"/cards/"+existing, model.AttachCardRequest{ColumnID: colID})
+	w := do(t, h, "PUT", "/boards/"+boardID+"/cards/"+existing, model.AttachCardRequest{ColumnID: colID})
 	if w.Code != 201 {
 		t.Fatalf("attach: expected 201, got %d: %s", w.Code, w.Body.String())
 	}
 
 	// Attaching an item noteboard doesn't know about → 404.
-	w = do(t, h, "PUT", "/api/boards/"+boardID+"/cards/ghost", model.AttachCardRequest{ColumnID: colID})
+	w = do(t, h, "PUT", "/boards/"+boardID+"/cards/ghost", model.AttachCardRequest{ColumnID: colID})
 	if w.Code != 404 {
 		t.Fatalf("attach unknown item: expected 404, got %d", w.Code)
 	}
 
 	// Detach.
-	if w := do(t, h, "DELETE", "/api/boards/"+boardID+"/cards/"+existing, nil); w.Code != 200 {
+	if w := do(t, h, "DELETE", "/boards/"+boardID+"/cards/"+existing, nil); w.Code != 200 {
 		t.Fatalf("detach: expected 200, got %d", w.Code)
 	}
 }
@@ -1020,16 +1020,16 @@ func TestWIPLimit(t *testing.T) {
 
 	// Column with wip_limit 1.
 	limit := 1
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/columns", model.CreateColumnRequest{Name: "Tight", WIPLimit: &limit})
+	w := do(t, h, "POST", "/boards/"+boardID+"/columns", model.CreateColumnRequest{Name: "Tight", WIPLimit: &limit})
 	var c model.Column
 	decodeSuccessfulResponse(t, w, &c)
 
 	// First card fits.
-	if w := do(t, h, "POST", "/api/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "one", ColumnID: c.ID}); w.Code != 201 {
+	if w := do(t, h, "POST", "/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "one", ColumnID: c.ID}); w.Code != 201 {
 		t.Fatalf("first card: expected 201, got %d: %s", w.Code, w.Body.String())
 	}
 	// Second card exceeds the WIP limit → 409.
-	if w := do(t, h, "POST", "/api/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "two", ColumnID: c.ID}); w.Code != 409 {
+	if w := do(t, h, "POST", "/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "two", ColumnID: c.ID}); w.Code != 409 {
 		t.Fatalf("second card: expected 409, got %d: %s", w.Code, w.Body.String())
 	}
 }
@@ -1041,25 +1041,25 @@ func TestCardErrors(t *testing.T) {
 	colID := mkColumn(t, h, boardID, "Todo", "")
 
 	// Missing title → 400.
-	if w := do(t, h, "POST", "/api/boards/"+boardID+"/cards", model.CreateCardRequest{ColumnID: colID}); w.Code != 400 {
+	if w := do(t, h, "POST", "/boards/"+boardID+"/cards", model.CreateCardRequest{ColumnID: colID}); w.Code != 400 {
 		t.Fatalf("missing title: expected 400, got %d", w.Code)
 	}
 	// Missing column_id → 400.
-	if w := do(t, h, "POST", "/api/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "x"}); w.Code != 400 {
+	if w := do(t, h, "POST", "/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "x"}); w.Code != 400 {
 		t.Fatalf("missing column_id: expected 400, got %d", w.Code)
 	}
 	// Column belonging to another board → 400.
 	other := mkBoard(t, h, "Other")
 	otherCol := mkColumn(t, h, other, "Elsewhere", "")
-	if w := do(t, h, "POST", "/api/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "x", ColumnID: otherCol}); w.Code != 400 {
+	if w := do(t, h, "POST", "/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "x", ColumnID: otherCol}); w.Code != 400 {
 		t.Fatalf("cross-board column: expected 400, got %d", w.Code)
 	}
 	// Move with missing board_id → 400.
-	if w := do(t, h, "POST", "/api/cards/whatever/move", model.MoveCardRequest{ColumnID: colID, Position: 1}); w.Code != 400 {
+	if w := do(t, h, "POST", "/cards/whatever/move", model.MoveCardRequest{ColumnID: colID, Position: 1}); w.Code != 400 {
 		t.Fatalf("move missing board_id: expected 400, got %d", w.Code)
 	}
 	// Move a card with no placement → 404.
-	if w := do(t, h, "POST", "/api/cards/ghost/move", model.MoveCardRequest{BoardID: boardID, ColumnID: colID, Position: 1}); w.Code != 404 {
+	if w := do(t, h, "POST", "/cards/ghost/move", model.MoveCardRequest{BoardID: boardID, ColumnID: colID, Position: 1}); w.Code != 404 {
 		t.Fatalf("move nonexistent placement: expected 404, got %d", w.Code)
 	}
 }
@@ -1071,14 +1071,14 @@ func TestCardLinks(t *testing.T) {
 	defer cleanup()
 	boardID := mkBoard(t, h, "Board")
 	colID := mkColumn(t, h, boardID, "Todo", "")
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "linked", ColumnID: colID})
+	w := do(t, h, "POST", "/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "linked", ColumnID: colID})
 	var cv model.CardView
 	decodeSuccessfulResponse(t, w, &cv)
 	cardID := cv.Placement.CardID
 
 	// Create a link.
 	label := "primary session"
-	w = do(t, h, "POST", "/api/cards/"+cardID+"/links", model.CreateCardLinkRequest{
+	w = do(t, h, "POST", "/cards/"+cardID+"/links", model.CreateCardLinkRequest{
 		EntityType: "session", EntityRef: "sess-123", Label: &label,
 	})
 	if w.Code != 201 {
@@ -1091,7 +1091,7 @@ func TestCardLinks(t *testing.T) {
 	}
 
 	// List links.
-	w = do(t, h, "GET", "/api/cards/"+cardID+"/links", nil)
+	w = do(t, h, "GET", "/cards/"+cardID+"/links", nil)
 	var links []model.CardLink
 	decodeSuccessfulResponse(t, w, &links)
 	if len(links) != 1 {
@@ -1099,7 +1099,7 @@ func TestCardLinks(t *testing.T) {
 	}
 
 	// Reverse lookup: cards by entity.
-	w = do(t, h, "GET", "/api/entities/session/sess-123/cards", nil)
+	w = do(t, h, "GET", "/entities/session/sess-123/cards", nil)
 	if w.Code != 200 {
 		t.Fatalf("entity cards: expected 200, got %d", w.Code)
 	}
@@ -1110,15 +1110,15 @@ func TestCardLinks(t *testing.T) {
 	}
 
 	// Missing entity_type → 400.
-	if w := do(t, h, "POST", "/api/cards/"+cardID+"/links", model.CreateCardLinkRequest{EntityRef: "x"}); w.Code != 400 {
+	if w := do(t, h, "POST", "/cards/"+cardID+"/links", model.CreateCardLinkRequest{EntityRef: "x"}); w.Code != 400 {
 		t.Fatalf("missing entity_type: expected 400, got %d", w.Code)
 	}
 
 	// Delete the link.
-	if w := do(t, h, "DELETE", "/api/links/"+link.ID, nil); w.Code != 200 {
+	if w := do(t, h, "DELETE", "/links/"+link.ID, nil); w.Code != 200 {
 		t.Fatalf("delete link: expected 200, got %d", w.Code)
 	}
-	if w := do(t, h, "DELETE", "/api/links/"+link.ID, nil); w.Code != 404 {
+	if w := do(t, h, "DELETE", "/links/"+link.ID, nil); w.Code != 404 {
 		t.Fatalf("delete missing link: expected 404, got %d", w.Code)
 	}
 }
@@ -1140,19 +1140,19 @@ func TestEntityCardsAreOldestLinkFirst(t *testing.T) {
 	const sessionRef = "sess-ordered"
 	var wantOrder []string
 	for _, title := range []string{"dispatch", "classified once", "classified twice"} {
-		w := do(t, h, "POST", "/api/boards/"+boardID+"/cards", model.CreateCardRequest{Title: title, ColumnID: colID})
+		w := do(t, h, "POST", "/boards/"+boardID+"/cards", model.CreateCardRequest{Title: title, ColumnID: colID})
 		var cv model.CardView
 		decodeSuccessfulResponse(t, w, &cv)
 		cardID := cv.Placement.CardID
 		wantOrder = append(wantOrder, cardID)
-		if w := do(t, h, "POST", "/api/cards/"+cardID+"/links", model.CreateCardLinkRequest{
+		if w := do(t, h, "POST", "/cards/"+cardID+"/links", model.CreateCardLinkRequest{
 			EntityType: "session", EntityRef: sessionRef,
 		}); w.Code != 201 {
 			t.Fatalf("link %q: expected 201, got %d: %s", title, w.Code, w.Body.String())
 		}
 	}
 
-	w := do(t, h, "GET", "/api/entities/session/"+sessionRef+"/cards", nil)
+	w := do(t, h, "GET", "/entities/session/"+sessionRef+"/cards", nil)
 	if w.Code != 200 {
 		t.Fatalf("entity cards: expected 200, got %d", w.Code)
 	}
@@ -1175,12 +1175,12 @@ func TestSearch(t *testing.T) {
 	defer cleanup()
 	boardID := mkBoard(t, h, "Board")
 	colID := mkColumn(t, h, boardID, "Todo", "")
-	if w := do(t, h, "POST", "/api/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "Findable card", ColumnID: colID}); w.Code != 201 {
+	if w := do(t, h, "POST", "/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "Findable card", ColumnID: colID}); w.Code != 201 {
 		t.Fatalf("create: %d %s", w.Code, w.Body.String())
 	}
 
 	// Plain search delegates to noteboard.
-	w := do(t, h, "GET", "/api/search?q=Findable", nil)
+	w := do(t, h, "GET", "/search?q=Findable", nil)
 	if w.Code != 200 {
 		t.Fatalf("search: expected 200, got %d", w.Code)
 	}
@@ -1191,14 +1191,14 @@ func TestSearch(t *testing.T) {
 	}
 
 	// on_board=true keeps only items with a placement (the created card qualifies).
-	w = do(t, h, "GET", "/api/search?q=Findable&on_board=true", nil)
+	w = do(t, h, "GET", "/search?q=Findable&on_board=true", nil)
 	decodeSuccessfulResponse(t, w, &items)
 	if len(items) != 1 {
 		t.Fatalf("on_board search: expected 1, got %d", len(items))
 	}
 
 	// Missing q → 400.
-	if w := do(t, h, "GET", "/api/search", nil); w.Code != 400 {
+	if w := do(t, h, "GET", "/search", nil); w.Code != 400 {
 		t.Fatalf("missing q: expected 400, got %d", w.Code)
 	}
 }
@@ -1224,7 +1224,7 @@ func TestCardCreateReportsAFailedAutoStatus(t *testing.T) {
 
 	nb.patchStatus = 503
 
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/cards", model.CreateCardRequest{
+	w := do(t, h, "POST", "/boards/"+boardID+"/cards", model.CreateCardRequest{
 		Title: "lands in Done", ColumnID: colID,
 	})
 	if w.Code != 201 {
@@ -1254,7 +1254,7 @@ func TestCardCreateReportsAnAppliedAutoStatus(t *testing.T) {
 	boardID := mkBoard(t, h, "Board")
 	colID := mkColumn(t, h, boardID, "Done", "done")
 
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/cards", model.CreateCardRequest{
+	w := do(t, h, "POST", "/boards/"+boardID+"/cards", model.CreateCardRequest{
 		Title: "lands in Done", ColumnID: colID,
 	})
 	if w.Code != 201 {
@@ -1283,7 +1283,7 @@ func TestCardCreateWithoutAutoStatusReportsNeither(t *testing.T) {
 	boardID := mkBoard(t, h, "Board")
 	colID := mkColumn(t, h, boardID, "Todo", "")
 
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/cards", model.CreateCardRequest{
+	w := do(t, h, "POST", "/boards/"+boardID+"/cards", model.CreateCardRequest{
 		Title: "plain", ColumnID: colID,
 	})
 	var cv model.CardView

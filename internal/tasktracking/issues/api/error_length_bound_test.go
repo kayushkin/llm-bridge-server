@@ -19,13 +19,13 @@ var callerValue = strings.Repeat("a", 50000)
 
 func TestAnErrorBodyDoesNotCarryTheCallersWholeValue(t *testing.T) {
 	h, _, _ := setupWithPrincipalEnforcement(t)
-	created := requestAs(t, h, asService, "POST", "/api/boards", map[string]any{"name": "bounds"})
+	created := requestAs(t, h, asService, "POST", "/boards", map[string]any{"name": "bounds"})
 	mustStatus(t, created, http.StatusCreated, "create board")
 	var board struct{ ID string }
 	if err := json.Unmarshal(created.Body.Bytes(), &board); err != nil {
 		t.Fatal(err)
 	}
-	column := requestAs(t, h, asService, "POST", "/api/boards/"+board.ID+"/columns", map[string]any{"name": "bounds"})
+	column := requestAs(t, h, asService, "POST", "/boards/"+board.ID+"/columns", map[string]any{"name": "bounds"})
 	mustStatus(t, column, http.StatusCreated, "create column")
 	var col struct{ ID string }
 	if err := json.Unmarshal(column.Body.Bytes(), &col); err != nil {
@@ -39,17 +39,17 @@ func TestAnErrorBodyDoesNotCarryTheCallersWholeValue(t *testing.T) {
 		path    string
 		body    any
 	}{
-		{"gate: malformed X-Principal-Id", asPrincipal(callerValue), "GET", "/api/boards", nil},
-		{"gate: unknown X-Principal-Id of the right shape", asPrincipal("principal_" + strings.Repeat("9", 50000)), "GET", "/api/boards", nil},
-		{"board default_principal_id", asService, "PATCH", "/api/boards/" + board.ID, map[string]any{"default_principal_id": callerValue}},
-		{"board organization_id", asService, "PATCH", "/api/boards/" + board.ID, map[string]any{"organization_id": callerValue}},
-		{"board default_bundle_id", asService, "PATCH", "/api/boards/" + board.ID, map[string]any{"default_bundle_id": callerValue}},
-		{"board default_instance_id", asService, "PATCH", "/api/boards/" + board.ID, map[string]any{"default_instance_id": callerValue}},
-		{"column lifecycle_state", asService, "PATCH", "/api/columns/" + col.ID, map[string]any{"lifecycle_state": callerValue}},
-		{"column work_state", asService, "PATCH", "/api/columns/" + col.ID, map[string]any{"work_state": callerValue}},
-		{"card id on PATCH", asService, "PATCH", "/api/cards/" + callerValue, map[string]any{"title": "x"}},
-		{"card id on hold", asService, "POST", "/api/cards/" + callerValue + "/hold", map[string]any{"reason": "x"}},
-		{"card id on DELETE", asService, "DELETE", "/api/cards/" + callerValue, nil},
+		{"gate: malformed X-Principal-Id", asPrincipal(callerValue), "GET", "/boards", nil},
+		{"gate: unknown X-Principal-Id of the right shape", asPrincipal("principal_" + strings.Repeat("9", 50000)), "GET", "/boards", nil},
+		{"board default_principal_id", asService, "PATCH", "/boards/" + board.ID, map[string]any{"default_principal_id": callerValue}},
+		{"board organization_id", asService, "PATCH", "/boards/" + board.ID, map[string]any{"organization_id": callerValue}},
+		{"board default_bundle_id", asService, "PATCH", "/boards/" + board.ID, map[string]any{"default_bundle_id": callerValue}},
+		{"board default_instance_id", asService, "PATCH", "/boards/" + board.ID, map[string]any{"default_instance_id": callerValue}},
+		{"column lifecycle_state", asService, "PATCH", "/columns/" + col.ID, map[string]any{"lifecycle_state": callerValue}},
+		{"column work_state", asService, "PATCH", "/columns/" + col.ID, map[string]any{"work_state": callerValue}},
+		{"card id on PATCH", asService, "PATCH", "/cards/" + callerValue, map[string]any{"title": "x"}},
+		{"card id on hold", asService, "POST", "/cards/" + callerValue + "/hold", map[string]any{"reason": "x"}},
+		{"card id on DELETE", asService, "DELETE", "/cards/" + callerValue, nil},
 	} {
 		w := requestAs(t, h, tc.headers, tc.method, tc.path, tc.body)
 		if w.Code < 400 {

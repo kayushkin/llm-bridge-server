@@ -32,7 +32,7 @@ func TestBoardAccessNamesEveryRelationThatHoldsForTheCaller(t *testing.T) {
 		{asService, "the service token", []string{"can_view", "can_edit", "can_administer"}, true},
 	}
 	for _, c := range cases {
-		w := requestAs(t, h, c.who, "GET", "/api/boards/"+f.supportBoardID+"/access", nil)
+		w := requestAs(t, h, c.who, "GET", "/boards/"+f.supportBoardID+"/access", nil)
 		mustStatus(t, w, 200, c.what+" reads its access to Support")
 		var access model.CallerAccess
 		decodeSuccessfulResponse(t, w, &access)
@@ -46,9 +46,9 @@ func TestBoardAccessNamesEveryRelationThatHoldsForTheCaller(t *testing.T) {
 
 	// bob holds nothing on Support: asking what he may do there must not
 	// confirm the board exists.
-	mustStatus(t, requestAs(t, h, asPrincipal(bob), "GET", "/api/boards/"+f.supportBoardID+"/access", nil),
+	mustStatus(t, requestAs(t, h, asPrincipal(bob), "GET", "/boards/"+f.supportBoardID+"/access", nil),
 		404, "bob reads his access to a board he cannot see")
-	mustStatus(t, requestAs(t, h, asService, "GET", "/api/boards/no-such-board/access", nil),
+	mustStatus(t, requestAs(t, h, asService, "GET", "/boards/no-such-board/access", nil),
 		404, "access to a board that does not exist")
 }
 
@@ -58,7 +58,7 @@ func TestOneCardIsReadThroughTheGate(t *testing.T) {
 	h, grants, _ := setupWithPrincipalEnforcement(t)
 	f := buildTwoBoards(t, h, grants)
 
-	w := requestAs(t, h, asPrincipal(alice), "GET", "/api/cards/"+f.supportCardID, nil)
+	w := requestAs(t, h, asPrincipal(alice), "GET", "/cards/"+f.supportCardID, nil)
 	mustStatus(t, w, 200, "alice reads a card on her board")
 	var detail model.CardDetail
 	decodeSuccessfulResponse(t, w, &detail)
@@ -73,9 +73,9 @@ func TestOneCardIsReadThroughTheGate(t *testing.T) {
 		t.Errorf("access on her own card = %v, want %v", detail.Access.Relations, want)
 	}
 
-	mustStatus(t, requestAs(t, h, asPrincipal(bob), "GET", "/api/cards/"+f.supportCardID, nil),
+	mustStatus(t, requestAs(t, h, asPrincipal(bob), "GET", "/cards/"+f.supportCardID, nil),
 		404, "bob reads a card on a board he cannot see")
-	mustStatus(t, requestAs(t, h, asService, "GET", "/api/cards/no-such-card", nil),
+	mustStatus(t, requestAs(t, h, asService, "GET", "/cards/no-such-card", nil),
 		404, "a card that is on no board")
 }
 
@@ -85,17 +85,17 @@ func TestOneCardIsReadThroughTheGate(t *testing.T) {
 func TestACardOnAnUnseenBoardIsViewOnlyAndTheBoardIsNotNamed(t *testing.T) {
 	h, grants, _ := setupWithPrincipalEnforcement(t)
 	f := buildTwoBoards(t, h, grants)
-	mustStatus(t, requestAs(t, h, asService, "PUT", "/api/cards/"+f.sharedCardID+"/ticket",
+	mustStatus(t, requestAs(t, h, asService, "PUT", "/cards/"+f.sharedCardID+"/ticket",
 		model.TicketWriteRequest{RequesterPrincipalID: requesterContact, Channel: "email"}), 200, "service files a ticket on the shared card")
 
-	w := requestAs(t, h, asPrincipal(alice), "GET", "/api/cards/"+f.sharedCardID, nil)
+	w := requestAs(t, h, asPrincipal(alice), "GET", "/cards/"+f.sharedCardID, nil)
 	mustStatus(t, w, 200, "alice reads the shared card")
 	var detail model.CardDetail
 	decodeSuccessfulResponse(t, w, &detail)
 	if want := []string{"can_view"}; !reflect.DeepEqual(detail.Access.Relations, want) {
 		t.Errorf("access = %v, want %v: the store refuses her edit, so the read must not offer it", detail.Access.Relations, want)
 	}
-	mustStatus(t, requestAs(t, h, asPrincipal(alice), "PATCH", "/api/cards/"+f.sharedCardID, map[string]any{"title": "x"}),
+	mustStatus(t, requestAs(t, h, asPrincipal(alice), "PATCH", "/cards/"+f.sharedCardID, map[string]any{"title": "x"}),
 		403, "the edit the access answer said she may not make")
 	for _, placement := range detail.Placements {
 		if placement.BoardID == f.financeBoardID {
@@ -112,7 +112,7 @@ func TestACardOnAnUnseenBoardIsViewOnlyAndTheBoardIsNotNamed(t *testing.T) {
 	}
 
 	// The same through the ticket route, which named every board before.
-	w = requestAs(t, h, asPrincipal(alice), "GET", "/api/cards/"+f.sharedCardID+"/ticket", nil)
+	w = requestAs(t, h, asPrincipal(alice), "GET", "/cards/"+f.sharedCardID+"/ticket", nil)
 	mustStatus(t, w, 200, "alice reads the shared ticket")
 	var view model.TicketView
 	decodeSuccessfulResponse(t, w, &view)
@@ -121,7 +121,7 @@ func TestACardOnAnUnseenBoardIsViewOnlyAndTheBoardIsNotNamed(t *testing.T) {
 	}
 
 	// The service token sees both.
-	w = requestAs(t, h, asService, "GET", "/api/cards/"+f.sharedCardID+"/ticket", nil)
+	w = requestAs(t, h, asService, "GET", "/cards/"+f.sharedCardID+"/ticket", nil)
 	mustStatus(t, w, 200, "the service reads the shared ticket")
 	decodeSuccessfulResponse(t, w, &view)
 	if len(view.States) != 2 {
@@ -136,7 +136,7 @@ func TestASaveMadeAgainstAnOlderCardIsRefusedWithTheCardAsItIsNow(t *testing.T) 
 	h, grants, _ := setupWithPrincipalEnforcement(t)
 	f := buildTwoBoards(t, h, grants)
 
-	w := requestAs(t, h, asPrincipal(alice), "GET", "/api/cards/"+f.supportCardID, nil)
+	w := requestAs(t, h, asPrincipal(alice), "GET", "/cards/"+f.supportCardID, nil)
 	mustStatus(t, w, 200, "alice opens the card")
 	var opened model.CardDetail
 	decodeSuccessfulResponse(t, w, &opened)
@@ -147,7 +147,7 @@ func TestASaveMadeAgainstAnOlderCardIsRefusedWithTheCardAsItIsNow(t *testing.T) 
 		if ifMatch != "" {
 			headers["If-Match"] = ifMatch
 		}
-		return requestAs(t, h, headers, "PATCH", "/api/cards/"+f.supportCardID, map[string]any{"title": title})
+		return requestAs(t, h, headers, "PATCH", "/cards/"+f.supportCardID, map[string]any{"title": title})
 	}
 	mustStatus(t, save(carol, "carol saved first", versionBothHold), 200, "the first save")
 

@@ -105,7 +105,7 @@ func (f *classificationFixture) send(headers map[string]string, method, path, if
 }
 
 func (f *classificationFixture) path(rest string) string {
-	return "/api/boards/" + f.boardID + "/classification" + rest
+	return "/boards/" + f.boardID + "/classification" + rest
 }
 
 func (f *classificationFixture) putTaxonomy(headers map[string]string, revision int64, taxonomy *msg.ClassificationTaxonomy, want int) model.TaxonomyUpdateResult {
@@ -188,7 +188,7 @@ func (f *classificationFixture) review(headers map[string]string, decisionID str
 
 func (f *classificationFixture) labels(cardID string) model.CardClassificationLabels {
 	var labels model.CardClassificationLabels
-	decodeSuccessfulResponse(f.t, f.send(asService, "GET", "/api/boards/"+f.boardID+"/cards/"+cardID+"/classification", "", nil), &labels)
+	decodeSuccessfulResponse(f.t, f.send(asService, "GET", "/boards/"+f.boardID+"/cards/"+cardID+"/classification", "", nil), &labels)
 	return labels
 }
 
@@ -284,7 +284,7 @@ func TestTheTaxonomyValidatorAndIdentityRulesRefuse(t *testing.T) {
 
 func (f *classificationFixture) putTaxonomyOn(boardID string, taxonomy *msg.ClassificationTaxonomy) msg.BoardClassification {
 	f.t.Helper()
-	w := f.send(asService, "PUT", "/api/boards/"+boardID+"/classification/taxonomy", `"taxonomy-0"`, map[string]any{"taxonomy": taxonomy})
+	w := f.send(asService, "PUT", "/boards/"+boardID+"/classification/taxonomy", `"taxonomy-0"`, map[string]any{"taxonomy": taxonomy})
 	var result model.TaxonomyUpdateResult
 	decodeSuccessfulResponse(f.t, w, &result)
 	return result.Classification
@@ -382,11 +382,11 @@ func TestThePolicyIsRevisionedAndHeldToTheTaxonomy(t *testing.T) {
 	// A board with no taxonomy has no policy to set, and says it is unconfigured.
 	bare := mkBoard(t, f.h, "Bare")
 	var unconfigured msg.BoardClassification
-	decodeSuccessfulResponse(t, f.send(asService, "GET", "/api/boards/"+bare+"/classification", "", nil), &unconfigured)
+	decodeSuccessfulResponse(t, f.send(asService, "GET", "/boards/"+bare+"/classification", "", nil), &unconfigured)
 	if unconfigured.Policy != nil || unconfigured.Taxonomy != nil || unconfigured.TaxonomyRevision != 0 {
 		t.Fatalf("a bare board was given defaults: %+v", unconfigured)
 	}
-	if w := f.send(asService, "PUT", "/api/boards/"+bare+"/classification/policy", `"policy-0"`, model.PolicyUpdateRequest{AxisPolicies: map[string]msg.ClassificationAxisPolicy{}}); w.Code != 409 {
+	if w := f.send(asService, "PUT", "/boards/"+bare+"/classification/policy", `"policy-0"`, model.PolicyUpdateRequest{AxisPolicies: map[string]msg.ClassificationAxisPolicy{}}); w.Code != 409 {
 		t.Fatalf("policy on a board with no taxonomy: want 409, got %d %s", w.Code, w.Body.String())
 	}
 }
@@ -438,7 +438,7 @@ func TestEachClassificationActionHasItsOwnGate(t *testing.T) {
 		t.Fatalf("a viewer reading a decision: %d", w.Code)
 	}
 	// A decision id from this board read through another board is not found.
-	if w := f.send(asService, "GET", "/api/boards/"+mkBoard(t, f.h, "Third")+"/classification/decisions/"+decision.ID, "", nil); w.Code != 404 {
+	if w := f.send(asService, "GET", "/boards/"+mkBoard(t, f.h, "Third")+"/classification/decisions/"+decision.ID, "", nil); w.Code != 404 {
 		t.Fatalf("a decision read through another board: want 404, got %d", w.Code)
 	}
 }
@@ -524,7 +524,7 @@ func TestTheFullSourceSurvivesAndGoesWithAPurgedCard(t *testing.T) {
 	if detail.Decision.Source == nil || detail.Decision.Source.Body != publication.Source.Body {
 		t.Fatal("the decision does not return the text it was given, byte for byte")
 	}
-	if w := do(t, f.h, "DELETE", "/api/cards/"+f.cardID+"?hard=true", nil); w.Code != 200 {
+	if w := do(t, f.h, "DELETE", "/cards/"+f.cardID+"?hard=true", nil); w.Code != 200 {
 		t.Fatalf("purge: %d %s", w.Code, w.Body.String())
 	}
 	var purged model.ClassificationDecisionDetail
@@ -685,7 +685,7 @@ func TestDecisionsArePagedAndFilteredWithoutTheirText(t *testing.T) {
 	}
 
 	other := mkBoard(t, f.h, "Other")
-	if w := f.send(asService, "GET", "/api/boards/"+other+"/classification/decisions?cursor="+page.NextCursor, "", nil); w.Code != 400 {
+	if w := f.send(asService, "GET", "/boards/"+other+"/classification/decisions?cursor="+page.NextCursor, "", nil); w.Code != 400 {
 		t.Fatalf("a cursor from another board: want 400, got %d", w.Code)
 	}
 	for query, want := range map[string]int{

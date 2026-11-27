@@ -207,7 +207,7 @@ func main() {
 	// off and their routes answer 503; with one, a module that cannot be
 	// provisioned, migrated or opened stops the server here.
 	if cfg.PostgresURL == "" {
-		log.Printf("postgres: %s is not set, so prediction-store, noteboard and project-store are off and their routes answer 503", config.PostgresURLEnvironmentVariable)
+		log.Printf("postgres: %s is not set, so prediction-store, notes, issues and project-store are off and their routes answer 503", config.PostgresURLEnvironmentVariable)
 	} else {
 		predictionStoreDB, err := openPredictionStoreModule(context.Background(), cfg.PostgresURL)
 		if err != nil {

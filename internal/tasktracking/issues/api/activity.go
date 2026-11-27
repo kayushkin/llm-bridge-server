@@ -172,7 +172,7 @@ func (a *API) recordCardEvent(cardID string, req model.CreateCardEventRequest, a
 	if req.Kind == model.EventTimeLogged {
 		// An entry may replace another, and that has rules this route does
 		// not check.
-		return nil, &Refusal{Status: 400, Message: "a time_logged event is written through POST /api/cards/{id}/time-entries, which checks who worked and which entry it replaces"}
+		return nil, &Refusal{Status: 400, Message: "a time_logged event is written through POST /cards/{id}/time-entries, which checks who worked and which entry it replaces"}
 	}
 	state, _ := req.ResolveClockState()
 	if req.Actor != "" {
@@ -207,7 +207,7 @@ func (a *API) cardNotes(w http.ResponseWriter, r *http.Request, cardID string) {
 		if visibility != "" && !model.ValidNoteVisibility(visibility) {
 			// A filter that was dropped would answer every note, internal ones
 			// included, to a reader that asked for the requester's.
-			writeError(w, 400, fmt.Sprintf("visibility %q is not one of %v (GET /api/note-visibilities)", visibility, model.NoteVisibilities))
+			writeError(w, 400, fmt.Sprintf("visibility %q is not one of %v (GET /note-visibilities)", visibility, model.NoteVisibilities))
 			return
 		}
 		notes, err := a.store.ListCardNotes(cardID, r.URL.Query().Get("board_id"), visibility)
@@ -333,7 +333,7 @@ func (a *API) cardTimeline(w http.ResponseWriter, r *http.Request, cardID string
 			writeError(w, 500, err.Error())
 			return
 		}
-		if item, err := a.noteboard.GetItem(cardID); err == nil {
+		if item, err := a.issueContent.GetItem(cardID); err == nil {
 			level = ladder.LevelFor(model.PriorityOfNoteboardItem(item))
 		}
 	}
@@ -378,10 +378,10 @@ func (a *API) boardPriorityLevels(w http.ResponseWriter, r *http.Request, boardI
 	}
 }
 
-// notesByID routes /api/notes/{id}. Notes are addressed globally because a note
+// notesByID routes /notes/{id}. Notes are addressed globally because a note
 // belongs to a card, not to a board.
 func (a *API) notesByID(w http.ResponseWriter, r *http.Request) {
-	noteID := strings.TrimPrefix(r.URL.Path, "/api/notes/")
+	noteID := strings.TrimPrefix(r.URL.Path, "/notes/")
 	if noteID == "" {
 		writeError(w, 400, "missing note id")
 		return

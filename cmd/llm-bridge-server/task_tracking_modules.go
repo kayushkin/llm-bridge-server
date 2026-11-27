@@ -15,19 +15,61 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/server"
 	issuesdb "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/db"
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/items"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issueitems"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/items"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboardsplit"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/notes"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/projects"
 )
 
-func openNoteboardModule(ctx context.Context, url string) (*sql.DB, error) {
-	module, err := items.Module()
+func openNotesModule(ctx context.Context, url string) (*sql.DB, error) {
+	module, err := notes.Module()
 	if err != nil {
 		return nil, err
 	}
 	return openPostgresModule(ctx, url, module)
 }
 
-func openKanbanStoreModule(ctx context.Context, url string) (*sql.DB, error) {
+// noteboardSplitModules are the two modules noteboard's records are split
+// between: notes, and issues.
+func noteboardSplitModules() (noteboardsplit.Modules, error) {
+	notesModule, err := notes.Module()
+	if err != nil {
+		return noteboardsplit.Modules{}, err
+	}
+	issuesModule, err := issuesdb.Module()
+	if err != nil {
+		return noteboardsplit.Modules{}, err
+	}
+	return noteboardsplit.Modules{Notes: notesModule, Issues: issuesModule}, nil
+}
+
+// moveTodosOutOfNotes moves the todos an install's noteboard module held in
+// Postgres, now its notes module, into issues, once: after the first start of
+// a binary that knows issues own them, notes holds no todo and nothing moves.
+// Both modules must be migrated first.
+func moveTodosOutOfNotes(ctx context.Context, url string) error {
+	modules, err := noteboardSplitModules()
+	if err != nil {
+		return err
+	}
+	administrator, err := sql.Open("pgx", url)
+	if err != nil {
+		return fmt.Errorf("the Postgres URL: %w", err)
+	}
+	defer administrator.Close()
+	moved, err := noteboardsplit.MoveTodosOutOfNotes(ctx, administrator, modules)
+	if err != nil {
+		return err
+	}
+	if moved.Issues > 0 || moved.Revisions > 0 {
+		log.Printf("postgres: moved %d todos and %d of their revisions (%d of purged cards) from module %s into module %s, ids kept",
+			moved.Issues, moved.Revisions, moved.RevisionsOfPurgedCards, modules.Notes.Schema, modules.Issues.Schema)
+	}
+	return nil
+}
+
+func openIssuesModule(ctx context.Context, url string) (*sql.DB, error) {
 	module, err := issuesdb.Module()
 	if err != nil {
 		return nil, err
@@ -43,45 +85,52 @@ func openProjectStoreModule(ctx context.Context, url string) (*sql.DB, error) {
 	return openPostgresModule(ctx, url, module)
 }
 
-// enableTaskTrackingModules opens noteboard, kanban-store and project-store in
-// Postgres, serves them from srv, and when projects.session_filer.enabled
-// is on starts the filer's passes. kanban-store calls noteboard and the access
-// stores in this process; project-store calls noteboard, kanban-store,
+// enableTaskTrackingModules opens notes, issues (boards, cards and the
+// content of each issue) and project-store in Postgres, moves the todos an
+// older install kept in noteboard into issues, serves them from srv, and when
+// projects.session_filer.enabled is on starts the filer's passes. issues
+// calls the access stores in this process; project-store calls notes,
+// issues,
 // repo-store, work-graph-store, the scheduler and this server's sessions,
 // briefs and one-shot router through their Go methods, in this process. Only
 // healthcheck, a service of its own, is asked over HTTP. The returned
 // function closes the pools.
 func enableTaskTrackingModules(ctx context.Context, cfg *config.Config, srv *server.Server, accessStores *access.Stores) (func(), error) {
 	principals := accessStores.Principals
-	noteboardDB, err := openNoteboardModule(ctx, cfg.PostgresURL)
+	notesDB, err := openNotesModule(ctx, cfg.PostgresURL)
 	if err != nil {
-		return nil, fmt.Errorf("noteboard: %w", err)
+		return nil, fmt.Errorf("notes: %w", err)
 	}
-	kanbanStoreDB, err := openKanbanStoreModule(ctx, cfg.PostgresURL)
+	issuesDB, err := openIssuesModule(ctx, cfg.PostgresURL)
 	if err != nil {
-		noteboardDB.Close()
-		return nil, fmt.Errorf("kanban-store: %w", err)
+		notesDB.Close()
+		return nil, fmt.Errorf("issues: %w", err)
 	}
 	projectStoreDB, err := openProjectStoreModule(ctx, cfg.PostgresURL)
 	if err != nil {
-		kanbanStoreDB.Close()
-		noteboardDB.Close()
+		issuesDB.Close()
+		notesDB.Close()
 		return nil, fmt.Errorf("project-store: %w", err)
 	}
 	closeModules := func() {
-		if err := errors.Join(projectStoreDB.Close(), kanbanStoreDB.Close(), noteboardDB.Close()); err != nil {
+		if err := errors.Join(projectStoreDB.Close(), issuesDB.Close(), notesDB.Close()); err != nil {
 			log.Printf("postgres: closing the task tracking modules: %v", err)
 		}
 	}
-	noteboardStore := items.New(noteboardDB)
-	srv.EnableNoteboard(noteboardStore)
+	if err := moveTodosOutOfNotes(ctx, cfg.PostgresURL); err != nil {
+		closeModules()
+		return nil, err
+	}
+	notesStore := notes.New(notesDB)
+	srv.EnableNotes(notesStore)
+	issueItemsStore := issueitems.New(issuesDB)
 
 	kanbanMessageTriggersEnabled := cfg.Settings.Boolean(config.SettingIssuesMessageTriggersEnabled)
 	if err := server.CheckKanbanStoreConfiguration(cfg, kanbanMessageTriggersEnabled); err != nil {
 		closeModules()
 		return nil, fmt.Errorf("kanban-store: %w", err)
 	}
-	srv.EnableIssues(issuesdb.New(kanbanStoreDB), server.KanbanStoreOwners{Noteboard: noteboardStore, Access: accessStores, MessageTriggersEnabled: kanbanMessageTriggersEnabled})
+	srv.EnableIssues(issuesdb.New(issuesDB), server.KanbanStoreOwners{IssueItems: issueItemsStore, Access: accessStores, MessageTriggersEnabled: kanbanMessageTriggersEnabled})
 
 	settings := cfg.Settings
 	projectStore := projects.New(projectStoreDB)
@@ -92,7 +141,7 @@ func enableTaskTrackingModules(ctx context.Context, cfg *config.Config, srv *ser
 		Scheduler:           srv.ProjectStoreScheduler(),
 		HealthcheckURL:      cfg.HealthcheckURL,
 		Principals:          projects.PrincipalStoreModule{Store: principals},
-		Noteboard:           projects.NoteboardModule{Store: noteboardStore},
+		NotesAndIssues:      projects.NotesAndIssuesModules{Notes: notesStore, Issues: issueItemsStore},
 		Bridge:              srv.ProjectStoreBridge(),
 		SuggestionModelRole: settings.String(config.SettingProjectsSuggestionModelRole),
 	}
@@ -110,7 +159,7 @@ func enableTaskTrackingModules(ctx context.Context, cfg *config.Config, srv *ser
 		return nil, fmt.Errorf("project-store: %w", err)
 	}
 	srv.EnableProjects(&projects.Handlers{Store: projectStore, Owners: owners, SessionFiler: filer})
-	log.Printf("postgres: noteboard open, served at /noteboard/; kanban-store open, served at /issues/ (%s); project-store open, served at /projects/", srv.IssuesDescription())
+	log.Printf("postgres: notes open, served at /notes/; issues open, served at /issues/, the content of each at /issues/items (%s); project-store open, served at /projects/", srv.IssuesDescription())
 
 	if settings.Boolean(config.SettingProjectsSessionFilerEnabled) {
 		interval := settings.Duration(config.SettingProjectsSessionFilerInterval)
@@ -127,23 +176,45 @@ func enableTaskTrackingModules(ctx context.Context, cfg *config.Config, srv *ser
 }
 
 // importNoteboardCmd copies a standalone noteboard's SQLite file into the
-// Postgres module, keeping every id and time, and prints what it copied. It
-// refuses a module that already holds any row. It reads the Postgres URL from
-// the same setting the server does.
+// two modules that own its records now, keeping every id, time and revision:
+// todos and their revisions into issues, everything else into notes. It
+// refuses modules that already hold any item or revision, and prints what it
+// copied into each. Run import-issues first, so a revision of a purged card
+// goes with the card's history. It reads the Postgres URL from the same
+// setting the server does.
 func importNoteboardCmd(args []string) {
 	sqlitePath := importArguments("import-noteboard", "noteboard", args)
 	ctx := context.Background()
-	db, err := openNoteboardModule(ctx, importPostgresURL())
+	url := importPostgresURL()
+	for _, open := range []func(context.Context, string) (*sql.DB, error){openNotesModule, openIssuesModule} {
+		db, err := open(ctx, url)
+		if err != nil {
+			importFailed(err)
+		}
+		db.Close()
+	}
+	modules, err := noteboardSplitModules()
 	if err != nil {
 		importFailed(err)
 	}
-	defer db.Close()
-	counts, err := items.ImportStandaloneDatabase(ctx, db, sqlitePath)
+	administrator, err := sql.Open("pgx", url)
+	if err != nil {
+		importFailed(fmt.Errorf("the Postgres URL: %w", err))
+	}
+	defer administrator.Close()
+	counts, err := noteboardsplit.ImportStandaloneDatabase(ctx, administrator, modules, sqlitePath)
 	if err != nil {
 		importFailed(fmt.Errorf("nothing was imported: %w", err))
 	}
-	fmt.Printf("items:     %d (%d soft-deleted, %d held, %d with a schedule)\n", counts.Items, counts.DeletedItems, counts.HeldItems, counts.ScheduledItems)
-	fmt.Printf("revisions: %d, last id %d\n", counts.Revisions, counts.LastRevisionID)
+	for _, module := range []struct {
+		name   string
+		counts items.StandaloneCopyCounts
+	}{{"notes", counts.Notes}, {"issues", counts.Issues}} {
+		fmt.Printf("%-7s items:     %d (%d soft-deleted, %d held, %d with a schedule)\n", module.name, module.counts.Items, module.counts.DeletedItems, module.counts.HeldItems, module.counts.ScheduledItems)
+		fmt.Printf("%-7s revisions: %d\n", module.name, module.counts.Revisions)
+	}
+	fmt.Printf("revisions of purged items: %d to issues (cards), %d to notes\n", counts.RevisionsOfPurgedItemsInIssues, counts.RevisionsOfPurgedItemsInNotes)
+	fmt.Printf("revision numbers continue after %d in both\n", counts.LastRevisionNumberHandedOut)
 }
 
 // importProjectStoreCmd copies a standalone project-store's SQLite file into
@@ -174,7 +245,7 @@ func importProjectStoreCmd(args []string) {
 func importKanbanStoreCmd(args []string) {
 	sqlitePath := importArguments("import-issues", "kanban-store", args)
 	ctx := context.Background()
-	db, err := openKanbanStoreModule(ctx, importPostgresURL())
+	db, err := openIssuesModule(ctx, importPostgresURL())
 	if err != nil {
 		importFailed(err)
 	}

@@ -15,7 +15,7 @@ import (
 func TestANoteSaysWhoItIsForAndARequesterFacingReaderGetsOnlyTheirs(t *testing.T) {
 	h, grants, _ := setupWithPrincipalEnforcement(t)
 	f := buildTwoBoards(t, h, grants)
-	notesPath := "/api/cards/" + f.supportCardID + "/notes"
+	notesPath := "/cards/" + f.supportCardID + "/notes"
 
 	write := func(body string, visibility string, want int) model.CardNote {
 		t.Helper()
@@ -62,7 +62,7 @@ func TestANoteSaysWhoItIsForAndARequesterFacingReaderGetsOnlyTheirs(t *testing.T
 	mustStatus(t, requestAs(t, h, asPrincipal(alice), "GET", notesPath+"?visibility=public", nil), 400, "an unknown visibility filter")
 
 	// The timeline carries the text, so each note_added event says who it is for.
-	w := requestAs(t, h, asPrincipal(alice), "GET", "/api/cards/"+f.supportCardID+"/events", nil)
+	w := requestAs(t, h, asPrincipal(alice), "GET", "/cards/"+f.supportCardID+"/events", nil)
 	mustStatus(t, w, 200, "events")
 	var events []model.CardEvent
 	decodeSuccessfulResponse(t, w, &events)
@@ -85,7 +85,7 @@ func TestANoteSaysWhoItIsForAndARequesterFacingReaderGetsOnlyTheirs(t *testing.T
 		t.Errorf("note_added events say %v, want %v", visibilityBySummary, want)
 	}
 
-	w = requestAs(t, h, asPrincipal(bob), "GET", "/api/note-visibilities", nil)
+	w = requestAs(t, h, asPrincipal(bob), "GET", "/note-visibilities", nil)
 	mustStatus(t, w, 200, "the vocabulary, which names no board")
 	var vocabulary []model.NoteVisibility
 	decodeSuccessfulResponse(t, w, &vocabulary)

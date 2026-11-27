@@ -44,8 +44,8 @@ keys, and keys a kind ignores, are a 400.
 
 | Effect | Fields | Owner call it plans |
 |---|---|---|
-| `move_linked_cards` | `board_id`, `to_column_id` | kanban-store `POST /api/cards/{id}/move` for each card a `linked_card_in_column` condition on the same board found — required, so a move never touches a card a person just closed |
-| `add_session_tag` | `tag` | kanban-store `POST /api/entities/session/{id}/tags` |
+| `move_linked_cards` | `board_id`, `to_column_id` | issues `POST /issues/cards/{id}/move` for each card a `linked_card_in_column` condition on the same board found — required, so a move never touches a card a person just closed |
+| `add_session_tag` | `tag` | issues `POST /issues/entities/session/{id}/tags` |
 | `send_session_message` | `text` | llm-bridge-server `POST /sessions/{id}/send`, with `client_request_id` = `rule-store:<revision>:<session>:<trigger key>` so a live send repeated after a crash is one message |
 | `move_session_to_folder` | `folder` | llm-bridge-server `PUT /sessions/{id}/folder` |
 

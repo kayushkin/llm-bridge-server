@@ -83,7 +83,7 @@ func str(s string) *string { return &s }
 
 func getBoard(t *testing.T, h http.Handler, id string) model.Board {
 	t.Helper()
-	w := do(t, h, "GET", "/api/boards/"+id, nil)
+	w := do(t, h, "GET", "/boards/"+id, nil)
 	if w.Code != 200 {
 		t.Fatalf("get board: %d %s", w.Code, w.Body.String())
 	}
@@ -94,7 +94,7 @@ func getBoard(t *testing.T, h http.Handler, id string) model.Board {
 
 func patchBoard(t *testing.T, h http.Handler, id string, req model.UpdateBoardRequest) *httptest.ResponseRecorder {
 	t.Helper()
-	return do(t, h, "PATCH", "/api/boards/"+id, req)
+	return do(t, h, "PATCH", "/boards/"+id, req)
 }
 
 // ============================ Settings round trip ============================
@@ -143,7 +143,7 @@ func TestBoardSettingsRoundTripAndClear(t *testing.T) {
 		t.Fatalf("clear did not clear: %+v", b)
 	}
 	// And a cleared setting is absent on the wire, not an empty string.
-	raw := do(t, h, "GET", "/api/boards/"+boardID, nil).Body.String()
+	raw := do(t, h, "GET", "/boards/"+boardID, nil).Body.String()
 	for _, key := range []string{"default_principal_id", "default_agent_id", "default_instance_id", "default_bundle_id", "classifier"} {
 		if strings.Contains(raw, key) {
 			t.Fatalf("cleared %s still on the wire: %s", key, raw)
@@ -156,7 +156,7 @@ func TestBoardSettingsListedWithTheBoard(t *testing.T) {
 	defer cleanup()
 	boardID := mkBoard(t, h, "Listed")
 	patchBoard(t, h, boardID, model.UpdateBoardRequest{DefaultInstanceID: str(knownInstanceID)})
-	w := do(t, h, "GET", "/api/boards", nil)
+	w := do(t, h, "GET", "/boards", nil)
 	var boards []model.Board
 	decodeSuccessfulResponse(t, w, &boards)
 	if len(boards) != 1 || boards[0].DefaultInstanceID != knownInstanceID {
@@ -263,7 +263,7 @@ func TestACardCreatedOnTheBoardTakesItsDefaultAssignee(t *testing.T) {
 	columnID := mkColumn(t, h, boardID, "Todo", "")
 	patchBoard(t, h, boardID, model.UpdateBoardRequest{DefaultPrincipalID: str(activePrincipal)})
 
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/cards?actor=email-classifier", model.CreateCardRequest{Title: "new mail", ColumnID: columnID})
+	w := do(t, h, "POST", "/boards/"+boardID+"/cards?actor=email-classifier", model.CreateCardRequest{Title: "new mail", ColumnID: columnID})
 	if w.Code != 201 {
 		t.Fatalf("create: %d %s", w.Code, w.Body.String())
 	}
@@ -292,14 +292,14 @@ func TestAttachingAnAlreadyAssignedCardKeepsItsAssignee(t *testing.T) {
 	// Card born on a board with no default, assigned by hand to principal 1.
 	sourceBoard := mkBoard(t, h, "Source")
 	sourceColumn := mkColumn(t, h, sourceBoard, "Todo", "")
-	w := do(t, h, "POST", "/api/boards/"+sourceBoard+"/cards", model.CreateCardRequest{Title: "owned", ColumnID: sourceColumn})
+	w := do(t, h, "POST", "/boards/"+sourceBoard+"/cards", model.CreateCardRequest{Title: "owned", ColumnID: sourceColumn})
 	var cv model.CardView
 	decodeSuccessfulResponse(t, w, &cv)
 	cardID := cv.Placement.CardID
 	if len(cv.Assignments) != 0 {
 		t.Fatalf("a board with no default should create unassigned cards: %+v", cv.Assignments)
 	}
-	if w := do(t, h, "PUT", "/api/cards/"+cardID+"/assignments/"+activePrincipal, nil); w.Code != 201 {
+	if w := do(t, h, "PUT", "/cards/"+cardID+"/assignments/"+activePrincipal, nil); w.Code != 201 {
 		t.Fatalf("assign: %d %s", w.Code, w.Body.String())
 	}
 
@@ -309,10 +309,10 @@ func TestAttachingAnAlreadyAssignedCardKeepsItsAssignee(t *testing.T) {
 	// principal_000003 is unknown to the fake store, so use the one it knows
 	// and make the point with the count instead: attaching must not add a row.
 	patchBoard(t, h, targetBoard, model.UpdateBoardRequest{DefaultPrincipalID: str(activePrincipal)})
-	if w := do(t, h, "PUT", "/api/boards/"+targetBoard+"/cards/"+cardID, model.AttachCardRequest{ColumnID: targetColumn}); w.Code != 201 {
+	if w := do(t, h, "PUT", "/boards/"+targetBoard+"/cards/"+cardID, model.AttachCardRequest{ColumnID: targetColumn}); w.Code != 201 {
 		t.Fatalf("attach: %d %s", w.Code, w.Body.String())
 	}
-	w = do(t, h, "GET", "/api/cards/"+cardID+"/assignments", nil)
+	w = do(t, h, "GET", "/cards/"+cardID+"/assignments", nil)
 	var assignments []model.CardAssignment
 	decodeSuccessfulResponse(t, w, &assignments)
 	if len(assignments) != 1 {
@@ -328,16 +328,16 @@ func TestAttachingAnUnassignedCardTakesTheBoardDefault(t *testing.T) {
 	defer cleanup()
 	sourceBoard := mkBoard(t, h, "Source")
 	sourceColumn := mkColumn(t, h, sourceBoard, "Todo", "")
-	w := do(t, h, "POST", "/api/boards/"+sourceBoard+"/cards", model.CreateCardRequest{Title: "loose", ColumnID: sourceColumn})
+	w := do(t, h, "POST", "/boards/"+sourceBoard+"/cards", model.CreateCardRequest{Title: "loose", ColumnID: sourceColumn})
 	var cv model.CardView
 	decodeSuccessfulResponse(t, w, &cv)
 	targetBoard := mkBoard(t, h, "Target")
 	targetColumn := mkColumn(t, h, targetBoard, "Inbox", "")
 	patchBoard(t, h, targetBoard, model.UpdateBoardRequest{DefaultPrincipalID: str(activePrincipal)})
-	if w := do(t, h, "PUT", "/api/boards/"+targetBoard+"/cards/"+cv.Placement.CardID, model.AttachCardRequest{ColumnID: targetColumn}); w.Code != 201 {
+	if w := do(t, h, "PUT", "/boards/"+targetBoard+"/cards/"+cv.Placement.CardID, model.AttachCardRequest{ColumnID: targetColumn}); w.Code != 201 {
 		t.Fatalf("attach: %d %s", w.Code, w.Body.String())
 	}
-	w = do(t, h, "GET", "/api/cards/"+cv.Placement.CardID+"/assignments", nil)
+	w = do(t, h, "GET", "/cards/"+cv.Placement.CardID+"/assignments", nil)
 	var assignments []model.CardAssignment
 	decodeSuccessfulResponse(t, w, &assignments)
 	if len(assignments) != 1 || assignments[0].PrincipalID != activePrincipal {
@@ -365,7 +365,7 @@ func TestADefaultAssigneeDisabledSinceRefusesTheCardBeforeNoteboardIsTouched(t *
 	principals.disabledAtByID[activePrincipal] = 1_757_000_000
 
 	itemsBefore := len(nb.items)
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "orphan?", ColumnID: columnID})
+	w := do(t, h, "POST", "/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "orphan?", ColumnID: columnID})
 	if w.Code != 400 {
 		t.Fatalf("want 400 naming the board's stale default, got %d %s", w.Code, w.Body.String())
 	}
@@ -405,7 +405,7 @@ func TestTheClassifiersOrganizationMustBeAnActiveGroup(t *testing.T) {
 	if w := patchBoard(t, h, boardID, classifier(organizationGroup)); w.Code != 200 {
 		t.Fatalf("a group: %d %s", w.Code, w.Body.String())
 	}
-	w := do(t, h, "GET", "/api/boards/"+boardID, nil)
+	w := do(t, h, "GET", "/boards/"+boardID, nil)
 	var board model.Board
 	decodeSuccessfulResponse(t, w, &board)
 	if board.Classifier == nil || board.Classifier.OrganizationID != organizationGroup {

@@ -13,7 +13,7 @@ import (
 
 func putTagRules(t *testing.T, h http.Handler, boardID string, rules []model.BoardTagRuleInput) *httptest.ResponseRecorder {
 	t.Helper()
-	return do(t, h, "PUT", "/api/boards/"+boardID+"/tag-rules", model.SetBoardTagRulesRequest{Rules: rules})
+	return do(t, h, "PUT", "/boards/"+boardID+"/tag-rules", model.SetBoardTagRulesRequest{Rules: rules})
 }
 
 func effectiveFor(t *testing.T, h http.Handler, boardID string, tags ...string) model.EffectiveDefaults {
@@ -22,7 +22,7 @@ func effectiveFor(t *testing.T, h http.Handler, boardID string, tags ...string) 
 	for _, tag := range tags {
 		query.Add("tag", tag)
 	}
-	w := do(t, h, "GET", "/api/boards/"+boardID+"/effective-defaults?"+query.Encode(), nil)
+	w := do(t, h, "GET", "/boards/"+boardID+"/effective-defaults?"+query.Encode(), nil)
 	if w.Code != 200 {
 		t.Fatalf("effective defaults: %d %s", w.Code, w.Body.String())
 	}
@@ -57,7 +57,7 @@ func TestTagRulesRoundTripInOrderAndKeepIDs(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("reorder: %d %s", w.Code, w.Body.String())
 	}
-	got := do(t, h, "GET", "/api/boards/"+boardID+"/tag-rules", nil)
+	got := do(t, h, "GET", "/boards/"+boardID+"/tag-rules", nil)
 	var second model.BoardTagRules
 	decodeSuccessfulResponse(t, got, &second)
 	if second.Rules[0].ID != first.Rules[1].ID || second.Rules[1].ID != first.Rules[0].ID {
@@ -71,7 +71,7 @@ func TestTagRulesRoundTripInOrderAndKeepIDs(t *testing.T) {
 	if w := putTagRules(t, h, boardID, []model.BoardTagRuleInput{}); w.Code != 200 {
 		t.Fatalf("clear: %d %s", w.Code, w.Body.String())
 	}
-	got = do(t, h, "GET", "/api/boards/"+boardID+"/tag-rules", nil)
+	got = do(t, h, "GET", "/boards/"+boardID+"/tag-rules", nil)
 	if !strings.Contains(got.Body.String(), `"rules":[]`) {
 		t.Fatalf("cleared rules should read back as an empty list: %s", got.Body.String())
 	}
@@ -111,7 +111,7 @@ func TestTagRulesRefusals(t *testing.T) {
 		t.Errorf("owner refusal should name rules[1] and its tags: %d %s", w.Code, w.Body.String())
 	}
 	// A misspelled field is refused, not dropped.
-	raw := httptest.NewRequest("PUT", "/api/boards/"+boardID+"/tag-rules", strings.NewReader(`{"rules":[{"tags":["a"],"instance_id":"inst-test"}]}`))
+	raw := httptest.NewRequest("PUT", "/boards/"+boardID+"/tag-rules", strings.NewReader(`{"rules":[{"tags":["a"],"instance_id":"inst-test"}]}`))
 	raw.Header.Set(testServiceTokenHeader, testServiceToken)
 	recorder := httptest.NewRecorder()
 	h.ServeHTTP(recorder, raw)
@@ -119,7 +119,7 @@ func TestTagRulesRefusals(t *testing.T) {
 		t.Errorf("unknown field: want 400 naming it, got %d %s", recorder.Code, recorder.Body.String())
 	}
 	// Nothing was written by any refusal.
-	got := do(t, h, "GET", "/api/boards/"+boardID+"/tag-rules", nil)
+	got := do(t, h, "GET", "/boards/"+boardID+"/tag-rules", nil)
 	if !strings.Contains(got.Body.String(), `"rules":[]`) {
 		t.Errorf("a refused put wrote rules: %s", got.Body.String())
 	}
@@ -136,7 +136,7 @@ func TestTagRulesWithAnOwnerDownAre502AndWriteNothing(t *testing.T) {
 	if w := putTagRules(t, h, boardID, []model.BoardTagRuleInput{{Tags: []string{"a"}, DefaultInstanceID: knownInstanceID}}); w.Code != 502 {
 		t.Fatalf("want 502, got %d %s", w.Code, w.Body.String())
 	}
-	got := do(t, h, "GET", "/api/boards/"+boardID+"/tag-rules", nil)
+	got := do(t, h, "GET", "/boards/"+boardID+"/tag-rules", nil)
 	if !strings.Contains(got.Body.String(), `"rules":[]`) {
 		t.Errorf("a 502 put wrote rules: %s", got.Body.String())
 	}
@@ -213,11 +213,11 @@ func TestCardEffectiveDefaultsReadTheCardsTagsFromNoteboard(t *testing.T) {
 	if w := putTagRules(t, h, boardID, []model.BoardTagRuleInput{{Tags: []string{"cat:product"}, DefaultBundleID: knownBundleID}}); w.Code != 200 {
 		t.Fatalf("rules: %d %s", w.Code, w.Body.String())
 	}
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "tagged", ColumnID: columnID, Tags: []string{"cat:product", "email"}})
+	w := do(t, h, "POST", "/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "tagged", ColumnID: columnID, Tags: []string{"cat:product", "email"}})
 	var card model.CardView
 	decodeSuccessfulResponse(t, w, &card)
 
-	w = do(t, h, "GET", "/api/boards/"+boardID+"/cards/"+card.Placement.CardID+"/effective-defaults", nil)
+	w = do(t, h, "GET", "/boards/"+boardID+"/cards/"+card.Placement.CardID+"/effective-defaults", nil)
 	if w.Code != 200 {
 		t.Fatalf("card effective defaults: %d %s", w.Code, w.Body.String())
 	}
@@ -230,7 +230,7 @@ func TestCardEffectiveDefaultsReadTheCardsTagsFromNoteboard(t *testing.T) {
 		t.Errorf("bundle = %+v, want the rule's", got)
 	}
 
-	if w := do(t, h, "GET", "/api/boards/"+boardID+"/cards/nb-missing/effective-defaults", nil); w.Code != 404 {
+	if w := do(t, h, "GET", "/boards/"+boardID+"/cards/nb-missing/effective-defaults", nil); w.Code != 404 {
 		t.Errorf("missing card: want 404, got %d %s", w.Code, w.Body.String())
 	}
 }
@@ -252,7 +252,7 @@ func TestATagRulesPrincipalIsAppliedOnArrival(t *testing.T) {
 	var rules model.BoardTagRules
 	decodeSuccessfulResponse(t, w, &rules)
 
-	w = do(t, h, "POST", "/api/boards/"+boardID+"/cards?actor=email-classifier", model.CreateCardRequest{Title: "product", ColumnID: columnID, Tags: []string{"cat:product"}})
+	w = do(t, h, "POST", "/boards/"+boardID+"/cards?actor=email-classifier", model.CreateCardRequest{Title: "product", ColumnID: columnID, Tags: []string{"cat:product"}})
 	var tagged model.CardView
 	decodeSuccessfulResponse(t, w, &tagged)
 	if len(tagged.Assignments) != 1 || tagged.Assignments[0].PrincipalID != otherActivePrincipal {
@@ -267,7 +267,7 @@ func TestATagRulesPrincipalIsAppliedOnArrival(t *testing.T) {
 		t.Errorf("assigned event should name the rule it came from: %s", events[0].Detail)
 	}
 
-	w = do(t, h, "POST", "/api/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "plain", ColumnID: columnID})
+	w = do(t, h, "POST", "/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "plain", ColumnID: columnID})
 	var plain model.CardView
 	decodeSuccessfulResponse(t, w, &plain)
 	if len(plain.Assignments) != 1 || plain.Assignments[0].PrincipalID != activePrincipal {
@@ -277,13 +277,13 @@ func TestATagRulesPrincipalIsAppliedOnArrival(t *testing.T) {
 	// Attaching an existing tagged card reads its tags from noteboard.
 	sourceBoard := mkBoard(t, h, "Source")
 	sourceColumn := mkColumn(t, h, sourceBoard, "Todo", "")
-	w = do(t, h, "POST", "/api/boards/"+sourceBoard+"/cards", model.CreateCardRequest{Title: "moving", ColumnID: sourceColumn, Tags: []string{"cat:product"}})
+	w = do(t, h, "POST", "/boards/"+sourceBoard+"/cards", model.CreateCardRequest{Title: "moving", ColumnID: sourceColumn, Tags: []string{"cat:product"}})
 	var moving model.CardView
 	decodeSuccessfulResponse(t, w, &moving)
-	if w := do(t, h, "PUT", "/api/boards/"+boardID+"/cards/"+moving.Placement.CardID, model.AttachCardRequest{ColumnID: columnID}); w.Code != 201 {
+	if w := do(t, h, "PUT", "/boards/"+boardID+"/cards/"+moving.Placement.CardID, model.AttachCardRequest{ColumnID: columnID}); w.Code != 201 {
 		t.Fatalf("attach: %d %s", w.Code, w.Body.String())
 	}
-	w = do(t, h, "GET", "/api/cards/"+moving.Placement.CardID+"/assignments", nil)
+	w = do(t, h, "GET", "/cards/"+moving.Placement.CardID+"/assignments", nil)
 	var assignments []model.CardAssignment
 	decodeSuccessfulResponse(t, w, &assignments)
 	if len(assignments) != 1 || assignments[0].PrincipalID != otherActivePrincipal {

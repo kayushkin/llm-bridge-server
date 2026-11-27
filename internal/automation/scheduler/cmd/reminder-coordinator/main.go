@@ -55,7 +55,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/boundedtext"
 	schedulerconfig "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/config"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/degradations"
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/items/model"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 

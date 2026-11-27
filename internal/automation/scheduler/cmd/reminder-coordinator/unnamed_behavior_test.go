@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/items/model"
 )
 
 func itemDue(title string, due *time.Time) *model.Item {

@@ -20,7 +20,7 @@ import (
 var referenceMountPrefixes = map[string]string{
 	"llm-bridge-server": "",
 	"prediction-store":  "/predictions",
-	"noteboard":         "/noteboard",
+	"notes":             "/notes",
 	"project-store":     "/projects",
 	"principal-store":   "/principals",
 	"repo-store":        reposMountPrefix,
@@ -84,7 +84,7 @@ func TestEveryInProcessReaderAnswersWhatItsRouteAnswers(t *testing.T) {
 	asked := map[string][]string{
 		"session":    {session.SessionID, "br_1794083694355010889"},
 		"repo":       {"repo:webapp", "repo:nothing"},
-		"note":       {createdID(t, gated, "", "/noteboard/api/items", map[string]any{"type": "note", "title": "Printer"}, "id"), "00000000-0000-0000-0000-000000000000"},
+		"note":       {createdID(t, gated, "", "/notes/items", map[string]any{"type": "note", "title": "Printer"}, "id"), "00000000-0000-0000-0000-000000000000"},
 		"project":    {createdID(t, gated, "", "/projects/projects", map[string]any{"name": "Inbox", "goal": "One inbox."}, "id"), "project_000099"},
 		"prediction": {createdID(t, gated, "", "/predictions/predictions", map[string]any{"claim": "it rains", "resolution_criteria": "look outside", "category": "will-fix", "provenance": "inferred", "probability": 0.7}, "id"), "prediction_000099"},
 		"scheduler_job": {"scheduler_job_" + createdID(t, gated, "", "/scheduler/api/jobs", map[string]any{"name": "disk check", "schedule": "*/5 * * * *", "command": "echo disk"}, "id"),
@@ -169,6 +169,19 @@ func TestEveryInProcessReaderAnswersWhatItsRouteAnswers(t *testing.T) {
 				t.Errorf("search %s %q as %q: the route answered %d %s, the reader %s, %v", typeName, query, asker, route.Code, route.Body, data, err)
 			}
 		}
+	}
+
+	// A uuid names a note or an issue: the note type's reader answers an
+	// issue as /issues/items answers it, since notes' own route cannot.
+	issueID := createdID(t, gated, "", "/issues/items", map[string]any{"title": "Refill the printer"}, "id")
+	issueRoute := gated.requestAsService(t, http.MethodGet, "/issues/items/"+issueID)
+	issueData, err := readers.Readers["note"].Record(ctx, issueID, references.InProcessAsker{})
+	var issueFromRoute, issueFromReader any
+	if issueRoute.Code != http.StatusOK || err != nil || json.Unmarshal(issueRoute.Body.Bytes(), &issueFromRoute) != nil || json.Unmarshal(issueData, &issueFromReader) != nil || !reflect.DeepEqual(issueFromRoute, issueFromReader) {
+		t.Errorf("an issue's id: the route answered %d %s, the reader %s, %v", issueRoute.Code, issueRoute.Body, issueData, err)
+	}
+	if found, err := readers.Readers["note"].Search(ctx, "printer", references.InProcessAsker{}); err != nil || !strings.Contains(string(found), issueID) || !strings.Contains(string(found), `"Printer"`) {
+		t.Errorf("a note search finds %s (%v), want the note and the issue", found, err)
 	}
 }
 

@@ -15,7 +15,7 @@ func TestServiceAndSiteAddressesMustBeAbsolute(t *testing.T) {
 	if err := ValidateReferenceConfiguration(Types, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateReferenceConfiguration(Types, map[string]string{"noteboard": "/relative"}, nil); err == nil {
+	if err := ValidateReferenceConfiguration(Types, map[string]string{"notes": "/relative"}, nil); err == nil {
 		t.Fatal("relative service address accepted")
 	}
 	if err := ValidateReferenceConfiguration(Types, nil, map[string]string{"music": "/relative"}); err == nil {

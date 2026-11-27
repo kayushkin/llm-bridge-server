@@ -18,9 +18,9 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/db/dbtest"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/filestore"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/grantstore"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuecontent"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/llmbridge"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/model"
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/noteboard"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/principalstore"
 )
 
@@ -164,7 +164,7 @@ func setupWithAttachments(t *testing.T) (http.Handler, *fakeGrantStore, *fakeFil
 		urls[name] = server.URL
 	}
 	store := dbtest.NewStore(t)
-	a := api.New(store, noteboard.New(urls["notes"]), principalstore.New(urls["principals"]), llmbridge.New(urls["bridge"]), bundlestore.New(urls["bundles"]))
+	a := api.New(store, issuecontent.New(urls["notes"]), principalstore.New(urls["principals"]), llmbridge.New(urls["bridge"]), bundlestore.New(urls["bundles"]))
 	a.SetReferenceStore(fakeReferenceStore(t))
 	// Cleanups run last-registered first, so this waits for trigger
 	// dispatches before the store above is closed.
@@ -194,7 +194,7 @@ func TestAFileIsReachedOnlyThroughTheCardItHangsOn(t *testing.T) {
 	f := buildTwoBoards(t, h, grants)
 	invoice := []byte("%PDF-1.7 the disputed invoice")
 
-	w := sendBytes(t, h, asPrincipal(alice), "/api/cards/"+f.supportCardID+"/attachments?filename=invoice.pdf", "application/pdf", invoice)
+	w := sendBytes(t, h, asPrincipal(alice), "/cards/"+f.supportCardID+"/attachments?filename=invoice.pdf", "application/pdf", invoice)
 	mustStatus(t, w, 201, "alice, who edits Support, attaches a file")
 	var attached model.CardAttachment
 	decodeSuccessfulResponse(t, w, &attached)
@@ -204,7 +204,7 @@ func TestAFileIsReachedOnlyThroughTheCardItHangsOn(t *testing.T) {
 		record["filename"] != "invoice.pdf" || record["owner_ref"] != f.supportCardID || record["uploaded_by_principal_id"] != alice {
 		t.Fatalf("attachment = %+v with file %v; want internal, by alice, file-store's own record for this card", attached, record)
 	}
-	contentPath := "/api/cards/" + f.supportCardID + "/attachments/" + attached.FileID + "/content"
+	contentPath := "/cards/" + f.supportCardID + "/attachments/" + attached.FileID + "/content"
 
 	w = requestAs(t, h, asPrincipal(alice), "GET", contentPath, nil)
 	mustStatus(t, w, 200, "alice downloads it")
@@ -219,18 +219,18 @@ func TestAFileIsReachedOnlyThroughTheCardItHangsOn(t *testing.T) {
 
 	// bob views Finance only. Support's card is 404 to him, files and all.
 	mustStatus(t, requestAs(t, h, asPrincipal(bob), "GET", contentPath, nil), 404, "bob downloads a file on a card he cannot see")
-	mustStatus(t, requestAs(t, h, asPrincipal(bob), "GET", "/api/cards/"+f.supportCardID+"/attachments", nil), 404, "bob lists them")
+	mustStatus(t, requestAs(t, h, asPrincipal(bob), "GET", "/cards/"+f.supportCardID+"/attachments", nil), 404, "bob lists them")
 	// And he cannot reach it by naming it under a card he CAN see.
-	mustStatus(t, requestAs(t, h, asPrincipal(bob), "GET", "/api/cards/"+f.financeCardID+"/attachments/"+attached.FileID+"/content", nil),
+	mustStatus(t, requestAs(t, h, asPrincipal(bob), "GET", "/cards/"+f.financeCardID+"/attachments/"+attached.FileID+"/content", nil),
 		404, "bob asks for Support's file through a Finance card")
 	// A viewer reads and does not write.
-	mustStatus(t, sendBytes(t, h, asPrincipal(bob), "/api/cards/"+f.financeCardID+"/attachments?filename=x.txt", "text/plain", []byte("x")), 403, "a viewer attaches")
+	mustStatus(t, sendBytes(t, h, asPrincipal(bob), "/cards/"+f.financeCardID+"/attachments?filename=x.txt", "text/plain", []byte("x")), 403, "a viewer attaches")
 }
 
 func TestAnAttachmentSaysWhoItIsForAndSitsOnTheTimeline(t *testing.T) {
 	h, grants, files := setupWithAttachments(t)
 	f := buildTwoBoards(t, h, grants)
-	base := "/api/cards/" + f.supportCardID + "/attachments"
+	base := "/cards/" + f.supportCardID + "/attachments"
 	mustStatus(t, sendBytes(t, h, asPrincipal(alice), base+"?filename=internal-notes.txt", "text/plain", []byte("do not concede")), 201, "an internal file")
 	w := sendBytes(t, h, asPrincipal(alice), base+"?filename=reply.pdf&visibility=requester", "application/pdf", []byte("%PDF our reply"))
 	mustStatus(t, w, 201, "a file for the requester")
@@ -264,7 +264,7 @@ func TestAnAttachmentSaysWhoItIsForAndSitsOnTheTimeline(t *testing.T) {
 	}
 	mustStatus(t, requestAs(t, h, asPrincipal(alice), "GET", base+"/"+forRequester.FileID+"/content", nil), 404, "a removed attachment")
 
-	w = requestAs(t, h, asService, "GET", "/api/cards/"+f.supportCardID+"/events", nil)
+	w = requestAs(t, h, asService, "GET", "/cards/"+f.supportCardID+"/events", nil)
 	var events []model.CardEvent
 	decodeSuccessfulResponse(t, w, &events)
 	seen := []string{}
@@ -286,7 +286,7 @@ func TestAnAttachmentSaysWhoItIsForAndSitsOnTheTimeline(t *testing.T) {
 func TestFileStoresRefusalsComeThroughAndItsFailuresLeaveNothing(t *testing.T) {
 	h, grants, files := setupWithAttachments(t)
 	f := buildTwoBoards(t, h, grants)
-	base := "/api/cards/" + f.supportCardID + "/attachments"
+	base := "/cards/" + f.supportCardID + "/attachments"
 	files.limit = 10
 	w := sendBytes(t, h, asPrincipal(alice), base+"?filename=big.bin", "application/octet-stream", bytes.Repeat([]byte("x"), 11))
 	mustStatus(t, w, 413, "a file over file-store's limit")
@@ -312,25 +312,25 @@ func TestFileStoresRefusalsComeThroughAndItsFailuresLeaveNothing(t *testing.T) {
 func TestPurgingACardDestroysItsFilesOrDoesNotHappen(t *testing.T) {
 	h, grants, files := setupWithAttachments(t)
 	f := buildTwoBoards(t, h, grants)
-	w := sendBytes(t, h, asService, "/api/cards/"+f.supportCardID+"/attachments?filename=a.txt", "text/plain", []byte("a"))
+	w := sendBytes(t, h, asService, "/cards/"+f.supportCardID+"/attachments?filename=a.txt", "text/plain", []byte("a"))
 	mustStatus(t, w, 201, "attach")
 	var attached model.CardAttachment
 	decodeSuccessfulResponse(t, w, &attached)
 
 	files.down = true
-	mustStatus(t, requestAs(t, h, asService, "DELETE", "/api/cards/"+f.supportCardID+"?hard=true", nil), 502, "purge while file-store cannot destroy the files")
+	mustStatus(t, requestAs(t, h, asService, "DELETE", "/cards/"+f.supportCardID+"?hard=true", nil), 502, "purge while file-store cannot destroy the files")
 	files.down = false
-	mustStatus(t, requestAs(t, h, asService, "GET", "/api/cards/"+f.supportCardID, nil), 200, "the card is still there")
+	mustStatus(t, requestAs(t, h, asService, "GET", "/cards/"+f.supportCardID, nil), 200, "the card is still there")
 
 	// A file taken off the card earlier has no row here and is still in
 	// file-store, deleted and restorable. The purge has to reach it too.
-	w = sendBytes(t, h, asService, "/api/cards/"+f.supportCardID+"/attachments?filename=removed-earlier.txt", "text/plain", []byte("b"))
+	w = sendBytes(t, h, asService, "/cards/"+f.supportCardID+"/attachments?filename=removed-earlier.txt", "text/plain", []byte("b"))
 	mustStatus(t, w, 201, "attach a second")
 	var removedEarlier model.CardAttachment
 	decodeSuccessfulResponse(t, w, &removedEarlier)
-	mustStatus(t, requestAs(t, h, asService, "DELETE", "/api/cards/"+f.supportCardID+"/attachments/"+removedEarlier.FileID, nil), 204, "take it off the card")
+	mustStatus(t, requestAs(t, h, asService, "DELETE", "/cards/"+f.supportCardID+"/attachments/"+removedEarlier.FileID, nil), 204, "take it off the card")
 
-	mustStatus(t, requestAs(t, h, asService, "DELETE", "/api/cards/"+f.supportCardID+"?hard=true", nil), 200, "purge")
+	mustStatus(t, requestAs(t, h, asService, "DELETE", "/cards/"+f.supportCardID+"?hard=true", nil), 200, "purge")
 	purged := map[string]bool{}
 	for _, id := range files.purged {
 		purged[id] = true
@@ -343,5 +343,5 @@ func TestPurgingACardDestroysItsFilesOrDoesNotHappen(t *testing.T) {
 func TestWithoutAFileStoreAttachmentsAreUnknownNotEmpty(t *testing.T) {
 	h, grants, _ := setupWithPrincipalEnforcement(t)
 	f := buildTwoBoards(t, h, grants)
-	mustStatus(t, requestAs(t, h, asPrincipal(alice), "GET", "/api/cards/"+f.supportCardID+"/attachments", nil), 503, "list with no file-store configured")
+	mustStatus(t, requestAs(t, h, asPrincipal(alice), "GET", "/cards/"+f.supportCardID+"/attachments", nil), 503, "list with no file-store configured")
 }

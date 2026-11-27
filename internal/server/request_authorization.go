@@ -250,8 +250,14 @@ var (
 	skillStoreRunnerSeedRoute     = runnerRoute("skill-store seed route for runners; the handler authenticates the runner's bearer token")
 )
 
-// noteboardRoute is the rule of every noteboard route.
-var noteboardRoute = operatorRoute("noteboard holds the operator's private notes and todos with no owner on a row, so any caller could read or rewrite all of them")
+// notesRoute is the rule of every notes route.
+var notesRoute = operatorRoute("notes holds the operator's private notes, ranked lists and workspaces with no owner on a row, so any caller could read or rewrite all of them")
+
+// issueItemsRoute is the rule of every /issues/items route: the content of
+// every issue, on a board or not. The boards and cards under the rest of
+// /issues/ answer a principal only the cards on boards it may view; these
+// routes cannot, because an issue on no board names nobody who may see it.
+var issueItemsRoute = operatorRoute("/issues/items holds the content of every issue with no owner on a row, on a board or not, so any caller could read or rewrite all of them; a principal reads its cards through /issues/cards")
 
 // projectStoreRoute is the rule of every project-store route.
 var projectStoreRoute = operatorRoute("project-store keeps one set of projects with no owner on a row, and its links name sessions, people and notes, so any caller could read or rewrite all of them")
@@ -691,27 +697,47 @@ var routeAccessRules = map[string]routeAccessRule{
 	"POST /predictions/predictions/{id}/links":     predictionStoreRoute,
 	"DELETE /predictions/links/{id}":               predictionStoreRoute,
 
-	// noteboard, mounted in this process. Its notes are the operator's own,
+	// notes, mounted in this process. Its notes are the operator's own,
 	// private, with no owner on a row, so it is the operator's, as
 	// prediction-store is. An administrator's session agent token reaches it.
-	"GET /noteboard/health":                     noteboardRoute,
-	"GET /noteboard/api/items":                  noteboardRoute,
-	"POST /noteboard/api/items":                 noteboardRoute,
-	"POST /noteboard/api/items/rerank":          noteboardRoute,
-	"POST /noteboard/api/items/query":           noteboardRoute,
-	"POST /noteboard/api/items/batch":           noteboardRoute,
-	"GET /noteboard/api/items/query-options":    noteboardRoute,
-	"GET /noteboard/api/items/{id}":             noteboardRoute,
-	"PATCH /noteboard/api/items/{id}":           noteboardRoute,
-	"DELETE /noteboard/api/items/{id}":          noteboardRoute,
-	"GET /noteboard/api/items/{id}/revisions":   noteboardRoute,
-	"POST /noteboard/api/items/{id}/restore":    noteboardRoute,
-	"POST /noteboard/api/items/{id}/hold":       noteboardRoute,
-	"POST /noteboard/api/items/{id}/unhold":     noteboardRoute,
-	"GET /noteboard/api/items/{id}/occurrences": noteboardRoute,
-	"GET /noteboard/api/lists":                  noteboardRoute,
-	"GET /noteboard/api/tags":                   noteboardRoute,
-	"GET /noteboard/api/search":                 noteboardRoute,
+	"GET /notes/health":                 notesRoute,
+	"GET /notes/items":                  notesRoute,
+	"POST /notes/items":                 notesRoute,
+	"POST /notes/items/rerank":          notesRoute,
+	"POST /notes/items/query":           notesRoute,
+	"POST /notes/items/batch":           notesRoute,
+	"GET /notes/items/query-options":    notesRoute,
+	"GET /notes/items/{id}":             notesRoute,
+	"PATCH /notes/items/{id}":           notesRoute,
+	"DELETE /notes/items/{id}":          notesRoute,
+	"GET /notes/items/{id}/revisions":   notesRoute,
+	"POST /notes/items/{id}/restore":    notesRoute,
+	"POST /notes/items/{id}/hold":       notesRoute,
+	"POST /notes/items/{id}/unhold":     notesRoute,
+	"GET /notes/items/{id}/occurrences": notesRoute,
+	"GET /notes/lists":                  notesRoute,
+	"GET /notes/tags":                   notesRoute,
+	"GET /notes/search":                 notesRoute,
+
+	// The content of issues, mounted in this process beside the boards and
+	// cards of /issues/.
+	"GET /issues/items":                  issueItemsRoute,
+	"POST /issues/items":                 issueItemsRoute,
+	"POST /issues/items/rerank":          issueItemsRoute,
+	"POST /issues/items/query":           issueItemsRoute,
+	"POST /issues/items/batch":           issueItemsRoute,
+	"GET /issues/items/query-options":    issueItemsRoute,
+	"GET /issues/items/health":           issueItemsRoute,
+	"GET /issues/items/tags":             issueItemsRoute,
+	"GET /issues/items/search":           issueItemsRoute,
+	"GET /issues/items/{id}":             issueItemsRoute,
+	"PATCH /issues/items/{id}":           issueItemsRoute,
+	"DELETE /issues/items/{id}":          issueItemsRoute,
+	"GET /issues/items/{id}/revisions":   issueItemsRoute,
+	"POST /issues/items/{id}/restore":    issueItemsRoute,
+	"POST /issues/items/{id}/hold":       issueItemsRoute,
+	"POST /issues/items/{id}/unhold":     issueItemsRoute,
+	"GET /issues/items/{id}/occurrences": issueItemsRoute,
 
 	// permission-store, mounted in this process.
 	"GET /permissions/healthz":       permissionStoreOperatorRoute,

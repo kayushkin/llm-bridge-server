@@ -7,8 +7,8 @@ import (
 	"net/url"
 
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/db"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuecontent"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/model"
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/noteboard"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -115,7 +115,7 @@ func (a *API) onCard(cardID string, needed BoardAccessLevel, what string) func(*
 	}
 }
 
-// EntityCards is GET /api/entities/{type}/{ref}/cards: every card linked to
+// EntityCards is GET /entities/{type}/{ref}/cards: every card linked to
 // the entity that the caller may see, oldest link first.
 func (a *API) EntityCards(caller Caller, entityType, entityRef string) ([]model.EntityCardView, error) {
 	access, err := a.authorizeCall(caller, nil)
@@ -125,17 +125,17 @@ func (a *API) EntityCards(caller Caller, entityType, entityRef string) ([]model.
 	return a.entityCardsFor(access, entityType, entityRef)
 }
 
-// CardLinks is GET /api/cards/{id}/links.
+// CardLinks is GET /cards/{id}/links.
 func (a *API) CardLinks(caller Caller, cardID string) ([]model.CardLink, error) {
-	if _, err := a.authorizeCall(caller, a.onCard(cardID, BoardAccessView, "GET /api/cards/"+cardID+"/links")); err != nil {
+	if _, err := a.authorizeCall(caller, a.onCard(cardID, BoardAccessView, "GET /cards/"+cardID+"/links")); err != nil {
 		return nil, err
 	}
 	return a.cardLinksOf(cardID)
 }
 
-// RecordCardEvent is POST /api/cards/{id}/events.
+// RecordCardEvent is POST /cards/{id}/events.
 func (a *API) RecordCardEvent(caller Caller, cardID string, request model.CreateCardEventRequest) (*model.CardEvent, error) {
-	access, err := a.authorizeCall(caller, a.onCard(cardID, BoardAccessEdit, "POST /api/cards/"+cardID+"/events"))
+	access, err := a.authorizeCall(caller, a.onCard(cardID, BoardAccessEdit, "POST /cards/"+cardID+"/events"))
 	if err != nil {
 		return nil, err
 	}
@@ -146,11 +146,11 @@ func (a *API) RecordCardEvent(caller Caller, cardID string, request model.Create
 	return a.recordCardEvent(cardID, request, actor)
 }
 
-// CardTags is the tags of a card, as GET /api/cards/{id} answers them on its
+// CardTags is the tags of a card, as GET /cards/{id} answers them on its
 // noteboard item. A noteboard item on no board is not a card (404), and a
 // card whose noteboard item is gone has no tags to read (404 too).
 func (a *API) CardTags(caller Caller, cardID string) ([]string, error) {
-	if _, err := a.authorizeCall(caller, a.onCard(cardID, BoardAccessView, "GET /api/cards/"+cardID)); err != nil {
+	if _, err := a.authorizeCall(caller, a.onCard(cardID, BoardAccessView, "GET /cards/"+cardID)); err != nil {
 		return nil, err
 	}
 	placements, err := a.store.ListPlacementsByCard(cardID)
@@ -160,8 +160,8 @@ func (a *API) CardTags(caller Caller, cardID string) ([]string, error) {
 	if len(placements) == 0 {
 		return nil, &Refusal{Status: http.StatusNotFound, Message: "not found"}
 	}
-	item, err := a.noteboard.GetItem(cardID)
-	if noteboard.IsNotFound(err) {
+	item, err := a.issueContent.GetItem(cardID)
+	if issuecontent.IsNotFound(err) {
 		return nil, &Refusal{Status: http.StatusNotFound, Message: "card " + cardID + " has no noteboard item"}
 	}
 	if err != nil {
@@ -174,9 +174,9 @@ func (a *API) CardTags(caller Caller, cardID string) ([]string, error) {
 	return tags, nil
 }
 
-// BoardEffectiveDefaults is GET /api/boards/{id}/effective-defaults?tag=….
+// BoardEffectiveDefaults is GET /boards/{id}/effective-defaults?tag=….
 func (a *API) BoardEffectiveDefaults(caller Caller, boardID string, tags []string) (*model.EffectiveDefaults, error) {
-	if _, err := a.authorizeCall(caller, a.viewOnBoard(boardID, "GET /api/boards/"+boardID+"/effective-defaults")); err != nil {
+	if _, err := a.authorizeCall(caller, a.viewOnBoard(boardID, "GET /boards/"+boardID+"/effective-defaults")); err != nil {
 		return nil, err
 	}
 	resolved, err := a.effectiveDefaultsFor(boardID, tags)
@@ -186,34 +186,34 @@ func (a *API) BoardEffectiveDefaults(caller Caller, boardID string, tags []strin
 	return resolved, nil
 }
 
-// CardEffectiveDefaults is GET /api/boards/{id}/cards/{card_id}/effective-defaults.
+// CardEffectiveDefaults is GET /boards/{id}/cards/{card_id}/effective-defaults.
 func (a *API) CardEffectiveDefaults(caller Caller, boardID, cardID string) (*model.EffectiveDefaults, error) {
-	if _, err := a.authorizeCall(caller, a.viewOnBoard(boardID, "GET /api/boards/"+boardID+"/cards/"+cardID+"/effective-defaults")); err != nil {
+	if _, err := a.authorizeCall(caller, a.viewOnBoard(boardID, "GET /boards/"+boardID+"/cards/"+cardID+"/effective-defaults")); err != nil {
 		return nil, err
 	}
 	return a.cardEffectiveDefaultsFor(boardID, cardID)
 }
 
-// BoardClassification is GET /api/boards/{id}/classification.
+// BoardClassification is GET /boards/{id}/classification.
 func (a *API) BoardClassification(caller Caller, boardID string) (*msg.BoardClassification, error) {
-	access, err := a.authorizeCall(caller, a.viewOnBoard(boardID, "GET /api/boards/"+boardID+"/classification"))
+	access, err := a.authorizeCall(caller, a.viewOnBoard(boardID, "GET /boards/"+boardID+"/classification"))
 	if err != nil {
 		return nil, err
 	}
 	return a.boardClassificationFor(access, boardID)
 }
 
-// BoardCardPage is GET /api/boards/{id}/card-page, with query its query
+// BoardCardPage is GET /boards/{id}/card-page, with query its query
 // string's values.
 func (a *API) BoardCardPage(caller Caller, boardID string, query url.Values) (*model.BoardCardPage, error) {
-	access, err := a.authorizeCall(caller, a.viewOnBoard(boardID, "GET /api/boards/"+boardID+"/card-page"))
+	access, err := a.authorizeCall(caller, a.viewOnBoard(boardID, "GET /boards/"+boardID+"/card-page"))
 	if err != nil {
 		return nil, err
 	}
 	return a.boardCardPageFor(access, boardID, query)
 }
 
-// PublishClassificationDecision is POST /api/boards/{id}/classification/decisions,
+// PublishClassificationDecision is POST /boards/{id}/classification/decisions,
 // the classifier's alone: only the internal service may publish. created is
 // false when the same decision was published before.
 func (a *API) PublishClassificationDecision(caller Caller, publication msg.BoardClassificationDecisionPublication) (*model.ClassificationDecision, bool, error) {
@@ -234,9 +234,9 @@ func (a *API) PublishClassificationDecision(caller Caller, publication msg.Board
 	return a.publishClassificationDecisionFor(publication.BoardID, publication)
 }
 
-// Board is GET /api/boards/{id}: the board's own record.
+// Board is GET /boards/{id}: the board's own record.
 func (a *API) Board(caller Caller, boardID string) (*model.Board, error) {
-	if _, err := a.authorizeCall(caller, a.viewOnBoard(boardID, "GET /api/boards/"+boardID)); err != nil {
+	if _, err := a.authorizeCall(caller, a.viewOnBoard(boardID, "GET /boards/"+boardID)); err != nil {
 		return nil, err
 	}
 	board, err := a.store.GetBoard(boardID)
@@ -246,7 +246,7 @@ func (a *API) Board(caller Caller, boardID string) (*model.Board, error) {
 	return board, nil
 }
 
-// EntityTags is GET /api/entities/{type}/{ref}/tags. Entity tags are one tag
+// EntityTags is GET /entities/{type}/{ref}/tags. Entity tags are one tag
 // space shared by every board and every kind of entity, so a principal is
 // refused them, as the route refuses one.
 func (a *API) EntityTags(caller Caller, entityType, entityRef string) ([]model.EntityTag, error) {
@@ -262,11 +262,11 @@ func (a *API) EntityTags(caller Caller, entityType, entityRef string) ([]model.E
 	return tags, nil
 }
 
-// CardPlacementsAndLinks is the part of GET /api/cards/{id} that says where a
+// CardPlacementsAndLinks is the part of GET /cards/{id} that says where a
 // card sits and what it links: the placements the caller may see, and every
 // link. A noteboard item on no board is not a card (404).
 func (a *API) CardPlacementsAndLinks(caller Caller, cardID string) ([]*model.Placement, []model.CardLink, error) {
-	access, err := a.authorizeCall(caller, a.onCard(cardID, BoardAccessView, "GET /api/cards/"+cardID))
+	access, err := a.authorizeCall(caller, a.onCard(cardID, BoardAccessView, "GET /cards/"+cardID))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -297,7 +297,7 @@ type ColumnCard struct {
 }
 
 // ColumnCardsAndLinks is one page of a column's cards in stored order, as GET
-// /api/columns/{id}/cards?limit=&offset= pages them with no filter: each
+// /columns/{id}/cards?limit=&offset= pages them with no filter: each
 // card's placement and links, the column's board and how many cards the
 // column holds.
 func (a *API) ColumnCardsAndLinks(caller Caller, columnID string, limit, offset int) (string, int, []ColumnCard, error) {
@@ -305,7 +305,7 @@ func (a *API) ColumnCardsAndLinks(caller Caller, columnID string, limit, offset 
 	if err != nil {
 		return "", 0, nil, dbRefusal(err)
 	}
-	if _, err := a.authorizeCall(caller, a.viewOnBoard(column.BoardID, "GET /api/columns/"+columnID+"/cards")); err != nil {
+	if _, err := a.authorizeCall(caller, a.viewOnBoard(column.BoardID, "GET /columns/"+columnID+"/cards")); err != nil {
 		return "", 0, nil, err
 	}
 	if offset < 0 {

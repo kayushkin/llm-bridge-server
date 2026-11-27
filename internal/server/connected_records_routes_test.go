@@ -11,17 +11,17 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/calendar"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/journal"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/people"
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/items"
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/items"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/items/model"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 )
 
 // enableConnectedRecordsOnTestDatabase serves people-store, calendar-store and
 // journal-store from a Postgres database of the test's own, after the
-// noteboard and reference-store they read.
+// issues and reference-store they read.
 func enableConnectedRecordsOnTestDatabase(t *testing.T, gated *gatedTestServer) *items.Store {
 	t.Helper()
-	noteboard, _ := enableTaskTrackingOnTestDatabase(t, gated.server)
+	issues := enableTaskTrackingOnTestDatabase(t, gated.server).issues
 	enableRepositoriesAndReferencesOnTestDatabase(t, gated.server)
 	peopleModule, err := people.Module()
 	if err != nil {
@@ -41,7 +41,7 @@ func enableConnectedRecordsOnTestDatabase(t *testing.T, gated *gatedTestServer) 
 	}); err != nil {
 		t.Fatal(err)
 	}
-	return noteboard
+	return issues
 }
 
 // requestAsPrincipalWithBody is a call through dash for a principal, with a
@@ -130,7 +130,7 @@ func TestAPersonIsReachedOnlyByItsOwnerAndAnAdministrator(t *testing.T) {
 // the internal service acting as nobody is refused on every route.
 func TestTheJournalAnswersOnlyItsOwnerAndAnAdministrator(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
-	noteboard := enableConnectedRecordsOnTestDatabase(t, gated)
+	issues := enableConnectedRecordsOnTestDatabase(t, gated)
 	for _, path := range []string{"/journal/health", "/journal/entry-kinds", "/journal/entries"} {
 		if response := gated.requestAsService(t, "GET", path); response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "journal_store_requires_a_principal") {
 			t.Errorf("GET %s as the internal service = %d %s, want 403 journal_store_requires_a_principal", path, response.Code, response.Body)
@@ -155,9 +155,9 @@ func TestTheJournalAnswersOnlyItsOwnerAndAnAdministrator(t *testing.T) {
 		t.Errorf("the administrator's GET = %d %s", response.Code, response.Body)
 	}
 
-	// promote-todo writes into noteboard, which every agent reads: the owner
-	// who is not an administrator is refused, and an administrator's own
-	// entry makes the todo through noteboard in this process.
+	// promote-todo makes an issue, which every agent reads: the owner who
+	// is not an administrator is refused, and an administrator's own entry
+	// makes the issue through the issues module in this process.
 	if response := gated.requestAsPrincipal(t, firstTestPrincipalID, "POST", "/journal/entries/"+id+"/promote-todo", map[string]any{"line": 1}); response.Code != http.StatusForbidden {
 		t.Errorf("promote-todo by an owner who is not an administrator = %d %s, want 403", response.Code, response.Body)
 	}
@@ -168,9 +168,9 @@ func TestTheJournalAnswersOnlyItsOwnerAndAnAdministrator(t *testing.T) {
 		t.Fatalf("the administrator's promote-todo = %d %s", promoted.Code, promoted.Body)
 	}
 	todoID, _ := decodeRecord(t, promoted)["todo_id"].(string)
-	todo, err := noteboard.GetItem(todoID)
+	todo, err := issues.GetItem(todoID)
 	if err != nil || todo.Type != model.TypeTodo || todo.Title != "post a letter" {
-		t.Fatalf("the todo in noteboard: %+v %v", todo, err)
+		t.Fatalf("the todo in issues: %+v %v", todo, err)
 	}
 }
 

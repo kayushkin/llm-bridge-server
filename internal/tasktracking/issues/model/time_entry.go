@@ -17,7 +17,7 @@ import (
 // order, and an entry backdated to yesterday would split an interval that was
 // already accounted for. When the work was done is TimeLoggedEventDetail.WorkedAt.
 //
-// It is written only through POST /api/cards/{id}/time-entries, never through
+// It is written only through POST /cards/{id}/time-entries, never through
 // /events, because an entry may replace another and that has rules.
 const EventTimeLogged EventKind = "time_logged"
 
@@ -37,7 +37,7 @@ type TimeLoggedEventDetail struct {
 	WorkedAt *time.Time `json:"worked_at,omitempty"`
 }
 
-// CreateTimeEntryRequest is POST /api/cards/{id}/time-entries.
+// CreateTimeEntryRequest is POST /cards/{id}/time-entries.
 type CreateTimeEntryRequest struct {
 	Seconds int64 `json:"seconds"`
 	// WorkerPrincipalID defaults to the calling principal. A caller with no
@@ -95,7 +95,7 @@ type TimeEntry struct {
 	Active bool `json:"active"`
 }
 
-// CardTimeEntries is GET /api/cards/{id}/time-entries.
+// CardTimeEntries is GET /cards/{id}/time-entries.
 type CardTimeEntries struct {
 	CardID string `json:"card_id"`
 	// ActiveSeconds is the sum over active entries, whatever filter was asked

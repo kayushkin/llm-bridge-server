@@ -122,7 +122,7 @@ func TestTheReactorDecidesOncePerStateEntryFromTheSeedAndTheFeed(t *testing.T) {
 	if run.Cause != CauseFeed || run.Outcome != OutcomeShadowed || run.TriggerKey != "completed#2" {
 		t.Fatalf("unexpected run %+v", run)
 	}
-	if len(run.PlannedEffects) != 1 || run.PlannedEffects[0].Path != "/api/cards/card-2/move" {
+	if len(run.PlannedEffects) != 1 || run.PlannedEffects[0].Path != "/cards/card-2/move" {
 		t.Fatalf("planned effects: %+v", run.PlannedEffects)
 	}
 
@@ -396,7 +396,7 @@ func TestOwnerCallsSendTheTokenAndBodyAndKeepTheAnswer(t *testing.T) {
 	}))
 	defer owner.Close()
 	calls := NewOwnerCalls(NewLLMBridge("http://unused", "b"), NewKanbanStore(owner.URL, "kanban-token"))
-	result := calls.Call(context.Background(), PlannedEffect{Service: "kanban-store", Method: "POST", Path: "/api/entities/session/s1/tags", Body: map[string]any{"tag": "x"}})
+	result := calls.Call(context.Background(), PlannedEffect{Service: "kanban-store", Method: "POST", Path: "/entities/session/s1/tags", Body: map[string]any{"tag": "x"}})
 	if !result.accepted() || result.Status != http.StatusCreated || result.Body != `{"tag":"x"}` {
 		t.Fatalf("result %+v", result)
 	}

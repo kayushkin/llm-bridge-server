@@ -13,11 +13,12 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/machines"
 	"github.com/kayushkin/llm-bridge-server/internal/repositories/gitactivity"
 	issuesdb "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/db"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/notes"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 )
 
-// Four modules were renamed on 2026-11-27. An install made before holds their
+// Five modules were renamed on 2026-11-27. An install made before holds their
 // records under the old schema and role; the server's start renames both and
 // the records stay. This builds each module under its old schema with its real
 // migrations, writes a row, and starts it under its new name.
@@ -26,7 +27,7 @@ import (
 // Postgres server, and the shared test server holds the real names already.
 func TestRenamedModulesKeepTheirRecordsAtStart(t *testing.T) {
 	ctx := context.Background()
-	for _, moduleOf := range []func() (postgresstorage.Module, error){issuesdb.Module, machines.Module, gitactivity.Module, onlineactivity.Module} {
+	for _, moduleOf := range []func() (postgresstorage.Module, error){issuesdb.Module, notes.Module, machines.Module, gitactivity.Module, onlineactivity.Module} {
 		current, err := moduleOf()
 		if err != nil {
 			t.Fatal(err)

@@ -9,16 +9,16 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/boundedtext"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/db"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuecontent"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/model"
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/noteboard"
 )
 
 // Tag rules and the effective defaults they produce.
 //
-//	GET  /api/boards/{id}/tag-rules                            the ordered list
-//	PUT  /api/boards/{id}/tag-rules                            replace it, in order
-//	GET  /api/boards/{id}/effective-defaults?tag=…&tag=…       what a card with these tags gets
-//	GET  /api/boards/{id}/cards/{card_id}/effective-defaults   the same, reading the card's tags from noteboard
+//	GET  /boards/{id}/tag-rules                            the ordered list
+//	PUT  /boards/{id}/tag-rules                            replace it, in order
+//	GET  /boards/{id}/effective-defaults?tag=…&tag=…       what a card with these tags gets
+//	GET  /boards/{id}/cards/{card_id}/effective-defaults   the same, reading the card's tags from noteboard
 //
 // The resolution lives in model.ResolveEffectiveDefaults and nowhere else, so
 // the dispatchers and the UI ask here rather than re-implementing the order.
@@ -137,8 +137,8 @@ func (a *API) cardEffectiveDefaults(w http.ResponseWriter, r *http.Request, boar
 // cardEffectiveDefaultsFor is what a card on a board gets, read with the
 // card's tags from noteboard.
 func (a *API) cardEffectiveDefaultsFor(boardID, cardID string) (*model.EffectiveDefaults, error) {
-	item, err := a.noteboard.GetItem(cardID)
-	if noteboard.IsNotFound(err) {
+	item, err := a.issueContent.GetItem(cardID)
+	if issuecontent.IsNotFound(err) {
 		return nil, &Refusal{Status: 404, Message: "noteboard item not found: " + boundedtext.Value(cardID)}
 	}
 	if err != nil {
@@ -173,7 +173,7 @@ func (a *API) effectiveDefaultsFor(boardID string, tags []string) (*model.Effect
 // owns tags; an item carrying something other than a list of strings there is
 // reported rather than read as untagged, because untagged would silently skip
 // every rule.
-func tagsOfNoteboardItem(item noteboard.Item) ([]string, error) {
+func tagsOfNoteboardItem(item issuecontent.Item) ([]string, error) {
 	raw, present := item["tags"]
 	if !present || raw == nil {
 		return []string{}, nil

@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/db"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuecontent"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/model"
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/noteboard"
 )
 
 // cardContentQuery filters and sorts cards by what they SAY — tags, priority,
@@ -32,7 +32,7 @@ func (q cardContentQuery) isEmpty() bool {
 // cardContentQueryFromRequest reads ?tag=&tag=&priority=&status=&due_before=&sort=.
 // It judges only what it can without asking: that a priority is a number and a
 // time is a time. What a sort or a status may be is noteboard's vocabulary
-// (its GET /api/items/query-options), so those go through as written and
+// (its GET /items/query-options), so those go through as written and
 // noteboard's refusal is relayed — this store keeps no copy of the list to
 // fall out of date.
 func cardContentQueryFromRequest(r *http.Request) (cardContentQuery, error) {
@@ -68,7 +68,7 @@ func cardContentQueryFromValues(values url.Values) (cardContentQuery, error) {
 //
 // A card whose noteboard item is gone cannot match a content query, so such a
 // read reports no orphans; an unfiltered one still does.
-func (a *API) columnPage(columnID string, filter db.CardFilter, content cardContentQuery, limit, offset int) ([]*model.Placement, []noteboard.Item, int, error) {
+func (a *API) columnPage(columnID string, filter db.CardFilter, content cardContentQuery, limit, offset int) ([]*model.Placement, []issuecontent.Item, int, error) {
 	if content.isEmpty() {
 		total, err := a.store.CountColumnCardsMatching(columnID, filter)
 		if err != nil {
@@ -82,7 +82,7 @@ func (a *API) columnPage(columnID string, filter db.CardFilter, content cardCont
 		for i, placement := range placements {
 			ids[i] = placement.CardID
 		}
-		items, err := a.noteboard.GetItems(ids)
+		items, err := a.issueContent.GetItems(ids)
 		return placements, items, total, err
 	}
 
@@ -91,7 +91,7 @@ func (a *API) columnPage(columnID string, filter db.CardFilter, content cardCont
 		return nil, nil, 0, &ownStoreError{err}
 	}
 	if len(every) == 0 {
-		return []*model.Placement{}, []noteboard.Item{}, 0, nil
+		return []*model.Placement{}, []issuecontent.Item{}, 0, nil
 	}
 	placementOfCard := make(map[string]*model.Placement, len(every))
 	ids := make([]string, len(every))
@@ -99,7 +99,7 @@ func (a *API) columnPage(columnID string, filter db.CardFilter, content cardCont
 		ids[i] = placement.CardID // stored order: noteboard breaks a sort's ties by it
 		placementOfCard[placement.CardID] = placement
 	}
-	result, err := a.noteboard.QueryItems(noteboard.ItemsQuery{
+	result, err := a.issueContent.QueryItems(issuecontent.ItemsQuery{
 		IDs: ids, Tags: content.Tags, Priorities: content.Priorities, Statuses: content.Statuses, DueBefore: content.DueBefore,
 		Sort: content.Sort, Limit: limit, Offset: offset, IncludeItems: true,
 	})
@@ -132,7 +132,7 @@ func writeCardReadError(w http.ResponseWriter, err error) {
 
 // cardReadRefusal is a failed board or column read as its route answers it.
 func cardReadRefusal(err error) *Refusal {
-	var refused *noteboard.QueryRefusedError
+	var refused *issuecontent.QueryRefusedError
 	if errors.As(err, &refused) {
 		return &Refusal{Status: http.StatusBadRequest, Message: string(refused.Body), raw: refused.Body}
 	}

@@ -16,7 +16,9 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
 	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 	issuesdb "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/db"
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/items"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issueitems"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboardsplit"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/notes"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -30,7 +32,8 @@ var (
 )
 
 // TestImportedStandaloneKanbanStoreAnswers imports copies of a standalone
-// kanban-store, the noteboard it read card content from, and the
+// kanban-store, the noteboard it read card content from (split between
+// notes and issues as import-noteboard splits it), and the
 // principal-store and grant-store it read callers from, serves them as main
 // does, and writes what /issues/<path> answers each caller, for a
 // comparison with the standalone service's own answers to the same requests.
@@ -67,11 +70,11 @@ func TestImportedStandaloneKanbanStoreAnswers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	noteboardModule, err := items.Module()
+	notesModule, err := notes.Module()
 	if err != nil {
 		t.Fatal(err)
 	}
-	database := postgrestest.NewDatabase(t, append(accessModules, kanbanModule, noteboardModule)...)
+	database := postgrestest.NewDatabase(t, append(accessModules, kanbanModule, notesModule)...)
 	principalsPool, grantsPool := database.Open(accessModules[0]), database.Open(accessModules[1])
 	if _, err := principals.ImportStandaloneDatabase(ctx, principalsPool, *standalonePrincipalStoreCopy); err != nil {
 		t.Fatalf("principal-store: %v", err)
@@ -82,16 +85,20 @@ func TestImportedStandaloneKanbanStoreAnswers(t *testing.T) {
 	stores := access.StoresOnPools(principalsPool, grantsPool, database.Open(accessModules[2]), database.Open(accessModules[3]))
 	server.EnableAccess(stores)
 
-	noteboardPool, kanbanPool := database.Open(noteboardModule), database.Open(kanbanModule)
-	if _, err := items.ImportStandaloneDatabase(ctx, noteboardPool, *standaloneNoteboardCopy); err != nil {
-		t.Fatalf("noteboard: %v", err)
-	}
+	// kanban-store first, so a revision of a purged card follows the card's
+	// history into issues, as the landing order says.
+	kanbanPool := database.Open(kanbanModule)
 	counts, err := issuesdb.ImportStandaloneDatabase(ctx, kanbanPool, *standaloneKanbanStoreCopy)
 	if err != nil {
 		t.Fatalf("kanban-store: %v", err)
 	}
 	t.Logf("kanban-store imported: %+v", counts)
-	server.EnableIssues(issuesdb.New(kanbanPool), KanbanStoreOwners{Noteboard: items.New(noteboardPool), Access: stores})
+	split, err := noteboardsplit.ImportStandaloneDatabase(ctx, database.OpenAsAdministrator(), noteboardsplit.Modules{Notes: notesModule, Issues: kanbanModule}, *standaloneNoteboardCopy)
+	if err != nil {
+		t.Fatalf("noteboard: %v", err)
+	}
+	t.Logf("noteboard imported: %+v", split)
+	server.EnableIssues(issuesdb.New(kanbanPool), KanbanStoreOwners{IssueItems: issueitems.New(kanbanPool), Access: stores})
 
 	requests, err := os.Open(*kanbanComparisonRequests)
 	if err != nil {

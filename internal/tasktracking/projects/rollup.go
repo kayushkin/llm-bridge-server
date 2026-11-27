@@ -133,7 +133,7 @@ type GoalRollup struct {
 
 // goalRollupsOf pairs each goal with its links and counts its linked todos
 // from the noteboard items already read.
-func goalRollupsOf(goals []Goal, links []GoalLink, items map[string]NoteboardItem) []GoalRollup {
+func goalRollupsOf(goals []Goal, links []GoalLink, items map[string]LinkedItem) []GoalRollup {
 	rollups := make([]GoalRollup, 0, len(goals))
 	indexByGoal := map[string]int{}
 	for _, goal := range goals {
@@ -225,7 +225,7 @@ func BuildRollup(ctx context.Context, store *Store, owners *Owners, id string) (
 			noteIDs = append(noteIDs, link.EntityRef)
 		}
 	}
-	items, err := owners.noteboardItemsByID(ctx, noteIDs)
+	items, err := owners.linkedItemsByID(ctx, noteIDs)
 	if err != nil {
 		return rollup, fmt.Errorf("notes linked to %s and its goals: %w", id, err)
 	}

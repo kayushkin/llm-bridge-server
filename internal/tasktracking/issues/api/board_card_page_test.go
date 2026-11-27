@@ -11,18 +11,18 @@ import (
 
 func TestGlobalBoardPageFiltersBeforePagingAcrossColumns(t *testing.T) {
 	d := buildContentDesk(t)
-	response := requestAs(t, d.h, asService, "POST", "/api/boards/"+d.boardID+"/columns", model.CreateColumnRequest{Name: "Resolved"})
+	response := requestAs(t, d.h, asService, "POST", "/boards/"+d.boardID+"/columns", model.CreateColumnRequest{Name: "Resolved"})
 	mustStatus(t, response, 201, "second column")
 	var column model.Column
 	decodeSuccessfulResponse(t, response, &column)
-	mustStatus(t, requestAs(t, d.h, asService, "PATCH", "/api/columns/"+column.ID, map[string]any{"lifecycle_state": "resolved"}), 200, "lifecycle")
+	mustStatus(t, requestAs(t, d.h, asService, "PATCH", "/columns/"+column.ID, map[string]any{"lifecycle_state": "resolved"}), 200, "lifecycle")
 	priority := 4
-	response = requestAs(t, d.h, asService, "POST", "/api/boards/"+d.boardID+"/cards", model.CreateCardRequest{Title: "late urgent", Priority: &priority, ColumnID: column.ID})
+	response = requestAs(t, d.h, asService, "POST", "/boards/"+d.boardID+"/cards", model.CreateCardRequest{Title: "late urgent", Priority: &priority, ColumnID: column.ID})
 	mustStatus(t, response, 201, "card in second column")
 	var created model.CardView
 	decodeSuccessfulResponse(t, response, &created)
 	d.titleOf[created.Placement.CardID] = "late urgent"
-	base := "/api/boards/" + d.boardID + "/card-page"
+	base := "/boards/" + d.boardID + "/card-page"
 	var seen []string
 	for offset := 0; offset < 6; offset += 2 {
 		w := requestAs(t, d.h, asService, "GET", fmt.Sprintf("%s?limit=2&offset=%d&sort=priority", base, offset), nil)
@@ -69,7 +69,7 @@ func TestGlobalBoardPageFiltersBeforePagingAcrossColumns(t *testing.T) {
 func TestGlobalBoardPageRequiresBoardViewAccess(t *testing.T) {
 	h, grants, _ := setupWithPrincipalEnforcement(t)
 	f := buildTwoBoards(t, h, grants)
-	mustStatus(t, requestAs(t, h, asPrincipal(bob), "GET", "/api/boards/"+f.financeBoardID+"/card-page?limit=25", nil), 200, "read-only granted board")
-	mustStatus(t, requestAs(t, h, asPrincipal(bob), "GET", "/api/boards/"+f.supportBoardID+"/card-page?limit=25", nil), 404, "ungranted board")
-	mustStatus(t, requestAs(t, h, nil, "GET", "/api/boards/"+f.financeBoardID+"/card-page?limit=25", nil), 401, "anonymous board")
+	mustStatus(t, requestAs(t, h, asPrincipal(bob), "GET", "/boards/"+f.financeBoardID+"/card-page?limit=25", nil), 200, "read-only granted board")
+	mustStatus(t, requestAs(t, h, asPrincipal(bob), "GET", "/boards/"+f.supportBoardID+"/card-page?limit=25", nil), 404, "ungranted board")
+	mustStatus(t, requestAs(t, h, nil, "GET", "/boards/"+f.financeBoardID+"/card-page?limit=25", nil), 401, "anonymous board")
 }

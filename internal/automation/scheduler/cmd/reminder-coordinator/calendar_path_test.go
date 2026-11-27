@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/items/model"
 )
 
 // A Google event id reaches UpdateEvent and DeleteEvent from splitCalendarLinks,

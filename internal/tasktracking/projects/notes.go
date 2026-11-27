@@ -35,9 +35,9 @@ type LinkedNote struct {
 	CompletedAt string `json:"completed_at"`
 }
 
-// NoteboardItem is the part of a noteboard item a LinkedNote carries, with its
+// LinkedItem is the part of a noteboard item a LinkedNote carries, with its
 // fields as noteboard's API writes them.
-type NoteboardItem struct {
+type LinkedItem struct {
 	ID          string   `json:"id"`
 	Type        string   `json:"type"`
 	Title       string   `json:"title"`
@@ -50,7 +50,7 @@ type NoteboardItem struct {
 	CompletedAt *string  `json:"completed_at"`
 }
 
-func (item NoteboardItem) linkedNote(linkID int64) LinkedNote {
+func (item LinkedItem) linkedNote(linkID int64) LinkedNote {
 	note := LinkedNote{LinkID: linkID, NoteID: item.ID, Type: item.Type, Title: item.Title, Status: item.Status, Priority: item.Priority,
 		Tags: item.Tags, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt}
 	if note.Tags == nil {
@@ -69,7 +69,7 @@ func (item NoteboardItem) linkedNote(linkID int64) LinkedNote {
 // todos come first, the most urgent first; the rest follow, newest first.
 // Links whose item noteboard no longer has are returned as missing ids.
 func (owners *Owners) LinkedNotes(ctx context.Context, links []Link) ([]LinkedNote, []string, error) {
-	items, err := owners.noteboardItemsByID(ctx, noteIDsOfLinks(links))
+	items, err := owners.linkedItemsByID(ctx, noteIDsOfLinks(links))
 	if err != nil {
 		return nil, nil, fmt.Errorf("notes linked to the project: %w", err)
 	}
@@ -88,10 +88,10 @@ func noteIDsOfLinks(links []Link) []string {
 	return ids
 }
 
-// noteboardItemsByID reads the given items from noteboard in one call. An id
+// linkedItemsByID reads the given items from noteboard in one call. An id
 // noteboard no longer has is absent from the answer.
-func (owners *Owners) noteboardItemsByID(ctx context.Context, ids []string) (map[string]NoteboardItem, error) {
-	items := map[string]NoteboardItem{}
+func (owners *Owners) linkedItemsByID(ctx context.Context, ids []string) (map[string]LinkedItem, error) {
+	items := map[string]LinkedItem{}
 	asked := map[string]bool{}
 	distinct := []string{}
 	for _, id := range ids {
@@ -103,7 +103,7 @@ func (owners *Owners) noteboardItemsByID(ctx context.Context, ids []string) (map
 	if len(distinct) == 0 {
 		return items, nil
 	}
-	found, _, err := owners.Noteboard.LinkedItems(ctx, distinct)
+	found, _, err := owners.NotesAndIssues.LinkedItems(ctx, distinct)
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +116,7 @@ func (owners *Owners) noteboardItemsByID(ctx context.Context, ids []string) (map
 // linkedNotesOf pairs a project's note links with their noteboard items: open
 // todos first, the most urgent first, then the rest, newest first. The second
 // answer is the ids of note links whose item is not among items.
-func linkedNotesOf(links []Link, items map[string]NoteboardItem) ([]LinkedNote, []string) {
+func linkedNotesOf(links []Link, items map[string]LinkedItem) ([]LinkedNote, []string) {
 	notes, missing := []LinkedNote{}, []string{}
 	for _, link := range links {
 		if link.EntityType != EntityNote {
@@ -170,7 +170,7 @@ func AddNextStep(ctx context.Context, store *Store, owners *Owners, projectID st
 	if _, err := store.Project(projectID); err != nil {
 		return LinkedNote{}, err
 	}
-	item, err := owners.Noteboard.CreateTodo(ctx, step.Title, step.Body, []string{NextStepTag}, step.Priority)
+	item, err := owners.NotesAndIssues.CreateTodo(ctx, step.Title, step.Body, []string{NextStepTag}, step.Priority)
 	if err != nil {
 		return LinkedNote{}, fmt.Errorf("make the todo: %w", err)
 	}

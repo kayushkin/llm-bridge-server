@@ -349,8 +349,8 @@ func TestAnAdministratorReachesTheOperatorRoutesAndTheStoreProxies(t *testing.T)
 		t.Errorf("an administrator GET /sessions/aggregates = 403 %s, want the route to answer", response.Body.String())
 	}
 
-	if response := gated.requestAs(t, administratorCookie, "GET", "/issues/api/boards", nil); response.Code != http.StatusOK {
-		t.Fatalf("an administrator GET /issues/api/boards = %d %s, want 200", response.Code, response.Body.String())
+	if response := gated.requestAs(t, administratorCookie, "GET", "/issues/boards", nil); response.Code != http.StatusOK {
+		t.Fatalf("an administrator GET /issues/boards = %d %s, want 200", response.Code, response.Body.String())
 	}
 	recorded := gated.kanban.recorded()
 	if len(recorded) != 1 {
@@ -519,8 +519,8 @@ func TestATrustedCallerMayAssertWhichPrincipalARequestIsFor(t *testing.T) {
 	}
 
 	// The proxy forwards the asserted principal and nothing the client sent.
-	if response := gated.requestAsServiceAssertingPrincipal(t, secondTestPrincipalID, "GET", "/issues/api/boards"); response.Code != http.StatusOK {
-		t.Fatalf("asserted %s on /issues/api/boards = %d %s, want 200", secondTestPrincipalID, response.Code, response.Body.String())
+	if response := gated.requestAsServiceAssertingPrincipal(t, secondTestPrincipalID, "GET", "/issues/boards"); response.Code != http.StatusOK {
+		t.Fatalf("asserted %s on /issues/boards = %d %s, want 200", secondTestPrincipalID, response.Code, response.Body.String())
 	}
 	recorded := gated.kanban.recorded()
 	if len(recorded) != 1 {
@@ -614,7 +614,7 @@ func TestGatedServerRefusesAnonymousOperatorAndUnclassifiedRequests(t *testing.T
 
 	for _, route := range []struct{ method, path string }{
 		{"GET", "/sessions"}, {"POST", "/sessions"}, {"GET", "/sessions/br_x"}, {"GET", "/signals"},
-		{"GET", "/bridge-prefs"}, {"GET", "/instances"}, {"GET", "/issues/api/boards"},
+		{"GET", "/bridge-prefs"}, {"GET", "/instances"}, {"GET", "/issues/boards"},
 	} {
 		if response := gated.requestAs(t, nil, route.method, route.path, nil); response.Code != http.StatusUnauthorized {
 			t.Errorf("anonymous %s %s = %d, want 401", route.method, route.path, response.Code)

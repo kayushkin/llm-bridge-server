@@ -65,7 +65,7 @@ func (store connectedRecordsModule) open(ctx context.Context, url string) (*sql.
 }
 
 // enableConnectedRecords opens people-store, calendar-store and journal-store
-// in Postgres and serves them from srv. It runs after access, noteboard and
+// in Postgres and serves them from srv. It runs after access, issues and
 // reference-store are enabled. The returned function closes the pools.
 func enableConnectedRecords(ctx context.Context, cfg *config.Config, srv *server.Server) (func(), error) {
 	var pools []*sql.DB

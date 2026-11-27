@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/items/model"
 )
 
 // The calendar read is the ONE failure this command survives rather than

@@ -114,7 +114,7 @@ func assignmentTestCard(t *testing.T, h http.Handler) (boardID, columnID, cardID
 	t.Helper()
 	boardID = mkBoard(t, h, "Board")
 	columnID = mkColumn(t, h, boardID, "Todo", "")
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "assignable", ColumnID: columnID})
+	w := do(t, h, "POST", "/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "assignable", ColumnID: columnID})
 	if w.Code != 201 {
 		t.Fatalf("create card: %d %s", w.Code, w.Body.String())
 	}
@@ -125,7 +125,7 @@ func assignmentTestCard(t *testing.T, h http.Handler) (boardID, columnID, cardID
 
 func eventsOfKind(t *testing.T, h http.Handler, cardID string, kind model.EventKind) []model.CardEvent {
 	t.Helper()
-	w := do(t, h, "GET", "/api/cards/"+cardID+"/events", nil)
+	w := do(t, h, "GET", "/cards/"+cardID+"/events", nil)
 	if w.Code != 200 {
 		t.Fatalf("events: %d %s", w.Code, w.Body.String())
 	}
@@ -146,7 +146,7 @@ func TestAssignIsIdempotent(t *testing.T) {
 	h, _, cleanup := setup(t)
 	defer cleanup()
 	_, _, cardID := assignmentTestCard(t, h)
-	path := "/api/cards/" + cardID + "/assignments/" + activePrincipal
+	path := "/cards/" + cardID + "/assignments/" + activePrincipal
 
 	w := do(t, h, "PUT", path+"?actor=lead", nil)
 	if w.Code != 201 {
@@ -168,7 +168,7 @@ func TestAssignIsIdempotent(t *testing.T) {
 		t.Fatalf("repeat PUT rewrote the row: first %+v, second %+v", first, second)
 	}
 
-	w = do(t, h, "GET", "/api/cards/"+cardID+"/assignments", nil)
+	w = do(t, h, "GET", "/cards/"+cardID+"/assignments", nil)
 	var list []model.CardAssignment
 	decodeSuccessfulResponse(t, w, &list)
 	if len(list) != 1 {
@@ -183,7 +183,7 @@ func TestUnassignIs204ThenA404(t *testing.T) {
 	h, _, cleanup := setup(t)
 	defer cleanup()
 	_, _, cardID := assignmentTestCard(t, h)
-	path := "/api/cards/" + cardID + "/assignments/" + activePrincipal
+	path := "/cards/" + cardID + "/assignments/" + activePrincipal
 	if w := do(t, h, "PUT", path, nil); w.Code != 201 {
 		t.Fatalf("PUT: %d %s", w.Code, w.Body.String())
 	}
@@ -194,7 +194,7 @@ func TestUnassignIs204ThenA404(t *testing.T) {
 	if w := do(t, h, "DELETE", path, nil); w.Code != 404 {
 		t.Fatalf("second DELETE: expected 404, got %d: %s", w.Code, w.Body.String())
 	}
-	w := do(t, h, "GET", "/api/cards/"+cardID+"/assignments", nil)
+	w := do(t, h, "GET", "/cards/"+cardID+"/assignments", nil)
 	if strings.TrimSpace(w.Body.String()) != "[]" {
 		t.Fatalf("expected an empty array after unassign, got %s", w.Body.String())
 	}
@@ -212,7 +212,7 @@ func TestAssignRejectsAMalformedPrincipalIDBeforeAskingPrincipalStore(t *testing
 	_, _, cardID := assignmentTestCard(t, h)
 
 	for _, bad := range []string{"bob", "principal_123", "prediction_000001", "PRINCIPAL_000001"} {
-		w := do(t, h, "PUT", "/api/cards/"+cardID+"/assignments/"+bad, nil)
+		w := do(t, h, "PUT", "/cards/"+cardID+"/assignments/"+bad, nil)
 		if w.Code != 400 {
 			t.Fatalf("%q: expected 400, got %d: %s", bad, w.Code, w.Body.String())
 		}
@@ -229,7 +229,7 @@ func TestAssignAnUnknownPrincipalIs400(t *testing.T) {
 	h, _, cleanup := setup(t)
 	defer cleanup()
 	_, _, cardID := assignmentTestCard(t, h)
-	w := do(t, h, "PUT", "/api/cards/"+cardID+"/assignments/"+unknownPrincipal, nil)
+	w := do(t, h, "PUT", "/cards/"+cardID+"/assignments/"+unknownPrincipal, nil)
 	if w.Code != 400 {
 		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
 	}
@@ -237,7 +237,7 @@ func TestAssignAnUnknownPrincipalIs400(t *testing.T) {
 	if !strings.Contains(w.Body.String(), want) {
 		t.Fatalf("body %s does not contain %q", w.Body.String(), want)
 	}
-	if w := do(t, h, "GET", "/api/cards/"+cardID+"/assignments", nil); strings.TrimSpace(w.Body.String()) != "[]" {
+	if w := do(t, h, "GET", "/cards/"+cardID+"/assignments", nil); strings.TrimSpace(w.Body.String()) != "[]" {
 		t.Fatalf("a refused assignment must not leave a row: %s", w.Body.String())
 	}
 }
@@ -246,7 +246,7 @@ func TestAssignADisabledPrincipalIs400(t *testing.T) {
 	h, _, cleanup := setup(t)
 	defer cleanup()
 	_, _, cardID := assignmentTestCard(t, h)
-	w := do(t, h, "PUT", "/api/cards/"+cardID+"/assignments/"+disabledPrincipal, nil)
+	w := do(t, h, "PUT", "/cards/"+cardID+"/assignments/"+disabledPrincipal, nil)
 	if w.Code != 400 {
 		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
 	}
@@ -260,14 +260,14 @@ func TestAssignWithPrincipalStoreUnreachableIs502AndWritesNothing(t *testing.T) 
 	h, _, cleanup := setupAgainstPrincipalStore(t, "http://127.0.0.1:1")
 	defer cleanup()
 	_, _, cardID := assignmentTestCard(t, h)
-	w := do(t, h, "PUT", "/api/cards/"+cardID+"/assignments/"+activePrincipal, nil)
+	w := do(t, h, "PUT", "/cards/"+cardID+"/assignments/"+activePrincipal, nil)
 	if w.Code != 502 {
 		t.Fatalf("expected 502, got %d: %s", w.Code, w.Body.String())
 	}
 	if !strings.Contains(w.Body.String(), "principal-store check failed") || !strings.Contains(w.Body.String(), "connection refused") {
 		t.Fatalf("502 body should carry the transport error verbatim, got %s", w.Body.String())
 	}
-	if w := do(t, h, "GET", "/api/cards/"+cardID+"/assignments", nil); strings.TrimSpace(w.Body.String()) != "[]" {
+	if w := do(t, h, "GET", "/cards/"+cardID+"/assignments", nil); strings.TrimSpace(w.Body.String()) != "[]" {
 		t.Fatalf("a failed check must not write the row: %s", w.Body.String())
 	}
 	if got := eventsOfKind(t, h, cardID, model.EventAssigned); len(got) != 0 {
@@ -279,11 +279,11 @@ func TestAssignmentsAppearInBoardAndColumnViews(t *testing.T) {
 	h, _, cleanup := setup(t)
 	defer cleanup()
 	boardID, columnID, cardID := assignmentTestCard(t, h)
-	if w := do(t, h, "PUT", "/api/cards/"+cardID+"/assignments/"+activePrincipal, nil); w.Code != 201 {
+	if w := do(t, h, "PUT", "/cards/"+cardID+"/assignments/"+activePrincipal, nil); w.Code != 201 {
 		t.Fatalf("PUT: %d %s", w.Code, w.Body.String())
 	}
 
-	w := do(t, h, "GET", "/api/boards/"+boardID+"/cards", nil)
+	w := do(t, h, "GET", "/boards/"+boardID+"/cards", nil)
 	if w.Code != 200 {
 		t.Fatalf("board view: %d %s", w.Code, w.Body.String())
 	}
@@ -296,7 +296,7 @@ func TestAssignmentsAppearInBoardAndColumnViews(t *testing.T) {
 		t.Fatalf("board view assignments: got %+v", got)
 	}
 
-	w = do(t, h, "GET", "/api/columns/"+columnID+"/cards", nil)
+	w = do(t, h, "GET", "/columns/"+columnID+"/cards", nil)
 	if w.Code != 200 {
 		t.Fatalf("column cards: %d %s", w.Code, w.Body.String())
 	}
@@ -310,10 +310,10 @@ func TestAssignmentsAppearInBoardAndColumnViews(t *testing.T) {
 	}
 
 	// The field is omitted, not null, on a card nobody is on.
-	if w := do(t, h, "DELETE", "/api/cards/"+cardID+"/assignments/"+activePrincipal, nil); w.Code != 204 {
+	if w := do(t, h, "DELETE", "/cards/"+cardID+"/assignments/"+activePrincipal, nil); w.Code != 204 {
 		t.Fatalf("DELETE: %d", w.Code)
 	}
-	w = do(t, h, "GET", "/api/boards/"+boardID+"/cards", nil)
+	w = do(t, h, "GET", "/boards/"+boardID+"/cards", nil)
 	var raw map[string]any
 	decodeSuccessfulResponse(t, w, &raw)
 	card := raw["columns"].([]any)[0].(map[string]any)["cards"].([]any)[0].(map[string]any)
@@ -326,21 +326,21 @@ func TestAssignmentsReverseLookupByPrincipal(t *testing.T) {
 	h, _, cleanup := setup(t)
 	defer cleanup()
 	boardID, columnID, firstCard := assignmentTestCard(t, h)
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "second", ColumnID: columnID})
+	w := do(t, h, "POST", "/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "second", ColumnID: columnID})
 	var cv model.CardView
 	decodeSuccessfulResponse(t, w, &cv)
 	secondCard := cv.Placement.CardID
 
 	for _, cardID := range []string{firstCard, secondCard} {
-		if w := do(t, h, "PUT", "/api/cards/"+cardID+"/assignments/"+activePrincipal, nil); w.Code != 201 {
+		if w := do(t, h, "PUT", "/cards/"+cardID+"/assignments/"+activePrincipal, nil); w.Code != 201 {
 			t.Fatalf("PUT %s: %d %s", cardID, w.Code, w.Body.String())
 		}
 	}
 
-	if w := do(t, h, "GET", "/api/assignments", nil); w.Code != 400 {
+	if w := do(t, h, "GET", "/assignments", nil); w.Code != 400 {
 		t.Fatalf("no principal_id: expected 400, got %d", w.Code)
 	}
-	w = do(t, h, "GET", "/api/assignments?principal_id="+activePrincipal, nil)
+	w = do(t, h, "GET", "/assignments?principal_id="+activePrincipal, nil)
 	if w.Code != 200 {
 		t.Fatalf("reverse lookup: %d %s", w.Code, w.Body.String())
 	}
@@ -349,7 +349,7 @@ func TestAssignmentsReverseLookupByPrincipal(t *testing.T) {
 	if len(list) != 2 || list[0].CardID != firstCard || list[1].CardID != secondCard {
 		t.Fatalf("expected [%s %s] oldest first, got %+v", firstCard, secondCard, list)
 	}
-	w = do(t, h, "GET", "/api/assignments?principal_id="+unknownPrincipal, nil)
+	w = do(t, h, "GET", "/assignments?principal_id="+unknownPrincipal, nil)
 	if w.Code != 200 || strings.TrimSpace(w.Body.String()) != "[]" {
 		t.Fatalf("unknown principal: expected 200 [], got %d %s", w.Code, w.Body.String())
 	}
@@ -366,12 +366,12 @@ func TestAssignmentEventsCarryTheClockForwardUnchanged(t *testing.T) {
 	blocked := mkColumnWithClock(t, h, boardID, "Blocked", model.ClockPaused)
 	done := mkColumnWithClock(t, h, boardID, "Done", model.ClockStopped)
 
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "waiting", ColumnID: blocked})
+	w := do(t, h, "POST", "/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "waiting", ColumnID: blocked})
 	var cv model.CardView
 	decodeSuccessfulResponse(t, w, &cv)
 	cardID := cv.Placement.CardID
 
-	if w := do(t, h, "PUT", "/api/cards/"+cardID+"/assignments/"+activePrincipal+"?actor=lead", nil); w.Code != 201 {
+	if w := do(t, h, "PUT", "/cards/"+cardID+"/assignments/"+activePrincipal+"?actor=lead", nil); w.Code != 201 {
 		t.Fatalf("PUT: %d %s", w.Code, w.Body.String())
 	}
 	assigned := eventsOfKind(t, h, cardID, model.EventAssigned)
@@ -391,7 +391,7 @@ func TestAssignmentEventsCarryTheClockForwardUnchanged(t *testing.T) {
 	}
 
 	// The card's standing does not change: still paused, no budget consumed.
-	w = do(t, h, "GET", "/api/cards/"+cardID+"/timeline?board_id="+boardID, nil)
+	w = do(t, h, "GET", "/cards/"+cardID+"/timeline?board_id="+boardID, nil)
 	var tl struct {
 		Summary model.CardTimeSummary `json:"summary"`
 	}
@@ -402,17 +402,17 @@ func TestAssignmentEventsCarryTheClockForwardUnchanged(t *testing.T) {
 
 	// Finish the card, then unassign: the unassigned event is stopped, so the
 	// card does not come back to life.
-	if w := do(t, h, "POST", "/api/cards/"+cardID+"/move", model.MoveCardRequest{BoardID: boardID, ColumnID: done}); w.Code != 200 {
+	if w := do(t, h, "POST", "/cards/"+cardID+"/move", model.MoveCardRequest{BoardID: boardID, ColumnID: done}); w.Code != 200 {
 		t.Fatalf("move: %d %s", w.Code, w.Body.String())
 	}
-	if w := do(t, h, "DELETE", "/api/cards/"+cardID+"/assignments/"+activePrincipal, nil); w.Code != 204 {
+	if w := do(t, h, "DELETE", "/cards/"+cardID+"/assignments/"+activePrincipal, nil); w.Code != 204 {
 		t.Fatalf("DELETE: %d %s", w.Code, w.Body.String())
 	}
 	unassigned := eventsOfKind(t, h, cardID, model.EventUnassigned)
 	if len(unassigned) != 1 || unassigned[0].ClockState != model.ClockStopped {
 		t.Fatalf("unassigned on a finished card must stay stopped, got %+v", unassigned)
 	}
-	w = do(t, h, "GET", "/api/cards/"+cardID+"/timeline?board_id="+boardID, nil)
+	w = do(t, h, "GET", "/cards/"+cardID+"/timeline?board_id="+boardID, nil)
 	decodeSuccessfulResponse(t, w, &tl)
 	if tl.Summary.ClockState != model.ClockStopped {
 		t.Fatalf("unassign restarted a finished card: %+v", tl.Summary)
@@ -443,14 +443,14 @@ func TestAssigningACardWithNoHistoryTakesItsColumnsClock(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if w := do(t, h, "PUT", "/api/cards/"+legacyDone+"/assignments/"+activePrincipal, nil); w.Code != 201 {
+	if w := do(t, h, "PUT", "/cards/"+legacyDone+"/assignments/"+activePrincipal, nil); w.Code != 201 {
 		t.Fatalf("PUT: %d %s", w.Code, w.Body.String())
 	}
 	assigned := eventsOfKind(t, h, legacyDone, model.EventAssigned)
 	if len(assigned) != 1 || assigned[0].ClockState != model.ClockStopped {
 		t.Fatalf("a no-history card in a stopped column must be assigned stopped, got %+v", assigned)
 	}
-	w := do(t, h, "GET", "/api/cards/"+legacyDone+"/timeline?board_id="+boardID, nil)
+	w := do(t, h, "GET", "/cards/"+legacyDone+"/timeline?board_id="+boardID, nil)
 	var tl struct {
 		Summary model.CardTimeSummary `json:"summary"`
 	}
@@ -461,7 +461,7 @@ func TestAssigningACardWithNoHistoryTakesItsColumnsClock(t *testing.T) {
 
 	// No history and an unclassified column: the store's answer for any first
 	// action on such a card, which is running.
-	if w := do(t, h, "PUT", "/api/cards/"+legacyInbox+"/assignments/"+activePrincipal, nil); w.Code != 201 {
+	if w := do(t, h, "PUT", "/cards/"+legacyInbox+"/assignments/"+activePrincipal, nil); w.Code != 201 {
 		t.Fatalf("PUT: %d %s", w.Code, w.Body.String())
 	}
 	assigned = eventsOfKind(t, h, legacyInbox, model.EventAssigned)
@@ -478,7 +478,7 @@ func TestAssignedKindHasNoDefaultClockState(t *testing.T) {
 	defer cleanup()
 	_, _, cardID := assignmentTestCard(t, h)
 	for _, kind := range []model.EventKind{model.EventAssigned, model.EventUnassigned} {
-		w := do(t, h, "POST", "/api/cards/"+cardID+"/events", model.CreateCardEventRequest{Kind: kind})
+		w := do(t, h, "POST", "/cards/"+cardID+"/events", model.CreateCardEventRequest{Kind: kind})
 		if w.Code != 400 {
 			t.Fatalf("%s without clock_state: expected 400, got %d: %s", kind, w.Code, w.Body.String())
 		}
@@ -488,7 +488,7 @@ func TestAssignedKindHasNoDefaultClockState(t *testing.T) {
 func TestEntityTypesAreReferenceStoresListUnchanged(t *testing.T) {
 	h, _, cleanup := setup(t)
 	defer cleanup()
-	w := do(t, h, "GET", "/api/entity-types", nil)
+	w := do(t, h, "GET", "/entity-types", nil)
 	var types []map[string]any
 	decodeSuccessfulResponse(t, w, &types)
 	if len(types) != 3 {

@@ -17,12 +17,12 @@ func TestSavingTheWorkingWeekKeepsTheHolidaysItDidNotMention(t *testing.T) {
 
 	holidaysAfter := func(what string, patch map[string]any, wantStatus int) []string {
 		t.Helper()
-		w := do(t, h, "PATCH", "/api/boards/"+boardID, patch)
+		w := do(t, h, "PATCH", "/boards/"+boardID, patch)
 		if w.Code != wantStatus {
 			t.Fatalf("%s: %d %s, want %d", what, w.Code, w.Body.String(), wantStatus)
 		}
 		var board model.Board
-		decodeSuccessfulResponse(t, do(t, h, "GET", "/api/boards/"+boardID, nil), &board)
+		decodeSuccessfulResponse(t, do(t, h, "GET", "/boards/"+boardID, nil), &board)
 		if board.BusinessHours == nil {
 			return nil
 		}

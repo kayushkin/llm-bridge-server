@@ -18,7 +18,7 @@ import (
 // MessageTriggerEventKinds is the served vocabulary of actions a trigger can
 // fire on — a subset of EventKind chosen because each one is something a
 // person plausibly wants to hear about the moment it happens. Served by
-// GET /api/message-trigger-event-kinds so no UI hardcodes it.
+// GET /message-trigger-event-kinds so no UI hardcodes it.
 var MessageTriggerEventKinds = []EventKind{
 	EventCardCreated,
 	EventCardMoved,
@@ -65,7 +65,7 @@ type MessageTrigger struct {
 	PriorityLabel string `json:"priority_label,omitempty"`
 	// RecipientUserID is multichat's id for the person: the bridge puppet id,
 	// e.g. @whatsapp_15551234567:chat.kayushkin.com, from multichat's
-	// GET /api/contacts/unified. RecipientDisplayName is for display only and
+	// GET /contacts/unified. RecipientDisplayName is for display only and
 	// is never read back to find the person.
 	RecipientUserID      string `json:"recipient_user_id"`
 	RecipientDisplayName string `json:"recipient_display_name,omitempty"`
@@ -98,7 +98,7 @@ func ParseMessageTemplate(text string) (*template.Template, error) {
 	return template.New("message").Option("missingkey=error").Parse(text)
 }
 
-// MessageTriggerOptions is what GET /api/message-trigger-options serves: the
+// MessageTriggerOptions is what GET /message-trigger-options serves: the
 // vocabularies a trigger editor needs and whether delivery is configured on
 // this kanban-store at all, so a UI never hardcodes an event kind or a
 // template field.

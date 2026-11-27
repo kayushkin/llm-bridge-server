@@ -13,7 +13,7 @@ const (
 	BulkCommandRemoveTags BulkCardCommand = "remove_tags"
 )
 
-// BulkCardCommands is the vocabulary, served by GET /api/bulk-card-commands so
+// BulkCardCommands is the vocabulary, served by GET /bulk-card-commands so
 // no client restates it.
 var BulkCardCommands = []BulkCardCommand{
 	BulkCommandMove, BulkCommandAssign, BulkCommandUnassign,
@@ -25,13 +25,13 @@ var BulkCardCommands = []BulkCardCommand{
 // as slow as its cards are many.
 const MaxBulkCardCommandCards = 200
 
-// BulkCardCommandOptions is GET /api/bulk-card-commands.
+// BulkCardCommandOptions is GET /bulk-card-commands.
 type BulkCardCommandOptions struct {
 	Commands []BulkCardCommand `json:"commands"`
 	MaxCards int               `json:"max_cards"`
 }
 
-// BulkCardCommandRequest is POST /api/bulk-card-commands: one command, many
+// BulkCardCommandRequest is POST /bulk-card-commands: one command, many
 // cards. Only the field its command reads may be set; any other is a 400, so a
 // request that says "assign" and carries a move is not half-obeyed.
 type BulkCardCommandRequest struct {

@@ -15,11 +15,11 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/db"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/db/dbtest"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/grantstore"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuecontent"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/llmbridge"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/messaging"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/model"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/multichat"
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/noteboard"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/principalstore"
 )
 
@@ -56,7 +56,7 @@ func (s *messageTriggerSender) messages() []sentTriggerMessage {
 
 // setupWithMessageSender is the usual harness with a message sender attached.
 // Passing a nil sender leaves delivery unconfigured, as MULTICHAT_URL unset does.
-func setupWithMessageSender(t *testing.T, sender messaging.Sender) (http.Handler, *db.Store, *noteboard.Client) {
+func setupWithMessageSender(t *testing.T, sender messaging.Sender) (http.Handler, *db.Store, *issuecontent.Client) {
 	t.Helper()
 	principals := httptest.NewServer(newFakePrincipalStore().handler())
 	t.Cleanup(principals.Close)
@@ -67,7 +67,7 @@ func setupWithMessageSender(t *testing.T, sender messaging.Sender) (http.Handler
 	notes := httptest.NewServer(newFakeNoteboard().handler())
 	t.Cleanup(notes.Close)
 	store := dbtest.NewStore(t)
-	nb := noteboard.New(notes.URL)
+	nb := issuecontent.New(notes.URL)
 	a := api.New(store, nb, principalstore.New(principals.URL), llmbridge.New(bridge.URL), bundlestore.New(bundles.URL))
 	a.SetReferenceStore(fakeReferenceStore(t))
 	// Cleanups run last-registered first, so this waits for trigger
@@ -82,7 +82,7 @@ func setupWithMessageSender(t *testing.T, sender messaging.Sender) (http.Handler
 
 func putTestLadder(t *testing.T, h http.Handler, boardID string) {
 	t.Helper()
-	w := do(t, h, "PUT", "/api/boards/"+boardID+"/priority-levels", model.SetPriorityLadderRequest{Levels: []model.BoardPriorityLevel{
+	w := do(t, h, "PUT", "/boards/"+boardID+"/priority-levels", model.SetPriorityLadderRequest{Levels: []model.BoardPriorityLevel{
 		{PriorityValue: 5, Label: "P0"},
 		{PriorityValue: 3, Label: "P2"},
 	}})
@@ -97,7 +97,7 @@ func mkTriggerCard(t *testing.T, h http.Handler, boardID, columnID, title string
 	if priority != 0 {
 		req.Priority = &priority
 	}
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/cards", req)
+	w := do(t, h, "POST", "/boards/"+boardID+"/cards", req)
 	if w.Code != 201 {
 		t.Fatalf("create card: %d %s", w.Code, w.Body.String())
 	}
@@ -108,7 +108,7 @@ func mkTriggerCard(t *testing.T, h http.Handler, boardID, columnID, title string
 
 func mkMessageTrigger(t *testing.T, h http.Handler, boardID string, body map[string]any) model.MessageTrigger {
 	t.Helper()
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/message-triggers", body)
+	w := do(t, h, "POST", "/boards/"+boardID+"/message-triggers", body)
 	if w.Code != 201 {
 		t.Fatalf("create trigger: %d %s", w.Code, w.Body.String())
 	}
@@ -123,7 +123,7 @@ func waitForMessageDeliveries(t *testing.T, h http.Handler, boardID string, coun
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		w := do(t, h, "GET", "/api/boards/"+boardID+"/message-deliveries", nil)
+		w := do(t, h, "GET", "/boards/"+boardID+"/message-deliveries", nil)
 		if w.Code != 200 {
 			t.Fatalf("list deliveries: %d %s", w.Code, w.Body.String())
 		}
@@ -189,13 +189,13 @@ func TestMessageTriggerWriteIsCheckedAgainstTheBoard(t *testing.T) {
 	for _, refusal := range refusals {
 		body := valid()
 		refusal.mutate(body)
-		w := do(t, h, "POST", "/api/boards/"+board+"/message-triggers", body)
+		w := do(t, h, "POST", "/boards/"+board+"/message-triggers", body)
 		if w.Code != 400 || !strings.Contains(w.Body.String(), refusal.want) {
 			t.Errorf("%s: expected 400 containing %q, got %d %s", refusal.name, refusal.want, w.Code, w.Body.String())
 		}
 	}
 
-	if w := do(t, h, "POST", "/api/boards/no-such-board/message-triggers", valid()); w.Code != 404 {
+	if w := do(t, h, "POST", "/boards/no-such-board/message-triggers", valid()); w.Code != 404 {
 		t.Errorf("unknown board: expected 404, got %d %s", w.Code, w.Body.String())
 	}
 
@@ -204,13 +204,13 @@ func TestMessageTriggerWriteIsCheckedAgainstTheBoard(t *testing.T) {
 		t.Fatalf("created trigger: %+v", created)
 	}
 
-	w := do(t, h, "PATCH", "/api/message-triggers/"+created.ID, map[string]any{"enabled": false})
+	w := do(t, h, "PATCH", "/message-triggers/"+created.ID, map[string]any{"enabled": false})
 	var patched model.MessageTrigger
 	decodeSuccessfulResponse(t, w, &patched)
 	if w.Code != 200 || patched.Enabled || patched.Name != "P0 created" || patched.PriorityValue == nil {
 		t.Fatalf("patch enabled=false: %d %+v", w.Code, patched)
 	}
-	w = do(t, h, "PATCH", "/api/message-triggers/"+created.ID, map[string]any{"clear_priority": true})
+	w = do(t, h, "PATCH", "/message-triggers/"+created.ID, map[string]any{"clear_priority": true})
 	// A fresh struct: a cleared priority is absent from the body, and decoding
 	// into the previous response would leave its old value in place.
 	var cleared model.MessageTrigger
@@ -218,18 +218,18 @@ func TestMessageTriggerWriteIsCheckedAgainstTheBoard(t *testing.T) {
 	if w.Code != 200 || cleared.PriorityValue != nil || cleared.PriorityLabel != "" || cleared.Enabled {
 		t.Fatalf("patch clear_priority: %d %+v", w.Code, cleared)
 	}
-	if w := do(t, h, "PATCH", "/api/message-triggers/"+created.ID, map[string]any{"to_column_id": todo}); w.Code != 400 {
+	if w := do(t, h, "PATCH", "/message-triggers/"+created.ID, map[string]any{"to_column_id": todo}); w.Code != 400 {
 		t.Errorf("patch that leaves the trigger invalid: expected 400, got %d %s", w.Code, w.Body.String())
 	}
 
-	if w := do(t, h, "DELETE", "/api/message-triggers/"+created.ID, nil); w.Code != 200 {
+	if w := do(t, h, "DELETE", "/message-triggers/"+created.ID, nil); w.Code != 200 {
 		t.Fatalf("delete: %d %s", w.Code, w.Body.String())
 	}
-	if w := do(t, h, "GET", "/api/message-triggers/"+created.ID, nil); w.Code != 404 {
+	if w := do(t, h, "GET", "/message-triggers/"+created.ID, nil); w.Code != 404 {
 		t.Errorf("get after delete: expected 404, got %d", w.Code)
 	}
 
-	w = do(t, h, "GET", "/api/message-trigger-options", nil)
+	w = do(t, h, "GET", "/message-trigger-options", nil)
 	var options struct {
 		EventKinds         []string `json:"event_kinds"`
 		TemplateFields     []string `json:"template_fields"`
@@ -294,7 +294,7 @@ func TestCardMovedTriggerFiresOnlyForMovesIntoItsColumn(t *testing.T) {
 	cardID := mkTriggerCard(t, h, board, todo, "Rotate the keys", 0)
 
 	for _, column := range []string{doing, done} {
-		if w := do(t, h, "POST", "/api/cards/"+cardID+"/move", model.MoveCardRequest{BoardID: board, ColumnID: column}); w.Code != 200 {
+		if w := do(t, h, "POST", "/cards/"+cardID+"/move", model.MoveCardRequest{BoardID: board, ColumnID: column}); w.Code != 200 {
 			t.Fatalf("move: %d %s", w.Code, w.Body.String())
 		}
 	}
@@ -315,7 +315,7 @@ func TestCardCompletedFiresTheBoardsTrigger(t *testing.T) {
 		"recipient_user_id": "@signal_1:chat.test", "message_template": "Resolved: {{.Title}} ({{.Summary}}, was in {{.ColumnName}})",
 	})
 	cardID := mkTriggerCard(t, h, board, todo, "Flaky deploy", 0)
-	if w := do(t, h, "PATCH", "/api/cards/"+cardID, map[string]any{"status": "done"}); w.Code != 200 {
+	if w := do(t, h, "PATCH", "/cards/"+cardID, map[string]any{"status": "done"}); w.Code != 200 {
 		t.Fatalf("complete: %d %s", w.Code, w.Body.String())
 	}
 	deliveries := waitForMessageDeliveries(t, h, board, 1)
@@ -341,7 +341,7 @@ func TestTriggerWithoutMultichatRecordsWhatItWouldHaveSent(t *testing.T) {
 }
 
 func TestFailedSendAndBadTemplateAreRecordedAsFailed(t *testing.T) {
-	sender := &messageTriggerSender{fail: errors.New("multichat POST /api/messages/send: 502 synapse is down")}
+	sender := &messageTriggerSender{fail: errors.New("multichat POST /messages/send: 502 synapse is down")}
 	h, _, _ := setupWithMessageSender(t, sender)
 	board := mkBoard(t, h, "Ops")
 	todo := mkColumn(t, h, board, "Todo", "")
@@ -376,7 +376,7 @@ func TestDisabledTriggerDoesNotFire(t *testing.T) {
 	disabled := mkMessageTrigger(t, h, board, map[string]any{
 		"name": "Off", "event_kind": "card_created", "recipient_user_id": "@whatsapp_1:chat.test", "message_template": "off",
 	})
-	if w := do(t, h, "PATCH", "/api/message-triggers/"+disabled.ID, map[string]any{"enabled": false}); w.Code != 200 {
+	if w := do(t, h, "PATCH", "/message-triggers/"+disabled.ID, map[string]any{"enabled": false}); w.Code != 200 {
 		t.Fatalf("disable: %d %s", w.Code, w.Body.String())
 	}
 	enabled := mkMessageTrigger(t, h, board, map[string]any{

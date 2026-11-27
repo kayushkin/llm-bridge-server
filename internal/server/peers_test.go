@@ -666,7 +666,7 @@ func TestPeerUsersActAsMappedPrincipalsWithinBothGrants(t *testing.T) {
 	if answer := asUser("POST", "/sessions/br_local_own/stop"); answer.Code != http.StatusNotFound {
 		t.Fatalf("stopping an observed session = %d %s, want 404: observing changes nothing", answer.Code, answer.Body)
 	}
-	if answer := asUser("GET", "/issues/api/boards"); answer.Code != http.StatusForbidden || !strings.Contains(answer.Body.String(), "route_not_for_peer_users") {
+	if answer := asUser("GET", "/issues/boards"); answer.Code != http.StatusForbidden || !strings.Contains(answer.Body.String(), "route_not_for_peer_users") {
 		t.Fatalf("a store proxy as a mapped user = %d %s, want 403 route_not_for_peer_users", answer.Code, answer.Body)
 	}
 

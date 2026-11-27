@@ -36,9 +36,10 @@ type Owners struct {
 	// Principals is principal-store, in this process: what a principal link
 	// names.
 	Principals Principals
-	// Noteboard is noteboard itself, in this process: what a note link names
-	// and where a next step is written.
-	Noteboard Noteboard
+	// NotesAndIssues is the notes and issues modules, in this process: what a
+	// note link names (a note or an issue) and where a next step is written
+	// (an issue).
+	NotesAndIssues NotesAndIssues
 	// Bridge is llm-bridge-server, the process this store runs in: its
 	// sessions, their briefs and its one-shot router, asked as its internal
 	// service.
@@ -288,7 +289,7 @@ func (owners *Owners) Label(ctx context.Context, entityType, entityRef string) (
 	case EntityPrincipal:
 		label, err = owners.Principals.DisplayName(ctx, entityRef)
 	case EntityNote:
-		label, err = owners.Noteboard.ItemTitle(ctx, entityRef)
+		label, err = owners.NotesAndIssues.ItemTitle(ctx, entityRef)
 	case EntitySession:
 		var bridge Bridge
 		if bridge, err = owners.bridge("session " + entityRef); err == nil {

@@ -62,7 +62,7 @@ type Board struct {
 	// email-classifier's mail-filing config and requires mail accounts; a
 	// board may have either, both or neither. Absent means the board has no
 	// taxonomy, and an operation naming it must bring its own or fail. It is
-	// changed only by PUT /api/boards/{id}/classification/taxonomy.
+	// changed only by PUT /boards/{id}/classification/taxonomy.
 	Taxonomy *msg.ClassificationTaxonomy `json:"taxonomy,omitempty"`
 	// TaxonomyRevision counts the board's taxonomies from 1; 0 means it never
 	// had one. Editing anything else on the board leaves it alone.
@@ -79,7 +79,7 @@ type ClassifierConfig struct {
 	// keeps the name, and the classifier refuses a board naming one it does not
 	// have. `email-classifier -list-vocabularies` prints them.
 	Vocabulary string `json:"vocabulary"`
-	// MailAccountIDs are mailstack's account ids (GET /api/accounts → id) the
+	// MailAccountIDs are mailstack's account ids (GET /accounts → id) the
 	// classifier reads for this board. Explicit, never "every account": a
 	// mailbox added later must be pointed at a board on purpose, not swept onto
 	// whichever board says "all". Checked by the classifier at run time, since
@@ -103,7 +103,7 @@ func (c *ClassifierConfig) Validate() error {
 		return fmt.Errorf("classifier.vocabulary is required: name one of email-classifier's vocabularies")
 	}
 	if len(c.MailAccountIDs) == 0 {
-		return fmt.Errorf("classifier.mail_account_ids is required: at least one mailstack account id, as GET /api/accounts lists them")
+		return fmt.Errorf("classifier.mail_account_ids is required: at least one mailstack account id, as GET /accounts lists them")
 	}
 	for _, id := range c.MailAccountIDs {
 		if strings.TrimSpace(id) == "" || id != strings.TrimSpace(id) {
@@ -121,7 +121,7 @@ func (c *ClassifierConfig) Cleared() bool {
 
 // AssignmentStrategy is how a board's assignment pool chooses among the
 // members available when a card arrives. The set is served at
-// GET /api/assignment-strategies so no client keeps its own copy.
+// GET /assignment-strategies so no client keeps its own copy.
 type AssignmentStrategy string
 
 const (
@@ -169,7 +169,7 @@ func (p *AssignmentPool) Validate() error {
 			return nil
 		}
 	}
-	return fmt.Errorf("assignment_pool.strategy %q is not one of %v (GET /api/assignment-strategies)", p.Strategy, AssignmentStrategies)
+	return fmt.Errorf("assignment_pool.strategy %q is not one of %v (GET /assignment-strategies)", p.Strategy, AssignmentStrategies)
 }
 
 type CreateBoardRequest struct {
@@ -210,7 +210,7 @@ type UpdateBoardRequest struct {
 	// must be an active principal-store group.
 	OrganizationID *string `json:"organization_id,omitempty"`
 	// Taxonomy is refused whenever it is present. The taxonomy is revisioned
-	// and written only by PUT /api/boards/{id}/classification/taxonomy with
+	// and written only by PUT /boards/{id}/classification/taxonomy with
 	// If-Match; the field stays here so that an old client sending it is told
 	// so, instead of having it silently dropped.
 	Taxonomy *msg.ClassificationTaxonomy `json:"taxonomy,omitempty"`
@@ -233,7 +233,7 @@ func (r *UpdateBoardRequest) Validate() error {
 		}
 	}
 	if r.Taxonomy != nil {
-		return fmt.Errorf("taxonomy is not changed by PATCH: PUT /api/boards/{id}/classification/taxonomy with If-Match")
+		return fmt.Errorf("taxonomy is not changed by PATCH: PUT /boards/{id}/classification/taxonomy with If-Match")
 	}
 	for name, value := range map[string]*string{
 		"organization_id":      r.OrganizationID,
@@ -272,7 +272,7 @@ type Column struct {
 	// rather than a guessed one — see model/ticket.go.
 	LifecycleState *TicketLifecycleState `json:"lifecycle_state,omitempty"`
 	// WorkState maps this column onto the one vocabulary every board shares
-	// (GET /api/work-states), so work can be counted across boards whatever
+	// (GET /work-states), so work can be counted across boards whatever
 	// each board calls its columns. Null means nobody has mapped the column.
 	// It writes nothing: see WorkState for why it does not imply auto_status.
 	WorkState *WorkState `json:"work_state" tstype:"WorkState | null,required"`
@@ -525,7 +525,7 @@ func (r *CreateEntityTagRequest) Validate() error {
 	return nil
 }
 
-// BoardView is the assembled response for GET /api/boards/:id/cards.
+// BoardView is the assembled response for GET /boards/:id/cards.
 // Cards are joined with their noteboard content; columns carry their cards
 // in placement order.
 type BoardView struct {
@@ -614,7 +614,7 @@ type CallerAccess struct {
 	Relations    []string `json:"relations"`
 }
 
-// CardDetail is GET /api/cards/{id}: one card read through the gate. A card's
+// CardDetail is GET /cards/{id}: one card read through the gate. A card's
 // content lives in noteboard, which has no callers' rules of its own, so this
 // is the only read of a card's body that checks who is asking.
 type CardDetail struct {
@@ -638,7 +638,7 @@ type CardDetail struct {
 	Access CallerAccess `json:"access"`
 }
 
-// EntityCardView is one row of GET /api/entities/{type}/{ref}/cards: a card
+// EntityCardView is one row of GET /entities/{type}/{ref}/cards: a card
 // that links the entity, with its noteboard item passed through unchanged —
 // the item carries the title and noteboard's status — and the card's shared
 // work_state, so one call answers a rollup such as a project's. Item is null

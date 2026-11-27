@@ -15,12 +15,12 @@ func TestWorkingMemoryPreambleCarriesTheContract(t *testing.T) {
 	preamble := workingMemoryPreamble("http://localhost:8191", "ws-123")
 
 	for _, want := range []string{
-		"ws-123",                      // which workspace
-		"/api/items/ws-123",           // where to read it
-		"READ IT FIRST",               // and that it must be read before acting
-		"REWRITE IT LAST",             // and rewritten before finishing
-		"/api/items/ws-123/revisions", // that rewriting is safe
-		"parent_id=ws-123",            // how to split when it outgrows a human
+		"ws-123",                  // which workspace
+		"/items/ws-123",           // where to read it
+		"READ IT FIRST",           // and that it must be read before acting
+		"REWRITE IT LAST",         // and rewritten before finishing
+		"/items/ws-123/revisions", // that rewriting is safe
+		"parent_id=ws-123",        // how to split when it outgrows a human
 	} {
 		if !strings.Contains(preamble, want) {
 			t.Errorf("preamble does not carry %q — the agent would not know %s", want, want)

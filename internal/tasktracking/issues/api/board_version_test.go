@@ -11,13 +11,13 @@ func TestBoardETagConditionalPatch(t *testing.T) {
 	h, _, cleanup := setup(t)
 	defer cleanup()
 	id := mkBoard(t, h, "Versioned board")
-	get := do(t, h, "GET", "/api/boards/"+id, nil)
+	get := do(t, h, "GET", "/boards/"+id, nil)
 	etag := get.Header().Get("ETag")
 	if get.Code != 200 || etag == "" {
 		t.Fatalf("GET: %d, ETag %q", get.Code, etag)
 	}
 	patch := func(condition, name string) *httptest.ResponseRecorder {
-		request := httptest.NewRequest("PATCH", "/api/boards/"+id, strings.NewReader(`{"name":"`+name+`"}`))
+		request := httptest.NewRequest("PATCH", "/boards/"+id, strings.NewReader(`{"name":"`+name+`"}`))
 		request.Header.Set(testServiceTokenHeader, testServiceToken)
 		if condition != "" {
 			request.Header.Set("If-Match", condition)

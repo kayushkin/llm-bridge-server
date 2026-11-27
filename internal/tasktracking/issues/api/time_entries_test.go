@@ -11,7 +11,7 @@ import (
 
 func logTime(t *testing.T, h http.Handler, who map[string]string, cardID string, request model.CreateTimeEntryRequest, want int, what string) model.TimeEntry {
 	t.Helper()
-	w := requestAs(t, h, who, "POST", "/api/cards/"+cardID+"/time-entries", request)
+	w := requestAs(t, h, who, "POST", "/cards/"+cardID+"/time-entries", request)
 	mustStatus(t, w, want, what)
 	var entry model.TimeEntry
 	if want == 201 {
@@ -22,7 +22,7 @@ func logTime(t *testing.T, h http.Handler, who map[string]string, cardID string,
 
 func timeEntriesOf(t *testing.T, h http.Handler, cardID, query string) model.CardTimeEntries {
 	t.Helper()
-	w := requestAs(t, h, asService, "GET", "/api/cards/"+cardID+"/time-entries"+query, nil)
+	w := requestAs(t, h, asService, "GET", "/cards/"+cardID+"/time-entries"+query, nil)
 	mustStatus(t, w, 200, "time entries"+query)
 	var entries model.CardTimeEntries
 	decodeSuccessfulResponse(t, w, &entries)
@@ -63,7 +63,7 @@ func TestCorrectingATimeEntryDeactivatesTheOldOneAndKeepsIt(t *testing.T) {
 	}
 
 	// The timeline shows both, marks the replaced one, and totals the active.
-	w := requestAs(t, h, asService, "GET", "/api/cards/"+f.supportCardID+"/timeline?board_id="+f.supportBoardID, nil)
+	w := requestAs(t, h, asService, "GET", "/cards/"+f.supportCardID+"/timeline?board_id="+f.supportBoardID, nil)
 	mustStatus(t, w, 200, "timeline")
 	var timeline model.CardTimeline
 	decodeSuccessfulResponse(t, w, &timeline)
@@ -102,7 +102,7 @@ func TestAnEntryCanBeReplacedOnlyOnce(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			w := requestAs(t, h, asService, "POST", "/api/cards/"+f.supportCardID+"/time-entries",
+			w := requestAs(t, h, asService, "POST", "/cards/"+f.supportCardID+"/time-entries",
 				model.CreateTimeEntryRequest{Seconds: 900, WorkerPrincipalID: alice, SupersedesEventID: first.EventID})
 			responses[i] = &responseSnapshot{status: w.Code, body: w.Body.String()}
 		}(i)
@@ -141,11 +141,11 @@ type responseSnapshot struct {
 func TestLoggingTimeLeavesTheClockWhereItWas(t *testing.T) {
 	h, grants, _ := setupWithPrincipalEnforcement(t)
 	f := buildTwoBoards(t, h, grants)
-	mustStatus(t, requestAs(t, h, asService, "POST", "/api/cards/"+f.supportCardID+"/events",
+	mustStatus(t, requestAs(t, h, asService, "POST", "/cards/"+f.supportCardID+"/events",
 		model.CreateCardEventRequest{Kind: model.EventWaitingStarted}), 201, "the card starts waiting")
 	entry := logTime(t, h, asPrincipal(alice), f.supportCardID, model.CreateTimeEntryRequest{Seconds: 900}, 201, "time logged while it waits")
 
-	w := requestAs(t, h, asService, "GET", "/api/cards/"+f.supportCardID+"/events", nil)
+	w := requestAs(t, h, asService, "GET", "/cards/"+f.supportCardID+"/events", nil)
 	mustStatus(t, w, 200, "events")
 	var events []model.CardEvent
 	decodeSuccessfulResponse(t, w, &events)
@@ -160,7 +160,7 @@ func TestATimeEntryThatCannotBeRightIsRefused(t *testing.T) {
 	h, grants, _ := setupWithPrincipalEnforcement(t)
 	f := buildTwoBoards(t, h, grants)
 	onFinance := logTime(t, h, asService, f.financeCardID, model.CreateTimeEntryRequest{Seconds: 60, WorkerPrincipalID: carol}, 201, "an entry on another card")
-	moved := requestAs(t, h, asService, "GET", "/api/cards/"+f.supportCardID+"/events", nil)
+	moved := requestAs(t, h, asService, "GET", "/cards/"+f.supportCardID+"/events", nil)
 	var events []model.CardEvent
 	decodeSuccessfulResponse(t, moved, &events)
 
@@ -188,7 +188,7 @@ func TestATimeEntryThatCannotBeRightIsRefused(t *testing.T) {
 		logTime(t, h, c.who, cardID, c.request, c.want, what)
 	}
 	// The generic events route must not be a way around the rules.
-	mustStatus(t, requestAs(t, h, asService, "POST", "/api/cards/"+f.supportCardID+"/events",
+	mustStatus(t, requestAs(t, h, asService, "POST", "/cards/"+f.supportCardID+"/events",
 		model.CreateCardEventRequest{Kind: model.EventTimeLogged, ClockState: model.ClockRunning}), 400, "time_logged through /events")
 	if got := timeEntriesOf(t, h, f.supportCardID, ""); len(got.Entries) != 0 {
 		t.Errorf("refused requests left %d entries", len(got.Entries))

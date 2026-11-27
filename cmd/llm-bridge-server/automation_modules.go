@@ -68,10 +68,10 @@ func enableScheduler(ctx context.Context, cfg *config.Config, srv *server.Server
 	settings := cfg.Settings
 	runsEnabled := settings.Boolean(config.SettingSchedulerRunsEnabled)
 	natsURL := settings.String(config.SettingSchedulerNATSURL)
-	noteboardURL := settings.String(config.SettingSchedulerNoteboardURL)
-	if runsEnabled && natsURL != "" && noteboardURL == "" {
+	notesURL := settings.String(config.SettingSchedulerNotesURL)
+	if runsEnabled && natsURL != "" && notesURL == "" {
 		return nil, fmt.Errorf("scheduler: %s is on and %s is set, so agent jobs run, but %s is not set: their prompts would name no workspace address",
-			config.SettingSchedulerRunsEnabled, config.SettingSchedulerNATSURL, config.SettingSchedulerNoteboardURL)
+			config.SettingSchedulerRunsEnabled, config.SettingSchedulerNATSURL, config.SettingSchedulerNotesURL)
 	}
 
 	pool, err := openSchedulerModule(ctx, cfg.PostgresURL)
@@ -133,7 +133,7 @@ func enableScheduler(ctx context.Context, cfg *config.Config, srv *server.Server
 		log.Printf("scheduler: runs are on; %d runs were going when the last process stopped, and are interrupted", len(interrupted))
 		scheduler.SetLogger(logger)
 		if natsClient != nil {
-			agents := executor.NewAgentExecutor(natsClient, srv.SchedulerBridge(), noteboardURL,
+			agents := executor.NewAgentExecutor(natsClient, srv.SchedulerBridge(), notesURL,
 				func() string { return storedSettings.ModelRole(schedulerconfig.SettingAgentJobModelRole) },
 				sessionmodelrole.SourcesChecker{Sources: srv.SchedulerModelRoleSources()})
 			scheduler.SetAgentExecutor(agents)

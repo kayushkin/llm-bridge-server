@@ -158,13 +158,13 @@ func EvaluateSession(ctx context.Context, definition Definition, subject Subject
 		case EffectMoveLinkedCards:
 			for _, card := range matchedCards[e.BoardID] {
 				decision.PlannedEffects = append(decision.PlannedEffects, PlannedEffect{
-					Kind: e.Kind, Service: "kanban-store", Method: "POST", Path: "/api/cards/" + card.CardID + "/move",
+					Kind: e.Kind, Service: "kanban-store", Method: "POST", Path: "/cards/" + card.CardID + "/move",
 					Body: map[string]any{"board_id": e.BoardID, "column_id": e.ToColumnID},
 				})
 			}
 		case EffectAddSessionTag:
 			decision.PlannedEffects = append(decision.PlannedEffects, PlannedEffect{
-				Kind: e.Kind, Service: "kanban-store", Method: "POST", Path: "/api/entities/session/" + session.SessionID + "/tags",
+				Kind: e.Kind, Service: "kanban-store", Method: "POST", Path: "/entities/session/" + session.SessionID + "/tags",
 				Body: map[string]any{"tag": e.Tag},
 			})
 		case EffectSendSessionMessage:

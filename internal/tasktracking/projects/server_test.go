@@ -147,7 +147,7 @@ func fakeOwners(t *testing.T) *Owners {
 	t.Cleanup(server.Close)
 	fake := httpOwners{client: server.Client(), url: server.URL}
 	return &Owners{HTTP: server.Client(), Repositories: fake, Kanban: fake, Scheduler: fake, HealthcheckURL: server.URL,
-		Principals: httpPrincipals{client: server.Client(), url: server.URL}, Noteboard: httpNoteboard{client: server.Client(), url: server.URL}, Bridge: fake,
+		Principals: httpPrincipals{client: server.Client(), url: server.URL}, NotesAndIssues: httpNotesAndIssues{client: server.Client(), url: server.URL}, Bridge: fake,
 		SuggestionModelRole: "balanced"}
 }
 

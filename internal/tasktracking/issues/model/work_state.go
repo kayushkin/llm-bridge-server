@@ -37,7 +37,7 @@ const (
 	WorkStateDropped WorkState = "dropped"
 )
 
-// WorkStateMeaning is one entry of GET /api/work-states: a state and what it
+// WorkStateMeaning is one entry of GET /work-states: a state and what it
 // means, so a person mapping a board's columns reads the meaning once, here.
 type WorkStateMeaning struct {
 	WorkState WorkState `json:"work_state"`
@@ -45,7 +45,7 @@ type WorkStateMeaning struct {
 }
 
 // WorkStates is the whole vocabulary, in the order work usually travels it and
-// the order GET /api/work-states serves it.
+// the order GET /work-states serves it.
 var WorkStates = []WorkStateMeaning{
 	{WorkStateNotStarted, "accepted as work, and nobody has begun it"},
 	{WorkStateWorking, "someone is doing it now"},
@@ -72,7 +72,7 @@ func ErrUnknownWorkState(raw string) error {
 	for _, known := range WorkStates {
 		names = append(names, string(known.WorkState))
 	}
-	return fmt.Errorf("unknown work_state %q: use one of %s (GET /api/work-states)", boundedtext.Value(raw), strings.Join(names, ", "))
+	return fmt.Errorf("unknown work_state %q: use one of %s (GET /work-states)", boundedtext.Value(raw), strings.Join(names, ", "))
 }
 
 // validateWorkStateField accepts absent (leave it alone), empty (clear it) and

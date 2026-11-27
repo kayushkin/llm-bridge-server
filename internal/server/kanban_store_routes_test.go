@@ -14,12 +14,14 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/access"
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
 	issuesdb "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/db"
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/items"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issueitems"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/items"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 )
 
-// kanbanTestServer is an accessTestServer with kanban-store and noteboard in
-// the same process, on Postgres, as main wires them: two boards the
+// kanbanTestServer is an accessTestServer with the issues module (boards,
+// cards and the content of each issue) in the same process, on Postgres, as
+// main wires it: two boards the
 // administrator made, one card on each, and a can_view grant for the member
 // on the first board only.
 type kanbanTestServer struct {
@@ -38,24 +40,21 @@ func newKanbanTestServer(t *testing.T) *kanbanTestServer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	noteboardModule, err := items.Module()
-	if err != nil {
-		t.Fatal(err)
-	}
-	database := postgrestest.NewDatabase(t, kanbanModule, noteboardModule)
-	test.kanban = issuesdb.New(database.Open(kanbanModule))
-	test.notes = items.New(database.Open(noteboardModule))
-	test.server.EnableIssues(test.kanban, KanbanStoreOwners{Noteboard: test.notes, Access: test.stores})
+	database := postgrestest.NewDatabase(t, kanbanModule)
+	pool := database.Open(kanbanModule)
+	test.kanban = issuesdb.New(pool)
+	test.notes = issueitems.New(pool)
+	test.server.EnableIssues(test.kanban, KanbanStoreOwners{IssueItems: test.notes, Access: test.stores})
 
 	makeBoard := func(name string) (string, string) {
 		var board struct {
 			ID string `json:"id"`
 		}
-		test.mustDecode(t, test.call(t, callerAdministratorThroughDash, "POST", "/issues/api/boards", `{"name":"`+name+`"}`), http.StatusCreated, &board)
+		test.mustDecode(t, test.call(t, callerAdministratorThroughDash, "POST", "/issues/boards", `{"name":"`+name+`"}`), http.StatusCreated, &board)
 		var column struct {
 			ID string `json:"id"`
 		}
-		test.mustDecode(t, test.call(t, callerAdministratorThroughDash, "POST", "/issues/api/boards/"+board.ID+"/columns", `{"name":"Open"}`), http.StatusCreated, &column)
+		test.mustDecode(t, test.call(t, callerAdministratorThroughDash, "POST", "/issues/boards/"+board.ID+"/columns", `{"name":"Open"}`), http.StatusCreated, &column)
 		return board.ID, column.ID
 	}
 	makeCard := func(boardID, columnID, title, tags string) string {
@@ -64,7 +63,7 @@ func newKanbanTestServer(t *testing.T) *kanbanTestServer {
 				CardID string `json:"card_id"`
 			} `json:"placement"`
 		}
-		test.mustDecode(t, test.call(t, callerAdministratorThroughDash, "POST", "/issues/api/boards/"+boardID+"/cards",
+		test.mustDecode(t, test.call(t, callerAdministratorThroughDash, "POST", "/issues/boards/"+boardID+"/cards",
 			`{"title":"`+title+`","column_id":"`+columnID+`","tags":`+tags+`}`), http.StatusCreated, &card)
 		return card.Placement.CardID
 	}
@@ -97,7 +96,7 @@ func (test *kanbanTestServer) mustDecode(t *testing.T, response *httptest.Respon
 	}
 }
 
-// boardIDsListed is every board id GET /issues/api/boards answers caller with.
+// boardIDsListed is every board id GET /issues/boards answers caller with.
 func (test *kanbanTestServer) boardIDsListed(t *testing.T, caller accessTestCaller, path string) []string {
 	t.Helper()
 	var boards []struct {
@@ -113,7 +112,7 @@ func (test *kanbanTestServer) boardIDsListed(t *testing.T, caller accessTestCall
 }
 
 // storeState is what a refused request must not change: kanban-store's rows,
-// noteboard's items and every grant.
+// the issues' content and every grant.
 func (test *kanbanTestServer) storeState(t *testing.T) string {
 	t.Helper()
 	counts, err := test.kanban.Counts()
@@ -147,12 +146,12 @@ func TestKanbanStoreRefusesACallerWithNoCredentialAndWritesNothing(t *testing.T)
 	test := newKanbanTestServer(t)
 	before := test.storeState(t)
 	for _, request := range []struct{ method, path, body string }{
-		{"GET", "/issues/api/boards", ""},
-		{"GET", "/issues/api/boards", ""},
-		{"GET", "/issues/api/boards/" + test.seenBoardID, ""},
-		{"POST", "/issues/api/boards", `{"name":"Forged"}`},
-		{"POST", "/issues/api/boards/" + test.seenBoardID + "/cards", `{"title":"forged","column_id":"` + test.seenColumnID + `"}`},
-		{"DELETE", "/issues/api/cards/" + test.seenCardID, ""},
+		{"GET", "/issues/boards", ""},
+		{"GET", "/issues/boards", ""},
+		{"GET", "/issues/boards/" + test.seenBoardID, ""},
+		{"POST", "/issues/boards", `{"name":"Forged"}`},
+		{"POST", "/issues/boards/" + test.seenBoardID + "/cards", `{"title":"forged","column_id":"` + test.seenColumnID + `"}`},
+		{"DELETE", "/issues/cards/" + test.seenCardID, ""},
 	} {
 		if response := test.call(t, callerWithNoCredential, request.method, request.path, request.body); response.Code != http.StatusUnauthorized {
 			t.Errorf("%s %s with no credential = %d %s, want 401", request.method, request.path, response.Code, response.Body)
@@ -175,7 +174,7 @@ func TestKanbanStoreIgnoresForgedIdentityAndStoreTokens(t *testing.T) {
 		addLoginCookie(request, test.memberCookie)
 		request.Header.Set(principalIdentityHeader, accessTestAdministratorID)
 	}}
-	for _, path := range []string{"/issues/api/boards", "/issues/api/boards/" + test.unseenBoardID} {
+	for _, path := range []string{"/issues/boards", "/issues/boards/" + test.unseenBoardID} {
 		response := test.call(t, forgingAnAdministrator, "GET", path, "")
 		if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), "principal_header_without_service_token") {
 			t.Errorf("GET %s as %s = %d %s, want 401 principal_header_without_service_token", path, forgingAnAdministrator.name, response.Code, response.Body)
@@ -190,17 +189,17 @@ func TestKanbanStoreIgnoresForgedIdentityAndStoreTokens(t *testing.T) {
 		request.Header.Set("X-Reference-Store-Service-Token", "forged")
 	}}
 	for _, caller := range []accessTestCaller{forgingStoreTokens, callerMemberThroughDash} {
-		if got, want := test.boardIDsListed(t, caller, "/issues/api/boards"), []string{test.seenBoardID}; !slices.Equal(got, want) {
+		if got, want := test.boardIDsListed(t, caller, "/issues/boards"), []string{test.seenBoardID}; !slices.Equal(got, want) {
 			t.Errorf("%s lists boards %v, want only %v", caller.name, got, want)
 		}
-		if got, want := test.boardIDsListed(t, caller, "/issues/api/boards"), []string{test.seenBoardID}; !slices.Equal(got, want) {
+		if got, want := test.boardIDsListed(t, caller, "/issues/boards"), []string{test.seenBoardID}; !slices.Equal(got, want) {
 			t.Errorf("%s lists boards at the root mount %v, want only %v", caller.name, got, want)
 		}
-		if response := test.call(t, caller, "GET", "/issues/api/boards/"+test.seenBoardID, ""); response.Code != http.StatusOK {
+		if response := test.call(t, caller, "GET", "/issues/boards/"+test.seenBoardID, ""); response.Code != http.StatusOK {
 			t.Errorf("%s reads the board it may view = %d %s", caller.name, response.Code, response.Body)
 		}
 		// can_view is not can_edit.
-		if response := test.call(t, caller, "POST", "/issues/api/boards/"+test.seenBoardID+"/cards",
+		if response := test.call(t, caller, "POST", "/issues/boards/"+test.seenBoardID+"/cards",
 			`{"title":"forged","column_id":"`+test.seenColumnID+`"}`); response.Code != http.StatusForbidden {
 			t.Errorf("%s adds a card to a board it may only view = %d %s, want 403", caller.name, response.Code, response.Body)
 		}
@@ -217,17 +216,17 @@ func TestKanbanStoreHidesABoardTheMemberMayNotSee(t *testing.T) {
 	before := test.storeState(t)
 	for _, caller := range []accessTestCaller{callerMemberWithLoginCookie, callerMemberThroughDash} {
 		for _, request := range []struct{ method, path, body string }{
-			{"GET", "/issues/api/boards/" + test.unseenBoardID, ""},
-			{"GET", "/issues/api/boards/" + test.unseenBoardID, ""},
-			{"GET", "/issues/api/boards/" + test.unseenBoardID + "/cards", ""},
-			{"GET", "/issues/api/columns/" + test.unseenColumnID + "/cards", ""},
-			{"GET", "/issues/api/cards/" + test.unseenCardID, ""},
-			{"GET", "/issues/api/cards/" + test.unseenCardID + "/events", ""},
-			{"PATCH", "/issues/api/boards/" + test.unseenBoardID, `{"name":"Renamed"}`},
-			{"POST", "/issues/api/boards/" + test.unseenBoardID + "/cards", `{"title":"forged","column_id":"` + test.unseenColumnID + `"}`},
-			{"POST", "/issues/api/cards/" + test.unseenCardID + "/notes", `{"body":"forged"}`},
-			{"DELETE", "/issues/api/cards/" + test.unseenCardID, ""},
-			{"GET", "/issues/api/boards/no-such-board", ""},
+			{"GET", "/issues/boards/" + test.unseenBoardID, ""},
+			{"GET", "/issues/boards/" + test.unseenBoardID, ""},
+			{"GET", "/issues/boards/" + test.unseenBoardID + "/cards", ""},
+			{"GET", "/issues/columns/" + test.unseenColumnID + "/cards", ""},
+			{"GET", "/issues/cards/" + test.unseenCardID, ""},
+			{"GET", "/issues/cards/" + test.unseenCardID + "/events", ""},
+			{"PATCH", "/issues/boards/" + test.unseenBoardID, `{"name":"Renamed"}`},
+			{"POST", "/issues/boards/" + test.unseenBoardID + "/cards", `{"title":"forged","column_id":"` + test.unseenColumnID + `"}`},
+			{"POST", "/issues/cards/" + test.unseenCardID + "/notes", `{"body":"forged"}`},
+			{"DELETE", "/issues/cards/" + test.unseenCardID, ""},
+			{"GET", "/issues/boards/no-such-board", ""},
 		} {
 			if response := test.call(t, caller, request.method, request.path, request.body); response.Code != http.StatusNotFound {
 				t.Errorf("%s %s as %s = %d %s, want 404", request.method, request.path, caller.name, response.Code, response.Body)
@@ -255,10 +254,10 @@ func TestKanbanStoreAnAdministratorAndTheInternalServiceSeeEveryBoard(t *testing
 	every := []string{test.seenBoardID, test.unseenBoardID}
 	slices.Sort(every)
 	for _, caller := range []accessTestCaller{callerAdministratorWithLoginCookie, callerAdministratorThroughDash, callerServiceTokenAlone} {
-		if got := test.boardIDsListed(t, caller, "/issues/api/boards"); !slices.Equal(got, every) {
+		if got := test.boardIDsListed(t, caller, "/issues/boards"); !slices.Equal(got, every) {
 			t.Errorf("%s lists %v, want %v", caller.name, got, every)
 		}
-		if response := test.call(t, caller, "GET", "/issues/api/cards/"+test.unseenCardID, ""); response.Code != http.StatusOK {
+		if response := test.call(t, caller, "GET", "/issues/cards/"+test.unseenCardID, ""); response.Code != http.StatusOK {
 			t.Errorf("%s reads a card on the second board = %d %s", caller.name, response.Code, response.Body)
 		}
 	}
@@ -267,7 +266,7 @@ func TestKanbanStoreAnAdministratorAndTheInternalServiceSeeEveryBoard(t *testing
 		PrincipalID  string `json:"principal_id"`
 		Unrestricted bool   `json:"unrestricted"`
 	}
-	test.mustDecode(t, test.call(t, callerAdministratorWithLoginCookie, "GET", "/issues/api/boards/"+test.unseenBoardID+"/access", ""), http.StatusOK, &access)
+	test.mustDecode(t, test.call(t, callerAdministratorWithLoginCookie, "GET", "/issues/boards/"+test.unseenBoardID+"/access", ""), http.StatusOK, &access)
 	if access.PrincipalID != accessTestAdministratorID || !access.Unrestricted {
 		t.Errorf("the administrator's access = %+v", access)
 	}
@@ -281,7 +280,7 @@ func TestKanbanStoreGivesTheCreatorOfABoardItsAdministration(t *testing.T) {
 	var board struct {
 		ID string `json:"id"`
 	}
-	test.mustDecode(t, test.call(t, callerMemberWithLoginCookie, "POST", "/issues/api/boards", `{"name":"Mine"}`), http.StatusCreated, &board)
+	test.mustDecode(t, test.call(t, callerMemberWithLoginCookie, "POST", "/issues/boards", `{"name":"Mine"}`), http.StatusCreated, &board)
 	grants, err := test.stores.Grants.List(context.Background(), grants.Filter{PrincipalID: accessTestMemberID, ResourceType: grants.ResourceTypeBoard, ResourceID: board.ID})
 	if err != nil {
 		t.Fatal(err)
@@ -291,7 +290,7 @@ func TestKanbanStoreGivesTheCreatorOfABoardItsAdministration(t *testing.T) {
 	}
 	want := []string{test.seenBoardID, board.ID}
 	slices.Sort(want)
-	if got := test.boardIDsListed(t, callerMemberWithLoginCookie, "/issues/api/boards"); !slices.Equal(got, want) {
+	if got := test.boardIDsListed(t, callerMemberWithLoginCookie, "/issues/boards"); !slices.Equal(got, want) {
 		t.Fatalf("the member lists %v, want %v", got, want)
 	}
 }

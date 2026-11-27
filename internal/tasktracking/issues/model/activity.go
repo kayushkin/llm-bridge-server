@@ -236,7 +236,7 @@ const (
 	NoteVisibilityRequester NoteVisibility = "requester"
 )
 
-// NoteVisibilities is the vocabulary, served by GET /api/note-visibilities.
+// NoteVisibilities is the vocabulary, served by GET /note-visibilities.
 var NoteVisibilities = []NoteVisibility{NoteVisibilityInternal, NoteVisibilityRequester}
 
 // DefaultNoteVisibility is what a note written without one gets, and what every
@@ -269,7 +269,7 @@ type CreateCardNoteRequest struct {
 	// "summary" or "status". Empty stores "note".
 	Kind  string `json:"kind,omitempty"`
 	Actor string `json:"actor,omitempty"`
-	// Visibility is `internal` or `requester` (GET /api/note-visibilities).
+	// Visibility is `internal` or `requester` (GET /note-visibilities).
 	// Empty stores `internal`: a note is never shown to a requester because
 	// its writer left a field out.
 	Visibility NoteVisibility `json:"visibility,omitempty"`
@@ -285,7 +285,7 @@ func (r *CreateCardNoteRequest) Validate() error {
 		return fmt.Errorf("body is required")
 	}
 	if r.Visibility != "" && !ValidNoteVisibility(r.Visibility) {
-		return fmt.Errorf("visibility %q is not one of %v (GET /api/note-visibilities)", boundedtext.Value(string(r.Visibility)), NoteVisibilities)
+		return fmt.Errorf("visibility %q is not one of %v (GET /note-visibilities)", boundedtext.Value(string(r.Visibility)), NoteVisibilities)
 	}
 	if r.ClockState != "" && !ValidClockState(r.ClockState) {
 		return fmt.Errorf("clock_state must be one of: %s", strings.Join(ClockStateNames(), ", "))

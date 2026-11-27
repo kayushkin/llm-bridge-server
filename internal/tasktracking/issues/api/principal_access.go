@@ -362,19 +362,19 @@ func (a *API) authorizeRequest(r *http.Request, access *PrincipalBoardAccess) (*
 		return strings.Split(strings.TrimPrefix(path, prefix), "/")
 	}
 	switch {
-	case path == "/api/entity-types", path == "/api/message-trigger-options",
-		path == "/api/ticket-channels", path == "/api/ticket-lifecycle-states", path == "/api/note-visibilities",
-		path == "/api/assignment-strategies", path == "/api/work-states":
+	case path == "/entity-types", path == "/message-trigger-options",
+		path == "/ticket-channels", path == "/ticket-lifecycle-states", path == "/note-visibilities",
+		path == "/assignment-strategies", path == "/work-states":
 		// Vocabularies: what a channel or a lifecycle state may be. They name
 		// no board and hold no card content.
 		return nil, nil
 
-	case path == "/api/boards":
+	case path == "/boards":
 		// GET is filtered by the handler; POST makes the creator its administrator.
 		return nil, nil
 
-	case strings.HasPrefix(path, "/api/boards/"):
-		parts := segments("/api/boards/")
+	case strings.HasPrefix(path, "/boards/"):
+		parts := segments("/boards/")
 		boardID := parts[0]
 		needed := BoardAccessAdminister
 		switch {
@@ -429,8 +429,8 @@ func (a *API) authorizeRequest(r *http.Request, access *PrincipalBoardAccess) (*
 		}
 		return requireOnBoard(access, boardID, needed, r.Method+" "+path), nil
 
-	case strings.HasPrefix(path, "/api/columns/"):
-		parts := segments("/api/columns/")
+	case strings.HasPrefix(path, "/columns/"):
+		parts := segments("/columns/")
 		column, err := a.store.GetColumn(parts[0])
 		if errors.Is(err, db.ErrNotFound) {
 			return refuseUnseen, nil
@@ -444,8 +444,8 @@ func (a *API) authorizeRequest(r *http.Request, access *PrincipalBoardAccess) (*
 		}
 		return requireOnBoard(access, column.BoardID, needed, r.Method+" "+path), nil
 
-	case strings.HasPrefix(path, "/api/cards/"):
-		parts := segments("/api/cards/")
+	case strings.HasPrefix(path, "/cards/"):
+		parts := segments("/cards/")
 		cardID := parts[0]
 		if boardID := r.URL.Query().Get("board_id"); boardID != "" {
 			if refusal := requireOnBoard(access, boardID, BoardAccessView, "board_id"); refusal != nil {
@@ -458,14 +458,14 @@ func (a *API) authorizeRequest(r *http.Request, access *PrincipalBoardAccess) (*
 		}
 		return a.requireOnCard(access, cardID, needed, r.Method+" "+path)
 
-	case strings.HasPrefix(path, "/api/links/"):
-		return a.requireOnCardOf(access, a.store.CardIDOfLink, segments("/api/links/")[0], "deleting a link")
+	case strings.HasPrefix(path, "/links/"):
+		return a.requireOnCardOf(access, a.store.CardIDOfLink, segments("/links/")[0], "deleting a link")
 
-	case strings.HasPrefix(path, "/api/notes/"):
-		return a.requireOnCardOf(access, a.store.CardIDOfNote, segments("/api/notes/")[0], "deleting a note")
+	case strings.HasPrefix(path, "/notes/"):
+		return a.requireOnCardOf(access, a.store.CardIDOfNote, segments("/notes/")[0], "deleting a note")
 
-	case strings.HasPrefix(path, "/api/message-triggers/"):
-		trigger, err := a.store.GetMessageTrigger(segments("/api/message-triggers/")[0])
+	case strings.HasPrefix(path, "/message-triggers/"):
+		trigger, err := a.store.GetMessageTrigger(segments("/message-triggers/")[0])
 		if errors.Is(err, db.ErrNotFound) {
 			return refuseUnseen, nil
 		}
@@ -474,8 +474,8 @@ func (a *API) authorizeRequest(r *http.Request, access *PrincipalBoardAccess) (*
 		}
 		return requireOnBoard(access, trigger.BoardID, BoardAccessAdminister, "a message trigger"), nil
 
-	case strings.HasPrefix(path, "/api/entities/"):
-		parts := segments("/api/entities/")
+	case strings.HasPrefix(path, "/entities/"):
+		parts := segments("/entities/")
 		if len(parts) == 3 && parts[2] == "cards" && reading {
 			return nil, nil // filtered by the handler
 		}
@@ -483,13 +483,13 @@ func (a *API) authorizeRequest(r *http.Request, access *PrincipalBoardAccess) (*
 		// entity; nothing yet says which principal may read or write them.
 		return &accessRefusal{status: http.StatusForbidden, message: "entity tags are not available under principal enforcement"}, nil
 
-	case path == "/api/tags":
+	case path == "/tags":
 		return &accessRefusal{status: http.StatusForbidden, message: "the tag listing spans every board and is not available under principal enforcement"}, nil
 
-	case path == "/api/assignments", path == "/api/search", path == "/api/tickets":
+	case path == "/assignments", path == "/search", path == "/tickets":
 		return nil, nil // filtered by the handler
 
-	case path == "/api/bulk-card-commands":
+	case path == "/bulk-card-commands":
 		// Names no card of its own. Each card in the request is judged by the
 		// single-card rule above, as this caller, before anything is done to it.
 		return nil, nil

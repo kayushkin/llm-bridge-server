@@ -86,7 +86,7 @@ func TestTheLoginAndStoreProxyRoutesAreMountedAndGated(t *testing.T) {
 	srv := newServerWithAllStoresConfigured(t, nil)
 	for _, route := range []struct{ method, path string }{
 		{"GET", "/auth/principal"},
-		{"GET", "/issues/api/boards"},
+		{"GET", "/issues/boards"},
 		{"GET", "/grants/relations"},
 		{"GET", "/mail/api/accounts"},
 		{"POST", "/references/resolve"},

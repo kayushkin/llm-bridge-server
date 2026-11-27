@@ -2,7 +2,8 @@ package server
 
 // kanban-store, run in this process (internal/tasktracking/issues). Its
 // routes are mounted under /issues/: /issues/<rest> answers kanban-store's
-// /<rest>, so /issues/api/boards is its /api/boards.
+// /<rest>, so /issues/boards is its /boards. /issues/items, the content of
+// issues, is mounted beside it (notes_routes.go).
 //
 // The standalone store trusted X-Principal-Id, which only the proxy was meant
 // to set. In this process the store reads its caller from the request
@@ -35,8 +36,7 @@ import (
 	issuesbridge "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/llmbridge"
 	issuesmultichat "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/multichat"
 	issuesprincipals "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/principalstore"
-	noteboardapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/api"
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/items"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/items"
 )
 
 // kanbanStoreHandlers is the store as this server serves it.
@@ -53,11 +53,13 @@ type kanbanStoreHandlers struct {
 }
 
 // KanbanStoreOwners is what kanban-store asks the stores beside it, in this
-// process: noteboard for a card's content, and the access stores for who a
-// principal is and what it was granted.
+// process: the issues module's own items for a card's content, and the access
+// stores for who a principal is and what it was granted.
 type KanbanStoreOwners struct {
-	Noteboard *items.Store
-	Access    *access.Stores
+	// IssueItems is the content of issues, kept in the issues module's own
+	// schema (issueitems.New over the module's pool).
+	IssueItems *items.Store
+	Access     *access.Stores
 	// MessageTriggersEnabled is issues.message_triggers.enabled: send
 	// through multichat, or record each delivery not_configured.
 	MessageTriggersEnabled bool
@@ -68,10 +70,12 @@ type KanbanStoreOwners struct {
 // until then, and in a test that never calls it, /issues/
 // answer 503 and this server's own kanban reads are off.
 func (s *Server) EnableIssues(store *issuesdb.Store, owners KanbanStoreOwners) {
-	// noteboard runs in this process, and kanban-store calls its API in Go.
-	notes := kanbanNoteboard{notes: noteboardapi.New(owners.Noteboard)}
+	// A card's content is an issue in the same module, and the boards call
+	// its API in Go; the same API answers /issues/items.
+	issueItems := s.EnableIssueItems(owners.IssueItems)
+	content := kanbanIssueContent{issues: issueItems}
 	directory := access.GrantsPrincipalDirectory(owners.Access.Principals)
-	api := issuesapi.New(store, notes,
+	api := issuesapi.New(store, content,
 		kanbanPrincipalDirectory{principals: owners.Access.Principals},
 		kanbanAgentsAndInstances{server: s},
 		kanbanBundles{server: s})

@@ -19,7 +19,7 @@ func mkColumnWithWorkState(t *testing.T, h http.Handler, boardID, name, workStat
 		request.WorkState = &workState
 	}
 	var column model.Column
-	decodeSuccessfulResponse(t, do(t, h, "POST", "/api/boards/"+boardID+"/columns", request), &column)
+	decodeSuccessfulResponse(t, do(t, h, "POST", "/boards/"+boardID+"/columns", request), &column)
 	return column.ID
 }
 
@@ -36,7 +36,7 @@ func TestWorkStateVocabularyIsServedWithMeanings(t *testing.T) {
 	h, _, cleanup := setup(t)
 	defer cleanup()
 	var states []model.WorkStateMeaning
-	decodeSuccessfulResponse(t, do(t, h, "GET", "/api/work-states", nil), &states)
+	decodeSuccessfulResponse(t, do(t, h, "GET", "/work-states", nil), &states)
 	want := []model.WorkState{"not_started", "working", "waiting", "done", "dropped"}
 	if len(states) != len(want) {
 		t.Fatalf("got %d states, want %d: %+v", len(states), len(want), states)
@@ -59,32 +59,32 @@ func TestColumnWorkStateOutsideTheVocabularyIsRefused(t *testing.T) {
 	defer cleanup()
 	boardID := mkBoard(t, h, "Northwind work")
 
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/columns", model.CreateColumnRequest{Name: "Blocked", WorkState: stringPointer("blocked")})
+	w := do(t, h, "POST", "/boards/"+boardID+"/columns", model.CreateColumnRequest{Name: "Blocked", WorkState: stringPointer("blocked")})
 	if w.Code != 400 || !strings.Contains(w.Body.String(), "not_started, working, waiting, done, dropped") {
 		t.Fatalf("create with work_state blocked: want 400 naming the vocabulary, got %d: %s", w.Code, w.Body.String())
 	}
 	var columns []model.Column
-	decodeSuccessfulResponse(t, do(t, h, "GET", "/api/boards/"+boardID+"/columns", nil), &columns)
+	decodeSuccessfulResponse(t, do(t, h, "GET", "/boards/"+boardID+"/columns", nil), &columns)
 	if len(columns) != 0 {
 		t.Fatalf("a refused create wrote a column: %+v", columns)
 	}
 
 	columnID := mkColumnWithWorkState(t, h, boardID, "In Progress", "working")
 	for _, refused := range []string{"Working", " working", "in_progress"} {
-		w := do(t, h, "PATCH", "/api/columns/"+columnID, model.UpdateColumnRequest{WorkState: stringPointer(refused)})
+		w := do(t, h, "PATCH", "/columns/"+columnID, model.UpdateColumnRequest{WorkState: stringPointer(refused)})
 		if w.Code != 400 {
 			t.Errorf("patch work_state %q: want 400, got %d: %s", refused, w.Code, w.Body.String())
 		}
 	}
 	var column model.Column
-	decodeSuccessfulResponse(t, do(t, h, "GET", "/api/columns/"+columnID, nil), &column)
+	decodeSuccessfulResponse(t, do(t, h, "GET", "/columns/"+columnID, nil), &column)
 	if workStateText(column.WorkState) != "working" {
 		t.Fatalf("refused patches changed work_state to %s", workStateText(column.WorkState))
 	}
 
 	// An empty string clears it, and a cleared column says null rather than
 	// leaving the field out.
-	w = do(t, h, "PATCH", "/api/columns/"+columnID, model.UpdateColumnRequest{WorkState: stringPointer("")})
+	w = do(t, h, "PATCH", "/columns/"+columnID, model.UpdateColumnRequest{WorkState: stringPointer("")})
 	var raw map[string]any
 	decodeSuccessfulResponse(t, w, &raw)
 	if value, present := raw["work_state"]; !present || value != nil {
@@ -101,8 +101,8 @@ func TestWorkStateDoesNotImplyAutoStatus(t *testing.T) {
 	queued := mkColumnWithWorkState(t, h, boardID, "Queued", "not_started")
 	done := mkColumnWithWorkState(t, h, boardID, "Done", "done")
 	var card model.CardView
-	decodeSuccessfulResponse(t, do(t, h, "POST", "/api/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "ship it", ColumnID: queued}), &card)
-	decodeSuccessfulResponse(t, do(t, h, "POST", "/api/cards/"+card.Placement.CardID+"/move", model.MoveCardRequest{BoardID: boardID, ColumnID: done}), &map[string]any{})
+	decodeSuccessfulResponse(t, do(t, h, "POST", "/boards/"+boardID+"/cards", model.CreateCardRequest{Title: "ship it", ColumnID: queued}), &card)
+	decodeSuccessfulResponse(t, do(t, h, "POST", "/cards/"+card.Placement.CardID+"/move", model.MoveCardRequest{BoardID: boardID, ColumnID: done}), &map[string]any{})
 	if status := notes.status(card.Placement.CardID); status != "open" {
 		t.Fatalf("noteboard status after a move into a done work_state column = %q, want open", status)
 	}
@@ -122,7 +122,7 @@ func TestCardWorkStateIsTheLatestMoveAcrossBoards(t *testing.T) {
 	unmapped := mkColumnWithWorkState(t, h, northwind, "Someday", "")
 
 	var created model.CardView
-	decodeSuccessfulResponse(t, do(t, h, "POST", "/api/boards/"+support+"/cards", model.CreateCardRequest{Title: "refund", ColumnID: actionNeeded}), &created)
+	decodeSuccessfulResponse(t, do(t, h, "POST", "/boards/"+support+"/cards", model.CreateCardRequest{Title: "refund", ColumnID: actionNeeded}), &created)
 	cardID := created.Placement.CardID
 	if workStateText(created.WorkState) != "not_started" || created.WorkStateSource == nil || created.WorkStateSource.BoardID != support {
 		t.Fatalf("new card: work_state %s from %+v, want not_started from Support", workStateText(created.WorkState), created.WorkStateSource)
@@ -131,7 +131,7 @@ func TestCardWorkStateIsTheLatestMoveAcrossBoards(t *testing.T) {
 	expect := func(step, wantState, wantBoard, wantColumn string) {
 		t.Helper()
 		var detail model.CardDetail
-		decodeSuccessfulResponse(t, do(t, h, "GET", "/api/cards/"+cardID, nil), &detail)
+		decodeSuccessfulResponse(t, do(t, h, "GET", "/cards/"+cardID, nil), &detail)
 		if workStateText(detail.WorkState) != wantState || detail.WorkStateSource == nil ||
 			detail.WorkStateSource.BoardID != wantBoard || detail.WorkStateSource.ColumnID != wantColumn {
 			t.Fatalf("%s: card says %s from %+v, want %s from board %s column %s", step, workStateText(detail.WorkState), detail.WorkStateSource, wantState, wantBoard, wantColumn)
@@ -139,7 +139,7 @@ func TestCardWorkStateIsTheLatestMoveAcrossBoards(t *testing.T) {
 		// Every board the card is on answers the same shared state.
 		for _, boardID := range []string{support, northwind} {
 			var view model.BoardView
-			decodeSuccessfulResponse(t, do(t, h, "GET", "/api/boards/"+boardID+"/cards", nil), &view)
+			decodeSuccessfulResponse(t, do(t, h, "GET", "/boards/"+boardID+"/cards", nil), &view)
 			found := false
 			for _, column := range view.Columns {
 				for _, card := range column.Cards {
@@ -159,13 +159,13 @@ func TestCardWorkStateIsTheLatestMoveAcrossBoards(t *testing.T) {
 	}
 	expect("created on Support", "not_started", support, actionNeeded)
 
-	mustStatus(t, do(t, h, "PUT", "/api/boards/"+northwind+"/cards/"+cardID, model.AttachCardRequest{ColumnID: inProgress}), 201, "attach to Northwind")
+	mustStatus(t, do(t, h, "PUT", "/boards/"+northwind+"/cards/"+cardID, model.AttachCardRequest{ColumnID: inProgress}), 201, "attach to Northwind")
 	expect("placed on Northwind after", "working", northwind, inProgress)
 
-	decodeSuccessfulResponse(t, do(t, h, "POST", "/api/cards/"+cardID+"/move", model.MoveCardRequest{BoardID: support, ColumnID: waitingOnReply}), &map[string]any{})
+	decodeSuccessfulResponse(t, do(t, h, "POST", "/cards/"+cardID+"/move", model.MoveCardRequest{BoardID: support, ColumnID: waitingOnReply}), &map[string]any{})
 	expect("moved on Support last", "waiting", support, waitingOnReply)
 
-	decodeSuccessfulResponse(t, do(t, h, "POST", "/api/cards/"+cardID+"/move", model.MoveCardRequest{BoardID: northwind, ColumnID: unmapped}), &map[string]any{})
+	decodeSuccessfulResponse(t, do(t, h, "POST", "/cards/"+cardID+"/move", model.MoveCardRequest{BoardID: northwind, ColumnID: unmapped}), &map[string]any{})
 	expect("moved into an unmapped column last", "<null>", northwind, unmapped)
 }
 
@@ -201,19 +201,19 @@ func TestEntityCardsCarryTitleStatusAndWorkStateFromOneNoteboardCall(t *testing.
 	inProgress := mkColumnWithWorkState(t, h, boardID, "In Progress", "working")
 	done := mkColumnWithWorkState(t, h, boardID, "Done", "done")
 	unmapped := mkColumnWithWorkState(t, h, boardID, "Inbox", "")
-	if w := do(t, h, "PATCH", "/api/columns/"+done, model.UpdateColumnRequest{AutoStatus: stringPointer("done")}); w.Code != 200 {
+	if w := do(t, h, "PATCH", "/columns/"+done, model.UpdateColumnRequest{AutoStatus: stringPointer("done")}); w.Code != 200 {
 		t.Fatalf("give Done an auto_status: %d %s", w.Code, w.Body.String())
 	}
 
 	const project = "project_000001"
 	link := func(cardID string) {
 		t.Helper()
-		mustStatus(t, do(t, h, "POST", "/api/cards/"+cardID+"/links", model.CreateCardLinkRequest{EntityType: "project", EntityRef: project}), 201, "link card to project")
+		mustStatus(t, do(t, h, "POST", "/cards/"+cardID+"/links", model.CreateCardLinkRequest{EntityType: "project", EntityRef: project}), 201, "link card to project")
 	}
 	newCard := func(title, columnID string) string {
 		t.Helper()
 		var card model.CardView
-		decodeSuccessfulResponse(t, do(t, h, "POST", "/api/boards/"+boardID+"/cards", model.CreateCardRequest{Title: title, ColumnID: columnID}), &card)
+		decodeSuccessfulResponse(t, do(t, h, "POST", "/boards/"+boardID+"/cards", model.CreateCardRequest{Title: title, ColumnID: columnID}), &card)
 		link(card.Placement.CardID)
 		return card.Placement.CardID
 	}
@@ -225,7 +225,7 @@ func TestEntityCardsCarryTitleStatusAndWorkStateFromOneNoteboardCall(t *testing.
 	link("gone-card")
 
 	queriesBefore, readsBefore := notes.queries, notes.itemReads
-	w := do(t, h, "GET", "/api/entities/project/"+project+"/cards", nil)
+	w := do(t, h, "GET", "/entities/project/"+project+"/cards", nil)
 	var rows []map[string]any
 	decodeSuccessfulResponse(t, w, &rows)
 	if notes.queries-queriesBefore != 1 || notes.itemReads != readsBefore {
@@ -267,19 +267,19 @@ func TestEntityCardsCarryTitleStatusAndWorkStateFromOneNoteboardCall(t *testing.
 func TestWorkStateSourceIsHiddenFromAPrincipalWhoCannotSeeItsBoard(t *testing.T) {
 	h, grants, _ := setupWithPrincipalEnforcement(t)
 	f := buildTwoBoards(t, h, grants)
-	mustStatus(t, requestAs(t, h, asService, "PATCH", "/api/columns/"+f.supportColumnID,
+	mustStatus(t, requestAs(t, h, asService, "PATCH", "/columns/"+f.supportColumnID,
 		model.UpdateColumnRequest{WorkState: stringPointer("waiting")}), 200, "map Support's column")
-	mustStatus(t, requestAs(t, h, asService, "POST", "/api/cards/"+f.sharedCardID+"/move",
+	mustStatus(t, requestAs(t, h, asService, "POST", "/cards/"+f.sharedCardID+"/move",
 		model.MoveCardRequest{BoardID: f.supportBoardID, ColumnID: f.supportColumnID}), 200, "move the shared card on Support last")
 
 	var asBob model.CardDetail
-	decodeSuccessfulResponse(t, requestAs(t, h, asPrincipal(bob), "GET", "/api/cards/"+f.sharedCardID, nil), &asBob)
+	decodeSuccessfulResponse(t, requestAs(t, h, asPrincipal(bob), "GET", "/cards/"+f.sharedCardID, nil), &asBob)
 	if workStateText(asBob.WorkState) != "waiting" || asBob.WorkStateSource == nil ||
 		asBob.WorkStateSource.BoardID != "" || asBob.WorkStateSource.ColumnID != "" || asBob.WorkStateSource.ColumnName != "" || asBob.WorkStateSource.MovedAt.IsZero() {
 		t.Fatalf("bob (Finance only) sees %s from %+v, want waiting with the Support board unnamed", workStateText(asBob.WorkState), asBob.WorkStateSource)
 	}
 	var asAlice model.CardDetail
-	decodeSuccessfulResponse(t, requestAs(t, h, asPrincipal(alice), "GET", "/api/cards/"+f.sharedCardID, nil), &asAlice)
+	decodeSuccessfulResponse(t, requestAs(t, h, asPrincipal(alice), "GET", "/cards/"+f.sharedCardID, nil), &asAlice)
 	if asAlice.WorkStateSource == nil || asAlice.WorkStateSource.BoardID != f.supportBoardID {
 		t.Fatalf("alice (Support) sees source %+v, want Support named", asAlice.WorkStateSource)
 	}

@@ -31,7 +31,7 @@ const (
 	TicketChannelAgent TicketChannel = "agent"
 )
 
-// TicketChannels is the whole vocabulary, in the order GET /api/ticket-channels
+// TicketChannels is the whole vocabulary, in the order GET /ticket-channels
 // serves it. Served rather than inferred from the rows, so no caller builds a
 // filter out of whichever channels happen to have been used so far.
 var TicketChannels = []TicketChannel{
@@ -79,7 +79,7 @@ const (
 )
 
 // TicketLifecycleStates is the whole vocabulary, in the order a ticket usually
-// travels it and the order GET /api/ticket-lifecycle-states serves it.
+// travels it and the order GET /ticket-lifecycle-states serves it.
 var TicketLifecycleStates = []TicketLifecycleState{
 	TicketLifecycleNew, TicketLifecycleOpen, TicketLifecycleWaitingOnRequester,
 	TicketLifecycleResolved, TicketLifecycleClosed,
@@ -156,7 +156,7 @@ type TicketView struct {
 	States               []TicketPlacementState `json:"states"`
 }
 
-// TicketWriteRequest is the body of PUT /api/cards/{id}/ticket.
+// TicketWriteRequest is the body of PUT /cards/{id}/ticket.
 type TicketWriteRequest struct {
 	RequesterPrincipalID string `json:"requester_principal_id"`
 	Channel              string `json:"channel"`
@@ -168,7 +168,7 @@ type TicketWriteRequest struct {
 	SourceEntityRef  string `json:"source_entity_ref,omitempty"`
 }
 
-// TicketLogEntry is one row of GET /api/tickets: a ticket, its lifecycle, and
+// TicketLogEntry is one row of GET /tickets: a ticket, its lifecycle, and
 // when its card was created, so a reader can tell a ticket that arrived as a
 // new card from an existing card that became a ticket.
 type TicketLogEntry struct {
@@ -178,7 +178,7 @@ type TicketLogEntry struct {
 	CardCreatedAt *time.Time `json:"card_created_at,omitempty"`
 }
 
-// TicketList is the body of GET /api/tickets, newest ticket first.
+// TicketList is the body of GET /tickets, newest ticket first.
 // NextBefore is the created_at to pass as ?before= for the next page, absent
 // on the last page.
 type TicketList struct {

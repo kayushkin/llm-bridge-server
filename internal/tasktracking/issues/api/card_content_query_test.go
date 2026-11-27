@@ -13,9 +13,9 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/bundlestore"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/db/dbtest"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/grantstore"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuecontent"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/llmbridge"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/model"
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/noteboard"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/principalstore"
 )
 
@@ -45,7 +45,7 @@ func buildContentDesk(t *testing.T) *contentDesk {
 		urls[name] = server.URL
 	}
 	store := dbtest.NewStore(t)
-	a := api.New(store, noteboard.New(urls["notes"]), principalstore.New(urls["principals"]), llmbridge.New(urls["bridge"]), bundlestore.New(urls["bundles"]))
+	a := api.New(store, issuecontent.New(urls["notes"]), principalstore.New(urls["principals"]), llmbridge.New(urls["bridge"]), bundlestore.New(urls["bundles"]))
 	a.SetReferenceStore(fakeReferenceStore(t))
 	// Cleanups run last-registered first, so this waits for trigger
 	// dispatches before the store above is closed.
@@ -53,12 +53,12 @@ func buildContentDesk(t *testing.T) *contentDesk {
 	a.SetPrincipalEnforcement(api.PrincipalEnforcement{Grants: grantstore.New(urls["grants"], "grant-store-token")})
 	d := &contentDesk{h: callerFromTestHeaders(a.Handler()), notes: notes, titleOf: map[string]string{}}
 
-	w := requestAs(t, d.h, asService, "POST", "/api/boards", model.CreateBoardRequest{Name: "Support Desk"})
+	w := requestAs(t, d.h, asService, "POST", "/boards", model.CreateBoardRequest{Name: "Support Desk"})
 	mustStatus(t, w, 201, "board")
 	var board model.Board
 	decodeSuccessfulResponse(t, w, &board)
 	d.boardID = board.ID
-	w = requestAs(t, d.h, asService, "POST", "/api/boards/"+d.boardID+"/columns", model.CreateColumnRequest{Name: "Open"})
+	w = requestAs(t, d.h, asService, "POST", "/boards/"+d.boardID+"/columns", model.CreateColumnRequest{Name: "Open"})
 	mustStatus(t, w, 201, "column")
 	var column model.Column
 	decodeSuccessfulResponse(t, w, &column)
@@ -72,13 +72,13 @@ func buildContentDesk(t *testing.T) *contentDesk {
 		{"invoice", []string{"billing"}, 3}, {"laptop", []string{"hardware"}, 2},
 	} {
 		priority := card.priority
-		w := requestAs(t, d.h, asService, "POST", "/api/boards/"+d.boardID+"/cards", model.CreateCardRequest{Title: card.title, Tags: card.tags, Priority: &priority, ColumnID: d.columnID})
+		w := requestAs(t, d.h, asService, "POST", "/boards/"+d.boardID+"/cards", model.CreateCardRequest{Title: card.title, Tags: card.tags, Priority: &priority, ColumnID: d.columnID})
 		mustStatus(t, w, 201, "card "+card.title)
 		var view model.CardView
 		decodeSuccessfulResponse(t, w, &view)
 		d.titleOf[view.Placement.CardID] = card.title
 		if card.title == "invoice" {
-			mustStatus(t, requestAs(t, d.h, asService, "PUT", "/api/cards/"+view.Placement.CardID+"/assignments/"+alice, nil), 201, "assign alice")
+			mustStatus(t, requestAs(t, d.h, asService, "PUT", "/cards/"+view.Placement.CardID+"/assignments/"+alice, nil), 201, "assign alice")
 		}
 	}
 	return d
@@ -111,7 +111,7 @@ func TestABoardIsFilteredAndSortedByWhatItsCardsSay(t *testing.T) {
 		"this store's filter leaves nothing":  {"?unassigned=true&tag=billing&priority=3", []string{"chargeback"}},
 		"a status nothing has":                {"?status=done", []string{}},
 	} {
-		w := requestAs(t, d.h, asService, "GET", "/api/boards/"+d.boardID+"/cards"+c.query, nil)
+		w := requestAs(t, d.h, asService, "GET", "/boards/"+d.boardID+"/cards"+c.query, nil)
 		mustStatus(t, w, 200, "board "+c.query)
 		var view model.BoardView
 		decodeSuccessfulResponse(t, w, &view)
@@ -121,7 +121,7 @@ func TestABoardIsFilteredAndSortedByWhatItsCardsSay(t *testing.T) {
 		if view.Columns[0].Total != len(c.want) {
 			t.Errorf("%s: total %d, want %d", what, view.Columns[0].Total, len(c.want))
 		}
-		w = requestAs(t, d.h, asService, "GET", "/api/columns/"+d.columnID+"/cards"+c.query, nil)
+		w = requestAs(t, d.h, asService, "GET", "/columns/"+d.columnID+"/cards"+c.query, nil)
 		mustStatus(t, w, 200, "column "+c.query)
 		var page model.ColumnView
 		decodeSuccessfulResponse(t, w, &page)
@@ -137,7 +137,7 @@ func TestASortedFilteredColumnPagesInOrder(t *testing.T) {
 	d := buildContentDesk(t)
 	var seen []string
 	for offset := 0; offset < 4; offset += 2 {
-		w := requestAs(t, d.h, asService, "GET", fmt.Sprintf("/api/columns/%s/cards?sort=priority&priority=3&priority=2&limit=2&offset=%d", d.columnID, offset), nil)
+		w := requestAs(t, d.h, asService, "GET", fmt.Sprintf("/columns/%s/cards?sort=priority&priority=3&priority=2&limit=2&offset=%d", d.columnID, offset), nil)
 		mustStatus(t, w, 200, "page")
 		var page model.ColumnView
 		decodeSuccessfulResponse(t, w, &page)
@@ -150,7 +150,7 @@ func TestASortedFilteredColumnPagesInOrder(t *testing.T) {
 		t.Errorf("two pages of two = %v, want %v", seen, want)
 	}
 	// The cards of a filtered page are whole cards: assignments ride along.
-	w := requestAs(t, d.h, asService, "GET", "/api/columns/"+d.columnID+"/cards?tag=billing&priority=3&sort=title", nil)
+	w := requestAs(t, d.h, asService, "GET", "/columns/"+d.columnID+"/cards?tag=billing&priority=3&sort=title", nil)
 	var page model.ColumnView
 	decodeSuccessfulResponse(t, w, &page)
 	if len(page.Cards) != 2 || d.titleOf[page.Cards[1].Placement.CardID] != "invoice" || len(page.Cards[1].Assignments) != 1 {
@@ -163,14 +163,14 @@ func TestASortedFilteredColumnPagesInOrder(t *testing.T) {
 // this store CAN judge without asking — that a priority is a number — it does.
 func TestNoteboardsRefusalIsRelayedAndThisStoresOwnIsItsOwn(t *testing.T) {
 	d := buildContentDesk(t)
-	w := requestAs(t, d.h, asService, "GET", "/api/boards/"+d.boardID+"/cards?sort=importance", nil)
+	w := requestAs(t, d.h, asService, "GET", "/boards/"+d.boardID+"/cards?sort=importance", nil)
 	mustStatus(t, w, 400, "a sort noteboard does not have")
-	if !strings.Contains(w.Body.String(), "GET /api/items/query-options") {
+	if !strings.Contains(w.Body.String(), "GET /items/query-options") {
 		t.Errorf("400 body = %s, want noteboard's own words naming where its sorts are served", w.Body.String())
 	}
 	asked := d.notes.queries
 	for _, query := range []string{"?priority=high", "?due_before=tomorrow", "?due_before=" + url.QueryEscape("2026-09-20 17:00")} {
-		mustStatus(t, requestAs(t, d.h, asService, "GET", "/api/boards/"+d.boardID+"/cards"+query, nil), 400, "board "+query)
+		mustStatus(t, requestAs(t, d.h, asService, "GET", "/boards/"+d.boardID+"/cards"+query, nil), 400, "board "+query)
 	}
 	if d.notes.queries != asked {
 		t.Errorf("a request this store could refuse itself still went to noteboard")
@@ -181,7 +181,7 @@ func TestNoteboardsRefusalIsRelayedAndThisStoresOwnIsItsOwn(t *testing.T) {
 // sending its card ids to noteboard to be "filtered" by nothing.
 func TestAnUnfilteredReadNeverAsksNoteboardToFilter(t *testing.T) {
 	d := buildContentDesk(t)
-	for _, target := range []string{"/api/boards/" + d.boardID + "/cards", "/api/boards/" + d.boardID + "/cards?assignee=" + alice + "&limit=2", "/api/columns/" + d.columnID + "/cards?limit=2&offset=2"} {
+	for _, target := range []string{"/boards/" + d.boardID + "/cards", "/boards/" + d.boardID + "/cards?assignee=" + alice + "&limit=2", "/columns/" + d.columnID + "/cards?limit=2&offset=2"} {
 		mustStatus(t, requestAs(t, d.h, asService, "GET", target, nil), 200, target)
 	}
 	if d.notes.queries != 0 {

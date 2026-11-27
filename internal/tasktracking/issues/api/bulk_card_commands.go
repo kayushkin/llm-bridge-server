@@ -121,7 +121,7 @@ func validateBulkCardCommandRequest(request *model.BulkCardCommandRequest) error
 	}
 	read, known := reads[request.Command]
 	if !known {
-		return fmt.Errorf("command %q is not one of %v (GET /api/bulk-card-commands)", request.Command, model.BulkCardCommands)
+		return fmt.Errorf("command %q is not one of %v (GET /bulk-card-commands)", request.Command, model.BulkCardCommands)
 	}
 	if read.required && !set[read.field] {
 		return fmt.Errorf("command %q needs %s", request.Command, read.field)
@@ -189,7 +189,7 @@ func (a *API) runAsSingleCardRequest(bulk *http.Request, method, path string, he
 }
 
 func (a *API) runBulkCommandOnCard(bulk *http.Request, request *model.BulkCardCommandRequest, index int, cardID string) model.BulkCardCommandResult {
-	cardPath := "/api/cards/" + url.PathEscape(cardID)
+	cardPath := "/cards/" + url.PathEscape(cardID)
 	var answer *capturedResponse
 	switch request.Command {
 	case model.BulkCommandMove:

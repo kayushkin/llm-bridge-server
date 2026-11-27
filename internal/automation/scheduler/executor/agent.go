@@ -26,9 +26,9 @@ import (
 // identical in shape to what bridge-ui sends, naming the model-store role the
 // session runs on: the job's model_role, or the agent_job_model_role setting.
 type AgentExecutor struct {
-	client       *natsbus.Client
-	bridge       Bridge
-	noteboardURL string
+	client   *natsbus.Client
+	bridge   Bridge
+	notesURL string
 	// defaultModelRole reads the agent_job_model_role setting when a run
 	// starts, so a change on the settings page applies to the next session.
 	defaultModelRole func() string
@@ -54,16 +54,16 @@ type Bridge interface {
 // message has not become a session yet, or never will.
 var ErrSessionNotFound = errors.New("session not found")
 
-// NewAgentExecutor takes noteboard's address from the caller, which reads it
+// NewAgentExecutor takes the address of notes from the caller, which reads it
 // from the service's settings; this package reads no environment variable.
-// noteboardURL is where a job's agent reads and rewrites its working memory.
+// notesURL is where a job's agent reads and rewrites its working memory.
 // defaultModelRole returns the role a job that names none starts its session
 // on, and modelRoles checks that the session's harness can run it.
-func NewAgentExecutor(client *natsbus.Client, bridge Bridge, noteboardURL string, defaultModelRole func() string, modelRoles sessionmodelrole.RoleChecker) *AgentExecutor {
+func NewAgentExecutor(client *natsbus.Client, bridge Bridge, notesURL string, defaultModelRole func() string, modelRoles sessionmodelrole.RoleChecker) *AgentExecutor {
 	return &AgentExecutor{
 		client:           client,
 		bridge:           bridge,
-		noteboardURL:     strings.TrimRight(noteboardURL, "/"),
+		notesURL:         strings.TrimRight(notesURL, "/"),
 		defaultModelRole: defaultModelRole,
 		modelRoles:       modelRoles,
 	}
@@ -113,7 +113,7 @@ func (e *AgentExecutor) firstEnabledInstance(h msg.Harness) (string, error) {
 // SessionID and WorkspaceID are the job's two kinds of memory, and they are not
 // redundant. SessionID is the conversation: rich, free, and LOSSY — compaction
 // erodes it and the bridge's reaper eventually discards the process. WorkspaceID
-// is a noteboard workspace: a markdown document the agent rewrites each run,
+// is a workspace in notes: a markdown document the agent rewrites each run,
 // which survives compaction, reaping, and a fresh session entirely. So the
 // workspace is the source of truth and the session is only an optimization — a
 // job with a workspace but no session still remembers everything that matters.
@@ -137,18 +137,18 @@ type AgentRun struct {
 // written into every job's prompt by hand: a convention each job re-states is
 // one every job can quietly get wrong, and the whole point of the workspace is
 // that the agent cannot silently forget it has one.
-func workingMemoryPreamble(noteboardURL, workspaceID string) string {
-	base := noteboardURL
+func workingMemoryPreamble(notesURL, workspaceID string) string {
+	base := notesURL
 	return fmt.Sprintf(`## Your working memory
 
-This job has a durable memory: noteboard workspace %[1]s. It is the only thing
+This job has a durable memory: workspace %[1]s, in notes. It is the only thing
 about you that survives between runs — your conversation context does not.
 
 READ IT FIRST, before you do anything else:
-    curl -sfS %[2]s/api/items/%[1]s
+    curl -sfS %[2]s/items/%[1]s
 
 REWRITE IT LAST, so the next run inherits what you learned:
-    curl -sfS -X PATCH %[2]s/api/items/%[1]s \
+    curl -sfS -X PATCH %[2]s/items/%[1]s \
       -H 'Content-Type: application/json' \
       -d '{"body": "<the full updated markdown>"}'
 
@@ -157,7 +157,7 @@ what you already escalated, and what the human decided — so you neither repeat
 work nor re-raise something that was already dismissed.
 
 Rewriting is safe: every prior version is kept, and you can read them back with
-GET %[2]s/api/items/%[1]s/revisions. So do not hoard: summarize aggressively and
+GET %[2]s/items/%[1]s/revisions. So do not hoard: summarize aggressively and
 keep the workspace small enough for a human to read in one sitting. If it has
 grown past that, split the detail into child workspaces (create an item of type
 workspace with parent_id=%[1]s) and leave a short roll-up here.
@@ -181,7 +181,7 @@ func (e *AgentExecutor) Run(run AgentRun) Result {
 		orchestrator = "claude-code"
 	}
 	if run.WorkspaceID != "" {
-		prompt = workingMemoryPreamble(e.noteboardURL, run.WorkspaceID) + prompt
+		prompt = workingMemoryPreamble(e.notesURL, run.WorkspaceID) + prompt
 	}
 
 	now := time.Now().UTC()

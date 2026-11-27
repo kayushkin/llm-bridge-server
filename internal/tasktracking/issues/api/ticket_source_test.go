@@ -14,7 +14,7 @@ const sourceEmailRef = "gmail-work:18f2a0c4b1d9e7aa"
 
 func putTicketFrom(t *testing.T, h http.Handler, cardID, sourceType, sourceRef string) *httptest.ResponseRecorder {
 	t.Helper()
-	return do(t, h, "PUT", "/api/cards/"+cardID+"/ticket", model.TicketWriteRequest{
+	return do(t, h, "PUT", "/cards/"+cardID+"/ticket", model.TicketWriteRequest{
 		RequesterPrincipalID: requesterContact, Channel: "email",
 		SourceEntityType: sourceType, SourceEntityRef: sourceRef,
 	})
@@ -52,7 +52,7 @@ func TestATicketKeepsTheEmailItCameFrom(t *testing.T) {
 	if w = putTicketFrom(t, f.handler, f.cardID, "email", "gmail-work:another"); w.Code != 409 {
 		t.Fatalf("a different source: want 409, got %d %s", w.Code, w.Body.String())
 	}
-	w = do(t, f.handler, "GET", "/api/cards/"+f.cardID+"/ticket", nil)
+	w = do(t, f.handler, "GET", "/cards/"+f.cardID+"/ticket", nil)
 	decodeSuccessfulResponse(t, w, &view)
 	if view.Ticket.SourceEntityRef != sourceEmailRef {
 		t.Fatalf("the refused write changed the source: %+v", view.Ticket)
@@ -89,14 +89,14 @@ func TestATicketSourceIsAKnownTypeAndARef(t *testing.T) {
 			t.Errorf("%s: want 400, got %d %s", c.name, w.Code, w.Body.String())
 		}
 	}
-	if w := do(t, f.handler, "GET", "/api/cards/"+f.cardID+"/ticket", nil); w.Code != 404 {
+	if w := do(t, f.handler, "GET", "/cards/"+f.cardID+"/ticket", nil); w.Code != 404 {
 		t.Fatalf("a refused write made a ticket: %d %s", w.Code, w.Body.String())
 	}
 }
 
 func listTicketsPage(t *testing.T, h http.Handler, query url.Values) model.TicketList {
 	t.Helper()
-	w := do(t, h, "GET", "/api/tickets?"+query.Encode(), nil)
+	w := do(t, h, "GET", "/tickets?"+query.Encode(), nil)
 	if w.Code != 200 {
 		t.Fatalf("list tickets %s: %d %s", query.Encode(), w.Code, w.Body.String())
 	}
@@ -111,7 +111,7 @@ func TestTicketsListNewestFirstAndPage(t *testing.T) {
 	f := newTicketFixture(t)
 	cardIDs := []string{f.cardID}
 	for _, title := range []string{"second", "third", "chat one"} {
-		w := do(t, f.handler, "POST", "/api/boards/"+f.boardID+"/cards",
+		w := do(t, f.handler, "POST", "/boards/"+f.boardID+"/cards",
 			model.CreateCardRequest{Title: title, ColumnID: f.newColumnID})
 		var card model.CardView
 		decodeSuccessfulResponse(t, w, &card)
@@ -149,7 +149,7 @@ func TestTicketsListNewestFirstAndPage(t *testing.T) {
 	if len(all.Tickets) != 4 {
 		t.Fatalf("no channel filter should list every ticket, got %d", len(all.Tickets))
 	}
-	if w := do(t, f.handler, "GET", "/api/tickets?channel=fax", nil); w.Code != 400 {
+	if w := do(t, f.handler, "GET", "/tickets?channel=fax", nil); w.Code != 400 {
 		t.Fatalf("unknown channel: want 400, got %d", w.Code)
 	}
 }
@@ -161,11 +161,11 @@ func TestTheTicketListHidesBoardsTheCallerCannotView(t *testing.T) {
 	h, grants, _ := setupWithPrincipalEnforcement(t)
 	f := buildTwoBoards(t, h, grants)
 	for _, cardID := range []string{f.supportCardID, f.financeCardID, f.sharedCardID} {
-		mustStatus(t, requestAs(t, h, asService, "PUT", "/api/cards/"+cardID+"/ticket",
+		mustStatus(t, requestAs(t, h, asService, "PUT", "/cards/"+cardID+"/ticket",
 			model.TicketWriteRequest{RequesterPrincipalID: requesterContact, Channel: "email"}), 200, "service writes ticket")
 	}
 
-	w := requestAs(t, h, asPrincipal(bob), "GET", "/api/tickets?limit=1", nil)
+	w := requestAs(t, h, asPrincipal(bob), "GET", "/tickets?limit=1", nil)
 	mustStatus(t, w, 200, "bob lists tickets")
 	var page model.TicketList
 	decodeSuccessfulResponse(t, w, &page)
@@ -174,7 +174,7 @@ func TestTheTicketListHidesBoardsTheCallerCannotView(t *testing.T) {
 		seen[entry.Ticket.CardID] = entry
 	}
 	for page.NextBefore != nil {
-		w = requestAs(t, h, asPrincipal(bob), "GET", "/api/tickets?limit=1&before="+url.QueryEscape(page.NextBefore.Format(time.RFC3339Nano)), nil)
+		w = requestAs(t, h, asPrincipal(bob), "GET", "/tickets?limit=1&before="+url.QueryEscape(page.NextBefore.Format(time.RFC3339Nano)), nil)
 		mustStatus(t, w, 200, "bob lists the next page")
 		page = model.TicketList{}
 		decodeSuccessfulResponse(t, w, &page)

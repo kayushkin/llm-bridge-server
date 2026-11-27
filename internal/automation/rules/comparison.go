@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -188,11 +189,14 @@ func (s *Store) checkEffect(ctx context.Context, run Run, effect PlannedEffect, 
 	return check, nil
 }
 
-// cardIDFromMovePath reads the card id out of /api/cards/{id}/move.
+// cardIDFromMovePath reads the card id out of /cards/{id}/move, or out of
+// /api/cards/{id}/move, the path a run decided before 2026-11-27 recorded.
 func cardIDFromMovePath(path string) string {
-	const prefix, suffix = "/api/cards/", "/move"
-	if len(path) > len(prefix)+len(suffix) {
-		return path[len(prefix) : len(path)-len(suffix)]
+	const suffix = "/move"
+	for _, prefix := range []string{"/cards/", "/api/cards/"} {
+		if strings.HasPrefix(path, prefix) && strings.HasSuffix(path, suffix) && len(path) > len(prefix)+len(suffix) {
+			return path[len(prefix) : len(path)-len(suffix)]
+		}
 	}
 	return ""
 }

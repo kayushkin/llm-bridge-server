@@ -13,7 +13,7 @@ func TestCardPageIncludesReviewedLabelsAndTheirVersion(t *testing.T) {
 	billing := f.value("category", "billing")
 	decision := f.publish(f.publication(f.cardID, "op-page", []string{billing}, []string{}), 201)
 	accepted, _ := f.review(asPrincipal(activePrincipal), decision.ID, model.ClassificationReviewRequest{IdempotencyKey: "page-review", Action: model.ClassificationReviewActionAccept, AxisIDs: []string{category}}, 201)
-	response := f.send(asPrincipal(activePrincipal), "GET", "/api/boards/"+f.boardID+"/card-page?limit=1&offset=0&card_id="+f.cardID, "", nil)
+	response := f.send(asPrincipal(activePrincipal), "GET", "/boards/"+f.boardID+"/card-page?limit=1&offset=0&card_id="+f.cardID, "", nil)
 	if response.Code != 200 {
 		t.Fatalf("page: %d %s", response.Code, response.Body.String())
 	}

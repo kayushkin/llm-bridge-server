@@ -21,13 +21,13 @@ func TestCardWritesSayMissingAs404AndFailureAs502(t *testing.T) {
 		name, method, path string
 		body               any
 	}{
-		{"patch", "PATCH", "/api/cards/nb-missing", map[string]any{"title": "x"}},
-		{"patch priority", "PATCH", "/api/cards/nb-missing", map[string]any{"priority": 2}},
-		{"delete", "DELETE", "/api/cards/nb-missing", nil},
-		{"hard delete", "DELETE", "/api/cards/nb-missing?hard=true", nil},
-		{"hold", "POST", "/api/cards/nb-missing/hold", map[string]string{"reason": "r"}},
-		{"unhold", "POST", "/api/cards/nb-missing/unhold", nil},
-		{"attach", "PUT", "/api/boards/" + boardID + "/cards/nb-missing", model.AttachCardRequest{ColumnID: colID}},
+		{"patch", "PATCH", "/cards/nb-missing", map[string]any{"title": "x"}},
+		{"patch priority", "PATCH", "/cards/nb-missing", map[string]any{"priority": 2}},
+		{"delete", "DELETE", "/cards/nb-missing", nil},
+		{"hard delete", "DELETE", "/cards/nb-missing?hard=true", nil},
+		{"hold", "POST", "/cards/nb-missing/hold", map[string]string{"reason": "r"}},
+		{"unhold", "POST", "/cards/nb-missing/unhold", nil},
+		{"attach", "PUT", "/boards/" + boardID + "/cards/nb-missing", model.AttachCardRequest{ColumnID: colID}},
 	}
 
 	for _, write := range writes {

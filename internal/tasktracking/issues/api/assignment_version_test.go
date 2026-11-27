@@ -9,7 +9,7 @@ func TestAssignmentETagRejectsStaleAutomaticAssignment(t *testing.T) {
 	h, _, cleanup := setup(t)
 	defer cleanup()
 	_, _, id := assignmentTestCard(t, h)
-	path := "/api/cards/" + id + "/assignments"
+	path := "/cards/" + id + "/assignments"
 	snapshot := do(t, h, "GET", path, nil)
 	version := snapshot.Header().Get("ETag")
 	if version == "" {

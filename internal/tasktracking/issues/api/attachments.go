@@ -15,7 +15,7 @@ import (
 // Files on a card.
 //
 // file-store owns a file and decides nothing about who may read it. This store
-// decides: the routes below sit under /api/cards/{id}/, so the gate has already
+// decides: the routes below sit under /cards/{id}/, so the gate has already
 // held the caller to the card — view to list and download, edit to attach and
 // remove — before any of them runs. A file is reached only through the card it
 // hangs on, never by its id alone, which is what makes "who may read this
@@ -52,7 +52,7 @@ func writeFileStoreFailure(w http.ResponseWriter, err error) {
 func attachmentVisibilityFrom(raw string) (model.NoteVisibility, error) {
 	visibility := model.NoteVisibility(raw)
 	if visibility != "" && !model.ValidNoteVisibility(visibility) {
-		return "", fmt.Errorf("visibility %q is not one of %v (GET /api/note-visibilities)", raw, model.NoteVisibilities)
+		return "", fmt.Errorf("visibility %q is not one of %v (GET /note-visibilities)", raw, model.NoteVisibilities)
 	}
 	return visibility, nil
 }
@@ -93,7 +93,7 @@ func (a *API) cardAttachments(w http.ResponseWriter, r *http.Request, cardID str
 	}
 }
 
-// attachFileToCard is POST /api/cards/{id}/attachments?filename=…[&visibility=…].
+// attachFileToCard is POST /cards/{id}/attachments?filename=…[&visibility=…].
 // The body is the file's bytes and Content-Type is what they are.
 func (a *API) attachFileToCard(w http.ResponseWriter, r *http.Request, cardID string) {
 	visibility, err := attachmentVisibilityFrom(r.URL.Query().Get("visibility"))
@@ -154,7 +154,7 @@ func (a *API) recordAttachmentEvent(r *http.Request, kind model.EventKind, attac
 	})
 }
 
-// cardAttachmentByFile is DELETE /api/cards/{id}/attachments/{file_id}: the
+// cardAttachmentByFile is DELETE /cards/{id}/attachments/{file_id}: the
 // file comes off the card and is deleted in file-store, reversibly there.
 func (a *API) cardAttachmentByFile(w http.ResponseWriter, r *http.Request, cardID, fileID string) {
 	if !a.requireFileStore(w) {

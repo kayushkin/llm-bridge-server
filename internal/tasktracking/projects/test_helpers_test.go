@@ -26,14 +26,14 @@ func newTestStore(t *testing.T) *Store {
 	return New(postgrestest.NewDatabase(t, module).Open(module))
 }
 
-// httpNoteboard is Noteboard over a fake noteboard's HTTP routes, as the
+// httpNotesAndIssues is NotesAndIssues over a fake noteboard's HTTP routes, as the
 // standalone store called noteboard before both moved into one process.
-type httpNoteboard struct {
+type httpNotesAndIssues struct {
 	client *http.Client
 	url    string
 }
 
-func (noteboard httpNoteboard) call(ctx context.Context, method, path string, body any, wantStatus int, target any) error {
+func (noteboard httpNotesAndIssues) call(ctx context.Context, method, path string, body any, wantStatus int, target any) error {
 	var reader io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -60,27 +60,27 @@ func (noteboard httpNoteboard) call(ctx context.Context, method, path string, bo
 	return json.NewDecoder(response.Body).Decode(target)
 }
 
-func (noteboard httpNoteboard) ItemTitle(ctx context.Context, id string) (string, error) {
-	var item NoteboardItem
+func (noteboard httpNotesAndIssues) ItemTitle(ctx context.Context, id string) (string, error) {
+	var item LinkedItem
 	err := noteboard.call(ctx, http.MethodGet, "/api/items/"+id, nil, http.StatusOK, &item)
 	return item.Title, err
 }
 
-func (noteboard httpNoteboard) LinkedItems(ctx context.Context, ids []string) ([]NoteboardItem, []string, error) {
+func (noteboard httpNotesAndIssues) LinkedItems(ctx context.Context, ids []string) ([]LinkedItem, []string, error) {
 	var answer struct {
-		Items      []NoteboardItem `json:"items"`
-		MissingIDs []string        `json:"missing_ids"`
+		Items      []LinkedItem `json:"items"`
+		MissingIDs []string     `json:"missing_ids"`
 	}
 	err := noteboard.call(ctx, http.MethodPost, "/api/items/query", map[string]any{"ids": ids, "include_items": true, "limit": len(ids)}, http.StatusOK, &answer)
 	return answer.Items, answer.MissingIDs, err
 }
 
-func (noteboard httpNoteboard) CreateTodo(ctx context.Context, title, body string, tags []string, priority *int) (NoteboardItem, error) {
+func (noteboard httpNotesAndIssues) CreateTodo(ctx context.Context, title, body string, tags []string, priority *int) (LinkedItem, error) {
 	todo := map[string]any{"type": "todo", "title": title, "body": body, "tags": tags}
 	if priority != nil {
 		todo["priority"] = *priority
 	}
-	var item NoteboardItem
+	var item LinkedItem
 	err := noteboard.call(ctx, http.MethodPost, "/api/items", todo, http.StatusCreated, &item)
 	return item, err
 }

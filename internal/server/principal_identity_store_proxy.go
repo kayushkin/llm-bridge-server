@@ -14,7 +14,7 @@ package server
 
 const (
 	// issuesMountPrefix is where kanban-store is mounted, with the remainder
-	// answered at its root, unchanged: /issues/api/… reaches /api/….
+	// answered at its root, unchanged: /issues/boards reaches /boards.
 	// kanban-store runs in this process (kanban_store_routes.go), so it is
 	// not proxied: the caller reaches it through the request context, not a
 	// header.

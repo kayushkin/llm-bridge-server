@@ -27,7 +27,7 @@ func newTicketFixture(t *testing.T) ticketFixture {
 	fixture.openColumnID = mkLifecycleColumn(t, h, boardID, "Working", model.TicketLifecycleOpen)
 	fixture.resolvedColumnID = mkLifecycleColumn(t, h, boardID, "Resolved", model.TicketLifecycleResolved)
 
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/cards",
+	w := do(t, h, "POST", "/boards/"+boardID+"/cards",
 		model.CreateCardRequest{Title: "printer on fire", ColumnID: fixture.newColumnID})
 	if w.Code != 201 {
 		t.Fatalf("create card: %d %s", w.Code, w.Body.String())
@@ -41,7 +41,7 @@ func newTicketFixture(t *testing.T) ticketFixture {
 func mkLifecycleColumn(t *testing.T, h http.Handler, boardID, name string, state model.TicketLifecycleState) string {
 	t.Helper()
 	lifecycle := string(state)
-	w := do(t, h, "POST", "/api/boards/"+boardID+"/columns",
+	w := do(t, h, "POST", "/boards/"+boardID+"/columns",
 		model.CreateColumnRequest{Name: name, LifecycleState: &lifecycle})
 	if w.Code != 201 {
 		t.Fatalf("create column %s: %d %s", name, w.Code, w.Body.String())
@@ -56,7 +56,7 @@ func mkLifecycleColumn(t *testing.T, h http.Handler, boardID, name string, state
 
 func putTicket(t *testing.T, h http.Handler, cardID, requester, channel string) *httptest.ResponseRecorder {
 	t.Helper()
-	return do(t, h, "PUT", "/api/cards/"+cardID+"/ticket",
+	return do(t, h, "PUT", "/cards/"+cardID+"/ticket",
 		model.TicketWriteRequest{RequesterPrincipalID: requester, Channel: channel})
 }
 
@@ -82,12 +82,12 @@ func TestATicketReadsItsLifecycleFromItsColumn(t *testing.T) {
 	}
 
 	// Move the card; the state follows, with nothing written to the ticket.
-	w = do(t, f.handler, "POST", "/api/cards/"+f.cardID+"/move",
+	w = do(t, f.handler, "POST", "/cards/"+f.cardID+"/move",
 		model.MoveCardRequest{BoardID: f.boardID, ColumnID: f.resolvedColumnID, Position: 1})
 	if w.Code != 200 {
 		t.Fatalf("move: %d %s", w.Code, w.Body.String())
 	}
-	w = do(t, f.handler, "GET", "/api/cards/"+f.cardID+"/ticket", nil)
+	w = do(t, f.handler, "GET", "/cards/"+f.cardID+"/ticket", nil)
 	decodeSuccessfulResponse(t, w, &view)
 	if *view.States[0].LifecycleState != model.TicketLifecycleResolved {
 		t.Fatalf("after the move the ticket is resolved, got %+v", view.States[0])
@@ -105,11 +105,11 @@ func TestAnUnclassifiedColumnReportsNoLifecycle(t *testing.T) {
 	if w := putTicket(t, f.handler, f.cardID, requesterContact, "portal"); w.Code != 200 {
 		t.Fatalf("put ticket: %d %s", w.Code, w.Body.String())
 	}
-	if w := do(t, f.handler, "POST", "/api/cards/"+f.cardID+"/move",
+	if w := do(t, f.handler, "POST", "/cards/"+f.cardID+"/move",
 		model.MoveCardRequest{BoardID: f.boardID, ColumnID: plainColumn, Position: 1}); w.Code != 200 {
 		t.Fatalf("move: %d %s", w.Code, w.Body.String())
 	}
-	w := do(t, f.handler, "GET", "/api/cards/"+f.cardID+"/ticket", nil)
+	w := do(t, f.handler, "GET", "/cards/"+f.cardID+"/ticket", nil)
 	var view model.TicketView
 	decodeSuccessfulResponse(t, w, &view)
 	if len(view.States) != 1 || view.States[0].LifecycleState != nil {
@@ -126,12 +126,12 @@ func TestACardOnTwoBoardsAnswersBothStates(t *testing.T) {
 	}
 	secondBoard := mkBoard(t, f.handler, "Team board")
 	secondColumn := mkLifecycleColumn(t, f.handler, secondBoard, "In progress", model.TicketLifecycleOpen)
-	if w := do(t, f.handler, "PUT", "/api/boards/"+secondBoard+"/cards/"+f.cardID,
+	if w := do(t, f.handler, "PUT", "/boards/"+secondBoard+"/cards/"+f.cardID,
 		model.AttachCardRequest{ColumnID: secondColumn}); w.Code != 201 {
 		t.Fatalf("attach to the second board: %d %s", w.Code, w.Body.String())
 	}
 
-	w := do(t, f.handler, "GET", "/api/cards/"+f.cardID+"/ticket", nil)
+	w := do(t, f.handler, "GET", "/cards/"+f.cardID+"/ticket", nil)
 	var view model.TicketView
 	decodeSuccessfulResponse(t, w, &view)
 	if len(view.States) != 2 {
@@ -167,7 +167,7 @@ func TestTheRequesterMustBeAContact(t *testing.T) {
 		t.Fatalf("a malformed id: want 400, got %d %s", w.Code, w.Body.String())
 	}
 	// Nothing was written by any of those.
-	if w := do(t, f.handler, "GET", "/api/cards/"+f.cardID+"/ticket", nil); w.Code != 404 {
+	if w := do(t, f.handler, "GET", "/cards/"+f.cardID+"/ticket", nil); w.Code != 404 {
 		t.Fatalf("no ticket should exist yet: %d %s", w.Code, w.Body.String())
 	}
 }
@@ -186,7 +186,7 @@ func TestAnUnknownChannelNamesTheVocabulary(t *testing.T) {
 		}
 	}
 	// An unknown field is refused too, rather than dropped.
-	raw := httptest.NewRequest("PUT", "/api/cards/"+f.cardID+"/ticket",
+	raw := httptest.NewRequest("PUT", "/cards/"+f.cardID+"/ticket",
 		strings.NewReader(`{"requester_principal_id":"`+requesterContact+`","channel":"email","status":"open"}`))
 	raw.Header.Set(testServiceTokenHeader, testServiceToken)
 	recorder := httptest.NewRecorder()
@@ -203,17 +203,17 @@ func TestDeletingATicketLeavesTheCard(t *testing.T) {
 	if w := putTicket(t, f.handler, f.cardID, requesterContact, "phone"); w.Code != 200 {
 		t.Fatalf("put: %d %s", w.Code, w.Body.String())
 	}
-	if w := do(t, f.handler, "DELETE", "/api/cards/"+f.cardID+"/ticket", nil); w.Code != 200 {
+	if w := do(t, f.handler, "DELETE", "/cards/"+f.cardID+"/ticket", nil); w.Code != 200 {
 		t.Fatalf("delete: %d %s", w.Code, w.Body.String())
 	}
-	if w := do(t, f.handler, "GET", "/api/cards/"+f.cardID+"/ticket", nil); w.Code != 404 {
+	if w := do(t, f.handler, "GET", "/cards/"+f.cardID+"/ticket", nil); w.Code != 404 {
 		t.Fatalf("the ticket is gone: %d", w.Code)
 	}
-	if w := do(t, f.handler, "DELETE", "/api/cards/"+f.cardID+"/ticket", nil); w.Code != 404 {
+	if w := do(t, f.handler, "DELETE", "/cards/"+f.cardID+"/ticket", nil); w.Code != 404 {
 		t.Fatalf("deleting a ticket that is not there is a 404, got %d", w.Code)
 	}
 	// The card is still on its board.
-	w := do(t, f.handler, "GET", "/api/cards/"+f.cardID+"/placements", nil)
+	w := do(t, f.handler, "GET", "/cards/"+f.cardID+"/placements", nil)
 	var placements []model.Placement
 	decodeSuccessfulResponse(t, w, &placements)
 	if len(placements) != 1 {
@@ -228,7 +228,7 @@ func TestTheBoardViewCarriesTickets(t *testing.T) {
 	if w := putTicket(t, f.handler, f.cardID, requesterContact, "chat"); w.Code != 200 {
 		t.Fatalf("put: %d %s", w.Code, w.Body.String())
 	}
-	w := do(t, f.handler, "GET", "/api/boards/"+f.boardID+"/cards", nil)
+	w := do(t, f.handler, "GET", "/boards/"+f.boardID+"/cards", nil)
 	var view model.BoardView
 	decodeSuccessfulResponse(t, w, &view)
 	found := false
@@ -252,11 +252,11 @@ func TestTheBoardViewCarriesTickets(t *testing.T) {
 // values happen to be in the rows.
 func TestTicketVocabulariesAreServed(t *testing.T) {
 	h, _, _ := setup(t)
-	w := do(t, h, "GET", "/api/ticket-channels", nil)
+	w := do(t, h, "GET", "/ticket-channels", nil)
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `"email"`) {
 		t.Fatalf("channels: %d %s", w.Code, w.Body.String())
 	}
-	w = do(t, h, "GET", "/api/ticket-lifecycle-states", nil)
+	w = do(t, h, "GET", "/ticket-lifecycle-states", nil)
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `"waiting_on_requester"`) {
 		t.Fatalf("lifecycle states: %d %s", w.Code, w.Body.String())
 	}

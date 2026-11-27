@@ -40,7 +40,7 @@ func (a *API) ticketLifecycleStates(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, model.TicketLifecycleStates)
 }
 
-// cardTicket is GET | PUT | DELETE /api/cards/{id}/ticket.
+// cardTicket is GET | PUT | DELETE /cards/{id}/ticket.
 func (a *API) cardTicket(w http.ResponseWriter, r *http.Request, cardID string) {
 	switch r.Method {
 	case http.MethodGet:
@@ -124,7 +124,7 @@ func (a *API) putCardTicket(w http.ResponseWriter, r *http.Request, cardID strin
 			return
 		}
 		if !known {
-			writeError(w, 400, fmt.Sprintf("source_entity_type %q is not a reference type (GET /api/entity-types, which is reference-store's list)", request.SourceEntityType))
+			writeError(w, 400, fmt.Sprintf("source_entity_type %q is not a reference type (GET /entity-types, which is reference-store's list)", request.SourceEntityType))
 			return
 		}
 	}
@@ -197,7 +197,7 @@ const (
 	maxTicketListLimit     = 200
 )
 
-// listTickets is GET /api/tickets: every ticket the caller can view, newest
+// listTickets is GET /tickets: every ticket the caller can view, newest
 // first, across boards. ?channel= narrows to one channel; ?before= (RFC 3339,
 // the previous page's next_before) and ?limit= page it.
 func (a *API) listTickets(w http.ResponseWriter, r *http.Request) {
