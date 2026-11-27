@@ -10,8 +10,6 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/agents"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
-	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient/kanbanclienttest"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	issuesapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/api"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -19,9 +17,9 @@ import (
 
 // fakeKanbanCards answers a card's tags for the cards given, and 404 for any
 // other card.
-func fakeKanbanCards(t *testing.T, tagsByCard map[string][]string) *kanbanclient.Client {
+func fakeKanbanCards(t *testing.T, tagsByCard map[string][]string) *issueReader {
 	t.Helper()
-	return kanbanclient.New(&kanbanclienttest.Store{CardTagsAnswer: func(cardID string) ([]string, error) {
+	return newIssueReader(&fakeIssueStore{CardTagsAnswer: func(cardID string) ([]string, error) {
 		tags, known := tagsByCard[cardID]
 		if !known {
 			return nil, &issuesapi.Refusal{Status: http.StatusNotFound, Message: "card not found"}
@@ -90,7 +88,7 @@ func harnessConfigString(t *testing.T, sess *store.Session, key string) (string,
 // go in follows the harness's delivery: Claude Code keeps its own system
 // prompt and gets the text appended; Codex gets it as its whole prompt.
 func TestInjectedContextFollowsTheCardTagsAndTheDelivery(t *testing.T) {
-	srv := &Server{cfg: &config.Config{}, agentStore: contextTestAgentStore(t), kanbanClient: fakeKanbanCards(t, map[string][]string{"card-billing": {"billing"}, "card-other": {"ops"}})}
+	srv := &Server{cfg: &config.Config{}, agentStore: contextTestAgentStore(t), issueReads: fakeKanbanCards(t, map[string][]string{"card-billing": {"billing"}, "card-other": {"ops"}})}
 	ctx := context.Background()
 
 	claudeCode := &store.Session{SessionID: "br_cc", Harness: msg.HarnessClaudeCode, CardID: "card-billing"}
@@ -128,7 +126,7 @@ func TestInjectedContextFollowsTheCardTagsAndTheDelivery(t *testing.T) {
 // The prompt is looked up in the directory the harness runs in, by the same
 // rule the spawn uses: the session's own directory, else the instance's.
 func TestInjectedContextUsesTheSpawnsWorkingDirectory(t *testing.T) {
-	srv := &Server{cfg: &config.Config{}, agentStore: contextTestAgentStore(t), kanbanClient: fakeKanbanCards(t, map[string][]string{"card-billing": {"billing"}})}
+	srv := &Server{cfg: &config.Config{}, agentStore: contextTestAgentStore(t), issueReads: fakeKanbanCards(t, map[string][]string{"card-billing": {"billing"}})}
 	for name, run := range map[string]struct {
 		sess *store.Session
 		inst *msg.Instance
@@ -146,7 +144,7 @@ func TestInjectedContextUsesTheSpawnsWorkingDirectory(t *testing.T) {
 // A session names a card kanban-store has, or is not created.
 func TestCreateSessionChecksItsCard(t *testing.T) {
 	srv, st, instID := testServerWithInstance(t, msg.HarnessClaudeCode)
-	srv.kanbanClient = fakeKanbanCards(t, map[string][]string{"card-billing": {"billing"}})
+	srv.issueReads = fakeKanbanCards(t, map[string][]string{"card-billing": {"billing"}})
 	create := func(cardID string) *http.Response {
 		return doJSON(t, srv, "POST", "/sessions", msg.CreateSessionRequest{
 			Type: msg.SessionTypeInteractive, Purpose: msg.PurposeChat, Origin: "test",

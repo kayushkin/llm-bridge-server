@@ -406,8 +406,8 @@ func (s *Server) operationIsOwnedByPrincipal(operationID, principalID string) bo
 // wired to its own one-shot path. main hands them to the coordinator.
 func (s *Server) OperationExecutors() []operations.Executor {
 	var boardStore executors.BoardClassificationStore
-	if s.kanbanClient != nil {
-		boardStore = s.kanbanClient
+	if s.issueReads != nil {
+		boardStore = s.issueReads
 	}
 	return []operations.Executor{executors.ModelClassifier{Caller: s, Taxonomies: s}, executors.BoardClassifier{Caller: s, Store: boardStore}, executors.LLMCompletion{Caller: s}}
 }
@@ -452,10 +452,14 @@ func (s *Server) checkOneShotInstanceByProvider(value string) error {
 
 // BoardTaxonomy implements executors.TaxonomyReader with kanban-store.
 func (s *Server) BoardTaxonomy(ctx context.Context, boardID, principalID string) (msg.ClassificationTaxonomy, string, error) {
-	if s.kanbanClient == nil {
+	if s.issueReads == nil {
 		return msg.ClassificationTaxonomy{}, "", errors.New("kanban-store is not configured, so no board taxonomy can be read")
 	}
-	return s.kanbanClient.BoardTaxonomy(ctx, boardID, principalID)
+	taxonomy, revision, err := s.issueReads.BoardTaxonomy(ctx, boardID, principalID)
+	if errors.Is(err, errIssueNotFound) {
+		return msg.ClassificationTaxonomy{}, "", fmt.Errorf("%w: %w", executors.ErrTaxonomyBoardNotFound, err)
+	}
+	return taxonomy, revision, err
 }
 
 // ModelListPrice reads a model's list price from model-store. A model it

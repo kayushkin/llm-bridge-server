@@ -314,16 +314,16 @@ func TestGrantStoreChecksABoardWithKanbanStoreInProcess(t *testing.T) {
 // service: a card's tags at spawn, and the board's defaults.
 func TestThisServersOwnKanbanReadsGoInProcess(t *testing.T) {
 	test := newKanbanTestServer(t)
-	tags, err := test.server.kanbanClient.CardTags(context.Background(), test.unseenCardID)
+	tags, err := test.server.issueReads.CardTags(context.Background(), test.unseenCardID)
 	if err != nil || fmt.Sprint(tags) != "[billing]" {
 		t.Fatalf("CardTags = %v, %v; want [billing]", tags, err)
 	}
-	defaults, err := test.server.kanbanClient.EffectiveDefaults(context.Background(), test.unseenBoardID, test.unseenCardID, nil)
+	defaults, err := test.server.issueReads.EffectiveDefaults(context.Background(), test.unseenBoardID, test.unseenCardID, nil)
 	if err != nil || defaults.BoardID != test.unseenBoardID {
 		t.Fatalf("EffectiveDefaults = %+v, %v", defaults, err)
 	}
 	// A read made as the member is held to the member's grants.
-	if _, _, err := test.server.kanbanClient.BoardTaxonomy(context.Background(), test.unseenBoardID, accessTestMemberID); err == nil {
+	if _, _, err := test.server.issueReads.BoardTaxonomy(context.Background(), test.unseenBoardID, accessTestMemberID); err == nil {
 		t.Fatalf("the member read a board it may not see")
 	}
 }

@@ -17,7 +17,6 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/bundles"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
-	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
 	"github.com/kayushkin/llm-bridge-server/internal/machines"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge-server/internal/textutil"
@@ -508,13 +507,13 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// context sections it injects — a card id nobody has would leave every
 	// spawn without them, far from the request that caused it.
 	if req.CardID != "" {
-		if s.kanbanClient == nil {
+		if s.issueReads == nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "kanban_store_not_configured",
 				"card_id was given but this server has no kanban-store to check it with (kanban-store is off)")
 			return
 		}
-		if _, err := s.kanbanClient.CardTags(r.Context(), req.CardID); err != nil {
-			if errors.Is(err, kanbanclient.ErrNotFound) {
+		if _, err := s.issueReads.CardTags(r.Context(), req.CardID); err != nil {
+			if errors.Is(err, errIssueNotFound) {
 				writeJSONError(w, http.StatusBadRequest, "unknown_card", fmt.Sprintf(
 					"card_id %q is not a card kanban-store has: %v", req.CardID, err))
 				return

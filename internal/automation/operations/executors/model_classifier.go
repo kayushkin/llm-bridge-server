@@ -9,17 +9,23 @@ import (
 	"strings"
 
 	"github.com/kayushkin/llm-bridge-server/internal/automation/operations"
-	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
+// ErrTaxonomyBoardNotFound is a board that is missing, or that the principal
+// a TaxonomyReader reads as may not view.
+var ErrTaxonomyBoardNotFound = errors.New("not found")
+
+// ErrBoardHasNoTaxonomy is a board kanban-store has, with no taxonomy set.
+var ErrBoardHasNoTaxonomy = errors.New("board has no taxonomy")
+
 // TaxonomyReader reads the taxonomy a kanban-store board keeps. The server
-// implements it with its kanban client.
+// implements it with kanban-store in its process.
 type TaxonomyReader interface {
 	// BoardTaxonomy returns the board's taxonomy and the revision it was read
 	// at, read as principalID when set. A board that is missing or not
-	// visible to the principal is kanbanclient.ErrNotFound; a board with no
-	// taxonomy is kanbanclient.ErrBoardHasNoTaxonomy.
+	// visible to the principal is ErrTaxonomyBoardNotFound; a board with no
+	// taxonomy is ErrBoardHasNoTaxonomy.
 	BoardTaxonomy(ctx context.Context, boardID, principalID string) (msg.ClassificationTaxonomy, string, error)
 }
 
@@ -185,10 +191,10 @@ func (classifier ModelClassifier) resolveTaxonomy(ctx context.Context, input msg
 	}
 	taxonomy, version, err := classifier.Taxonomies.BoardTaxonomy(ctx, input.TaxonomyBoardID, principalID)
 	switch {
-	case errors.Is(err, kanbanclient.ErrNotFound):
+	case errors.Is(err, ErrTaxonomyBoardNotFound):
 		refusal := failed("taxonomy_board_not_found", fmt.Sprintf("board %s does not exist or its principal may not view it", input.TaxonomyBoardID))
 		return msg.ClassificationTaxonomy{}, nil, &refusal
-	case errors.Is(err, kanbanclient.ErrBoardHasNoTaxonomy):
+	case errors.Is(err, ErrBoardHasNoTaxonomy):
 		refusal := failed("board_has_no_taxonomy", fmt.Sprintf("board %s keeps no taxonomy; set one on the board first", input.TaxonomyBoardID))
 		return msg.ClassificationTaxonomy{}, nil, &refusal
 	case err != nil:

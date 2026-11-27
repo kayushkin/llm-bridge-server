@@ -24,10 +24,10 @@ import (
 // Failure is not fatal. A signal is a surface on top of work that already
 // happened, and losing the todo pointer must never cost the signal itself.
 func (s *Server) linkedTodoForSession(sessionID string) string {
-	if s.kanbanClient == nil || sessionID == "" {
+	if s.issueReads == nil || sessionID == "" {
 		return ""
 	}
-	todoID, err := s.kanbanClient.LinkedTodoForSession(context.Background(), sessionID)
+	todoID, err := s.issueReads.LinkedTodoForSession(context.Background(), sessionID)
 	if err != nil {
 		log.Printf("[signals] %s: resolve linked todo: %v", sessionID, err)
 		return ""

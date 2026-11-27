@@ -13,8 +13,6 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
-	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient/kanbanclienttest"
 	issuesapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/api"
 )
 
@@ -191,7 +189,7 @@ func newFakeKanbanStore(t *testing.T) *fakeKanbanStore {
 // handler, as EnableKanbanStore does from the store's, and this server's own
 // kanban reads from a store that answers none of them (501).
 func (s *Server) useKanbanStoreHandlerForTests(handler http.Handler) {
-	s.kanbanClient = kanbanclient.New(&kanbanclienttest.Store{})
+	s.issueReads = newIssueReader(&fakeIssueStore{})
 	s.kanbanStore.Store(&kanbanStoreHandlers{handler: handler})
 }
 

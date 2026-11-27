@@ -137,10 +137,10 @@ func (s *Server) sessionContextTags(ctx context.Context, sess *store.Session) ([
 	if sess.CardID == "" {
 		return nil, nil
 	}
-	if s.kanbanClient == nil {
+	if s.issueReads == nil {
 		return nil, fmt.Errorf("session names card %s but this server has no kanban-store to read its tags from (kanban-store is off)", sess.CardID)
 	}
-	tags, err := s.kanbanClient.CardTags(ctx, sess.CardID)
+	tags, err := s.issueReads.CardTags(ctx, sess.CardID)
 	if err != nil {
 		return nil, fmt.Errorf("read the tags of card %s: %w", sess.CardID, err)
 	}

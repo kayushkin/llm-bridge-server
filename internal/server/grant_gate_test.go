@@ -201,7 +201,7 @@ func TestGateRunsAtSpawnToo(t *testing.T) {
 // lost context.
 func TestTheDryRunWarnsOfACardCreateWouldRefuse(t *testing.T) {
 	srv, instanceID := gatedServer(t, map[string][]string{})
-	srv.kanbanClient = fakeKanbanCards(t, map[string][]string{"card-billing": {"billing"}})
+	srv.issueReads = fakeKanbanCards(t, map[string][]string{"card-billing": {"billing"}})
 	for cardID, wantWarning := range map[string]bool{"card-billing": false, "card-nobody-has": true} {
 		resp := doJSON(t, srv, "GET", "/effective-config?instance_id="+instanceID+"&principal_id=principal_000001&card_id="+cardID, nil)
 		answer := decodeJSON[msg.EffectiveConfig](t, resp)

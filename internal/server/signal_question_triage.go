@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -92,7 +91,7 @@ type triageQuestion struct {
 // cardContext is what triage knows about the card the worker is on: its text,
 // and the mail it was filed from when that can be resolved.
 type cardContext struct {
-	Card *kanbanclient.LinkedCard
+	Card *linkedIssueCard
 	// Customer is the sender of the card's oldest linked mail — the person
 	// who asked for the work. Nil when the card has no mail link or mailstack
 	// could not be asked.
@@ -296,10 +295,10 @@ func triagePrompt(question triageQuestion, card cardContext) string {
 // than inventing a name.
 func (s *Server) cardContextForSession(ctx context.Context, sessionID string) cardContext {
 	var out cardContext
-	if s.kanbanClient == nil {
+	if s.issueReads == nil {
 		return out
 	}
-	card, err := s.kanbanClient.LinkedCardForSession(ctx, sessionID)
+	card, err := s.issueReads.LinkedCardForSession(ctx, sessionID)
 	if err != nil {
 		log.Printf("[triage] %s: resolve linked card: %v", sessionID, err)
 		return out
@@ -311,7 +310,7 @@ func (s *Server) cardContextForSession(ctx context.Context, sessionID string) ca
 	if s.mailMessages == nil {
 		return out
 	}
-	links, err := s.kanbanClient.CardLinks(ctx, card.ID)
+	links, err := s.issueReads.CardLinks(ctx, card.ID)
 	if err != nil {
 		log.Printf("[triage] %s: read card %s links: %v", sessionID, card.ID, err)
 		return out
@@ -379,11 +378,11 @@ func (s *Server) triageWithTimeout(question triageQuestion, sessionID string) (*
 // person answering. Best-effort: the timeline is a view of the work, and a
 // store that cannot be reached must not cost the question itself.
 func (s *Server) recordCardWaiting(cardID, sessionID, summary string) {
-	if s.kanbanClient == nil || cardID == "" {
+	if s.issueReads == nil || cardID == "" {
 		return
 	}
 	detail, _ := json.Marshal(map[string]string{"entity_type": "session", "entity_ref": sessionID})
-	err := s.kanbanClient.PostCardEvent(context.Background(), cardID, kanbanclient.CardEvent{
+	err := s.issueReads.PostCardEvent(context.Background(), cardID, issueCardEvent{
 		Kind:    "waiting_started",
 		Actor:   "service:llm-bridge-server",
 		Summary: summary,
@@ -397,11 +396,11 @@ func (s *Server) recordCardWaiting(cardID, sessionID, summary string) {
 // recordCardWaitingEnded is the other half: the answer arrived, the worker
 // has the ball again.
 func (s *Server) recordCardWaitingEnded(cardID, sessionID, summary string) {
-	if s.kanbanClient == nil || cardID == "" {
+	if s.issueReads == nil || cardID == "" {
 		return
 	}
 	detail, _ := json.Marshal(map[string]string{"entity_type": "session", "entity_ref": sessionID})
-	err := s.kanbanClient.PostCardEvent(context.Background(), cardID, kanbanclient.CardEvent{
+	err := s.issueReads.PostCardEvent(context.Background(), cardID, issueCardEvent{
 		Kind:    "waiting_ended",
 		Actor:   "service:llm-bridge-server",
 		Summary: summary,

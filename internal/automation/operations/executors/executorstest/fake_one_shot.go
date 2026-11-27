@@ -11,7 +11,6 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/executors"
-	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -162,7 +161,7 @@ func answerClassification(request msg.OneShotRequest) (json.RawMessage, bool) {
 }
 
 // FakeTaxonomies is a set of boards and the taxonomies they keep. A board
-// missing from Boards is kanbanclient.ErrNotFound; one mapped to nil keeps
+// missing from Boards is executors.ErrTaxonomyBoardNotFound; one mapped to nil keeps
 // no taxonomy. ViewersByBoard, when set for a board, limits which principals
 // may read it.
 type FakeTaxonomies struct {
@@ -179,14 +178,14 @@ func (f FakeTaxonomies) BoardTaxonomy(_ context.Context, boardID, principalID st
 			allowed = allowed || viewer == principalID
 		}
 		if !allowed {
-			return msg.ClassificationTaxonomy{}, "", kanbanclient.ErrNotFound
+			return msg.ClassificationTaxonomy{}, "", executors.ErrTaxonomyBoardNotFound
 		}
 	}
 	switch {
 	case !known:
-		return msg.ClassificationTaxonomy{}, "", kanbanclient.ErrNotFound
+		return msg.ClassificationTaxonomy{}, "", executors.ErrTaxonomyBoardNotFound
 	case taxonomy == nil:
-		return msg.ClassificationTaxonomy{}, "", kanbanclient.ErrBoardHasNoTaxonomy
+		return msg.ClassificationTaxonomy{}, "", executors.ErrBoardHasNoTaxonomy
 	}
 	return *taxonomy, "2026-09-23T10:00:00Z", nil
 }

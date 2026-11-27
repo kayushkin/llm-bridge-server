@@ -59,7 +59,7 @@ func TestInternalCallTimings(t *testing.T) {
 		reportInternalCallTiming(t, func(b *testing.B) {
 			b.ReportAllocs()
 			for range b.N {
-				if tags, err := test.server.kanbanClient.CardTags(ctx, test.unseenCardID); err != nil || len(tags) != 1 {
+				if tags, err := test.server.issueReads.CardTags(ctx, test.unseenCardID); err != nil || len(tags) != 1 {
 					b.Fatalf("CardTags = %v, %v", tags, err)
 				}
 			}

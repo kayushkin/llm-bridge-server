@@ -28,7 +28,6 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/agents/bundles"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/inprocesshttp"
-	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
 	issuesapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/api"
 	issuesbundles "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/bundlestore"
 	issuesdb "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/db"
@@ -90,7 +89,7 @@ func (s *Server) EnableKanbanStore(store *issuesdb.Store, owners KanbanStoreOwne
 		checker:   s.grantResourceChecker(owners.Access.Principals),
 	}})
 	handler := api.Handler()
-	s.kanbanClient = kanbanclient.New(api)
+	s.issueReads = newIssueReader(api)
 	s.kanbanStore.Store(&kanbanStoreHandlers{handler: handler, store: store, api: api, messageTriggersEnabled: owners.MessageTriggersEnabled})
 }
 

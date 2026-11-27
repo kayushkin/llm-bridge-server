@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
-	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	issuesmodel "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/model"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -559,11 +558,11 @@ func (s *Server) handleDryRunEffectiveConfig(w http.ResponseWriter, r *http.Requ
 	defer cancel()
 
 	if subject.BoardID != "" {
-		if s.kanbanClient == nil {
+		if s.issueReads == nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "kanban_store_not_configured", "board_id was given but this server has no kanban-store to read the board's defaults from (kanban-store is off)")
 			return
 		}
-		resolved, err := s.kanbanClient.EffectiveDefaults(ctx, subject.BoardID, subject.CardID, subject.Tags)
+		resolved, err := s.issueReads.EffectiveDefaults(ctx, subject.BoardID, subject.CardID, subject.Tags)
 		if err != nil {
 			writeJSONError(w, http.StatusBadGateway, "kanban_store_unavailable", fmt.Sprintf("kanban-store could not answer for board %s: %v", subject.BoardID, err))
 			return
@@ -640,8 +639,8 @@ func (s *Server) handleDryRunEffectiveConfig(w http.ResponseWriter, r *http.Requ
 			answer.Warnings = append(answer.Warnings, fmt.Sprintf("POST /sessions would refuse this session: %v", err))
 		}
 	}
-	if subject.CardID != "" && s.kanbanClient != nil {
-		if _, err := s.kanbanClient.CardTags(ctx, subject.CardID); errors.Is(err, kanbanclient.ErrNotFound) {
+	if subject.CardID != "" && s.issueReads != nil {
+		if _, err := s.issueReads.CardTags(ctx, subject.CardID); errors.Is(err, errIssueNotFound) {
 			answer.Warnings = append(answer.Warnings, fmt.Sprintf("POST /sessions would refuse this session: card_id %q is not a card kanban-store has: %v", subject.CardID, err))
 		}
 	}

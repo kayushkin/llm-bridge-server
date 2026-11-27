@@ -28,7 +28,6 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/filestorage/files"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
-	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
 	"github.com/kayushkin/llm-bridge-server/internal/keepawake"
 	"github.com/kayushkin/llm-bridge-server/internal/machines"
 	"github.com/kayushkin/llm-bridge-server/internal/mail"
@@ -145,11 +144,11 @@ type Server struct {
 	// referenceReadable are the stores reference-store's readers call
 	// (reference_readers.go).
 	referenceReadable referenceReadableStores
-	// kanbanClient answers "which noteboard todo is this session linked
+	// issueReads answers "which noteboard todo is this session linked
 	// to?" when a signal is minted, and every other read this server makes of
 	// kanban-store. EnableKanbanStore sets it; nil until then, which leaves
 	// every signal unlinked rather than guessing.
-	kanbanClient *kanbanclient.Client
+	issueReads *issueReader
 	// kanbanStore answers /kanban/ and /kanban-store/ once EnableKanbanStore
 	// has run (kanban_store_routes.go); nil answers them 503.
 	kanbanStore atomic.Pointer[kanbanStoreHandlers]
