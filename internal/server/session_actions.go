@@ -621,10 +621,10 @@ func (s *Server) sendToCreatedSession(createdBody []byte, message string) sessio
 
 func (s *Server) sendMessageInternally(sessionID, message string) (string, error) {
 	answer := s.sendMessageFromThisServer(context.Background(), sessionID, SendMessageRequest{Message: message}, "")
-	if answer.status != http.StatusOK {
-		return string(answer.body), fmt.Errorf("send to %s refused with %d: %s", sessionID, answer.status, strings.TrimSpace(string(answer.body)))
+	if answer.Status != http.StatusOK {
+		return string(answer.Body), fmt.Errorf("send to %s refused with %d: %s", sessionID, answer.Status, strings.TrimSpace(string(answer.Body)))
 	}
-	return string(answer.body), nil
+	return string(answer.Body), nil
 }
 
 // serveInternally runs one request through this server's own routes, past

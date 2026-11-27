@@ -257,7 +257,7 @@ type multichatSendResult struct {
 // body.
 func (s *Server) sendIntoSessionAsTheServer(sessionID string, request msg.SendMessageRequest) (int, []byte) {
 	answer := s.sendMessageFromThisServer(context.Background(), sessionID, request, "")
-	return answer.status, answer.body
+	return answer.Status, answer.Body
 }
 
 // --- routes ---

@@ -215,7 +215,7 @@ func (s *Server) deliverHeldMessages() {
 
 func (s *Server) deliverHeldMessage(message store.HeldMessage) {
 	answer := s.sendMessageFromThisServer(context.Background(), message.SessionID, message.Request, message.SenderPrincipalID)
-	status, body := answer.status, answer.body
+	status, body := answer.Status, answer.Body
 	outcome, subtype, detail := store.HeldMessageDelivered, msg.SystemSubtypeHeldMessageDelivered, ""
 	if status == http.StatusAccepted {
 		log.Printf("[restart-drain] held %s for session %s was held again: a new drain began while it was sent", message.HeldMessageID, message.SessionID)

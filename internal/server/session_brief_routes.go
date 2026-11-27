@@ -134,9 +134,9 @@ func (s *Server) handleAnswerLooseEnd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sent := s.sendMessageFromThisServer(r.Context(), looseEnd.SessionID, SendMessageRequest{Message: looseEndAnswerMessage(looseEnd, answer)}, "")
-	if !sent.sent() {
+	if !sent.Sent() {
 		httpjson.WriteJSONError(w, http.StatusBadGateway, "send_failed",
-			fmt.Sprintf("sending the answer to the session answered %d: %s", sent.status, strings.TrimSpace(string(sent.body))))
+			fmt.Sprintf("sending the answer to the session answered %d: %s", sent.Status, strings.TrimSpace(string(sent.Body))))
 		return
 	}
 	if err := s.store.CloseLooseEnd(looseEnd.ID, msg.LooseEndAnswered, answer); err != nil {

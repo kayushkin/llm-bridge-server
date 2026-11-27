@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -12,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/sendanswer"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
 
@@ -812,7 +813,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if sess.ControlledBy == msg.ControlledByHarness {
-		notBridgeControlledSendAnswer().write(w)
+		sendanswer.NotBridgeControlled().Write(w)
 		return
 	}
 	var req SendMessageRequest
@@ -820,55 +821,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	s.sendMessageToSession(r.Context(), r.PathValue("id"), req, senderPrincipalIDOfRequest(r)).write(w)
-}
-
-// sessionSendAnswer is the answer to one send: the status, content type and
-// body POST /sessions/{id}/send writes. A sender inside this server reads the
-// same answer a person calling the route gets.
-type sessionSendAnswer struct {
-	status      int
-	contentType string
-	body        []byte
-}
-
-// write answers a request with it, as http.Error and writeJSON would have.
-func (answer sessionSendAnswer) write(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", answer.contentType)
-	if strings.HasPrefix(answer.contentType, "text/plain") {
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-	}
-	w.WriteHeader(answer.status)
-	w.Write(answer.body)
-}
-
-// sent reports whether the message went to the session or was held.
-func (answer sessionSendAnswer) sent() bool {
-	return answer.status >= 200 && answer.status <= 299
-}
-
-// plainTextSendAnswer is what http.Error writes.
-func plainTextSendAnswer(status int, text string) sessionSendAnswer {
-	return sessionSendAnswer{status: status, contentType: "text/plain; charset=utf-8", body: []byte(text + "\n")}
-}
-
-// jsonSendAnswer is a JSON body, encoded as writeJSON and writeJSONError
-// encode it.
-func jsonSendAnswer(status int, value any) sessionSendAnswer {
-	var body bytes.Buffer
-	if err := json.NewEncoder(&body).Encode(value); err != nil {
-		return plainTextSendAnswer(http.StatusInternalServerError, fmt.Sprintf("encode the answer: %v", err))
-	}
-	return sessionSendAnswer{status: status, contentType: "application/json", body: body.Bytes()}
-}
-
-func jsonErrorSendAnswer(status int, code, message string) sessionSendAnswer {
-	return jsonSendAnswer(status, map[string]any{"error": map[string]string{"code": code, "message": message}})
-}
-
-func notBridgeControlledSendAnswer() sessionSendAnswer {
-	return jsonErrorSendAnswer(http.StatusConflict, "not_bridge_controlled",
-		"this session is controlled by its parent harness process and cannot be messaged directly; message the session that spawned it")
+	s.sendMessageToSession(r.Context(), r.PathValue("id"), req, senderPrincipalIDOfRequest(r)).Write(w)
 }
 
 // sendMessageToSession sends a message into a session as senderPrincipalID
@@ -877,26 +830,26 @@ func notBridgeControlledSendAnswer() sessionSendAnswer {
 // calls it directly, so its message is checked and sent exactly as a
 // person's is; such a caller goes through sendMessageFromThisServer, which
 // also does what the route's wrapper does.
-func (s *Server) sendMessageToSession(ctx context.Context, bridgeID string, req SendMessageRequest, senderPrincipalID string) sessionSendAnswer {
+func (s *Server) sendMessageToSession(ctx context.Context, bridgeID string, req SendMessageRequest, senderPrincipalID string) sendanswer.Answer {
 	sess, err := s.store.GetSession(bridgeID)
 	if err != nil {
-		return plainTextSendAnswer(http.StatusNotFound, "session not found")
+		return sendanswer.PlainText(http.StatusNotFound, "session not found")
 	}
 
 	// Sending to a harness subagent would spawn a fresh agent rather than
 	// reach the one that ran, for the same reason resume does — see the gate
 	// in handleResumeSession. The parent is the addressable session.
 	if sess.ControlledBy == msg.ControlledByHarness {
-		return notBridgeControlledSendAnswer()
+		return sendanswer.NotBridgeControlled()
 	}
 
 	// Message and Blocks are mutually exclusive — fail fast at the boundary
 	// so harnesses never see both populated.
 	if req.Message != "" && len(req.Blocks) > 0 {
-		return plainTextSendAnswer(http.StatusBadRequest, "message and blocks are mutually exclusive")
+		return sendanswer.PlainText(http.StatusBadRequest, "message and blocks are mutually exclusive")
 	}
 	if req.Message == "" && len(req.Blocks) == 0 {
-		return plainTextSendAnswer(http.StatusBadRequest, "message or blocks must be set")
+		return sendanswer.PlainText(http.StatusBadRequest, "message or blocks must be set")
 	}
 
 	// Refuse to spend past the session's ceiling. Checked before the
@@ -909,22 +862,22 @@ func (s *Server) sendMessageToSession(ctx context.Context, bridgeID string, req 
 	// While the server drains before a restart, a new turn waits: the
 	// message is kept and sent once the drain ends (restart_drain.go).
 	if heldMessageID, held, err := s.holdMessageIfRestartDraining(bridgeID, req, senderPrincipalID, "send"); err != nil {
-		return jsonErrorSendAnswer(http.StatusInternalServerError, "hold_failed", err.Error())
+		return sendanswer.JSONError(http.StatusInternalServerError, "hold_failed", err.Error())
 	} else if held {
-		return jsonSendAnswer(http.StatusAccepted, msg.SendMessageResponse{Status: msg.SendStatusHeld, HeldMessageID: heldMessageID})
+		return sendanswer.JSON(http.StatusAccepted, msg.SendMessageResponse{Status: msg.SendStatusHeld, HeldMessageID: heldMessageID})
 	}
 
 	if s.harness.Get(bridgeID) == nil {
 		if sess.InstanceID == "" || s.harnessStore == nil {
-			return plainTextSendAnswer(http.StatusInternalServerError, "session has no instance bound")
+			return sendanswer.PlainText(http.StatusInternalServerError, "session has no instance bound")
 		}
 		inst, err := s.harnessStore.GetInstance(sess.InstanceID)
 		if err != nil {
-			return plainTextSendAnswer(http.StatusInternalServerError, fmt.Sprintf("instance not found: %v", err))
+			return sendanswer.PlainText(http.StatusInternalServerError, fmt.Sprintf("instance not found: %v", err))
 		}
 		credID := resolveCredential(s.harnessStore, inst.ID)
 		if _, startErr := s.startOnInstance(ctx, sess, inst, credID); startErr != nil {
-			return plainTextSendAnswer(http.StatusInternalServerError, fmt.Sprintf("failed to start harness: %v", startErr))
+			return sendanswer.PlainText(http.StatusInternalServerError, fmt.Sprintf("failed to start harness: %v", startErr))
 		}
 	}
 
@@ -937,7 +890,7 @@ func (s *Server) sendMessageToSession(ctx context.Context, bridgeID string, req 
 	}
 	sender, err := s.messageSenderOf(ctx, senderPrincipalID)
 	if err != nil {
-		return jsonErrorSendAnswer(http.StatusBadGateway, "principal_store_unavailable", err.Error())
+		return sendanswer.JSONError(http.StatusBadGateway, "principal_store_unavailable", err.Error())
 	}
 	sender.stamp(&userEvent)
 	// Persist before forwarding to the harness. If either store can't take
@@ -947,7 +900,7 @@ func (s *Server) sendMessageToSession(ctx context.Context, bridgeID string, req 
 	// seen the message yet. BroadcastEvent now writes both stores and returns
 	// the log-store error if it fails.
 	if _, err := s.harness.BroadcastEvent(&userEvent); err != nil {
-		return plainTextSendAnswer(http.StatusInternalServerError, fmt.Sprintf("persist user_message: %v", err))
+		return sendanswer.PlainText(http.StatusInternalServerError, fmt.Sprintf("persist user_message: %v", err))
 	}
 
 	if name := displayNameFromMessage(req.Message); name != "" {
@@ -957,7 +910,7 @@ func (s *Server) sendMessageToSession(ctx context.Context, bridgeID string, req 
 	}
 
 	if err := s.harness.Send(bridgeID, req.Message, req.Blocks); err != nil {
-		return plainTextSendAnswer(http.StatusInternalServerError, err.Error())
+		return sendanswer.PlainText(http.StatusInternalServerError, err.Error())
 	}
 
 	// Replying to a chat that was marked done reopens it: pull it back out of
@@ -981,7 +934,7 @@ func (s *Server) sendMessageToSession(ctx context.Context, bridgeID string, req 
 	// channel, not through the next message.
 	s.closeQuestionsAnsweredByMessage(bridgeID, req.Message)
 
-	return jsonSendAnswer(http.StatusOK, msg.SendMessageResponse{Status: msg.SendStatusSent, MessageID: userEvent.MessageID})
+	return sendanswer.JSON(http.StatusOK, msg.SendMessageResponse{Status: msg.SendStatusSent, MessageID: userEvent.MessageID})
 }
 
 // sendMessageFromThisServer sends a message the server itself sends — a
@@ -991,7 +944,7 @@ func (s *Server) sendMessageToSession(ctx context.Context, bridgeID string, req 
 // senders were let through request authorization when they started (the
 // person who pressed the button, the link's owner) or are the server's own,
 // so no route rule is skipped.
-func (s *Server) sendMessageFromThisServer(ctx context.Context, sessionID string, req SendMessageRequest, senderPrincipalID string) sessionSendAnswer {
+func (s *Server) sendMessageFromThisServer(ctx context.Context, sessionID string, req SendMessageRequest, senderPrincipalID string) sendanswer.Answer {
 	if s.keepAwake != nil {
 		// Taking a block can wait on a child starting; the send must not.
 		go s.keepAwake.Touch()
@@ -1034,12 +987,12 @@ func overBudgetRefusalBody(spendUSD, maxBudgetUSD float64) map[string]any {
 
 // overBudgetSendAnswer is writeRefusalIfOverBudget's refusal as a send
 // answer, and true, when the session has spent its ceiling.
-func (s *Server) overBudgetSendAnswer(bridgeID string) (sessionSendAnswer, bool) {
+func (s *Server) overBudgetSendAnswer(bridgeID string) (sendanswer.Answer, bool) {
 	over, spendUSD, maxBudgetUSD := s.harness.SessionOverBudget(bridgeID)
 	if !over {
-		return sessionSendAnswer{}, false
+		return sendanswer.Answer{}, false
 	}
-	return jsonSendAnswer(http.StatusPaymentRequired, overBudgetRefusalBody(spendUSD, maxBudgetUSD)), true
+	return sendanswer.JSON(http.StatusPaymentRequired, overBudgetRefusalBody(spendUSD, maxBudgetUSD)), true
 }
 
 func (s *Server) handleSessionEvents(w http.ResponseWriter, r *http.Request) {
