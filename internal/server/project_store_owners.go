@@ -16,32 +16,32 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/repositories/repostore"
 	"github.com/kayushkin/llm-bridge-server/internal/repositories/workgraphstore"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
-	kanbanapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/api"
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/projectstore"
+	issuesapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/api"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/projects"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
 // ProjectStoreRepositories is repo-store and work-graph-store as
 // project-store reads them. They answer once EnableRepositories has run.
-func (s *Server) ProjectStoreRepositories() projectstore.Repositories {
+func (s *Server) ProjectStoreRepositories() projects.Repositories {
 	return projectStoreRepositories{server: s}
 }
 
 // ProjectStoreKanban is kanban-store as project-store reads it. It answers
 // once EnableKanbanStore has run.
-func (s *Server) ProjectStoreKanban() projectstore.Kanban {
+func (s *Server) ProjectStoreKanban() projects.Kanban {
 	return projectStoreKanban{server: s}
 }
 
 // ProjectStoreScheduler is the scheduler's jobs as project-store reads them.
 // It answers once EnableScheduler has run.
-func (s *Server) ProjectStoreScheduler() projectstore.SchedulerJobs {
+func (s *Server) ProjectStoreScheduler() projects.SchedulerJobs {
 	return projectStoreScheduler{server: s}
 }
 
 // ProjectStoreBridge is this server as project-store reads it: its sessions,
 // their briefs and its one-shot router.
-func (s *Server) ProjectStoreBridge() projectstore.Bridge {
+func (s *Server) ProjectStoreBridge() projects.Bridge {
 	return projectStoreBridge{server: s}
 }
 
@@ -58,10 +58,10 @@ func (repositories projectStoreRepositories) stores() (*repositoryStores, error)
 }
 
 // repoStoreAnswer is a repo-store error as project-store reads it: a repo it
-// does not have is projectstore.ErrNotFound.
+// does not have is projects.ErrNotFound.
 func repoStoreAnswer(err error) error {
 	if errors.Is(err, repostore.ErrNotFound) || errors.Is(err, workgraphstore.ErrNotFound) {
-		return projectstore.ErrNotFound
+		return projects.ErrNotFound
 	}
 	return err
 }
@@ -78,7 +78,7 @@ func (repositories projectStoreRepositories) RepoName(_ context.Context, repoSto
 	return repo.Name, nil
 }
 
-func (repositories projectStoreRepositories) Deployments(_ context.Context, repoStoreID int64, limit int) ([]projectstore.Deploy, error) {
+func (repositories projectStoreRepositories) Deployments(_ context.Context, repoStoreID int64, limit int) ([]projects.Deploy, error) {
 	stores, err := repositories.stores()
 	if err != nil {
 		return nil, err
@@ -87,14 +87,14 @@ func (repositories projectStoreRepositories) Deployments(_ context.Context, repo
 	if err != nil {
 		return nil, repoStoreAnswer(err)
 	}
-	deploys := make([]projectstore.Deploy, len(stored))
+	deploys := make([]projects.Deploy, len(stored))
 	for i, deploy := range stored {
-		deploys[i] = projectstore.Deploy{CommitSHA: deploy.CommitSHA, DeployedBy: deploy.DeployedBy, CreatedAt: deploy.CreatedAt}
+		deploys[i] = projects.Deploy{CommitSHA: deploy.CommitSHA, DeployedBy: deploy.DeployedBy, CreatedAt: deploy.CreatedAt}
 	}
 	return deploys, nil
 }
 
-func (repositories projectStoreRepositories) PullRequests(_ context.Context, repoStoreID int64, state string) ([]projectstore.PullRequest, error) {
+func (repositories projectStoreRepositories) PullRequests(_ context.Context, repoStoreID int64, state string) ([]projects.PullRequest, error) {
 	stores, err := repositories.stores()
 	if err != nil {
 		return nil, err
@@ -103,9 +103,9 @@ func (repositories projectStoreRepositories) PullRequests(_ context.Context, rep
 	if err != nil {
 		return nil, repoStoreAnswer(err)
 	}
-	pullRequests := make([]projectstore.PullRequest, len(stored))
+	pullRequests := make([]projects.PullRequest, len(stored))
 	for i, pullRequest := range stored {
-		pullRequests[i] = projectstore.PullRequest{RepoID: pullRequest.RepoID, Number: pullRequest.Number, Title: pullRequest.Title, State: string(pullRequest.State),
+		pullRequests[i] = projects.PullRequest{RepoID: pullRequest.RepoID, Number: pullRequest.Number, Title: pullRequest.Title, State: string(pullRequest.State),
 			IsDraft: pullRequest.IsDraft, Author: pullRequest.Author, HeadRef: pullRequest.HeadRef, BaseRef: pullRequest.BaseRef, HeadSHA: pullRequest.HeadSHA,
 			URL: pullRequest.URL, CreatedAt: pullRequest.CreatedAt, UpdatedAt: pullRequest.UpdatedAt, MergedAt: pullRequest.MergedAt, ClosedAt: pullRequest.ClosedAt,
 			SyncedAt: pullRequest.SyncedAt}
@@ -113,22 +113,22 @@ func (repositories projectStoreRepositories) PullRequests(_ context.Context, rep
 	return pullRequests, nil
 }
 
-func (repositories projectStoreRepositories) Graph(ctx context.Context, repoStoreID int64, maxCommits int) (projectstore.RepoGraph, error) {
+func (repositories projectStoreRepositories) Graph(ctx context.Context, repoStoreID int64, maxCommits int) (projects.RepoGraph, error) {
 	stores, err := repositories.stores()
 	if err != nil {
-		return projectstore.RepoGraph{}, err
+		return projects.RepoGraph{}, err
 	}
 	repo, err := stores.workGraphRepos.Repo(ctx, repoStoreID)
 	if err != nil {
-		return projectstore.RepoGraph{}, repoStoreAnswer(err)
+		return projects.RepoGraph{}, repoStoreAnswer(err)
 	}
 	graph, err := workgraphstore.BuildGraph(ctx, stores.workGraph, repo, maxCommits)
 	if err != nil {
-		return projectstore.RepoGraph{}, err
+		return projects.RepoGraph{}, err
 	}
-	answer := projectstore.RepoGraph{DefaultBranch: graph.DefaultBranch}
+	answer := projects.RepoGraph{DefaultBranch: graph.DefaultBranch}
 	for _, commit := range graph.Commits {
-		converted := projectstore.GraphCommit{SHA: commit.SHA, Parents: commit.Parents, CommittedAt: commit.CommittedAt, AuthorName: commit.AuthorName,
+		converted := projects.GraphCommit{SHA: commit.SHA, Parents: commit.Parents, CommittedAt: commit.CommittedAt, AuthorName: commit.AuthorName,
 			Subject: commit.Subject, OnOriginBranch: commit.OnOriginBranch}
 		if commit.MadeBy != nil {
 			converted.MadeBySessionID = commit.MadeBy.SessionID
@@ -136,7 +136,7 @@ func (repositories projectStoreRepositories) Graph(ctx context.Context, repoStor
 		answer.Commits = append(answer.Commits, converted)
 	}
 	for _, branch := range graph.Branches {
-		converted := projectstore.GraphBranch{Name: branch.Name, IsRemote: branch.IsRemote, HeadSHA: branch.HeadSHA, CommittedAt: branch.CommittedAt,
+		converted := projects.GraphBranch{Name: branch.Name, IsRemote: branch.IsRemote, HeadSHA: branch.HeadSHA, CommittedAt: branch.CommittedAt,
 			MergedIntoDefault: branch.MergedIntoDefault, WorktreePath: branch.WorktreePath}
 		for _, session := range branch.Sessions {
 			converted.SessionIDs = append(converted.SessionIDs, session.SessionID)
@@ -146,7 +146,7 @@ func (repositories projectStoreRepositories) Graph(ctx context.Context, repoStor
 	return answer, nil
 }
 
-func (repositories projectStoreRepositories) SessionRepos(_ context.Context, sinceUnixNano int64) ([]projectstore.SessionRepo, error) {
+func (repositories projectStoreRepositories) SessionRepos(_ context.Context, sinceUnixNano int64) ([]projects.SessionRepo, error) {
 	stores, err := repositories.stores()
 	if err != nil {
 		return nil, err
@@ -155,9 +155,9 @@ func (repositories projectStoreRepositories) SessionRepos(_ context.Context, sin
 	if err != nil {
 		return nil, err
 	}
-	repos := make([]projectstore.SessionRepo, len(rows))
+	repos := make([]projects.SessionRepo, len(rows))
 	for i, row := range rows {
-		repos[i] = projectstore.SessionRepo{SessionID: row.SessionID, RepoStoreID: row.RepoStoreID, RefUpdates: int(row.RefUpdates)}
+		repos[i] = projects.SessionRepo{SessionID: row.SessionID, RepoStoreID: row.RepoStoreID, RefUpdates: int(row.RefUpdates)}
 	}
 	return repos, nil
 }
@@ -166,7 +166,7 @@ type projectStoreKanban struct {
 	server *Server
 }
 
-func (kanban projectStoreKanban) api() (*kanbanapi.API, error) {
+func (kanban projectStoreKanban) api() (*issuesapi.API, error) {
 	handlers := kanban.server.kanbanStore.Load()
 	if handlers == nil || handlers.api == nil {
 		return nil, errKanbanStoreOff
@@ -175,11 +175,11 @@ func (kanban projectStoreKanban) api() (*kanbanapi.API, error) {
 }
 
 // kanbanAnswer is a kanban-store refusal as project-store reads it: its 404
-// is projectstore.ErrNotFound.
+// is projects.ErrNotFound.
 func kanbanAnswer(err error) error {
-	var refusal *kanbanapi.Refusal
+	var refusal *issuesapi.Refusal
 	if errors.As(err, &refusal) && refusal.Status == 404 {
-		return projectstore.ErrNotFound
+		return projects.ErrNotFound
 	}
 	return err
 }
@@ -189,25 +189,25 @@ func (kanban projectStoreKanban) BoardName(_ context.Context, boardID string) (s
 	if err != nil {
 		return "", err
 	}
-	board, err := api.Board(kanbanapi.Caller{InternalService: true}, boardID)
+	board, err := api.Board(issuesapi.Caller{InternalService: true}, boardID)
 	if err != nil {
 		return "", kanbanAnswer(err)
 	}
 	return board.Name, nil
 }
 
-func (kanban projectStoreKanban) ProjectCards(_ context.Context, projectID string) ([]projectstore.LinkedKanbanCard, error) {
+func (kanban projectStoreKanban) ProjectCards(_ context.Context, projectID string) ([]projects.LinkedKanbanCard, error) {
 	api, err := kanban.api()
 	if err != nil {
 		return nil, err
 	}
-	rows, err := api.EntityCards(kanbanapi.Caller{InternalService: true}, "project", projectID)
+	rows, err := api.EntityCards(issuesapi.Caller{InternalService: true}, "project", projectID)
 	if err != nil {
 		return nil, kanbanAnswer(err)
 	}
-	cards := make([]projectstore.LinkedKanbanCard, 0, len(rows))
+	cards := make([]projects.LinkedKanbanCard, 0, len(rows))
 	for _, row := range rows {
-		card := projectstore.LinkedKanbanCard{CardID: row.CardID}
+		card := projects.LinkedKanbanCard{CardID: row.CardID}
 		if row.WorkState != nil {
 			state := string(*row.WorkState)
 			card.WorkState = &state
@@ -250,7 +250,7 @@ func (scheduler projectStoreScheduler) JobName(_ context.Context, jobID int64) (
 	}
 	job, err := jobs.Job(jobID)
 	if errors.Is(err, schedulerapi.ErrJobNotFound) {
-		return "", projectstore.ErrNotFound
+		return "", projects.ErrNotFound
 	}
 	if err != nil {
 		return "", err
@@ -264,27 +264,27 @@ type projectStoreBridge struct {
 
 // Session is GET /sessions/{id}: any failure to read the row is the route's
 // 404.
-func (bridge projectStoreBridge) Session(_ context.Context, sessionID string) (projectstore.BridgeSession, error) {
+func (bridge projectStoreBridge) Session(_ context.Context, sessionID string) (projects.BridgeSession, error) {
 	session, err := bridge.server.store.GetSession(sessionID)
 	if err != nil {
-		return projectstore.BridgeSession{}, fmt.Errorf("%w: %v", projectstore.ErrNotFound, err)
+		return projects.BridgeSession{}, fmt.Errorf("%w: %v", projects.ErrNotFound, err)
 	}
-	return projectstore.BridgeSession{SessionID: session.SessionID, DisplayName: session.DisplayName, Type: string(session.Type), Purpose: session.Purpose,
+	return projects.BridgeSession{SessionID: session.SessionID, DisplayName: session.DisplayName, Type: string(session.Type), Purpose: session.Purpose,
 		Origin: session.Origin, WorkingDirectory: session.WorkingDir, ManagerSessionID: session.ManagerSessionID,
 		CreatedAt: session.CreatedAt, UpdatedAt: session.UpdatedAt}, nil
 }
 
 // ChatSessions is GET /sessions/summary?type=interactive&purpose=chat, as
 // the internal service, whose list nothing narrows.
-func (bridge projectStoreBridge) ChatSessions(_ context.Context, before string, limit int) ([]projectstore.BridgeChatSession, string, error) {
+func (bridge projectStoreBridge) ChatSessions(_ context.Context, before string, limit int) ([]projects.BridgeChatSession, string, error) {
 	rows, err := bridge.server.store.ListSessionSummaries(limit, before, store.SessionSummaryFilter{
 		Types: []string{string(msg.SessionTypeInteractive)}, Purposes: []string{msg.PurposeChat}})
 	if err != nil {
 		return nil, "", err
 	}
-	chats := make([]projectstore.BridgeChatSession, len(rows))
+	chats := make([]projects.BridgeChatSession, len(rows))
 	for i, row := range rows {
-		chats[i] = projectstore.BridgeChatSession{SessionID: row.SessionID, DisplayName: row.DisplayName, UpdatedAt: row.UpdatedAt, CreatedAt: row.CreatedAt}
+		chats[i] = projects.BridgeChatSession{SessionID: row.SessionID, DisplayName: row.DisplayName, UpdatedAt: row.UpdatedAt, CreatedAt: row.CreatedAt}
 	}
 	next := ""
 	// A full page implies there may be more, as the route answers it.
@@ -303,7 +303,7 @@ func (bridge projectStoreBridge) SessionBriefsUpdatedSince(_ context.Context, si
 // SessionBrief is GET /sessions/{id}/brief.
 func (bridge projectStoreBridge) SessionBrief(_ context.Context, sessionID string) (msg.SessionBriefView, error) {
 	if _, err := bridge.server.store.GetSession(sessionID); err != nil {
-		return msg.SessionBriefView{}, fmt.Errorf("%w: %v", projectstore.ErrNotFound, err)
+		return msg.SessionBriefView{}, fmt.Errorf("%w: %v", projects.ErrNotFound, err)
 	}
 	return bridge.server.store.GetSessionBriefView(sessionID)
 }

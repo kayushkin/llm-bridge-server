@@ -13,7 +13,7 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/access"
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
-	kanbandb "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/db"
+	issuesdb "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/db"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/items"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 )
@@ -24,7 +24,7 @@ import (
 // on the first board only.
 type kanbanTestServer struct {
 	*accessTestServer
-	kanban                       *kanbandb.Store
+	kanban                       *issuesdb.Store
 	notes                        *items.Store
 	seenBoardID, unseenBoardID   string
 	seenColumnID, unseenColumnID string
@@ -34,7 +34,7 @@ type kanbanTestServer struct {
 func newKanbanTestServer(t *testing.T) *kanbanTestServer {
 	t.Helper()
 	test := &kanbanTestServer{accessTestServer: newAccessTestServer(t)}
-	kanbanModule, err := kanbandb.Module()
+	kanbanModule, err := issuesdb.Module()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func newKanbanTestServer(t *testing.T) *kanbanTestServer {
 		t.Fatal(err)
 	}
 	database := postgrestest.NewDatabase(t, kanbanModule, noteboardModule)
-	test.kanban = kanbandb.New(database.Open(kanbanModule))
+	test.kanban = issuesdb.New(database.Open(kanbanModule))
 	test.notes = items.New(database.Open(noteboardModule))
 	test.server.EnableKanbanStore(test.kanban, KanbanStoreOwners{Noteboard: test.notes, Access: test.stores})
 

@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient/kanbanclienttest"
-	kanbanapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/api"
-	kanbanmodel "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/model"
+	issuesapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/api"
+	issuesmodel "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/model"
 )
 
 // item is a noteboard item as kanban-store passes it through.
@@ -19,10 +19,10 @@ func item(id string) map[string]any { return map[string]any{"id": id} }
 // session with cards, and with no cards (not a refusal) for any other: an
 // unknown session ref is 200 [] on the route, so a lookup aimed at the wrong
 // id would read as "no todo" without this distinction in a test.
-func sessionCards(sessionID string, cards []kanbanmodel.EntityCardView) (*Client, *kanbanclienttest.Store) {
-	store := &kanbanclienttest.Store{EntityCardsAnswer: func(entityType, entityRef string) ([]kanbanmodel.EntityCardView, error) {
+func sessionCards(sessionID string, cards []issuesmodel.EntityCardView) (*Client, *kanbanclienttest.Store) {
+	store := &kanbanclienttest.Store{EntityCardsAnswer: func(entityType, entityRef string) ([]issuesmodel.EntityCardView, error) {
 		if entityType != "session" || entityRef != sessionID {
-			return []kanbanmodel.EntityCardView{}, nil
+			return []issuesmodel.EntityCardView{}, nil
 		}
 		return cards, nil
 	}}
@@ -34,7 +34,7 @@ func TestLinkedTodoForSessionTakesTheFirstCard(t *testing.T) {
 	// MIN(created_at), card_id, pinned by TestListCardsByEntityIsOldestLinkFirst),
 	// and the first is the todo the session was created for. Re-sorting here
 	// would second-guess the store that owns the ordering.
-	client, store := sessionCards("br_1", []kanbanmodel.EntityCardView{
+	client, store := sessionCards("br_1", []issuesmodel.EntityCardView{
 		{CardID: "todo-oldest", Item: map[string]any{"id": "todo-oldest", "title": "dispatch"}},
 		{CardID: "todo-newer", Item: map[string]any{"id": "todo-newer", "title": "classified work"}},
 	})
@@ -51,14 +51,14 @@ func TestLinkedTodoForSessionTakesTheFirstCard(t *testing.T) {
 }
 
 func TestLinkedCardForSessionReadsTheTitleAndBody(t *testing.T) {
-	client, _ := sessionCards("br_1", []kanbanmodel.EntityCardView{
+	client, _ := sessionCards("br_1", []issuesmodel.EntityCardView{
 		{CardID: "todo-1", Item: map[string]any{"id": "todo-1", "title": "printer jammed", "body": "third floor"}},
 	})
 	card, err := client.LinkedCardForSession(context.Background(), "br_1")
 	if err != nil || card == nil || card.Title != "printer jammed" || card.Body != "third floor" {
 		t.Fatalf("card = %+v, %v", card, err)
 	}
-	client, _ = sessionCards("br_1", []kanbanmodel.EntityCardView{{CardID: "todo-1", Item: map[string]any{"id": "todo-1", "title": 7}}})
+	client, _ = sessionCards("br_1", []issuesmodel.EntityCardView{{CardID: "todo-1", Item: map[string]any{"id": "todo-1", "title": 7}}})
 	if _, err := client.LinkedCardForSession(context.Background(), "br_1"); err == nil {
 		t.Fatal("a title that is not text read as a card")
 	}
@@ -69,7 +69,7 @@ func TestLinkedTodoForSessionSkipsOrphanedLinks(t *testing.T) {
 	// keeps the slot index-aligned and leaves the item nil. Returning its card
 	// id would point the signal at a todo no view can render.
 	var gone map[string]any
-	client, _ := sessionCards("br_1", []kanbanmodel.EntityCardView{
+	client, _ := sessionCards("br_1", []issuesmodel.EntityCardView{
 		{CardID: "todo-deleted", Item: gone},
 		{CardID: "todo-alive", Item: item("todo-alive")},
 	})
@@ -86,7 +86,7 @@ func TestLinkedTodoForSessionSkipsOrphanedLinks(t *testing.T) {
 // returned. kanban-store cannot emit this; the good row after the blank one is
 // what makes the test discriminating.
 func TestLinkedTodoForSessionSkipsRowsWithNoCardID(t *testing.T) {
-	client, _ := sessionCards("br_1", []kanbanmodel.EntityCardView{
+	client, _ := sessionCards("br_1", []issuesmodel.EntityCardView{
 		{CardID: "", Item: item("blank-card-id")},
 		{CardID: "todo-alive", Item: item("todo-alive")},
 	})
@@ -101,7 +101,7 @@ func TestLinkedTodoForSessionSkipsRowsWithNoCardID(t *testing.T) {
 
 func TestLinkedTodoForSessionWithNoLinks(t *testing.T) {
 	var gone map[string]any
-	for name, cards := range map[string][]kanbanmodel.EntityCardView{
+	for name, cards := range map[string][]issuesmodel.EntityCardView{
 		"empty list":   {},
 		"nil list":     nil,
 		"all orphaned": {{CardID: "gone", Item: gone}},
@@ -123,8 +123,8 @@ func TestLinkedTodoForSessionWithNoLinks(t *testing.T) {
 // confident empty string: the caller treats "" as "this session has no todo".
 func TestLinkedTodoForSessionErrors(t *testing.T) {
 	for _, status := range []int{http.StatusInternalServerError, http.StatusBadGateway} {
-		client := New(&kanbanclienttest.Store{EntityCardsAnswer: func(string, string) ([]kanbanmodel.EntityCardView, error) {
-			return nil, &kanbanapi.Refusal{Status: status, Message: "noteboard: connection refused"}
+		client := New(&kanbanclienttest.Store{EntityCardsAnswer: func(string, string) ([]issuesmodel.EntityCardView, error) {
+			return nil, &issuesapi.Refusal{Status: status, Message: "noteboard: connection refused"}
 		}})
 		_, err := client.LinkedTodoForSession(context.Background(), "br_1")
 		if err == nil || !strings.Contains(err.Error(), strconv.Itoa(status)) {
@@ -140,7 +140,7 @@ func TestLinkedTodoForSessionErrors(t *testing.T) {
 // An id carrying slashes is one entity ref: it is asked for whole, and it can
 // never reach another session's cards.
 func TestLinkedTodoForSessionAsksForTheWholeIDAndNoOther(t *testing.T) {
-	client, store := sessionCards("br_2", []kanbanmodel.EntityCardView{{CardID: "br_2-todo", Item: item("br_2-todo")}})
+	client, store := sessionCards("br_2", []issuesmodel.EntityCardView{{CardID: "br_2-todo", Item: item("br_2-todo")}})
 	got, err := client.LinkedTodoForSession(context.Background(), "br_1/../br_2")
 	if err != nil || got != "" {
 		t.Fatalf("todo = %q, %v; want none — never another session's card", got, err)
@@ -168,7 +168,7 @@ func TestCardTagsAndItsNotFound(t *testing.T) {
 		if cardID == "card-1" {
 			return []string{"billing"}, nil
 		}
-		return nil, &kanbanapi.Refusal{Status: http.StatusNotFound, Message: "not found"}
+		return nil, &issuesapi.Refusal{Status: http.StatusNotFound, Message: "not found"}
 	}})
 	if tags, err := client.CardTags(context.Background(), "card-1"); err != nil || len(tags) != 1 || tags[0] != "billing" {
 		t.Fatalf("tags = %v, %v", tags, err)

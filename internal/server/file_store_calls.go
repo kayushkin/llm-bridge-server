@@ -20,7 +20,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
 	mailfilestore "github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/filestore"
-	kanbanfiles "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/filestore"
+	issuesfiles "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/filestore"
 )
 
 // errFileStoreOff is a call to file-store on a server that never enabled it.
@@ -80,25 +80,25 @@ type kanbanFileStore struct {
 
 // kanbanFileRecord is file-store's record as kanban-store passes it on: the
 // whole record, encoded as file-store's routes encode it.
-func kanbanFileRecord(file *filestore.File) (*kanbanfiles.File, error) {
+func kanbanFileRecord(file *filestore.File) (*issuesfiles.File, error) {
 	encoded, err := json.Marshal(file)
 	if err != nil {
 		return nil, err
 	}
-	return kanbanfiles.FileOfRecord(encoded)
+	return issuesfiles.FileOfRecord(encoded)
 }
 
-func (files kanbanFileStore) Upload(content io.Reader, contentLength int64, contentType, filename, cardID, uploadedByPrincipalID string) (*kanbanfiles.File, error) {
+func (files kanbanFileStore) Upload(content io.Reader, contentLength int64, contentType, filename, cardID, uploadedByPrincipalID string) (*issuesfiles.File, error) {
 	module, err := files.server.fileStoreModuleForCalls()
 	if err != nil {
 		return nil, err
 	}
 	stored, err := module.Accept(content, contentLength, contentType, filestore.NewFile{
-		Filename: filename, OwnerService: kanbanfiles.OwnerService, OwnerRef: cardID, UploadedByPrincipalID: uploadedByPrincipalID,
+		Filename: filename, OwnerService: issuesfiles.OwnerService, OwnerRef: cardID, UploadedByPrincipalID: uploadedByPrincipalID,
 	})
 	var refusal *filestore.Refusal
 	if errors.As(err, &refusal) {
-		return nil, &kanbanfiles.RefusalError{Status: refusal.Status, Body: refusal.Body()}
+		return nil, &issuesfiles.RefusalError{Status: refusal.Status, Body: refusal.Body()}
 	}
 	if err != nil {
 		return nil, err
@@ -106,22 +106,22 @@ func (files kanbanFileStore) Upload(content io.Reader, contentLength int64, cont
 	return kanbanFileRecord(stored)
 }
 
-func (files kanbanFileStore) FilesOfCard(cardID string) (map[string]*kanbanfiles.File, error) {
+func (files kanbanFileStore) FilesOfCard(cardID string) (map[string]*issuesfiles.File, error) {
 	return files.filesOfCard(cardID, false)
 }
 
-func (files kanbanFileStore) EveryFileOfCard(cardID string) (map[string]*kanbanfiles.File, error) {
+func (files kanbanFileStore) EveryFileOfCard(cardID string) (map[string]*issuesfiles.File, error) {
 	return files.filesOfCard(cardID, true)
 }
 
-func (files kanbanFileStore) filesOfCard(cardID string, includeDeleted bool) (map[string]*kanbanfiles.File, error) {
+func (files kanbanFileStore) filesOfCard(cardID string, includeDeleted bool) (map[string]*issuesfiles.File, error) {
 	module, err := files.server.fileStoreModuleForCalls()
 	if err != nil {
 		return nil, err
 	}
-	byID := map[string]*kanbanfiles.File{}
+	byID := map[string]*issuesfiles.File{}
 	for offset := 0; ; offset += filestore.MaximumFilesListed {
-		page, err := module.ListFiles(filestore.Filter{OwnerService: kanbanfiles.OwnerService, OwnerRef: cardID,
+		page, err := module.ListFiles(filestore.Filter{OwnerService: issuesfiles.OwnerService, OwnerRef: cardID,
 			IncludeDeleted: includeDeleted, Limit: filestore.MaximumFilesListed, Offset: offset})
 		if err != nil {
 			return nil, err
@@ -140,7 +140,7 @@ func (files kanbanFileStore) filesOfCard(cardID string, includeDeleted bool) (ma
 }
 
 func (files kanbanFileStore) ServeContent(w http.ResponseWriter, r *http.Request, fileID string, inline bool) error {
-	return files.server.serveFileStoreContent(w, r, fileID, inline, kanbanfiles.ErrNotFound)
+	return files.server.serveFileStoreContent(w, r, fileID, inline, issuesfiles.ErrNotFound)
 }
 
 func (files kanbanFileStore) Delete(fileID string, purge bool) error {
@@ -154,7 +154,7 @@ func (files kanbanFileStore) Delete(fileID string, purge bool) error {
 		err = module.DeleteFile(fileID)
 	}
 	if errors.Is(err, filestore.ErrNotFound) {
-		return kanbanfiles.ErrNotFound
+		return issuesfiles.ErrNotFound
 	}
 	return err
 }

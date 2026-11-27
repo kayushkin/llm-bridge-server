@@ -37,8 +37,8 @@ import (
 	snapshotstore "github.com/kayushkin/llm-bridge-server/internal/sessions/snapshotstore"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	noteboardapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/api"
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/predictionstore"
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/projectstore"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/predictions"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/projects"
 	"github.com/kayushkin/llm-bridge-server/ui"
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
@@ -74,7 +74,7 @@ type Server struct {
 	snapshotStore  *snapshotstore.Store
 	// predictionStore answers /prediction-store/ once the Postgres module is
 	// open (prediction_store_routes.go); nil answers those routes 503.
-	predictionStore atomic.Pointer[predictionstore.Handlers]
+	predictionStore atomic.Pointer[predictions.Handlers]
 	// sessionLog is log-store in this process; see EnableSessionLog.
 	sessionLog atomic.Pointer[sessionLogModule]
 	// noteboard answers /noteboard/ once its Postgres module is open
@@ -82,7 +82,7 @@ type Server struct {
 	noteboard atomic.Pointer[noteboardapi.API]
 	// projectStore answers /project-store/ once its Postgres module is open
 	// (project_store_routes.go); nil answers those routes 503.
-	projectStore atomic.Pointer[projectstore.Handlers]
+	projectStore atomic.Pointer[projects.Handlers]
 	// userInterfaceBuild is the built front end served at /ui/ (user_interface.go).
 	userInterfaceBuild fs.FS
 	harness            *harness.Manager

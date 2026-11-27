@@ -8,7 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5/stdlib"
 
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/predictionstore"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/predictions"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 )
 
@@ -18,7 +18,7 @@ import (
 // create roles and schemas; each step that fails is the error, and nothing
 // carries on without it.
 func openPredictionStoreModule(ctx context.Context, url string) (*sql.DB, error) {
-	module, err := predictionstore.Module()
+	module, err := predictions.Module()
 	if err != nil {
 		return nil, err
 	}

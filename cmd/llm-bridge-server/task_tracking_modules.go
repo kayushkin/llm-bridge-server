@@ -14,9 +14,9 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/access"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/server"
-	kanbandb "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/db"
+	issuesdb "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/db"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/items"
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/projectstore"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/projects"
 )
 
 func openNoteboardModule(ctx context.Context, url string) (*sql.DB, error) {
@@ -28,7 +28,7 @@ func openNoteboardModule(ctx context.Context, url string) (*sql.DB, error) {
 }
 
 func openKanbanStoreModule(ctx context.Context, url string) (*sql.DB, error) {
-	module, err := kanbandb.Module()
+	module, err := issuesdb.Module()
 	if err != nil {
 		return nil, err
 	}
@@ -36,7 +36,7 @@ func openKanbanStoreModule(ctx context.Context, url string) (*sql.DB, error) {
 }
 
 func openProjectStoreModule(ctx context.Context, url string) (*sql.DB, error) {
-	module, err := projectstore.Module()
+	module, err := projects.Module()
 	if err != nil {
 		return nil, err
 	}
@@ -81,23 +81,23 @@ func enableTaskTrackingModules(ctx context.Context, cfg *config.Config, srv *ser
 		closeModules()
 		return nil, fmt.Errorf("kanban-store: %w", err)
 	}
-	srv.EnableKanbanStore(kanbandb.New(kanbanStoreDB), server.KanbanStoreOwners{Noteboard: noteboardStore, Access: accessStores, MessageTriggersEnabled: kanbanMessageTriggersEnabled})
+	srv.EnableKanbanStore(issuesdb.New(kanbanStoreDB), server.KanbanStoreOwners{Noteboard: noteboardStore, Access: accessStores, MessageTriggersEnabled: kanbanMessageTriggersEnabled})
 
 	settings := cfg.Settings
-	projects := projectstore.New(projectStoreDB)
-	owners := &projectstore.Owners{
+	projectStore := projects.New(projectStoreDB)
+	owners := &projects.Owners{
 		HTTP:                &http.Client{Timeout: 10 * time.Second},
 		Repositories:        srv.ProjectStoreRepositories(),
 		Kanban:              srv.ProjectStoreKanban(),
 		Scheduler:           srv.ProjectStoreScheduler(),
 		HealthcheckURL:      cfg.HealthcheckURL,
-		Principals:          projectstore.PrincipalStoreModule{Store: principals},
-		Noteboard:           projectstore.NoteboardModule{Store: noteboardStore},
+		Principals:          projects.PrincipalStoreModule{Store: principals},
+		Noteboard:           projects.NoteboardModule{Store: noteboardStore},
 		Bridge:              srv.ProjectStoreBridge(),
 		SuggestionModelRole: settings.String(config.SettingProjectStoreSuggestionModelRole),
 	}
-	filer := &projectstore.SessionFiler{
-		Store:                          projects,
+	filer := &projects.SessionFiler{
+		Store:                          projectStore,
 		Owners:                         owners,
 		ModelRole:                      settings.String(config.SettingProjectStoreSessionFilerModelRole),
 		MinimumConfidence:              settings.Decimal(config.SettingProjectStoreSessionFilerMinimumConfidence),
@@ -109,7 +109,7 @@ func enableTaskTrackingModules(ctx context.Context, cfg *config.Config, srv *ser
 		closeModules()
 		return nil, fmt.Errorf("project-store: %w", err)
 	}
-	srv.EnableProjectStore(&projectstore.Handlers{Store: projects, Owners: owners, SessionFiler: filer})
+	srv.EnableProjectStore(&projects.Handlers{Store: projectStore, Owners: owners, SessionFiler: filer})
 	log.Printf("postgres: noteboard open, served at /noteboard/; kanban-store open, served at /kanban/ and /kanban-store/ (%s); project-store open, served at /project-store/", srv.KanbanStoreDescription())
 
 	if settings.Boolean(config.SettingProjectStoreSessionFilerEnabled) {
@@ -156,7 +156,7 @@ func importProjectStoreCmd(args []string) {
 		importFailed(err)
 	}
 	defer db.Close()
-	counts, err := projectstore.ImportStandaloneDatabase(ctx, db, sqlitePath)
+	counts, err := projects.ImportStandaloneDatabase(ctx, db, sqlitePath)
 	if err != nil {
 		importFailed(fmt.Errorf("nothing was imported: %w", err))
 	}
@@ -179,7 +179,7 @@ func importKanbanStoreCmd(args []string) {
 		importFailed(err)
 	}
 	defer db.Close()
-	counts, err := kanbandb.ImportStandaloneDatabase(ctx, db, sqlitePath)
+	counts, err := issuesdb.ImportStandaloneDatabase(ctx, db, sqlitePath)
 	if err != nil {
 		importFailed(fmt.Errorf("nothing was imported: %w", err))
 	}

@@ -4,7 +4,7 @@
 // timeline that the card is waiting on an answer, and reads a board's
 // defaults and classification.
 //
-// kanban-store runs in this process (internal/tasktracking/kanbanstore), and
+// kanban-store runs in this process (internal/tasktracking/issues), and
 // every call here is a Go call to its API (Store), the same code its routes
 // run, held to the same rules. A call is made as the internal service,
 // unrestricted, unless it names a principal, and then the store's board
@@ -25,24 +25,24 @@ import (
 	"net/url"
 	"strconv"
 
-	kanbanapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/api"
-	kanbanmodel "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/model"
+	issuesapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/api"
+	issuesmodel "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/model"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
 // Store is kanban-store's Go surface as this client calls it:
-// *kanbanapi.API in the server, a fake in tests. Every method refuses as its
-// route does, with a *kanbanapi.Refusal carrying the route's status.
+// *issuesapi.API in the server, a fake in tests. Every method refuses as its
+// route does, with a *issuesapi.Refusal carrying the route's status.
 type Store interface {
-	EntityCards(caller kanbanapi.Caller, entityType, entityRef string) ([]kanbanmodel.EntityCardView, error)
-	CardLinks(caller kanbanapi.Caller, cardID string) ([]kanbanmodel.CardLink, error)
-	RecordCardEvent(caller kanbanapi.Caller, cardID string, request kanbanmodel.CreateCardEventRequest) (*kanbanmodel.CardEvent, error)
-	CardTags(caller kanbanapi.Caller, cardID string) ([]string, error)
-	BoardEffectiveDefaults(caller kanbanapi.Caller, boardID string, tags []string) (*kanbanmodel.EffectiveDefaults, error)
-	CardEffectiveDefaults(caller kanbanapi.Caller, boardID, cardID string) (*kanbanmodel.EffectiveDefaults, error)
-	BoardClassification(caller kanbanapi.Caller, boardID string) (*msg.BoardClassification, error)
-	BoardCardPage(caller kanbanapi.Caller, boardID string, query url.Values) (*kanbanmodel.BoardCardPage, error)
-	PublishClassificationDecision(caller kanbanapi.Caller, publication msg.BoardClassificationDecisionPublication) (*kanbanmodel.ClassificationDecision, bool, error)
+	EntityCards(caller issuesapi.Caller, entityType, entityRef string) ([]issuesmodel.EntityCardView, error)
+	CardLinks(caller issuesapi.Caller, cardID string) ([]issuesmodel.CardLink, error)
+	RecordCardEvent(caller issuesapi.Caller, cardID string, request issuesmodel.CreateCardEventRequest) (*issuesmodel.CardEvent, error)
+	CardTags(caller issuesapi.Caller, cardID string) ([]string, error)
+	BoardEffectiveDefaults(caller issuesapi.Caller, boardID string, tags []string) (*issuesmodel.EffectiveDefaults, error)
+	CardEffectiveDefaults(caller issuesapi.Caller, boardID, cardID string) (*issuesmodel.EffectiveDefaults, error)
+	BoardClassification(caller issuesapi.Caller, boardID string) (*msg.BoardClassification, error)
+	BoardCardPage(caller issuesapi.Caller, boardID string, query url.Values) (*issuesmodel.BoardCardPage, error)
+	PublishClassificationDecision(caller issuesapi.Caller, publication msg.BoardClassificationDecisionPublication) (*issuesmodel.ClassificationDecision, bool, error)
 }
 
 // Client is kanban-store in this process. Safe for concurrent use.
@@ -59,7 +59,7 @@ func New(store Store) *Client {
 }
 
 // internalService is the caller of every read this server makes for itself.
-var internalService = kanbanapi.Caller{InternalService: true}
+var internalService = issuesapi.Caller{InternalService: true}
 
 // ErrNotFound is kanban-store answering 404: the card or board is not one it
 // has. Any other failure is the store not answering, and is not this error.
@@ -68,7 +68,7 @@ var ErrNotFound = errors.New("not found")
 // failure is a refusal of a call made as the internal service: a 404 is
 // ErrNotFound, and every other status is named in the message.
 func failure(what string, err error) error {
-	var refusal *kanbanapi.Refusal
+	var refusal *issuesapi.Refusal
 	if errors.As(err, &refusal) {
 		if refusal.Status == http.StatusNotFound {
 			return fmt.Errorf("%w: kanban-store %s: status 404: %s", ErrNotFound, what, refusal.Message)
@@ -81,7 +81,7 @@ func failure(what string, err error) error {
 // failureAsPrincipal is a refusal of a call made as a principal: a board it
 // may not view (403 or 404) is ErrNotFound, the same as a missing one.
 func failureAsPrincipal(what string, err error) error {
-	var refusal *kanbanapi.Refusal
+	var refusal *issuesapi.Refusal
 	if errors.As(err, &refusal) && (refusal.Status == http.StatusNotFound || refusal.Status == http.StatusForbidden) {
 		return fmt.Errorf("%w: kanban-store %s: status %d: %s", ErrNotFound, what, refusal.Status, refusal.Message)
 	}
@@ -90,11 +90,11 @@ func failureAsPrincipal(what string, err error) error {
 
 // asPrincipal is the caller a read names: the principal, whose board grants
 // decide, or the internal service when it names none.
-func asPrincipal(principalID string) kanbanapi.Caller {
+func asPrincipal(principalID string) issuesapi.Caller {
 	if principalID == "" {
 		return internalService
 	}
-	return kanbanapi.Caller{PrincipalID: principalID}
+	return issuesapi.Caller{PrincipalID: principalID}
 }
 
 // LinkedCard is the card a session is linked to, with the text of the work it
@@ -217,8 +217,8 @@ func (c *Client) PostCardEvent(_ context.Context, cardID string, event CardEvent
 	if event.Kind == "" {
 		return fmt.Errorf("event kind is required")
 	}
-	_, err := c.store.RecordCardEvent(internalService, cardID, kanbanmodel.CreateCardEventRequest{
-		Kind: kanbanmodel.EventKind(event.Kind), Actor: event.Actor, Summary: event.Summary, Detail: event.Detail,
+	_, err := c.store.RecordCardEvent(internalService, cardID, issuesmodel.CreateCardEventRequest{
+		Kind: issuesmodel.EventKind(event.Kind), Actor: event.Actor, Summary: event.Summary, Detail: event.Detail,
 	})
 	if err != nil {
 		return failure("card event", err)
@@ -245,7 +245,7 @@ func (c *Client) CardTags(_ context.Context, cardID string) ([]string, error) {
 // board get": each of the four defaults that anything sets, with its source.
 // A default absent from Defaults is set nowhere. The precedence lives in
 // kanban-store alone; this is its answer, never a re-resolution.
-type EffectiveDefaults = kanbanmodel.EffectiveDefaults
+type EffectiveDefaults = issuesmodel.EffectiveDefaults
 
 // EffectiveDefaults reads a board's resolved defaults: for a card when cardID
 // is given, else for a card that would carry tags.
@@ -253,7 +253,7 @@ func (c *Client) EffectiveDefaults(_ context.Context, boardID, cardID string, ta
 	if boardID == "" {
 		return nil, fmt.Errorf("board id is required")
 	}
-	var resolved *kanbanmodel.EffectiveDefaults
+	var resolved *issuesmodel.EffectiveDefaults
 	var err error
 	if cardID != "" {
 		resolved, err = c.store.CardEffectiveDefaults(internalService, boardID, cardID)

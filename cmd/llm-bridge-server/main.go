@@ -16,7 +16,7 @@ import (
 	harnessstore "github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore"
 	"github.com/kayushkin/llm-bridge-server/internal/operations"
 	"github.com/kayushkin/llm-bridge-server/internal/server"
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/predictionstore"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/predictions"
 )
 
 func main() {
@@ -214,7 +214,7 @@ func main() {
 			log.Fatalf("prediction-store: %v", err)
 		}
 		defer predictionStoreDB.Close()
-		srv.EnablePredictionStore(predictionstore.New(predictionStoreDB))
+		srv.EnablePredictionStore(predictions.New(predictionStoreDB))
 		log.Printf("postgres: prediction-store open, served at /prediction-store/")
 		closeTaskTrackingModules, err := enableTaskTrackingModules(context.Background(), cfg, srv, accessStores)
 		if err != nil {
@@ -397,7 +397,7 @@ func importPredictionStoreCmd(args []string) {
 		os.Exit(1)
 	}
 	defer db.Close()
-	counts, err := predictionstore.ImportStandaloneDatabase(ctx, db, *sqlitePath)
+	counts, err := predictions.ImportStandaloneDatabase(ctx, db, *sqlitePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: nothing was imported: %v\n", err)
 		os.Exit(1)

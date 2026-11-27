@@ -12,7 +12,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
-	kanbanmodel "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/model"
+	issuesmodel "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/model"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -568,7 +568,7 @@ func (s *Server) handleDryRunEffectiveConfig(w http.ResponseWriter, r *http.Requ
 			writeJSONError(w, http.StatusBadGateway, "kanban_store_unavailable", fmt.Sprintf("kanban-store could not answer for board %s: %v", subject.BoardID, err))
 			return
 		}
-		apply := func(key msg.EffectiveSettingKey, field kanbanmodel.DefaultField, target *string) {
+		apply := func(key msg.EffectiveSettingKey, field issuesmodel.DefaultField, target *string) {
 			d, ok := resolved.Defaults[field]
 			if !ok || d.Value == "" || *target != "" {
 				return
@@ -582,10 +582,10 @@ func (s *Server) handleDryRunEffectiveConfig(w http.ResponseWriter, r *http.Requ
 			}
 			origins[key] = origin
 		}
-		apply(msg.EffectiveSettingPrincipal, kanbanmodel.DefaultFieldPrincipal, &subject.PrincipalID)
-		apply(msg.EffectiveSettingAgent, kanbanmodel.DefaultFieldAgent, &subject.AgentID)
-		apply(msg.EffectiveSettingInstance, kanbanmodel.DefaultFieldInstance, &subject.InstanceID)
-		apply(msg.EffectiveSettingBundle, kanbanmodel.DefaultFieldBundle, &subject.BundleID)
+		apply(msg.EffectiveSettingPrincipal, issuesmodel.DefaultFieldPrincipal, &subject.PrincipalID)
+		apply(msg.EffectiveSettingAgent, issuesmodel.DefaultFieldAgent, &subject.AgentID)
+		apply(msg.EffectiveSettingInstance, issuesmodel.DefaultFieldInstance, &subject.InstanceID)
+		apply(msg.EffectiveSettingBundle, issuesmodel.DefaultFieldBundle, &subject.BundleID)
 	}
 	if subject.PrincipalID == "" {
 		if id := principalStartingSessionAsThemselves(r); id != "" {

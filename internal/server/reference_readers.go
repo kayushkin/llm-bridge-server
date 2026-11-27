@@ -45,8 +45,8 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/repositories/repostore"
 	"github.com/kayushkin/llm-bridge-server/internal/repositories/workgraphstore"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/items"
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/predictionstore"
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/projectstore"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/predictions"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/projects"
 )
 
 // InProcessReferenceServices are the services, by the name the type rows
@@ -81,7 +81,7 @@ var InProcessReferenceServices = []string{
 // call that opens it; nil until then, and a read of it is an error naming it.
 type referenceReadableStores struct {
 	noteboard     atomic.Pointer[items.Store]
-	predictions   atomic.Pointer[predictionstore.Store]
+	predictions   atomic.Pointer[predictions.Store]
 	principals    atomic.Pointer[principals.Store]
 	repos         atomic.Pointer[repostore.Store]
 	workGraph     atomic.Pointer[workgraphstore.Store]
@@ -502,27 +502,27 @@ func (s *Server) searchNotesForReference(_ context.Context, query string, _ refe
 }
 
 func (s *Server) readPredictionForReference(ctx context.Context, id string, _ referencestore.InProcessAsker) (json.RawMessage, error) {
-	predictions, err := loaded(&s.referenceReadable.predictions, "prediction-store")
+	predictionStore, err := loaded(&s.referenceReadable.predictions, "prediction-store")
 	if err != nil {
 		return nil, err
 	}
-	prediction, err := predictions.Get(ctx, id)
-	return referenceAnswer(prediction, err, predictionstore.ErrNotFound)
+	prediction, err := predictionStore.Get(ctx, id)
+	return referenceAnswer(prediction, err, predictions.ErrNotFound)
 }
 
 func (s *Server) searchPredictionsForReference(ctx context.Context, query string, _ referencestore.InProcessAsker) (json.RawMessage, error) {
-	predictions, err := loaded(&s.referenceReadable.predictions, "prediction-store")
+	predictionStore, err := loaded(&s.referenceReadable.predictions, "prediction-store")
 	if err != nil {
 		return nil, err
 	}
-	list, err := predictions.ListWithTotal(ctx, predictionstore.Filter{Query: query})
+	list, err := predictionStore.ListWithTotal(ctx, predictions.Filter{Query: query})
 	if err != nil {
 		return nil, err
 	}
 	return json.Marshal(list)
 }
 
-func (s *Server) projectStoreForReference() (*projectstore.Store, error) {
+func (s *Server) projectStoreForReference() (*projects.Store, error) {
 	handlers := s.projectStore.Load()
 	if handlers == nil {
 		return nil, errors.New("project-store is not open on this server")
@@ -531,20 +531,20 @@ func (s *Server) projectStoreForReference() (*projectstore.Store, error) {
 }
 
 func (s *Server) readProjectForReference(_ context.Context, id string, _ referencestore.InProcessAsker) (json.RawMessage, error) {
-	projects, err := s.projectStoreForReference()
+	projectStore, err := s.projectStoreForReference()
 	if err != nil {
 		return nil, err
 	}
-	project, err := projects.Project(id)
-	return referenceAnswer(project, err, projectstore.ErrNotFound)
+	project, err := projectStore.Project(id)
+	return referenceAnswer(project, err, projects.ErrNotFound)
 }
 
 func (s *Server) searchProjectsForReference(_ context.Context, query string, _ referencestore.InProcessAsker) (json.RawMessage, error) {
-	projects, err := s.projectStoreForReference()
+	projectStore, err := s.projectStoreForReference()
 	if err != nil {
 		return nil, err
 	}
-	list, err := projects.ProjectList(projectstore.ProjectFilter{Query: query})
+	list, err := projectStore.ProjectList(projects.ProjectFilter{Query: query})
 	if err != nil {
 		return nil, err
 	}

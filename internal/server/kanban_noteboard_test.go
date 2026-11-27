@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	kanbannoteboard "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/noteboard"
+	issuesnoteboard "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/noteboard"
 	noteboardapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/api"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/items"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
@@ -26,7 +26,7 @@ func newKanbanNoteboardOnTestDatabase(t *testing.T) kanbanNoteboard {
 func TestKanbanStoreCallsNoteboardInGoWithItsRefusals(t *testing.T) {
 	notes := newKanbanNoteboardOnTestDatabase(t)
 	body := "the printer on floor two"
-	created, err := notes.CreateItem(kanbannoteboard.CreateItemPayload{Type: "todo", Title: "printer jammed", Body: &body, Tags: []string{"support"}})
+	created, err := notes.CreateItem(issuesnoteboard.CreateItemPayload{Type: "todo", Title: "printer jammed", Body: &body, Tags: []string{"support"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,10 +34,10 @@ func TestKanbanStoreCallsNoteboardInGoWithItsRefusals(t *testing.T) {
 	if id == "" || created["title"] != "printer jammed" || created["body"] != body {
 		t.Fatalf("created = %v", created)
 	}
-	if _, err := notes.CreateItem(kanbannoteboard.CreateItemPayload{Title: "no type"}); err == nil || !strings.Contains(err.Error(), "400") {
+	if _, err := notes.CreateItem(issuesnoteboard.CreateItemPayload{Title: "no type"}); err == nil || !strings.Contains(err.Error(), "400") {
 		t.Errorf("an item with no type = %v, want noteboard's 400", err)
 	}
-	if _, err := notes.GetItem("00000000-0000-0000-0000-000000000000"); !kanbannoteboard.IsNotFound(err) {
+	if _, err := notes.GetItem("00000000-0000-0000-0000-000000000000"); !issuesnoteboard.IsNotFound(err) {
 		t.Errorf("an unknown item = %v, want not found", err)
 	}
 
@@ -49,7 +49,7 @@ func TestKanbanStoreCallsNoteboardInGoWithItsRefusals(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = notes.PatchItemIfMatch(id, map[string]any{"title": "printer jammed again"}, version)
-	var changed *kanbannoteboard.ItemChangedError
+	var changed *issuesnoteboard.ItemChangedError
 	if !errors.As(err, &changed) || !strings.Contains(string(changed.Body), `"title":"printer fixed"`) || changed.ETag == "" {
 		t.Fatalf("a stale patch = %v", err)
 	}
@@ -69,19 +69,19 @@ func TestKanbanStoreCallsNoteboardInGoWithItsRefusals(t *testing.T) {
 	if err != nil || len(found) != 1 {
 		t.Fatalf("search = %v, %v", found, err)
 	}
-	result, err := notes.QueryItems(kanbannoteboard.ItemsQuery{IDs: []string{id}, IncludeItems: true})
+	result, err := notes.QueryItems(issuesnoteboard.ItemsQuery{IDs: []string{id}, IncludeItems: true})
 	if err != nil || result.Total != 1 || len(result.Items) != 1 {
 		t.Fatalf("query = %+v, %v", result, err)
 	}
-	_, err = notes.QueryItems(kanbannoteboard.ItemsQuery{IDs: []string{id}, Sort: "no-such-sort"})
-	var refused *kanbannoteboard.QueryRefusedError
+	_, err = notes.QueryItems(issuesnoteboard.ItemsQuery{IDs: []string{id}, Sort: "no-such-sort"})
+	var refused *issuesnoteboard.QueryRefusedError
 	if !errors.As(err, &refused) || !strings.Contains(string(refused.Body), `"error"`) {
 		t.Fatalf("a query with an unknown sort = %v", err)
 	}
 	if err := notes.DeleteItem(id, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := notes.DeleteItem("00000000-0000-0000-0000-000000000000", false); !kanbannoteboard.IsNotFound(err) {
+	if err := notes.DeleteItem("00000000-0000-0000-0000-000000000000", false); !issuesnoteboard.IsNotFound(err) {
 		t.Errorf("deleting an unknown item = %v, want not found", err)
 	}
 }

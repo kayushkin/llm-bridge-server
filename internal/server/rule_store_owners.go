@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/automation/rulestore"
-	kanbanapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/api"
+	issuesapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/api"
 )
 
 // RuleStoreSessions is this server's sessions as rule-store reads them: the
@@ -74,9 +74,9 @@ type ruleStoreKanban struct {
 	server *Server
 }
 
-var ruleStoreCaller = kanbanapi.Caller{InternalService: true}
+var ruleStoreCaller = issuesapi.Caller{InternalService: true}
 
-func (kanban ruleStoreKanban) api() (*kanbanapi.API, error) {
+func (kanban ruleStoreKanban) api() (*issuesapi.API, error) {
 	handlers := kanban.server.kanbanStore.Load()
 	if handlers == nil || handlers.api == nil {
 		return nil, errKanbanStoreOff
@@ -87,7 +87,7 @@ func (kanban ruleStoreKanban) api() (*kanbanapi.API, error) {
 // ruleStoreKanbanAnswer is a kanban-store refusal as rule-store reads it: a
 // 404 wraps rulestore.ErrKanbanNotFound, and any other names its status.
 func ruleStoreKanbanAnswer(what string, err error) error {
-	var refusal *kanbanapi.Refusal
+	var refusal *issuesapi.Refusal
 	if errors.As(err, &refusal) {
 		if refusal.Status == 404 {
 			return fmt.Errorf("%w: %s: %s", rulestore.ErrKanbanNotFound, what, refusal.Message)
@@ -112,7 +112,7 @@ func (kanban ruleStoreKanban) LinkedCardPlacements(_ context.Context, sessionID 
 		// A card that is on no board — linked, but detached from every board
 		// — sits in no column, so it has no placement, which is an answer,
 		// not a failure.
-		var refusal *kanbanapi.Refusal
+		var refusal *issuesapi.Refusal
 		if errors.As(err, &refusal) && refusal.Status == 404 {
 			continue
 		}

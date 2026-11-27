@@ -14,7 +14,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/access"
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
 	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
-	kanbandb "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/db"
+	issuesdb "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/db"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/items"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -62,7 +62,7 @@ func TestImportedStandaloneKanbanStoreAnswers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	kanbanModule, err := kanbandb.Module()
+	kanbanModule, err := issuesdb.Module()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,12 +85,12 @@ func TestImportedStandaloneKanbanStoreAnswers(t *testing.T) {
 	if _, err := items.ImportStandaloneDatabase(ctx, noteboardPool, *standaloneNoteboardCopy); err != nil {
 		t.Fatalf("noteboard: %v", err)
 	}
-	counts, err := kanbandb.ImportStandaloneDatabase(ctx, kanbanPool, *standaloneKanbanStoreCopy)
+	counts, err := issuesdb.ImportStandaloneDatabase(ctx, kanbanPool, *standaloneKanbanStoreCopy)
 	if err != nil {
 		t.Fatalf("kanban-store: %v", err)
 	}
 	t.Logf("kanban-store imported: %+v", counts)
-	server.EnableKanbanStore(kanbandb.New(kanbanPool), KanbanStoreOwners{Noteboard: items.New(noteboardPool), Access: stores})
+	server.EnableKanbanStore(issuesdb.New(kanbanPool), KanbanStoreOwners{Noteboard: items.New(noteboardPool), Access: stores})
 
 	requests, err := os.Open(*kanbanComparisonRequests)
 	if err != nil {

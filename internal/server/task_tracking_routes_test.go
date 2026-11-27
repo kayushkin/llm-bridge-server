@@ -10,29 +10,29 @@ import (
 	"testing"
 
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/items"
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/projectstore"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/projects"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 )
 
 // enableTaskTrackingOnTestDatabase opens noteboard and project-store on a
 // Postgres database of the test's own and serves them from server, with
 // project-store calling noteboard in process, as main wires them.
-func enableTaskTrackingOnTestDatabase(t *testing.T, server *Server) (*items.Store, *projectstore.Store) {
+func enableTaskTrackingOnTestDatabase(t *testing.T, server *Server) (*items.Store, *projects.Store) {
 	t.Helper()
 	noteboardModule, err := items.Module()
 	if err != nil {
 		t.Fatal(err)
 	}
-	projectsModule, err := projectstore.Module()
+	projectsModule, err := projects.Module()
 	if err != nil {
 		t.Fatal(err)
 	}
 	database := postgrestest.NewDatabase(t, noteboardModule, projectsModule)
 	noteboard := items.New(database.Open(noteboardModule))
-	projects := projectstore.New(database.Open(projectsModule))
+	projectStore := projects.New(database.Open(projectsModule))
 	server.EnableNoteboard(noteboard)
-	server.EnableProjectStore(&projectstore.Handlers{Store: projects, Owners: &projectstore.Owners{Noteboard: projectstore.NoteboardModule{Store: noteboard}}})
-	return noteboard, projects
+	server.EnableProjectStore(&projects.Handlers{Store: projectStore, Owners: &projects.Owners{Noteboard: projects.NoteboardModule{Store: noteboard}}})
+	return noteboard, projectStore
 }
 
 func TestTaskTrackingRoutesAnswer503WithNoPostgres(t *testing.T) {
@@ -156,7 +156,7 @@ func TestImportedStandaloneTaskTrackingDatabases(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	projectsModule, err := projectstore.Module()
+	projectsModule, err := projects.Module()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,14 +166,14 @@ func TestImportedStandaloneTaskTrackingDatabases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("noteboard import: %v", err)
 	}
-	projectCounts, err := projectstore.ImportStandaloneDatabase(context.Background(), projectsDB, *standaloneProjectStoreCopy)
+	projectCounts, err := projects.ImportStandaloneDatabase(context.Background(), projectsDB, *standaloneProjectStoreCopy)
 	if err != nil {
 		t.Fatalf("project-store import: %v", err)
 	}
 	t.Logf("imported noteboard %+v and project-store %+v", noteboardCounts, projectCounts)
 	noteboard := items.New(noteboardDB)
 	gated.server.EnableNoteboard(noteboard)
-	gated.server.EnableProjectStore(&projectstore.Handlers{Store: projectstore.New(projectsDB), Owners: &projectstore.Owners{Noteboard: projectstore.NoteboardModule{Store: noteboard}}})
+	gated.server.EnableProjectStore(&projects.Handlers{Store: projects.New(projectsDB), Owners: &projects.Owners{Noteboard: projects.NoteboardModule{Store: noteboard}}})
 
 	paths, err := os.ReadFile(*taskTrackingPaths)
 	if err != nil {

@@ -15,7 +15,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient/kanbanclienttest"
-	kanbanapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/api"
+	issuesapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/api"
 )
 
 // fakePrincipalDirectory answers GET /principals/{id} from a set of records
@@ -138,7 +138,7 @@ type recordedKanbanRequest struct {
 	HeaderKeyNames []string
 	// Caller is who the store was told the request is from, and Named whether
 	// it was told at all.
-	Caller kanbanapi.Caller
+	Caller issuesapi.Caller
 	Named  bool
 }
 
@@ -179,7 +179,7 @@ func newFakeKanbanStore(t *testing.T) *fakeKanbanStore {
 			Method: r.Method, EscapedPath: r.URL.EscapedPath(), RawQuery: r.URL.RawQuery,
 			Header: r.Header.Clone(), Body: string(body), HeaderKeyNames: keyNames,
 		}
-		recorded.Caller, recorded.Named = kanbanapi.CallerFrom(r.Context())
+		recorded.Caller, recorded.Named = issuesapi.CallerFrom(r.Context())
 		fake.requests = append(fake.requests, recorded)
 		fake.mutex.Unlock()
 		fake.respond(w, r)
@@ -433,7 +433,7 @@ func TestKanbanStoreHearsOnlyTheCookiesPrincipalAndNoServiceToken(t *testing.T) 
 		t.Fatalf("kanban-store received %d requests, want 1", len(got))
 	}
 	seen := got[0]
-	if seen.Caller != (kanbanapi.Caller{PrincipalID: "principal_000001"}) {
+	if seen.Caller != (issuesapi.Caller{PrincipalID: "principal_000001"}) {
 		t.Fatalf("kanban-store was told the caller is %+v, want principal_000001", seen.Caller)
 	}
 	for _, key := range seen.HeaderKeyNames {
@@ -620,7 +620,7 @@ func TestKanbanStoreRootProxyForwardsThePathUnchanged(t *testing.T) {
 	if got[1].EscapedPath != "/health" {
 		t.Fatalf("second forwarded as %s, want /health", got[1].EscapedPath)
 	}
-	if got[0].Caller != (kanbanapi.Caller{PrincipalID: "principal_000001"}) {
+	if got[0].Caller != (issuesapi.Caller{PrincipalID: "principal_000001"}) {
 		t.Fatalf("caller = %+v, want the login's principal", got[0].Caller)
 	}
 }

@@ -13,7 +13,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient/kanbanclienttest"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
-	kanbanapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/api"
+	issuesapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/api"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -24,7 +24,7 @@ func fakeKanbanCards(t *testing.T, tagsByCard map[string][]string) *kanbanclient
 	return kanbanclient.New(&kanbanclienttest.Store{CardTagsAnswer: func(cardID string) ([]string, error) {
 		tags, known := tagsByCard[cardID]
 		if !known {
-			return nil, &kanbanapi.Refusal{Status: http.StatusNotFound, Message: "card not found"}
+			return nil, &issuesapi.Refusal{Status: http.StatusNotFound, Message: "card not found"}
 		}
 		return tags, nil
 	}})

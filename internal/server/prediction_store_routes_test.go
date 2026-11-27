@@ -10,20 +10,20 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/predictionstore"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/predictions"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 )
 
 // enablePredictionStoreOnTestDatabase opens the module on a Postgres database
 // of the test's own and serves it from server.
-func enablePredictionStoreOnTestDatabase(t *testing.T, server *Server) *predictionstore.Store {
+func enablePredictionStoreOnTestDatabase(t *testing.T, server *Server) *predictions.Store {
 	t.Helper()
-	module, err := predictionstore.Module()
+	module, err := predictions.Module()
 	if err != nil {
 		t.Fatal(err)
 	}
 	database := postgrestest.NewDatabase(t, module)
-	store := predictionstore.New(database.Open(module))
+	store := predictions.New(database.Open(module))
 	server.EnablePredictionStore(store)
 	return store
 }
@@ -83,7 +83,7 @@ func TestPredictionStoreRoutesServeTheStoreUnderThePrefix(t *testing.T) {
 	}
 
 	read := gated.requestAsService(t, "GET", "/prediction-store/predictions/prediction_000001")
-	var prediction predictionstore.Prediction
+	var prediction predictions.Prediction
 	if err := json.Unmarshal(read.Body.Bytes(), &prediction); err != nil || read.Code != http.StatusOK {
 		t.Fatalf("read = %d %s (%v)", read.Code, read.Body, err)
 	}
@@ -93,7 +93,7 @@ func TestPredictionStoreRoutesServeTheStoreUnderThePrefix(t *testing.T) {
 	}
 
 	calibration := gated.requestAsService(t, "GET", "/prediction-store/calibration?group_by=category")
-	var report predictionstore.CalibrationReport
+	var report predictions.CalibrationReport
 	if err := json.Unmarshal(calibration.Body.Bytes(), &report); err != nil || calibration.Code != http.StatusOK {
 		t.Fatalf("calibration = %d %s (%v)", calibration.Code, calibration.Body, err)
 	}
@@ -156,18 +156,18 @@ func TestImportedStandaloneDatabaseCalibration(t *testing.T) {
 		t.Skip("no -standalone-prediction-store-copy and -calibration-output given")
 	}
 	gated := newGatedTestServer(t, nil)
-	module, err := predictionstore.Module()
+	module, err := predictions.Module()
 	if err != nil {
 		t.Fatal(err)
 	}
 	database := postgrestest.NewDatabase(t, module)
 	db := database.Open(module)
-	counts, err := predictionstore.ImportStandaloneDatabase(context.Background(), db, *standalonePredictionStoreCopy)
+	counts, err := predictions.ImportStandaloneDatabase(context.Background(), db, *standalonePredictionStoreCopy)
 	if err != nil {
 		t.Fatalf("import: %v", err)
 	}
 	t.Logf("imported %+v", counts)
-	gated.server.EnablePredictionStore(predictionstore.New(db))
+	gated.server.EnablePredictionStore(predictions.New(db))
 	report := map[string]json.RawMessage{}
 	for _, path := range []string{"/prediction-store/calibration", "/prediction-store/calibration?group_by=category", "/prediction-store/base-rates", "/prediction-store/health", "/prediction-store/predictions?include_deleted=1&expand=1", "/prediction-store/tags"} {
 		response := gated.requestAsService(t, "GET", path)

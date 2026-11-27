@@ -11,8 +11,8 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient/kanbanclienttest"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
-	kanbanapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/api"
-	kanbanmodel "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/model"
+	issuesapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/api"
+	issuesmodel "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/model"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -25,8 +25,8 @@ func testServerWithKanban(t *testing.T, kanban *kanbanclienttest.Store) (*Server
 	st := newTestBridgeStore(t)
 
 	if kanban == nil {
-		kanban = &kanbanclienttest.Store{EntityCardsAnswer: func(string, string) ([]kanbanmodel.EntityCardView, error) {
-			return nil, &kanbanapi.Refusal{Status: http.StatusBadGateway, Message: "noteboard did not answer"}
+		kanban = &kanbanclienttest.Store{EntityCardsAnswer: func(string, string) ([]issuesmodel.EntityCardView, error) {
+			return nil, &issuesapi.Refusal{Status: http.StatusBadGateway, Message: "noteboard did not answer"}
 		}}
 	}
 
@@ -52,12 +52,12 @@ func testServerWithKanban(t *testing.T, kanban *kanbanclienttest.Store) (*Server
 // the canned card for every ref cannot tell a right id from a wrong one, so
 // it certifies whichever id the caller happens to pass.
 func newSessionCardsStub(todoByRef map[string]string) *kanbanclienttest.Store {
-	return &kanbanclienttest.Store{EntityCardsAnswer: func(entityType, entityRef string) ([]kanbanmodel.EntityCardView, error) {
+	return &kanbanclienttest.Store{EntityCardsAnswer: func(entityType, entityRef string) ([]issuesmodel.EntityCardView, error) {
 		todo, linked := todoByRef[entityRef]
 		if entityType != "session" || !linked {
-			return []kanbanmodel.EntityCardView{}, nil
+			return []issuesmodel.EntityCardView{}, nil
 		}
-		return []kanbanmodel.EntityCardView{{CardID: todo, Item: map[string]any{"id": todo}}}, nil
+		return []issuesmodel.EntityCardView{{CardID: todo, Item: map[string]any{"id": todo}}}, nil
 	}}
 }
 
@@ -152,11 +152,11 @@ func TestDerivedSignalsCarryTheLinkedTodo(t *testing.T) {
 // pointer; it may never cost the signal.
 func TestSignalIsStillRecordedWhenTheLookupFails(t *testing.T) {
 	cases := map[string]*kanbanclienttest.Store{
-		"store errors": {EntityCardsAnswer: func(string, string) ([]kanbanmodel.EntityCardView, error) {
-			return nil, &kanbanapi.Refusal{Status: http.StatusInternalServerError, Message: "boom"}
+		"store errors": {EntityCardsAnswer: func(string, string) ([]issuesmodel.EntityCardView, error) {
+			return nil, &issuesapi.Refusal{Status: http.StatusInternalServerError, Message: "boom"}
 		}},
-		"store gives an unreadable card": {EntityCardsAnswer: func(string, string) ([]kanbanmodel.EntityCardView, error) {
-			return []kanbanmodel.EntityCardView{{CardID: "todo-42", Item: map[string]any{"id": "todo-42", "title": 7}}}, nil
+		"store gives an unreadable card": {EntityCardsAnswer: func(string, string) ([]issuesmodel.EntityCardView, error) {
+			return []issuesmodel.EntityCardView{{CardID: "todo-42", Item: map[string]any{"id": "todo-42", "title": 7}}}, nil
 		}},
 		"store unreachable": nil,
 	}

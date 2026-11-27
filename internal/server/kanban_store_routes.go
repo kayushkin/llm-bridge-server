@@ -1,6 +1,6 @@
 package server
 
-// kanban-store, run in this process (internal/tasktracking/kanbanstore). Its
+// kanban-store, run in this process (internal/tasktracking/issues). Its
 // routes stay where the identity-carrying proxy put them: /kanban/<rest>
 // answers kanban-store's /api/<rest>, and /kanban-store/<rest> its /<rest>.
 //
@@ -29,13 +29,13 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/inprocesshttp"
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
-	kanbanapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/api"
-	kanbanbundles "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/bundlestore"
-	kanbandb "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/db"
-	kanbangrants "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/grantstore"
-	kanbanbridge "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/llmbridge"
-	kanbanmultichat "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/multichat"
-	kanbanprincipals "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/principalstore"
+	issuesapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/api"
+	issuesbundles "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/bundlestore"
+	issuesdb "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/db"
+	issuesgrants "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/grantstore"
+	issuesbridge "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/llmbridge"
+	issuesmultichat "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/multichat"
+	issuesprincipals "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/principalstore"
 	noteboardapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/api"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/items"
 )
@@ -45,10 +45,10 @@ type kanbanStoreHandlers struct {
 	// handler answers every route at the store's own paths (/api/…, /health).
 	handler http.Handler
 	// store is the module, for grant-store's check that a board exists.
-	store *kanbandb.Store
+	store *issuesdb.Store
 	// api is the store's own, for mailstack's question of which messages a
 	// person sees through a ticket.
-	api *kanbanapi.API
+	api *issuesapi.API
 	// messageTriggersEnabled is whether triggers send, for the start log.
 	messageTriggersEnabled bool
 }
@@ -68,11 +68,11 @@ type KanbanStoreOwners struct {
 // asks. main calls it once, after EnableAccess and before the server listens;
 // until then, and in a test that never calls it, /kanban/ and /kanban-store/
 // answer 503 and this server's own kanban reads are off.
-func (s *Server) EnableKanbanStore(store *kanbandb.Store, owners KanbanStoreOwners) {
+func (s *Server) EnableKanbanStore(store *issuesdb.Store, owners KanbanStoreOwners) {
 	// noteboard runs in this process, and kanban-store calls its API in Go.
 	notes := kanbanNoteboard{notes: noteboardapi.New(owners.Noteboard)}
 	directory := access.GrantsPrincipalDirectory(owners.Access.Principals)
-	api := kanbanapi.New(store, notes,
+	api := issuesapi.New(store, notes,
 		kanbanPrincipalDirectory{principals: owners.Access.Principals},
 		kanbanAgentsAndInstances{server: s},
 		kanbanBundles{server: s})
@@ -82,9 +82,9 @@ func (s *Server) EnableKanbanStore(store *kanbandb.Store, owners KanbanStoreOwne
 	api.SetReferenceStore(kanbanReferenceTypes{server: s})
 	api.SetFileStore(kanbanFileStore{server: s})
 	if owners.MessageTriggersEnabled {
-		api.SetMessageSender(kanbanmultichat.New(s.cfg.MultichatURL, kanbanmultichat.AuthStoreTokenSource(s.cfg.AuthStoreURL, s.cfg.AuthStoreToken)))
+		api.SetMessageSender(issuesmultichat.New(s.cfg.MultichatURL, issuesmultichat.AuthStoreTokenSource(s.cfg.AuthStoreURL, s.cfg.AuthStoreToken)))
 	}
-	api.SetPrincipalEnforcement(kanbanapi.PrincipalEnforcement{Grants: kanbanBoardGrants{
+	api.SetPrincipalEnforcement(issuesapi.PrincipalEnforcement{Grants: kanbanBoardGrants{
 		grants:    owners.Access.Grants,
 		directory: directory,
 		checker:   s.grantResourceChecker(owners.Access.Principals),
@@ -134,11 +134,11 @@ func (s *Server) serveKanbanStore(w http.ResponseWriter, r *http.Request, mountP
 		writeJSONError(w, http.StatusServiceUnavailable, "kanban_store_off", errKanbanStoreOff.Error())
 		return
 	}
-	var caller kanbanapi.Caller
+	var caller issuesapi.Caller
 	if principalID, identified := principalIdentityOfRequest(r); identified {
-		caller = kanbanapi.Caller{PrincipalID: principalID}
+		caller = issuesapi.Caller{PrincipalID: principalID}
 	} else if s.requestIsTheInternalServiceActingAsItself(r) {
-		caller = kanbanapi.Caller{InternalService: true}
+		caller = issuesapi.Caller{InternalService: true}
 	} else {
 		// Request authorization lets nothing else through to a store route.
 		writeJSONError(w, http.StatusUnauthorized, "kanban_store_requires_a_caller",
@@ -150,7 +150,7 @@ func (s *Server) serveKanbanStore(w http.ResponseWriter, r *http.Request, mountP
 		writeJSONError(w, http.StatusBadRequest, "invalid_path", fmt.Sprintf("the path after %s/ is not one kanban-store can read: %v", mountPrefix, err))
 		return
 	}
-	served := r.Clone(kanbanapi.ContextWithCaller(r.Context(), caller))
+	served := r.Clone(issuesapi.ContextWithCaller(r.Context(), caller))
 	served.URL.Path = storePath.Path
 	served.URL.RawPath = storePath.RawPath
 	served.RequestURI = served.URL.RequestURI()
@@ -186,7 +186,7 @@ func (s *Server) checkKanbanBoardExists(boardID string) error {
 	if handlers == nil {
 		return fmt.Errorf("%w, so board %q cannot be checked", errKanbanStoreOff, boardID)
 	}
-	if _, err := handlers.store.GetBoard(boardID); errors.Is(err, kanbandb.ErrNotFound) {
+	if _, err := handlers.store.GetBoard(boardID); errors.Is(err, issuesdb.ErrNotFound) {
 		return fmt.Errorf("%w: kanban-store has no board %q", grants.ErrResourceNotFound, boardID)
 	} else if err != nil {
 		return fmt.Errorf("kanban-store: reading board %s: %w", boardID, err)
@@ -201,8 +201,8 @@ type kanbanPrincipalDirectory struct {
 	principals *principals.Store
 }
 
-func kanbanPrincipalOf(principal *principals.Principal) kanbanprincipals.Principal {
-	return kanbanprincipals.Principal{
+func kanbanPrincipalOf(principal *principals.Principal) issuesprincipals.Principal {
+	return issuesprincipals.Principal{
 		ID:              principal.ID,
 		Kind:            principal.Kind,
 		DisplayName:     principal.DisplayName,
@@ -211,10 +211,10 @@ func kanbanPrincipalOf(principal *principals.Principal) kanbanprincipals.Princip
 	}
 }
 
-func (directory kanbanPrincipalDirectory) Get(id string) (*kanbanprincipals.Principal, error) {
+func (directory kanbanPrincipalDirectory) Get(id string) (*issuesprincipals.Principal, error) {
 	principal, err := directory.principals.Get(context.Background(), id, false)
 	if errors.Is(err, principals.ErrNotFound) {
-		return nil, kanbanprincipals.ErrNotFound
+		return nil, issuesprincipals.ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("principal-store: reading %s: %w", id, err)
@@ -223,15 +223,15 @@ func (directory kanbanPrincipalDirectory) Get(id string) (*kanbanprincipals.Prin
 	return &read, nil
 }
 
-func (directory kanbanPrincipalDirectory) ListAvailableMembers(groupID string, at time.Time) ([]kanbanprincipals.Principal, error) {
+func (directory kanbanPrincipalDirectory) ListAvailableMembers(groupID string, at time.Time) ([]issuesprincipals.Principal, error) {
 	members, err := directory.principals.ListAvailableMembers(context.Background(), groupID, at)
 	if errors.Is(err, principals.ErrNotFound) {
-		return nil, kanbanprincipals.ErrNotFound
+		return nil, issuesprincipals.ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("principal-store: the members of %s available at %s: %w", groupID, at.UTC().Format(time.RFC3339), err)
 	}
-	read := make([]kanbanprincipals.Principal, 0, len(members))
+	read := make([]issuesprincipals.Principal, 0, len(members))
 	for _, member := range members {
 		read = append(read, kanbanPrincipalOf(member))
 	}
@@ -247,17 +247,17 @@ type kanbanBoardGrants struct {
 	checker   grants.ResourceChecker
 }
 
-func (boardGrants kanbanBoardGrants) EffectiveBoardGrants(principalID string) ([]kanbangrants.BoardGrant, error) {
-	effective, err := boardGrants.grants.Effective(context.Background(), boardGrants.directory, principalID, "", kanbangrants.ResourceTypeBoard)
+func (boardGrants kanbanBoardGrants) EffectiveBoardGrants(principalID string) ([]issuesgrants.BoardGrant, error) {
+	effective, err := boardGrants.grants.Effective(context.Background(), boardGrants.directory, principalID, "", issuesgrants.ResourceTypeBoard)
 	if errors.Is(err, grants.ErrNotFound) {
-		return nil, fmt.Errorf("%w: %v", kanbangrants.ErrPrincipalNotFound, err)
+		return nil, fmt.Errorf("%w: %v", issuesgrants.ErrPrincipalNotFound, err)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("grant-store: the effective board grants of %s: %w", principalID, err)
 	}
-	read := make([]kanbangrants.BoardGrant, 0, len(effective))
+	read := make([]issuesgrants.BoardGrant, 0, len(effective))
 	for _, grant := range effective {
-		read = append(read, kanbangrants.BoardGrant{PrincipalID: grant.PrincipalID, Relation: grant.Relation, BoardID: grant.ResourceID})
+		read = append(read, issuesgrants.BoardGrant{PrincipalID: grant.PrincipalID, Relation: grant.Relation, BoardID: grant.ResourceID})
 	}
 	return read, nil
 }
@@ -265,8 +265,8 @@ func (boardGrants kanbanBoardGrants) EffectiveBoardGrants(principalID string) ([
 func (boardGrants kanbanBoardGrants) GrantBoardAdministration(principalID, boardID string) error {
 	_, _, err := boardGrants.grants.Create(context.Background(), boardGrants.directory, boardGrants.checker, grants.GrantRequest{
 		PrincipalID:  principalID,
-		Relation:     kanbangrants.RelationCanAdminister,
-		ResourceType: kanbangrants.ResourceTypeBoard,
+		Relation:     issuesgrants.RelationCanAdminister,
+		ResourceType: issuesgrants.ResourceTypeBoard,
 		ResourceID:   boardID,
 		Note:         "created the board",
 	})
@@ -289,7 +289,7 @@ func (owner kanbanAgentsAndInstances) CheckInstanceExists(id string) error {
 	}
 	if _, err := owner.server.harnessStore.GetInstanceWithMachine(id); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("%w: instance %s", kanbanbridge.ErrNotFound, id)
+			return fmt.Errorf("%w: instance %s", issuesbridge.ErrNotFound, id)
 		}
 		return fmt.Errorf("harness-store: reading instance %s: %w", id, err)
 	}
@@ -303,11 +303,11 @@ func (owner kanbanAgentsAndInstances) CheckAgentExists(id string) error {
 	// A board names agent-store's numeric id; the slug is renameable.
 	number, err := strconv.ParseInt(id, 10, 64)
 	if err != nil || strconv.FormatInt(number, 10) != id {
-		return fmt.Errorf("%w: agent %q is not agent-store's numeric id (send the id, not the slug)", kanbanbridge.ErrNotFound, id)
+		return fmt.Errorf("%w: agent %q is not agent-store's numeric id (send the id, not the slug)", issuesbridge.ErrNotFound, id)
 	}
 	if _, err := owner.server.agentStore.GetAgent(number); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("%w: agent-store has no agent %s", kanbanbridge.ErrNotFound, id)
+			return fmt.Errorf("%w: agent-store has no agent %s", issuesbridge.ErrNotFound, id)
 		}
 		return fmt.Errorf("agent-store: reading agent %s: %w", id, err)
 	}
@@ -326,7 +326,7 @@ func (owner kanbanBundles) CheckBundleExists(id string) error {
 	}
 	err := owner.server.bundleClient.CheckExists(context.Background(), id)
 	if errors.Is(err, bundleclient.ErrNotFound) {
-		return fmt.Errorf("%w: %v", kanbanbundles.ErrNotFound, err)
+		return fmt.Errorf("%w: %v", issuesbundles.ErrNotFound, err)
 	}
 	return err
 }
@@ -342,7 +342,7 @@ func (s *Server) KanbanStoreHTTPClientAsInternalService() (*http.Client, error) 
 		return nil, errKanbanStoreOff
 	}
 	asInternalService := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handlers.handler.ServeHTTP(w, r.WithContext(kanbanapi.ContextWithCaller(r.Context(), kanbanapi.Caller{InternalService: true})))
+		handlers.handler.ServeHTTP(w, r.WithContext(issuesapi.ContextWithCaller(r.Context(), issuesapi.Caller{InternalService: true})))
 	})
 	return &http.Client{Transport: inprocesshttp.Transport{Handler: asInternalService}}, nil
 }

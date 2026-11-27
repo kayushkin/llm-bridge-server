@@ -16,7 +16,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/backend"
 	"github.com/kayushkin/llm-bridge-server/internal/mailstackclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
-	kanbanmodel "github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/model"
+	issuesmodel "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/model"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -86,22 +86,22 @@ const askMayIProceed = `{"tool_name":"AskUserQuestion","tool_input":{"questions"
 // link, and records every event posted onto it.
 type cardStub struct {
 	mu     sync.Mutex
-	events []kanbanmodel.CreateCardEventRequest
+	events []issuesmodel.CreateCardEventRequest
 }
 
 func (c *cardStub) kanbanStore(cardID string) *kanbanclienttest.Store {
 	return &kanbanclienttest.Store{
-		EntityCardsAnswer: func(string, string) ([]kanbanmodel.EntityCardView, error) {
-			return []kanbanmodel.EntityCardView{{CardID: cardID, Item: map[string]any{"id": cardID, "title": "Add catalog product count to /health", "body": "Helena asks for a products count on /health."}}}, nil
+		EntityCardsAnswer: func(string, string) ([]issuesmodel.EntityCardView, error) {
+			return []issuesmodel.EntityCardView{{CardID: cardID, Item: map[string]any{"id": cardID, "title": "Add catalog product count to /health", "body": "Helena asks for a products count on /health."}}}, nil
 		},
-		CardLinksAnswer: func(string) ([]kanbanmodel.CardLink, error) {
-			return []kanbanmodel.CardLink{{EntityType: "repo", EntityRef: "/tmp/x"}, {EntityType: "email", EntityRef: "demo-work:lmf8c5178e02571eae"}}, nil
+		CardLinksAnswer: func(string) ([]issuesmodel.CardLink, error) {
+			return []issuesmodel.CardLink{{EntityType: "repo", EntityRef: "/tmp/x"}, {EntityType: "email", EntityRef: "demo-work:lmf8c5178e02571eae"}}, nil
 		},
-		RecordCardEventAnswer: func(_ string, request kanbanmodel.CreateCardEventRequest) (*kanbanmodel.CardEvent, error) {
+		RecordCardEventAnswer: func(_ string, request issuesmodel.CreateCardEventRequest) (*issuesmodel.CardEvent, error) {
 			c.mu.Lock()
 			c.events = append(c.events, request)
 			c.mu.Unlock()
-			return &kanbanmodel.CardEvent{}, nil
+			return &issuesmodel.CardEvent{}, nil
 		},
 	}
 }

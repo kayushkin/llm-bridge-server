@@ -16,7 +16,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/backend"
 	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/localmail"
 	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack/mailmodule"
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/kanbanstore/model"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/model"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 )
 

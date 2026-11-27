@@ -8,12 +8,12 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/repositories/repostore"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
-	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/projectstore"
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/projects"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
 // project-store's owners in this process answer what their routes answered:
-// the record for an id they have, projectstore.ErrNotFound for one they do
+// the record for an id they have, projects.ErrNotFound for one they do
 // not, and the route's refusal for a request it would refuse.
 func TestProjectStoreOwnersAnswerInProcess(t *testing.T) {
 	ctx := context.Background()
@@ -29,7 +29,7 @@ func TestProjectStoreOwnersAnswerInProcess(t *testing.T) {
 	if name, err := repositories.RepoName(ctx, repo.ID); err != nil || name != "webapp" {
 		t.Errorf("RepoName = %q, %v", name, err)
 	}
-	if _, err := repositories.RepoName(ctx, repo.ID+100); !errors.Is(err, projectstore.ErrNotFound) {
+	if _, err := repositories.RepoName(ctx, repo.ID+100); !errors.Is(err, projects.ErrNotFound) {
 		t.Errorf("an unknown repo: %v, want ErrNotFound", err)
 	}
 	if deploys, err := repositories.Deployments(ctx, repo.ID, 1); err != nil || len(deploys) != 0 {
@@ -46,7 +46,7 @@ func TestProjectStoreOwnersAnswerInProcess(t *testing.T) {
 	if name, err := kanban.BoardName(ctx, test.seenBoardID); err != nil || name != "Support" {
 		t.Errorf("BoardName = %q, %v", name, err)
 	}
-	if _, err := kanban.BoardName(ctx, "board-nobody-has"); !errors.Is(err, projectstore.ErrNotFound) {
+	if _, err := kanban.BoardName(ctx, "board-nobody-has"); !errors.Is(err, projects.ErrNotFound) {
 		t.Errorf("an unknown board: %v, want ErrNotFound", err)
 	}
 	if cards, err := kanban.ProjectCards(ctx, "project_000001"); err != nil || len(cards) != 0 {
@@ -58,13 +58,13 @@ func TestProjectStoreOwnersAnswerInProcess(t *testing.T) {
 	if session, err := bridge.Session(ctx, "br_chat"); err != nil || session.SessionID != "br_chat" || session.Type != "interactive" {
 		t.Errorf("Session = %+v, %v", session, err)
 	}
-	if _, err := bridge.Session(ctx, "br_nobody"); !errors.Is(err, projectstore.ErrNotFound) {
+	if _, err := bridge.Session(ctx, "br_nobody"); !errors.Is(err, projects.ErrNotFound) {
 		t.Errorf("an unknown session: %v, want ErrNotFound", err)
 	}
 	if brief, err := bridge.SessionBrief(ctx, "br_chat"); err != nil || brief.Brief != nil {
 		t.Errorf("the brief of a chat no turn has briefed = %+v, %v", brief, err)
 	}
-	if _, err := bridge.SessionBrief(ctx, "br_nobody"); !errors.Is(err, projectstore.ErrNotFound) {
+	if _, err := bridge.SessionBrief(ctx, "br_nobody"); !errors.Is(err, projects.ErrNotFound) {
 		t.Errorf("the brief of an unknown session: %v, want ErrNotFound", err)
 	}
 	if _, err := bridge.OneShot(ctx, msg.OneShotRequest{ModelRole: "balanced"}); err == nil || !strings.Contains(err.Error(), "prompt_required") {
@@ -81,7 +81,7 @@ func TestProjectStoreOwnersAnswerInProcess(t *testing.T) {
 	if name, err := srv.ProjectStoreScheduler().JobName(ctx, 76); err != nil || name != "nightly-digest" {
 		t.Errorf("JobName = %q, %v", name, err)
 	}
-	if _, err := srv.ProjectStoreScheduler().JobName(ctx, 5); !errors.Is(err, projectstore.ErrNotFound) {
+	if _, err := srv.ProjectStoreScheduler().JobName(ctx, 5); !errors.Is(err, projects.ErrNotFound) {
 		t.Errorf("an unknown job: %v, want ErrNotFound", err)
 	}
 }
