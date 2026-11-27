@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/tools"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -103,7 +103,7 @@ func (s *Server) reportObservedHarnessTools(ctx context.Context, harness msg.Har
 	if s.toolRegistry == nil {
 		return nil, fmt.Errorf("%s", toolStoreOffMessage)
 	}
-	answer, err := s.toolRegistry.RecordObservedHarnessTools(ctx, toolstore.ObservedHarnessToolsRequest{Harness: string(harness), ToolNames: names})
+	answer, err := s.toolRegistry.RecordObservedHarnessTools(ctx, tools.ObservedHarnessToolsRequest{Harness: string(harness), ToolNames: names})
 	if err != nil {
 		return nil, fmt.Errorf("tool-store could not record the harness tools %s reported: %w", harness, err)
 	}

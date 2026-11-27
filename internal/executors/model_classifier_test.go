@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/executors"
 	"github.com/kayushkin/llm-bridge-server/internal/executors/executorstest"
-	"github.com/kayushkin/llm-bridge-server/internal/oneshotrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/operations"
 	"github.com/kayushkin/llm-bridge-server/internal/operationstore"
 	"github.com/kayushkin/llm-bridge-server/internal/operationstore/operationstoretest"
@@ -157,10 +157,10 @@ func TestItemsGoToTheModelInBatches(t *testing.T) {
 // scriptedAnswer answers every call with the same parsed JSON.
 type scriptedAnswer struct{ parsed string }
 
-func (s scriptedAnswer) OneShotRoute(string) (oneshotrouting.Route, error) {
-	return oneshotrouting.Route{Requested: "m", Candidates: []oneshotrouting.Candidate{{ModelID: "m", Provider: "test"}}}, nil
+func (s scriptedAnswer) OneShotRoute(string) (modelrouting.Route, error) {
+	return modelrouting.Route{Requested: "m", Candidates: []modelrouting.Candidate{{ModelID: "m", Provider: "test"}}}, nil
 }
-func (s scriptedAnswer) RunOneShotRoute(context.Context, oneshotrouting.Route, msg.OneShotRequest, func(oneshotrouting.Candidate) string) (msg.OneShotResponse, error) {
+func (s scriptedAnswer) RunOneShotRoute(context.Context, modelrouting.Route, msg.OneShotRequest, func(modelrouting.Candidate) string) (msg.OneShotResponse, error) {
 	return msg.OneShotResponse{Parsed: json.RawMessage(s.parsed), Model: "m", InstanceID: "inst"}, nil
 }
 

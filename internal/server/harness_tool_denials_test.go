@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/agents/bundlestore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/bundles"
 	"github.com/kayushkin/llm-bridge-server/internal/bundleclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -21,9 +21,9 @@ func bundleStoreDenying(t *testing.T, deniedToolIDs []int64, deniedReadPaths []s
 		deniedReadPaths = []string{}
 	}
 	return &fakeBundleResolver{bundleID: "6", resolution: &bundleclient.Resolution{
-		Bundles:         []bundlestore.BundleRef{{ID: 6, Name: "support-read-only"}},
-		Skills:          []bundlestore.MemberRef{},
-		Tools:           []bundlestore.MemberRef{},
+		Bundles:         []bundles.BundleRef{{ID: 6, Name: "support-read-only"}},
+		Skills:          []bundles.MemberRef{},
+		Tools:           []bundles.MemberRef{},
 		DeniedTools:     memberRefs("denied", deniedToolIDs...),
 		DeniedReadPaths: deniedReadPaths,
 	}}

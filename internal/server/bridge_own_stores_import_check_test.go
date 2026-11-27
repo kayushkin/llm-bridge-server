@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/agents/hookstore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/hooks"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore"
 	"github.com/kayushkin/llm-bridge-server/internal/operations"
@@ -85,7 +85,7 @@ func TestTheImportedBridgeOwnStoresAnswerAsTheLiveServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	hookModule, err := hookstore.Module()
+	hookModule, err := hooks.Module()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestTheImportedBridgeOwnStoresAnswerAsTheLiveServer(t *testing.T) {
 	harnessDB, hookDB, snapshotDB, operationDB := database.Open(harnessModule), database.Open(hookModule), database.Open(snapshotModule), database.Open(operationModule)
 	for name, run := range map[string]func() (any, error){
 		"harness-store": func() (any, error) { return harnessstore.ImportStandaloneDatabase(ctx, harnessDB, *harnessStoreCopy) },
-		"hook-store":    func() (any, error) { return hookstore.ImportStandaloneDatabase(ctx, hookDB, *hookStoreCopy) },
+		"hook-store":    func() (any, error) { return hooks.ImportStandaloneDatabase(ctx, hookDB, *hookStoreCopy) },
 		"snapshot-store": func() (any, error) {
 			return snapshotstore.ImportStandaloneDatabase(ctx, snapshotDB, *snapshotStoreCopy)
 		},
@@ -123,7 +123,7 @@ func TestTheImportedBridgeOwnStoresAnswerAsTheLiveServer(t *testing.T) {
 	}
 	cfg := &config.Config{ImagesDir: filepath.Join(directory, "images"), BridgePrefsPath: filepath.Join(directory, "prefs.json")}
 	testAuthorizationConfig(cfg)
-	srv := New(bridgeStore, nil, nil, harnessstore.New(harnessDB), hookstore.New(hookDB), nil, snapshots, cfg)
+	srv := New(bridgeStore, nil, nil, harnessstore.New(harnessDB), hooks.New(hookDB), nil, snapshots, cfg)
 	operationStore := operationstore.New(operationDB)
 	coordinator, err := operations.NewCoordinator(operationStore, operations.Config{WorkerCount: 1, LeaseDuration: time.Minute, LeaseOwner: "import check"})
 	if err != nil {

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	agentstore "github.com/kayushkin/llm-bridge-server/internal/agents/agentstore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -87,21 +87,21 @@ func TestGateRefusesAnInstanceOutsideTheDispatchGrants(t *testing.T) {
 
 // agentStoreWithAgents is an agent-store holding one agent per slug, and the
 // id it gave each.
-func agentStoreWithAgents(t *testing.T, slugs ...string) (*agentstore.Store, map[string]string) {
+func agentStoreWithAgents(t *testing.T, slugs ...string) (*agents.Store, map[string]string) {
 	t.Helper()
-	agents := openTestAgentStore(t)
+	agentStore := openTestAgentStore(t)
 	ids := map[string]string{}
 	for _, slug := range slugs {
-		if err := agents.UpsertAgent(&agentstore.Agent{Slug: slug, DisplayName: slug, Enabled: true}); err != nil {
+		if err := agentStore.UpsertAgent(&agents.Agent{Slug: slug, DisplayName: slug, Enabled: true}); err != nil {
 			t.Fatal(err)
 		}
-		agent, err := agents.GetAgentBySlug(slug)
+		agent, err := agentStore.GetAgentBySlug(slug)
 		if err != nil {
 			t.Fatal(err)
 		}
 		ids[slug] = strconv.FormatInt(agent.ID, 10)
 	}
-	return agents, ids
+	return agentStore, ids
 }
 
 // can_run_as: no grants means any agent agent-store has; grants mean only

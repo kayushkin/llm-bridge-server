@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	agentstore "github.com/kayushkin/llm-bridge-server/internal/agents/agentstore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient/kanbanclienttest"
@@ -32,12 +32,12 @@ func fakeKanbanCards(t *testing.T, tagsByCard map[string][]string) *kanbanclient
 
 // contextTestAgentStore holds a native_file Claude Code, an inject Codex, and
 // context collections for every directory and for /work/northwind.
-func contextTestAgentStore(t *testing.T) *agentstore.Store {
+func contextTestAgentStore(t *testing.T) *agents.Store {
 	t.Helper()
 	as := openTestAgentStore(t)
-	for _, delivery := range []agentstore.PromptHarnessDelivery{
-		{Harness: string(msg.HarnessClaudeCode), Delivery: agentstore.PromptDeliveryNativeFile, NativeRelativePath: "CLAUDE.md"},
-		{Harness: string(msg.HarnessCodex), Delivery: agentstore.PromptDeliveryInject},
+	for _, delivery := range []agents.PromptHarnessDelivery{
+		{Harness: string(msg.HarnessClaudeCode), Delivery: agents.PromptDeliveryNativeFile, NativeRelativePath: "CLAUDE.md"},
+		{Harness: string(msg.HarnessCodex), Delivery: agents.PromptDeliveryInject},
 	} {
 		if _, err := as.SetPromptHarnessDelivery(delivery); err != nil {
 			t.Fatal(err)
@@ -60,7 +60,7 @@ func contextTestAgentStore(t *testing.T) *agentstore.Store {
 		{everywhere.ID, "## Refunds", "Refunds go through the ledger.", []string{"billing"}},
 		{northwind.ID, "## Northwind billing", "Northwind bills monthly.", []string{"billing"}},
 	} {
-		if _, err := as.CreatePromptSection(section.collection, &agentstore.PromptSection{Heading: section.heading, Body: section.body, Tags: section.tags, Enabled: true}, 0, ""); err != nil {
+		if _, err := as.CreatePromptSection(section.collection, &agents.PromptSection{Heading: section.heading, Body: section.body, Tags: section.tags, Enabled: true}, 0, ""); err != nil {
 			t.Fatal(err)
 		}
 	}

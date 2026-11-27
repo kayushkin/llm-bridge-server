@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/tools"
 	"github.com/kayushkin/llm-bridge-server/internal/bundleclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -277,7 +277,7 @@ func (s *Server) injectMCPConfig(sess *store.Session) error {
 		if len(offer.Names) == 0 {
 			return s.replaceHarnessConfig(sess, cfg)
 		}
-		path, err := s.writeProvisionedMCPConfig(ctx, toolstore.ProvisionRequest{Tools: offer.Names})
+		path, err := s.writeProvisionedMCPConfig(ctx, tools.ProvisionRequest{Tools: offer.Names})
 		if err != nil {
 			return err
 		}
@@ -291,7 +291,7 @@ func (s *Server) injectMCPConfig(sess *store.Session) error {
 				sess.SessionID, sess.BundleID, offer.Resolution.Bundles)
 			return s.replaceHarnessConfig(sess, cfg)
 		}
-		path, err := s.writeProvisionedMCPConfig(ctx, toolstore.ProvisionRequest{ToolIDs: offer.IDs})
+		path, err := s.writeProvisionedMCPConfig(ctx, tools.ProvisionRequest{ToolIDs: offer.IDs})
 		if err != nil {
 			return fmt.Errorf("session %s bundle %s: provisioning tools %v failed, so it was not started: %w", sess.SessionID, sess.BundleID, offer.IDs, err)
 		}
@@ -307,7 +307,7 @@ func (s *Server) injectMCPConfig(sess *store.Session) error {
 		if len(offer.IDs) == 0 {
 			return nil
 		}
-		path, err := s.writeProvisionedMCPConfig(ctx, toolstore.ProvisionRequest{ToolIDs: offer.IDs})
+		path, err := s.writeProvisionedMCPConfig(ctx, tools.ProvisionRequest{ToolIDs: offer.IDs})
 		if err != nil {
 			return fmt.Errorf("session %s as %s: provisioning granted tools %v failed, so it was not started: %w", sess.SessionID, sess.PrincipalID, offer.IDs, err)
 		}
@@ -323,7 +323,7 @@ func (s *Server) injectMCPConfig(sess *store.Session) error {
 		// Provisioned by instance id, as before: tool-store applies the opt-in
 		// list itself, and a registry outage starts the session with nothing
 		// rather than stopping it.
-		path, err := s.writeProvisionedMCPConfig(ctx, toolstore.ProvisionRequest{InstanceID: sess.InstanceID})
+		path, err := s.writeProvisionedMCPConfig(ctx, tools.ProvisionRequest{InstanceID: sess.InstanceID})
 		if err != nil {
 			log.Printf("[tool-store] instance %s opt-ins unavailable for session %s, starting with no MCP servers: %v",
 				sess.InstanceID, sess.SessionID, err)
@@ -361,13 +361,13 @@ func (s *Server) instanceMCPTools(ctx context.Context, instanceID string) ([]mcp
 	if s.toolRegistry == nil {
 		return nil, fmt.Errorf("%s, so instance %s's opt-ins cannot be read", toolStoreOffMessage, instanceID)
 	}
-	tools, err := s.toolRegistry.ListInstanceTools(ctx, instanceID)
+	instanceTools, err := s.toolRegistry.ListInstanceTools(ctx, instanceID)
 	if err != nil {
 		return nil, fmt.Errorf("tool-store could not list instance %s's tools: %w", instanceID, err)
 	}
-	mcp := make([]mcpTool, 0, len(tools))
-	for _, t := range tools {
-		if t.Kind == toolstore.KindMCP {
+	mcp := make([]mcpTool, 0, len(instanceTools))
+	for _, t := range instanceTools {
+		if t.Kind == tools.KindMCP {
 			mcp = append(mcp, mcpTool{ID: t.ID, Name: t.Name, Kind: string(t.Kind)})
 		}
 	}
@@ -410,7 +410,7 @@ func (s *Server) replaceHarnessConfig(sess *store.Session, cfg map[string]json.R
 // returned path means tool-store had no servers to hand back — no file is
 // written, because an --mcp-config pointing at an empty server set is a way to
 // make a harness fail on nothing.
-func (s *Server) writeProvisionedMCPConfig(ctx context.Context, request toolstore.ProvisionRequest) (string, error) {
+func (s *Server) writeProvisionedMCPConfig(ctx context.Context, request tools.ProvisionRequest) (string, error) {
 	if s.toolRegistry == nil {
 		return "", fmt.Errorf("%s, so no tools can be provisioned", toolStoreOffMessage)
 	}

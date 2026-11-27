@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	agentstore "github.com/kayushkin/llm-bridge-server/internal/agents/agentstore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -60,12 +60,12 @@ func promptDriftTaggerOutputSchema() map[string]any {
 
 // onPromptDriftsDetected is agent-store's hook. It returns at once; labeling
 // runs in the background so a scan never waits on a model.
-func (s *Server) onPromptDriftsDetected(drifts []agentstore.PromptDrift) {
+func (s *Server) onPromptDriftsDetected(drifts []agents.PromptDrift) {
 	for _, drift := range drifts {
 		if !drift.NeedsAnnotation() {
 			continue
 		}
-		go func(drift agentstore.PromptDrift) {
+		go func(drift agents.PromptDrift) {
 			ctx, cancel := context.WithTimeout(context.Background(), promptDriftTaggerTimeout)
 			defer cancel()
 			if err := s.annotatePromptDrift(ctx, drift); err != nil {
@@ -75,7 +75,7 @@ func (s *Server) onPromptDriftsDetected(drifts []agentstore.PromptDrift) {
 	}
 }
 
-func (s *Server) annotatePromptDrift(ctx context.Context, drift agentstore.PromptDrift) error {
+func (s *Server) annotatePromptDrift(ctx context.Context, drift agents.PromptDrift) error {
 	view, err := s.agentStore.GetPromptCollectionView(drift.CollectionID)
 	if err != nil {
 		return fmt.Errorf("read collection %d: %w", drift.CollectionID, err)
@@ -104,7 +104,7 @@ func (s *Server) annotatePromptDrift(ctx context.Context, drift agentstore.Promp
 	return nil
 }
 
-func buildPromptDriftTaggerRequest(drift agentstore.PromptDrift, sections []agentstore.PromptSection, modelRole string) (msg.OneShotRequest, error) {
+func buildPromptDriftTaggerRequest(drift agents.PromptDrift, sections []agents.PromptSection, modelRole string) (msg.OneShotRequest, error) {
 	tagSet := map[string]bool{}
 	for _, section := range sections {
 		for _, tag := range section.Tags {
@@ -121,7 +121,7 @@ func buildPromptDriftTaggerRequest(drift agentstore.PromptDrift, sections []agen
 	fmt.Fprintf(&prompt, "Prompt file edited: %s\n\nTags already in use: %s\n\nSections added:\n", drift.Path, strings.Join(tags, ", "))
 	added := 0
 	for index, operation := range drift.Operations {
-		if operation.Kind != agentstore.PromptMarkdownEditInsert {
+		if operation.Kind != agents.PromptMarkdownEditInsert {
 			continue
 		}
 		added++
@@ -148,11 +148,11 @@ func buildPromptDriftTaggerRequest(drift agentstore.PromptDrift, sections []agen
 	}, nil
 }
 
-func decodePromptDriftTaggerReply(reply msg.OneShotResponse) (*agentstore.PromptDriftAnnotation, error) {
+func decodePromptDriftTaggerReply(reply msg.OneShotResponse) (*agents.PromptDriftAnnotation, error) {
 	if len(reply.Parsed) == 0 {
 		return nil, fmt.Errorf("oneshot returned no schema-conformant output (stop_reason=%q)", reply.StopReason)
 	}
-	var annotation agentstore.PromptDriftAnnotation
+	var annotation agents.PromptDriftAnnotation
 	if err := json.Unmarshal(reply.Parsed, &annotation); err != nil {
 		return nil, fmt.Errorf("decode labels: %w", err)
 	}

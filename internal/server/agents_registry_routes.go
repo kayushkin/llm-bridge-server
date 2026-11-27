@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/kayushkin/llm-bridge-server/internal/agents/agentstore"
-	"github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models"
 	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/runnerprotocol"
 )
 
@@ -20,12 +20,12 @@ import (
 // agentStoreHandlerHooks are the callbacks agent-store's routes run when a
 // tracked file is saved, a scan ends or prompt drift is found: connected
 // runners are told to reconcile, and held drifts are sent to be tagged.
-func (s *Server) agentStoreHandlerHooks() agentstore.HandlerHooks {
-	return agentstore.HandlerHooks{
-		OnFileSaved: func(f *agentstore.TrackedFile, v *agentstore.TrackedFileVersion) {
+func (s *Server) agentStoreHandlerHooks() agents.HandlerHooks {
+	return agents.HandlerHooks{
+		OnFileSaved: func(f *agents.TrackedFile, v *agents.TrackedFileVersion) {
 			s.broadcastSeedSnapshot(runnerprotocol.SeedSourceAgentStore, "save")
 		},
-		OnScanCompleted: func(_ *agentstore.ScanResult) {
+		OnScanCompleted: func(_ *agents.ScanResult) {
 			s.broadcastSeedSnapshot(runnerprotocol.SeedSourceAgentStore, "scan")
 		},
 		OnPromptDriftsDetected: s.onPromptDriftsDetected,
@@ -33,13 +33,13 @@ func (s *Server) agentStoreHandlerHooks() agentstore.HandlerHooks {
 }
 
 // modelStoreRoute answers one model-store route from the registry.
-func (s *Server) modelStoreRoute(route func(*modelstore.Handlers, http.ResponseWriter, *http.Request)) http.HandlerFunc {
+func (s *Server) modelStoreRoute(route func(*models.Handlers, http.ResponseWriter, *http.Request)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if s.modelStore == nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "model_store_off", "this server was built without a model registry")
 			return
 		}
-		route(modelstore.NewHandlers(s.modelStore), w, r)
+		route(models.NewHandlers(s.modelStore), w, r)
 	}
 }
 
@@ -68,19 +68,19 @@ func (s *Server) agentStoreRunnerSeedRoute(agentStoreRoutes http.Handler) http.H
 // written out, because the route classification test reads them from string
 // literals.
 func (s *Server) registerAgentsRegistryRoutes() {
-	s.mux.HandleFunc("GET /model-store/api/models", s.modelStoreRoute((*modelstore.Handlers).ListModels))
-	s.mux.HandleFunc("POST /model-store/api/models/toggle", s.modelStoreRoute((*modelstore.Handlers).ToggleModel))
-	s.mux.HandleFunc("GET /model-store/api/roles", s.modelStoreRoute((*modelstore.Handlers).ListRoles))
-	s.mux.HandleFunc("POST /model-store/api/roles", s.modelStoreRoute((*modelstore.Handlers).SetRole))
-	s.mux.HandleFunc("GET /model-store/api/roles/{role}", s.modelStoreRoute((*modelstore.Handlers).GetRole))
-	s.mux.HandleFunc("GET /model-store/api/roles/{role}/models", s.modelStoreRoute((*modelstore.Handlers).GetRoleModels))
-	s.mux.HandleFunc("GET /model-store/api/health", s.modelStoreRoute((*modelstore.Handlers).Health))
+	s.mux.HandleFunc("GET /model-store/api/models", s.modelStoreRoute((*models.Handlers).ListModels))
+	s.mux.HandleFunc("POST /model-store/api/models/toggle", s.modelStoreRoute((*models.Handlers).ToggleModel))
+	s.mux.HandleFunc("GET /model-store/api/roles", s.modelStoreRoute((*models.Handlers).ListRoles))
+	s.mux.HandleFunc("POST /model-store/api/roles", s.modelStoreRoute((*models.Handlers).SetRole))
+	s.mux.HandleFunc("GET /model-store/api/roles/{role}", s.modelStoreRoute((*models.Handlers).GetRole))
+	s.mux.HandleFunc("GET /model-store/api/roles/{role}/models", s.modelStoreRoute((*models.Handlers).GetRoleModels))
+	s.mux.HandleFunc("GET /model-store/api/health", s.modelStoreRoute((*models.Handlers).Health))
 
 	// The four routes a runner's agent seed reconciler calls (runner/seed.go).
 	var agentStoreRoutes http.Handler
 	if s.agentStore != nil {
 		routes := http.NewServeMux()
-		agentstore.RegisterHandlersWithHookSet(routes, s.agentStore, s.agentStoreHandlerHooks())
+		agents.RegisterHandlersWithHookSet(routes, s.agentStore, s.agentStoreHandlerHooks())
 		agentStoreRoutes = routes
 	}
 	s.mux.HandleFunc("GET /api/agent-store/seed/manifest", s.agentStoreRunnerSeedRoute(agentStoreRoutes))

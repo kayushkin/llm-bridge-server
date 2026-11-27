@@ -6,20 +6,20 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/agents/bundlestore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/bundles"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 )
 
-func newBundleStore(t *testing.T) *bundlestore.Store {
+func newBundleStore(t *testing.T) *bundles.Store {
 	t.Helper()
-	module, err := bundlestore.Module()
+	module, err := bundles.Module()
 	if err != nil {
 		t.Fatal(err)
 	}
-	return bundlestore.New(postgrestest.NewDatabase(t, module).Open(module))
+	return bundles.New(postgrestest.NewDatabase(t, module).Open(module))
 }
 
-func upsert(t *testing.T, store *bundlestore.Store, bundle *bundlestore.Bundle) int64 {
+func upsert(t *testing.T, store *bundles.Store, bundle *bundles.Bundle) int64 {
 	t.Helper()
 	if _, err := store.UpsertBundle(context.Background(), bundle); err != nil {
 		t.Fatalf("upsert %s: %v", bundle.Name, err)
@@ -37,10 +37,10 @@ func upsert(t *testing.T, store *bundlestore.Store, bundle *bundlestore.Bundle) 
 func TestTheClientAnswersFromTheModule(t *testing.T) {
 	store := newBundleStore(t)
 	ctx := context.Background()
-	upsert(t, store, &bundlestore.Bundle{Name: "base", Enabled: true, Members: []bundlestore.Member{{Kind: bundlestore.MemberSkill, ID: 40, Name: "a-skill"}}})
-	docker := upsert(t, store, &bundlestore.Bundle{Name: "docker", Enabled: true, DeniedReadPaths: []string{"/proc/**"}, Model: "a-model",
-		Members: []bundlestore.Member{{Kind: bundlestore.MemberTool, ID: 13, Name: "a-tool"}, {Kind: bundlestore.MemberTool, ID: 102, Name: "a-shell", Effect: bundlestore.MemberDeny}}})
-	off := upsert(t, store, &bundlestore.Bundle{Name: "off", Enabled: false})
+	upsert(t, store, &bundles.Bundle{Name: "base", Enabled: true, Members: []bundles.Member{{Kind: bundles.MemberSkill, ID: 40, Name: "a-skill"}}})
+	docker := upsert(t, store, &bundles.Bundle{Name: "docker", Enabled: true, DeniedReadPaths: []string{"/proc/**"}, Model: "a-model",
+		Members: []bundles.Member{{Kind: bundles.MemberTool, ID: 13, Name: "a-tool"}, {Kind: bundles.MemberTool, ID: 102, Name: "a-shell", Effect: bundles.MemberDeny}}})
+	off := upsert(t, store, &bundles.Bundle{Name: "off", Enabled: false})
 	client := New(store)
 
 	resolution, err := client.Resolve(ctx, strconv.FormatInt(docker, 10))

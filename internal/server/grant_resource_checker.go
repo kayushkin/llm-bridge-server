@@ -18,8 +18,8 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
 	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
-	"github.com/kayushkin/llm-bridge-server/internal/agents/skillstore"
-	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/skills"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/tools"
 	"github.com/kayushkin/llm-bridge-server/internal/references/referencestore"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 )
@@ -47,30 +47,30 @@ func (checker inProcessResourceChecker) CheckResourceExists(ctx context.Context,
 	s := checker.server
 	switch resourceType {
 	case grants.ResourceTypeTool:
-		tools := s.toolStoreForResourceChecks.Load()
-		if tools == nil {
+		toolStore := s.toolStoreForResourceChecks.Load()
+		if toolStore == nil {
 			return fmt.Errorf("this server's tool-store module is off, so tool %q cannot be checked", resourceID)
 		}
 		number, err := strconv.ParseInt(resourceID, 10, 64)
 		if err != nil || strconv.FormatInt(number, 10) != resourceID {
 			return notFound("tool-store")
 		}
-		if _, err := tools.GetTool(ctx, number); errors.Is(err, toolstore.ErrNotFound) {
+		if _, err := toolStore.GetTool(ctx, number); errors.Is(err, tools.ErrNotFound) {
 			return notFound("tool-store")
 		} else if err != nil {
 			return fmt.Errorf("tool-store: reading tool %s: %w", resourceID, err)
 		}
 		return nil
 	case grants.ResourceTypeSkill:
-		skills := s.skillStoreForResourceChecks.Load()
-		if skills == nil {
+		skillStore := s.skillStoreForResourceChecks.Load()
+		if skillStore == nil {
 			return fmt.Errorf("this server's skill-store module is off, so skill %q cannot be checked", resourceID)
 		}
 		number, err := strconv.ParseInt(resourceID, 10, 64)
 		if err != nil || strconv.FormatInt(number, 10) != resourceID {
 			return notFound("skill-store")
 		}
-		if _, err := skills.GetSkill(ctx, number); errors.Is(err, skillstore.ErrNotFound) {
+		if _, err := skillStore.GetSkill(ctx, number); errors.Is(err, skills.ErrNotFound) {
 			return notFound("skill-store")
 		} else if err != nil {
 			return fmt.Errorf("skill-store: reading skill %s: %w", resourceID, err)

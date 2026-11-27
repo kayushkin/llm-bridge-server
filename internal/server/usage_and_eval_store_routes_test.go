@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/agents/evalstore"
-	"github.com/kayushkin/llm-bridge-server/internal/agents/usagestore"
-	usagestorehttpapi "github.com/kayushkin/llm-bridge-server/internal/agents/usagestore/httpapi"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/evaluations"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelrouting"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/usage"
+	usagestorehttpapi "github.com/kayushkin/llm-bridge-server/internal/agents/usage/httpapi"
 	"github.com/kayushkin/llm-bridge-server/internal/executors"
-	"github.com/kayushkin/llm-bridge-server/internal/oneshotrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/operations"
 	"github.com/kayushkin/llm-bridge-server/internal/operationstore/operationstoretest"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
@@ -25,30 +25,30 @@ func (limitsWatchedNowhere) MarkWatched() {}
 
 // enableUsageStoreOnTestDatabase opens usage-store on a Postgres database of
 // the test's own and serves it from server, with no provider to read.
-func enableUsageStoreOnTestDatabase(t *testing.T, server *Server) *usagestore.Store {
+func enableUsageStoreOnTestDatabase(t *testing.T, server *Server) *usage.Store {
 	t.Helper()
-	module, err := usagestore.Module()
+	module, err := usage.Module()
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := usagestore.New(postgrestest.NewDatabase(t, module).Open(module))
+	store := usage.New(postgrestest.NewDatabase(t, module).Open(module))
 	server.EnableUsageStore(usagestorehttpapi.New(store, nil, nil, nil, limitsWatchedNowhere{}, 45*time.Minute, usagestorehttpapi.SpendCollectors{}))
 	return store
 }
 
-func openTestEvalStore(t *testing.T) *evalstore.Store {
+func openTestEvalStore(t *testing.T) *evaluations.Store {
 	t.Helper()
-	module, err := evalstore.Module()
+	module, err := evaluations.Module()
 	if err != nil {
 		t.Fatal(err)
 	}
-	return evalstore.New(postgrestest.NewDatabase(t, module).Open(module))
+	return evaluations.New(postgrestest.NewDatabase(t, module).Open(module))
 }
 
-func saveUsageSnapshot(t *testing.T, store *usagestore.Store, provider, window string, usedPercent float64) {
+func saveUsageSnapshot(t *testing.T, store *usage.Store, provider, window string, usedPercent float64) {
 	t.Helper()
-	if err := store.SaveLimits(usagestore.ProviderLimits{Provider: provider, SnapshotAt: time.Now().Unix(), Source: "api",
-		Windows: map[string]*usagestore.LimitWindow{window: {UsedPercent: usedPercent}}}, nil); err != nil {
+	if err := store.SaveLimits(usage.ProviderLimits{Provider: provider, SnapshotAt: time.Now().Unix(), Source: "api",
+		Windows: map[string]*usage.LimitWindow{window: {UsedPercent: usedPercent}}}, nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -87,7 +87,7 @@ func TestUsageStoreRoutesAnswerUnderThePrefixToTheOperatorOnly(t *testing.T) {
 	saveUsageSnapshot(t, store, "anthropic", "seven_day", 42)
 
 	limits := gated.requestAsService(t, "GET", "/usage-store/api/usage/limits")
-	var providers map[string]*usagestore.ProviderLimits
+	var providers map[string]*usage.ProviderLimits
 	if err := json.Unmarshal(limits.Body.Bytes(), &providers); limits.Code != http.StatusOK || err != nil {
 		t.Fatalf("GET /usage-store/api/usage/limits = %d %s", limits.Code, limits.Body)
 	}
@@ -117,7 +117,7 @@ func TestUsageStoreRoutesAnswerUnderThePrefixToTheOperatorOnly(t *testing.T) {
 // open is an error the router logs and calls through, never a skip.
 func TestTheOneShotRouterReadsUsageStoreLimitsInProcess(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
-	if _, err := gated.server.oneShotRouter.Limits.ExhaustedWindow(context.Background(), oneshotrouting.UsageProviderByHarness[msg.HarnessClaudeCode]); err == nil {
+	if _, err := gated.server.oneShotRouter.Limits.ExhaustedWindow(context.Background(), modelrouting.UsageProviderByHarness[msg.HarnessClaudeCode]); err == nil {
 		t.Fatal("a usage-store that is not open read as no limit instead of an error")
 	}
 	store := enableUsageStoreOnTestDatabase(t, gated.server)
@@ -136,11 +136,11 @@ func TestTheOneShotRouterReadsUsageStoreLimitsInProcess(t *testing.T) {
 // answerEveryCallWith answers every one-shot call with the same parsed JSON.
 type answerEveryCallWith struct{ parsed json.RawMessage }
 
-func (answer answerEveryCallWith) OneShotRoute(requestedModel string) (oneshotrouting.Route, error) {
-	return oneshotrouting.Route{Requested: requestedModel, Candidates: []oneshotrouting.Candidate{{ModelID: requestedModel, Provider: "mock"}}}, nil
+func (answer answerEveryCallWith) OneShotRoute(requestedModel string) (modelrouting.Route, error) {
+	return modelrouting.Route{Requested: requestedModel, Candidates: []modelrouting.Candidate{{ModelID: requestedModel, Provider: "mock"}}}, nil
 }
 
-func (answer answerEveryCallWith) RunOneShotRoute(_ context.Context, route oneshotrouting.Route, _ msg.OneShotRequest, _ func(oneshotrouting.Candidate) string) (msg.OneShotResponse, error) {
+func (answer answerEveryCallWith) RunOneShotRoute(_ context.Context, route modelrouting.Route, _ msg.OneShotRequest, _ func(modelrouting.Candidate) string) (msg.OneShotResponse, error) {
 	return msg.OneShotResponse{Model: route.Candidates[0].ModelID, InstanceID: "inst_test", Parsed: answer.parsed, StopReason: "end_turn",
 		Usage: msg.TokenUsage{InputTokens: 10, OutputTokens: 2}}, nil
 }
@@ -153,7 +153,7 @@ func TestEvalStoreRoutesAnswerAndRunsStayOffUntilTheSettingIsOn(t *testing.T) {
 	if off := gated.requestAsService(t, "GET", "/eval-store/suites"); off.Code != http.StatusServiceUnavailable || !strings.Contains(off.Body.String(), "eval_store_off") {
 		t.Fatalf("before the module opens = %d %s, want 503 eval_store_off", off.Code, off.Body)
 	}
-	if _, err := gated.server.EnableEvalStore(openTestEvalStore(t), EvalStoreOptions{Defaults: evalstore.RunDefaults{Concurrency: 1, BudgetCheckEveryCalls: 1}}); err != nil {
+	if _, err := gated.server.EnableEvalStore(openTestEvalStore(t), EvalStoreOptions{Defaults: evaluations.RunDefaults{Concurrency: 1, BudgetCheckEveryCalls: 1}}); err != nil {
 		t.Fatal(err)
 	}
 	runID := createSyntheticEvalRun(t, gated)
@@ -188,8 +188,8 @@ func createSyntheticEvalRun(t *testing.T, gated *gatedTestServer) string {
 		"candidate_model_ids": []string{"mock-model", "mock-model-alt"}, "judge_model_ids": []string{"mock-model"},
 		"case_selection": map[string]any{"mode": "all"}, "organization_id": groupTestPrincipalID})
 	var createdRun struct {
-		ID          string                          `json:"id"`
-		ModelPrices map[string]evalstore.ModelPrice `json:"model_prices"`
+		ID          string                            `json:"id"`
+		ModelPrices map[string]evaluations.ModelPrice `json:"model_prices"`
 	}
 	if err := json.Unmarshal(run.Body.Bytes(), &createdRun); run.Code != http.StatusCreated || err != nil {
 		t.Fatalf("POST /eval-store/runs = %d %s", run.Code, run.Body)
@@ -219,8 +219,8 @@ func TestAnEvalStoreRunMakesItsCallsAsOperationsInProcess(t *testing.T) {
 	usage := enableUsageStoreOnTestDatabase(t, gated.server)
 	saveUsageSnapshot(t, usage, "anthropic", "seven_day", 10)
 	runner, err := gated.server.EnableEvalStore(openTestEvalStore(t), EvalStoreOptions{RunsEnabled: true, OperationPollingInterval: 10 * time.Millisecond,
-		Defaults: evalstore.RunDefaults{Concurrency: 2, BudgetCheckEveryCalls: 2, AnswerTimeout: 30 * time.Second, JudgeTimeout: 30 * time.Second,
-			BudgetLimits: []evalstore.BudgetLimit{{Subscription: "anthropic", Window: "seven_day", MaxUsedPercent: 40}}}})
+		Defaults: evaluations.RunDefaults{Concurrency: 2, BudgetCheckEveryCalls: 2, AnswerTimeout: 30 * time.Second, JudgeTimeout: 30 * time.Second,
+			BudgetLimits: []evaluations.BudgetLimit{{Subscription: "anthropic", Window: "seven_day", MaxUsedPercent: 40}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,13 +231,13 @@ func TestAnEvalStoreRunMakesItsCallsAsOperationsInProcess(t *testing.T) {
 	}
 	runner.Wait()
 
-	var run evalstore.Run
+	var run evaluations.Run
 	read := gated.requestAsService(t, "GET", "/eval-store/runs/"+runID)
-	if err := json.Unmarshal(read.Body.Bytes(), &run); err != nil || run.Status != evalstore.RunStatusCompleted {
+	if err := json.Unmarshal(read.Body.Bytes(), &run); err != nil || run.Status != evaluations.RunStatusCompleted {
 		t.Fatalf("the run ended %s: %s", run.Status, read.Body)
 	}
 	var listedAnswers struct {
-		Answers []evalstore.Answer `json:"answers"`
+		Answers []evaluations.Answer `json:"answers"`
 	}
 	listed := gated.requestAsService(t, "GET", "/eval-store/runs/"+runID+"/answers?include_bodies=true")
 	if err := json.Unmarshal(listed.Body.Bytes(), &listedAnswers); err != nil || len(listedAnswers.Answers) != 2 {
@@ -249,7 +249,7 @@ func TestAnEvalStoreRunMakesItsCallsAsOperationsInProcess(t *testing.T) {
 		}
 	}
 	var listedVerdicts struct {
-		Verdicts []evalstore.Verdict `json:"verdicts"`
+		Verdicts []evaluations.Verdict `json:"verdicts"`
 	}
 	verdicts := gated.requestAsService(t, "GET", "/eval-store/runs/"+runID+"/verdicts")
 	if err := json.Unmarshal(verdicts.Body.Bytes(), &listedVerdicts); err != nil || len(listedVerdicts.Verdicts) != 1 ||

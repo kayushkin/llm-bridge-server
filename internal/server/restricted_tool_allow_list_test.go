@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/tools"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -28,13 +28,13 @@ func newObservingToolStore(t *testing.T, rows []map[string]any) *observingToolSt
 	return fake
 }
 
-func (fake *observingToolStore) ListTools(ctx context.Context, filter toolstore.ListFilter) ([]toolstore.Tool, error) {
+func (fake *observingToolStore) ListTools(ctx context.Context, filter tools.ListFilter) ([]tools.Tool, error) {
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
 	return fake.fakeToolRegistry.ListTools(ctx, filter)
 }
 
-func (fake *observingToolStore) RecordObservedHarnessTools(_ context.Context, request toolstore.ObservedHarnessToolsRequest) (toolstore.ObservedHarnessToolsResponse, error) {
+func (fake *observingToolStore) RecordObservedHarnessTools(_ context.Context, request tools.ObservedHarnessToolsRequest) (tools.ObservedHarnessToolsResponse, error) {
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
 	known := map[string]bool{}
@@ -51,7 +51,7 @@ func (fake *observingToolStore) RecordObservedHarnessTools(_ context.Context, re
 			created = append(created, name)
 		}
 	}
-	return toolstore.ObservedHarnessToolsResponse{Created: created, Seen: len(request.ToolNames)}, nil
+	return tools.ObservedHarnessToolsResponse{Created: created, Seen: len(request.ToolNames)}, nil
 }
 
 // reviewedClaudeCodeTools is tool-store as a person left it: Read reviewed and

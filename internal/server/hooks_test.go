@@ -9,19 +9,19 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/agents/hookstore/hookstoretest"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/hooks/hookstest"
 
-	hookstore "github.com/kayushkin/llm-bridge-server/internal/agents/hookstore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/hooks"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-func testServerWithHookStore(t *testing.T) (*Server, *hookstore.Store) {
+func testServerWithHookStore(t *testing.T) (*Server, *hooks.Store) {
 	t.Helper()
 	dir := t.TempDir()
 	st := newTestBridgeStore(t)
 
-	hks := hookstoretest.NewStore(t)
+	hks := hookstest.NewStore(t)
 
 	cfg := &config.Config{
 		ImagesDir:       filepath.Join(dir, "images"),

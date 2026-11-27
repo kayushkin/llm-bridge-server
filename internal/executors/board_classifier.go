@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/oneshotrouting"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/operations"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -53,16 +53,16 @@ func (BoardClassifier) Validate(intent msg.OperationIntent) error {
 // the decision records which candidate answered and what the harness said.
 type captureCaller struct {
 	OneShotCaller
-	route  oneshotrouting.Route
+	route  modelrouting.Route
 	answer msg.OneShotResponse
 }
 
-func (c *captureCaller) OneShotRoute(model string) (oneshotrouting.Route, error) {
+func (c *captureCaller) OneShotRoute(model string) (modelrouting.Route, error) {
 	route, err := c.OneShotCaller.OneShotRoute(model)
 	c.route = route
 	return route, err
 }
-func (c *captureCaller) RunOneShotRoute(ctx context.Context, route oneshotrouting.Route, req msg.OneShotRequest, admit func(oneshotrouting.Candidate) string) (msg.OneShotResponse, error) {
+func (c *captureCaller) RunOneShotRoute(ctx context.Context, route modelrouting.Route, req msg.OneShotRequest, admit func(modelrouting.Candidate) string) (msg.OneShotResponse, error) {
 	r, err := c.OneShotCaller.RunOneShotRoute(ctx, route, req, admit)
 	c.answer = r
 	return r, err
@@ -70,10 +70,10 @@ func (c *captureCaller) RunOneShotRoute(ctx context.Context, route oneshotroutin
 
 // answeredCandidate is the route candidate that produced the answer: the
 // router records one attempt (skipped or failed) per candidate before it.
-func (c *captureCaller) answeredCandidate() (oneshotrouting.Candidate, error) {
+func (c *captureCaller) answeredCandidate() (modelrouting.Candidate, error) {
 	index := len(c.answer.Attempts)
 	if index >= len(c.route.Candidates) {
-		return oneshotrouting.Candidate{}, fmt.Errorf("answer follows %d attempts but the route has %d candidates", index, len(c.route.Candidates))
+		return modelrouting.Candidate{}, fmt.Errorf("answer follows %d attempts but the route has %d candidates", index, len(c.route.Candidates))
 	}
 	return c.route.Candidates[index], nil
 }

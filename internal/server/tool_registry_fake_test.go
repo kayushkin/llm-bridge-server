@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/agents/bundlestore"
-	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/bundles"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/tools"
 	"github.com/kayushkin/llm-bridge-server/internal/bundleclient"
 )
 
@@ -30,12 +30,12 @@ type fakeToolRegistry struct {
 	recordObservedError    error
 	// provisionAnswer is the MCP config Provision answers a request with, as
 	// JSON; nil answers one server per requested id and one for an instance.
-	provisionAnswer func(request toolstore.ProvisionRequest) string
+	provisionAnswer func(request tools.ProvisionRequest) string
 	// provisionBodies records each Provision request as the JSON body the
 	// standalone store's POST /provision received, with only the fields set.
 	provisionBodies []map[string]any
 	// observed records each harness tool report; created is what it answers.
-	observed []toolstore.ObservedHarnessToolsRequest
+	observed []tools.ObservedHarnessToolsRequest
 	created  []string
 }
 
@@ -58,24 +58,24 @@ func unreachableToolRegistry(t *testing.T) *fakeToolRegistry {
 	return registry
 }
 
-func (registry *fakeToolRegistry) toolsFromRows(rows []map[string]any) []toolstore.Tool {
+func (registry *fakeToolRegistry) toolsFromRows(rows []map[string]any) []tools.Tool {
 	registry.t.Helper()
 	encoded, err := json.Marshal(rows)
 	if err != nil {
 		registry.t.Fatalf("fake tool-store rows: %v", err)
 	}
-	tools := []toolstore.Tool{}
+	tools := []tools.Tool{}
 	if err := json.Unmarshal(encoded, &tools); err != nil {
 		registry.t.Fatalf("fake tool-store rows are not tools: %v", err)
 	}
 	return tools
 }
 
-func (registry *fakeToolRegistry) ListTools(_ context.Context, filter toolstore.ListFilter) ([]toolstore.Tool, error) {
+func (registry *fakeToolRegistry) ListTools(_ context.Context, filter tools.ListFilter) ([]tools.Tool, error) {
 	if registry.listToolsError != nil {
 		return nil, registry.listToolsError
 	}
-	if filter.Kind != toolstore.KindHarness {
+	if filter.Kind != tools.KindHarness {
 		registry.t.Fatalf("the fake tool-store serves kind=harness only; asked for %+v", filter)
 	}
 	rows := registry.harnessTools
@@ -91,14 +91,14 @@ func (registry *fakeToolRegistry) ListTools(_ context.Context, filter toolstore.
 	return registry.toolsFromRows(matching), nil
 }
 
-func (registry *fakeToolRegistry) ListInstanceTools(_ context.Context, instanceID string) ([]toolstore.Tool, error) {
+func (registry *fakeToolRegistry) ListInstanceTools(_ context.Context, instanceID string) ([]tools.Tool, error) {
 	if registry.listInstanceToolsError != nil {
 		return nil, registry.listInstanceToolsError
 	}
 	return registry.toolsFromRows(registry.instanceTools[instanceID]), nil
 }
 
-func (registry *fakeToolRegistry) Provision(_ context.Context, request toolstore.ProvisionRequest) (*toolstore.ProvisionResponse, error) {
+func (registry *fakeToolRegistry) Provision(_ context.Context, request tools.ProvisionRequest) (*tools.ProvisionResponse, error) {
 	registry.t.Helper()
 	body := map[string]any{}
 	if len(request.Tools) > 0 {
@@ -131,19 +131,19 @@ func (registry *fakeToolRegistry) Provision(_ context.Context, request toolstore
 		encodedServers, _ := json.Marshal(map[string]any{"mcpServers": servers})
 		answer = string(encodedServers)
 	}
-	var response toolstore.ProvisionResponse
+	var response tools.ProvisionResponse
 	if err := json.Unmarshal([]byte(answer), &response); err != nil {
 		registry.t.Fatalf("fake tool-store provision answer %q: %v", answer, err)
 	}
 	return &response, nil
 }
 
-func (registry *fakeToolRegistry) RecordObservedHarnessTools(_ context.Context, request toolstore.ObservedHarnessToolsRequest) (toolstore.ObservedHarnessToolsResponse, error) {
+func (registry *fakeToolRegistry) RecordObservedHarnessTools(_ context.Context, request tools.ObservedHarnessToolsRequest) (tools.ObservedHarnessToolsResponse, error) {
 	registry.observed = append(registry.observed, request)
 	if registry.recordObservedError != nil {
-		return toolstore.ObservedHarnessToolsResponse{}, registry.recordObservedError
+		return tools.ObservedHarnessToolsResponse{}, registry.recordObservedError
 	}
-	return toolstore.ObservedHarnessToolsResponse{Created: registry.created, Seen: len(request.ToolNames)}, nil
+	return tools.ObservedHarnessToolsResponse{Created: registry.created, Seen: len(request.ToolNames)}, nil
 }
 
 func jsonNumber(number int64) string {
@@ -152,8 +152,8 @@ func jsonNumber(number int64) string {
 }
 
 // provisionAnswering is a provisionAnswer that answers every request with body.
-func provisionAnswering(body string) func(toolstore.ProvisionRequest) string {
-	return func(toolstore.ProvisionRequest) string { return body }
+func provisionAnswering(body string) func(tools.ProvisionRequest) string {
+	return func(tools.ProvisionRequest) string { return body }
 }
 
 // fakeBundleResolver stands in for the bundle-store module: it knows one
@@ -195,10 +195,10 @@ func (resolver *fakeBundleResolver) Resolve(_ context.Context, bundleID string) 
 }
 
 // memberRefs names each id, for a fake resolution.
-func memberRefs(name string, ids ...int64) []bundlestore.MemberRef {
-	refs := []bundlestore.MemberRef{}
+func memberRefs(name string, ids ...int64) []bundles.MemberRef {
+	refs := []bundles.MemberRef{}
 	for _, id := range ids {
-		refs = append(refs, bundlestore.MemberRef{ID: id, Name: name})
+		refs = append(refs, bundles.MemberRef{ID: id, Name: name})
 	}
 	return refs
 }

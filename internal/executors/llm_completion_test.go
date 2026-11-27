@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/executors"
-	"github.com/kayushkin/llm-bridge-server/internal/oneshotrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/operations"
 	"github.com/kayushkin/llm-bridge-server/internal/operationstore"
 	"github.com/kayushkin/llm-bridge-server/internal/operationstore/operationstoretest"
@@ -25,17 +25,17 @@ type fakeOneShot struct {
 	calls        []msg.OneShotRequest
 }
 
-func (f *fakeOneShot) OneShotRoute(requestedModel string) (oneshotrouting.Route, error) {
+func (f *fakeOneShot) OneShotRoute(requestedModel string) (modelrouting.Route, error) {
 	model := requestedModel
 	if model == "" {
 		model = f.defaultModel
 	}
 	if model == "unresolvable" {
-		return oneshotrouting.Route{}, &executors.TargetError{Code: "unknown_model", Message: "no such model"}
+		return modelrouting.Route{}, &executors.TargetError{Code: "unknown_model", Message: "no such model"}
 	}
-	return oneshotrouting.Route{Requested: requestedModel, Candidates: []oneshotrouting.Candidate{{ModelID: model, Provider: "anthropic"}}}, nil
+	return modelrouting.Route{Requested: requestedModel, Candidates: []modelrouting.Candidate{{ModelID: model, Provider: "anthropic"}}}, nil
 }
-func (f *fakeOneShot) RunOneShotRoute(_ context.Context, route oneshotrouting.Route, request msg.OneShotRequest, admit func(oneshotrouting.Candidate) string) (msg.OneShotResponse, error) {
+func (f *fakeOneShot) RunOneShotRoute(_ context.Context, route modelrouting.Route, request msg.OneShotRequest, admit func(modelrouting.Candidate) string) (msg.OneShotResponse, error) {
 	var attempts []msg.OneShotAttempt
 	for _, candidate := range route.Candidates {
 		if reason := admit(candidate); reason != "" {
@@ -55,7 +55,7 @@ func (f *fakeOneShot) RunOneShotRoute(_ context.Context, route oneshotrouting.Ro
 		}
 		return response, nil
 	}
-	return msg.OneShotResponse{}, &oneshotrouting.AllModelsFailedError{Caller: request.Caller, Route: route, Attempts: attempts}
+	return msg.OneShotResponse{}, &modelrouting.AllModelsFailedError{Caller: request.Caller, Route: route, Attempts: attempts}
 }
 
 // Prices in dollars per million tokens: haiku is known, mystery is not.

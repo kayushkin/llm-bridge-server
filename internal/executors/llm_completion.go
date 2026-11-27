@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/kayushkin/llm-bridge-server/internal/oneshotrouting"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/operations"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -19,13 +19,13 @@ type OneShotCaller interface {
 	// OneShotRoute resolves what an input asked for — a model-store role, a
 	// model id or an alias; empty for the configured default role — to the
 	// models to try, in order. A failure is a *TargetError.
-	OneShotRoute(requestedModel string) (oneshotrouting.Route, error)
+	OneShotRoute(requestedModel string) (modelrouting.Route, error)
 	// RunOneShotRoute tries the route's models in order, each on the
 	// instance configured for its provider, until one answers. admit is asked
 	// about each model first; a reason skips it. The response names the model
 	// and instance that answered and the attempts before it; an error means
-	// no model answered (an *oneshotrouting.AllModelsFailedError).
-	RunOneShotRoute(ctx context.Context, route oneshotrouting.Route, request msg.OneShotRequest, admit func(oneshotrouting.Candidate) string) (msg.OneShotResponse, error)
+	// no model answered (an *modelrouting.AllModelsFailedError).
+	RunOneShotRoute(ctx context.Context, route modelrouting.Route, request msg.OneShotRequest, admit func(modelrouting.Candidate) string) (msg.OneShotResponse, error)
 }
 
 // Callers named on the executors' one-shot requests, for logs.
@@ -46,7 +46,7 @@ func (e *TargetError) Error() string { return e.Code + ": " + e.Message }
 
 // resolveRoute asks the caller for the route and turns a failure into the
 // result that ends the attempt.
-func resolveRoute(caller OneShotCaller, requestedModel string) (oneshotrouting.Route, *operations.Result) {
+func resolveRoute(caller OneShotCaller, requestedModel string) (modelrouting.Route, *operations.Result) {
 	route, err := caller.OneShotRoute(requestedModel)
 	if err == nil {
 		return route, nil
@@ -54,13 +54,13 @@ func resolveRoute(caller OneShotCaller, requestedModel string) (oneshotrouting.R
 	var targetError *TargetError
 	if errors.As(err, &targetError) {
 		refusal := failed(targetError.Code, targetError.Message)
-		return oneshotrouting.Route{}, &refusal
+		return modelrouting.Route{}, &refusal
 	}
-	return oneshotrouting.Route{}, &operations.Result{Error: &msg.OperationError{Code: "model_resolution_failed", Retryable: true, Message: err.Error()}}
+	return modelrouting.Route{}, &operations.Result{Error: &msg.OperationError{Code: "model_resolution_failed", Retryable: true, Message: err.Error()}}
 }
 
 // routeEvidence records which model answered and where, for diagnostics.
-func routeEvidence(route oneshotrouting.Route, response msg.OneShotResponse) msg.OperationEvidence {
+func routeEvidence(route modelrouting.Route, response msg.OneShotResponse) msg.OperationEvidence {
 	detail, _ := json.Marshal(map[string]any{"requested_model": route.Requested, "role": route.Role, "answered_by": response.Model,
 		"instance_id": response.InstanceID, "attempts": response.Attempts, "duration_ms": response.DurationMs})
 	return msg.OperationEvidence{Kind: "model_call", Summary: fmt.Sprintf("%s (asked for %s) on %s", response.Model, route.Requested, response.InstanceID), Detail: detail}
@@ -89,7 +89,7 @@ func openBudgetGate(receipt operations.ReceiptWriter) (*budgetGate, *operations.
 	return &budgetGate{receipt: receipt, limited: limited}, nil
 }
 
-func (gate *budgetGate) admit(candidate oneshotrouting.Candidate) string {
+func (gate *budgetGate) admit(candidate modelrouting.Candidate) string {
 	if gate.limited && !gate.receipt.ModelHasListPrice(candidate.ModelID) {
 		gate.priceSkips++
 		return priceUnknownSkipPrefix + candidate.ModelID + " and the operation is under a budget"
@@ -99,7 +99,7 @@ func (gate *budgetGate) admit(candidate oneshotrouting.Candidate) string {
 
 // callFailure is the result for a routed call that got no answer.
 func (gate *budgetGate) callFailure(ctx context.Context, err error, context string) operations.Result {
-	var allFailed *oneshotrouting.AllModelsFailedError
+	var allFailed *modelrouting.AllModelsFailedError
 	if errors.As(err, &allFailed) && gate.priceSkips > 0 && gate.priceSkips == len(allFailed.Attempts) {
 		return failed("model_price_unknown", context+err.Error())
 	}

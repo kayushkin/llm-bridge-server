@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/agents/hookstore/hookstoretest"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/hooks/hookstest"
 	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore/harnessstoretest"
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/snapshotstore/snapshotstoretest"
 
@@ -119,7 +119,7 @@ func newServerWithAllStoresConfigured(t *testing.T, adjustConfig func(*config.Co
 
 	hs := harnessstoretest.NewStore(t)
 
-	hks := hookstoretest.NewStore(t)
+	hks := hookstest.NewStore(t)
 
 	mds := openTestModelStore(t)
 

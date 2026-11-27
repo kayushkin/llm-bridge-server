@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/agents/bundlestore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/bundles"
 	"github.com/kayushkin/llm-bridge-server/internal/bundleclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -17,8 +17,8 @@ import (
 func bundleStoreNaming(t *testing.T, model, effort string) *fakeBundleResolver {
 	t.Helper()
 	return &fakeBundleResolver{bundleID: "6", resolution: &bundleclient.Resolution{
-		Bundles:         []bundlestore.BundleRef{{ID: 6, Name: "reviewer"}},
-		DeniedTools:     []bundlestore.MemberRef{},
+		Bundles:         []bundles.BundleRef{{ID: 6, Name: "reviewer"}},
+		DeniedTools:     []bundles.MemberRef{},
 		DeniedReadPaths: []string{},
 		Model:           model,
 		Effort:          effort,

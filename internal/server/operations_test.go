@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/executors"
 	"github.com/kayushkin/llm-bridge-server/internal/executors/executorstest"
-	"github.com/kayushkin/llm-bridge-server/internal/oneshotrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/operations"
 	"github.com/kayushkin/llm-bridge-server/internal/operationstore/operationstoretest"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -404,10 +404,10 @@ func TestOneShotRouteResolvesRolesModelsAndAliases(t *testing.T) {
 		return gated.requestAsServiceWithBody(t, "PUT", "/settings/"+key, `{"value":"`+value+`"}`)
 	}
 
-	for requested, want := range map[string]oneshotrouting.Route{
-		"efficient":  {Requested: "efficient", Role: "efficient", Candidates: []oneshotrouting.Candidate{{ModelID: "mock-model-alt", Provider: "mock"}}},
-		"alt":        {Requested: "alt", Candidates: []oneshotrouting.Candidate{{ModelID: "mock-model-alt", Provider: "mock"}}},
-		"mock-model": {Requested: "mock-model", Candidates: []oneshotrouting.Candidate{{ModelID: "mock-model", Provider: "mock"}}},
+	for requested, want := range map[string]modelrouting.Route{
+		"efficient":  {Requested: "efficient", Role: "efficient", Candidates: []modelrouting.Candidate{{ModelID: "mock-model-alt", Provider: "mock"}}},
+		"alt":        {Requested: "alt", Candidates: []modelrouting.Candidate{{ModelID: "mock-model-alt", Provider: "mock"}}},
+		"mock-model": {Requested: "mock-model", Candidates: []modelrouting.Candidate{{ModelID: "mock-model", Provider: "mock"}}},
 	} {
 		route, err := server.OneShotRoute(requested)
 		if err != nil || !reflect.DeepEqual(route, want) {

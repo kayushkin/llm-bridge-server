@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync"
 
-	hookstore "github.com/kayushkin/llm-bridge-server/internal/agents/hookstore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/hooks"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -369,17 +369,17 @@ func (s *Server) buildClaudeCodeSettings(sess *store.Session) (string, error) {
 // The harness parameter scopes the hook-store query: a hook registered for
 // claude_code does not bleed into codex sessions and vice versa.
 func (s *Server) collectApplicableHooks(sess *store.Session, harness msg.Harness) ([]msg.Hook, error) {
-	filters := []hookstore.ListFilter{
+	filters := []hooks.ListFilter{
 		{Harness: harness, ScopeKind: msg.HookScopeGlobal, EnabledSet: true, Enabled: true},
 	}
 	if sess.InstanceID != "" {
-		filters = append(filters, hookstore.ListFilter{
+		filters = append(filters, hooks.ListFilter{
 			Harness: harness, ScopeKind: msg.HookScopeInstance,
 			ScopeID: sess.InstanceID, EnabledSet: true, Enabled: true,
 		})
 	}
 	if sess.SessionID != "" {
-		filters = append(filters, hookstore.ListFilter{
+		filters = append(filters, hooks.ListFilter{
 			Harness: harness, ScopeKind: msg.HookScopeSession,
 			ScopeID: sess.SessionID, EnabledSet: true, Enabled: true,
 		})

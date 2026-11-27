@@ -9,16 +9,16 @@ import (
 	"net/http"
 	"strings"
 
-	modelstore "github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/executors"
-	"github.com/kayushkin/llm-bridge-server/internal/oneshotrouting"
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
 // Every background model call this server makes names a model-store role and
-// goes through one router (internal/oneshotrouting): the role's models in
+// goes through one router (internal/agents/models/modelrouting): the role's models in
 // order, each on the instance oneshot.instance_by_provider names for its
 // provider, skipping one whose subscription usage-store reports full, until
 // one answers. The Caller on each request says which feature asked.
@@ -35,8 +35,8 @@ const (
 // newOneShotRouter builds the router from the server's stores and settings.
 // A store the server was built without stays nil in the router, so a call
 // fails naming it rather than on a nil pointer.
-func (s *Server) newOneShotRouter() *oneshotrouting.Router {
-	router := &oneshotrouting.Router{
+func (s *Server) newOneShotRouter() *modelrouting.Router {
+	router := &modelrouting.Router{
 		InstanceByProvider: func() map[string]string {
 			return s.settings.StringMap(config.SettingOneShotInstanceByProvider)
 		},
@@ -51,7 +51,7 @@ func (s *Server) newOneShotRouter() *oneshotrouting.Router {
 	}
 	// usage-store runs in this process. Until its module is open a read is
 	// an error, which the router logs and calls anyway.
-	router.Limits = oneshotrouting.NewUsageStoreLimits(s.readUsageStoreLimits)
+	router.Limits = modelrouting.NewUsageStoreLimits(s.readUsageStoreLimits)
 	return router
 }
 
@@ -85,23 +85,23 @@ func (s *Server) routedOneShotJSON(ctx context.Context, request msg.OneShotReque
 // OneShotRoute implements executors.OneShotCaller. An input's model — a
 // role, an id or an alias — or operations.completion_model_role when it names
 // none, read at the time of use.
-func (s *Server) OneShotRoute(requestedModel string) (oneshotrouting.Route, error) {
+func (s *Server) OneShotRoute(requestedModel string) (modelrouting.Route, error) {
 	if requestedModel == "" {
 		requestedModel = s.settings.ModelRole(config.SettingOperationsCompletionModelRole)
 	}
 	if requestedModel == "" {
-		return oneshotrouting.Route{}, &executors.TargetError{Code: "no_model",
+		return modelrouting.Route{}, &executors.TargetError{Code: "no_model",
 			Message: "the input names no model and operations.completion_model_role is empty"}
 	}
 	route, err := s.oneShotRouter.Resolve(requestedModel)
-	if resolution, ok := oneshotrouting.IsResolutionError(err); ok {
-		return oneshotrouting.Route{}, &executors.TargetError{Code: resolution.Code, Message: resolution.Message}
+	if resolution, ok := modelrouting.IsResolutionError(err); ok {
+		return modelrouting.Route{}, &executors.TargetError{Code: resolution.Code, Message: resolution.Message}
 	}
 	return route, err
 }
 
 // RunOneShotRoute implements executors.OneShotCaller.
-func (s *Server) RunOneShotRoute(ctx context.Context, route oneshotrouting.Route, request msg.OneShotRequest, admit func(oneshotrouting.Candidate) string) (msg.OneShotResponse, error) {
+func (s *Server) RunOneShotRoute(ctx context.Context, route modelrouting.Route, request msg.OneShotRequest, admit func(modelrouting.Candidate) string) (msg.OneShotResponse, error) {
 	return s.oneShotRouter.Run(ctx, request.Caller, route, request, admit)
 }
 
@@ -157,15 +157,15 @@ func (s *Server) routedOneShot(ctx context.Context, request msg.OneShotRequest) 
 	}
 	if request.Model != "" {
 		return msg.OneShotResponse{}, &oneShotRefusal{status: http.StatusBadRequest, code: "model_not_accepted",
-			message: "name a model_role (" + strings.Join(modelstore.CanonicalRoles, ", ") + "), not a model: the server picks the model, the instance and the fallbacks. POST /instances/{id}/oneshot takes a model"}
+			message: "name a model_role (" + strings.Join(models.CanonicalRoles, ", ") + "), not a model: the server picks the model, the instance and the fallbacks. POST /instances/{id}/oneshot takes a model"}
 	}
 	route, err := s.oneShotRouter.ResolveRole(request.ModelRole)
 	if err != nil {
 		status := http.StatusServiceUnavailable
 		code := "model_role_unresolvable"
-		if resolution, ok := oneshotrouting.IsResolutionError(err); ok {
+		if resolution, ok := modelrouting.IsResolutionError(err); ok {
 			code = resolution.Code
-			if code == oneshotrouting.CodeNoModelRole || code == oneshotrouting.CodeUnknownModelRole {
+			if code == modelrouting.CodeNoModelRole || code == modelrouting.CodeUnknownModelRole {
 				status = http.StatusBadRequest
 			}
 		}
@@ -173,7 +173,7 @@ func (s *Server) routedOneShot(ctx context.Context, request msg.OneShotRequest) 
 	}
 	response, err := s.oneShotRouter.Run(ctx, request.Caller, route, request, nil)
 	if err != nil {
-		var allFailed *oneshotrouting.AllModelsFailedError
+		var allFailed *modelrouting.AllModelsFailedError
 		if errors.As(err, &allFailed) {
 			return msg.OneShotResponse{}, &oneShotRefusal{status: http.StatusBadGateway, code: "all_models_failed", message: err.Error(), attempts: allFailed.Attempts}
 		}
@@ -186,8 +186,8 @@ func (s *Server) routedOneShot(ctx context.Context, request msg.OneShotRequest) 
 // setting: the role must be one of model-store's, and model-store must have
 // models for it, or every call on it would fail.
 func (s *Server) checkSettingNamesAnAssignedModelRole(role string) error {
-	if !modelstore.IsCanonicalRole(role) {
-		return fmt.Errorf("%q is not a model role; the roles are %s", role, strings.Join(modelstore.CanonicalRoles, ", "))
+	if !models.IsCanonicalRole(role) {
+		return fmt.Errorf("%q is not a model role; the roles are %s", role, strings.Join(models.CanonicalRoles, ", "))
 	}
 	if s.modelStore == nil {
 		return fmt.Errorf("%w: this server has no model-store to check role %q with", servicesettings.ErrSettingOwnerUnavailable, role)

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	modelstore "github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/executor"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/modelstoreroles"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/sessionmodelrole"
@@ -82,7 +82,7 @@ func (reads schedulerReadsThisServer) ProvidersOfHarness(harness msg.Harness) ([
 }
 
 func (reads schedulerReadsThisServer) CanonicalRoleNames() []string {
-	return modelstore.CanonicalRoles
+	return models.CanonicalRoles
 }
 
 func (reads schedulerReadsThisServer) RoleModelLists() (map[string][]string, error) {

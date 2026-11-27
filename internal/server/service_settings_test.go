@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	modelstore "github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models"
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -155,14 +155,14 @@ func TestAChangedClassifierSettingIsInForceWithoutARestart(t *testing.T) {
 	if modelRole, timeout := srv.questionTriage.current(); modelRole != "" || timeout != 45*time.Second {
 		t.Errorf("triage = %q %v, want its own (empty) role and the classifier's timeout", modelRole, timeout)
 	}
-	if err := srv.modelStore.SetRole(modelstore.RoleBalanced, "mock-model"); err != nil {
+	if err := srv.modelStore.SetRole(models.RoleBalanced, "mock-model"); err != nil {
 		t.Fatal(err)
 	}
-	body, _ := json.Marshal(msg.ServiceSettingUpdate{Value: modelstore.RoleBalanced})
+	body, _ := json.Marshal(msg.ServiceSettingUpdate{Value: models.RoleBalanced})
 	if got := serve(srv, serviceSettingsRequest("PUT", "/settings/"+config.SettingQuestionTriageModelRole, string(body), true)); got.Code != http.StatusOK {
 		t.Fatalf("PUT %s = %d %s", config.SettingQuestionTriageModelRole, got.Code, got.Body.String())
 	}
-	if modelRole, _ := srv.questionTriage.current(); modelRole != modelstore.RoleBalanced {
+	if modelRole, _ := srv.questionTriage.current(); modelRole != models.RoleBalanced {
 		t.Errorf("triage role = %q, want balanced", modelRole)
 	}
 	if tuning := srv.signalClassifier.currentTuning(); tuning.modelRole != "efficient" {

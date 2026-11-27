@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/tools"
 	"github.com/kayushkin/llm-bridge-server/internal/bundleclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -82,7 +82,7 @@ func (s *Server) harnessTools(ctx context.Context, harness msg.Harness) ([]harne
 	if s.toolRegistry == nil {
 		return nil, fmt.Errorf("%s, so there are no harness tools to read", toolStoreOffMessage)
 	}
-	tools, err := s.toolRegistry.ListTools(ctx, toolstore.ListFilter{Kind: toolstore.KindHarness, Harness: string(harness)})
+	tools, err := s.toolRegistry.ListTools(ctx, tools.ListFilter{Kind: tools.KindHarness, Harness: string(harness)})
 	if err != nil {
 		return nil, fmt.Errorf("%w: listing harness tools: %v", errToolStoreUnavailable, err)
 	}

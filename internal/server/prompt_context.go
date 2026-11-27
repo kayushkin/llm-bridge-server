@@ -7,7 +7,7 @@ import (
 	"log"
 	"strings"
 
-	agentstore "github.com/kayushkin/llm-bridge-server/internal/agents/agentstore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -34,9 +34,9 @@ func (s *Server) syncPromptHarnessDeliveries() {
 		return
 	}
 	for _, harness := range msg.AllHarnesses {
-		delivery := agentstore.PromptHarnessDelivery{Harness: string(harness), Delivery: agentstore.PromptDeliveryInject, Note: "recorded at bridge start: the bridge injects the prompt"}
+		delivery := agents.PromptHarnessDelivery{Harness: string(harness), Delivery: agents.PromptDeliveryInject, Note: "recorded at bridge start: the bridge injects the prompt"}
 		if nativeFile, ok := harnessesThatReadTheirOwnPromptFile[harness]; ok {
-			delivery.Delivery = agentstore.PromptDeliveryNativeFile
+			delivery.Delivery = agents.PromptDeliveryNativeFile
 			delivery.NativeRelativePath = nativeFile
 			delivery.Note = "recorded at bridge start: this harness reads " + nativeFile + " itself"
 		}
@@ -124,7 +124,7 @@ func (s *Server) injectPromptContext(ctx context.Context, sess *store.Session, i
 // harnessConfigKeyForInjectedPrompt is the HarnessConfig key the injected text
 // goes in for a delivery: see injectPromptContext.
 func harnessConfigKeyForInjectedPrompt(delivery string) string {
-	if delivery == agentstore.PromptDeliveryNativeFile {
+	if delivery == agents.PromptDeliveryNativeFile {
 		return "append_system_prompt"
 	}
 	return "system_prompt"
@@ -149,7 +149,7 @@ func (s *Server) sessionContextTags(ctx context.Context, sess *store.Session) ([
 
 // describeMatchedContextSections names the context sections a resolution
 // injected, by id and title, for a log line.
-func describeMatchedContextSections(res *agentstore.ResolvedContext) string {
+func describeMatchedContextSections(res *agents.ResolvedContext) string {
 	var matched []string
 	for _, entry := range res.Manifest {
 		for _, section := range entry.MatchedSections {

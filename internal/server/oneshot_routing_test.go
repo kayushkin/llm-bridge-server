@@ -8,24 +8,24 @@ import (
 	"strings"
 	"testing"
 
-	modelstore "github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	"github.com/kayushkin/llm-bridge-server/internal/oneshotrouting"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
 // routerAnsweringEveryCall is a router over the server's own model-store and
 // harness-store, with every provider the test model-store knows mapped to
 // instanceID, and answer standing in for the harness.
-func routerAnsweringEveryCall(t *testing.T, srv *Server, instanceID string, answer func(msg.OneShotRequest) (msg.OneShotResponse, error)) *oneshotrouting.Router {
+func routerAnsweringEveryCall(t *testing.T, srv *Server, instanceID string, answer func(msg.OneShotRequest) (msg.OneShotResponse, error)) *modelrouting.Router {
 	t.Helper()
 	if srv.modelStore == nil {
 		t.Fatal("the test server has no model-store")
 	}
-	if err := srv.modelStore.SetRoleModels(modelstore.RoleEfficient, []string{"mock-model-alt", "mock-model"}); err != nil {
+	if err := srv.modelStore.SetRoleModels(models.RoleEfficient, []string{"mock-model-alt", "mock-model"}); err != nil {
 		t.Fatalf("seed efficient role: %v", err)
 	}
-	return &oneshotrouting.Router{
+	return &modelrouting.Router{
 		Models:             srv.modelStore,
 		Instances:          srv.harnessStore,
 		InstanceByProvider: func() map[string]string { return map[string]string{"mock": instanceID} },
@@ -54,8 +54,8 @@ func TestRoutedOneShotRouteRefusesAModelAMissingRoleAndAnUnknownRole(t *testing.
 	for body, code := range map[string]string{
 		`{"prompt":"hi","model":"mock-model","model_role":"efficient"}`: "model_not_accepted",
 		`{"prompt":"hi","model":"mock-model"}`:                          "model_not_accepted",
-		`{"prompt":"hi"}`:                                               oneshotrouting.CodeNoModelRole,
-		`{"prompt":"hi","model_role":"cheapest"}`:                       oneshotrouting.CodeUnknownModelRole,
+		`{"prompt":"hi"}`:                                               modelrouting.CodeNoModelRole,
+		`{"prompt":"hi","model_role":"cheapest"}`:                       modelrouting.CodeUnknownModelRole,
 		`{"model_role":"efficient"}`:                                    "prompt_required",
 		`{"prompt":"hi","model_role":"efficient","modle":"x"}`:          "invalid_body",
 	} {

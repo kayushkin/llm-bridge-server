@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/tools"
 
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -39,10 +39,10 @@ func TestASessionsReportedToolsReachToolStoreWithoutItsMCPTools(t *testing.T) {
 func TestAToolStoreThatRefusesTheReportIsAnError(t *testing.T) {
 	srv, _ := testServer(t)
 	toolStore := newFakeToolRegistry(t)
-	toolStore.recordObservedError = fmt.Errorf("%w: tool name %q contains whitespace", toolstore.ErrInvalidObservedHarnessTools, "Bad Name")
+	toolStore.recordObservedError = fmt.Errorf("%w: tool name %q contains whitespace", tools.ErrInvalidObservedHarnessTools, "Bad Name")
 	srv.toolRegistry = toolStore
 	_, err := srv.reportObservedHarnessTools(t.Context(), msg.HarnessClaudeCode, []string{"Bad Name"})
-	if err == nil || !errors.Is(err, toolstore.ErrInvalidObservedHarnessTools) {
+	if err == nil || !errors.Is(err, tools.ErrInvalidObservedHarnessTools) {
 		t.Errorf("err = %v; want the store's refusal", err)
 	}
 }

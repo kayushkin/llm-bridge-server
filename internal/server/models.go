@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	modelstore "github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models"
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 )
 
@@ -58,7 +58,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 // CredentialsKnown is false, Credentials is null and CredentialsError says why;
 // an empty list always means auth-store answered and holds none.
 type modelWithCredentials struct {
-	modelstore.ModelStatus
+	models.ModelStatus
 	Credentials      []credResponse `json:"credentials"`
 	CredentialsKnown bool           `json:"credentials_known"`
 	CredentialsError string         `json:"credentials_error,omitempty"`

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	modelstore "github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -17,14 +17,14 @@ import (
 // `default` and `efficient` roles. The shared fixtures hand it to New so every
 // test server has a registry — the server's contract now requires one, and a
 // nil store fails resolution loudly by design (see model_selection.go).
-func testModelStore(t *testing.T) *modelstore.Store {
+func testModelStore(t *testing.T) *models.Store {
 	t.Helper()
 	mds := openTestModelStore(t)
-	if err := mds.AddProvider(modelstore.Provider{ID: "mock", Name: "Mock"}); err != nil {
+	if err := mds.AddProvider(models.Provider{ID: "mock", Name: "Mock"}); err != nil {
 		t.Fatalf("seed provider: %v", err)
 	}
 	for _, id := range []string{"mock-model", "mock-model-alt"} {
-		if err := mds.AddModel(modelstore.Model{ID: id, Provider: "mock", Name: id, MaxTokens: 1000, Enabled: true}); err != nil {
+		if err := mds.AddModel(models.Model{ID: id, Provider: "mock", Name: id, MaxTokens: 1000, Enabled: true}); err != nil {
 			t.Fatalf("seed model %s: %v", id, err)
 		}
 	}
@@ -35,10 +35,10 @@ func testModelStore(t *testing.T) *modelstore.Store {
 	if err := mds.AddAlias("mock-model", "opus"); err != nil {
 		t.Fatalf("seed alias: %v", err)
 	}
-	if err := mds.SetRole(modelstore.RoleDefault, "mock-model"); err != nil {
+	if err := mds.SetRole(models.RoleDefault, "mock-model"); err != nil {
 		t.Fatalf("seed default role: %v", err)
 	}
-	if err := mds.SetRole(modelstore.RoleEfficient, "mock-model-alt"); err != nil {
+	if err := mds.SetRole(models.RoleEfficient, "mock-model-alt"); err != nil {
 		t.Fatalf("seed efficient role: %v", err)
 	}
 	return mds
@@ -129,7 +129,7 @@ func TestResolveModelSelectionUnknownModelFailsLoud(t *testing.T) {
 
 func TestResolveModelSelectionUnassignedDefaultRoleFailsLoud(t *testing.T) {
 	srv, _ := testServer(t)
-	if err := srv.modelStore.RemoveRole(modelstore.RoleDefault); err != nil {
+	if err := srv.modelStore.RemoveRole(models.RoleDefault); err != nil {
 		t.Fatal(err)
 	}
 	_, err := srv.resolveModelSelection(t.Context(), sessionWithConfig("mock", ``))
@@ -253,11 +253,11 @@ func TestForkCarriesTheParentHarnessConfig(t *testing.T) {
 
 // openTestModelStore gives the test an empty registry on a Postgres database of
 // its own (postgresstorage/postgrestest).
-func openTestModelStore(t *testing.T) *modelstore.Store {
+func openTestModelStore(t *testing.T) *models.Store {
 	t.Helper()
-	module, err := modelstore.Module()
+	module, err := models.Module()
 	if err != nil {
 		t.Fatalf("model-store module: %v", err)
 	}
-	return modelstore.New(postgrestest.NewDatabase(t, module).Open(module))
+	return models.New(postgrestest.NewDatabase(t, module).Open(module))
 }

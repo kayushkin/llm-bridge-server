@@ -11,7 +11,7 @@ import (
 	"os/exec"
 	"time"
 
-	hookstore "github.com/kayushkin/llm-bridge-server/internal/agents/hookstore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/hooks"
 	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 	"github.com/kayushkin/llm-bridge-server/internal/ids"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -83,7 +83,7 @@ func (s *Server) handleHookOptions(w http.ResponseWriter, r *http.Request) {
 // scope_kind, scope_id, enabled (true|false).
 func (s *Server) handleListHooks(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	filter := hookstore.ListFilter{
+	filter := hooks.ListFilter{
 		Harness:   msg.Harness(q.Get("harness")),
 		Event:     q.Get("event"),
 		ScopeKind: msg.HookScope(q.Get("scope_kind")),

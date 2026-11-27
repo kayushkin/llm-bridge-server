@@ -6,9 +6,9 @@ import (
 	"log"
 	"os"
 
-	"github.com/kayushkin/llm-bridge-server/internal/agents/agentstore"
-	"github.com/kayushkin/llm-bridge-server/internal/agents/memorystore"
-	"github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/memories"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 )
@@ -16,9 +16,9 @@ import (
 // agentsRegistryStores are agent-store, memory-store and model-store, opened
 // in Postgres before the server is built, since server.New takes them.
 type agentsRegistryStores struct {
-	agents   *agentstore.Store
-	memories *memorystore.Store
-	models   *modelstore.Store
+	agents   *agents.Store
+	memories *memories.Store
+	models   *models.Store
 	pools    []*sql.DB
 }
 
@@ -55,13 +55,13 @@ func openAgentsRegistryModules(ctx context.Context, cfg *config.Config) *agentsR
 	if err != nil {
 		log.Fatalf("agent-store: the home directory its scan walks: %v", err)
 	}
-	stores.agents, err = agentstore.New(open("agent-store", agentstore.Module), homeDirectory)
+	stores.agents, err = agents.New(open("agent-store", agents.Module), homeDirectory)
 	if err != nil {
 		stores.close()
 		log.Fatalf("agent-store: %v", err)
 	}
-	stores.memories = memorystore.New(open("memory-store", memorystore.Module))
-	stores.models = modelstore.New(open("model-store", modelstore.Module))
+	stores.memories = memories.New(open("memory-store", memories.Module))
+	stores.models = models.New(open("model-store", models.Module))
 	log.Printf("postgres: agent-store (prompt files under %s), memory-store and model-store open; model-store's own routes at /model-store/", homeDirectory)
 	return stores
 }
@@ -69,21 +69,21 @@ func openAgentsRegistryModules(ctx context.Context, cfg *config.Config) *agentsR
 // importAgentStoreCmd copies a standalone agent-store's SQLite file into its
 // module, keeping every id. It writes no prompt file: the rows only.
 func importAgentStoreCmd(args []string) {
-	importAgentsStoreCmd("import-agent-store", args, agentstore.Module, func(ctx context.Context, db *sql.DB, path string) (any, error) {
-		return agentstore.ImportStandaloneDatabase(ctx, db, path)
+	importAgentsStoreCmd("import-agent-store", args, agents.Module, func(ctx context.Context, db *sql.DB, path string) (any, error) {
+		return agents.ImportStandaloneDatabase(ctx, db, path)
 	})
 }
 
 func importMemoryStoreCmd(args []string) {
-	importAgentsStoreCmd("import-memory-store", args, memorystore.Module, func(ctx context.Context, db *sql.DB, path string) (any, error) {
-		return memorystore.ImportStandaloneDatabase(ctx, db, path)
+	importAgentsStoreCmd("import-memory-store", args, memories.Module, func(ctx context.Context, db *sql.DB, path string) (any, error) {
+		return memories.ImportStandaloneDatabase(ctx, db, path)
 	})
 }
 
 // importModelStoreCmd copies a standalone model-store's registry into its
 // module. Its credential tables stay in the file: auth-store holds credentials.
 func importModelStoreCmd(args []string) {
-	importAgentsStoreCmd("import-model-store", args, modelstore.Module, func(ctx context.Context, db *sql.DB, path string) (any, error) {
-		return modelstore.ImportStandaloneDatabase(ctx, db, path)
+	importAgentsStoreCmd("import-model-store", args, models.Module, func(ctx context.Context, db *sql.DB, path string) (any, error) {
+		return models.ImportStandaloneDatabase(ctx, db, path)
 	})
 }

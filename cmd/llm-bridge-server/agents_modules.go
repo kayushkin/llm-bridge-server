@@ -11,10 +11,10 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
-	"github.com/kayushkin/llm-bridge-server/internal/agents/bundlestore"
-	"github.com/kayushkin/llm-bridge-server/internal/agents/skillstore"
-	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore"
-	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore/tools"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/bundles"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/skills"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/tools"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/tools/localtools"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/server"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage"
@@ -59,26 +59,26 @@ func enableAgentsStoreModules(ctx context.Context, srv *server.Server, cfg *conf
 	// Before the registry of in-process tools is seeded: browser, web_search
 	// and scheduler are in it only once they are given where PinchTab, Brave
 	// and the scheduler are.
-	tools.RegisterToolsThatReachOutsideServices(tools.OutsideServiceConnections{
-		Pinchtab:    tools.PinchtabConnection{BaseURL: cfg.LocalToolsPinchtabURL, Token: cfg.LocalToolsPinchtabToken},
+	localtools.RegisterToolsThatReachOutsideServices(localtools.OutsideServiceConnections{
+		Pinchtab:    localtools.PinchtabConnection{BaseURL: cfg.LocalToolsPinchtabURL, Token: cfg.LocalToolsPinchtabToken},
 		BraveAPIKey: cfg.LocalToolsBraveAPIKey,
-		Scheduler:   tools.SchedulerConnection{BaseURL: server.SchedulerInProcessBaseURL, HTTP: srv.SchedulerHTTPClient()},
+		Scheduler:   localtools.SchedulerConnection{BaseURL: server.SchedulerInProcessBaseURL, HTTP: srv.SchedulerHTTPClient()},
 	})
-	toolStore := toolstore.New(open("tool-store", toolstore.Module))
-	if err := toolstore.SeedRegistry(ctx, toolStore); err != nil {
+	toolStore := tools.New(open("tool-store", tools.Module))
+	if err := tools.SeedRegistry(ctx, toolStore); err != nil {
 		closeAll()
 		log.Fatalf("tool-store: seeding the registry: %v", err)
 	}
 	srv.EnableToolStore(toolStore, srv.ToolStoreCredentialResolver())
 
-	skillStore, err := skillstore.New(open("skill-store", skillstore.Module), cfg.SkillStoreDataDirectory, cfg.SkillStoreInstallDirectory)
+	skillStore, err := skills.New(open("skill-store", skills.Module), cfg.SkillStoreDataDirectory, cfg.SkillStoreInstallDirectory)
 	if err != nil {
 		closeAll()
 		log.Fatalf("skill-store: %v", err)
 	}
 	srv.EnableSkillStore(skillStore)
 
-	srv.EnableBundleStore(bundlestore.New(open("bundle-store", bundlestore.Module)))
+	srv.EnableBundleStore(bundles.New(open("bundle-store", bundles.Module)))
 
 	log.Printf("postgres: tool-store, skill-store and bundle-store open, served at /tool-store/, /skill-store/ and /bundle-store/ (skill files in %s)", cfg.SkillStoreDataDirectory)
 	return closeAll
@@ -124,8 +124,8 @@ func importAgentsStoreCmd(command string, args []string, describe func() (postgr
 }
 
 func importToolStoreCmd(args []string) {
-	importAgentsStoreCmd("import-tool-store", args, toolstore.Module, func(ctx context.Context, db *sql.DB, path string) (any, error) {
-		return toolstore.ImportStandaloneDatabase(ctx, db, path)
+	importAgentsStoreCmd("import-tool-store", args, tools.Module, func(ctx context.Context, db *sql.DB, path string) (any, error) {
+		return tools.ImportStandaloneDatabase(ctx, db, path)
 	})
 }
 
@@ -133,13 +133,13 @@ func importToolStoreCmd(args []string) {
 // standalone store's data directory until they are copied into
 // skill_store.data_directory.
 func importSkillStoreCmd(args []string) {
-	importAgentsStoreCmd("import-skill-store", args, skillstore.Module, func(ctx context.Context, db *sql.DB, path string) (any, error) {
-		return skillstore.ImportStandaloneDatabase(ctx, db, path)
+	importAgentsStoreCmd("import-skill-store", args, skills.Module, func(ctx context.Context, db *sql.DB, path string) (any, error) {
+		return skills.ImportStandaloneDatabase(ctx, db, path)
 	})
 }
 
 func importBundleStoreCmd(args []string) {
-	importAgentsStoreCmd("import-bundle-store", args, bundlestore.Module, func(ctx context.Context, db *sql.DB, path string) (any, error) {
-		return bundlestore.ImportStandaloneDatabase(ctx, db, path)
+	importAgentsStoreCmd("import-bundle-store", args, bundles.Module, func(ctx context.Context, db *sql.DB, path string) (any, error) {
+		return bundles.ImportStandaloneDatabase(ctx, db, path)
 	})
 }

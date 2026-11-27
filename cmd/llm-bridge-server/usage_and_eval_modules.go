@@ -8,14 +8,14 @@ import (
 	"log"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/agents/evalstore"
-	"github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
-	"github.com/kayushkin/llm-bridge-server/internal/agents/usagestore"
-	"github.com/kayushkin/llm-bridge-server/internal/agents/usagestore/anthropic"
-	"github.com/kayushkin/llm-bridge-server/internal/agents/usagestore/codex"
-	usagestorehttpapi "github.com/kayushkin/llm-bridge-server/internal/agents/usagestore/httpapi"
-	"github.com/kayushkin/llm-bridge-server/internal/agents/usagestore/limitsrefresh"
-	"github.com/kayushkin/llm-bridge-server/internal/agents/usagestore/spendrefresh"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/evaluations"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/usage"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/usage/anthropic"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/usage/codex"
+	usagestorehttpapi "github.com/kayushkin/llm-bridge-server/internal/agents/usage/httpapi"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/usage/limitsrefresh"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/usage/spendrefresh"
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/server"
@@ -33,7 +33,7 @@ const limitsRefreshCheckEvery = 15 * time.Second
 // modelStoreTokenUsage answers usage-store's GET /api/usage from model-store's
 // old daily usage rows.
 type modelStoreTokenUsage struct {
-	models *modelstore.Store
+	models *models.Store
 }
 
 func (reader modelStoreTokenUsage) TokenUsageOverTheLastDays(days int) ([]usagestorehttpapi.TokenUsageTotals, error) {
@@ -58,19 +58,19 @@ func (reader modelStoreTokenUsage) TokenUsageOverTheLastDays(days int) ([]usages
 // run, two processes reading the same providers would spend their rate limits
 // twice, and two runners would run one run twice. The returned function stops
 // the loops and closes the pools.
-func enableUsageAndEvalStores(ctx context.Context, cfg *config.Config, srv *server.Server, models *modelstore.Store) (func(), error) {
+func enableUsageAndEvalStores(ctx context.Context, cfg *config.Config, srv *server.Server, models *models.Store) (func(), error) {
 	settings := cfg.Settings
-	usageDB, err := openAgentsModule(ctx, cfg.PostgresURL, usagestore.Module)
+	usageDB, err := openAgentsModule(ctx, cfg.PostgresURL, usage.Module)
 	if err != nil {
 		return nil, fmt.Errorf("usage-store: %w", err)
 	}
-	evalDB, err := openAgentsModule(ctx, cfg.PostgresURL, evalstore.Module)
+	evalDB, err := openAgentsModule(ctx, cfg.PostgresURL, evaluations.Module)
 	if err != nil {
 		usageDB.Close()
 		return nil, fmt.Errorf("eval-store: %w", err)
 	}
 	loops, stopLoops := context.WithCancel(ctx)
-	var runner *evalstore.Runner
+	var runner *evaluations.Runner
 	closeAll := func() {
 		stopLoops()
 		if runner != nil {
@@ -85,7 +85,7 @@ func enableUsageAndEvalStores(ctx context.Context, cfg *config.Config, srv *serv
 		return nil, err
 	}
 
-	usageStore := usagestore.New(usageDB)
+	usageStore := usage.New(usageDB)
 	idleInterval := settings.Duration(config.SettingUsageStoreLimitsRefreshIdleInterval)
 	watchedInterval := settings.Duration(config.SettingUsageStoreLimitsRefreshWatchedInterval)
 	watcherExpiry := settings.Duration(config.SettingUsageStoreLimitsRefreshWatcherExpiry)
@@ -106,7 +106,7 @@ func enableUsageAndEvalStores(ctx context.Context, cfg *config.Config, srv *serv
 	}
 	providers := []limitsrefresh.Provider{{
 		Name:  "anthropic",
-		Fetch: func(context.Context) (*usagestore.ProviderLimits, []byte, error) { return anthropicLimits.Fetch() },
+		Fetch: func(context.Context) (*usage.ProviderLimits, []byte, error) { return anthropicLimits.Fetch() },
 	}}
 	if codexLimits != nil {
 		providers = append(providers, limitsrefresh.Provider{Name: "codex", Fetch: codexLimits.Read})
@@ -149,16 +149,16 @@ func enableUsageAndEvalStores(ctx context.Context, cfg *config.Config, srv *serv
 		log.Printf("usage-store: reading per-key spend every %s", spendInterval)
 	}
 
-	defaultLimits, err := evalstore.ParseBudgetLimits(settings.StringMap(config.SettingEvalStoreDefaultBudgetLimits))
+	defaultLimits, err := evaluations.ParseBudgetLimits(settings.StringMap(config.SettingEvalStoreDefaultBudgetLimits))
 	if err != nil {
 		return fail(fmt.Errorf("eval-store: %s: %w", config.SettingEvalStoreDefaultBudgetLimits, err))
 	}
-	evalStore := evalstore.New(evalDB)
+	evalStore := evaluations.New(evalDB)
 	runsEnabled := settings.Boolean(config.SettingEvalStoreRunsEnabled)
 	runner, err = srv.EnableEvalStore(evalStore, server.EvalStoreOptions{
 		RunsEnabled:              runsEnabled,
 		OperationPollingInterval: settings.Duration(config.SettingEvalStoreOperationPollingInterval),
-		Defaults: evalstore.RunDefaults{
+		Defaults: evaluations.RunDefaults{
 			Concurrency:           settings.Integer(config.SettingEvalStoreDefaultConcurrency),
 			BudgetLimits:          defaultLimits,
 			BudgetCheckEveryCalls: settings.Integer(config.SettingEvalStoreBudgetCheckEveryCalls),
@@ -184,15 +184,15 @@ func enableUsageAndEvalStores(ctx context.Context, cfg *config.Config, srv *serv
 }
 
 func importUsageStoreCmd(args []string) {
-	importAgentsStoreCmd("import-usage-store", args, usagestore.Module, func(ctx context.Context, db *sql.DB, path string) (any, error) {
-		return usagestore.ImportStandaloneDatabase(ctx, db, path)
+	importAgentsStoreCmd("import-usage-store", args, usage.Module, func(ctx context.Context, db *sql.DB, path string) (any, error) {
+		return usage.ImportStandaloneDatabase(ctx, db, path)
 	})
 }
 
 // importEvalStoreCmd copies a standalone eval-store's file into its module.
 // Its cases hold real mail; the command prints only how many rows it copied.
 func importEvalStoreCmd(args []string) {
-	importAgentsStoreCmd("import-eval-store", args, evalstore.Module, func(ctx context.Context, db *sql.DB, path string) (any, error) {
-		return evalstore.ImportStandaloneDatabase(ctx, db, path)
+	importAgentsStoreCmd("import-eval-store", args, evaluations.Module, func(ctx context.Context, db *sql.DB, path string) (any, error) {
+		return evaluations.ImportStandaloneDatabase(ctx, db, path)
 	})
 }

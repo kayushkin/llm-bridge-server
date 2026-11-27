@@ -18,11 +18,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/executors"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
-	"github.com/kayushkin/llm-bridge-server/internal/oneshotrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -122,7 +122,7 @@ func (s *Server) runShellForSessionAction(session *store.Session, action store.S
 // sessionActionModelCallPlan is a model_call resolved: the models it may
 // try, their prices, and how many output tokens its cap buys on the dearest.
 type sessionActionModelCallPlan struct {
-	route               oneshotrouting.Route
+	route               modelrouting.Route
 	listPricesByModel   map[string][2]float64
 	maximumOutputTokens int
 }

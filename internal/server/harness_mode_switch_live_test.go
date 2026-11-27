@@ -24,7 +24,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore/harnessstoretest"
 
 	"github.com/gorilla/websocket"
-	modelstore "github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/productiondefaults"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -391,7 +391,7 @@ func newLiveBridge(t *testing.T, h liveHarness) *liveBridge {
 // reads into dir and imports the copy into a test database. VACUUM INTO
 // through a read-only handle takes a consistent copy, WAL included, and cannot
 // write to the source.
-func copyOfProductionModelStore(t *testing.T, dir string) *modelstore.Store {
+func copyOfProductionModelStore(t *testing.T, dir string) *models.Store {
 	t.Helper()
 	source := productiondefaults.StandaloneModelStoreDatabasePath()
 	db, err := sql.Open("sqlite", "file:"+source+"?mode=ro")
@@ -403,23 +403,23 @@ func copyOfProductionModelStore(t *testing.T, dir string) *modelstore.Store {
 	if _, err := db.Exec("VACUUM INTO ?", copyPath); err != nil {
 		t.Fatalf("copy %s: %v", source, err)
 	}
-	module, err := modelstore.Module()
+	module, err := models.Module()
 	if err != nil {
 		t.Fatalf("model-store module: %v", err)
 	}
 	pool := postgrestest.NewDatabase(t, module).Open(module)
-	if _, err := modelstore.ImportStandaloneDatabase(context.Background(), pool, copyPath); err != nil {
+	if _, err := models.ImportStandaloneDatabase(context.Background(), pool, copyPath); err != nil {
 		t.Fatalf("import the model-store copy: %v", err)
 	}
-	return modelstore.New(pool)
+	return models.New(pool)
 }
 
 // liveModelForHarness picks the cheapest kind of model the registry offers
 // that this CLI can run: the first model of the efficient role whose provider
 // is the harness's.
-func liveModelForHarness(t *testing.T, models *modelstore.Store, h liveHarness) string {
+func liveModelForHarness(t *testing.T, models *models.Store, h liveHarness) string {
 	t.Helper()
-	efficient, err := models.RoleModels(modelstore.RoleEfficient)
+	efficient, err := models.RoleModels(models.RoleEfficient)
 	if err != nil {
 		t.Fatalf("read efficient role: %v", err)
 	}

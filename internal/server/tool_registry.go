@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/tools"
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 )
@@ -16,10 +16,10 @@ import (
 // (inProcessToolRegistry); a nil registry is a server whose tool-store module
 // is off because it has no Postgres.
 type toolRegistry interface {
-	ListTools(ctx context.Context, filter toolstore.ListFilter) ([]toolstore.Tool, error)
-	ListInstanceTools(ctx context.Context, instanceID string) ([]toolstore.Tool, error)
-	Provision(ctx context.Context, request toolstore.ProvisionRequest) (*toolstore.ProvisionResponse, error)
-	RecordObservedHarnessTools(ctx context.Context, request toolstore.ObservedHarnessToolsRequest) (toolstore.ObservedHarnessToolsResponse, error)
+	ListTools(ctx context.Context, filter tools.ListFilter) ([]tools.Tool, error)
+	ListInstanceTools(ctx context.Context, instanceID string) ([]tools.Tool, error)
+	Provision(ctx context.Context, request tools.ProvisionRequest) (*tools.ProvisionResponse, error)
+	RecordObservedHarnessTools(ctx context.Context, request tools.ObservedHarnessToolsRequest) (tools.ObservedHarnessToolsResponse, error)
 }
 
 // toolStoreOffMessage says why a server has no tool registry.
@@ -27,23 +27,23 @@ const toolStoreOffMessage = "this server's tool-store module is off (" + config.
 
 // inProcessToolRegistry is the tool-store module, called directly.
 type inProcessToolRegistry struct {
-	store             *toolstore.Store
-	resolveCredential toolstore.ResolveCredentialFunc
+	store             *tools.Store
+	resolveCredential tools.ResolveCredentialFunc
 }
 
-func (registry inProcessToolRegistry) ListTools(ctx context.Context, filter toolstore.ListFilter) ([]toolstore.Tool, error) {
+func (registry inProcessToolRegistry) ListTools(ctx context.Context, filter tools.ListFilter) ([]tools.Tool, error) {
 	return registry.store.ListTools(ctx, filter)
 }
 
-func (registry inProcessToolRegistry) ListInstanceTools(ctx context.Context, instanceID string) ([]toolstore.Tool, error) {
+func (registry inProcessToolRegistry) ListInstanceTools(ctx context.Context, instanceID string) ([]tools.Tool, error) {
 	return registry.store.ListInstanceTools(ctx, instanceID)
 }
 
-func (registry inProcessToolRegistry) Provision(ctx context.Context, request toolstore.ProvisionRequest) (*toolstore.ProvisionResponse, error) {
-	return toolstore.Provision(ctx, registry.store, request, registry.resolveCredential)
+func (registry inProcessToolRegistry) Provision(ctx context.Context, request tools.ProvisionRequest) (*tools.ProvisionResponse, error) {
+	return tools.Provision(ctx, registry.store, request, registry.resolveCredential)
 }
 
-func (registry inProcessToolRegistry) RecordObservedHarnessTools(ctx context.Context, request toolstore.ObservedHarnessToolsRequest) (toolstore.ObservedHarnessToolsResponse, error) {
+func (registry inProcessToolRegistry) RecordObservedHarnessTools(ctx context.Context, request tools.ObservedHarnessToolsRequest) (tools.ObservedHarnessToolsResponse, error) {
 	return registry.store.RecordObservedHarnessTools(ctx, request)
 }
 
@@ -52,7 +52,7 @@ func (registry inProcessToolRegistry) RecordObservedHarnessTools(ctx context.Con
 // the way the standalone tool-store's resolver did: an API key for api_key, an
 // access token for oauth and token, and an error for anything else or an empty
 // secret. Nothing falls back to this process's environment.
-func credentialResolverFromAuthStore(client *authstoreclient.Client) toolstore.ResolveCredentialFunc {
+func credentialResolverFromAuthStore(client *authstoreclient.Client) tools.ResolveCredentialFunc {
 	return func(ctx context.Context, provider string) (string, error) {
 		if provider == "" {
 			return "", fmt.Errorf("auth-store: empty provider")

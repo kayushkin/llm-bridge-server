@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	hookstore "github.com/kayushkin/llm-bridge-server/internal/agents/hookstore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/hooks"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -16,7 +16,7 @@ import (
 // seedHook is a small helper because the test-only hook-store API requires
 // passing every field; the helper lets each test assert the synthesis
 // behavior without boilerplate.
-func seedHook(t *testing.T, hks *hookstore.Store, id, event, matcher string, scope msg.HookScope, scopeID string) {
+func seedHook(t *testing.T, hks *hooks.Store, id, event, matcher string, scope msg.HookScope, scopeID string) {
 	t.Helper()
 	h := &msg.Hook{
 		ID:        id,

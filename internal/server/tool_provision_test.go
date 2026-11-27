@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/tools"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -18,7 +18,7 @@ import (
 func fakeToolStore(t *testing.T, body string) *fakeToolRegistry {
 	t.Helper()
 	registry := newFakeToolRegistry(t)
-	registry.provisionAnswer = func(request toolstore.ProvisionRequest) string {
+	registry.provisionAnswer = func(request tools.ProvisionRequest) string {
 		if len(request.Tools) == 0 {
 			t.Fatalf("provision request %+v names no tools", request)
 		}
@@ -159,7 +159,7 @@ func fakeInstanceToolStore(t *testing.T, byInstance map[string]string) (*fakeToo
 	t.Helper()
 	var asked []string
 	registry := newFakeToolRegistry(t)
-	registry.provisionAnswer = func(request toolstore.ProvisionRequest) string {
+	registry.provisionAnswer = func(request tools.ProvisionRequest) string {
 		if request.InstanceID == "" {
 			t.Fatalf("provision request %+v names no instance", request)
 		}

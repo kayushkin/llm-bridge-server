@@ -15,12 +15,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelrouting"
 	schedulerapi "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/api"
 	schedulerdb "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/db"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/executors"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
-	"github.com/kayushkin/llm-bridge-server/internal/oneshotrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/repositories/repostore"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -381,15 +381,15 @@ type fakeSessionActionModels struct {
 	instanceCalls []string
 }
 
-func (fake *fakeSessionActionModels) OneShotRoute(requestedModel string) (oneshotrouting.Route, error) {
+func (fake *fakeSessionActionModels) OneShotRoute(requestedModel string) (modelrouting.Route, error) {
 	if requestedModel == "" {
-		return oneshotrouting.Route{}, &executors.TargetError{Code: "no_model", Message: "no model named"}
+		return modelrouting.Route{}, &executors.TargetError{Code: "no_model", Message: "no model named"}
 	}
-	return oneshotrouting.Route{Requested: requestedModel, Role: requestedModel,
-		Candidates: []oneshotrouting.Candidate{{ModelID: requestedModel + "-resolved", Provider: "mock"}}}, nil
+	return modelrouting.Route{Requested: requestedModel, Role: requestedModel,
+		Candidates: []modelrouting.Candidate{{ModelID: requestedModel + "-resolved", Provider: "mock"}}}, nil
 }
 
-func (fake *fakeSessionActionModels) RunOneShotRoute(ctx context.Context, route oneshotrouting.Route, request msg.OneShotRequest, admit func(oneshotrouting.Candidate) string) (msg.OneShotResponse, error) {
+func (fake *fakeSessionActionModels) RunOneShotRoute(ctx context.Context, route modelrouting.Route, request msg.OneShotRequest, admit func(modelrouting.Candidate) string) (msg.OneShotResponse, error) {
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
 	request.Model = route.Candidates[0].ModelID

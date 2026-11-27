@@ -3,7 +3,7 @@
 // created with an id nobody hands out) and what does it resolve to (at spawn,
 // so the session is provisioned exactly the tools the bundle names).
 //
-// The module runs in this process (internal/agents/bundlestore), so both
+// The module runs in this process (internal/agents/bundles), so both
 // questions are calls into it, not HTTP. A missing or malformed id, and a
 // bundle that cannot be applied because it is disabled, are ErrNotFound: the
 // caller's id is wrong. Any other error is the store failing to answer.
@@ -15,7 +15,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/kayushkin/llm-bridge-server/internal/agents/bundlestore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/bundles"
 )
 
 // ErrNotFound is bundle-store answering that it has no such bundle, or that
@@ -24,24 +24,24 @@ var ErrNotFound = errors.New("bundle not found")
 
 // Client asks one bundle-store module.
 type Client struct {
-	store *bundlestore.Store
+	store *bundles.Store
 }
 
 // New builds a client on the module's store.
-func New(store *bundlestore.Store) *Client {
+func New(store *bundles.Store) *Client {
 	return &Client{store: store}
 }
 
 // Resolution is what a bundle composes to: the tool-store and skill-store ids
 // to provision, and the bundles that contributed, for the log line.
 type Resolution struct {
-	Bundles []bundlestore.BundleRef
-	Skills  []bundlestore.MemberRef
-	Tools   []bundlestore.MemberRef
+	Bundles []bundles.BundleRef
+	Skills  []bundles.MemberRef
+	Tools   []bundles.MemberRef
 	// DeniedTools is every tool a bundle in the resolved set denies. A deny
 	// anywhere wins, so bundle-store has already taken these out of Tools; a
 	// harness tool among them is one the session's harness must not offer.
-	DeniedTools []bundlestore.MemberRef
+	DeniedTools []bundles.MemberRef
 	// DeniedReadPaths is the paths the session may not read: absolute
 	// ("/proc/**") or home-relative ("~/.config/**"), never a harness rule.
 	DeniedReadPaths []string
@@ -87,7 +87,7 @@ func (c *Client) CheckExists(ctx context.Context, bundleID string) error {
 		return fmt.Errorf("%w: %v", ErrNotFound, err)
 	}
 	if _, err := c.store.GetBundle(ctx, id); err != nil {
-		if errors.Is(err, bundlestore.ErrNotFound) {
+		if errors.Is(err, bundles.ErrNotFound) {
 			return fmt.Errorf("%w: bundle-store has no bundle %d", ErrNotFound, id)
 		}
 		return fmt.Errorf("bundle-store could not read bundle %d: %w", id, err)
@@ -104,9 +104,9 @@ func (c *Client) Resolve(ctx context.Context, bundleID string) (*Resolution, err
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrNotFound, err)
 	}
-	answer, err := bundlestore.Resolve(ctx, c.store, bundlestore.ResolveRequest{BundleIDs: []int64{id}})
+	answer, err := bundles.Resolve(ctx, c.store, bundles.ResolveRequest{BundleIDs: []int64{id}})
 	if err != nil {
-		if errors.Is(err, bundlestore.ErrBundleNotApplicable) {
+		if errors.Is(err, bundles.ErrBundleNotApplicable) {
 			return nil, fmt.Errorf("%w: %v", ErrNotFound, err)
 		}
 		return nil, fmt.Errorf("bundle-store could not resolve bundle %d: %w", id, err)

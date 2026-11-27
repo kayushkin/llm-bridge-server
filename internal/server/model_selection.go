@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"log"
 
-	modelstore "github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models"
 	"github.com/kayushkin/llm-bridge-server/internal/bundleclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -114,7 +114,7 @@ func (s *Server) resolveModelSelectionWithBundle(sess *store.Session, bundle *bu
 	}
 
 	// 4. The registry's own default role — the floor.
-	m, err := s.modelStore.ResolveRole(modelstore.RoleDefault)
+	m, err := s.modelStore.ResolveRole(models.RoleDefault)
 	if err != nil {
 		return msg.ModelSelection{}, fmt.Errorf("resolve model for %s: no session override, no bundle model, no bridge-prefs default for harness %q, and the registry's default role cannot answer: %w", sess.SessionID, sess.Harness, err)
 	}
@@ -132,7 +132,7 @@ func (s *Server) selectionFromRequested(requested string, selectedBy msg.ModelSe
 	if s.modelStore == nil {
 		return msg.ModelSelection{}, fmt.Errorf("resolve %q: model-store is not configured, and the registry is the only source of a model", requested)
 	}
-	if modelstore.IsCanonicalRole(requested) {
+	if models.IsCanonicalRole(requested) {
 		m, err := s.modelStore.ResolveRole(requested)
 		if err != nil {
 			return msg.ModelSelection{}, fmt.Errorf("%s names role %q: %w", selectedBy, requested, err)

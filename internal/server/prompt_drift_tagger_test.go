@@ -5,16 +5,16 @@ import (
 	"strings"
 	"testing"
 
-	agentstore "github.com/kayushkin/llm-bridge-server/internal/agents/agentstore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
 func TestPromptDriftTaggerRequestNamesOnlyAddedSectionsAndExistingTags(t *testing.T) {
-	drift := agentstore.PromptDrift{ID: 7, Path: "/home/x/CLAUDE.md", Operations: []agentstore.PromptDriftOperation{
-		{Kind: agentstore.PromptMarkdownEditUpdate, SectionID: 1, Heading: "## Old", Body: "SECRET-EDITED-BODY"},
-		{Kind: agentstore.PromptMarkdownEditInsert, Heading: "## Reminders", Body: strings.Repeat("x", 5000)},
+	drift := agents.PromptDrift{ID: 7, Path: "/home/x/CLAUDE.md", Operations: []agents.PromptDriftOperation{
+		{Kind: agents.PromptMarkdownEditUpdate, SectionID: 1, Heading: "## Old", Body: "SECRET-EDITED-BODY"},
+		{Kind: agents.PromptMarkdownEditInsert, Heading: "## Reminders", Body: strings.Repeat("x", 5000)},
 	}}
-	sections := []agentstore.PromptSection{{Tags: []string{"scheduler", "stores"}}, {Tags: []string{"stores"}}}
+	sections := []agents.PromptSection{{Tags: []string{"scheduler", "stores"}}, {Tags: []string{"stores"}}}
 	request, err := buildPromptDriftTaggerRequest(drift, sections, "balanced")
 	if err != nil {
 		t.Fatal(err)
@@ -37,7 +37,7 @@ func TestPromptDriftTaggerRequestNamesOnlyAddedSectionsAndExistingTags(t *testin
 }
 
 func TestPromptDriftTaggerRequestRefusesADriftThatAddsNothing(t *testing.T) {
-	drift := agentstore.PromptDrift{Operations: []agentstore.PromptDriftOperation{{Kind: agentstore.PromptMarkdownEditDelete, SectionID: 3}}}
+	drift := agents.PromptDrift{Operations: []agents.PromptDriftOperation{{Kind: agents.PromptMarkdownEditDelete, SectionID: 3}}}
 	if _, err := buildPromptDriftTaggerRequest(drift, nil, "m"); err == nil {
 		t.Fatal("built a request with nothing to label")
 	}

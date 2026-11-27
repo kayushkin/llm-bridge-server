@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/executors"
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
-	"github.com/kayushkin/llm-bridge-server/internal/oneshotrouting"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -37,15 +37,15 @@ type FakeOneShot struct {
 // OneShotRoute implements executors.OneShotCaller: the requested model, or
 // DefaultModel, as a route of one. It resolves nothing — a name is its own id
 // — so a test of resolution uses the server's.
-func (f *FakeOneShot) OneShotRoute(requestedModel string) (oneshotrouting.Route, error) {
+func (f *FakeOneShot) OneShotRoute(requestedModel string) (modelrouting.Route, error) {
 	model := requestedModel
 	if model == "" {
 		model = f.DefaultModel
 	}
 	if model == "" {
-		return oneshotrouting.Route{}, &executors.TargetError{Code: "no_model", Message: "the fake has no default model"}
+		return modelrouting.Route{}, &executors.TargetError{Code: "no_model", Message: "the fake has no default model"}
 	}
-	return oneshotrouting.Route{Requested: model, Candidates: []oneshotrouting.Candidate{{ModelID: model, Provider: "test"}}}, nil
+	return modelrouting.Route{Requested: model, Candidates: []modelrouting.Candidate{{ModelID: model, Provider: "test"}}}, nil
 }
 
 // Calls returns the requests made so far.
@@ -57,7 +57,7 @@ func (f *FakeOneShot) Calls() []msg.OneShotRequest {
 
 // RunOneShotRoute implements executors.OneShotCaller: each model the route
 // names and admit lets through is answered on InstanceID, the first one wins.
-func (f *FakeOneShot) RunOneShotRoute(ctx context.Context, route oneshotrouting.Route, request msg.OneShotRequest, admit func(oneshotrouting.Candidate) string) (msg.OneShotResponse, error) {
+func (f *FakeOneShot) RunOneShotRoute(ctx context.Context, route modelrouting.Route, request msg.OneShotRequest, admit func(modelrouting.Candidate) string) (msg.OneShotResponse, error) {
 	var attempts []msg.OneShotAttempt
 	for _, candidate := range route.Candidates {
 		if admit != nil {
@@ -75,7 +75,7 @@ func (f *FakeOneShot) RunOneShotRoute(ctx context.Context, route oneshotrouting.
 		response.InstanceID, response.Attempts = f.InstanceID, attempts
 		return response, nil
 	}
-	return msg.OneShotResponse{}, &oneshotrouting.AllModelsFailedError{Caller: request.Caller, Route: route, Attempts: attempts}
+	return msg.OneShotResponse{}, &modelrouting.AllModelsFailedError{Caller: request.Caller, Route: route, Attempts: attempts}
 }
 
 func (f *FakeOneShot) answer(ctx context.Context, request msg.OneShotRequest) (msg.OneShotResponse, error) {

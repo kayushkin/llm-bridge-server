@@ -14,13 +14,14 @@ import (
 	"sync/atomic"
 	"time"
 
-	agentstore "github.com/kayushkin/llm-bridge-server/internal/agents/agentstore"
-	"github.com/kayushkin/llm-bridge-server/internal/agents/bundlestore"
-	hookstore "github.com/kayushkin/llm-bridge-server/internal/agents/hookstore"
-	memorystore "github.com/kayushkin/llm-bridge-server/internal/agents/memorystore"
-	modelstore "github.com/kayushkin/llm-bridge-server/internal/agents/modelstore"
-	"github.com/kayushkin/llm-bridge-server/internal/agents/skillstore"
-	"github.com/kayushkin/llm-bridge-server/internal/agents/toolstore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/bundles"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/hooks"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/memories"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelrouting"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/skills"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/tools"
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/filestorage/filestore"
@@ -30,7 +31,6 @@ import (
 	harnessstore "github.com/kayushkin/llm-bridge-server/internal/machinemanagement/harnessstore"
 	"github.com/kayushkin/llm-bridge-server/internal/mail/mailstack"
 	"github.com/kayushkin/llm-bridge-server/internal/mailstackclient"
-	"github.com/kayushkin/llm-bridge-server/internal/oneshotrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/operations"
 	"github.com/kayushkin/llm-bridge-server/internal/references/referencestore"
 	"github.com/kayushkin/llm-bridge-server/internal/serviceinventory"
@@ -66,11 +66,11 @@ type Server struct {
 	peerProxyCalls peerProxyCalls
 	mux            *http.ServeMux
 	store          *store.Store
-	agentStore     *agentstore.Store
-	memoryStore    *memorystore.Store
+	agentStore     *agents.Store
+	memoryStore    *memories.Store
 	harnessStore   *harnessstore.Store
-	hookStore      *hookstore.Store
-	modelStore     *modelstore.Store
+	hookStore      *hooks.Store
+	modelStore     *models.Store
 	snapshotStore  *snapshotstore.Store
 	// predictionStore answers /prediction-store/ once the Postgres module is
 	// open (prediction_store_routes.go); nil answers those routes 503.
@@ -123,14 +123,14 @@ type Server struct {
 	toolRegistry toolRegistry
 	// The agents stores moved into this process answer their routes once
 	// their Postgres modules are open; nil answers those routes 503.
-	toolStoreHandlers  atomic.Pointer[toolstore.Handlers]
-	skillStoreHandlers atomic.Pointer[skillstore.Handlers]
+	toolStoreHandlers  atomic.Pointer[tools.Handlers]
+	skillStoreHandlers atomic.Pointer[skills.Handlers]
 	// The tool-store and skill-store modules, for grant-store to check that a
 	// tool or skill a grant names exists. Nil until EnableToolStore and
 	// EnableSkillStore, like the handlers above.
-	toolStoreForResourceChecks  atomic.Pointer[toolstore.Store]
-	skillStoreForResourceChecks atomic.Pointer[skillstore.Store]
-	bundleStoreHandlers         atomic.Pointer[bundlestore.Handlers]
+	toolStoreForResourceChecks  atomic.Pointer[tools.Store]
+	skillStoreForResourceChecks atomic.Pointer[skills.Store]
+	bundleStoreHandlers         atomic.Pointer[bundles.Handlers]
 	// usageAndEvalStores answers /usage-store/ and /eval-store/ once their
 	// Postgres modules are open (usage_and_eval_store_routes.go).
 	usageAndEvalStores usageAndEvalStores
@@ -239,7 +239,7 @@ type Server struct {
 	// oneShotRouter is where every background model call goes: a model-store
 	// role in, the first of its models that answers out. See
 	// oneshot_routing.go.
-	oneShotRouter *oneshotrouting.Router
+	oneShotRouter *modelrouting.Router
 	// renamesInFlight holds the renamer slot ids of the title calls this
 	// process is making, so a slot left by a call a restart killed reads as
 	// free. See renamer.go.
@@ -248,7 +248,7 @@ type Server struct {
 	chatLinks *chatLinks
 }
 
-func New(st *store.Store, as *agentstore.Store, ms *memorystore.Store, hs *harnessstore.Store, hks *hookstore.Store, mds *modelstore.Store, ss *snapshotstore.Store, cfg *config.Config) *Server {
+func New(st *store.Store, as *agents.Store, ms *memories.Store, hs *harnessstore.Store, hks *hooks.Store, mds *models.Store, ss *snapshotstore.Store, cfg *config.Config) *Server {
 	authClient := authstoreclient.New("", "", "llm-bridge-server")
 	hub := newSessionHub(st)
 	// The chat-page response cache and the SSE hub both need session-row mutation
@@ -602,12 +602,12 @@ func (s *Server) routes() {
 	// callbacks let agent-store nudge connected runners to reconcile when
 	// the canonical context files change.
 	if s.agentStore != nil {
-		agentstore.RegisterHandlersWithHookSet(s.mux, s.agentStore, s.agentStoreHandlerHooks())
+		agents.RegisterHandlersWithHookSet(s.mux, s.agentStore, s.agentStoreHandlerHooks())
 	}
 
 	// Memory-store routes (mounted from memory-store library)
 	if s.memoryStore != nil {
-		memorystore.RegisterHandlers(s.mux, s.memoryStore)
+		memories.RegisterHandlers(s.mux, s.memoryStore)
 	}
 
 	// Instance routes only available if harness-store is loaded

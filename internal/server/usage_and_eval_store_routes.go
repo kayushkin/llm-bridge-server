@@ -9,10 +9,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/agents/evalstore"
-	usagestorehttpapi "github.com/kayushkin/llm-bridge-server/internal/agents/usagestore/httpapi"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/evaluations"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelrouting"
+	usagestorehttpapi "github.com/kayushkin/llm-bridge-server/internal/agents/usage/httpapi"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	"github.com/kayushkin/llm-bridge-server/internal/oneshotrouting"
 )
 
 // usage-store and eval-store run in this process from their Postgres modules.
@@ -59,7 +59,7 @@ var errUsageStoreOff = errors.New("this server's usage-store module is not open"
 
 // readUsageStoreLimits is usage-store's latest limits, read in this process
 // from the same function its GET /api/usage/limits answers from.
-func (s *Server) readUsageStoreLimits(context.Context) (map[string]oneshotrouting.UsageProviderLimits, error) {
+func (s *Server) readUsageStoreLimits(context.Context) (map[string]modelrouting.UsageProviderLimits, error) {
 	handlers := s.usageAndEvalStores.usage.Load()
 	if handlers == nil {
 		return nil, errUsageStoreOff
@@ -68,12 +68,12 @@ func (s *Server) readUsageStoreLimits(context.Context) (map[string]oneshotroutin
 	if err != nil {
 		return nil, err
 	}
-	providers := make(map[string]oneshotrouting.UsageProviderLimits, len(latest))
+	providers := make(map[string]modelrouting.UsageProviderLimits, len(latest))
 	for provider, snapshot := range latest {
 		if snapshot == nil {
 			continue
 		}
-		limits := oneshotrouting.UsageProviderLimits{UsedPercentByWindow: make(map[string]float64, len(snapshot.Windows))}
+		limits := modelrouting.UsageProviderLimits{UsedPercentByWindow: make(map[string]float64, len(snapshot.Windows))}
 		if snapshot.StaleAfter != nil {
 			limits.StaleAfter = *snapshot.StaleAfter
 		}
@@ -91,7 +91,7 @@ func (s *Server) readUsageStoreLimits(context.Context) (map[string]oneshotroutin
 type EvalStoreOptions struct {
 	// RunsEnabled is eval_store.runs.enabled: off, start and resume answer 503.
 	RunsEnabled              bool
-	Defaults                 evalstore.RunDefaults
+	Defaults                 evaluations.RunDefaults
 	OperationPollingInterval time.Duration
 }
 
@@ -101,18 +101,18 @@ type EvalStoreOptions struct {
 // subscription usage come from model-store and usage-store, all called in
 // process as the internal service (evalStoreInThisServer), as the standalone
 // eval-store called them with the service token alone.
-func (s *Server) EnableEvalStore(store *evalstore.Store, options EvalStoreOptions) (*evalstore.Runner, error) {
+func (s *Server) EnableEvalStore(store *evaluations.Store, options EvalStoreOptions) (*evaluations.Runner, error) {
 	if options.RunsEnabled && options.OperationPollingInterval <= 0 {
 		return nil, fmt.Errorf("eval-store: %s is %s; it must be longer than nothing", config.SettingEvalStoreOperationPollingInterval, options.OperationPollingInterval)
 	}
 	thisServer := evalStoreInThisServer{server: s}
-	bridge := &evalstore.BridgeOperations{Operations: thisServer, PollInterval: options.OperationPollingInterval}
-	runner := evalstore.NewRunner(store, bridge, thisServer, thisServer, options.Defaults)
+	bridge := &evaluations.BridgeOperations{Operations: thisServer, PollInterval: options.OperationPollingInterval}
+	runner := evaluations.NewRunner(store, bridge, thisServer, thisServer, options.Defaults)
 	if !options.RunsEnabled {
 		runner.SwitchRunsOff(config.SettingEvalStoreRunsEnabled + " is off on this server")
 	}
 	routes := http.NewServeMux()
-	evalstore.RegisterHandlers(routes, store, runner, bridge)
+	evaluations.RegisterHandlers(routes, store, runner, bridge)
 	s.usageAndEvalStores.eval.Store(routes)
 	return runner, nil
 }

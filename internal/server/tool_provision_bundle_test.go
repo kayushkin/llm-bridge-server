@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/agents/bundlestore"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/bundles"
 	"github.com/kayushkin/llm-bridge-server/internal/bundleclient"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -21,10 +21,10 @@ import (
 func fakeBundleStore(t *testing.T, bundleID string, toolIDs []int64, skillIDs []int64) (*fakeBundleResolver, *[]string) {
 	t.Helper()
 	resolver := &fakeBundleResolver{bundleID: bundleID, resolution: &bundleclient.Resolution{
-		Bundles:         []bundlestore.BundleRef{{ID: 1, Name: "base"}, {ID: 6, Name: "docker"}},
+		Bundles:         []bundles.BundleRef{{ID: 1, Name: "base"}, {ID: 6, Name: "docker"}},
 		Skills:          memberRefs("skill", skillIDs...),
 		Tools:           memberRefs("tool", toolIDs...),
-		DeniedTools:     []bundlestore.MemberRef{},
+		DeniedTools:     []bundles.MemberRef{},
 		DeniedReadPaths: []string{},
 	}}
 	return resolver, &resolver.resolveCalls
