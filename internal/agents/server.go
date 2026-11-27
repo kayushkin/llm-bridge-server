@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/kayushkin/llm-bridge-server/internal/httproutes"
 )
 
 // RegisterHandlers registers agent-store's domain handlers on the given mux.
@@ -24,7 +26,7 @@ import (
 // Health is the process's concern, not the store's, so it is deliberately NOT
 // registered here. A standalone agent-store calls RegisterHealthHandler; an
 // embedding host already serves its own.
-func RegisterHandlers(mux *http.ServeMux, s *Store) {
+func RegisterHandlers(mux httproutes.Mux, s *Store) {
 	registerWithHandler(mux, &handler{s: s})
 }
 
@@ -40,7 +42,7 @@ func RegisterHealthHandler(mux *http.ServeMux) {
 	})
 }
 
-func registerWithHandler(mux *http.ServeMux, h *handler) {
+func registerWithHandler(mux httproutes.Mux, h *handler) {
 	mux.HandleFunc("GET /agents", h.listAgents)
 	mux.HandleFunc("GET /agents/{slug}", h.getAgent)
 	mux.HandleFunc("POST /agents", h.createAgent)
@@ -103,14 +105,14 @@ type HandlerHooks struct {
 }
 
 // RegisterHandlersWithHookSet is RegisterHandlers plus the embedding server's hooks.
-func RegisterHandlersWithHookSet(mux *http.ServeMux, s *Store, hooks HandlerHooks) {
+func RegisterHandlersWithHookSet(mux httproutes.Mux, s *Store, hooks HandlerHooks) {
 	registerWithHandler(mux, &handler{s: s, onFileSaved: hooks.OnFileSaved, onScanCompleted: hooks.OnScanCompleted, onPromptDriftsDetected: hooks.OnPromptDriftsDetected})
 }
 
 // RegisterHandlersWithHooks is RegisterHandlers plus seed-broadcast hooks.
 // Bridge-server wraps with hooks so saves and scans propagate to runners;
 // standalone agent-store uses RegisterHandlers and the hooks stay nil.
-func RegisterHandlersWithHooks(mux *http.ServeMux, s *Store, onSave func(*TrackedFile, *TrackedFileVersion), onScan func(*ScanResult)) {
+func RegisterHandlersWithHooks(mux httproutes.Mux, s *Store, onSave func(*TrackedFile, *TrackedFileVersion), onScan func(*ScanResult)) {
 	registerWithHandler(mux, &handler{s: s, onFileSaved: onSave, onScanCompleted: onScan})
 }
 

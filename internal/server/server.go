@@ -27,6 +27,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/filestorage/files"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
+	"github.com/kayushkin/llm-bridge-server/internal/httproutes"
 	"github.com/kayushkin/llm-bridge-server/internal/keepawake"
 	"github.com/kayushkin/llm-bridge-server/internal/machines"
 	"github.com/kayushkin/llm-bridge-server/internal/mail"
@@ -62,7 +63,7 @@ type Server struct {
 	// peerProxyCalls shares identical reads through the connection proxy and
 	// limits how often each connected server is called (peer_proxy_calls.go).
 	peerProxyCalls peerProxyCalls
-	mux            *http.ServeMux
+	mux            *httproutes.RecordingMux
 	store          *store.Store
 	agentStore     *agents.Store
 	memoryStore    *memories.Store
@@ -263,7 +264,7 @@ func New(st *store.Store, as *agents.Store, ms *memories.Store, hs *machines.Sto
 	respCache := newResponseCache()
 	st.SetNotifier(newNotifierFanout(hub, respCache))
 	srv := &Server{
-		mux:                  http.NewServeMux(),
+		mux:                  httproutes.NewRecordingMux(),
 		userInterfaceBuild:   ui.Build(),
 		store:                st,
 		agentStore:           as,

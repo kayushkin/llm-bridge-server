@@ -8,9 +8,11 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/kayushkin/llm-bridge-server/internal/httproutes"
 )
 
-func registerPromptSourceHandlers(mux *http.ServeMux, h *handler) {
+func registerPromptSourceHandlers(mux httproutes.Mux, h *handler) {
 	mux.HandleFunc("GET /prompt-collections", h.listPromptCollections)
 	mux.HandleFunc("POST /prompt-collections", h.createPromptCollection)
 	mux.HandleFunc("GET /prompt-collections/{id}", h.getPromptCollection)

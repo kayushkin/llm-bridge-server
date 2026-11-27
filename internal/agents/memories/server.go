@@ -5,10 +5,12 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/kayushkin/llm-bridge-server/internal/httproutes"
 )
 
 // RegisterHandlers registers all HTTP handlers on the given mux.
-func RegisterHandlers(mux *http.ServeMux, s *Store) {
+func RegisterHandlers(mux httproutes.Mux, s *Store) {
 	h := &handler{s: s}
 
 	mux.HandleFunc("POST /memories", h.save)

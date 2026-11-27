@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -813,21 +814,21 @@ func TestPathValueForPatternReadsTheNamedSegment(t *testing.T) {
 }
 
 // TestEveryRegisteredRouteIsClassified reads every pattern literal this
-// package registers and fails for any without an access rule, so a new route
-// is classified in the change that adds it rather than discovered as a 403.
-// agent-store's and memory-store's routes are registered by those libraries;
-// TestEveryAccessRuleNamesARegisteredRoute covers them from the other side.
+// package registers, and every one registered by a package that mounts routes
+// on this server's mux (one that imports internal/httproutes), and fails for
+// any without an access rule, so a new route is classified in the change that
+// adds it rather than discovered as a 403. agent-store's and memory-store's
+// routes are registered by those libraries;
+// TestEveryPatternTheMuxRecordedIsClassified and
+// TestEveryAccessRuleNamesARegisteredRoute cover them.
 func TestEveryRegisteredRouteIsClassified(t *testing.T) {
 	registration := regexp.MustCompile(`\.(?:HandleFunc|Handle)\(\s*("[^"]+"|issuesMountPrefix\s*\+\s*"/"|grantsMountPrefix\s*\+\s*"/"|mailMountPrefix\s*\+\s*"/")`)
-	sourceFiles, err := filepath.Glob("*.go")
+	sourceFiles, err := routeRegisteringSourceFiles()
 	if err != nil {
 		t.Fatal(err)
 	}
 	found := 0
 	for _, sourceFile := range sourceFiles {
-		if strings.HasSuffix(sourceFile, "_test.go") {
-			continue
-		}
 		source, err := os.ReadFile(sourceFile)
 		if err != nil {
 			t.Fatal(err)
@@ -845,6 +846,9 @@ func TestEveryRegisteredRouteIsClassified(t *testing.T) {
 				pattern = strings.Trim(pattern, `"`)
 			}
 			found++
+			if _, known := registeredRoutesLeftUnclassified[pattern]; known {
+				continue
+			}
 			if _, classified := routeAccessRules[pattern]; !classified {
 				t.Errorf("%s registers %q, which has no entry in routeAccessRules", sourceFile, pattern)
 			}
@@ -853,6 +857,78 @@ func TestEveryRegisteredRouteIsClassified(t *testing.T) {
 	if found < 100 {
 		t.Fatalf("found only %d route registrations; the pattern that finds them has stopped matching", found)
 	}
+}
+
+// routeRegisteringSourceFiles is every non-test Go file of this package, and
+// of each package under internal/ that imports internal/httproutes, which is
+// how a package mounts routes on this server's mux.
+func routeRegisteringSourceFiles() ([]string, error) {
+	var sourceFiles []string
+	err := filepath.WalkDir("..", func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		if filepath.Dir(path) == "../server" {
+			sourceFiles = append(sourceFiles, path)
+			return nil
+		}
+		packageSources, err := filepath.Glob(filepath.Join(filepath.Dir(path), "*.go"))
+		if err != nil {
+			return err
+		}
+		for _, packageSource := range packageSources {
+			if strings.HasSuffix(packageSource, "_test.go") {
+				continue
+			}
+			source, err := os.ReadFile(packageSource)
+			if err != nil {
+				return err
+			}
+			if strings.Contains(string(source), `"github.com/kayushkin/llm-bridge-server/internal/httproutes"`) {
+				sourceFiles = append(sourceFiles, path)
+				return nil
+			}
+		}
+		return nil
+	})
+	return sourceFiles, err
+}
+
+// TestEveryPatternTheMuxRecordedIsClassified fails for any pattern a server
+// with every store configured registered on its mux without an access rule,
+// whichever package registered it.
+func TestEveryPatternTheMuxRecordedIsClassified(t *testing.T) {
+	server := newServerWithAllStoresConfigured(t, nil)
+	patterns := server.mux.Patterns()
+	if len(patterns) < 100 {
+		t.Fatalf("the mux recorded only %d patterns", len(patterns))
+	}
+	for _, pattern := range patterns {
+		if _, known := registeredRoutesLeftUnclassified[pattern]; known {
+			continue
+		}
+		if _, classified := routeAccessRules[pattern]; !classified {
+			t.Errorf("%q is registered on the mux and has no entry in routeAccessRules", pattern)
+		}
+	}
+	for pattern := range registeredRoutesLeftUnclassified {
+		if _, classified := routeAccessRules[pattern]; classified {
+			t.Errorf("%q now has an access rule; take it out of registeredRoutesLeftUnclassified", pattern)
+		}
+	}
+}
+
+// registeredRoutesLeftUnclassified are routes a store library registers on
+// the mux that have no access rule, so they answer 403 route_not_classified
+// to everyone but the service token. Each is listed so the tests above can
+// tell them from a route someone forgot; give one a rule, and take it out of
+// here, in the change that decides who may call it.
+var registeredRoutesLeftUnclassified = map[string]string{
+	"PUT /prompt-collections/{id}/root":    "agent-store's prompt collection root; nobody has decided who may call it",
+	"POST /prompt-collections/{id}/retire": "agent-store's prompt collection retirement; nobody has decided who may call it",
 }
 
 // TestEveryAccessRuleNamesARegisteredRoute fails for a rule whose pattern the
