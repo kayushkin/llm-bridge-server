@@ -1,4 +1,4 @@
-package server
+package machineroutes
 
 import (
 	"net/http/httptest"
@@ -17,7 +17,7 @@ func TestBucketMachineStats(t *testing.T) {
 		{CollectedAt: since.Add(130 * time.Second), MemoryUsedBytes: 3},
 		{CollectedAt: since.Add(400 * time.Second), CPUUsagePercent: percent(50), MemoryUsedBytes: 4},
 	}
-	points := bucketMachineStats(samples, since, 3*time.Minute)
+	points := BucketMachineStats(samples, since, 3*time.Minute)
 	if len(points) != 2 {
 		t.Fatalf("got %d points, want 2 (the empty bucket left out)", len(points))
 	}
@@ -28,14 +28,14 @@ func TestBucketMachineStats(t *testing.T) {
 	if second := points[1]; !second.At.Equal(since.Add(6*time.Minute)) || second.SampleCount != 1 || *second.CPUUsagePercentAverage != 50 {
 		t.Fatalf("second point %+v", second)
 	}
-	if len(bucketMachineStats(nil, since, time.Minute)) != 0 {
+	if len(BucketMachineStats(nil, since, time.Minute)) != 0 {
 		t.Fatal("no samples, no points")
 	}
 }
 
 func TestParseMachineStatsHistoryQuery(t *testing.T) {
 	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
-	since, until, step, err := parseMachineStatsHistoryQuery(httptest.NewRequest("GET", "/machines/m_1/stats/history", nil), now)
+	since, until, step, err := ParseMachineStatsHistoryQuery(httptest.NewRequest("GET", "/machines/m_1/stats/history", nil), now)
 	if err != nil || !until.Equal(now) || !since.Equal(now.Add(-24*time.Hour)) || step != time.Minute {
 		t.Fatalf("defaults: %v %v %v %v", since, until, step, err)
 	}
@@ -45,11 +45,11 @@ func TestParseMachineStatsHistoryQuery(t *testing.T) {
 		"?since=yesterday",
 		"?since=2026-10-01T00:00:00Z&step_seconds=60",
 	} {
-		if _, _, _, err := parseMachineStatsHistoryQuery(httptest.NewRequest("GET", "/x"+query, nil), now); err == nil {
+		if _, _, _, err := ParseMachineStatsHistoryQuery(httptest.NewRequest("GET", "/x"+query, nil), now); err == nil {
 			t.Errorf("%s: expected an error", query)
 		}
 	}
-	if _, _, step, err := parseMachineStatsHistoryQuery(httptest.NewRequest("GET", "/x?since=2026-10-04T12:00:00Z&step_seconds=3600", nil), now); err != nil || step != time.Hour {
+	if _, _, step, err := ParseMachineStatsHistoryQuery(httptest.NewRequest("GET", "/x?since=2026-10-04T12:00:00Z&step_seconds=3600", nil), now); err != nil || step != time.Hour {
 		t.Fatalf("30 days hourly: %v %v", step, err)
 	}
 }

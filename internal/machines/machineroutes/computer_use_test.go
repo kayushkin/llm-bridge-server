@@ -1,4 +1,4 @@
-package server
+package machineroutes
 
 import (
 	"encoding/json"
@@ -33,7 +33,7 @@ func reportedTool(name string) *runnerprotocol.ComputerUseTool {
 
 func mcpServerNames(t *testing.T, sess *store.Session) map[string]json.RawMessage {
 	t.Helper()
-	cfg, err := harnessConfigMap(sess)
+	cfg, err := HarnessConfigMap(sess)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,10 +54,10 @@ func mcpServerNames(t *testing.T, sess *store.Session) map[string]json.RawMessag
 }
 
 func TestComputerUseJoinsTheSessionsOtherServersUnderItsOwnName(t *testing.T) {
-	srv := (&Server{}).withServicesComposed()
+	srv := &Service{}
 	sess := computerUseSession(t, msg.HarnessClaudeCode,
 		`{"computer_use":true,"mcp_config":"{\"mcpServers\":{\"notes\":{\"command\":\"notes-mcp\"}}}"}`)
-	if err := srv.injectComputerUse(sess, runnerInstance(true), reportedTool); err != nil {
+	if err := srv.InjectComputerUse(sess, runnerInstance(true), reportedTool); err != nil {
 		t.Fatal(err)
 	}
 	servers := mcpServerNames(t, sess)
@@ -76,7 +76,7 @@ func TestComputerUseJoinsTheSessionsOtherServersUnderItsOwnName(t *testing.T) {
 }
 
 func TestComputerUseIsRefusedNamingWhatIsMissing(t *testing.T) {
-	srv := (&Server{}).withServicesComposed()
+	srv := &Service{}
 	cases := []struct {
 		name    string
 		sess    *store.Session
@@ -92,7 +92,7 @@ func TestComputerUseIsRefusedNamingWhatIsMissing(t *testing.T) {
 		{"not a boolean", computerUseSession(t, msg.HarnessClaudeCode, `{"computer_use":"yes"}`), runnerInstance(true), "true or false"},
 	}
 	for _, c := range cases {
-		err := srv.injectComputerUse(c.sess, c.inst, reportedTool)
+		err := srv.InjectComputerUse(c.sess, c.inst, reportedTool)
 		if err == nil || !strings.Contains(err.Error(), c.mention) {
 			t.Errorf("%s: error = %v, want one mentioning %q", c.name, err, c.mention)
 		}
@@ -100,9 +100,9 @@ func TestComputerUseIsRefusedNamingWhatIsMissing(t *testing.T) {
 }
 
 func TestASessionThatDidNotAskIsUntouched(t *testing.T) {
-	srv := (&Server{}).withServicesComposed()
+	srv := &Service{}
 	sess := computerUseSession(t, msg.HarnessClaudeCode, `{"model":"x"}`)
-	if err := srv.injectComputerUse(sess, runnerInstance(true), reportedTool); err != nil {
+	if err := srv.InjectComputerUse(sess, runnerInstance(true), reportedTool); err != nil {
 		t.Fatal(err)
 	}
 	if string(sess.HarnessConfig) != `{"model":"x"}` {
@@ -111,14 +111,14 @@ func TestASessionThatDidNotAskIsUntouched(t *testing.T) {
 }
 
 func TestARunnerSessionGetsItsMCPConfigFileAsJSON(t *testing.T) {
-	srv := (&Server{}).withServicesComposed()
+	srv := &Service{}
 	path := filepath.Join(t.TempDir(), "mcp.json")
 	if err := os.WriteFile(path, []byte(`{"mcpServers":{"notes":{"command":"notes-mcp"}}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	pathJSON, _ := json.Marshal(path)
 	sess := computerUseSession(t, msg.HarnessClaudeCode, `{"mcp_config":`+string(pathJSON)+`}`)
-	if err := srv.inlineMCPConfigForRunner(sess, runnerInstance(false)); err != nil {
+	if err := srv.InlineMCPConfigForRunner(sess, runnerInstance(false)); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := mcpServerNames(t, sess)["notes"]; !ok {
@@ -126,7 +126,7 @@ func TestARunnerSessionGetsItsMCPConfigFileAsJSON(t *testing.T) {
 	}
 
 	local := computerUseSession(t, msg.HarnessClaudeCode, `{"mcp_config":`+string(pathJSON)+`}`)
-	if err := srv.inlineMCPConfigForRunner(local, &msg.Instance{ID: "inst-local", Machine: &msg.Machine{Transport: msg.TransportLocal}}); err != nil {
+	if err := srv.InlineMCPConfigForRunner(local, &msg.Instance{ID: "inst-local", Machine: &msg.Machine{Transport: msg.TransportLocal}}); err != nil {
 		t.Fatal(err)
 	}
 	if string(local.HarnessConfig) != `{"mcp_config":`+string(pathJSON)+`}` {

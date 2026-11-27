@@ -1,6 +1,8 @@
-package server
+package machineroutes
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestDiskPathName(t *testing.T) {
 	for path, want := range map[string]string{
@@ -12,7 +14,7 @@ func TestDiskPathName(t *testing.T) {
 		`C:\`:                            "",
 		"/":                              "",
 	} {
-		if got := diskPathName(path); got != want {
+		if got := DiskPathName(path); got != want {
 			t.Errorf("diskPathName(%q) = %q, want %q", path, got, want)
 		}
 	}

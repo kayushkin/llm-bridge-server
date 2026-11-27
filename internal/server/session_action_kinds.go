@@ -18,6 +18,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/harnessconfig"
+
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/executors"
 	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
@@ -358,7 +360,7 @@ func harnessConfigWithModel(config json.RawMessage, model string) (json.RawMessa
 	if err != nil {
 		return nil, err
 	}
-	fields[harnessConfigKeyModel] = encodedModel
-	delete(fields, harnessConfigKeyModelSelection)
+	fields[harnessconfig.KeyModel] = encodedModel
+	delete(fields, harnessconfig.KeyModelSelection)
 	return json.Marshal(fields)
 }

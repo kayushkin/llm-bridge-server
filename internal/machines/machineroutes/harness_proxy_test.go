@@ -1,4 +1,4 @@
-package server
+package machineroutes
 
 import (
 	"io"
@@ -43,7 +43,7 @@ func serveHarnessProxyWithBackend(t *testing.T, backendURL string) *httptest.Ser
 	t.Setenv("LLMBRIDGE_HARNESS_PROXY_INBER", backendURL)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/harness-proxy/{harness}/{rest...}", ((&Server{}).withServicesComposed()).handleHarnessProxy)
+	mux.HandleFunc("/api/harness-proxy/{harness}/{rest...}", (&Service{}).HandleHarnessProxy)
 	bridge := httptest.NewServer(mux)
 	t.Cleanup(bridge.Close)
 	return bridge

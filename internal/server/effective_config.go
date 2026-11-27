@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/harnessconfig"
+
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads"
 
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
@@ -47,7 +49,7 @@ func (s *Server) effectiveConfigFor(ctx context.Context, sess *store.Session, su
 	warn := func(format string, args ...any) { out.Warnings = append(out.Warnings, fmt.Sprintf(format, args...)) }
 	add := func(setting msg.EffectiveSetting) { out.Settings = append(out.Settings, setting) }
 
-	cfg, err := parseHarnessConfig(sess)
+	cfg, err := harnessconfig.Parse(sess)
 	if err != nil {
 		warn("harness_config could not be read, so the settings it carries are reported as unset: %v", err)
 		cfg = map[string]json.RawMessage{}
@@ -95,7 +97,7 @@ func (s *Server) effectiveConfigFor(ctx context.Context, sess *store.Session, su
 
 	{
 		setting := msg.EffectiveSetting{Key: msg.EffectiveSettingEffort, Layer: msg.EffectiveLayerNone, Detail: "nothing sets it; the harness runs at its own default effort"}
-		if raw, ok := cfg[harnessConfigKeyEffort]; ok {
+		if raw, ok := cfg[harnessconfig.KeyEffort]; ok {
 			var effort string
 			if json.Unmarshal(raw, &effort) == nil && effort != "" {
 				setting.Value = effort
@@ -126,7 +128,7 @@ func (s *Server) effectiveConfigFor(ctx context.Context, sess *store.Session, su
 
 	{
 		setting := msg.EffectiveSetting{Key: msg.EffectiveSettingDisabledTools, Layer: msg.EffectiveLayerNone, Detail: "nothing disables a built-in tool"}
-		if raw, ok := cfg[harnessConfigKeyDisabledTools]; ok {
+		if raw, ok := cfg[harnessconfig.KeyDisabledTools]; ok {
 			var tools []string
 			if json.Unmarshal(raw, &tools) == nil {
 				setting.Value = tools
@@ -134,7 +136,7 @@ func (s *Server) effectiveConfigFor(ctx context.Context, sess *store.Session, su
 			}
 		}
 		var byLayer map[msg.EffectiveConfigLayer][]string
-		if raw, ok := cfg[harnessConfigKeyDisabledToolsByLayer]; ok {
+		if raw, ok := cfg[harnessconfig.KeyDisabledToolsByLayer]; ok {
 			if err := json.Unmarshal(raw, &byLayer); err != nil {
 				warn("harness_config.disabled_tools_by_layer could not be read: %v", err)
 			}
@@ -369,7 +371,7 @@ func (s *Server) effectiveModel(ctx context.Context, sess *store.Session, cfg ma
 	setting := msg.EffectiveSetting{Key: msg.EffectiveSettingModel}
 	var selection msg.ModelSelection
 	pinned := false
-	if raw, ok := cfg[harnessConfigKeyModelSelection]; ok && json.Unmarshal(raw, &selection) == nil && selection.Model != "" {
+	if raw, ok := cfg[harnessconfig.KeyModelSelection]; ok && json.Unmarshal(raw, &selection) == nil && selection.Model != "" {
 		pinned = true
 	} else {
 		resolved, err := s.resolveModelSelection(ctx, sess)

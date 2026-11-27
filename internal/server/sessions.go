@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/harnessconfig"
+
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads"
 
 	"github.com/kayushkin/llm-bridge-server/internal/serversentevents"
@@ -1535,7 +1537,7 @@ func mergeHarnessConfig(current json.RawMessage, req ConfigSessionRequest) (json
 		// The new list replaces the creator's own and the harness default,
 		// never what the bundle denies or tool-store has switched off.
 		var byLayer map[msg.EffectiveConfigLayer][]string
-		if raw, ok := cfg[harnessConfigKeyDisabledToolsByLayer]; ok {
+		if raw, ok := cfg[harnessconfig.KeyDisabledToolsByLayer]; ok {
 			if err := json.Unmarshal(raw, &byLayer); err != nil {
 				return nil, fmt.Errorf("harness_config.disabled_tools_by_layer is unreadable: %w", err)
 			}
@@ -1549,7 +1551,7 @@ func mergeHarnessConfig(current json.RawMessage, req ConfigSessionRequest) (json
 		if err != nil {
 			return nil, err
 		}
-		cfg[harnessConfigKeyDisabledToolsByLayer] = rawByLayer
+		cfg[harnessconfig.KeyDisabledToolsByLayer] = rawByLayer
 		raw, err := json.Marshal(unionInOrder(req.DisabledTools, byLayer[msg.EffectiveLayerBundle], byLayer[msg.EffectiveLayerToolStore]))
 		if err != nil {
 			return nil, err

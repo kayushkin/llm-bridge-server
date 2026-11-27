@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/harnessconfig"
+
 	"github.com/kayushkin/llm-bridge-server/internal/agents/bundles"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/tools"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -36,20 +38,8 @@ import (
 // allow list (--tools); a restricted session of any other harness is refused.
 
 const (
-	harnessConfigKeyDeniedReadPaths = "denied_read_paths"
-	// harnessConfigKeySettings is Claude Code's --settings, which carries the
-	// Read deny rules and the hooks; a caller that sets it replaces both.
-	harnessConfigKeySettings             = "settings"
-	harnessConfigKeyDisabledToolsByLayer = "disabled_tools_by_layer"
-	// harnessConfigKeyBuiltInToolAllowList is Claude Code's --tools: the only
-	// built-in tools it may offer. The server pins it on a restricted session.
-	harnessConfigKeyBuiltInToolAllowList = "tools"
-	// harnessConfigKeyBuiltInToolAllowListPinnedFor names the bundle whose
-	// restriction pinned the allow list. Harness bridges ignore it; the
-	// server reads it to hold a started session to its list.
-	harnessConfigKeyBuiltInToolAllowListPinnedFor = "built_in_tool_allow_list_pinned_for_bundle"
-	harnessToolKind                               = "harness"
-	harnessToolTagRunsCommands                    = "runs-commands"
+	harnessToolKind            = "harness"
+	harnessToolTagRunsCommands = "runs-commands"
 )
 
 // harnessTool is one tool-store row of kind harness.
@@ -227,12 +217,12 @@ func restrictedSessionBuiltInToolAllowList(harness msg.Harness, enabledInToolSto
 // builtInToolAllowListPinnedOn reads a restricted session's allow list. It
 // returns nil when the session has none: no bundle restricted it.
 func builtInToolAllowListPinnedOn(cfg map[string]json.RawMessage) ([]string, error) {
-	if _, pinned := cfg[harnessConfigKeyBuiltInToolAllowListPinnedFor]; !pinned {
+	if _, pinned := cfg[harnessconfig.KeyBuiltInToolAllowListPinnedFor]; !pinned {
 		return nil, nil
 	}
-	raw, ok := cfg[harnessConfigKeyBuiltInToolAllowList]
+	raw, ok := cfg[harnessconfig.KeyBuiltInToolAllowList]
 	if !ok {
-		return nil, fmt.Errorf("harness_config.%s is set but harness_config.tools is missing", harnessConfigKeyBuiltInToolAllowListPinnedFor)
+		return nil, fmt.Errorf("harness_config.%s is set but harness_config.tools is missing", harnessconfig.KeyBuiltInToolAllowListPinnedFor)
 	}
 	allowed := []string{}
 	if err := json.Unmarshal(raw, &allowed); err != nil {
@@ -297,7 +287,7 @@ func claudeCodeReadDenyRules(paths []string) ([]string, error) {
 
 // deniedReadPathsPinnedOn reads harness_config.denied_read_paths.
 func deniedReadPathsPinnedOn(cfg map[string]json.RawMessage) ([]string, error) {
-	raw, ok := cfg[harnessConfigKeyDeniedReadPaths]
+	raw, ok := cfg[harnessconfig.KeyDeniedReadPaths]
 	if !ok {
 		return nil, nil
 	}
@@ -310,7 +300,7 @@ func deniedReadPathsPinnedOn(cfg map[string]json.RawMessage) ([]string, error) {
 
 // sessionDeniedReadPaths is deniedReadPathsPinnedOn for a stored session.
 func sessionDeniedReadPaths(sess *store.Session) ([]string, error) {
-	cfg, err := parseHarnessConfig(sess)
+	cfg, err := harnessconfig.Parse(sess)
 	if err != nil {
 		return nil, err
 	}

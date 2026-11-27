@@ -1,4 +1,4 @@
-package server
+package machineroutes
 
 import (
 	"context"
@@ -51,14 +51,14 @@ type MachineDiskUsageView struct {
 
 // StartMachineDiskUsage wires runners' finished deletions and disconnects
 // to the deletion record.
-func (s *Server) StartMachineDiskUsage() {
-	runners := s.harness.Runners()
+func (s *Service) StartMachineDiskUsage() {
+	runners := s.Harness.Runners()
 	runners.SetDiskUsageDeletionReceiver(s.recordFinishedDiskDeletion)
 	runners.SetDisconnectReceiver(func(machineID string) {
 		if s.runnerConnectionOfMachineID(machineID) != nil {
 			return // a newer connection replaced this one; its deletion carries on
 		}
-		lost, err := s.store.MarkUnfinishedMachineDiskDeletionsLost(machineID)
+		lost, err := s.Store.MarkUnfinishedMachineDiskDeletionsLost(machineID)
 		if err != nil {
 			log.Printf("[disk-usage] ERROR: mark deletions on %s lost: %v", machineID, err)
 		} else if lost > 0 {
@@ -67,8 +67,8 @@ func (s *Server) StartMachineDiskUsage() {
 	})
 }
 
-func (s *Server) recordFinishedDiskDeletion(machineID string, deletion msg.DiskUsageDeletion) {
-	if err := s.store.UpdateMachineDiskDeletion(machineID, deletion.DeletionID, deletion, ""); err != nil {
+func (s *Service) recordFinishedDiskDeletion(machineID string, deletion msg.DiskUsageDeletion) {
+	if err := s.Store.UpdateMachineDiskDeletion(machineID, deletion.DeletionID, deletion, ""); err != nil {
 		log.Printf("[disk-usage] ERROR: record the end of deletion %s on %s: %v", deletion.DeletionID, machineID, err)
 		return
 	}
@@ -76,8 +76,8 @@ func (s *Server) recordFinishedDiskDeletion(machineID string, deletion msg.DiskU
 		deletion.DeletionID, deletion.Path, machineID, deletion.State, deletion.DeletedBytes, deletion.DeletedFileCount, deletion.FailedEntryCount)
 }
 
-func (s *Server) runnerConnectionOfMachineID(machineID string) *harness.RunnerConnection {
-	for _, connection := range s.harness.Runners().List() {
+func (s *Service) runnerConnectionOfMachineID(machineID string) *harness.RunnerConnection {
+	for _, connection := range s.Harness.Runners().List() {
 		if connection.MachineID == machineID {
 			return connection
 		}
@@ -87,8 +87,8 @@ func (s *Server) runnerConnectionOfMachineID(machineID string) *harness.RunnerCo
 
 // diskUsageRunner finds the machine and its connected runner with a helper,
 // or writes the error and returns nil.
-func (s *Server) diskUsageRunner(w http.ResponseWriter, r *http.Request) (*msg.Machine, *harness.RunnerConnection, string) {
-	machine, err := s.harnessStore.GetMachine(r.PathValue("id"))
+func (s *Service) diskUsageRunner(w http.ResponseWriter, r *http.Request) (*msg.Machine, *harness.RunnerConnection, string) {
+	machine, err := s.HarnessStore().GetMachine(r.PathValue("id"))
 	if err != nil || machine == nil {
 		httpjson.WriteJSONError(w, http.StatusNotFound, "machine_not_found", "no machine "+r.PathValue("id"))
 		return nil, nil, ""
@@ -96,7 +96,7 @@ func (s *Server) diskUsageRunner(w http.ResponseWriter, r *http.Request) (*msg.M
 	if machine.Transport != msg.TransportRunner {
 		return machine, nil, fmt.Sprintf("%s is not a runner machine; disk usage is shown only for machines with a runner", machine.Name)
 	}
-	connection := s.harness.Runners().Get(machine.Name)
+	connection := s.Harness.Runners().Get(machine.Name)
 	if connection == nil || connection.MachineID != machine.ID {
 		return machine, nil, fmt.Sprintf("the runner on %s is not connected", machine.Name)
 	}
@@ -106,7 +106,7 @@ func (s *Server) diskUsageRunner(w http.ResponseWriter, r *http.Request) (*msg.M
 	return machine, connection, ""
 }
 
-func (s *Server) askDiskUsage(r *http.Request, connection *harness.RunnerConnection, request msg.DiskUsageRequest) (*msg.DiskUsageAnswer, error) {
+func (s *Service) askDiskUsage(r *http.Request, connection *harness.RunnerConnection, request msg.DiskUsageRequest) (*msg.DiskUsageAnswer, error) {
 	ctx, cancel := context.WithTimeout(r.Context(), diskUsageRequestTimeout)
 	defer cancel()
 	return connection.RequestDiskUsage(ctx, request)
@@ -126,14 +126,14 @@ func writeDiskUsageAnswerError(w http.ResponseWriter, answer *msg.DiskUsageAnswe
 	return false
 }
 
-// handleMachineDiskUsage serves GET /machines/{id}/disk-usage.
-func (s *Server) handleMachineDiskUsage(w http.ResponseWriter, r *http.Request) {
+// HandleMachineDiskUsage serves GET /machines/{id}/disk-usage.
+func (s *Service) HandleMachineDiskUsage(w http.ResponseWriter, r *http.Request) {
 	machine, connection, unavailable := s.diskUsageRunner(w, r)
 	if machine == nil {
 		return
 	}
 	view := MachineDiskUsageView{MachineID: machine.ID, UnavailableReason: unavailable}
-	deletions, err := s.store.MachineDiskDeletions(machine.ID, machineDiskDeletionsShown)
+	deletions, err := s.Store.MachineDiskDeletions(machine.ID, machineDiskDeletionsShown)
 	if err != nil {
 		httpjson.WriteJSONError(w, http.StatusInternalServerError, "disk_deletions_unreadable", err.Error())
 		return
@@ -155,8 +155,8 @@ func (s *Server) handleMachineDiskUsage(w http.ResponseWriter, r *http.Request) 
 	httpjson.WriteJSON(w, view)
 }
 
-// handleStartMachineDiskScan serves POST /machines/{id}/disk-usage/scans {"drive":"C:"}.
-func (s *Server) handleStartMachineDiskScan(w http.ResponseWriter, r *http.Request) {
+// HandleStartMachineDiskScan serves POST /machines/{id}/disk-usage/scans {"drive":"C:"}.
+func (s *Service) HandleStartMachineDiskScan(w http.ResponseWriter, r *http.Request) {
 	machine, connection, unavailable := s.diskUsageRunner(w, r)
 	if machine == nil {
 		return
@@ -181,9 +181,9 @@ func (s *Server) handleStartMachineDiskScan(w http.ResponseWriter, r *http.Reque
 	json.NewEncoder(w).Encode(answer.Status)
 }
 
-// handleMachineDiskEntries serves GET /machines/{id}/disk-usage/entries?path=C:\Games:
+// HandleMachineDiskEntries serves GET /machines/{id}/disk-usage/entries?path=C:\Games:
 // an entry of the drive's latest scan and the entries directly inside it.
-func (s *Server) handleMachineDiskEntries(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleMachineDiskEntries(w http.ResponseWriter, r *http.Request) {
 	machine, connection, unavailable := s.diskUsageRunner(w, r)
 	if machine == nil {
 		return
@@ -204,9 +204,9 @@ func (s *Server) handleMachineDiskEntries(w http.ResponseWriter, r *http.Request
 	httpjson.WriteJSON(w, answer.Children)
 }
 
-// handleCheckMachineDiskDeletion serves POST /machines/{id}/disk-usage/deletion-checks {"path"}:
+// HandleCheckMachineDiskDeletion serves POST /machines/{id}/disk-usage/deletion-checks {"path"}:
 // whether the entry may be deleted, why not, and what to know first. It deletes nothing.
-func (s *Server) handleCheckMachineDiskDeletion(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleCheckMachineDiskDeletion(w http.ResponseWriter, r *http.Request) {
 	machine, connection, unavailable := s.diskUsageRunner(w, r)
 	if machine == nil {
 		return
@@ -245,10 +245,10 @@ type MachineDiskDeletionAnswer struct {
 	DeletionCheck *msg.DiskUsageDeletionCheck `json:"deletion_check,omitempty"`
 }
 
-// handleDeleteFromMachineDisk serves POST /machines/{id}/disk-usage/deletions:
+// HandleDeleteFromMachineDisk serves POST /machines/{id}/disk-usage/deletions:
 // 202 once the runner has started deleting, 409 with the reason when it
 // refused, 400 when the confirmation does not match.
-func (s *Server) handleDeleteFromMachineDisk(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleDeleteFromMachineDisk(w http.ResponseWriter, r *http.Request) {
 	machine, connection, unavailable := s.diskUsageRunner(w, r)
 	if machine == nil {
 		return
@@ -266,13 +266,13 @@ func (s *Server) handleDeleteFromMachineDisk(w http.ResponseWriter, r *http.Requ
 		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_kind", `kind must be "file" or "directory"`)
 		return
 	}
-	name := diskPathName(body.Path)
+	name := DiskPathName(body.Path)
 	if name == "" || body.ConfirmationName != name {
 		httpjson.WriteJSONError(w, http.StatusBadRequest, "confirmation_mismatch", fmt.Sprintf("confirmation_name must be exactly %q, the name of what is deleted", name))
 		return
 	}
 	requestedBy, _ := requestcaller.PrincipalIdentityOfRequest(r)
-	deletion, err := s.store.RecordRequestedMachineDiskDeletion(store.MachineDiskDeletion{
+	deletion, err := s.Store.RecordRequestedMachineDiskDeletion(store.MachineDiskDeletion{
 		MachineID:              machine.ID,
 		Path:                   body.Path,
 		Kind:                   body.Kind,
@@ -291,14 +291,14 @@ func (s *Server) handleDeleteFromMachineDisk(w http.ResponseWriter, r *http.Requ
 	settle := func(state msg.DiskUsageDeletionState, reason string) {
 		now := time.Now().UTC()
 		deletion.State, deletion.RefusalReason, deletion.FinishedAt = state, reason, &now
-		if err := s.store.UpdateMachineDiskDeletion(machine.ID, deletion.ID, msg.DiskUsageDeletion{DeletionID: deletion.ID, State: state, FinishedAt: &now}, reason); err != nil {
+		if err := s.Store.UpdateMachineDiskDeletion(machine.ID, deletion.ID, msg.DiskUsageDeletion{DeletionID: deletion.ID, State: state, FinishedAt: &now}, reason); err != nil {
 			log.Printf("[disk-usage] ERROR: record deletion %s as %s: %v", deletion.ID, state, err)
 		}
 	}
 	switch {
 	case err != nil:
 		// The runner may have started; only its report can say.
-		if markErr := s.store.UpdateMachineDiskDeletion(machine.ID, deletion.ID, msg.DiskUsageDeletion{DeletionID: deletion.ID, State: msg.DiskUsageDeletionLost}, ""); markErr != nil {
+		if markErr := s.Store.UpdateMachineDiskDeletion(machine.ID, deletion.ID, msg.DiskUsageDeletion{DeletionID: deletion.ID, State: msg.DiskUsageDeletionLost}, ""); markErr != nil {
 			log.Printf("[disk-usage] ERROR: record deletion %s as lost: %v", deletion.ID, markErr)
 		}
 		httpjson.WriteJSONError(w, http.StatusBadGateway, "runner_did_not_answer", err.Error()+"; scan again to see whether anything was deleted")
@@ -319,7 +319,7 @@ func (s *Server) handleDeleteFromMachineDisk(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	// The runner may already have reported the end; record running only over requested.
-	if err := s.store.MarkMachineDiskDeletionRunning(machine.ID, deletion.ID); err != nil {
+	if err := s.Store.MarkMachineDiskDeletionRunning(machine.ID, deletion.ID); err != nil {
 		log.Printf("[disk-usage] ERROR: record deletion %s as running: %v", deletion.ID, err)
 	}
 	deletion.State = msg.DiskUsageDeletionRunning
@@ -328,15 +328,15 @@ func (s *Server) handleDeleteFromMachineDisk(w http.ResponseWriter, r *http.Requ
 	json.NewEncoder(w).Encode(MachineDiskDeletionAnswer{Deletion: deletion, DeletionCheck: answer.DeletionCheck})
 }
 
-// handleMachineDiskDeletions serves GET /machines/{id}/disk-usage/deletions:
+// HandleMachineDiskDeletions serves GET /machines/{id}/disk-usage/deletions:
 // the recorded deletions on a machine, newest first.
-func (s *Server) handleMachineDiskDeletions(w http.ResponseWriter, r *http.Request) {
-	machine, err := s.harnessStore.GetMachine(r.PathValue("id"))
+func (s *Service) HandleMachineDiskDeletions(w http.ResponseWriter, r *http.Request) {
+	machine, err := s.HarnessStore().GetMachine(r.PathValue("id"))
 	if err != nil || machine == nil {
 		httpjson.WriteJSONError(w, http.StatusNotFound, "machine_not_found", "no machine "+r.PathValue("id"))
 		return
 	}
-	deletions, err := s.store.MachineDiskDeletions(machine.ID, 500)
+	deletions, err := s.Store.MachineDiskDeletions(machine.ID, 500)
 	if err != nil {
 		httpjson.WriteJSONError(w, http.StatusInternalServerError, "disk_deletions_unreadable", err.Error())
 		return
@@ -364,9 +364,9 @@ func decodeStrictJSON(r *http.Request, into any) error {
 	return nil
 }
 
-// diskPathName is the last part of a path on a runner machine: a Windows
+// DiskPathName is the last part of a path on a runner machine: a Windows
 // path splits on backslashes, a WSL path, which starts with /, on slashes.
-func diskPathName(path string) string {
+func DiskPathName(path string) string {
 	separator := `\`
 	if strings.HasPrefix(path, "/") {
 		separator = "/"

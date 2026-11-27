@@ -1,4 +1,4 @@
-package server
+package machineroutes
 
 import (
 	"context"
@@ -61,7 +61,7 @@ func restEscapesBackendPath(rest string) bool {
 	return cleaned == ".." || strings.HasPrefix(cleaned, "../")
 }
 
-// handleHarnessProxy forwards a request to the corresponding harness
+// HandleHarnessProxy forwards a request to the corresponding harness
 // backend on the bridge host. Path layout:
 //
 //	/api/harness-proxy/{harness}/<rest> → <backend>/<rest>
@@ -120,7 +120,7 @@ func restEscapesBackendPath(rest string) bool {
 // The one thing not passed through is a <rest> that climbs above the
 // backend's own path — see restEscapesBackendPath — which is refused
 // with 400 rather than forwarded.
-func (s *Server) handleHarnessProxy(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleHarnessProxy(w http.ResponseWriter, r *http.Request) {
 	harness := r.PathValue("harness")
 	rest := r.PathValue("rest")
 	if harness == "" {

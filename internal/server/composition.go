@@ -7,6 +7,8 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/automation/operations"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/operationroutes"
 	"github.com/kayushkin/llm-bridge-server/internal/chatlinks"
+	"github.com/kayushkin/llm-bridge-server/internal/machines"
+	"github.com/kayushkin/llm-bridge-server/internal/machines/machineroutes"
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/briefs"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads"
 )
@@ -32,6 +34,12 @@ func (s *Server) composeServices() {
 		Operations:     func() *operations.Coordinator { return s.operations },
 		PrincipalStore: func() operationroutes.PrincipalStore { return s.principalStore },
 		Settings:       s.settings,
+	}}
+	s.machineRoutes = &machineroutes.Service{Dependencies: machineroutes.Dependencies{
+		GrantChecker: s.grantChecker,
+		Harness:      s.harness,
+		HarnessStore: func() *machines.Store { return s.harnessStore },
+		Store:        s.store,
 	}}
 	s.briefService = &briefs.Service{Dependencies: briefs.Dependencies{
 		Harness:        s.harness,

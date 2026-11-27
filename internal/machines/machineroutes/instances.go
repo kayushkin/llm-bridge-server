@@ -1,4 +1,4 @@
-package server
+package machineroutes
 
 import (
 	"context"
@@ -23,18 +23,18 @@ type (
 	BindCredentialRequest = msg.BindCredentialRequest
 )
 
-// listInstancesWithMachines populates each instance's Machine field by
+// ListInstancesWithMachines populates each instance's Machine field by
 // joining against the machines table. Used by every list/get response so
 // the client gets host/transport/SSH details for display.
-func (s *Server) listInstancesWithMachines() ([]msg.Instance, error) {
-	insts, err := s.harnessStore.ListInstances()
+func (s *Service) ListInstancesWithMachines() ([]msg.Instance, error) {
+	insts, err := s.HarnessStore().ListInstances()
 	if err != nil {
 		return nil, err
 	}
 	if len(insts) == 0 {
 		return []msg.Instance{}, nil
 	}
-	machines, err := s.harnessStore.ListMachines()
+	machines, err := s.HarnessStore().ListMachines()
 	if err != nil {
 		return nil, err
 	}
@@ -48,8 +48,8 @@ func (s *Server) listInstancesWithMachines() ([]msg.Instance, error) {
 	return insts, nil
 }
 
-func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
-	instances, err := s.listInstancesWithMachines()
+func (s *Service) HandleListInstances(w http.ResponseWriter, r *http.Request) {
+	instances, err := s.ListInstancesWithMachines()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -70,8 +70,8 @@ func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
 // checkPrincipalMayRunHere enforces at creation (principal_grants.go). Machine
 // details (hostname, SSH user and key path) are the operator's and are left
 // out; machine_id stays.
-func (s *Server) instancesPrincipalMayDispatchOn(ctx context.Context, subject grantcheck.Subject, instances []msg.Instance) ([]msg.Instance, error) {
-	dispatch, err := s.grantChecker.DispatchGrantsOf(ctx, subject)
+func (s *Service) instancesPrincipalMayDispatchOn(ctx context.Context, subject grantcheck.Subject, instances []msg.Instance) ([]msg.Instance, error) {
+	dispatch, err := s.GrantChecker.DispatchGrantsOf(ctx, subject)
 	if err != nil {
 		return nil, err
 	}
@@ -86,9 +86,9 @@ func (s *Server) instancesPrincipalMayDispatchOn(ctx context.Context, subject gr
 	return visible, nil
 }
 
-func (s *Server) handleGetInstance(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleGetInstance(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	inst, err := s.harnessStore.GetInstanceWithMachine(id)
+	inst, err := s.HarnessStore().GetInstanceWithMachine(id)
 	if err != nil {
 		http.Error(w, "instance not found", http.StatusNotFound)
 		return
@@ -96,7 +96,7 @@ func (s *Server) handleGetInstance(w http.ResponseWriter, r *http.Request) {
 	httpjson.WriteJSON(w, inst)
 }
 
-func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	var req CreateInstanceRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
@@ -114,7 +114,7 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "machine_id is required", http.StatusBadRequest)
 		return
 	}
-	machine, err := s.harnessStore.GetMachine(req.MachineID)
+	machine, err := s.HarnessStore().GetMachine(req.MachineID)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("machine_id not found: %s", req.MachineID), http.StatusBadRequest)
 		return
@@ -133,7 +133,7 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		MaxConcurrentSessions: maxSessions,
 		Enabled:               true,
 	}
-	if err := s.harnessStore.CreateInstance(inst); err != nil {
+	if err := s.HarnessStore().CreateInstance(inst); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -143,9 +143,9 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	httpjson.WriteJSON(w, inst)
 }
 
-func (s *Server) handleUpdateInstance(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleUpdateInstance(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	existing, err := s.harnessStore.GetInstance(id)
+	existing, err := s.HarnessStore().GetInstance(id)
 	if err != nil {
 		http.Error(w, "instance not found", http.StatusNotFound)
 		return
@@ -164,7 +164,7 @@ func (s *Server) handleUpdateInstance(w http.ResponseWriter, r *http.Request) {
 		existing.HarnessType = msg.Harness(req.HarnessType)
 	}
 	if req.MachineID != "" {
-		if _, err := s.harnessStore.GetMachine(req.MachineID); err != nil {
+		if _, err := s.HarnessStore().GetMachine(req.MachineID); err != nil {
 			http.Error(w, fmt.Sprintf("machine_id not found: %s", req.MachineID), http.StatusBadRequest)
 			return
 		}
@@ -177,33 +177,33 @@ func (s *Server) handleUpdateInstance(w http.ResponseWriter, r *http.Request) {
 		existing.MaxConcurrentSessions = req.MaxConcurrentSessions
 	}
 
-	if err := s.harnessStore.UpdateInstance(existing); err != nil {
+	if err := s.HarnessStore().UpdateInstance(existing); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if m, err := s.harnessStore.GetMachine(existing.MachineID); err == nil {
+	if m, err := s.HarnessStore().GetMachine(existing.MachineID); err == nil {
 		existing.Machine = m
 	}
 	httpjson.WriteJSON(w, existing)
 }
 
-func (s *Server) handleDeleteInstance(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleDeleteInstance(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if err := s.harnessStore.DeleteInstance(id); err != nil {
+	if err := s.HarnessStore().DeleteInstance(id); err != nil {
 		http.Error(w, "instance not found", http.StatusNotFound)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) handleListInstanceCredentials(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleListInstanceCredentials(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if _, err := s.harnessStore.GetInstance(id); err != nil {
+	if _, err := s.HarnessStore().GetInstance(id); err != nil {
 		http.Error(w, "instance not found", http.StatusNotFound)
 		return
 	}
 
-	creds, err := s.harnessStore.ListInstanceCredentials(id)
+	creds, err := s.HarnessStore().ListInstanceCredentials(id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -214,9 +214,9 @@ func (s *Server) handleListInstanceCredentials(w http.ResponseWriter, r *http.Re
 	httpjson.WriteJSON(w, creds)
 }
 
-func (s *Server) handleBindCredential(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleBindCredential(w http.ResponseWriter, r *http.Request) {
 	instanceID := r.PathValue("id")
-	if _, err := s.harnessStore.GetInstance(instanceID); err != nil {
+	if _, err := s.HarnessStore().GetInstance(instanceID); err != nil {
 		http.Error(w, "instance not found", http.StatusNotFound)
 		return
 	}
@@ -237,7 +237,7 @@ func (s *Server) handleBindCredential(w http.ResponseWriter, r *http.Request) {
 		Priority:     req.Priority,
 		Enabled:      true,
 	}
-	if err := s.harnessStore.BindCredential(ic); err != nil {
+	if err := s.HarnessStore().BindCredential(ic); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -245,31 +245,31 @@ func (s *Server) handleBindCredential(w http.ResponseWriter, r *http.Request) {
 	httpjson.WriteJSON(w, ic)
 }
 
-func (s *Server) handleUnbindCredential(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleUnbindCredential(w http.ResponseWriter, r *http.Request) {
 	instanceID := r.PathValue("id")
 	credID := r.PathValue("cred_id")
 
-	if err := s.harnessStore.UnbindCredential(instanceID, credID); err != nil {
+	if err := s.HarnessStore().UnbindCredential(instanceID, credID); err != nil {
 		http.Error(w, "binding not found", http.StatusNotFound)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) handleInstanceStatus(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleInstanceStatus(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	inst, err := s.harnessStore.GetInstanceWithMachine(id)
+	inst, err := s.HarnessStore().GetInstanceWithMachine(id)
 	if err != nil {
 		http.Error(w, "instance not found", http.StatusNotFound)
 		return
 	}
 
-	credBindings, _ := s.harnessStore.ListInstanceCredentials(id)
+	credBindings, _ := s.HarnessStore().ListInstanceCredentials(id)
 	if credBindings == nil {
 		credBindings = []msg.InstanceCredential{}
 	}
 
-	reachable, checkedAt := s.harness.ReachabilityOfMachine(inst.Machine)
+	reachable, checkedAt := s.Harness.ReachabilityOfMachine(inst.Machine)
 
 	status := msg.InstanceStatus{
 		Instance:    *inst,
@@ -280,14 +280,14 @@ func (s *Server) handleInstanceStatus(w http.ResponseWriter, r *http.Request) {
 	httpjson.WriteJSON(w, status)
 }
 
-func (s *Server) handleListInstanceSessions(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleListInstanceSessions(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if _, err := s.harnessStore.GetInstance(id); err != nil {
+	if _, err := s.HarnessStore().GetInstance(id); err != nil {
 		http.Error(w, "instance not found", http.StatusNotFound)
 		return
 	}
 
-	sessions, err := s.store.ListSessions()
+	sessions, err := s.Store.ListSessions()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

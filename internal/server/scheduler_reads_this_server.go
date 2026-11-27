@@ -44,7 +44,7 @@ func (s *Server) SchedulerModelStoreRoles() modelstoreroles.Roles {
 }
 
 func (reads schedulerReadsThisServer) Instances() ([]msg.Instance, error) {
-	return reads.server.listInstancesWithMachines()
+	return reads.server.machineRoutes.ListInstancesWithMachines()
 }
 
 func (reads schedulerReadsThisServer) Session(sessionID string) (*msg.ManagedSession, error) {

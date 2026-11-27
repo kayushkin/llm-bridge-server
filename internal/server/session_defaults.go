@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/harnessconfig"
+
 	"github.com/kayushkin/llm-bridge-server/internal/agents/bundles"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -31,16 +33,6 @@ import (
 // at all — so a session a dispatcher created ran at the harness's own effort,
 // with no spend ceiling, on whatever the harness default model was, whatever
 // its board's bundle said.
-
-const (
-	harnessConfigKeyEffort        = "effort"
-	harnessConfigKeyDisabledTools = "disabled_tools"
-	// harnessConfigKeySettingLayers maps a setting (msg.EffectiveSettingKey) to
-	// the layer (msg.EffectiveConfigLayer) that decided the value pinned on the
-	// row. Harness bridges ignore the key. The model's layer is not here: it
-	// has its own typed record, harness_config.model_selection.
-	harnessConfigKeySettingLayers = "setting_layers"
-)
 
 // pinnedSettingLayers is harness_config.setting_layers, decoded.
 type pinnedSettingLayers map[msg.EffectiveSettingKey]msg.EffectiveConfigLayer
@@ -90,7 +82,7 @@ func (s *Server) snapshotSessionDefaultsIntoSession(ctx context.Context, sess *s
 		return err
 	}
 
-	cfg, err := parseHarnessConfig(sess)
+	cfg, err := harnessconfig.Parse(sess)
 	if err != nil {
 		return err
 	}
@@ -107,7 +99,7 @@ func (s *Server) snapshotSessionDefaultsIntoSession(ctx context.Context, sess *s
 
 	// effort
 	ownEffort := ""
-	if raw, ok := cfg[harnessConfigKeyEffort]; ok {
+	if raw, ok := cfg[harnessconfig.KeyEffort]; ok {
 		if err := json.Unmarshal(raw, &ownEffort); err != nil {
 			return fmt.Errorf("harness_config.effort is not a string: %w", err)
 		}
@@ -116,12 +108,12 @@ func (s *Server) snapshotSessionDefaultsIntoSession(ctx context.Context, sess *s
 	case ownEffort != "":
 		layers[msg.EffectiveSettingEffort] = msg.EffectiveLayerSession
 	case bundle != nil && bundle.Effort != "":
-		if err := pin(harnessConfigKeyEffort, bundle.Effort); err != nil {
+		if err := pin(harnessconfig.KeyEffort, bundle.Effort); err != nil {
 			return err
 		}
 		layers[msg.EffectiveSettingEffort] = msg.EffectiveLayerBundle
 	case defaults.Effort != "":
-		if err := pin(harnessConfigKeyEffort, defaults.Effort); err != nil {
+		if err := pin(harnessconfig.KeyEffort, defaults.Effort); err != nil {
 			return err
 		}
 		layers[msg.EffectiveSettingEffort] = msg.EffectiveLayerHarnessDefault
@@ -145,7 +137,7 @@ func (s *Server) snapshotSessionDefaultsIntoSession(ctx context.Context, sess *s
 	// deny the caller could undo would not be a deny.
 	byLayer := map[msg.EffectiveConfigLayer][]string{}
 	var chosen []string
-	raw, sent := cfg[harnessConfigKeyDisabledTools]
+	raw, sent := cfg[harnessconfig.KeyDisabledTools]
 	if sent {
 		if err := json.Unmarshal(raw, &chosen); err != nil {
 			return fmt.Errorf("harness_config.disabled_tools is not a string array: %w", err)
@@ -170,7 +162,7 @@ func (s *Server) snapshotSessionDefaultsIntoSession(ctx context.Context, sess *s
 	if bundle != nil {
 		deniedReadPaths = bundle.DeniedReadPaths
 	}
-	_, callerSetSettings := cfg[harnessConfigKeySettings]
+	_, callerSetSettings := cfg[harnessconfig.KeySettings]
 	if err := checkDeniedReadPathsAreEnforceable(sess.Harness, deniedReadPaths, disabled, denials.CommandRunningTools, callerSetSettings); err != nil {
 		return err
 	}
@@ -181,34 +173,34 @@ func (s *Server) snapshotSessionDefaultsIntoSession(ctx context.Context, sess *s
 		}
 	}
 	if sent || len(disabled) > 0 {
-		if err := pin(harnessConfigKeyDisabledTools, disabled); err != nil {
+		if err := pin(harnessconfig.KeyDisabledTools, disabled); err != nil {
 			return err
 		}
-		if err := pin(harnessConfigKeyDisabledToolsByLayer, byLayer); err != nil {
+		if err := pin(harnessconfig.KeyDisabledToolsByLayer, byLayer); err != nil {
 			return err
 		}
 	}
 	if bundleRestrictsSession(bundle) {
-		_, callerSetTools := cfg[harnessConfigKeyBuiltInToolAllowList]
+		_, callerSetTools := cfg[harnessconfig.KeyBuiltInToolAllowList]
 		allowed, err := restrictedSessionBuiltInToolAllowList(sess.Harness, denials.EnabledInToolStore, disabled, callerSetTools)
 		if err != nil {
 			return err
 		}
-		if err := pin(harnessConfigKeyBuiltInToolAllowList, allowed); err != nil {
+		if err := pin(harnessconfig.KeyBuiltInToolAllowList, allowed); err != nil {
 			return err
 		}
-		if err := pin(harnessConfigKeyBuiltInToolAllowListPinnedFor, sess.BundleID); err != nil {
+		if err := pin(harnessconfig.KeyBuiltInToolAllowListPinnedFor, sess.BundleID); err != nil {
 			return err
 		}
 	}
 	if len(deniedReadPaths) > 0 {
-		if err := pin(harnessConfigKeyDeniedReadPaths, deniedReadPaths); err != nil {
+		if err := pin(harnessconfig.KeyDeniedReadPaths, deniedReadPaths); err != nil {
 			return err
 		}
 		layers[msg.EffectiveSettingDeniedReadPaths] = msg.EffectiveLayerBundle
 	}
 
-	if err := pin(harnessConfigKeySettingLayers, layers); err != nil {
+	if err := pin(harnessconfig.KeySettingLayers, layers); err != nil {
 		return err
 	}
 	merged, err := json.Marshal(cfg)
@@ -223,7 +215,7 @@ func (s *Server) snapshotSessionDefaultsIntoSession(ctx context.Context, sess *s
 // before the record existed has none, which is not an error.
 func settingLayersPinnedOn(cfg map[string]json.RawMessage) pinnedSettingLayers {
 	layers := pinnedSettingLayers{}
-	if raw, ok := cfg[harnessConfigKeySettingLayers]; ok {
+	if raw, ok := cfg[harnessconfig.KeySettingLayers]; ok {
 		_ = json.Unmarshal(raw, &layers)
 	}
 	return layers
@@ -238,7 +230,7 @@ func markSettingChosenOnSession(cfg map[string]json.RawMessage, key msg.Effectiv
 	if err != nil {
 		return err
 	}
-	cfg[harnessConfigKeySettingLayers] = raw
+	cfg[harnessconfig.KeySettingLayers] = raw
 	return nil
 }
 

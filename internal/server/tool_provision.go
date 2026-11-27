@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/harnessconfig"
+
 	"github.com/kayushkin/llm-bridge-server/internal/agents/bundles"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/tools"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -275,7 +277,7 @@ func (s *Server) injectMCPConfig(sess *store.Session) error {
 	case toolOfferHandNamed:
 		delete(cfg, "tool_store_tools")
 		if len(offer.Names) == 0 {
-			return s.replaceHarnessConfig(sess, cfg)
+			return harnessconfig.Replace(sess, cfg)
 		}
 		path, err := s.writeProvisionedMCPConfig(ctx, tools.ProvisionRequest{Tools: offer.Names})
 		if err != nil {
@@ -289,7 +291,7 @@ func (s *Server) injectMCPConfig(sess *store.Session) error {
 		if len(offer.IDs) == 0 {
 			log.Printf("[bundle-store] session %s bundle %s resolves to no MCP tools (bundles %v); starting with no MCP servers",
 				sess.SessionID, sess.BundleID, offer.Resolution.Bundles)
-			return s.replaceHarnessConfig(sess, cfg)
+			return harnessconfig.Replace(sess, cfg)
 		}
 		path, err := s.writeProvisionedMCPConfig(ctx, tools.ProvisionRequest{ToolIDs: offer.IDs})
 		if err != nil {
@@ -384,7 +386,7 @@ func (s *Server) setMCPConfigPath(sess *store.Session, cfg map[string]json.RawMe
 		return fmt.Errorf("marshal mcp config path: %w", err)
 	}
 	cfg["mcp_config"] = pathJSON
-	if err := s.replaceHarnessConfig(sess, cfg); err != nil {
+	if err := harnessconfig.Replace(sess, cfg); err != nil {
 		os.Remove(path)
 		return err
 	}
@@ -393,15 +395,6 @@ func (s *Server) setMCPConfigPath(sess *store.Session, cfg map[string]json.RawMe
 	} else {
 		log.Printf("[tool-store] provisioned instance %s opt-ins for session %s → %s", sess.InstanceID, sess.SessionID, path)
 	}
-	return nil
-}
-
-func (s *Server) replaceHarnessConfig(sess *store.Session, cfg map[string]json.RawMessage) error {
-	merged, err := json.Marshal(cfg)
-	if err != nil {
-		return fmt.Errorf("re-marshal HarnessConfig: %w", err)
-	}
-	sess.HarnessConfig = merged
 	return nil
 }
 

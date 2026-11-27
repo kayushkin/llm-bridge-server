@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/harnessconfig"
+
 	"github.com/kayushkin/llm-bridge-server/internal/agents/bundles"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -45,17 +47,6 @@ import (
 // session's next turn; the authoritative record of what actually ran is per
 // call, and reconciling the two is a separate concern.
 
-const (
-	// harnessConfigKeyModel is the wire key every harness bridge already reads
-	// for the model it should spawn on (llm-bridge-claudecode turns it into
-	// --model). The resolved registry id is written here.
-	harnessConfigKeyModel = "model"
-	// harnessConfigKeyModelSelection carries the typed msg.ModelSelection —
-	// the id plus which layer chose it — so a session can always say WHY it is
-	// on the model it is on. Harness bridges ignore the key.
-	harnessConfigKeyModelSelection = "model_selection"
-)
-
 // resolveModelSelection decides the model for sess by the precedence above and
 // returns the typed selection. It never mutates sess. It resolves the session's
 // bundle to do so; a bundle that cannot be resolved is an error, because the
@@ -82,7 +73,7 @@ func (s *Server) resolveModelSelectionWithBundle(sess *store.Session, bundle *bu
 		return msg.ModelSelection{}, fmt.Errorf("resolve model for %s: model-store is not configured, and the registry is the only source of a model", sess.SessionID)
 	}
 
-	cfg, err := parseHarnessConfig(sess)
+	cfg, err := harnessconfig.Parse(sess)
 	if err != nil {
 		// Refused rather than guessed: an unreadable blob may hold the
 		// override the caller asked for, and choosing a different model than
@@ -91,7 +82,7 @@ func (s *Server) resolveModelSelectionWithBundle(sess *store.Session, bundle *bu
 	}
 
 	// 1. The session's own override.
-	if raw, ok := cfg[harnessConfigKeyModel]; ok {
+	if raw, ok := cfg[harnessconfig.KeyModel]; ok {
 		var requested string
 		if err := json.Unmarshal(raw, &requested); err != nil {
 			return msg.ModelSelection{}, fmt.Errorf("resolve model for %s: harness_config.model is not a string: %w", sess.SessionID, err)
@@ -165,12 +156,12 @@ func (s *Server) injectModelSelection(ctx context.Context, sess *store.Session) 
 	if sess == nil {
 		return fmt.Errorf("inject model selection: nil session")
 	}
-	cfg, err := parseHarnessConfig(sess)
+	cfg, err := harnessconfig.Parse(sess)
 	if err != nil {
 		return fmt.Errorf("inject model selection for %s: %w", sess.SessionID, err)
 	}
-	_, hasModel := cfg[harnessConfigKeyModel]
-	_, hasSelection := cfg[harnessConfigKeyModelSelection]
+	_, hasModel := cfg[harnessconfig.KeyModel]
+	_, hasSelection := cfg[harnessconfig.KeyModelSelection]
 	if hasModel && hasSelection {
 		return nil // already pinned by create or config
 	}
@@ -186,7 +177,7 @@ func (s *Server) injectModelSelection(ctx context.Context, sess *store.Session) 
 // (in memory). The resolved id goes under "model" so every harness bridge
 // reads it unchanged; the typed selection goes under "model_selection".
 func writeModelSelectionIntoSession(sess *store.Session, selection msg.ModelSelection) error {
-	cfg, err := parseHarnessConfig(sess)
+	cfg, err := harnessconfig.Parse(sess)
 	if err != nil {
 		return err
 	}
@@ -198,26 +189,12 @@ func writeModelSelectionIntoSession(sess *store.Session, selection msg.ModelSele
 	if err != nil {
 		return fmt.Errorf("marshal model selection: %w", err)
 	}
-	cfg[harnessConfigKeyModel] = idRaw
-	cfg[harnessConfigKeyModelSelection] = selectionRaw
+	cfg[harnessconfig.KeyModel] = idRaw
+	cfg[harnessconfig.KeyModelSelection] = selectionRaw
 	merged, err := json.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("re-marshal harness_config for %s: %w", sess.SessionID, err)
 	}
 	sess.HarnessConfig = merged
 	return nil
-}
-
-// parseHarnessConfig decodes sess.HarnessConfig as an object, treating an
-// empty blob as an empty object. An unparseable blob is an error, not an
-// empty map — see resolveModelSelection for why.
-func parseHarnessConfig(sess *store.Session) (map[string]json.RawMessage, error) {
-	cfg := make(map[string]json.RawMessage)
-	if len(sess.HarnessConfig) == 0 {
-		return cfg, nil
-	}
-	if err := json.Unmarshal(sess.HarnessConfig, &cfg); err != nil {
-		return nil, fmt.Errorf("harness_config is not a JSON object: %w", err)
-	}
-	return cfg, nil
 }

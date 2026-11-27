@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/harnessconfig"
+
 	"github.com/kayushkin/llm-bridge-server/internal/agents/hooks"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -79,10 +81,10 @@ func (s *Server) startOnInstance(ctx context.Context, sess *store.Session, inst 
 	if err := s.injectMCPConfig(sess); err != nil {
 		return nil, fmt.Errorf("inject mcp config: %w", err)
 	}
-	if err := s.inlineMCPConfigForRunner(sess, inst); err != nil {
+	if err := s.machineRoutes.InlineMCPConfigForRunner(sess, inst); err != nil {
 		return nil, fmt.Errorf("inline mcp config for runner: %w", err)
 	}
-	if err := s.injectComputerUse(sess, inst, s.harness.RunnerComputerUse); err != nil {
+	if err := s.machineRoutes.InjectComputerUse(sess, inst, s.harness.RunnerComputerUse); err != nil {
 		return nil, fmt.Errorf("computer use: %w", err)
 	}
 	sessionEnvironment, err := s.sessionAgentEnvironment(sess)
@@ -148,7 +150,7 @@ func (s *Server) injectClaudeCodeHookSettings(sess *store.Session) error {
 			return fmt.Errorf("harness_config of %s is unparseable: %w", sess.SessionID, err)
 		}
 	}
-	if _, ok := cfg[harnessConfigKeySettings]; ok {
+	if _, ok := cfg[harnessconfig.KeySettings]; ok {
 		// Explicit user override — don't clobber. But the Read deny rules
 		// live in the settings this would have written, so a session whose
 		// bundle denies paths cannot take an override.

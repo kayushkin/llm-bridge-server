@@ -1,4 +1,4 @@
-package server
+package machineroutes
 
 import (
 	"encoding/json"
@@ -13,7 +13,7 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// handleEnrollRunner consumes a one-time enrollment passphrase, creates
+// HandleEnrollRunner consumes a one-time enrollment passphrase, creates
 // (or updates) the machine row for the runner, mints a durable per-machine
 // runner token, and seeds one default instance per harness type the runner
 // reports as available (claude_code, codex, jig, …). Older runners that
@@ -22,8 +22,8 @@ import (
 // Idempotency: re-enrollment with the same machine_name reuses the existing
 // machine row (refreshing its hostname/os/etc. from the runner's report)
 // and rotates the token. Different machine_name produces a new row.
-func (s *Server) handleEnrollRunner(w http.ResponseWriter, r *http.Request) {
-	if s.harnessStore == nil {
+func (s *Service) HandleEnrollRunner(w http.ResponseWriter, r *http.Request) {
+	if s.HarnessStore() == nil {
 		http.Error(w, "harness store unavailable", http.StatusServiceUnavailable)
 		return
 	}
@@ -48,7 +48,7 @@ func (s *Server) handleEnrollRunner(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Find or create the machine.
-	machine, err := s.harnessStore.GetMachineByName(machineName)
+	machine, err := s.HarnessStore().GetMachineByName(machineName)
 	created := false
 	if err != nil {
 		machine = &msg.Machine{
@@ -61,7 +61,7 @@ func (s *Server) handleEnrollRunner(w http.ResponseWriter, r *http.Request) {
 			User:              req.User,
 			DefaultWorkingDir: req.WorkingDir,
 		}
-		if err := s.harnessStore.CreateMachine(machine); err != nil {
+		if err := s.HarnessStore().CreateMachine(machine); err != nil {
 			http.Error(w, fmt.Sprintf("create machine: %v", err), http.StatusInternalServerError)
 			return
 		}
@@ -79,7 +79,7 @@ func (s *Server) handleEnrollRunner(w http.ResponseWriter, r *http.Request) {
 		if req.WorkingDir != "" {
 			machine.DefaultWorkingDir = req.WorkingDir
 		}
-		if err := s.harnessStore.UpdateMachine(machine); err != nil {
+		if err := s.HarnessStore().UpdateMachine(machine); err != nil {
 			http.Error(w, fmt.Sprintf("update machine: %v", err), http.StatusInternalServerError)
 			return
 		}
@@ -88,9 +88,9 @@ func (s *Server) handleEnrollRunner(w http.ResponseWriter, r *http.Request) {
 	// Consume the passphrase, binding it to this machine. Done after
 	// machine create so a failed consume doesn't leave a half-enrolled
 	// row — but we roll back our created machine if the consume fails.
-	if err := s.harnessStore.ConsumeEnrollment(req.Passphrase, machine.ID); err != nil {
+	if err := s.HarnessStore().ConsumeEnrollment(req.Passphrase, machine.ID); err != nil {
 		if created {
-			_ = s.harnessStore.DeleteMachine(machine.ID)
+			_ = s.HarnessStore().DeleteMachine(machine.ID)
 		}
 		switch {
 		case errors.Is(err, machines.ErrEnrollmentExpired):
@@ -107,11 +107,11 @@ func (s *Server) handleEnrollRunner(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("mint token: %v", err), http.StatusInternalServerError)
 		return
 	}
-	if err := s.harnessStore.SetMachineRunnerTokenHash(machine.ID, machines.HashRunnerToken(token)); err != nil {
+	if err := s.HarnessStore().SetMachineRunnerTokenHash(machine.ID, machines.HashRunnerToken(token)); err != nil {
 		http.Error(w, fmt.Sprintf("store token: %v", err), http.StatusInternalServerError)
 		return
 	}
-	_ = s.harnessStore.TouchMachineLastSeen(machine.ID)
+	_ = s.HarnessStore().TouchMachineLastSeen(machine.ID)
 
 	// Seed default instances based on what the runner reports as
 	// available. For each available harness type that doesn't already
@@ -133,7 +133,7 @@ func (s *Server) handleEnrollRunner(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	existing, _ := s.harnessStore.ListInstancesByMachine(machine.ID)
+	existing, _ := s.HarnessStore().ListInstancesByMachine(machine.ID)
 	hasHarness := make(map[msg.Harness]bool, len(existing))
 	for _, e := range existing {
 		hasHarness[e.HarnessType] = true
@@ -151,7 +151,7 @@ func (s *Server) handleEnrollRunner(w http.ResponseWriter, r *http.Request) {
 			MaxConcurrentSessions: 1,
 			Enabled:               true,
 		}
-		if err := s.harnessStore.CreateInstance(inst); err != nil {
+		if err := s.HarnessStore().CreateInstance(inst); err != nil {
 			http.Error(w, fmt.Sprintf("create default instance %s: %v", h, err), http.StatusInternalServerError)
 			return
 		}

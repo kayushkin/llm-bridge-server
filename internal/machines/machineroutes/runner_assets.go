@@ -1,4 +1,4 @@
-package server
+package machineroutes
 
 import (
 	"fmt"
@@ -28,7 +28,7 @@ func runnerAssetsDir() string {
 	return "/usr/local/lib/llm-bridge-runner-binaries"
 }
 
-// handleRunnerBinary serves a prebuilt llm-bridge-* binary matching the
+// HandleRunnerBinary serves a prebuilt llm-bridge-* binary matching the
 // requested os+arch. Query params:
 //
 //	os=linux|darwin
@@ -38,7 +38,7 @@ func runnerAssetsDir() string {
 // On disk the file is expected to be llm-bridge-<name>-<os>-<arch>.
 // Used by both the install script (default name=runner) and the runner
 // itself when it needs to fetch a missing harness wrapper binary.
-func (s *Server) handleRunnerBinary(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleRunnerBinary(w http.ResponseWriter, r *http.Request) {
 	osQ := r.URL.Query().Get("os")
 	archQ := r.URL.Query().Get("arch")
 	nameQ := r.URL.Query().Get("name")
@@ -72,10 +72,10 @@ func (s *Server) handleRunnerBinary(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, name, stat.ModTime(), f)
 }
 
-// handleRunnerInstallScript serves the install.sh script. Looked up in
+// HandleRunnerInstallScript serves the install.sh script. Looked up in
 // (in order) LLMBRIDGE_RUNNER_INSTALL_SCRIPT env var, the assets dir's
 // install.sh, then the canonical repo path.
-func (s *Server) handleRunnerInstallScript(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleRunnerInstallScript(w http.ResponseWriter, r *http.Request) {
 	candidates := []string{
 		os.Getenv("LLMBRIDGE_RUNNER_INSTALL_SCRIPT"),
 		filepath.Join(runnerAssetsDir(), "install.sh"),

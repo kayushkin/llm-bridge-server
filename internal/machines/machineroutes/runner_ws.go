@@ -1,4 +1,4 @@
-package server
+package machineroutes
 
 import (
 	"errors"
@@ -21,12 +21,12 @@ var runnerUpgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
-// handleRunnerWS authenticates the bearer token against a Machine row,
+// HandleRunnerWS authenticates the bearer token against a Machine row,
 // upgrades the request to a WebSocket, and hands the connection off to
 // the harness manager's RunnerRegistry to run the Hello/Welcome handshake
 // and serve until close.
-func (s *Server) handleRunnerWS(w http.ResponseWriter, r *http.Request) {
-	if s.harnessStore == nil {
+func (s *Service) HandleRunnerWS(w http.ResponseWriter, r *http.Request) {
+	if s.HarnessStore() == nil {
 		http.Error(w, "harness store unavailable", http.StatusServiceUnavailable)
 		return
 	}
@@ -42,7 +42,7 @@ func (s *Server) handleRunnerWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	machine, err := s.harnessStore.GetMachineByRunnerTokenHash(machines.HashRunnerToken(token))
+	machine, err := s.HarnessStore().GetMachineByRunnerTokenHash(machines.HashRunnerToken(token))
 	if errors.Is(err, sql.ErrNoRows) {
 		http.Error(w, "unknown token", http.StatusUnauthorized)
 		return
@@ -59,11 +59,11 @@ func (s *Server) handleRunnerWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.harnessStore.TouchMachineLastSeen(machine.ID); err != nil {
+	if err := s.HarnessStore().TouchMachineLastSeen(machine.ID); err != nil {
 		log.Printf("[runner-ws] touch last_seen for %s: %v", machine.ID, err)
 	}
 
-	if err := s.harness.Runners().AcceptRunner(r.Context(), conn, machine, "llm-bridge-server"); err != nil {
+	if err := s.Harness.Runners().AcceptRunner(r.Context(), conn, machine, "llm-bridge-server"); err != nil {
 		log.Printf("[runner-ws] %s connection closed: %v", machine.Name, err)
 	}
 }

@@ -298,15 +298,15 @@ func main() {
 	log.Printf("operations: %d workers | lease %s", cfg.OperationsWorkerCount, cfg.OperationsLeaseDuration)
 	srv.ReconcileAndResume() // Clean up stale running-state and resume recently-active sessions
 	srv.RedeliverWakeupsLostInRestart()
-	srv.DeliverMessagesHeldBeforeRestart()                    // Send what the previous process held while it drained for this restart
-	srv.AutoDiscover()                                        // Import on-disk sessions from harnesses
-	go srv.WatchExternalHarnessActivity(context.Background()) // Bring in terminal runs of claude and codex while the server is up
-	srv.StartWatchdog()                                       // Periodic check for sessions whose harness died mid-life
-	srv.StartPeerDialers()                                    // Reopen the socket of every dial-out connection this server initiated
-	srv.StartMachineDiskUsage()                               // Record runners' finished deletions on the Machines page
-	srv.StartMachineStatsSampler(context.Background())        // Read this machine every minute, keep runners' readings, delete old ones
-	go srv.ChatLinks().Run(context.Background())     // Deliver what people send linked conversations, and send the replies
-	go func() {                                               // Read messaging.inbound for chat links; a bus that is down is retried, not fatal to every session
+	srv.DeliverMessagesHeldBeforeRestart()                        // Send what the previous process held while it drained for this restart
+	srv.AutoDiscover()                                            // Import on-disk sessions from harnesses
+	go srv.WatchExternalHarnessActivity(context.Background())     // Bring in terminal runs of claude and codex while the server is up
+	srv.StartWatchdog()                                           // Periodic check for sessions whose harness died mid-life
+	srv.StartPeerDialers()                                        // Reopen the socket of every dial-out connection this server initiated
+	srv.Machines().StartMachineDiskUsage()                        // Record runners' finished deletions on the Machines page
+	srv.Machines().StartMachineStatsSampler(context.Background()) // Read this machine every minute, keep runners' readings, delete old ones
+	go srv.ChatLinks().Run(context.Background())                  // Deliver what people send linked conversations, and send the replies
+	go func() {                                                   // Read messaging.inbound for chat links; a bus that is down is retried, not fatal to every session
 		for {
 			err := srv.ChatLinks().StartInbound(cfg.ChatLinksNATSURL)
 			if err == nil {

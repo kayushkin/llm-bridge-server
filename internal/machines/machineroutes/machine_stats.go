@@ -1,4 +1,4 @@
-package server
+package machineroutes
 
 import (
 	"context"
@@ -33,12 +33,12 @@ const machineStatsHistoryMaximumPoints = 5000
 
 // StartMachineStatsSampler files runners' readings, reads this server's own
 // machine every minute, and deletes readings past retention.
-func (s *Server) StartMachineStatsSampler(ctx context.Context) {
-	if s.harnessStore == nil {
+func (s *Service) StartMachineStatsSampler(ctx context.Context) {
+	if s.HarnessStore() == nil {
 		log.Printf("[machine-stats] no harness store; machine stats are off")
 		return
 	}
-	s.harness.Runners().SetMachineStatsReceiver(s.recordMachineStats)
+	s.Harness.Runners().SetMachineStatsReceiver(s.recordMachineStats)
 	collector := machinestats.NewCollector()
 	go func() {
 		ticker := time.NewTicker(machinestats.SampleInterval)
@@ -60,16 +60,16 @@ func (s *Server) StartMachineStatsSampler(ctx context.Context) {
 }
 
 // recordMachineStats stores one reading.
-func (s *Server) recordMachineStats(machineID string, stats msg.MachineStats) {
-	if err := s.store.RecordMachineStatsSample(machineID, stats); err != nil {
+func (s *Service) recordMachineStats(machineID string, stats msg.MachineStats) {
+	if err := s.Store.RecordMachineStatsSample(machineID, stats); err != nil {
 		log.Printf("[machine-stats] record reading of %s: %v", machineID, err)
 	}
 }
 
 // sampleLocalMachines reads this host and files the reading under every
 // machine whose transport is local: each of them is this host.
-func (s *Server) sampleLocalMachines(ctx context.Context, collector *machinestats.Collector) {
-	machines, err := s.harnessStore.ListMachines()
+func (s *Service) sampleLocalMachines(ctx context.Context, collector *machinestats.Collector) {
+	machines, err := s.HarnessStore().ListMachines()
 	if err != nil {
 		log.Printf("[machine-stats] list machines: %v", err)
 		return
@@ -89,8 +89,8 @@ func (s *Server) sampleLocalMachines(ctx context.Context, collector *machinestat
 	}
 }
 
-func (s *Server) pruneMachineStats() {
-	deleted, err := s.store.DeleteMachineStatsSamplesBefore(time.Now().Add(-machineStatsRetention))
+func (s *Service) pruneMachineStats() {
+	deleted, err := s.Store.DeleteMachineStatsSamplesBefore(time.Now().Add(-machineStatsRetention))
 	if err != nil {
 		log.Printf("[machine-stats] delete readings past retention: %v", err)
 		return
@@ -100,20 +100,20 @@ func (s *Server) pruneMachineStats() {
 	}
 }
 
-// handleMachineStatsOverview serves GET /machines/stats: every machine with
+// HandleMachineStatsOverview serves GET /machines/stats: every machine with
 // its newest reading, sorted by name.
-func (s *Server) handleMachineStatsOverview(w http.ResponseWriter, r *http.Request) {
-	machines, err := s.harnessStore.ListMachines()
+func (s *Service) HandleMachineStatsOverview(w http.ResponseWriter, r *http.Request) {
+	machines, err := s.HarnessStore().ListMachines()
 	if err != nil {
 		httpjson.WriteJSONError(w, http.StatusInternalServerError, "machine_stats_unavailable", err.Error())
 		return
 	}
-	latest, err := s.store.LatestMachineStats()
+	latest, err := s.Store.LatestMachineStats()
 	if err != nil {
 		httpjson.WriteJSONError(w, http.StatusInternalServerError, "machine_stats_unavailable", err.Error())
 		return
 	}
-	runners := s.harness.Runners()
+	runners := s.Harness.Runners()
 	overviews := make([]msg.MachineStatsOverview, 0, len(machines))
 	for _, machine := range machines {
 		overview := msg.MachineStatsOverview{Machine: machine}
@@ -130,21 +130,21 @@ func (s *Server) handleMachineStatsOverview(w http.ResponseWriter, r *http.Reque
 	httpjson.WriteJSON(w, overviews)
 }
 
-// handleMachineStatsHistory serves GET /machines/{id}/stats/history.
+// HandleMachineStatsHistory serves GET /machines/{id}/stats/history.
 // Query: since and until (RFC 3339; default the last 24 hours) and
 // step_seconds (default 60, at least 60).
-func (s *Server) handleMachineStatsHistory(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleMachineStatsHistory(w http.ResponseWriter, r *http.Request) {
 	machineID := r.PathValue("id")
-	if _, err := s.harnessStore.GetMachine(machineID); err != nil {
+	if _, err := s.HarnessStore().GetMachine(machineID); err != nil {
 		httpjson.WriteJSONError(w, http.StatusNotFound, "machine_not_found", "machine not found")
 		return
 	}
-	since, until, step, err := parseMachineStatsHistoryQuery(r, time.Now().UTC())
+	since, until, step, err := ParseMachineStatsHistoryQuery(r, time.Now().UTC())
 	if err != nil {
 		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_machine_stats_query", err.Error())
 		return
 	}
-	samples, err := s.store.MachineStatsSamplesBetween(machineID, since, until)
+	samples, err := s.Store.MachineStatsSamplesBetween(machineID, since, until)
 	if err != nil {
 		httpjson.WriteJSONError(w, http.StatusInternalServerError, "machine_stats_unavailable", err.Error())
 		return
@@ -154,12 +154,12 @@ func (s *Server) handleMachineStatsHistory(w http.ResponseWriter, r *http.Reques
 		Since:       since,
 		Until:       until,
 		StepSeconds: int64(step / time.Second),
-		Points:      bucketMachineStats(samples, since, step),
+		Points:      BucketMachineStats(samples, since, step),
 	})
 }
 
-// parseMachineStatsHistoryQuery reads and checks the history query.
-func parseMachineStatsHistoryQuery(r *http.Request, now time.Time) (since, until time.Time, step time.Duration, err error) {
+// ParseMachineStatsHistoryQuery reads and checks the history query.
+func ParseMachineStatsHistoryQuery(r *http.Request, now time.Time) (since, until time.Time, step time.Duration, err error) {
 	query := r.URL.Query()
 	until = now
 	if value := query.Get("until"); value != "" {
@@ -193,10 +193,10 @@ func parseMachineStatsHistoryQuery(r *http.Request, now time.Time) (since, until
 	return since.UTC(), until.UTC(), step, nil
 }
 
-// bucketMachineStats groups readings, oldest first, into buckets of step
+// BucketMachineStats groups readings, oldest first, into buckets of step
 // starting at since. Each point carries the bucket's newest reading and its
 // CPU mean and peak. Empty buckets are left out.
-func bucketMachineStats(samples []msg.MachineStats, since time.Time, step time.Duration) []msg.MachineStatsHistoryPoint {
+func BucketMachineStats(samples []msg.MachineStats, since time.Time, step time.Duration) []msg.MachineStatsHistoryPoint {
 	points := []msg.MachineStatsHistoryPoint{}
 	var cpuSum float64
 	var cpuCount int

@@ -50,6 +50,7 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 
+	"github.com/kayushkin/llm-bridge-server/internal/machines/machineroutes"
 	"github.com/kayushkin/llm-bridge-server/internal/machines/runnerprotocol"
 )
 
@@ -266,6 +267,7 @@ type Server struct {
 	grantChecker    *grantcheck.Checker
 	briefService    *briefs.Service
 	operationRoutes *operationroutes.Service
+	machineRoutes   *machineroutes.Service
 }
 
 func New(st *store.Store, as *agents.Store, ms *memories.Store, hs *machines.Store, hks *hooks.Store, mds *models.Store, ss *snapshots.Store, cfg *config.Config) *Server {
@@ -615,17 +617,8 @@ func (s *Server) routes() {
 	}
 
 	// Instance routes only available if harness-store is loaded
+	s.machineRoutes.Mount(s.mux)
 	if s.harnessStore != nil {
-		s.mux.HandleFunc("GET /instances", s.handleListInstances)
-		s.mux.HandleFunc("POST /instances", s.handleCreateInstance)
-		s.mux.HandleFunc("GET /instances/{id}", s.handleGetInstance)
-		s.mux.HandleFunc("PUT /instances/{id}", s.handleUpdateInstance)
-		s.mux.HandleFunc("DELETE /instances/{id}", s.handleDeleteInstance)
-		s.mux.HandleFunc("GET /instances/{id}/status", s.handleInstanceStatus)
-		s.mux.HandleFunc("GET /instances/{id}/sessions", s.handleListInstanceSessions)
-		s.mux.HandleFunc("GET /instances/{id}/credentials", s.handleListInstanceCredentials)
-		s.mux.HandleFunc("POST /instances/{id}/credentials", s.handleBindCredential)
-		s.mux.HandleFunc("DELETE /instances/{id}/credentials/{cred_id}", s.handleUnbindCredential)
 		s.mux.HandleFunc("POST /instances/{id}/oneshot", s.handleInstanceOneShot)
 	}
 	s.mux.HandleFunc("POST /oneshot", s.handleRoutedOneShot)
@@ -676,37 +669,19 @@ func (s *Server) routes() {
 	// Machine routes — host-level configuration. Instances bind to a
 	// machine; the machine carries transport/SSH/runner details.
 	if s.harnessStore != nil {
-		s.mux.HandleFunc("GET /machines", s.handleListMachines)
-		s.mux.HandleFunc("POST /machines", s.handleCreateMachine)
-		s.mux.HandleFunc("GET /machines/{id}", s.handleGetMachine)
-		s.mux.HandleFunc("PUT /machines/{id}", s.handleUpdateMachine)
-		s.mux.HandleFunc("PUT /machines/{id}/computer-use", s.handleSetMachineComputerUse)
-		s.mux.HandleFunc("DELETE /machines/{id}", s.handleDeleteMachine)
-		s.mux.HandleFunc("GET /machines/stats", s.handleMachineStatsOverview)
-		s.mux.HandleFunc("GET /machines/{id}/stats/history", s.handleMachineStatsHistory)
-		s.mux.HandleFunc("GET /machines/{id}/disk-usage", s.handleMachineDiskUsage)
-		s.mux.HandleFunc("POST /machines/{id}/disk-usage/scans", s.handleStartMachineDiskScan)
-		s.mux.HandleFunc("GET /machines/{id}/disk-usage/entries", s.handleMachineDiskEntries)
-		s.mux.HandleFunc("POST /machines/{id}/disk-usage/deletion-checks", s.handleCheckMachineDiskDeletion)
-		s.mux.HandleFunc("POST /machines/{id}/disk-usage/deletions", s.handleDeleteFromMachineDisk)
-		s.mux.HandleFunc("GET /machines/{id}/disk-usage/deletions", s.handleMachineDiskDeletions)
 	}
 
 	// Runner WebSocket — long-lived connection from llm-bridge-runner
 	// daemons on remote machines. Auth is per-machine bearer token in
 	// the Authorization header, validated against machines.runner_token_hash.
-	s.mux.HandleFunc("GET /api/runner/ws", s.handleRunnerWS)
 	// Runner enrollment — single-use passphrase exchanged for a
 	// durable per-machine token. Mint passphrases via the
 	// `llm-bridge mint-enroll` CLI subcommand.
-	s.mux.HandleFunc("POST /api/runner/enroll", s.handleEnrollRunner)
 
 	// Runner asset distribution — install script + prebuilt binaries.
 	// The server hosts these so a freshly-cloned WSL/laptop can bootstrap
 	// from a single curl command, without depending on a public
 	// download infrastructure (GitHub Releases, etc.).
-	s.mux.HandleFunc("GET /api/runner/install.sh", s.handleRunnerInstallScript)
-	s.mux.HandleFunc("GET /api/runner/binary", s.handleRunnerBinary)
 
 	// Seed-broadcast trigger. Anything that mutates a seed source's content
 	// (the standalone agent-store on :8300 reached via dash, a CLI editing
@@ -725,7 +700,6 @@ func (s *Server) routes() {
 	// runners hit /api/harness-proxy/{harness}/<rest> instead of
 	// localhost:<backend-port>, eliminating the need to replicate
 	// state and credentials on every machine.
-	s.mux.HandleFunc("/api/harness-proxy/{harness}/{rest...}", s.handleHarnessProxy)
 }
 
 // localInstancesByHarness returns a {harness: instance_id} map of the
@@ -1490,3 +1464,7 @@ func (s *Server) turnClassifierForBriefs() briefs.TurnClassifier {
 	}
 	return s.signalClassifier
 }
+
+// Machines is the machine, instance and runner routes and the work behind
+// them: machine stats, disk usage and runner sockets.
+func (s *Server) Machines() *machineroutes.Service { return s.machineRoutes }

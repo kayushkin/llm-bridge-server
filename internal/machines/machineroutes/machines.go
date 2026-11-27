@@ -1,4 +1,4 @@
-package server
+package machineroutes
 
 import (
 	"crypto/rand"
@@ -12,8 +12,8 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-func (s *Server) handleListMachines(w http.ResponseWriter, r *http.Request) {
-	machines, err := s.harnessStore.ListMachines()
+func (s *Service) HandleListMachines(w http.ResponseWriter, r *http.Request) {
+	machines, err := s.HarnessStore().ListMachines()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -24,9 +24,9 @@ func (s *Server) handleListMachines(w http.ResponseWriter, r *http.Request) {
 	httpjson.WriteJSON(w, machines)
 }
 
-func (s *Server) handleGetMachine(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleGetMachine(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	m, err := s.harnessStore.GetMachine(id)
+	m, err := s.HarnessStore().GetMachine(id)
 	if err != nil {
 		http.Error(w, "machine not found", http.StatusNotFound)
 		return
@@ -34,7 +34,7 @@ func (s *Server) handleGetMachine(w http.ResponseWriter, r *http.Request) {
 	httpjson.WriteJSON(w, m)
 }
 
-func (s *Server) handleCreateMachine(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleCreateMachine(w http.ResponseWriter, r *http.Request) {
 	var req msg.CreateMachineRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
@@ -47,7 +47,7 @@ func (s *Server) handleCreateMachine(w http.ResponseWriter, r *http.Request) {
 	if req.Transport == "" {
 		req.Transport = msg.TransportLocal
 	}
-	if existing, _ := s.harnessStore.GetMachineByName(req.Name); existing != nil {
+	if existing, _ := s.HarnessStore().GetMachineByName(req.Name); existing != nil {
 		http.Error(w, fmt.Sprintf("machine name already in use: %s", req.Name), http.StatusConflict)
 		return
 	}
@@ -65,7 +65,7 @@ func (s *Server) handleCreateMachine(w http.ResponseWriter, r *http.Request) {
 		DefaultWorkingDir: req.DefaultWorkingDir,
 		Notes:             req.Notes,
 	}
-	if err := s.harnessStore.CreateMachine(m); err != nil {
+	if err := s.HarnessStore().CreateMachine(m); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -73,9 +73,9 @@ func (s *Server) handleCreateMachine(w http.ResponseWriter, r *http.Request) {
 	httpjson.WriteJSON(w, m)
 }
 
-func (s *Server) handleUpdateMachine(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleUpdateMachine(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	existing, err := s.harnessStore.GetMachine(id)
+	existing, err := s.HarnessStore().GetMachine(id)
 	if err != nil {
 		http.Error(w, "machine not found", http.StatusNotFound)
 		return
@@ -118,16 +118,16 @@ func (s *Server) handleUpdateMachine(w http.ResponseWriter, r *http.Request) {
 	if req.Notes != "" {
 		existing.Notes = req.Notes
 	}
-	if err := s.harnessStore.UpdateMachine(existing); err != nil {
+	if err := s.HarnessStore().UpdateMachine(existing); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	httpjson.WriteJSON(w, existing)
 }
 
-func (s *Server) handleDeleteMachine(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleDeleteMachine(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if err := s.harnessStore.DeleteMachine(id); err != nil {
+	if err := s.HarnessStore().DeleteMachine(id); err != nil {
 		http.Error(w, "machine not found", http.StatusNotFound)
 		return
 	}

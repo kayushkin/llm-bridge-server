@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/harnessconfig"
+
 	"github.com/kayushkin/llm-bridge-server/internal/agents/tools"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -59,7 +61,7 @@ func (s *Server) onSessionInfo(bridgeID string, info *msg.SessionInfo) {
 // not obey. The report arrives once the process has started, so this is a
 // second line, not the first: it ends the session rather than let it go on.
 func (s *Server) holdRestrictedSessionToItsAllowList(sess *store.Session, reported []string) {
-	cfg, err := parseHarnessConfig(sess)
+	cfg, err := harnessconfig.Parse(sess)
 	if err != nil {
 		log.Printf("[harness-tools] ERROR session %s: harness_config unreadable, stopping it because its allow list cannot be checked: %v", sess.SessionID, err)
 		s.stopSessionOffItsAllowList(sess.SessionID)

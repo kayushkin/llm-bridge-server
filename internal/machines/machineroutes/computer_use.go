@@ -1,4 +1,4 @@
-package server
+package machineroutes
 
 import (
 	"database/sql"
@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/harnessconfig"
 
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -52,7 +53,7 @@ func sessionAsksForComputerUse(cfg map[string]json.RawMessage) (bool, error) {
 	return asks, nil
 }
 
-func harnessConfigMap(sess *store.Session) (map[string]json.RawMessage, error) {
+func HarnessConfigMap(sess *store.Session) (map[string]json.RawMessage, error) {
 	cfg := map[string]json.RawMessage{}
 	if len(sess.HarnessConfig) == 0 {
 		return cfg, nil
@@ -108,16 +109,16 @@ func setInlineMCPConfig(cfg map[string]json.RawMessage, servers map[string]json.
 	return nil
 }
 
-// inlineMCPConfigForRunner replaces a session's mcp_config path with the
+// InlineMCPConfigForRunner replaces a session's mcp_config path with the
 // file's JSON when the session runs on a runner machine: the path names a
 // file on this host, and Claude Code there stopped with "MCP config file not
 // found" (br_1792016058819150718, 2026-10-14). A config that is already JSON
 // is left as it is.
-func (s *Server) inlineMCPConfigForRunner(sess *store.Session, inst *msg.Instance) error {
+func (s *Service) InlineMCPConfigForRunner(sess *store.Session, inst *msg.Instance) error {
 	if inst.Machine == nil || inst.Machine.Transport != msg.TransportRunner {
 		return nil
 	}
-	cfg, err := harnessConfigMap(sess)
+	cfg, err := HarnessConfigMap(sess)
 	if err != nil {
 		return err
 	}
@@ -136,15 +137,15 @@ func (s *Server) inlineMCPConfigForRunner(sess *store.Session, inst *msg.Instanc
 	if err := setInlineMCPConfig(cfg, servers); err != nil {
 		return err
 	}
-	return s.replaceHarnessConfig(sess, cfg)
+	return harnessconfig.Replace(sess, cfg)
 }
 
-// injectComputerUse adds the runner's computer-use server to a session that
+// InjectComputerUse adds the runner's computer-use server to a session that
 // asked for it, or refuses the spawn naming the condition that failed.
 // runnerComputerUse is the tool a machine's connected runner reported
 // (harness.Manager.RunnerComputerUse in the spawn).
-func (s *Server) injectComputerUse(sess *store.Session, inst *msg.Instance, runnerComputerUse func(machineName string) *runnerprotocol.ComputerUseTool) error {
-	cfg, err := harnessConfigMap(sess)
+func (s *Service) InjectComputerUse(sess *store.Session, inst *msg.Instance, runnerComputerUse func(machineName string) *runnerprotocol.ComputerUseTool) error {
+	cfg, err := HarnessConfigMap(sess)
 	if err != nil {
 		return err
 	}
@@ -178,13 +179,13 @@ func (s *Server) injectComputerUse(sess *store.Session, inst *msg.Instance, runn
 		return err
 	}
 	log.Printf("[computer-use] session %s on %s gets %s (%s, version %s)", sess.SessionID, machine.Name, runnerprotocol.ComputerUseMCPServerName, tool.Command, tool.Version)
-	return s.replaceHarnessConfig(sess, cfg)
+	return harnessconfig.Replace(sess, cfg)
 }
 
-// handleSetMachineComputerUse is PUT /machines/{id}/computer-use with
+// HandleSetMachineComputerUse is PUT /machines/{id}/computer-use with
 // {"allowed": true|false}: the owner's switch, set alone so no other machine
 // edit can flip it.
-func (s *Server) handleSetMachineComputerUse(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleSetMachineComputerUse(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req struct {
 		Allowed *bool `json:"allowed"`
@@ -195,7 +196,7 @@ func (s *Server) handleSetMachineComputerUse(w http.ResponseWriter, r *http.Requ
 		http.Error(w, `body must be {"allowed": true} or {"allowed": false}`, http.StatusBadRequest)
 		return
 	}
-	if err := s.harnessStore.SetMachineComputerUseAllowed(id, *req.Allowed); err != nil {
+	if err := s.HarnessStore().SetMachineComputerUseAllowed(id, *req.Allowed); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			http.Error(w, "machine not found", http.StatusNotFound)
 			return
@@ -203,7 +204,7 @@ func (s *Server) handleSetMachineComputerUse(w http.ResponseWriter, r *http.Requ
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	machine, err := s.harnessStore.GetMachine(id)
+	machine, err := s.HarnessStore().GetMachine(id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
