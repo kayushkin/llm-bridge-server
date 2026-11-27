@@ -620,7 +620,7 @@ func (s *Server) sendToCreatedSession(createdBody []byte, message string) sessio
 }
 
 func (s *Server) sendMessageInternally(sessionID, message string) (string, error) {
-	answer := s.sendMessageFromThisServer(context.Background(), sessionID, SendMessageRequest{Message: message}, "")
+	answer := s.SendMessageFromThisServer(context.Background(), sessionID, SendMessageRequest{Message: message}, "")
 	if answer.Status != http.StatusOK {
 		return string(answer.Body), fmt.Errorf("send to %s refused with %d: %s", sessionID, answer.Status, strings.TrimSpace(string(answer.Body)))
 	}
@@ -634,7 +634,7 @@ func (s *Server) sendMessageInternally(sessionID, message string) (string, error
 // POST /sessions/{id}/fork go this way: their handlers decide from the
 // request's caller throughout (delegates, peers, starters, scopes), and
 // splitting them into a function of their own is a change to session
-// creation, not to how it is called. A send calls sendMessageFromThisServer.
+// creation, not to how it is called. A send calls SendMessageFromThisServer.
 func (s *Server) serveInternally(method, path string, body any) (int, []byte) {
 	return s.serveInternallyWithContext(context.Background(), method, path, body)
 }

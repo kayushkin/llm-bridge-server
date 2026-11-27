@@ -1,4 +1,4 @@
-package server
+package chatlinks
 
 import (
 	"bytes"
@@ -35,58 +35,58 @@ import (
 // retried until multichat takes it. A turn anyone else starts carries no
 // such id and is never sent.
 
-// chatLinkDeliveryIDPrefix opens the client_request_id of a turn a chat link
+// DeliveryIDPrefix opens the client_request_id of a turn a chat link
 // started; nothing else mints one.
-const chatLinkDeliveryIDPrefix = "chat-link-delivery:"
+const DeliveryIDPrefix = "chat-link-delivery:"
 
-// chatLinkReportRequestIDPrefix opens the client_request_id of a report a
+// ReportRequestIDPrefix opens the client_request_id of a report a
 // chat link sends its session; its turn's reply goes nowhere.
-const chatLinkReportRequestIDPrefix = "chat-link-report:"
+const ReportRequestIDPrefix = "chat-link-report:"
 
 // How chat links pace themselves.
 const (
 	chatLinkSweepInterval = 10 * time.Second
-	// chatLinkTurnWithoutEndAfter is how long a delivered turn may sit with
+	// TurnWithoutEndAfter is how long a delivered turn may sit with
 	// its session free and no turn end seen before it is called failed: an
 	// error-terminated turn reports no turn end.
-	chatLinkTurnWithoutEndAfter = 2 * time.Minute
+	TurnWithoutEndAfter = 2 * time.Minute
 	chatLinkFirstRetry          = 30 * time.Second
 	chatLinkLongestRetry        = 30 * time.Minute
 	chatLinkSendAttempts        = 12
 	chatLinksInboundConsumer    = "llm-bridge-server-chat-links"
-	chatLinkMultichatProvider   = "multichat"
+	MultichatProvider   = "multichat"
 )
 
-// chatLinks is the server's chat-link machinery; nil when it is switched off.
-type chatLinks struct {
-	multichatURL string
-	// senders is people-store, asked who owns the account a message came from.
-	senders    chatLinkSenderDirectory
-	httpClient *http.Client
-	// token answers multichat's bearer.
-	token func(ctx context.Context) (string, error)
-	// kick wakes the sweep early, after a message arrives or a turn ends.
-	kick chan struct{}
+// ChatLinks is the server's chat-link machinery; nil when it is switched off.
+type ChatLinks struct {
+	MultichatURL string
+	// Senders is people-store, asked who owns the account a message came from.
+	Senders    chatLinkSenderDirectory
+	HTTPClient *http.Client
+	// Token answers multichat's bearer.
+	Token func(ctx context.Context) (string, error)
+	// Kick wakes the sweep early, after a message arrives or a turn ends.
+	Kick chan struct{}
 	// mu keeps one sweep at a time.
 	mu sync.Mutex
-	// now is the clock.
-	now func() time.Time
-	// sendIntoSession sends into a session as POST /sessions/{id}/send does
+	// Now is the clock.
+	Now func() time.Time
+	// SendIntoSession sends into a session as POST /sessions/{id}/send does
 	// (sendMessageToSession), answering its status and body; a test replaces
 	// it.
-	sendIntoSession func(sessionID string, request msg.SendMessageRequest) (int, []byte)
+	SendIntoSession func(sessionID string, request msg.SendMessageRequest) (int, []byte)
 	// references reads reference-store's id patterns, once a while.
 	references chatLinkReferencePatterns
 }
 
-var errChatLinksOff = errors.New("chat links are off: LLMBRIDGE_NATS_URL and LLMBRIDGE_MULTICHAT_URL must both be set")
+var ErrOff = errors.New("chat links are off: LLMBRIDGE_NATS_URL and LLMBRIDGE_MULTICHAT_URL must both be set")
 
-func (c *chatLinks) wake() {
+func (c *ChatLinks) wake() {
 	if c == nil {
 		return
 	}
 	select {
-	case c.kick <- struct{}{}:
+	case c.Kick <- struct{}{}:
 	default:
 	}
 }
@@ -104,13 +104,13 @@ func chatLinkSessionIsFree(state msg.SessionState) bool {
 	return true
 }
 
-// chatLinkInboundText is what the session is sent: each message labeled by
+// InboundText is what the session is sent: each message labeled by
 // who sent it, read by id from people-store. A message from the person whose
 // principal the session runs as is the operator's own; any other is labeled
 // as not the operator's, so the agent never takes it for them. The closing
 // note says what the far end can see, since the reply reaches them as a plain
 // platform message.
-func chatLinkInboundText(link store.ChatLink, sessionPrincipalID, accountName string, messages []store.ChatLinkMessage) string {
+func InboundText(link store.ChatLink, sessionPrincipalID, accountName string, messages []store.ChatLinkMessage) string {
 	via := platformName(link.Platform)
 	if accountName != "" {
 		via += ", through the " + accountName + " bot"
@@ -191,8 +191,8 @@ type multichatAccounts struct {
 	} `json:"bot_accounts"`
 }
 
-func (c *chatLinks) call(ctx context.Context, method, path string, body any, out any) (int, error) {
-	token, err := c.token(ctx)
+func (c *ChatLinks) call(ctx context.Context, method, path string, body any, out any) (int, error) {
+	token, err := c.Token(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("multichat token from auth-store: %w", err)
 	}
@@ -204,13 +204,13 @@ func (c *chatLinks) call(ctx context.Context, method, path string, body any, out
 		}
 		reader = bytes.NewReader(encoded)
 	}
-	request, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(c.multichatURL, "/")+path, reader)
+	request, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(c.MultichatURL, "/")+path, reader)
 	if err != nil {
 		return 0, err
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("Content-Type", "application/json")
-	response, err := c.httpClient.Do(request)
+	response, err := c.HTTPClient.Do(request)
 	if err != nil {
 		return 0, fmt.Errorf("multichat %s %s: %w", method, path, err)
 	}
@@ -232,7 +232,7 @@ func (c *chatLinks) call(ctx context.Context, method, path string, body any, out
 
 // botAccountName answers the display name multichat gives a bot account on
 // platform, or an error when multichat holds no such bot.
-func (c *chatLinks) botAccountName(ctx context.Context, accountID, platform string) (string, error) {
+func (c *ChatLinks) botAccountName(ctx context.Context, accountID, platform string) (string, error) {
 	var accounts multichatAccounts
 	if _, err := c.call(ctx, http.MethodGet, "/api/accounts", nil, &accounts); err != nil {
 		return "", err
@@ -252,30 +252,30 @@ type multichatSendResult struct {
 	MessageIDs []string `json:"message_ids"`
 }
 
-// sendIntoSessionAsTheServer is chatLinks.sendIntoSession in production: the
+// SendIntoSessionAsTheServer is ChatLinks.sendIntoSession in production: the
 // send POST /sessions/{id}/send makes, as the server, with its status and
 // body.
-func (s *Server) sendIntoSessionAsTheServer(sessionID string, request msg.SendMessageRequest) (int, []byte) {
-	answer := s.sendMessageFromThisServer(context.Background(), sessionID, request, "")
+func (s *Service) SendIntoSessionAsTheServer(sessionID string, request msg.SendMessageRequest) (int, []byte) {
+	answer := s.Sessions.SendMessageFromThisServer(context.Background(), sessionID, request, "")
 	return answer.Status, answer.Body
 }
 
 // --- routes ---
 
-func (s *Server) chatLinksOrRefuse(w http.ResponseWriter) bool {
-	if s.chatLinks == nil {
-		httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "chat_links_off", errChatLinksOff.Error())
+func (s *Service) chatLinksOrRefuse(w http.ResponseWriter) bool {
+	if s.ChatLinks == nil {
+		httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "chat_links_off", ErrOff.Error())
 		return false
 	}
 	return true
 }
 
-// handleCreateChatLink: POST /sessions/{id}/chat-links.
-func (s *Server) handleCreateChatLink(w http.ResponseWriter, r *http.Request) {
+// HandleCreateChatLink: POST /sessions/{id}/chat-links.
+func (s *Service) HandleCreateChatLink(w http.ResponseWriter, r *http.Request) {
 	if !s.chatLinksOrRefuse(w) {
 		return
 	}
-	session, err := s.store.GetSession(r.PathValue("id"))
+	session, err := s.Store.GetSession(r.PathValue("id"))
 	if err != nil {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
@@ -294,7 +294,7 @@ func (s *Server) handleCreateChatLink(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if _, err := s.chatLinks.botAccountName(r.Context(), create.AccountID, create.Platform); err != nil {
+	if _, err := s.ChatLinks.botAccountName(r.Context(), create.AccountID, create.Platform); err != nil {
 		httpjson.WriteJSONError(w, http.StatusBadRequest, "unknown_account", err.Error())
 		return
 	}
@@ -303,12 +303,12 @@ func (s *Server) handleCreateChatLink(w http.ResponseWriter, r *http.Request) {
 		SessionID: session.SessionID, AccountID: create.AccountID, Platform: create.Platform,
 		ConversationID: create.ConversationID, PersonDisplayName: create.PersonDisplayName,
 		CreatedByPrincipalID: caller.PrincipalID, CreatedBySessionAgent: caller.PostingAgentOfSessionID != "",
-		CreatedAt: s.chatLinks.now(),
+		CreatedAt: s.ChatLinks.Now(),
 	}
 	if caller.PostingAgentOfSessionID != "" {
 		link.CreatedByPrincipalID = session.PrincipalID
 	}
-	created, err := s.store.CreateChatLink(link)
+	created, err := s.Store.CreateChatLink(link)
 	if errors.Is(err, store.ErrChatLinkConversationTaken) {
 		httpjson.WriteJSONError(w, http.StatusConflict, "conversation_taken", err.Error()+"; end that link first")
 		return
@@ -321,9 +321,9 @@ func (s *Server) handleCreateChatLink(w http.ResponseWriter, r *http.Request) {
 	httpjson.WriteJSON(w, created)
 }
 
-// handleListChatLinks: GET /sessions/{id}/chat-links.
-func (s *Server) handleListChatLinks(w http.ResponseWriter, r *http.Request) {
-	links, err := s.store.ListChatLinks(r.PathValue("id"))
+// HandleListChatLinks: GET /sessions/{id}/chat-links.
+func (s *Service) HandleListChatLinks(w http.ResponseWriter, r *http.Request) {
+	links, err := s.Store.ListChatLinks(r.PathValue("id"))
 	if err != nil {
 		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
@@ -331,9 +331,9 @@ func (s *Server) handleListChatLinks(w http.ResponseWriter, r *http.Request) {
 	httpjson.WriteJSON(w, links)
 }
 
-// handleGetChatLink: GET /sessions/{id}/chat-links/{link_id}, with its log.
-func (s *Server) handleGetChatLink(w http.ResponseWriter, r *http.Request) {
-	link, err := s.store.GetChatLink(r.PathValue("id"), r.PathValue("link_id"))
+// HandleGetChatLink: GET /sessions/{id}/chat-links/{link_id}, with its log.
+func (s *Service) HandleGetChatLink(w http.ResponseWriter, r *http.Request) {
+	link, err := s.Store.GetChatLink(r.PathValue("id"), r.PathValue("link_id"))
 	if errors.Is(err, store.ErrChatLinkNotFound) {
 		http.Error(w, "chat link not found", http.StatusNotFound)
 		return
@@ -342,17 +342,17 @@ func (s *Server) handleGetChatLink(w http.ResponseWriter, r *http.Request) {
 		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
-	if link.Messages, err = s.store.ChatLinkMessages(link.ID); err != nil {
+	if link.Messages, err = s.Store.ChatLinkMessages(link.ID); err != nil {
 		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	httpjson.WriteJSON(w, link)
 }
 
-// handleEndChatLink: POST /sessions/{id}/chat-links/{link_id}/end. What the
+// HandleEndChatLink: POST /sessions/{id}/chat-links/{link_id}/end. What the
 // person sends after it is not kept; a reply already written is still sent.
-func (s *Server) handleEndChatLink(w http.ResponseWriter, r *http.Request) {
-	link, err := s.store.EndChatLink(r.PathValue("id"), r.PathValue("link_id"), time.Now().UTC())
+func (s *Service) HandleEndChatLink(w http.ResponseWriter, r *http.Request) {
+	link, err := s.Store.EndChatLink(r.PathValue("id"), r.PathValue("link_id"), time.Now().UTC())
 	if errors.Is(err, store.ErrChatLinkNotFound) {
 		http.Error(w, "chat link not found", http.StatusNotFound)
 		return
@@ -367,13 +367,13 @@ func (s *Server) handleEndChatLink(w http.ResponseWriter, r *http.Request) {
 
 // --- inbound ---
 
-// keepChatLinkInbound keeps one bus message for the active link holding its
+// KeepInbound keeps one bus message for the active link holding its
 // conversation. It answers false with no error for a message no link holds.
-func (s *Server) keepChatLinkInbound(inbound chatLinkInbound) (bool, error) {
+func (s *Service) KeepInbound(inbound Inbound) (bool, error) {
 	if inbound.ReceivingAccountID == "" || inbound.PlatformChannelID == "" {
 		return false, nil
 	}
-	link, found, err := s.store.ActiveChatLinkFor(inbound.ReceivingAccountID, inbound.Platform, inbound.PlatformChannelID)
+	link, found, err := s.Store.ActiveChatLinkFor(inbound.ReceivingAccountID, inbound.Platform, inbound.PlatformChannelID)
 	if err != nil || !found {
 		return false, err
 	}
@@ -381,7 +381,7 @@ func (s *Server) keepChatLinkInbound(inbound chatLinkInbound) (bool, error) {
 	for _, attachment := range inbound.Attachments {
 		attachments = append(attachments, msg.ChatLinkAttachment{URL: attachment.URL, Filename: attachment.Filename, ContentType: attachment.ContentType, SizeBytes: attachment.SizeBytes})
 	}
-	kept, err := s.store.AddInboundChatLinkMessage(store.InboundChatLinkMessage{
+	kept, err := s.Store.AddInboundChatLinkMessage(store.InboundChatLinkMessage{
 		LinkID: link.ID, BusEventID: inbound.EventID, Body: inbound.Body, Attachments: attachments,
 		PlatformMessageID: inbound.PlatformMessageID, SenderPlatformUserID: inbound.SenderPlatformUserID,
 		SenderPlatformDisplayName: inbound.SenderDisplayName, At: time.Now().UTC()})
@@ -394,9 +394,9 @@ func (s *Server) keepChatLinkInbound(inbound chatLinkInbound) (bool, error) {
 	return kept, nil
 }
 
-// chatLinkInbound is the part of bus messages.MessagingInbound a chat link
+// Inbound is the part of bus messages.MessagingInbound a chat link
 // reads.
-type chatLinkInbound struct {
+type Inbound struct {
 	EventID            string `json:"event_id"`
 	Platform           string `json:"platform"`
 	Body               string `json:"body"`
@@ -417,29 +417,29 @@ type chatLinkInbound struct {
 
 // --- the sweep ---
 
-// RunChatLinks delivers and sends until ctx ends: on every kick and every
+// Run delivers and sends until ctx ends: on every kick and every
 // chatLinkSweepInterval.
-func (s *Server) RunChatLinks(ctx context.Context) {
-	if s.chatLinks == nil {
+func (s *Service) Run(ctx context.Context) {
+	if s.ChatLinks == nil {
 		return
 	}
 	ticker := time.NewTicker(chatLinkSweepInterval)
 	defer ticker.Stop()
 	for {
-		s.sweepChatLinks(ctx)
+		s.Sweep(ctx)
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-		case <-s.chatLinks.kick:
+		case <-s.ChatLinks.Kick:
 		}
 	}
 }
 
-func (s *Server) sweepChatLinks(ctx context.Context) {
-	s.chatLinks.mu.Lock()
-	defer s.chatLinks.mu.Unlock()
-	links, err := s.store.ActiveChatLinks()
+func (s *Service) Sweep(ctx context.Context) {
+	s.ChatLinks.mu.Lock()
+	defer s.ChatLinks.mu.Unlock()
+	links, err := s.Store.ActiveChatLinks()
 	if err != nil {
 		log.Printf("[chat-links] ERROR: read active links: %v", err)
 		return
@@ -453,8 +453,8 @@ func (s *Server) sweepChatLinks(ctx context.Context) {
 
 // deliverChatLinkInbound sends a link's pending messages into its session,
 // together, when the session is free and no earlier delivery is in it.
-func (s *Server) deliverChatLinkInbound(ctx context.Context, link store.ChatLink) {
-	inSession, err := s.store.ChatLinkMessagesInState(link.ID, msg.ChatLinkInbound, msg.ChatLinkMessageInSession)
+func (s *Service) deliverChatLinkInbound(ctx context.Context, link store.ChatLink) {
+	inSession, err := s.Store.ChatLinkMessagesInState(link.ID, msg.ChatLinkInbound, msg.ChatLinkMessageInSession)
 	if err != nil {
 		log.Printf("[chat-links] ERROR: %s: read messages in session: %v", link.ID, err)
 		return
@@ -462,7 +462,7 @@ func (s *Server) deliverChatLinkInbound(ctx context.Context, link store.ChatLink
 	if len(inSession) > 0 {
 		return
 	}
-	pending, err := s.store.ChatLinkMessagesInState(link.ID, msg.ChatLinkInbound, msg.ChatLinkMessagePending)
+	pending, err := s.Store.ChatLinkMessagesInState(link.ID, msg.ChatLinkInbound, msg.ChatLinkMessagePending)
 	if err != nil {
 		log.Printf("[chat-links] ERROR: %s: read pending messages: %v", link.ID, err)
 		return
@@ -470,7 +470,7 @@ func (s *Server) deliverChatLinkInbound(ctx context.Context, link store.ChatLink
 	if len(pending) == 0 {
 		return
 	}
-	session, err := s.store.GetSession(link.SessionID)
+	session, err := s.Store.GetSession(link.SessionID)
 	if err != nil {
 		log.Printf("[chat-links] ERROR: %s: session %s: %v", link.ID, link.SessionID, err)
 		return
@@ -482,7 +482,7 @@ func (s *Server) deliverChatLinkInbound(ctx context.Context, link store.ChatLink
 	if err != nil {
 		return
 	}
-	accountName, err := s.chatLinks.botAccountName(ctx, link.AccountID, link.Platform)
+	accountName, err := s.ChatLinks.botAccountName(ctx, link.AccountID, link.Platform)
 	if err != nil {
 		log.Printf("[chat-links] %s: the account's name is unknown (%v); labeling by platform only", link.ID, err)
 		accountName = ""
@@ -491,14 +491,14 @@ func (s *Server) deliverChatLinkInbound(ctx context.Context, link store.ChatLink
 	for index, message := range pending {
 		ids[index] = message.ID
 	}
-	deliveryID := chatLinkDeliveryIDPrefix + pending[0].ID
-	status, body := s.chatLinks.sendIntoSession(link.SessionID,
-		msg.SendMessageRequest{Message: chatLinkInboundText(link, session.PrincipalID, accountName, pending), ClientRequestID: deliveryID})
-	now := s.chatLinks.now()
+	deliveryID := DeliveryIDPrefix + pending[0].ID
+	status, body := s.ChatLinks.SendIntoSession(link.SessionID,
+		msg.SendMessageRequest{Message: InboundText(link, session.PrincipalID, accountName, pending), ClientRequestID: deliveryID})
+	now := s.ChatLinks.Now()
 	if status != http.StatusOK {
 		reason := fmt.Sprintf("the session refused it with %d: %s", status, strings.TrimSpace(string(body)))
 		log.Printf("[chat-links] ERROR: %s: deliver %v: %s", link.ID, ids, reason)
-		if err := s.store.RecordChatLinkDeliveryAttemptFailed(ids, reason, now); err != nil {
+		if err := s.Store.RecordChatLinkDeliveryAttemptFailed(ids, reason, now); err != nil {
 			log.Printf("[chat-links] ERROR: %s: record the failed delivery: %v", link.ID, err)
 		}
 		return
@@ -511,7 +511,7 @@ func (s *Server) deliverChatLinkInbound(ctx context.Context, link store.ChatLink
 	if bridgeMessageID == "" {
 		bridgeMessageID = sent.HeldMessageID
 	}
-	if err := s.store.MarkChatLinkMessagesInSession(ids, deliveryID, bridgeMessageID, now); err != nil {
+	if err := s.Store.MarkChatLinkMessagesInSession(ids, deliveryID, bridgeMessageID, now); err != nil {
 		log.Printf("[chat-links] ERROR: %s: %v were sent into %s but not marked: %v", link.ID, ids, link.SessionID, err)
 		return
 	}
@@ -521,15 +521,15 @@ func (s *Server) deliverChatLinkInbound(ctx context.Context, link store.ChatLink
 // settleChatLinkTurnWithoutEnd fails a delivery whose session is free again
 // with no turn end seen for it: the turn ended in an error or was cut off,
 // which reports no turn end.
-func (s *Server) settleChatLinkTurnWithoutEnd(link store.ChatLink) {
-	inSession, err := s.store.ChatLinkMessagesInState(link.ID, msg.ChatLinkInbound, msg.ChatLinkMessageInSession)
+func (s *Service) settleChatLinkTurnWithoutEnd(link store.ChatLink) {
+	inSession, err := s.Store.ChatLinkMessagesInState(link.ID, msg.ChatLinkInbound, msg.ChatLinkMessageInSession)
 	if err != nil || len(inSession) == 0 {
 		return
 	}
-	if s.chatLinks.now().Sub(inSession[0].UpdatedAt) < chatLinkTurnWithoutEndAfter {
+	if s.ChatLinks.Now().Sub(inSession[0].UpdatedAt) < TurnWithoutEndAfter {
 		return
 	}
-	session, err := s.store.GetSession(link.SessionID)
+	session, err := s.Store.GetSession(link.SessionID)
 	if err != nil || !chatLinkSessionIsFree(msg.SessionState(session.State)) {
 		return
 	}
@@ -537,22 +537,22 @@ func (s *Server) settleChatLinkTurnWithoutEnd(link store.ChatLink) {
 	s.finishChatLinkDelivery(link, inSession[0].DeliveryID, "", reason)
 }
 
-// onChatLinkTurnEnd takes the final reply of a turn a chat link started.
+// OnTurnEnd takes the final reply of a turn a chat link started.
 // Any turn end wakes the sweep, since the session is free now.
-func (s *Server) onChatLinkTurnEnd(bridgeID string, ev *msg.Event, state msg.SessionState) {
-	if s.chatLinks == nil {
+func (s *Service) OnTurnEnd(bridgeID string, ev *msg.Event, state msg.SessionState) {
+	if s.ChatLinks == nil {
 		return
 	}
-	defer s.chatLinks.wake()
-	if ev == nil || !strings.HasPrefix(ev.ClientRequestID, chatLinkDeliveryIDPrefix) {
+	defer s.ChatLinks.wake()
+	if ev == nil || !strings.HasPrefix(ev.ClientRequestID, DeliveryIDPrefix) {
 		return
 	}
-	delivered, err := s.store.ChatLinkMessagesOfDelivery(ev.ClientRequestID)
+	delivered, err := s.Store.ChatLinkMessagesOfDelivery(ev.ClientRequestID)
 	if err != nil || len(delivered) == 0 {
 		log.Printf("[chat-links] ERROR: session %s ended turn %s but its messages were not found: %v", bridgeID, ev.ClientRequestID, err)
 		return
 	}
-	link, err := s.store.ChatLinkOfMessage(delivered[0])
+	link, err := s.Store.ChatLinkOfMessage(delivered[0])
 	if err != nil {
 		log.Printf("[chat-links] ERROR: the link of %s: %v", delivered[0].ID, err)
 		return
@@ -568,24 +568,24 @@ func (s *Server) onChatLinkTurnEnd(bridgeID string, ev *msg.Event, state msg.Ses
 	default:
 		reply = ev.Result.Text
 	}
-	s.chatLinks.mu.Lock()
-	defer s.chatLinks.mu.Unlock()
+	s.ChatLinks.mu.Lock()
+	defer s.ChatLinks.mu.Unlock()
 	s.finishChatLinkDelivery(link, ev.ClientRequestID, reply, reason)
 }
 
 // finishChatLinkDelivery closes a delivery: its inbound messages are
 // delivered, and its reply is kept to send, or failed with reason when there
 // is none — and then the session is told.
-func (s *Server) finishChatLinkDelivery(link store.ChatLink, deliveryID, reply, reason string) {
-	now := s.chatLinks.now()
-	delivered, err := s.store.ChatLinkMessagesOfDelivery(deliveryID)
+func (s *Service) finishChatLinkDelivery(link store.ChatLink, deliveryID, reply, reason string) {
+	now := s.ChatLinks.Now()
+	delivered, err := s.Store.ChatLinkMessagesOfDelivery(deliveryID)
 	if err != nil {
 		log.Printf("[chat-links] ERROR: %s: read delivery %s: %v", link.ID, deliveryID, err)
 		return
 	}
 	for _, message := range delivered {
 		if message.Direction == msg.ChatLinkInbound && message.State == msg.ChatLinkMessageInSession {
-			if err := s.store.SetChatLinkMessageState(message.ID, msg.ChatLinkMessageDelivered, "", nil, now); err != nil {
+			if err := s.Store.SetChatLinkMessageState(message.ID, msg.ChatLinkMessageDelivered, "", nil, now); err != nil {
 				log.Printf("[chat-links] ERROR: %s: mark %s delivered: %v", link.ID, message.ID, err)
 			}
 		}
@@ -594,7 +594,7 @@ func (s *Server) finishChatLinkDelivery(link store.ChatLink, deliveryID, reply, 
 	if reply == "" {
 		state = msg.ChatLinkMessageFailed
 	}
-	outbound, err := s.store.AddOutboundChatLinkMessage(link.ID, deliveryID, reply, state, reason, now)
+	outbound, err := s.Store.AddOutboundChatLinkMessage(link.ID, deliveryID, reply, state, reason, now)
 	if err != nil {
 		log.Printf("[chat-links] ERROR: %s: keep the reply to %s: %v", link.ID, deliveryID, err)
 		return
@@ -606,14 +606,14 @@ func (s *Server) finishChatLinkDelivery(link store.ChatLink, deliveryID, reply, 
 }
 
 // sendDueChatLinkReplies sends every reply whose attempt is due.
-func (s *Server) sendDueChatLinkReplies(ctx context.Context) {
-	due, err := s.store.DueOutboundChatLinkMessages(s.chatLinks.now())
+func (s *Service) sendDueChatLinkReplies(ctx context.Context) {
+	due, err := s.Store.DueOutboundChatLinkMessages(s.ChatLinks.Now())
 	if err != nil {
 		log.Printf("[chat-links] ERROR: read due replies: %v", err)
 		return
 	}
 	for _, reply := range due {
-		link, err := s.store.ChatLinkOfMessage(reply)
+		link, err := s.Store.ChatLinkOfMessage(reply)
 		if err != nil {
 			log.Printf("[chat-links] ERROR: the link of %s: %v", reply.ID, err)
 			continue
@@ -622,22 +622,22 @@ func (s *Server) sendDueChatLinkReplies(ctx context.Context) {
 	}
 }
 
-func (s *Server) sendChatLinkReply(ctx context.Context, link store.ChatLink, reply store.ChatLinkMessage) {
+func (s *Service) sendChatLinkReply(ctx context.Context, link store.ChatLink, reply store.ChatLinkMessage) {
 	body, files := s.chatLinkReplyForRecipient(ctx, link, reply.Body)
 	send := map[string]any{"account_id": link.AccountID, "channel_id": link.ConversationID, "body": body}
 	if len(files) > 0 {
 		send["files"] = files
 	}
 	var result multichatSendResult
-	status, err := s.chatLinks.call(ctx, http.MethodPost, "/api/messages/send", send, &result)
-	now := s.chatLinks.now()
+	status, err := s.ChatLinks.call(ctx, http.MethodPost, "/api/messages/send", send, &result)
+	now := s.ChatLinks.Now()
 	if err == nil {
 		if body != reply.Body {
-			if err := s.store.SetChatLinkMessageSentBody(reply.ID, body); err != nil {
+			if err := s.Store.SetChatLinkMessageSentBody(reply.ID, body); err != nil {
 				log.Printf("[chat-links] ERROR: %s: %s was sent with its references drawn but that was not recorded: %v", link.ID, reply.ID, err)
 			}
 		}
-		if err := s.store.SetChatLinkMessageState(reply.ID, msg.ChatLinkMessageDelivered, "", result.MessageIDs, now); err != nil {
+		if err := s.Store.SetChatLinkMessageState(reply.ID, msg.ChatLinkMessageDelivered, "", result.MessageIDs, now); err != nil {
 			log.Printf("[chat-links] ERROR: %s: %s was sent as %v but not marked: %v", link.ID, reply.ID, result.MessageIDs, err)
 		}
 		log.Printf("[chat-links] %s: sent %s to %s as %v", link.ID, reply.ID, link.PersonDisplayName, result.MessageIDs)
@@ -651,7 +651,7 @@ func (s *Server) sendChatLinkReply(ctx context.Context, link store.ChatLink, rep
 		if reply.Attempts+1 >= chatLinkSendAttempts {
 			reason = fmt.Sprintf("gave up after %d attempts: %s", reply.Attempts+1, reason)
 		}
-		if err := s.store.SetChatLinkMessageState(reply.ID, msg.ChatLinkMessageFailed, reason, nil, now); err != nil {
+		if err := s.Store.SetChatLinkMessageState(reply.ID, msg.ChatLinkMessageFailed, reason, nil, now); err != nil {
 			log.Printf("[chat-links] ERROR: %s: mark %s failed: %v", link.ID, reply.ID, err)
 		}
 		log.Printf("[chat-links] ERROR: %s: %s will not be sent: %s", link.ID, reply.ID, reason)
@@ -662,7 +662,7 @@ func (s *Server) sendChatLinkReply(ctx context.Context, link store.ChatLink, rep
 	if wait <= 0 || wait > chatLinkLongestRetry {
 		wait = chatLinkLongestRetry
 	}
-	if err := s.store.RecordChatLinkSendFailed(reply.ID, err.Error(), now.Add(wait), now); err != nil {
+	if err := s.Store.RecordChatLinkSendFailed(reply.ID, err.Error(), now.Add(wait), now); err != nil {
 		log.Printf("[chat-links] ERROR: %s: record the failed send of %s: %v", link.ID, reply.ID, err)
 	}
 	log.Printf("[chat-links] %s: send %s failed (attempt %d), trying again in %s: %v", link.ID, reply.ID, reply.Attempts+1, wait, err)
@@ -670,15 +670,15 @@ func (s *Server) sendChatLinkReply(ctx context.Context, link store.ChatLink, rep
 
 // reportChatLinkFailure tells the session a reply did not reach the person.
 // The report's turn carries a report request id, so its reply goes nowhere.
-func (s *Server) reportChatLinkFailure(link store.ChatLink, reply store.ChatLinkMessage, reason string) {
+func (s *Service) reportChatLinkFailure(link store.ChatLink, reply store.ChatLinkMessage, reason string) {
 	text := fmt.Sprintf("Chat link %s: your reply to %s was not sent (%s). %s has not heard back from you about their last message; reply to this turn goes only to the operator, not to %s.",
 		link.ID, link.PersonDisplayName, reason, link.PersonDisplayName, link.PersonDisplayName)
 	if reply.Body != "" {
 		text += "\n\nThe reply that was not sent:\n\n" + reply.Body
 	}
 	go func() {
-		status, body := s.chatLinks.sendIntoSession(link.SessionID,
-			msg.SendMessageRequest{Message: text, ClientRequestID: chatLinkReportRequestIDPrefix + reply.ID})
+		status, body := s.ChatLinks.SendIntoSession(link.SessionID,
+			msg.SendMessageRequest{Message: text, ClientRequestID: ReportRequestIDPrefix + reply.ID})
 		if status != http.StatusOK {
 			log.Printf("[chat-links] ERROR: %s: session %s was not told that %s failed: %d %s", link.ID, link.SessionID, reply.ID, status, strings.TrimSpace(string(body)))
 		}

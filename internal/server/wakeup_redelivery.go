@@ -131,7 +131,7 @@ func (s *Server) deliverLostWakeup(armed store.ScheduledWakeup, oldestCallToRead
 		return
 	}
 	message := fmt.Sprintf("[llm-bridge-server restarted while your ScheduleWakeup was pending, which canceled it. This is its prompt, sent by the server at the time it was due.]\n\n%s", armed.Prompt)
-	answer := s.sendMessageFromThisServer(context.Background(), armed.SessionID, SendMessageRequest{Message: message}, "")
+	answer := s.SendMessageFromThisServer(context.Background(), armed.SessionID, SendMessageRequest{Message: message}, "")
 	if answer.Status != http.StatusOK {
 		log.Printf("[wakeup-redelivery] ERROR %s: sending wakeup %s answered %d: %s", armed.SessionID, armed.ToolID, answer.Status, answer.Body)
 		return

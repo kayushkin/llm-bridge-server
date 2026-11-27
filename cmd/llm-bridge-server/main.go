@@ -305,10 +305,10 @@ func main() {
 	srv.StartPeerDialers()                                    // Reopen the socket of every dial-out connection this server initiated
 	srv.StartMachineDiskUsage()                               // Record runners' finished deletions on the Machines page
 	srv.StartMachineStatsSampler(context.Background())        // Read this machine every minute, keep runners' readings, delete old ones
-	go srv.RunChatLinks(context.Background())                 // Deliver what people send linked conversations, and send the replies
+	go srv.ChatLinks().Run(context.Background())     // Deliver what people send linked conversations, and send the replies
 	go func() {                                               // Read messaging.inbound for chat links; a bus that is down is retried, not fatal to every session
 		for {
-			err := srv.StartChatLinkInbound(cfg.ChatLinksNATSURL)
+			err := srv.ChatLinks().StartInbound(cfg.ChatLinksNATSURL)
 			if err == nil {
 				return
 			}

@@ -25,6 +25,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/chatlinks"
+
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/people"
@@ -285,7 +287,7 @@ func (s *Server) photoFacePassOperator(ctx context.Context, owner string) (strin
 // photoFacePassMultichatToken is multichat's token from auth-store, read for
 // each round, as chat links read it.
 func (s *Server) photoFacePassMultichatToken(ctx context.Context) (string, error) {
-	resolved, err := s.authClient.ResolveByProvider(ctx, chatLinkMultichatProvider, "", "", "read the chats a photo was sent in, for photo-store's face passes")
+	resolved, err := s.authClient.ResolveByProvider(ctx, chatlinks.MultichatProvider, "", "", "read the chats a photo was sent in, for photo-store's face passes")
 	if err != nil {
 		return "", fmt.Errorf("auth-store, multichat's token: %w", err)
 	}

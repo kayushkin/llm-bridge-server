@@ -1,4 +1,4 @@
-package server
+package chatlinks
 
 import (
 	"context"
@@ -28,15 +28,15 @@ var chatLinkIdentityKinds = map[string]string{
 // cannot answer, the delivery is recorded as a failed attempt with the
 // reason, and the error is answered: the sweep tries again, and no message
 // goes in with a guessed sender.
-func (s *Server) resolveChatLinkSenders(ctx context.Context, link store.ChatLink, sessionPrincipalID string, messages []store.ChatLinkMessage) ([]store.ChatLinkMessage, error) {
+func (s *Service) resolveChatLinkSenders(ctx context.Context, link store.ChatLink, sessionPrincipalID string, messages []store.ChatLinkMessage) ([]store.ChatLinkMessage, error) {
 	resolved := make([]store.ChatLinkMessage, len(messages))
 	for index, message := range messages {
 		resolved[index] = message
 		if !message.SenderResolvedAt.IsZero() {
 			continue
 		}
-		sender, err := s.chatLinks.lookUpSender(ctx, sessionPrincipalID, link.Platform, message.SenderPlatformUserID)
-		now := s.chatLinks.now()
+		sender, err := s.ChatLinks.lookUpSender(ctx, sessionPrincipalID, link.Platform, message.SenderPlatformUserID)
+		now := s.ChatLinks.Now()
 		if err != nil {
 			reason := fmt.Sprintf("could not read who sent %s from people-store: %v", message.ID, err)
 			log.Printf("[chat-links] ERROR: %s: %s", link.ID, reason)
@@ -44,12 +44,12 @@ func (s *Server) resolveChatLinkSenders(ctx context.Context, link store.ChatLink
 			for index, message := range messages {
 				ids[index] = message.ID
 			}
-			if recordErr := s.store.RecordChatLinkDeliveryAttemptFailed(ids, reason, now); recordErr != nil {
+			if recordErr := s.Store.RecordChatLinkDeliveryAttemptFailed(ids, reason, now); recordErr != nil {
 				log.Printf("[chat-links] ERROR: %s: record the failed delivery: %v", link.ID, recordErr)
 			}
 			return nil, err
 		}
-		if err := s.store.RecordChatLinkMessageSender(message.ID, sender, now); err != nil {
+		if err := s.Store.RecordChatLinkMessageSender(message.ID, sender, now); err != nil {
 			log.Printf("[chat-links] ERROR: %s: record the sender of %s: %v", link.ID, message.ID, err)
 			return nil, err
 		}
@@ -75,7 +75,7 @@ type chatLinkSenderDirectory interface {
 // with no id or no identity kind, is an empty sender and no error;
 // people-store failing to answer is an error, and so is a session that runs as
 // no principal, since then there are no records to read.
-func (c *chatLinks) lookUpSender(ctx context.Context, sessionPrincipalID, platform, platformUserID string) (store.ChatLinkMessageSender, error) {
+func (c *ChatLinks) lookUpSender(ctx context.Context, sessionPrincipalID, platform, platformUserID string) (store.ChatLinkMessageSender, error) {
 	kind := chatLinkIdentityKinds[platform]
 	if kind == "" || platformUserID == "" {
 		return store.ChatLinkMessageSender{}, nil
@@ -83,5 +83,5 @@ func (c *chatLinks) lookUpSender(ctx context.Context, sessionPrincipalID, platfo
 	if sessionPrincipalID == "" {
 		return store.ChatLinkMessageSender{}, errors.New("the session runs as no principal, so there are no people records to read the sender from")
 	}
-	return c.senders.SenderOfAccount(ctx, sessionPrincipalID, kind, platformUserID)
+	return c.Senders.SenderOfAccount(ctx, sessionPrincipalID, kind, platformUserID)
 }

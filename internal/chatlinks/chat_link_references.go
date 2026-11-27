@@ -1,4 +1,4 @@
-package server
+package chatlinks
 
 // A chat link's reply, as the person it goes to may read it.
 //
@@ -129,17 +129,17 @@ const chatLinkMaximumAttachments = 10
 // the person the link talks with, and a picture of each linked record that
 // has one. A failure anywhere is logged and the reply goes as it was written,
 // or without a picture: a missing link is not a wrong one.
-func (s *Server) chatLinkReplyForRecipient(ctx context.Context, link store.ChatLink, body string) (string, []chatLinkFile) {
-	resolver := s.referenceResolver.Load()
-	if resolver == nil || s.chatLinks == nil {
+func (s *Service) chatLinkReplyForRecipient(ctx context.Context, link store.ChatLink, body string) (string, []chatLinkFile) {
+	resolver := s.ReferenceResolver()
+	if resolver == nil || s.ChatLinks == nil {
 		return body, nil
 	}
-	session, err := s.store.GetSession(link.SessionID)
+	session, err := s.Store.GetSession(link.SessionID)
 	if err != nil || session == nil {
 		log.Printf("[chat-links] ERROR: %s: read session %s to draw references: %v", link.ID, link.SessionID, err)
 		return body, nil
 	}
-	recipient, err := s.store.ChatLinkRecipientPrincipalID(link.ID, session.PrincipalID)
+	recipient, err := s.Store.ChatLinkRecipientPrincipalID(link.ID, session.PrincipalID)
 	if err != nil {
 		log.Printf("[chat-links] ERROR: %s: who the reply goes to: %v", link.ID, err)
 		return body, nil
@@ -147,12 +147,12 @@ func (s *Server) chatLinkReplyForRecipient(ctx context.Context, link store.ChatL
 	if recipient == "" {
 		return body, nil
 	}
-	pattern, withPictures, err := s.chatLinks.references.get(resolver.Types, s.chatLinks.now())
+	pattern, withPictures, err := s.ChatLinks.references.get(resolver.Types, s.ChatLinks.Now())
 	if err != nil {
 		log.Printf("[chat-links] ERROR: %s: %v; the reply goes with its ids as written", link.ID, err)
 		return body, nil
 	}
-	drawn, linked, err := drawReferencesForRecipient(ctx, body, pattern, s.settings.String(config.SettingChatLinksReferencePageBaseURL),
+	drawn, linked, err := drawReferencesForRecipient(ctx, body, pattern, s.Settings.String(config.SettingChatLinksReferencePageBaseURL),
 		func(ctx context.Context, ids []string) (map[string][]referenceMatch, error) {
 			return resolveReferencesAs(ctx, resolver, recipient, ids)
 		})

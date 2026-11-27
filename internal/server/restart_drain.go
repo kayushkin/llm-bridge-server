@@ -214,7 +214,7 @@ func (s *Server) deliverHeldMessages() {
 }
 
 func (s *Server) deliverHeldMessage(message store.HeldMessage) {
-	answer := s.sendMessageFromThisServer(context.Background(), message.SessionID, message.Request, message.SenderPrincipalID)
+	answer := s.SendMessageFromThisServer(context.Background(), message.SessionID, message.Request, message.SenderPrincipalID)
 	status, body := answer.Status, answer.Body
 	outcome, subtype, detail := store.HeldMessageDelivered, msg.SystemSubtypeHeldMessageDelivered, ""
 	if status == http.StatusAccepted {

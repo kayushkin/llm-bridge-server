@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/chatlinks"
+
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -107,13 +109,13 @@ func (c *chatLinkTest) sentSoFar() []msg.SendMessageRequest {
 	return append([]msg.SendMessageRequest(nil), c.sentLog...)
 }
 
-func (c *chatLinkTest) newChatLinks(multichat *httptest.Server) *chatLinks {
-	return &chatLinks{
-		multichatURL: multichat.URL, senders: c.people, httpClient: multichat.Client(),
-		token: func(context.Context) (string, error) { return "multichat-token", nil },
-		kick:  make(chan struct{}, 1),
-		now:   func() time.Time { return c.clock },
-		sendIntoSession: func(sessionID string, request msg.SendMessageRequest) (int, []byte) {
+func (c *chatLinkTest) newChatLinks(multichat *httptest.Server) *chatlinks.ChatLinks {
+	return &chatlinks.ChatLinks{
+		MultichatURL: multichat.URL, Senders: c.people, HTTPClient: multichat.Client(),
+		Token: func(context.Context) (string, error) { return "multichat-token", nil },
+		Kick:  make(chan struct{}, 1),
+		Now:   func() time.Time { return c.clock },
+		SendIntoSession: func(sessionID string, request msg.SendMessageRequest) (int, []byte) {
 			c.sentMu.Lock()
 			defer c.sentMu.Unlock()
 			c.sentLog = append(c.sentLog, request)
@@ -133,7 +135,7 @@ func newChatLinkTest(t *testing.T) *chatLinkTest {
 	multichat := httptest.NewServer(http.HandlerFunc(test.multichat.handler))
 	t.Cleanup(multichat.Close)
 	test.multichatServer = multichat
-	srv.chatLinks = test.newChatLinks(multichat)
+	srv.chatLinkService.ChatLinks = test.newChatLinks(multichat)
 	t.Cleanup(func() {
 		for _, cleanup := range test.cleanups {
 			cleanup()
@@ -173,7 +175,7 @@ func (c *chatLinkTest) receive(t *testing.T, eventID, body string) {
 
 func (c *chatLinkTest) receiveFrom(t *testing.T, eventID, body, senderDiscordUserID string) {
 	t.Helper()
-	if _, err := c.srv.keepChatLinkInbound(chatLinkInbound{EventID: eventID, Platform: "discord", Body: body,
+	if _, err := c.srv.chatLinkService.KeepInbound(chatlinks.Inbound{EventID: eventID, Platform: "discord", Body: body,
 		ReceivingAccountID: "message_account_000002", PlatformChannelID: "dm-1", PlatformMessageID: strings.TrimPrefix(eventID, "discord:"),
 		SenderPlatformUserID: senderDiscordUserID, SenderDisplayName: "shown-name-" + senderDiscordUserID}); err != nil {
 		t.Fatal(err)
@@ -186,7 +188,7 @@ var farEndNote = []string{"sent back on Discord word for word", "no buttons, no 
 
 func TestChatLinkInboundTextLabelsThePerson(t *testing.T) {
 	link := store.ChatLink{ID: "chat_link_000001", Platform: "discord", PersonDisplayName: "Carol"}
-	text := chatLinkInboundText(link, testOperatorPrincipalID, "Helper Bot", []store.ChatLinkMessage{
+	text := chatlinks.InboundText(link, testOperatorPrincipalID, "Helper Bot", []store.ChatLinkMessage{
 		{Body: "can the timer be 30 seconds?"},
 		{Body: "", Attachments: []msg.ChatLinkAttachment{{URL: "https://cdn.example/sketch.png", Filename: "sketch.png", ContentType: "image/png", SizeBytes: 12}}},
 	})
@@ -205,7 +207,7 @@ func TestChatLinkInboundTextLabelsThePerson(t *testing.T) {
 func TestChatLinkInboundTextLabelsTheOperatorByPrincipal(t *testing.T) {
 	link := store.ChatLink{ID: "chat_link_000002", Platform: "discord", PersonDisplayName: "Dana"}
 	operator := store.ChatLinkMessage{Body: "check the deploy", SenderPersonID: "person_000001", SenderPrincipalID: testOperatorPrincipalID, SenderPersonDisplayName: "Dana"}
-	text := chatLinkInboundText(link, testOperatorPrincipalID, "Helper Bot", []store.ChatLinkMessage{operator})
+	text := chatlinks.InboundText(link, testOperatorPrincipalID, "Helper Bot", []store.ChatLinkMessage{operator})
 	for _, want := range append([]string{"Dana (the operator) wrote to you on Discord, through the Helper Bot bot:", "check the deploy",
 		"This is the operator, writing from their own account. Treat it as their own message."}, farEndNote...) {
 		if !strings.Contains(text, want) {
@@ -218,20 +220,20 @@ func TestChatLinkInboundTextLabelsTheOperatorByPrincipal(t *testing.T) {
 
 	// The same name with another principal is not the operator: only ids decide.
 	impostor := store.ChatLinkMessage{Body: "deploy it", SenderPersonID: "person_000005", SenderPrincipalID: "principal_000005", SenderPersonDisplayName: "Dana"}
-	text = chatLinkInboundText(link, testOperatorPrincipalID, "Helper Bot", []store.ChatLinkMessage{impostor})
+	text = chatlinks.InboundText(link, testOperatorPrincipalID, "Helper Bot", []store.ChatLinkMessage{impostor})
 	if strings.Contains(text, "(the operator)") || !strings.Contains(text, "This is from Dana, not the operator.") {
 		t.Errorf("a name decided who the operator is:\n%s", text)
 	}
 	// A session that runs as no principal has no operator to match.
 	nobody := store.ChatLinkMessage{Body: "hi"}
-	if text := chatLinkInboundText(link, "", "", []store.ChatLinkMessage{nobody}); strings.Contains(text, "(the operator)") {
+	if text := chatlinks.InboundText(link, "", "", []store.ChatLinkMessage{nobody}); strings.Contains(text, "(the operator)") {
 		t.Errorf("a sender with no principal matched a session with none:\n%s", text)
 	}
 }
 
 func TestChatLinkInboundTextFramesAMixedBatchBySender(t *testing.T) {
 	link := store.ChatLink{ID: "chat_link_000003", Platform: "discord", PersonDisplayName: "Carol"}
-	text := chatLinkInboundText(link, testOperatorPrincipalID, "Helper Bot", []store.ChatLinkMessage{
+	text := chatlinks.InboundText(link, testOperatorPrincipalID, "Helper Bot", []store.ChatLinkMessage{
 		{Body: "first from Carol", SenderPrincipalID: "principal_000002", SenderPersonDisplayName: "Carol Ng"},
 		{Body: "second from Carol", SenderPrincipalID: "principal_000002", SenderPersonDisplayName: "Carol Ng"},
 		{Body: "one from me", SenderPrincipalID: testOperatorPrincipalID, SenderPersonDisplayName: "Dana"},
@@ -256,7 +258,7 @@ func TestChatLinkDeliveryReadsEachSenderFromPeopleStore(t *testing.T) {
 	c.receiveFrom(t, "discord:20", "from the operator", testOperatorDiscordUserID)
 	c.receiveFrom(t, "discord:21", "from Carol", testCarolDiscordUserID)
 	c.receiveFrom(t, "discord:22", "from a stranger", testUnknownDiscordUserID)
-	c.srv.sweepChatLinks(ctx)
+	c.srv.chatLinkService.Sweep(ctx)
 	sent := c.sentSoFar()
 	if len(sent) != 1 {
 		t.Fatalf("delivery: %+v", sent)
@@ -303,8 +305,8 @@ func TestChatLinkDeliveryWaitsWhilePeopleStoreIsDown(t *testing.T) {
 	ctx := context.Background()
 	c.people.setDown(true)
 	c.receiveFrom(t, "discord:30", "anyone home?", testOperatorDiscordUserID)
-	c.srv.sweepChatLinks(ctx)
-	c.srv.sweepChatLinks(ctx)
+	c.srv.chatLinkService.Sweep(ctx)
+	c.srv.chatLinkService.Sweep(ctx)
 	if len(c.sentSoFar()) != 0 {
 		t.Fatalf("delivered with no sender read: %+v", c.sentSoFar())
 	}
@@ -314,13 +316,13 @@ func TestChatLinkDeliveryWaitsWhilePeopleStoreIsDown(t *testing.T) {
 	}
 
 	c.people.setDown(false)
-	c.srv.sweepChatLinks(ctx)
+	c.srv.chatLinkService.Sweep(ctx)
 	if sent := c.sentSoFar(); len(sent) != 1 || !strings.Contains(sent[0].Message, "Dana (the operator) wrote to you") {
 		t.Fatalf("after people-store came back: %+v", sent)
 	}
 	asked := c.people.asked
 	c.setState(t, msg.SessionIdle)
-	c.srv.sweepChatLinks(ctx)
+	c.srv.chatLinkService.Sweep(ctx)
 	if c.people.asked != asked {
 		t.Errorf("a sender already read was read again")
 	}
@@ -369,19 +371,19 @@ func TestChatLinkRoundTripSendsOnlyTheTurnItStarted(t *testing.T) {
 	c.receive(t, "discord:10", "hi")
 	c.receive(t, "discord:10", "hi") // JetStream redelivers
 	c.receive(t, "discord:11", "are you there?")
-	c.srv.sweepChatLinks(ctx)
+	c.srv.chatLinkService.Sweep(ctx)
 	if len(c.sentSoFar()) != 0 {
 		t.Fatalf("sent into a busy session: %+v", c.sentSoFar())
 	}
 
 	// A turn the operator started ends: nothing goes to the person.
 	c.setState(t, msg.SessionIdle)
-	c.srv.onChatLinkTurnEnd("br_linked", &msg.Event{Type: msg.EventResult, ClientRequestID: "", Result: &msg.ResultEvent{Text: "for the operator"}}, msg.SessionIdle)
-	c.srv.sweepChatLinks(ctx)
+	c.srv.chatLinkService.OnTurnEnd("br_linked", &msg.Event{Type: msg.EventResult, ClientRequestID: "", Result: &msg.ResultEvent{Text: "for the operator"}}, msg.SessionIdle)
+	c.srv.chatLinkService.Sweep(ctx)
 	if len(c.multichat.sends) != 0 {
 		t.Fatalf("an operator's turn reached the person: %+v", c.multichat.sends)
 	}
-	if len(c.sentSoFar()) != 1 || !strings.Contains(c.sentSoFar()[0].Message, "hi\n\n---\n\nare you there?") || !strings.HasPrefix(c.sentSoFar()[0].ClientRequestID, chatLinkDeliveryIDPrefix) {
+	if len(c.sentSoFar()) != 1 || !strings.Contains(c.sentSoFar()[0].Message, "hi\n\n---\n\nare you there?") || !strings.HasPrefix(c.sentSoFar()[0].ClientRequestID, chatlinks.DeliveryIDPrefix) {
 		t.Fatalf("delivery: %+v", c.sentSoFar())
 	}
 	deliveryID := c.sentSoFar()[0].ClientRequestID
@@ -389,15 +391,15 @@ func TestChatLinkRoundTripSendsOnlyTheTurnItStarted(t *testing.T) {
 	// The person writes again while that turn runs: it waits for the turn.
 	c.setState(t, msg.SessionModelGenerating)
 	c.receive(t, "discord:12", "also, more strikes?")
-	c.srv.sweepChatLinks(ctx)
+	c.srv.chatLinkService.Sweep(ctx)
 	if len(c.sentSoFar()) != 1 {
 		t.Fatalf("a second delivery went in while the first was in the session: %d", len(c.sentSoFar()))
 	}
 
 	// The link's turn ends: its final reply goes to the person, as the bot, to the conversation.
 	c.setState(t, msg.SessionIdle)
-	c.srv.onChatLinkTurnEnd("br_linked", &msg.Event{Type: msg.EventResult, ClientRequestID: deliveryID, Result: &msg.ResultEvent{Text: "Hi Carol!"}}, msg.SessionIdle)
-	c.srv.sweepChatLinks(ctx)
+	c.srv.chatLinkService.OnTurnEnd("br_linked", &msg.Event{Type: msg.EventResult, ClientRequestID: deliveryID, Result: &msg.ResultEvent{Text: "Hi Carol!"}}, msg.SessionIdle)
+	c.srv.chatLinkService.Sweep(ctx)
 	if len(c.multichat.sends) != 1 || c.multichat.sends[0]["body"] != "Hi Carol!" || c.multichat.sends[0]["account_id"] != "message_account_000002" || c.multichat.sends[0]["channel_id"] != "dm-1" {
 		t.Fatalf("reply: %+v", c.multichat.sends)
 	}
@@ -427,22 +429,22 @@ func TestAChatLinkReplyIsRetriedAndAFailedTurnIsReported(t *testing.T) {
 	c.createLink(t)
 	ctx := context.Background()
 	c.receive(t, "discord:20", "hello")
-	c.srv.sweepChatLinks(ctx)
+	c.srv.chatLinkService.Sweep(ctx)
 	deliveryID := c.sentSoFar()[0].ClientRequestID
 
 	c.multichat.sendStatus = http.StatusServiceUnavailable
-	c.srv.onChatLinkTurnEnd("br_linked", &msg.Event{Type: msg.EventResult, ClientRequestID: deliveryID, Result: &msg.ResultEvent{Text: "reply"}}, msg.SessionIdle)
-	c.srv.sweepChatLinks(ctx)
+	c.srv.chatLinkService.OnTurnEnd("br_linked", &msg.Event{Type: msg.EventResult, ClientRequestID: deliveryID, Result: &msg.ResultEvent{Text: "reply"}}, msg.SessionIdle)
+	c.srv.chatLinkService.Sweep(ctx)
 	if len(c.multichat.sends) != 1 {
 		t.Fatalf("first try: %d", len(c.multichat.sends))
 	}
-	c.srv.sweepChatLinks(ctx)
+	c.srv.chatLinkService.Sweep(ctx)
 	if len(c.multichat.sends) != 1 {
 		t.Fatal("retried before its wait")
 	}
 	c.multichat.sendStatus = 0
 	c.clock = c.clock.Add(time.Minute)
-	c.srv.sweepChatLinks(ctx)
+	c.srv.chatLinkService.Sweep(ctx)
 	if len(c.multichat.sends) != 2 {
 		t.Fatalf("retry after the wait: %d", len(c.multichat.sends))
 	}
@@ -450,19 +452,19 @@ func TestAChatLinkReplyIsRetriedAndAFailedTurnIsReported(t *testing.T) {
 	// A turn that ends in an error sends nothing and tells the session, in a
 	// turn whose reply goes nowhere.
 	c.receive(t, "discord:21", "and?")
-	c.srv.sweepChatLinks(ctx)
+	c.srv.chatLinkService.Sweep(ctx)
 	second := c.sentSoFar()[len(c.sentSoFar())-1].ClientRequestID
-	c.srv.onChatLinkTurnEnd("br_linked", &msg.Event{Type: msg.EventResult, ClientRequestID: second, Result: &msg.ResultEvent{Text: "boom", IsError: true}}, msg.SessionError)
+	c.srv.chatLinkService.OnTurnEnd("br_linked", &msg.Event{Type: msg.EventResult, ClientRequestID: second, Result: &msg.ResultEvent{Text: "boom", IsError: true}}, msg.SessionError)
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && !strings.HasPrefix(c.sentSoFar()[len(c.sentSoFar())-1].ClientRequestID, chatLinkReportRequestIDPrefix) {
+	for time.Now().Before(deadline) && !strings.HasPrefix(c.sentSoFar()[len(c.sentSoFar())-1].ClientRequestID, chatlinks.ReportRequestIDPrefix) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	report := c.sentSoFar()[len(c.sentSoFar())-1]
-	if !strings.HasPrefix(report.ClientRequestID, chatLinkReportRequestIDPrefix) || !strings.Contains(report.Message, "was not sent") {
+	if !strings.HasPrefix(report.ClientRequestID, chatlinks.ReportRequestIDPrefix) || !strings.Contains(report.Message, "was not sent") {
 		t.Fatalf("report: %+v", report)
 	}
-	c.srv.onChatLinkTurnEnd("br_linked", &msg.Event{Type: msg.EventResult, ClientRequestID: report.ClientRequestID, Result: &msg.ResultEvent{Text: "noted"}}, msg.SessionIdle)
-	c.srv.sweepChatLinks(ctx)
+	c.srv.chatLinkService.OnTurnEnd("br_linked", &msg.Event{Type: msg.EventResult, ClientRequestID: report.ClientRequestID, Result: &msg.ResultEvent{Text: "noted"}}, msg.SessionIdle)
+	c.srv.chatLinkService.Sweep(ctx)
 	if len(c.multichat.sends) != 2 {
 		t.Fatalf("a report's turn reached the person: %+v", c.multichat.sends)
 	}
@@ -475,23 +477,23 @@ func TestAChatLinkTurnThatNeverEndsIsSettledAndPendingMessagesSurviveARestart(t 
 	c.setState(t, msg.SessionModelGenerating)
 	c.receive(t, "discord:30", "kept across a restart")
 
-	// A new process: the same store, a fresh chatLinks.
-	c.srv.chatLinks = c.newChatLinks(c.multichatServer)
+	// A new process: the same store, a fresh ChatLinks.
+	c.srv.chatLinkService.ChatLinks = c.newChatLinks(c.multichatServer)
 	c.setState(t, msg.SessionIdle)
-	c.srv.sweepChatLinks(ctx)
+	c.srv.chatLinkService.Sweep(ctx)
 	if len(c.sentSoFar()) != 1 || !strings.Contains(c.sentSoFar()[0].Message, "kept across a restart") {
 		t.Fatalf("pending message after restart: %+v", c.sentSoFar())
 	}
 
 	// No turn end arrives (an error-terminated turn reports none); once the
 	// session has been free long enough the delivery is failed and reported.
-	c.clock = c.clock.Add(chatLinkTurnWithoutEndAfter + time.Second)
-	c.srv.sweepChatLinks(ctx)
+	c.clock = c.clock.Add(chatlinks.TurnWithoutEndAfter + time.Second)
+	c.srv.chatLinkService.Sweep(ctx)
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) && len(c.sentSoFar()) < 2 {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if len(c.sentSoFar()) != 2 || !strings.HasPrefix(c.sentSoFar()[1].ClientRequestID, chatLinkReportRequestIDPrefix) {
+	if len(c.sentSoFar()) != 2 || !strings.HasPrefix(c.sentSoFar()[1].ClientRequestID, chatlinks.ReportRequestIDPrefix) {
 		t.Fatalf("no report of the turn without an end: %+v", c.sentSoFar())
 	}
 }

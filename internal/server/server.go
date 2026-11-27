@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/chatlinks"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
 	"github.com/kayushkin/llm-bridge-server/internal/agents"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/bundles"
@@ -251,8 +253,8 @@ type Server struct {
 	// process is making, so a slot left by a call a restart killed reads as
 	// free. See renamer.go.
 	renamesInFlight sync.Map
-	// chatLinks is nil when chat links are off (chat_links.go).
-	chatLinks *chatLinks
+	// ChatLinks is nil when chat links are off (chat_links.go).
+	chatLinkService *chatlinks.Service
 }
 
 func New(st *store.Store, as *agents.Store, ms *memories.Store, hs *machines.Store, hks *hooks.Store, mds *models.Store, ss *snapshots.Store, cfg *config.Config) *Server {
@@ -302,24 +304,30 @@ func New(st *store.Store, as *agents.Store, ms *memories.Store, hs *machines.Sto
 	// machine.
 	srv.harness.SetTurnEndObserver(srv.onTurnEnd)
 	srv.harness.SetUnpromptedTurnStartObserver(srv.onUnpromptedTurnStart)
+	srv.chatLinkService = &chatlinks.Service{Dependencies: chatlinks.Dependencies{
+		Store:             st,
+		Settings:          srv.settings,
+		ReferenceResolver: srv.referenceResolver.Load,
+		Sessions:          srv,
+	}}
 	if cfg.ChatLinksNATSURL != "" && cfg.MultichatURL != "" {
-		srv.chatLinks = &chatLinks{
-			multichatURL: cfg.MultichatURL,
-			senders:      chatLinkSendersInPeopleStore{server: srv},
-			httpClient:   &http.Client{Timeout: 60 * time.Second},
-			token: func(ctx context.Context) (string, error) {
-				resolved, err := authClient.ResolveByProvider(ctx, chatLinkMultichatProvider, "", "", "read multichat's accounts and send a chat link's reply")
+		srv.chatLinkService.ChatLinks = &chatlinks.ChatLinks{
+			MultichatURL: cfg.MultichatURL,
+			Senders:      chatLinkSendersInPeopleStore{server: srv},
+			HTTPClient:   &http.Client{Timeout: 60 * time.Second},
+			Token: func(ctx context.Context) (string, error) {
+				resolved, err := authClient.ResolveByProvider(ctx, chatlinks.MultichatProvider, "", "", "read multichat's accounts and send a chat link's reply")
 				if err != nil {
 					return "", err
 				}
 				return resolved.Secret(), nil
 			},
-			kick: make(chan struct{}, 1),
-			now:  func() time.Time { return time.Now().UTC() },
+			Kick: make(chan struct{}, 1),
+			Now:  func() time.Time { return time.Now().UTC() },
 		}
-		srv.chatLinks.sendIntoSession = srv.sendIntoSessionAsTheServer
+		srv.chatLinkService.ChatLinks.SendIntoSession = srv.chatLinkService.SendIntoSessionAsTheServer
 	} else {
-		log.Printf("[chat-links] off: %v", errChatLinksOff)
+		log.Printf("[chat-links] off: %v", chatlinks.ErrOff)
 	}
 	srv.harness.SetSessionInfoObserver(srv.onSessionInfo)
 	// The classifier runs its call through the server's one-shot router, so
@@ -448,10 +456,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /sessions/{id}/files-named-by-tools", s.handleFilesNamedByTools)
 	s.mux.HandleFunc("GET /sessions/{id}/files-named-by-tools/content", s.handleFileNamedByToolsContent)
 	s.mux.HandleFunc("GET /sessions/{id}/files-named-by-tools/image", s.handleImageNamedByTools)
-	s.mux.HandleFunc("POST /sessions/{id}/chat-links", s.handleCreateChatLink)
-	s.mux.HandleFunc("GET /sessions/{id}/chat-links", s.handleListChatLinks)
-	s.mux.HandleFunc("GET /sessions/{id}/chat-links/{link_id}", s.handleGetChatLink)
-	s.mux.HandleFunc("POST /sessions/{id}/chat-links/{link_id}/end", s.handleEndChatLink)
+	s.chatLinkService.Mount(s.mux)
 	s.mux.HandleFunc("POST /sessions/{id}/actions", s.handleOfferSessionAction)
 	s.mux.HandleFunc("POST /sessions/{id}/images", s.handleGenerateImagesIntoSession)
 	s.mux.HandleFunc("GET /sessions/{id}/actions", s.handleListSessionActions)
@@ -1480,3 +1485,7 @@ type discoveredLink struct {
 	bridgeID        string
 	parentHarnessID string
 }
+
+// ChatLinks is the chat link service: a session talking with a person
+// through one of the bots multichat holds.
+func (s *Server) ChatLinks() *chatlinks.Service { return s.chatLinkService }

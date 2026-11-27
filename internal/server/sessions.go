@@ -828,7 +828,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 // (empty for none): every check and step of POST /sessions/{id}/send, which
 // calls it, and the answer that route writes. A sender inside this server
 // calls it directly, so its message is checked and sent exactly as a
-// person's is; such a caller goes through sendMessageFromThisServer, which
+// person's is; such a caller goes through SendMessageFromThisServer, which
 // also does what the route's wrapper does.
 func (s *Server) sendMessageToSession(ctx context.Context, bridgeID string, req SendMessageRequest, senderPrincipalID string) sendanswer.Answer {
 	sess, err := s.store.GetSession(bridgeID)
@@ -937,14 +937,14 @@ func (s *Server) sendMessageToSession(ctx context.Context, bridgeID string, req 
 	return sendanswer.JSON(http.StatusOK, msg.SendMessageResponse{Status: msg.SendStatusSent, MessageID: userEvent.MessageID})
 }
 
-// sendMessageFromThisServer sends a message the server itself sends — a
+// SendMessageFromThisServer sends a message the server itself sends — a
 // button's message, a chat link's delivery, a loose end's answer, a wakeup,
 // a held message — through sendMessageToSession, as POST /sessions/{id}/send
 // does, after the touch of keep-awake that route's wrapper makes. These
 // senders were let through request authorization when they started (the
 // person who pressed the button, the link's owner) or are the server's own,
 // so no route rule is skipped.
-func (s *Server) sendMessageFromThisServer(ctx context.Context, sessionID string, req SendMessageRequest, senderPrincipalID string) sendanswer.Answer {
+func (s *Server) SendMessageFromThisServer(ctx context.Context, sessionID string, req SendMessageRequest, senderPrincipalID string) sendanswer.Answer {
 	if s.keepAwake != nil {
 		// Taking a block can wait on a child starting; the send must not.
 		go s.keepAwake.Touch()
