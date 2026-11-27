@@ -127,7 +127,7 @@ export function BridgeKanban() {
     () => (connectionId ? peerConnectionBridgeConfig(config, connectionId) : config),
     [config, connectionId],
   )
-  const boardsByServer = useBoardsOnServers(servers, config)
+  const boardsByServer = useBoardsOnServers(servers, config, server ? serverBoardsKey(server) : null)
   const pickBoardOnServer = useCallback((target: KanbanServer, boardID: string) => {
     localStorage.setItem(kanbanLastBoardStorageKey(target), boardID)
     setSearchParams(prev => {

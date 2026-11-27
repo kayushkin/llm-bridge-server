@@ -192,17 +192,13 @@ func main() {
 
 			emitState(msg.SessionRunning)
 
-			// Echo the user's message as an EventUserMessage so consumers
-			// that want a single source of truth for "what did the user
-			// send?" can listen on the event stream rather than tracking
-			// stdin separately.
-			emit(msg.Event{
-				Type:            msg.EventUserMessage,
-				Harness:         msg.Harness(harnessName),
-				BridgeSessionID: sessionID,
-				Timestamp:       time.Now(),
-				Result:          &msg.ResultEvent{Text: mp.Content},
-			})
+			// No echo of the message as an EventUserMessage. The server
+			// records the message itself when POST /sessions/{id}/send takes
+			// it, so an echo was a second copy with an id of its own, and the
+			// chat drew the prompt twice. No real harness echoes it either:
+			// llm-bridge-claudecode skips Claude Code's echo of the operator's
+			// text (its OTel copy is marked and paired with the server's), and
+			// llm-bridge-codex emits none.
 
 			emitResult(emit, harnessName, sessionID, mp.Content)
 
@@ -250,7 +246,20 @@ func main() {
 	}
 }
 
+// mockTurnNumber numbers this process's turns, for their harness message ids.
+var mockTurnNumber int
+
 func emitResult(emit func(msg.Event), harnessName, sessionID, userMessage string) {
+	// Two messages a turn, as a real agent writes them: one that calls the
+	// tool, then one that answers. Each event carries its message's harness
+	// id where a real harness puts it (msg.HarnessMessageIDOf reads the
+	// variant fields), so the server gives the two bridge message ids. In one message, the answer's
+	// text block sat beside a tool call, which reads as narration (text that
+	// announces a tool), so the settled chat drew it as well as the result
+	// that repeats it.
+	mockTurnNumber++
+	toolMessageID := fmt.Sprintf("mock-tool-message-%d", mockTurnNumber)
+	answerMessageID := fmt.Sprintf("mock-answer-message-%d", mockTurnNumber)
 	if envBool("MOCK_HARNESS_EMIT_ERROR") {
 		emit(msg.Event{
 			Type:            msg.EventError,
@@ -273,7 +282,7 @@ func emitResult(emit func(msg.Event), harnessName, sessionID, userMessage string
 		Harness:         msg.Harness(harnessName),
 		BridgeSessionID: sessionID,
 		Timestamp:       time.Now(),
-		ToolCall:        &msg.ToolCallEvent{ToolID: "mock-tool-1", Name: "mock_tool", Input: json.RawMessage(`{}`)},
+		ToolCall:        &msg.ToolCallEvent{ToolID: "mock-tool-1", Name: "mock_tool", Input: json.RawMessage(`{}`), MessageID: toolMessageID},
 	})
 	emit(msg.Event{
 		Type:            msg.EventSessionState,
@@ -300,7 +309,7 @@ func emitResult(emit func(msg.Event), harnessName, sessionID, userMessage string
 		Harness:         msg.Harness(harnessName),
 		BridgeSessionID: sessionID,
 		Timestamp:       time.Now(),
-		ToolResult:      &msg.ToolResultEvent{ToolID: "mock-tool-1", Name: "mock_tool", Output: "mock tool output"},
+		ToolResult:      &msg.ToolResultEvent{ToolID: "mock-tool-1", Name: "mock_tool", Output: "mock tool output", MessageID: toolMessageID},
 	})
 
 	responseText := "Mock response to: " + userMessage
@@ -311,7 +320,7 @@ func emitResult(emit func(msg.Event), harnessName, sessionID, userMessage string
 		Harness:         msg.Harness(harnessName),
 		BridgeSessionID: sessionID,
 		Timestamp:       time.Now(),
-		Stream: &msg.HarnessStream{Delta: &msg.BlockDelta{
+		Stream: &msg.HarnessStream{MessageID: answerMessageID, Delta: &msg.BlockDelta{
 			Type: msg.DeltaText,
 			Text: responseText,
 		}},
@@ -327,8 +336,9 @@ func emitResult(emit func(msg.Event), harnessName, sessionID, userMessage string
 		BridgeSessionID: sessionID,
 		Timestamp:       time.Now(),
 		Block: &msg.BlockEvent{
-			Index: 0,
-			Block: &msg.ContentBlock{Type: msg.BlockText, Text: &msg.TextBlock{Text: responseText}},
+			Index:     0,
+			MessageID: answerMessageID,
+			Block:     &msg.ContentBlock{Type: msg.BlockText, Text: &msg.TextBlock{Text: responseText}},
 		},
 	})
 

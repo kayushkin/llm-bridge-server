@@ -9,13 +9,13 @@ import type { JSX } from 'react'
 import { useReferenceTypes, type ResolvedRefMatch } from '@kayushkin/chat-core'
 import { useBridgeConfig } from '../../context'
 import {
-  isOffSiteHref,
   referenceChipLabel,
   referencePageHref,
   referenceSummaryRows,
 } from '../../referenceChips'
 import { AnchoredPanel, RefChip, RefRow, truncate, useAnchoredPanel } from './RefChip'
 import { useRefChipServer } from './refChipServer'
+import { PageLink } from '../PageLink'
 
 export function GenericReferenceChip({
   refId,
@@ -81,13 +81,9 @@ export function GenericReferenceChip({
           )}
           {href && (
             <div className="ref-chip-panel-actions">
-              <a
-                className="ref-chip-panel-btn"
-                href={href}
-                {...(isOffSiteHref(href) ? { target: '_blank', rel: 'noreferrer' } : {})}
-              >
+              <PageLink className="ref-chip-panel-btn" href={href}>
                 Open
-              </a>
+              </PageLink>
             </div>
           )}
         </AnchoredPanel>

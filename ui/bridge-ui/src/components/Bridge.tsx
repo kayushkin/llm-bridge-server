@@ -1,5 +1,5 @@
 import { createElement, useMemo, type JSX } from 'react'
-import { Route, Routes } from 'react-router-dom'
+import { Route, Routes, useLocation } from 'react-router-dom'
 import { ChatProvider } from '@kayushkin/chat-core'
 import { BridgeProvider, type BridgeProviderProps } from '../provider'
 import { DEFAULT_BRIDGE_ROUTES, useBridgeConfig, type BridgeRoutes } from '../context'
@@ -61,6 +61,10 @@ export function Bridge({ notesPath = '', showConformance, showServiceInventory, 
             {hostPages.map(p => (
               <Route key={p.path + (p.routeSuffix ?? '')} path={p.path.replace(/^\//, '') + (p.routeSuffix ?? '')} element={p.element} />
             ))}
+            {/* A path no page claims: a record's page on another host (reference-store's
+                page_urls name dash's pages too), or a stale link. Saying so beats a
+                blank page under the navigation. */}
+            <Route path="*" element={<NoPageAtThisAddress />} />
           </Route>
         </Routes>
       </ChatStore>
@@ -82,5 +86,14 @@ function ChatStore({ children }: { children: React.ReactNode }): JSX.Element {
     >
       {children}
     </ChatProvider>
+  )
+}
+
+function NoPageAtThisAddress(): JSX.Element {
+  const location = useLocation()
+  return (
+    <div className="bridge-page">
+      <div className="bi-empty">This site has no page at <code>{location.pathname}</code>.</div>
+    </div>
   )
 }

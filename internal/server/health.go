@@ -1,7 +1,10 @@
 package server
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -467,6 +470,25 @@ func (s *Server) handleHarnessAgents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, agents)
 }
 
+// harnessImageURL is the address of a harness's logo under /images/, or empty
+// when it has none or its file is not in the images directory: an address for
+// a file that is not there is only a broken picture and a 404 in the page. A
+// missing file other than "not there" is logged, since the logo then goes
+// missing for a reason nobody chose.
+func (s *Server) harnessImageURL(h msg.Harness, image string) string {
+	if image == "" {
+		return ""
+	}
+	st, err := os.Stat(filepath.Join(s.cfg.ImagesDir, "harnesses", image))
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			log.Printf("[harnesses] ERROR: reading the logo of %s: %v", h, err)
+		}
+		return ""
+	}
+	return fmt.Sprintf("/images/harnesses/%s?v=%d", image, st.ModTime().Unix())
+}
+
 func (s *Server) discoverHarnesses() []HarnessStatus {
 	var statuses []HarnessStatus
 	for _, h := range allHarnesses {
@@ -476,13 +498,7 @@ func (s *Server) discoverHarnesses() []HarnessStatus {
 			caps = []string{}
 		}
 		meta := harnessMetadata[h]
-		var imageURL string
-		if meta.Image != "" {
-			imageURL = "/images/harnesses/" + meta.Image
-			if st, err := os.Stat(filepath.Join(s.cfg.ImagesDir, "harnesses", meta.Image)); err == nil {
-				imageURL += fmt.Sprintf("?v=%d", st.ModTime().Unix())
-			}
-		}
+		imageURL := s.harnessImageURL(h, meta.Image)
 		statuses = append(statuses, HarnessStatus{
 			Name:                     string(h),
 			Label:                    meta.Label,

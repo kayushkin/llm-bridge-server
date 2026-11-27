@@ -147,6 +147,21 @@ export function BridgeCardPage() {
     navigate(`${routes.kanban}?card=${encodeURIComponent(cardId)}`)
   }, [navigate, routes.kanban, cardId])
 
+  // Both stores are needed to read a card; without either, `load` asks nothing,
+  // so the page says which is missing instead of waiting for an answer that
+  // never comes.
+  const missingStores = [
+    kanbanStoreBasePath ? null : 'kanbanStoreBasePath',
+    noteboardBasePath ? null : 'noteboardBasePath',
+  ].filter((name): name is string => name !== null)
+  if (missingStores.length > 0) {
+    return (
+      <div className="bi-empty">
+        Cards cannot be read here: {missingStores.map((name, index) => <span key={name}>{index > 0 ? ' and ' : ''}<code>{name}</code></span>)} {missingStores.length > 1 ? 'are' : 'is'} not configured.
+      </div>
+    )
+  }
+  if (!cardId) return <div className="bi-empty">No card id in the address.</div>
   if (state === 'loading') return <div className="bi-empty">Loading card…</div>
   if (state === 'missing') return <div className="bi-empty">No card with id {cardId}.</div>
   if (state === 'error') return <div className="bi-empty">Could not load this card.</div>

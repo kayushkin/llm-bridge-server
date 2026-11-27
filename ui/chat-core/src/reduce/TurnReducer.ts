@@ -381,12 +381,10 @@ export function mergeMaterializedPage(
       const reported = Object.values(incoming.entries).some((inc) => {
         if (inc.role !== 'user' || !inc.text) return false;
         // `clientRequestId` is the promoted field; the raw branch covers a log-store
-        // that predates it. ⚠️ Measured on this box, NOTHING populates either — the
-        // bridge stamps the id only when a caller supplies one and no caller here
-        // does — so this comparison is dead today and the normalized-text match
-        // below is what actually runs. That fallback cannot tell two identical
-        // prompts apart. Left as-is rather than "fixed": the honest repair is for
-        // the sender to mint an id, not for the reader to guess harder.
+        // that predates it. The chat sends the id it drew the optimistic row under
+        // (`ApiClient.send`), and the bridge keeps it on the `user_message` it
+        // records, so this id match is what pairs them. The normalized-text match
+        // below is left for a message sent by a client that sends no id.
         const incClientRequestId =
           inc.clientRequestId ?? (inc.raw as { client_request_id?: string } | undefined)?.client_request_id;
         if (heldRaw.clientId && incClientRequestId === heldRaw.clientId) return true;
@@ -620,17 +618,28 @@ function applyPayload(prev: Entry, ev: WireEvent): Entry {
     case 'user_message':
       next.text = raw.result?.text ?? prev.text ?? '';
       break;
+    // A harness streams a block's text as deltas and then sends the same block
+    // whole. Both land on one entry (same message, same kind), so adding the
+    // whole block after its deltas showed the reply twice until a reload read
+    // the page. `wholeBlocksText` is the text as of the last whole block: a delta
+    // adds to `text`, and a whole block replaces what the deltas built since.
     case 'stream': {
       const d = raw.stream?.delta;
-      if (d?.type === 'text_delta') next.text = (prev.text || '') + (d.text || '');
-      else if (d?.type === 'thinking_delta') next.text = (prev.text || '') + (d.thinking || '');
+      const piece = d?.type === 'text_delta' ? d.text : d?.type === 'thinking_delta' ? d.thinking : undefined;
+      if (piece !== undefined) {
+        next.wholeBlocksText = prev.wholeBlocksText ?? prev.text ?? '';
+        next.text = (prev.text || '') + piece;
+      }
       break;
     }
     case 'block': {
       const b = raw.block?.block;
-      if (b?.type === 'text' && b.text_block) next.text = (prev.text || '') + (b.text_block.text || '');
-      else if (b?.type === 'thinking' && b.thinking_block) {
-        next.text = (prev.text || '') + (b.thinking_block.text || '');
+      const whole = b?.type === 'text' && b.text_block ? b.text_block.text
+        : b?.type === 'thinking' && b.thinking_block ? b.thinking_block.text
+        : undefined;
+      if (whole !== undefined) {
+        next.text = (prev.wholeBlocksText ?? prev.text ?? '') + whole;
+        next.wholeBlocksText = next.text;
       }
       break;
     }
@@ -907,7 +916,16 @@ function foldEvent(state: TailState, ev: WireEvent, annotate: boolean): TailStat
   // reload, which is what was measured on br_1788973449319671731 (2026-09-10).
   const existingIsHydrated =
     existing !== undefined && (state.entryEventIds.get(entryId)?.size ?? 0) === 0;
-  if ((!existing || existingIsHydrated) && heldCopyExists(state, ev, kind, role)) {
+  // A live entry the cache handed back already holds every frame up to its
+  // `eventId`, which is in the live stream's own numbering. On a reload the
+  // stream replays those frames, and a replayed delta or whole block would add
+  // its text again: one more copy of the reply per reload. `heldCopyExists`
+  // catches a whole block whose text the entry holds, but not a delta, and once
+  // a replayed delta has folded the entry no longer counts as handed back. So a
+  // frame no newer than what the handed-back entry holds is a replay.
+  const replayOntoHydratedLiveEntry =
+    existingIsHydrated && existing.origin === 'live' && evId > 0 && evId <= existing.eventId;
+  if (replayOntoHydratedLiveEntry || ((!existing || existingIsHydrated) && heldCopyExists(state, ev, kind, role))) {
     // A cross-space replay: fold nothing, but record the frame id so the check
     // is O(1) next time and a later literal replay short-circuits at the top.
     if (!evId) return state;

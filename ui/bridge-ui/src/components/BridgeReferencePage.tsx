@@ -9,12 +9,12 @@ import { useParams } from 'react-router-dom'
 import { useReferenceTypes, useResolvedRef, type ResolvedRefMatch } from '@kayushkin/chat-core'
 import { useBridgeConfig } from '../context'
 import {
-  isOffSiteHref,
   referenceChipLabel,
   referenceRecordFields,
   referenceSummaryRows,
 } from '../referenceChips'
 import { RefChip } from './chat/RefChip'
+import { PageLink } from './PageLink'
 
 export function BridgeReferencePage(): JSX.Element {
   const { refId = '' } = useParams<{ refId: string }>()
@@ -60,9 +60,7 @@ function ReferenceRecord({ refId, match }: { refId: string; match: ResolvedRefMa
       </p>
       {match.page_url && (
         <p>
-          <a href={match.page_url} {...(isOffSiteHref(match.page_url) ? { target: '_blank', rel: 'noreferrer' } : {})}>
-            Open its page
-          </a>
+          <PageLink href={match.page_url}>Open its page</PageLink>
         </p>
       )}
       {rows.length > 0 && (

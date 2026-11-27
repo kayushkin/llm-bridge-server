@@ -110,3 +110,48 @@ describe('a replayed frame onto a hydrated live-keyed entry', () => {
     expect(modelOf(store).entries[`${MSG}_text`]?.text).toBe('Done.Done.');
   });
 });
+
+// The same reload when the answer was STREAMED before its whole block came: a
+// replayed delta is not caught by the held-copy check (deltas always fold), and
+// once it has folded the entry no longer counts as handed back, so the block then
+// folded too. Measured 2026-11-26 on a test instance's mock chat: one more copy
+// of the reply per reload. A frame no newer than the handed-back entry holds is
+// a replay.
+describe('a replayed delta and block onto a hydrated live-keyed entry', () => {
+  const delta = (streamId: number, text: string) =>
+    frame(streamId, 'stream', { message_id: MSG, stream: { delta: { type: 'text_delta', text } } });
+  const turnFrames = () => [delta(99, ANSWER), block(100, ANSWER), result(101, ANSWER)];
+
+  function liveStreamedTab() {
+    const store = createChatStore();
+    const a = store.getState().actions;
+    a.applyTailEvents(SID, turnFrames());
+    a.setTurns(SID, pageWithoutTheBlock());
+    return modelOf(store);
+  }
+  function reloadStreamed(cached: TurnModel) {
+    const store = createChatStore();
+    const a = store.getState().actions;
+    a.setTurns(SID, cached);
+    a.applyTailEvents(SID, turnFrames());
+    a.setTurns(SID, pageWithoutTheBlock());
+    return modelOf(store);
+  }
+
+  it('holds the answer once live, after one reload and after two', () => {
+    const live = liveStreamedTab();
+    expect(copies(live.entries[`${MSG}_text`]?.text)).toBe(1);
+    const afterOne = reloadStreamed(live);
+    expect(copies(afterOne.entries[`${MSG}_text`]?.text)).toBe(1);
+    const afterTwo = reloadStreamed(afterOne);
+    expect(copies(afterTwo.entries[`${MSG}_text`]?.text)).toBe(1);
+  });
+
+  it('still folds a delta newer than what the handed-back entry holds', () => {
+    const store = createChatStore();
+    const a = store.getState().actions;
+    a.setTurns(SID, liveStreamedTab());
+    a.applyTailEvents(SID, [delta(102, ' More.')]);
+    expect(modelOf(store).entries[`${MSG}_text`]?.text).toBe(ANSWER + ' More.');
+  });
+});

@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { useBridgeConfig } from '../context'
 import { useBridgeInstances } from '../useBridgeInstances'
 import { useBridgeTools } from '../useBridgeTools'
 import type { Tool } from '@kayushkin/tool-store-types'
@@ -11,8 +12,23 @@ import type { Tool } from '@kayushkin/tool-store-types'
  *
  * Global is master: per-instance toggle is disabled (and flipped off) when
  * the tool is globally disabled. UI mirrors backend semantics.
+ *
+ * A host that passed no `toolStoreBasePath` gets a line saying so, rather than
+ * "No tools registered", which would claim the registry is empty.
  */
 export function BridgeTools() {
+  const { toolStoreBasePath } = useBridgeConfig()
+  if (!toolStoreBasePath) {
+    return (
+      <div className="bt-container">
+        <div className="bridge-error">tool-store is not configured. Pass <code>toolStoreBasePath</code> to <code>&lt;BridgeProvider&gt;</code>.</div>
+      </div>
+    )
+  }
+  return <ToolsPage />
+}
+
+function ToolsPage() {
   const { instances, loading: instancesLoading } = useBridgeInstances()
   const [selectedInstanceID, setSelectedInstanceID] = useState<string | null>(null)
   const { tools, locals, byInstance, loading, error, setGlobal, setForInstance } = useBridgeTools(selectedInstanceID)

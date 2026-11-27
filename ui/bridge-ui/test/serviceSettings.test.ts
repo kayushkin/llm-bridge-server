@@ -53,6 +53,16 @@ describe('serviceSettingsSourcesOf', () => {
     const sources = serviceSettingsSourcesOf({ basePath: '/api/bridge', hostBasePath: '' } as BridgeConfig)
     expect(sources.map(s => s.configKey)).toEqual(['basePath'])
   })
+  it('asks only the services the host names as serving settings', () => {
+    const sources = serviceSettingsSourcesOf({
+      basePath: '', kanbanStoreBasePath: '/kanban-store', grantStoreBasePath: '/grant-store', schedulerBasePath: '/scheduler',
+      serviceSettingsSourceKeys: ['basePath', 'schedulerBasePath'],
+    } as unknown as BridgeConfig)
+    // The bridge's own base is empty when it serves the page itself, and its
+    // settings are still at `/settings`.
+    expect(sources.map(s => [s.serviceName, s.basePath])).toEqual([['llm-bridge-server', ''], ['scheduler', '/scheduler']])
+    expect(serviceSettingsURL(sources[0].basePath)).toBe('/settings')
+  })
   it('builds the two routes of the convention', () => {
     expect(serviceSettingsURL('/api/bridge')).toBe('/api/bridge/settings')
     expect(serviceSettingURL('/api/bridge', 'session.idle_timeout')).toBe('/api/bridge/settings/session.idle_timeout')

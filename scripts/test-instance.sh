@@ -285,6 +285,7 @@ install_instance() {
   for binary in llm-bridge-server llm-bridge-runner llm-bridge-mock "${STORES[@]}"; do
     [ -x "$binaries/$binary" ] || fail "$binaries/$binary is missing or not executable"
   done
+  [ -f "$binaries/harness-images.tar" ] || fail "$binaries/harness-images.tar is missing: build the folder again with scripts/build-test-instance.sh"
 
   step "laying out $ROOT"
   mkdir -p "$ROOT"/{bin,data,env,home,runner,runner-assets,run/postgres} "$ROOT"/data/{file-store,work-graph-store,skill-store,location-store/geonames,possession-store/outfit-covers} "$UNIT_DIR"
@@ -369,6 +370,11 @@ EOF
   for wrapper in llm-bridge-claudecode llm-bridge-codex; do
     if [ -x "$binaries/$wrapper" ]; then install -m 755 "$binaries/$wrapper" "$ROOT/bin/$wrapper"; fi
   done
+  # The harness logos, served at /images/harnesses/ from LLMBRIDGE_IMAGES_DIR.
+  # Replaced whole, so a logo the repo dropped goes too.
+  rm -rf "$ROOT/data/images/harnesses"
+  mkdir -p "$ROOT/data/images"
+  tar -C "$ROOT/data/images" -xf "$binaries/harness-images.tar"
   # The server offers runners the build in this folder. It is the same file the
   # test runner runs, so the two never disagree about which is newer.
   install -m 755 "$binaries/llm-bridge-runner" "$ROOT/runner-assets/llm-bridge-runner-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')"

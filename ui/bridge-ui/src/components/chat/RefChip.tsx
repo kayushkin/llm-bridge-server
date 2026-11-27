@@ -25,6 +25,7 @@ import { SessionChipOpenQuestions } from './SessionChipOpenQuestions';
 import { useOpenSignalRequestsOfSession } from './sessionsWithOpenQuestion';
 import { SessionActionInText } from './SessionActions';
 import { FileRefChip } from './FileRefChip';
+import { PageLink } from '../PageLink';
 import { SessionFileChip, useSessionFileShown } from './SessionFileChip';
 import {
   RefChipServerContext,
@@ -1200,9 +1201,9 @@ function ProjectRefChip({
           {project.goal && <RefRow label="Goal" value={project.goal} />}
           {href && (
             <div className="ref-chip-panel-actions">
-              <a className="ref-chip-panel-btn" href={href}>
+              <PageLink className="ref-chip-panel-btn" href={href}>
                 Open project
-              </a>
+              </PageLink>
             </div>
           )}
         </AnchoredPanel>
@@ -1256,9 +1257,9 @@ function MessageRefChip({
           {message.body && <div className="ref-chip-panel-body">{message.body}</div>}
           {href && (
             <div className="ref-chip-panel-actions">
-              <a className="ref-chip-panel-btn" href={href}>
+              <PageLink className="ref-chip-panel-btn" href={href}>
                 Open conversation
-              </a>
+              </PageLink>
             </div>
           )}
         </AnchoredPanel>
@@ -1313,9 +1314,9 @@ function RepoRefChip({
                 </a>
               )}
               {workGraphHref && (
-                <a className="ref-chip-panel-btn" href={workGraphHref}>
+                <PageLink className="ref-chip-panel-btn" href={workGraphHref}>
                   Work graph
-                </a>
+                </PageLink>
               )}
             </div>
           )}
@@ -1381,9 +1382,9 @@ function CommitRefChip({
                 </a>
               )}
               {workGraphHref && (
-                <a className="ref-chip-panel-btn" href={workGraphHref}>
+                <PageLink className="ref-chip-panel-btn" href={workGraphHref}>
                   Work graph
-                </a>
+                </PageLink>
               )}
               {madeBy && onActivate && (
                 <button type="button" className="ref-chip-panel-btn" onClick={() => onActivate('session', madeBy.session_id)}>

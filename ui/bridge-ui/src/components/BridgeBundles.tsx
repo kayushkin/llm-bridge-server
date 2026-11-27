@@ -29,13 +29,19 @@ import styles from './BridgeBundles.module.css'
  * the name) or the enable/disable/delete routes, and the list is read again
  * after, so what is shown is what the store holds.
  *
- * Renders nothing when the host passed no `bundleStoreBasePath`, which is also
- * when `BridgeLayout` shows no Bundles tab. Without `repoStoreBasePath` the
+ * When the host passed no `bundleStoreBasePath` (and `BridgeLayout` shows no
+ * Bundles tab), a page reached by its address says so instead. Without `repoStoreBasePath` the
  * bundles still list and the preview column says there are no repos to pick.
  */
 export function BridgeBundles() {
   const { fetch: fetchFn, bundleStoreBasePath, repoStoreBasePath } = useBridgeConfig()
-  if (!bundleStoreBasePath) return null
+  if (!bundleStoreBasePath) {
+    return (
+      <div className="bridge-page">
+        <div className="bridge-error">bundle-store is not configured. Pass <code>bundleStoreBasePath</code> to <code>&lt;BridgeProvider&gt;</code>.</div>
+      </div>
+    )
+  }
   return <BundlesPage fetchFn={fetchFn} bundleStoreBase={bundleStoreBasePath} repoStoreBase={repoStoreBasePath} />
 }
 
