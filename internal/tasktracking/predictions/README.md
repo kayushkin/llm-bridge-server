@@ -1,4 +1,6 @@
-# prediction-store
+# predictions (formerly prediction-store)
+
+`internal/tasktracking/predictions`, package `predictions`. It was the standalone prediction-store until it moved into llm-bridge-server; on 2026-11-27 its package, route prefix, Postgres module, settings and import subcommand took the name `predictions`. Its record ids did not change.
 
 The calibration ledger, mounted in llm-bridge-server at `/predictions/`:
 resolvable claims (`predictions`), every revision of the odds on them

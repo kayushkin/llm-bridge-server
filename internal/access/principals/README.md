@@ -1,4 +1,6 @@
-# principal-store
+# principals (formerly principal-store)
+
+`internal/access/principals`, package `principals`. It was the standalone principal-store until it moved into llm-bridge-server; on 2026-11-27 its package, route prefix, Postgres module, settings and import subcommand took the name `principals`. Its record ids did not change.
 
 The registry of *principals* — the humans and groups a permission can be
 granted to and a card can be assigned to — as a package of llm-bridge-server,

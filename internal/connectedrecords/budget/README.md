@@ -1,4 +1,6 @@
-# budget-store
+# budget (formerly budget-store)
+
+`internal/connectedrecords/budget`, package `budget`. It was the standalone budget-store until it moved into llm-bridge-server; on 2026-11-27 its package, route prefix, Postgres module, settings and import subcommand took the name `budget`. Its record ids did not change.
 
 A personal finance ledger: accounts, credit cards, loans, retirement
 accounts, every transaction, categories and budgets.
@@ -39,7 +41,7 @@ works in.
 `cmd/budget-suggest-categories` and `cmd/budget-match-trips` are HTTP
 clients of the routes. The server also runs the matching passes itself,
 each off until its setting turns it on (llm-bridge-server's
-`budget_store.*` settings): bank sync through Plaid, recurring bill
+`budget.*` settings): bank sync through Plaid, recurring bill
 detection, interest matching and trip matching, which reads location-store's
 journeys in the same process.
 

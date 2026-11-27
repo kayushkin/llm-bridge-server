@@ -1,4 +1,6 @@
-# calendar-store
+# calendar (formerly calendar-store)
+
+`internal/connectedrecords/calendar`, package `calendar`. It was the standalone calendar-store until it moved into llm-bridge-server; on 2026-11-27 its package, route prefix, Postgres module, settings and import subcommand took the name `calendar`. Its record ids did not change.
 
 Calendar events as their calendars wrote them, kept whole, with who each was with as ids from a people service.
 

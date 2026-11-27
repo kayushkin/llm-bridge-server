@@ -1,4 +1,6 @@
-# possession-store
+# possessions (formerly possession-store)
+
+`internal/connectedrecords/possessions`, package `possessions`. It was the standalone possession-store until it moved into llm-bridge-server; on 2026-11-27 its package, route prefix, Postgres module, settings and import subcommand took the name `possessions`. Its record ids did not change.
 
 An inventory of the things a person owns: clothes, computers, audio gear,
 instruments, vehicles and everything else, with photos, prices and where each

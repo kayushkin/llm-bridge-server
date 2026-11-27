@@ -1,4 +1,6 @@
-# message-store
+# messages (formerly message-store)
+
+`internal/connectedrecords/messages`, package `messages`. It was the standalone message-store until it moved into llm-bridge-server; on 2026-11-27 its package, route prefix, Postgres module, settings and import subcommand took the name `messages`. Its record ids did not change.
 
 Every chat message one person sent or received, one row each, in time order,
 whatever app carried it: phone texts, Skype, Messenger, Discord, and whatever a

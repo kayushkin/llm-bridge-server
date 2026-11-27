@@ -1,4 +1,6 @@
-# project-store
+# projects (formerly project-store)
+
+`internal/tasktracking/projects`, package `projects`. It was the standalone project-store until it moved into llm-bridge-server; on 2026-11-27 its package, route prefix, Postgres module, settings and import subcommand took the name `projects`. Its record ids did not change.
 
 Projects: what each is for, the goals it wants reached, and what it owns in
 other stores by their ids.

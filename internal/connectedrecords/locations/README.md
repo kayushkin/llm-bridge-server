@@ -1,4 +1,6 @@
-# location-store
+# locations (formerly location-store)
+
+`internal/connectedrecords/locations`, package `locations`. It was the standalone location-store until it moved into llm-bridge-server; on 2026-11-27 its package, route prefix, Postgres module, settings and import subcommand took the name `locations`. Its record ids did not change.
 
 Keeps where you have been: named places, visits to them, trips between them,
 and the raw location points underneath. It imports Google's location history

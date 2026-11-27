@@ -82,7 +82,7 @@ var RetiredStoredSettingKeys = []string{
 var RenamedStoredSettingKeys = map[string]string{
 	"operations.completion_instances": SettingOneShotInstanceByProvider,
 	// file-store's package became files on 2026-11-27, and its settings
-	// moved from file_store.* with it.
+	// moved from files.* with it.
 	"file_store.maximum_file_bytes":   SettingFilesMaximumFileBytes,
 	"file_store.inline_content_types": SettingFilesInlineContentTypes,
 }

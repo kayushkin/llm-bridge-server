@@ -1,4 +1,6 @@
-# hook-store
+# hooks (formerly hook-store)
+
+`internal/agents/hooks`, package `hooks`. It was the standalone hook-store until it moved into llm-bridge-server; on 2026-11-27 its package, route prefix, Postgres module, settings and import subcommand took the name `hooks`. Its record ids did not change.
 
 Registry for bridge-managed harness hooks, kept in the Postgres module `hooks` (schema and role `hooks_module`, migrations in `migrations/`), in the [llm-bridge](https://github.com/kayushkin/llm-bridge) ecosystem.
 

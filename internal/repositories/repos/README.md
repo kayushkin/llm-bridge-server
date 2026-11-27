@@ -1,4 +1,6 @@
-# repo-store
+# repos (formerly repo-store)
+
+`internal/repositories/repos`, package `repos`. It was the standalone repo-store until it moved into llm-bridge-server; on 2026-11-27 its package, route prefix, Postgres module, settings and import subcommand took the name `repos`. Its record ids did not change.
 
 > **In llm-bridge-server.** This package is repo-store moved into the bridge: its routes are served under `/repos/` (operator routes), its records are in the Postgres module `repos`, and `llm-bridge-server import-repos -sqlite <copy>` copies a standalone store's file in. The pull-request sync runs in the bridge only with `repos.pull_request_sync.enabled`. Where this README says `:8306`, SQLite or the unit, it describes the standalone service.
 

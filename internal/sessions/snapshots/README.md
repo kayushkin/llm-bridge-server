@@ -1,4 +1,6 @@
-# snapshot-store
+# snapshots (formerly snapshot-store)
+
+`internal/sessions/snapshots`, package `snapshots`. It was the standalone snapshot-store until it moved into llm-bridge-server; on 2026-11-27 its package, route prefix, Postgres module, settings and import subcommand took the name `snapshots`. Its record ids did not change.
 
 Point-in-time file snapshot store for the [llm-bridge](https://github.com/kayushkin/llm-bridge) ecosystem.
 

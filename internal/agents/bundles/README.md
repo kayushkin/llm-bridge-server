@@ -1,4 +1,6 @@
-# bundle-store
+# bundles (formerly bundle-store)
+
+`internal/agents/bundles`, package `bundles`. It was the standalone bundle-store until it moved into llm-bridge-server; on 2026-11-27 its package, route prefix, Postgres module, settings and import subcommand took the name `bundles`. Its record ids did not change.
 
 A small Go service that keeps curated **session bundles** — named, inheritable
 sets of **skills and tools**, with optional model and effort defaults — and

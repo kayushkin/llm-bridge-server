@@ -1,4 +1,6 @@
-# agent-store
+# agents (formerly agent-store)
+
+`internal/agents`, package `agents`. It was the standalone agent-store until it moved into llm-bridge-server; on 2026-11-27 its package, route prefix, Postgres module, settings and import subcommand took the name `agents`. Its record ids did not change.
 
 Single source of truth for agent identity, nature, and harness configs.
 
@@ -40,8 +42,8 @@ or render a file outside that folder (`ErrWriteOutsideHome`), so a store a
 test opens on a temporary folder cannot touch the real home.
 
 ```go
-store, err := agentstore.New(pool, homeDirectory) // pool from postgresstorage.Open
-agentstore.RegisterHandlers(mux, store)
+store, err := agents.New(pool, homeDirectory) // pool from postgresstorage.Open
+agents.RegisterHandlers(mux, store)
 ```
 
 Tests run on `postgrestest` databases (`POSTGRESTEST_ADMINISTRATOR_URL`), in

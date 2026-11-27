@@ -1,4 +1,6 @@
-# grant-store
+# grants (formerly grant-store)
+
+`internal/access/grants`, package `grants`. It was the standalone grant-store until it moved into llm-bridge-server; on 2026-11-27 its package, route prefix, Postgres module, settings and import subcommand took the name `grants`. Its record ids did not change.
 
 The registry of *grants* — which principal (a human, a group, a peer or a
 service from principal-store) may use which tool or skill, run as which agent,

@@ -1,4 +1,6 @@
-# file-store
+# files (formerly file-store)
+
+`internal/filestorage/files`, package `files`. It was the standalone file-store until it moved into llm-bridge-server; on 2026-11-27 its package, route prefix, Postgres module, settings and import subcommand took the name `files`. Its record ids did not change.
 
 > **In llm-bridge-server.** This package is file-store moved into the bridge: its routes are served under `/file-storage/` for the operator only (no service token), its records are in the Postgres module `files`, and the bytes stay on disk under `files.data_directory` (`blobs/<aa>/<bb>/<sha256>`). `llm-bridge-server import-files -sqlite <copy> -blobs <standalone data dir>/blobs [-carry copy|link]` copies the records in and carries every blob, checking its SHA-256. The size limit and inline list are the bridge's stored settings `files.maximum_file_bytes` and `files.inline_content_types`. Where this README says `:8317`, SQLite, the token or the unit, it describes the standalone service.
 

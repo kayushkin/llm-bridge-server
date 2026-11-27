@@ -1,4 +1,6 @@
-# mailstack
+# mail (formerly mailstack)
+
+`internal/mail`, package `mail`. It was the standalone mailstack until it moved into llm-bridge-server; on 2026-11-27 its package, route prefix, Postgres module, settings and import subcommand took the name `mail`. Its record ids did not change.
 
 Read and write email across Gmail, Outlook (Microsoft Graph) and IMAP accounts, plus local accounts this module owns outright. It runs inside llm-bridge-server, mounted at `/mail/` with its own paths behind the prefix, and keeps its records in the Postgres module `mail` (role `mail_module`, migrations in `mailmodule/migrations`).
 

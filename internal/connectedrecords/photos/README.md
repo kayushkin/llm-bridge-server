@@ -1,4 +1,6 @@
-# photo-store
+# photos (formerly photo-store)
+
+`internal/connectedrecords/photos`, package `photos`. It was the standalone photo-store until it moved into llm-bridge-server; on 2026-11-27 its package, route prefix, Postgres module, settings and import subcommand took the name `photos`. Its record ids did not change.
 
 What is known about each owner's own photos and videos: where each original is, when and where it was taken and how far to trust that date, a thumbnail, a description, the faces a model found on it, and who is in it. The originals never move; photo-store keeps the facts, and a thumbnail file in file-store.
 

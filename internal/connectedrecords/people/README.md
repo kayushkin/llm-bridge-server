@@ -1,4 +1,6 @@
-# people-store
+# people (formerly people-store)
+
+`internal/connectedrecords/people`, package `people`. It was the standalone people-store until it moved into llm-bridge-server; on 2026-11-27 its package, route prefix, Postgres module, settings and import subcommand took the name `people`. Its record ids did not change.
 
 The people in one person's own life — friends, family, coworkers, everyone
 they chat with — with their chat handles, emails, phone numbers and how they

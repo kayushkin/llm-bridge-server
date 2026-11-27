@@ -1,4 +1,6 @@
-# reference-store
+# references (formerly reference-store)
+
+`internal/references`, package `references`. It was the standalone reference-store until it moved into llm-bridge-server; on 2026-11-27 its package, route prefix, Postgres module, settings and import subcommand took the name `references`. Its record ids did not change.
 
 > **In llm-bridge-server.** This package is reference-store moved into the bridge, served under `/references/`: the catalog is open, and lookups run as the verified caller from the request context. It reads the stores the bridge runs in process by Go calls, one reader per type (`internal/server/reference_readers.go`), and asks the rest over HTTP at `references.service_urls`. The type list stays in code (`types.go`); there is no table of types. Where this README says `:8343`, `X-Principal-Id` or a service token, it describes the standalone service.
 

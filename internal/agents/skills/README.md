@@ -1,4 +1,6 @@
-# skill-store
+# skills (formerly skill-store)
+
+`internal/agents/skills`, package `skills`. It was the standalone skill-store until it moved into llm-bridge-server; on 2026-11-27 its package, route prefix, Postgres module, settings and import subcommand took the name `skills`. Its record ids did not change.
 
 The registry of Claude Code / Agent `SKILL.md` skills. It ingests upstream git
 repositories by cloning them (or reads a directory on the host for a local

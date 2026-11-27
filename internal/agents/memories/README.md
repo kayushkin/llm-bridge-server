@@ -1,4 +1,6 @@
-# memory-store
+# memories (formerly memory-store)
+
+`internal/agents/memories`, package `memories`. It was the standalone memory-store until it moved into llm-bridge-server; on 2026-11-27 its package, route prefix, Postgres module, settings and import subcommand took the name `memories`. Its record ids did not change.
 
 Persistent memory with full-text search for the [llm-bridge](https://github.com/kayushkin/llm-bridge) ecosystem.
 
@@ -39,13 +41,13 @@ It is a module of llm-bridge-server: its records live in Postgres (schema `memor
 ### As a library
 
 ```go
-import memorystore "github.com/kayushkin/llm-bridge-server/internal/agents/memories"
+import "github.com/kayushkin/llm-bridge-server/internal/agents/memories"
 
 // The server provisions, migrates and opens the module, then hands its pool here.
-store := memorystore.New(db)
+store := memories.New(db)
 
 // Save a memory
-store.Save(memorystore.Memory{
+store.Save(memories.Memory{
     ID:         "setup-preferences",
     Content:    "User prefers concise responses without emoji",
     Source:     "user",
@@ -57,7 +59,7 @@ store.Save(memorystore.Memory{
 results, _ := store.Search("response style", 5)
 
 // Build prompt context within a token budget
-memories, tokens, _ := store.BuildContext(memorystore.BuildContextRequest{
+recalled, tokens, _ := store.BuildContext(memories.BuildContextRequest{
     Tags:              []string{"preference"},
     TokenBudget:       32000,
     IncludeAlwaysLoad: true,
@@ -67,7 +69,7 @@ memories, tokens, _ := store.BuildContext(memorystore.BuildContextRequest{
 ### With HTTP handlers
 
 ```go
-memorystore.RegisterHandlers(mux, store)
+memories.RegisterHandlers(mux, store)
 ```
 
 llm-bridge-server mounts them on its own mux.

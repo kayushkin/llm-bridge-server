@@ -1,15 +1,17 @@
-# kanban-store
+# issues (formerly kanban-store)
+
+`internal/tasktracking/issues`, package `issues`. It was the standalone kanban-store until it moved into llm-bridge-server; on 2026-11-27 its package, route prefix, Postgres module, settings and import subcommand took the name `issues`. Its record ids did not change.
 
 > **In llm-bridge-server.** This copy runs inside llm-bridge-server on a
-> Postgres module (`kanban`), not as a service of its own. Its routes are the
-> server's `/kanban/<rest>` (this store's `/api/<rest>`) and
-> `/issues/<rest>` (its `/<rest>`). The server names the caller in the
+> Postgres module (`issues`; `kanban` before 2026-11-27, renamed at start),
+> not as a service of its own. Its routes are the server's `/issues/<rest>`
+> (this store's `/<rest>`, so its boards are `/issues/api/boards`). The server names the caller in the
 > request context from the credential it verified, so `X-Principal-Id` and
 > `X-Kanban-Store-Service-Token` below name nobody: a principal comes from a
 > login or a session agent token, and the internal service is the server's own
 > service token. There is no `GET /settings`, no unit and no environment of the
-> store's own; the server's `kanban_store.*`, `multichat.url`, `auth_store.*`,
-> `file_store.*` and `reference_store.url` settings wire it. Noteboard,
+> store's own; the server's `issues.*`, `multichat.url`, `auth_store.*`,
+> `files.*` and `reference_store.url` settings wire it. Noteboard,
 > principal-store, grant-store, bundle-store, agent-store and harness-store are
 > asked in the same process. `llm-bridge-server import-issues -sqlite
 > <file>` copies a standalone database in. The rest of this file describes the

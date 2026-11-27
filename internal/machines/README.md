@@ -1,6 +1,8 @@
-# harness-store
+# machines (formerly harness-store)
 
-Registry for harness instances, machines and credential bindings, kept in the Postgres module `harnesses` (role `harnesses_module`, migrations in `migrations/`). Part of the [llm-bridge](https://github.com/kayushkin/llm-bridge) ecosystem.
+`internal/machines`, package `machines`. It was the standalone harness-store until it moved into llm-bridge-server; on 2026-11-27 its package, route prefix, Postgres module, settings and import subcommand took the name `machines`. Its record ids did not change.
+
+Registry for harness instances, machines and credential bindings, kept in the Postgres module `machines` (role `machines_module`; `harnesses` and `harnesses_module` before 2026-11-27, renamed at start; migrations in `migrations/`). Part of the [llm-bridge](https://github.com/kayushkin/llm-bridge) ecosystem.
 
 Tracks which harness instances are deployed across machines (local or SSH), which credentials are bound to each instance, and display metadata for harness types. This is configuration storage only -- runtime state (active sessions, credential slot occupancy) lives in [llm-bridge-server](https://github.com/kayushkin/llm-bridge-server).
 

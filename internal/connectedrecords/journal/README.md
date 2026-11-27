@@ -1,4 +1,6 @@
-# journal-store
+# journal (formerly journal-store)
+
+`internal/connectedrecords/journal`, package `journal`. It was the standalone journal-store until it moved into llm-bridge-server; on 2026-11-27 its package, route prefix, Postgres module, settings and import subcommand took the name `journal`. Its record ids did not change.
 
 Keeps your own writing: journal entries, blog posts, notes, notes about one
 person or thing, timelines, and transcripts of conversations you took part in.

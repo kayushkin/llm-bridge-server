@@ -178,7 +178,7 @@ reach below 10⁷).
 
 ## Settings and runs
 
-eval-store's settings are llm-bridge-server's, `eval_store.*` in
+eval-store's settings are llm-bridge-server's, `evaluations.*` in
 `internal/config/usage_and_eval_settings.go`, read at start. Runs are carried
 out only when `evaluations.runs.enabled` is on (off by default): off, `POST
 /runs/{id}/start` and `/resume` answer 503 and every other route answers. On,

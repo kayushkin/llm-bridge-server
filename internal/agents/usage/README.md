@@ -1,4 +1,6 @@
-# usage-store
+# usage (formerly usage-store)
+
+`internal/agents/usage`, package `usage`. It was the standalone usage-store until it moved into llm-bridge-server; on 2026-11-27 its package, route prefix, Postgres module, settings and import subcommand took the name `usage`. Its record ids did not change.
 
 How much of each subscription's limit is used, and what each Anthropic API key
 has cost. It runs inside llm-bridge-server, mounted at `/usage/` with the
@@ -13,7 +15,7 @@ standalone usage-store's SQLite file into the module, keeping every id.
 
 ## Packages
 
-- `usagestore`: the store.
+- `usage`: the store.
 - `anthropic`: reads Claude's OAuth subscription usage from
   `https://api.anthropic.com/api/oauth/usage` with the token in
   `~/.claude/.credentials.json`.
@@ -44,7 +46,7 @@ standalone usage-store's SQLite file into the module, keeping every id.
 
 ## Settings and background reads
 
-The settings are llm-bridge-server's, `usage_store.*` in
+The settings are llm-bridge-server's, `usage.*` in
 `internal/config/usage_and_eval_settings.go`, read at start.
 
 - **Limits** are read in the background only when

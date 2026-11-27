@@ -1,4 +1,6 @@
-# model-store
+# models (formerly model-store)
+
+`internal/agents/models`, package `models`. It was the standalone model-store until it moved into llm-bridge-server; on 2026-11-27 its package, route prefix, Postgres module, settings and import subcommand took the name `models`. Its record ids did not change.
 
 Centralized model registry for AI agents. Tracks providers, models, aliases, pricing, and health — shared across the [llm-bridge](https://github.com/kayushkin/llm-bridge) ecosystem and any other consumer.
 

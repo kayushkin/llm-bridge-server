@@ -1,4 +1,6 @@
-# rule-store
+# rules (formerly rule-store)
+
+`internal/automation/rules`, package `rules`. It was the standalone rule-store until it moved into llm-bridge-server; on 2026-11-27 its package, route prefix, Postgres module, settings and import subcommand took the name `rules`. Its record ids did not change.
 
 > **In llm-bridge-server.** This copy runs inside llm-bridge-server on a
 > Postgres module (`rules`), not as a service of its own: its routes are the

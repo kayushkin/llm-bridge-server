@@ -431,7 +431,7 @@ the turn itself resolved.
 
 | Piece | File |
 |---|---|
-| The join, as a client | `internal/kanbanclient/client.go` (`LinkedTodoForSession`) |
+| The join, as a client | `internal/server/issue_reads.go` (`issueReader.LinkedTodoForSession`) |
 | Resolved once per signal mint | `internal/server/signal_todo_link.go` |
 | Stamped by the tool producer | `internal/server/signals.go` |
 | Stamped by the derived producer | `internal/server/signal_classifier.go` |

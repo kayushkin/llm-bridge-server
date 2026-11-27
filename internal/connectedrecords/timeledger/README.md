@@ -1,4 +1,6 @@
-# time-ledger-store
+# timeledger (formerly time-ledger-store)
+
+`internal/connectedrecords/timeledger`, package `timeledger`. It was the standalone time-ledger-store until it moved into llm-bridge-server; on 2026-11-27 its package, route prefix, Postgres module, settings and import subcommand took the name `timeledger`. Its record ids did not change.
 
 An account of what someone did, when and where: time entries over spans of time, each linked by id to the records that brought it in (a calendar event, a Discord event, an event suggestion, a message, a journey) and the records that show whether it happened (visits, photos, charges, attendance records), and reviewed by a model and by the person.
 

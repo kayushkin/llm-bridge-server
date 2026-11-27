@@ -87,7 +87,7 @@ func (s *scriptedStmt) Query([]driver.Value) (driver.Rows, error) { return s.new
 
 // storeReadingScriptedRows builds a Store whose every query answers with the
 // given result set. It writes the db field directly rather than going through
-// Open, which is the whole reason this test lives in package usagestore.
+// Open, which is the whole reason this test lives in package usage.
 func storeReadingScriptedRows(t *testing.T, newRows func() driver.Rows) *Store {
 	t.Helper()
 	db := sql.OpenDB(scriptedDriverConnector{newRows: newRows})

@@ -1,4 +1,6 @@
-# tool-store
+# tools (formerly tool-store)
+
+`internal/agents/tools`, package `tools`. It was the standalone tool-store until it moved into llm-bridge-server; on 2026-11-27 its package, route prefix, Postgres module, settings and import subcommand took the name `tools`. Its record ids did not change.
 
 A registry of tools that can be seeded into AI coding agents and harnesses. It is a module of [llm-bridge-server](https://github.com/kayushkin/llm-bridge-server): the server keeps its records in Postgres and serves its routes at `/tools/`, the same paths the standalone service served on `:8302`, behind the prefix. They are operator routes: the service token, an administrator, or an administrator's session agent token.
 
@@ -64,10 +66,10 @@ The server seeds the registry at every start (`SeedRegistry`) with every in-proc
 
 ## Packages
 
-### `toolstore` — Registry types and HTTP handlers
+### `tools` — Registry types and HTTP handlers
 
 ```go
-import toolstore "github.com/kayushkin/llm-bridge-server/internal/agents/tools"
+import "github.com/kayushkin/llm-bridge-server/internal/agents/tools"
 ```
 
 - `Tool`, `Kind` (`mcp` | `cli` | `local` | `harness`), `Kinds`, `KindDescriptor`, `MCPSpec`, `CLISpec`, `LocalSpec`, `HarnessToolRowName`

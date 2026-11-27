@@ -1,8 +1,8 @@
 # activity-store contract
 
 activity-store runs inside llm-bridge-server, at `/online-activity/` with the
-paths below, and keeps its records in Postgres (schema `activity`, role
-`activity_module`) and the bytes of its attachments in the server's file-store
+paths below, and keeps its records in Postgres (schema `online_activity`, role
+`online_activity_module`; `activity` and `activity_module` before 2026-11-27) and the bytes of its attachments in the server's file-store
 (owner service `activity-store`, owner ref the activity id). It answers only a
 request carrying the caller the server verified; one with none is 401. What a
 person did online, one activity per thing done at one time, imported from

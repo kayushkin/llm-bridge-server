@@ -1,4 +1,6 @@
-# permission-store
+# permissions (formerly permission-store)
+
+`internal/access/permissions`, package `permissions`. It was the standalone permission-store until it moved into llm-bridge-server; on 2026-11-27 its package, route prefix, Postgres module, settings and import subcommand took the name `permissions`. Its record ids did not change.
 
 The rule engine for tool-call gating across the llm-bridge harnesses: rules, the verdict on one tool call, and an audit row for every verdict. A package of llm-bridge-server, `internal/access/permissions`, which that server mounts under `/permissions/` with the paths the standalone service on `127.0.0.1:8304` served (`GET /healthz`, `GET`/`POST /rules`, `GET`/`PATCH`/`DELETE /rules/{id}`, `POST /evaluate`, `GET /audit`). The server's Claude Code `PreToolUse` prehook evaluates every tool call with the same `Engine` the routes use, in process, so a rule written through the routes drops the compiled patterns the prehook reads. The `bridge_perm` MCP server this used to back was deleted from `llm-bridge-claudecode` on 2026-05-05 (the story is in `docs/cc-mcp-retrospective.md`).
 

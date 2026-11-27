@@ -1,4 +1,6 @@
-# log-store
+# sessionlog (formerly log-store)
+
+`internal/sessionlog`, package `sessionlog`. It was the standalone log-store until it moved into llm-bridge-server; on 2026-11-27 its package, route prefix, Postgres module, settings and import subcommand took the name `sessionlog`. Its record ids did not change.
 
 The session event log of llm-bridge-server: every `msg.Event` of every session,
 the turns each is placed in, the stored reading pages, search and per-session

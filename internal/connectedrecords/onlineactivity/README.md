@@ -1,4 +1,6 @@
-# activity-store
+# onlineactivity (formerly activity-store)
+
+`internal/connectedrecords/onlineactivity`, package `onlineactivity`. It was the standalone activity-store until it moved into llm-bridge-server; on 2026-11-27 its package, route prefix, Postgres module, settings and import subcommand took the name `onlineactivity`. Its record ids did not change.
 
 Keeps what a person did online: searches, pages visited, videos watched, apps
 used and places looked up on a map, one activity per thing done at one time.
@@ -6,7 +8,7 @@ It imports Google Takeout: My Activity's pages, YouTube's watch and search
 history, and Chrome's history and bookmarks.
 
 It runs inside llm-bridge-server, at `/online-activity/`, with its records in
-Postgres (schema `activity`, role `activity_module`) and the bytes of its
+Postgres (schema `online_activity`, role `online_activity_module`; `activity` and `activity_module` before 2026-11-27, renamed at start) and the bytes of its
 attachments in the server's file-store. Every record has an owner, the
 principal whose activity it is, and a caller reaches only its own records (an
 administrator reaches every owner's). Each activity has an id like
