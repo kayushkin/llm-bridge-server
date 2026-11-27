@@ -38,7 +38,7 @@ var (
 // stores do, through importConnectedRecordsStoreCmd.
 func init() {
 	for command, module := range map[string]connectedRecordsModule{
-		"import-messages":     messageStoreModule,
+		"import-messages":    messageStoreModule,
 		"import-time-ledger": timeLedgerStoreModule,
 	} {
 		if _, taken := connectedRecordsImports[command]; taken {

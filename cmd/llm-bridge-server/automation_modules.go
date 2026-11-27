@@ -249,7 +249,7 @@ func enableRuleStore(ctx context.Context, cfg *config.Config, srv *server.Server
 	_, effectsOnThisServer := srv.HTTPClientToThisServer(0)
 	owners := rules.NewOwnerCalls(feed, &rules.KanbanStore{BaseURL: server.IssuesInProcessBaseURL})
 	owners.Client = &http.Client{Timeout: ruleStoreEffectCallTimeout, Transport: transportByHost{
-		hostOf(bridgeBaseURL):                      effectsOnThisServer.Transport,
+		hostOf(bridgeBaseURL):                 effectsOnThisServer.Transport,
 		hostOf(server.IssuesInProcessBaseURL): kanbanClient.Transport,
 	}}
 	reactor := rules.NewReactor(store, sessions, kanban, owners, sweepInterval)
