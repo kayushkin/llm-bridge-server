@@ -6,6 +6,8 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -150,11 +152,11 @@ type stubKanban struct {
 	cards []stubQueueCard
 
 	failQueueBoards int // status for the board lookup that resolves the queue
-	failBoardView   int // status for GET /api/boards/{queue}/cards — the queue read itself
-	failCreateCard  int // status for POST /api/boards/{id}/cards
-	failLink        int // status for POST /api/cards/{id}/links
-	failMove        int // status for POST /api/cards/{id}/move
-	failHold        int // status for POST /api/cards/{id}/hold
+	failBoardView   int // status for GET /boards/{queue}/cards — the queue read itself
+	failCreateCard  int // status for POST /boards/{id}/cards
+	failLink        int // status for POST /cards/{id}/links
+	failMove        int // status for POST /cards/{id}/move
+	failHold        int // status for POST /cards/{id}/hold
 
 	created []string // titles of cards created on the "Agent runs" board
 	moved   map[string]string
@@ -174,7 +176,7 @@ func (k *stubKanban) URL() string { return k.server.URL }
 func (k *stubKanban) serve(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.Path
 	switch {
-	case p == "/api/boards" && r.Method == "GET":
+	case p == "/boards" && r.Method == "GET":
 		if k.failQueueBoards != 0 {
 			http.Error(w, "boards unavailable", k.failQueueBoards)
 			return
@@ -184,20 +186,20 @@ func (k *stubKanban) serve(w http.ResponseWriter, r *http.Request) {
 			{"id": stubRunsBoardID, "name": kanbanBoardName},
 		})
 
-	case p == "/api/boards/"+stubQueueBoardID+"/columns" && r.Method == "GET":
+	case p == "/boards/"+stubQueueBoardID+"/columns" && r.Method == "GET":
 		writeStubJSON(w, 200, stubColumns(stubQueueBoardID, stubColQueued, stubColInProgQ))
 
-	case p == "/api/boards/"+stubRunsBoardID+"/columns" && r.Method == "GET":
+	case p == "/boards/"+stubRunsBoardID+"/columns" && r.Method == "GET":
 		writeStubJSON(w, 200, stubColumns(stubRunsBoardID, "col-queued-runs", stubColInProgR))
 
-	case p == "/api/boards/"+stubQueueBoardID+"/cards" && r.Method == "GET":
+	case p == "/boards/"+stubQueueBoardID+"/cards" && r.Method == "GET":
 		if k.failBoardView != 0 {
 			http.Error(w, "board view unavailable", k.failBoardView)
 			return
 		}
 		writeStubJSON(w, 200, k.queueView())
 
-	case p == "/api/boards/"+stubRunsBoardID+"/cards" && r.Method == "POST":
+	case p == "/boards/"+stubRunsBoardID+"/cards" && r.Method == "POST":
 		if k.failCreateCard != 0 {
 			http.Error(w, "create card refused", k.failCreateCard)
 			return
@@ -209,7 +211,7 @@ func (k *stubKanban) serve(w http.ResponseWriter, r *http.Request) {
 		writeStubJSON(w, 201, map[string]any{"item": map[string]any{"id": "run-card-1"}})
 
 	case strings.HasSuffix(p, "/links") && r.Method == "GET":
-		cardID := strings.TrimSuffix(strings.TrimPrefix(p, "/api/cards/"), "/links")
+		cardID := strings.TrimSuffix(strings.TrimPrefix(p, "/cards/"), "/links")
 		links := []map[string]any{}
 		for _, c := range k.cards {
 			if c.cardID != cardID {
@@ -237,7 +239,7 @@ func (k *stubKanban) serve(w http.ResponseWriter, r *http.Request) {
 			ColumnID string `json:"column_id"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
-		k.moved[strings.TrimSuffix(strings.TrimPrefix(p, "/api/cards/"), "/move")] = req.ColumnID
+		k.moved[strings.TrimSuffix(strings.TrimPrefix(p, "/cards/"), "/move")] = req.ColumnID
 		writeStubJSON(w, 200, map[string]string{"status": "ok"})
 
 	case strings.HasSuffix(p, "/hold") && r.Method == "POST":
@@ -245,10 +247,10 @@ func (k *stubKanban) serve(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "hold refused", k.failHold)
 			return
 		}
-		k.held = append(k.held, strings.TrimSuffix(strings.TrimPrefix(p, "/api/cards/"), "/hold"))
+		k.held = append(k.held, strings.TrimSuffix(strings.TrimPrefix(p, "/cards/"), "/hold"))
 		writeStubJSON(w, 200, map[string]string{"status": "ok"})
 
-	case strings.HasPrefix(p, "/api/cards/") && r.Method == "PATCH":
+	case strings.HasPrefix(p, "/cards/") && r.Method == "PATCH":
 		writeStubJSON(w, 200, map[string]string{"status": "ok"})
 
 	default:
@@ -335,8 +337,8 @@ func (s *stubSpend) URL() string { return s.server.URL }
 
 func (s *stubSpend) serve(w http.ResponseWriter, r *http.Request) {
 	switch {
-	case strings.HasPrefix(r.URL.Path, "/api/items"):
-		// A bare array, as noteboard sends it. This used to be wrapped in
+	case strings.HasPrefix(r.URL.Path, "/items"):
+		// A bare array, as the issues send it. This used to be wrapped in
 		// {"items": …}, which fetchNoteboardItems cannot decode, so every tick
 		// through this stub read the spend tree as unreadable.
 		items := s.items
@@ -354,6 +356,30 @@ func (s *stubSpend) serve(w http.ResponseWriter, r *http.Request) {
 
 // ------------------------------------------------------------------- harness
 
+// issuesRoutedTo stands up one issues address, as the bridge has one: its
+// items go to the spend stub, which holds the spend tree, and its boards and
+// cards to the board stub.
+func issuesRoutedTo(t *testing.T, boards, items string) string {
+	t.Helper()
+	proxyTo := func(address string) *httputil.ReverseProxy {
+		target, err := url.Parse(address)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return httputil.NewSingleHostReverseProxy(target)
+	}
+	boardsProxy, itemsProxy := proxyTo(boards), proxyTo(items)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/items") {
+			itemsProxy.ServeHTTP(w, r)
+			return
+		}
+		boardsProxy.ServeHTTP(w, r)
+	}))
+	t.Cleanup(server.Close)
+	return server.URL
+}
+
 // tickConfig assembles a config pointed at the stubs, with a state file in a
 // temp dir so no test touches ~/.config/autoworker/state.json.
 func tickConfig(t *testing.T, usage, kanban, spend string) config {
@@ -363,10 +389,9 @@ func tickConfig(t *testing.T, usage, kanban, spend string) config {
 		prompt:             "the default discovery prompt",
 		timezone:           "America/Los_Angeles",
 		natsURL:            "nats://unreachable.invalid:4222",
-		kanbanStoreURL:     kanban,
 		llmBridgeURL:       spend,
-		noteboardURL:       spend,
-		usageStoreURL:      usage,
+		issuesURL:          issuesRoutedTo(t, kanban, spend),
+		usageURL:           usage,
 		schedulerURL:       "http://unreachable.invalid",
 		statePath:          filepath.Join(t.TempDir(), "state.json"),
 	}
@@ -392,7 +417,7 @@ func (p *recordingPublisher) publish(_ providerSpec, _ string, prompt string, ma
 func newStubEmptyBoards(t *testing.T) string {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/boards" && r.Method == "GET" {
+		if r.URL.Path == "/boards" && r.Method == "GET" {
 			writeStubJSON(w, 200, []map[string]string{})
 			return
 		}

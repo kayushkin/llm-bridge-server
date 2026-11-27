@@ -115,20 +115,20 @@ func newWorld(t *testing.T) *classifierWorld {
 		case r.Method == http.MethodDelete && strings.Contains(path, "/tags/"):
 			w.tagsDeleted = append(w.tagsDeleted, path[strings.Index(path, "/tags/")+len("/tags/"):])
 			writeJSON(rw, http.StatusOK, map[string]any{})
-		case r.Method == http.MethodGet && strings.HasPrefix(path, "/api/entities/") && strings.HasSuffix(path, "/cards"):
+		case r.Method == http.MethodGet && strings.HasPrefix(path, "/entities/") && strings.HasSuffix(path, "/cards"):
 			cards := w.cards
 			if cards == nil {
 				cards = []map[string]any{}
 			}
 			writeJSON(rw, http.StatusOK, cards)
 		case r.Method == http.MethodPost && strings.HasSuffix(path, "/move"):
-			id := strings.TrimSuffix(strings.TrimPrefix(path, "/api/cards/"), "/move")
+			id := strings.TrimSuffix(strings.TrimPrefix(path, "/cards/"), "/move")
 			column, _ := payload["column_id"].(string)
 			w.movedTo[id] = column
 			writeJSON(rw, http.StatusOK, map[string]any{})
-		case r.Method == http.MethodPatch && strings.HasPrefix(path, "/api/cards/"):
+		case r.Method == http.MethodPatch && strings.HasPrefix(path, "/cards/"):
 			body, _ := payload["body"].(string)
-			w.patchedBodies[strings.TrimPrefix(path, "/api/cards/")] = body
+			w.patchedBodies[strings.TrimPrefix(path, "/cards/")] = body
 			writeJSON(rw, http.StatusOK, map[string]any{})
 		case r.Method == http.MethodPost && strings.HasSuffix(path, "/links"):
 			writeJSON(rw, http.StatusCreated, map[string]any{})
@@ -165,7 +165,7 @@ func newWorld(t *testing.T) *classifierWorld {
 	}))
 	t.Cleanup(bridge.Close)
 
-	w.kc = issuesclient.New(board.URL, "")
+	w.kc = issuesclient.New(board.URL)
 	w.kc.BoardID = "board-1"
 	w.kc.ColumnsByName = map[string]string{
 		"In Progress": "col-inprogress", "Blocked": "col-blocked",

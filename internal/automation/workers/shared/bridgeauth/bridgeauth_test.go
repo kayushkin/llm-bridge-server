@@ -6,14 +6,14 @@ import (
 	"testing"
 )
 
-// TestOnlyTheBridgeHostGetsTheToken pins the host check: these binaries call
-// noteboard and kanban-store with the same default transport, and this token
-// must never reach them.
+// TestOnlyTheBridgeHostGetsTheToken pins the host check: reminder-coordinator
+// calls dash with the same default transport, and this token must never reach
+// it or anything else that is not the bridge.
 func TestOnlyTheBridgeHostGetsTheToken(t *testing.T) {
-	const token = "scheduler-bridge-service-token-0123456789"
+	const token = "llm-bridge-service-principal-token-v1.worker-0123456789"
 	seen := make(chan string, 2)
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seen <- r.Header.Get(ServiceTokenHeader)
+		seen <- r.Header.Get(AuthorizationHeader)
 		w.Write([]byte(`{}`))
 	})
 	bridge := httptest.NewServer(handler)
@@ -32,10 +32,10 @@ func TestOnlyTheBridgeHostGetsTheToken(t *testing.T) {
 	if _, err := http.Get(bridge.URL + "/sessions"); err != nil {
 		t.Fatal(err)
 	}
-	if got := <-seen; got != token {
+	if got := <-seen; got != "Bearer "+token {
 		t.Fatalf("the bridge should get the token, got %q", got)
 	}
-	if _, err := http.Get(somethingElse.URL + "/api/items"); err != nil {
+	if _, err := http.Get(somethingElse.URL + "/api/calendar/google"); err != nil {
 		t.Fatal(err)
 	}
 	if got := <-seen; got != "" {

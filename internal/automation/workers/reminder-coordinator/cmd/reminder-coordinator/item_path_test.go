@@ -50,7 +50,7 @@ var itemPathProbes = []string{
 }
 
 // assertItemIDIsOneSegment is the property: whatever the id contains, the request
-// must address /api/items/<id> — the id occupying exactly one path segment, with no
+// must address /issues/items/<id> — the id occupying exactly one path segment, with no
 // query and no fragment the caller did not set.
 //
 // It reads the ESCAPED path and never url.URL.Path, for the reason
@@ -70,7 +70,7 @@ func assertItemIDIsOneSegment(t *testing.T, requestLine, itemID string) {
 		t.Errorf("the id carried a separator and added the query %q, which no caller set\n  request line: %s",
 			parsed.RawQuery, requestLine)
 	}
-	const prefix = "/api/items/"
+	const prefix = "/issues/items/"
 	escaped := parsed.EscapedPath()
 	if !strings.HasPrefix(escaped, prefix) {
 		t.Fatalf("request addressed %q, want a path under %q\n  request line: %s",
@@ -94,10 +94,10 @@ func TestPatchKeepsAnItemIDInOnePathSegment(t *testing.T) {
 	for _, itemID := range itemPathProbes {
 		t.Run(itemID, func(t *testing.T) {
 			server, seen := recordRequestLine(t)
-			client := &NoteboardClient{BaseURL: server.URL}
+			client := itemsClientFor(server.URL)
 
-			if err := client.Patch(itemID, map[string]any{"status": "done"}); err != nil {
-				t.Fatalf("Patch: %v", err)
+			if err := client.PatchTodo(itemID, map[string]any{"status": "done"}); err != nil {
+				t.Fatalf("PatchTodo: %v", err)
 			}
 			assertItemIDIsOneSegment(t, *seen, itemID)
 		})
@@ -111,7 +111,7 @@ func TestSetScheduleKeepsAnItemIDInOnePathSegment(t *testing.T) {
 	for _, itemID := range itemPathProbes {
 		t.Run(itemID, func(t *testing.T) {
 			server, seen := recordRequestLine(t)
-			client := &NoteboardClient{BaseURL: server.URL}
+			client := itemsClientFor(server.URL)
 
 			schedule := &model.Schedule{RRule: "FREQ=DAILY", TZID: "America/Los_Angeles"}
 			if err := client.SetSchedule(itemID, schedule, false); err != nil {
@@ -128,12 +128,12 @@ func TestAnOrdinaryItemIDReachesTheWireUnchanged(t *testing.T) {
 	const ordinary = "018f2c1a-4d3b-7e91-a0c5-2b6f8d19e4aa"
 
 	server, seen := recordRequestLine(t)
-	client := &NoteboardClient{BaseURL: server.URL}
+	client := itemsClientFor(server.URL)
 
-	if err := client.Patch(ordinary, map[string]any{"status": "done"}); err != nil {
-		t.Fatalf("Patch: %v", err)
+	if err := client.PatchTodo(ordinary, map[string]any{"status": "done"}); err != nil {
+		t.Fatalf("PatchTodo: %v", err)
 	}
-	if want := "/api/items/" + ordinary; *seen != want {
+	if want := "/issues/items/" + ordinary; *seen != want {
 		t.Errorf("request line %q, want %q", *seen, want)
 	}
 }

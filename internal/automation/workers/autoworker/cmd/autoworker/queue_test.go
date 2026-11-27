@@ -59,7 +59,7 @@ func (f *fakeKanban) start(t *testing.T) *issuesclient.Client {
 	t.Helper()
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/api/boards/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/boards/", func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasSuffix(r.URL.Path, "/cards") {
 			http.NotFound(w, r)
 			return
@@ -76,8 +76,8 @@ func (f *fakeKanban) start(t *testing.T) *issuesclient.Client {
 		writeFakeJSON(w, view)
 	})
 
-	mux.HandleFunc("/api/cards/", func(w http.ResponseWriter, r *http.Request) {
-		rest := strings.TrimPrefix(r.URL.Path, "/api/cards/")
+	mux.HandleFunc("/cards/", func(w http.ResponseWriter, r *http.Request) {
+		rest := strings.TrimPrefix(r.URL.Path, "/cards/")
 		cardID, action, _ := strings.Cut(rest, "/")
 		f.mu.Lock()
 		defer f.mu.Unlock()
@@ -103,7 +103,7 @@ func (f *fakeKanban) start(t *testing.T) *issuesclient.Client {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	qc := issuesclient.New(srv.URL, "")
+	qc := issuesclient.New(srv.URL)
 	qc.BoardID = "board-1"
 	qc.ColumnsByName = map[string]string{
 		"Queued":      "col-queued",
@@ -112,7 +112,7 @@ func (f *fakeKanban) start(t *testing.T) *issuesclient.Client {
 	return qc
 }
 
-// serveNoteboardItems stands in for noteboard's /api/items and records the last
+// serveNoteboardItems stands in for the issues' /items and records the last
 // query it was asked. The query matters: the parent chain has to be complete,
 // which means held ancestors and every page of the list. It honors limit and
 // offset as noteboard does, so a list longer than one page takes more than one
@@ -127,7 +127,7 @@ func serveNoteboardItems(t *testing.T, items []map[string]any) (url string, last
 	var mu sync.Mutex
 	seen := ""
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/items" {
+		if r.URL.Path != "/items" {
 			http.NotFound(w, r)
 			return
 		}
@@ -152,7 +152,7 @@ func serveNoteboardItems(t *testing.T, items []map[string]any) (url string, last
 func serveEndlessNoteboardItems(t *testing.T, items []map[string]any) string {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/items" {
+		if r.URL.Path != "/items" {
 			http.NotFound(w, r)
 			return
 		}
@@ -219,9 +219,9 @@ func card(id string, item map[string]any) issuesclient.CardView {
 // pointAtFakes builds the config selectQueuedCard reads the two spend URLs from.
 // On the branch these tests came from, selectQueuedCard read them from the
 // environment; on main they are config fields.
-func pointAtFakes(t *testing.T, bridgeURL, noteboardURL string) config {
+func pointAtFakes(t *testing.T, bridgeURL, issuesURL string) config {
 	t.Helper()
-	return config{llmBridgeURL: bridgeURL, noteboardURL: noteboardURL}
+	return config{llmBridgeURL: bridgeURL, issuesURL: issuesURL}
 }
 
 // ------------------------------------------------------------- the hold gate
@@ -781,7 +781,7 @@ func TestCardSpendCeilingDistinguishesAbsentFromZero(t *testing.T) {
 // that loses it produces a session that does the work and cannot report it, and
 // the card sits In Progress forever.
 func TestTheQueuePromptCarriesTheCardIdAndTheTask(t *testing.T) {
-	prompt := buildQueuePrompt(&queueCandidate{
+	prompt := buildQueuePrompt(testIssuesURL, &queueCandidate{
 		cardID: "card-abc-123",
 		title:  "Rename the thing",
 		body:   "It is called the wrong thing in four places.",
@@ -800,10 +800,34 @@ func TestTheQueuePromptCarriesTheCardIdAndTheTask(t *testing.T) {
 		t.Error("the card id appears once; the prompt needs it both as the task's " +
 			"identity and in the URL the worker closes it with")
 	}
+	if !strings.Contains(prompt, "PATCH "+testIssuesURL+"/items/card-abc-123 ") {
+		t.Errorf("the prompt does not close the card at the configured bridge's issues:\n%s", prompt)
+	}
+}
+
+// testIssuesURL stands for the bridge's /issues in the prompt tests.
+const testIssuesURL = "http://bridge.test/issues"
+
+// The discovery prompt names the configured bridge's issues everywhere it gives
+// the worker an address, and the old noteboard address nowhere.
+func TestTheDefaultPromptNamesTheConfiguredIssues(t *testing.T) {
+	prompt := defaultPrompt(testIssuesURL)
+	for _, want := range []string{
+		"GET " + testIssuesURL + "/items?type=todo&status=open",
+		testIssuesURL + "/items/search",
+		"PATCH " + testIssuesURL + "/items/<id>",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("the default prompt does not carry %q", want)
+		}
+	}
+	if strings.Contains(prompt, "8191") || strings.Contains(prompt, "%!") {
+		t.Errorf("the default prompt names the old noteboard or is malformed:\n%s", prompt)
+	}
 }
 
 func TestAnEmptyCardBodySaysSoRatherThanRenderingNothing(t *testing.T) {
-	prompt := buildQueuePrompt(&queueCandidate{cardID: "c1", title: "Only a title", body: "   "})
+	prompt := buildQueuePrompt(testIssuesURL, &queueCandidate{cardID: "c1", title: "Only a title", body: "   "})
 	if !strings.Contains(prompt, "Only a title") {
 		t.Fatal("the title did not reach the prompt")
 	}

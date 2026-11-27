@@ -20,21 +20,23 @@ import (
 // for a model call per session, so a wrong cadence or a second copy of the job
 // is billed in real API spend on a schedule.
 
-// schedulerFixture serves s and returns the configuration -register runs
-// with, built by parseFlags from an environment naming the stub, so the job is
-// posted to the stub and never to the scheduler serving this box.
-// registerSchedulerJob reads the URL from cfg alone; there is no compiled-in
-// route around the fixture.
+// schedulerFixture serves s as the bridge's /scheduler and returns the
+// configuration -register runs with, built by parseFlags from an environment
+// naming the stub as the bridge, so the job is posted to the stub and never to
+// the scheduler serving this box. registerSchedulerJob reads the address from
+// cfg alone; there is no compiled-in route around the fixture.
 func schedulerFixture(t *testing.T, s *schedulerStub) config {
 	t.Helper()
-	srv := httptest.NewServer(s)
+	mux := http.NewServeMux()
+	mux.Handle("/scheduler/", http.StripPrefix("/scheduler", s))
+	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	cfg, err := parseFlags([]string{"-register"}, environmentWith(map[string]string{"SCHEDULER_URL": srv.URL}), "/home/agent")
+	cfg, err := parseFlags([]string{"-register"}, environmentWith(map[string]string{"LLM_BRIDGE_URL": srv.URL}), "/home/agent")
 	if err != nil {
 		t.Fatalf("parseFlags: %v", err)
 	}
-	if cfg.SchedulerURL != srv.URL {
-		t.Fatalf("SchedulerURL = %q, want the stub %q — the fixture would post to a real scheduler", cfg.SchedulerURL, srv.URL)
+	if cfg.BridgeURL != srv.URL {
+		t.Fatalf("BridgeURL = %q, want the stub %q — the fixture would post to a real scheduler", cfg.BridgeURL, srv.URL)
 	}
 	return cfg
 }
@@ -232,7 +234,7 @@ func TestAJobListThatIsNotAnArrayRefusesRatherThanRegisteringASecondTick(t *test
 // in, so a board missing one is a board where some classification has nowhere
 // to go — and the failure has to be at startup rather than per card.
 func TestABoardMissingALifecycleColumnIsNamedRatherThanDiscoveredPerCard(t *testing.T) {
-	kc := issuesclient.New("http://unused", "")
+	kc := issuesclient.New("http://unused")
 	kc.BoardID = "board-1"
 	kc.ColumnsByName = map[string]string{
 		"In Progress": "col-1",
@@ -263,7 +265,7 @@ func TestABoardMissingALifecycleColumnIsNamedRatherThanDiscoveredPerCard(t *test
 // half-built board has, and it is not the same as an absent key — Go answers
 // "" to both, which is exactly why this is worth pinning rather than assuming.
 func TestAColumnWithNoIDIsAsMissingAsAnAbsentOne(t *testing.T) {
-	kc := issuesclient.New("http://unused", "")
+	kc := issuesclient.New("http://unused")
 	kc.BoardID = "board-1"
 	kc.ColumnsByName = map[string]string{"In Progress": ""}
 

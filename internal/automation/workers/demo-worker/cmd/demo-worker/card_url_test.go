@@ -4,10 +4,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgestores"
 )
 
 // TestCardURLsKeepEachIDOnePathSegment pins that a card or board id holding
-// "/" or "?" reaches kanban-store and noteboard as one escaped segment.
+// "/" or "?" reaches the bridge's issues as one escaped segment.
 // Unescaped, "a/b" would hit a different route and "a?b" would cut the id
 // short at the query separator.
 func TestCardURLsKeepEachIDOnePathSegment(t *testing.T) {
@@ -19,7 +21,7 @@ func TestCardURLsKeepEachIDOnePathSegment(t *testing.T) {
 		gotEscapedPath = r.URL.EscapedPath()
 		gotRawQuery = r.URL.RawQuery
 		switch {
-		case r.Method == http.MethodGet && gotEscapedPath == "/api/cards/"+escapedCardID+"/events":
+		case r.Method == http.MethodGet && gotEscapedPath == "/issues/cards/"+escapedCardID+"/events":
 			_, _ = w.Write([]byte(`[]`))
 		case r.Method == http.MethodGet:
 			_, _ = w.Write([]byte(`{}`))
@@ -28,6 +30,7 @@ func TestCardURLsKeepEachIDOnePathSegment(t *testing.T) {
 		}
 	}))
 	defer server.Close()
+	issuesURL := bridgestores.IssuesURL(server.URL)
 
 	cases := []struct {
 		name      string
@@ -35,20 +38,20 @@ func TestCardURLsKeepEachIDOnePathSegment(t *testing.T) {
 		wantPath  string
 		wantQuery string
 	}{
-		{"patchItem", func() error { return patchItem(server.URL, cardID, map[string]any{"title": "x"}) },
-			"/api/cards/" + escapedCardID, ""},
-		{"addNote", func() error { return addNote(server.URL, cardID, "board-1", "tester", "body") },
-			"/api/cards/" + escapedCardID + "/notes", ""},
-		{"linkAs", func() error { return linkAs(server.URL, cardID, "session", "s-1", "label", "a&b") },
-			"/api/cards/" + escapedCardID + "/links", "actor=a%26b"},
-		{"getItem", func() error { _, err := getItem(server.URL, cardID); return err },
-			"/api/items/" + escapedCardID, ""},
-		{"unhold", func() error { return unhold(server.URL, cardID) },
-			"/api/cards/" + escapedCardID + "/unhold", ""},
-		{"listEvents", func() error { _, err := listEvents(server.URL, cardID); return err },
-			"/api/cards/" + escapedCardID + "/events", ""},
-		{"attachCard", func() error { return attachCard(server.URL, "board/b?q", cardID, "column-1") },
-			"/api/boards/board%2Fb%3Fq/cards/" + escapedCardID, ""},
+		{"patchItem", func() error { return patchItem(issuesURL, cardID, map[string]any{"title": "x"}) },
+			"/issues/cards/" + escapedCardID, ""},
+		{"addNote", func() error { return addNote(issuesURL, cardID, "board-1", "tester", "body") },
+			"/issues/cards/" + escapedCardID + "/notes", ""},
+		{"linkAs", func() error { return linkAs(issuesURL, cardID, "session", "s-1", "label", "a&b") },
+			"/issues/cards/" + escapedCardID + "/links", "actor=a%26b"},
+		{"getItem", func() error { _, err := getItem(issuesURL, cardID); return err },
+			"/issues/items/" + escapedCardID, ""},
+		{"unhold", func() error { return unhold(issuesURL, cardID) },
+			"/issues/cards/" + escapedCardID + "/unhold", ""},
+		{"listEvents", func() error { _, err := listEvents(issuesURL, cardID); return err },
+			"/issues/cards/" + escapedCardID + "/events", ""},
+		{"attachCard", func() error { return attachCard(issuesURL, "board/b?q", cardID, "column-1") },
+			"/issues/boards/board%2Fb%3Fq/cards/" + escapedCardID, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

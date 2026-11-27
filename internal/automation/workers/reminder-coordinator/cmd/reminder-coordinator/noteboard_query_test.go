@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/items/model"
 )
 
 // A noteboard tag is user data. "personal" is the common case, but nothing stops
@@ -15,7 +17,6 @@ import (
 // pin too, but only because net/http refuses to send it.
 const (
 	probeTag      = "home&status=done"
-	probeItemType = "todo&limit=1"
 	probeParentID = "id&limit=1"
 )
 
@@ -63,7 +64,7 @@ func assertParametersAreExactly(t *testing.T, requestURI string, want map[string
 
 func TestListOpenSendsTheTagItWasGiven(t *testing.T) {
 	server, seen := recordRequestURI(t)
-	client := &NoteboardClient{BaseURL: server.URL}
+	client := itemsClientFor(server.URL)
 
 	if _, err := client.ListOpen(probeTag); err != nil {
 		t.Fatalf("ListOpen: %v", err)
@@ -75,7 +76,7 @@ func TestListOpenSendsTheTagItWasGiven(t *testing.T) {
 
 func TestListAllStatusesSendsTheTagItWasGiven(t *testing.T) {
 	server, seen := recordRequestURI(t)
-	client := &NoteboardClient{BaseURL: server.URL}
+	client := itemsClientFor(server.URL)
 
 	if _, err := client.ListAllStatuses(probeTag); err != nil {
 		t.Fatalf("ListAllStatuses: %v", err)
@@ -88,7 +89,7 @@ func TestListAllStatusesSendsTheTagItWasGiven(t *testing.T) {
 
 func TestListChildrenSendsTheParentIDItWasGiven(t *testing.T) {
 	server, seen := recordRequestURI(t)
-	client := &NoteboardClient{BaseURL: server.URL}
+	client := itemsClientFor(server.URL)
 
 	if _, err := client.ListChildren(probeParentID); err != nil {
 		t.Fatalf("ListChildren: %v", err)
@@ -100,12 +101,12 @@ func TestListChildrenSendsTheParentIDItWasGiven(t *testing.T) {
 
 func TestFindByTagSendsTheTypeAndTagItWasGiven(t *testing.T) {
 	server, seen := recordRequestURI(t)
-	client := &NoteboardClient{BaseURL: server.URL}
+	client := itemsClientFor(server.URL)
 
-	if _, err := client.FindByTag(probeItemType, probeTag); err != nil {
+	if _, err := client.FindByTag(model.TypeNote, probeTag); err != nil {
 		t.Fatalf("FindByTag: %v", err)
 	}
 	assertParametersAreExactly(t, *seen, map[string]string{
-		"type": probeItemType, "tag": probeTag, "limit": "10",
+		"type": model.TypeNote, "tag": probeTag, "limit": "10",
 	})
 }

@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/kayushkin/bus/messages"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgeauth"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgestores"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 )
 
@@ -61,7 +63,7 @@ func tick(t *testing.T, kanban *fakeKanban, sessions map[string]string) (error, 
 	defer bridgeServer.Close()
 	var published []messages.BridgeInbound
 	err := run(runOptions{ModelRole: "default", ModelRoles: stubModelRoles{},
-		BoardID: testBoardID, KanbanURL: kanbanServer.URL, BridgeURL: bridgeServer.URL, MaxDispatch: 10,
+		BoardID: testBoardID, BridgeURL: bridgeWithIssues(t, kanbanServer, bridgeServer), MaxDispatch: 10,
 		Publish: func(in messages.BridgeInbound) error {
 			published = append(published, in)
 			return nil
@@ -173,7 +175,7 @@ func TestARefusedPublishFailsTheRun(t *testing.T) {
 	bridgeServer := fakeBridge(t, nil)
 	defer bridgeServer.Close()
 	err := run(runOptions{ModelRole: "default", ModelRoles: stubModelRoles{},
-		BoardID: testBoardID, KanbanURL: kanbanServer.URL, BridgeURL: bridgeServer.URL, MaxDispatch: 10,
+		BoardID: testBoardID, BridgeURL: bridgeWithIssues(t, kanbanServer, bridgeServer), MaxDispatch: 10,
 		Publish: func(messages.BridgeInbound) error { return errors.New("bus down") },
 	})
 	wantShortfall(t, err, "card-next", "nats publish: bus down")
@@ -272,22 +274,48 @@ func TestTheRollup(t *testing.T) {
 	})
 }
 
-// kanban-store gates every route, so the closure pass's placement read must
-// carry the service token like every other kanban call.
-func TestThePlacementReadCarriesTheServiceToken(t *testing.T) {
-	var authorization string
+// The bridge gates every route, so the closure pass's placement read must
+// carry the bridge credential like every other call: it goes out through the
+// default transport bridgeauth stamps for the bridge's host.
+func TestThePlacementReadCarriesTheBridgeCredential(t *testing.T) {
+	var authorization, path string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		authorization = r.Header.Get(issuesclient.ServiceTokenHeader)
+		authorization, path = r.Header.Get("Authorization"), r.URL.Path
 		w.Write([]byte(`[{"card_id":"c1","board_id":"` + testBoardID + `","column_id":"col-done"}]`))
 	}))
 	defer server.Close()
-	column, err := currentPlacement(issuesclient.New(server.URL, "secret-token"), "c1", testBoardID)
+	originalTransport, originalClientTransport := http.DefaultTransport, http.DefaultClient.Transport
+	t.Cleanup(func() {
+		http.DefaultTransport, http.DefaultClient.Transport = originalTransport, originalClientTransport
+	})
+	if err := bridgeauth.StampRequestsToBridge(server.URL, "secret-token"); err != nil {
+		t.Fatal(err)
+	}
+	column, err := currentPlacement(issuesclient.New(bridgestores.IssuesURL(server.URL)), "c1", testBoardID)
 	if err != nil || column != "col-done" {
 		t.Fatalf("currentPlacement = %q, %v; want col-done", column, err)
 	}
-	if authorization != "secret-token" {
-		t.Errorf("the placement read sent service token %q, want secret-token", authorization)
+	if authorization != "Bearer secret-token" {
+		t.Errorf("the placement read sent Authorization %q, want the bridge credential", authorization)
 	}
+	if path != "/issues/cards/c1/placements" {
+		t.Errorf("the placement read went to %q, want the bridge's /issues/cards/c1/placements", path)
+	}
+}
+
+// testIssuesURL is the issues address a prompt names in these tests.
+const testIssuesURL = "http://bridge.test/issues"
+
+// bridgeWithIssues is llm-bridge-server as run reaches it: the board stub
+// under /issues with the prefix taken off, and the bridge stub at the root.
+func bridgeWithIssues(t *testing.T, issues, bridge *httptest.Server) string {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.Handle("/issues/", http.StripPrefix("/issues", issues.Config.Handler))
+	mux.Handle("/", bridge.Config.Handler)
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return server.URL
 }
 
 // A sibling session that is busy, or last updated outside the revive window,
@@ -335,7 +363,7 @@ func TestThePerTickCapIsNotAShortfall(t *testing.T) {
 	defer bridgeServer.Close()
 	var published []messages.BridgeInbound
 	err := run(runOptions{ModelRole: "default", ModelRoles: stubModelRoles{},
-		BoardID: testBoardID, KanbanURL: kanbanServer.URL, BridgeURL: bridgeServer.URL, MaxDispatch: 1,
+		BoardID: testBoardID, BridgeURL: bridgeWithIssues(t, kanbanServer, bridgeServer), MaxDispatch: 1,
 		Publish: func(in messages.BridgeInbound) error {
 			published = append(published, in)
 			return nil
@@ -360,7 +388,7 @@ func TestADryRunWritesNothing(t *testing.T) {
 	defer kanbanServer.Close()
 	bridgeServer := fakeBridge(t, nil)
 	defer bridgeServer.Close()
-	if err := run(runOptions{ModelRole: "default", ModelRoles: stubModelRoles{}, BoardID: testBoardID, KanbanURL: kanbanServer.URL, BridgeURL: bridgeServer.URL, MaxDispatch: 10, DryRun: true}); err != nil {
+	if err := run(runOptions{ModelRole: "default", ModelRoles: stubModelRoles{}, BoardID: testBoardID, BridgeURL: bridgeWithIssues(t, kanbanServer, bridgeServer), MaxDispatch: 10, DryRun: true}); err != nil {
 		t.Fatalf("a dry run over a settled goal must succeed, got %v", err)
 	}
 	if len(kanban.moved) != 0 || len(kanban.patched) != 0 || len(kanban.linked) != 0 {

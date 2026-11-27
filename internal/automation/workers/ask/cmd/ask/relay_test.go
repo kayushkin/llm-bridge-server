@@ -31,6 +31,7 @@ import (
 
 	"github.com/kayushkin/bus/messages"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/sessionmodelrole"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgestores"
 )
 
 // ---------------------------------------------------------------- fixtures
@@ -820,16 +821,17 @@ func TestRunAsk_AnUnusableModelRolePublishesNothing(t *testing.T) {
 }
 
 // readHeraldModelRole reads the scheduler's setting and checks it against
-// claude_code with model-store and the bridge.
+// claude_code with model-store and the bridge, all three at their paths under
+// the one bridge address.
 func TestReadHeraldModelRole(t *testing.T) {
 	role := "default"
-	services := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	bridge := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/settings":
+		case "/scheduler/settings":
 			fmt.Fprintf(w, `{"service":"scheduler","settings":[{"key":"herald_model_role","value_type":"model_role","value":%q}]}`, role)
-		case "/api/roles/default":
+		case "/models/api/roles/default":
 			fmt.Fprint(w, `{"id":"claude-test","provider":"anthropic"}`)
-		case "/api/roles/balanced":
+		case "/models/api/roles/balanced":
 			fmt.Fprint(w, `{"id":"gpt-test","provider":"openai"}`)
 		case "/harnesses":
 			fmt.Fprint(w, `[{"name":"claude_code","supported_providers":["anthropic"]}]`)
@@ -838,15 +840,15 @@ func TestReadHeraldModelRole(t *testing.T) {
 			http.NotFound(w, r)
 		}
 	}))
-	defer services.Close()
-	checker := sessionmodelrole.New(services.URL, services.URL)
+	defer bridge.Close()
+	checker := sessionmodelrole.New(bridgestores.ModelsURL(bridge.URL), bridge.URL)
 
-	gotRole, gotModel, err := readHeraldModelRole(context.Background(), services.URL, checker)
+	gotRole, gotModel, err := readHeraldModelRole(context.Background(), bridgestores.SchedulerURL(bridge.URL), checker)
 	if err != nil || gotRole != "default" || gotModel != "claude-test" {
 		t.Fatalf("got %q %q %v, want default claude-test", gotRole, gotModel, err)
 	}
 	role = "balanced"
-	if _, _, err := readHeraldModelRole(context.Background(), services.URL, checker); err == nil || !strings.Contains(err.Error(), "herald_model_role") {
+	if _, _, err := readHeraldModelRole(context.Background(), bridgestores.SchedulerURL(bridge.URL), checker); err == nil || !strings.Contains(err.Error(), "herald_model_role") {
 		t.Errorf("err = %v, want a refusal naming the setting", err)
 	}
 }

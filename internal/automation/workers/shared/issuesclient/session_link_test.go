@@ -45,11 +45,11 @@ func TestSessionCardLinkSurvivesTheWriterToReaderRoundTrip(t *testing.T) {
 	// sent, rather than a struct the test filled in itself.
 	var stored []map[string]any
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/boards/board-1/cards", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/boards/board-1/cards", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]any{"item": map[string]any{"id": cardID}})
 	})
-	mux.HandleFunc("/api/cards/"+cardID+"/links", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/cards/"+cardID+"/links", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodPost:
 			body, _ := io.ReadAll(r.Body)
@@ -73,7 +73,7 @@ func TestSessionCardLinkSurvivesTheWriterToReaderRoundTrip(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	c := New(srv.URL, "")
+	c := New(srv.URL)
 	c.BoardID = "board-1"
 	c.ColumnsByName = map[string]string{boardvocabulary.ColumnInProgress: "col-1"}
 

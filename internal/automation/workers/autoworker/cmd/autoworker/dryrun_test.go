@@ -66,7 +66,7 @@ func writeCountingBoards(t *testing.T) (url string, writes func() int) {
 	var mu sync.Mutex
 	count := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "GET" && r.URL.Path == "/api/boards" {
+		if r.Method == "GET" && r.URL.Path == "/boards" {
 			writeStubJSON(w, 200, []map[string]string{})
 			return
 		}

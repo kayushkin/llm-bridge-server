@@ -55,10 +55,12 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/email-classifier/completionoperation"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/email-classifier/principalstore"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgeauth"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgestores"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/degradations"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/schedulerjobs"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/schedulersettings"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/workersettings"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
@@ -163,14 +165,6 @@ const (
 // flag package has already printed its own errors and exits 2.
 var errSettingsRefused = errors.New("settings refused")
 
-// mailstackTokenWhenUnset is the -mail-token default with MAILSTACK_TOKEN
-// unset. It is mailstack's own out-of-the-box token, and the live mailstack
-// still runs on it (measured 2026-09-21): the scheduler unit does not carry
-// MAILSTACK_TOKEN, so the email-classifier job authenticates with this. The
-// settings library refuses a default on a secret, so it is not in the
-// declaration; giving the job the token and deleting this is its own change.
-const mailstackTokenWhenUnset = "changeme"
-
 // parseFlags builds the flag set and parses args into a config.
 //
 // The flag set lives here rather than in main() so that a test can reach the
@@ -199,43 +193,39 @@ const mailstackTokenWhenUnset = "changeme"
 // test binary down with it on a bad argument instead of returning the error.
 //
 // The environment is an argument, not the process's own, so that a test states
-// which variables were set without setting them: nine of the twenty-three flag
-// defaults below are read at flag-registration time, so a test that exported
-// MAILSTACK_URL to observe it would be racing every other test in this package
-// for one process-wide variable. It is read through the binary's settings
-// registry (internal/config), which refuses a misspelled EMAIL_CLASSIFIER_ or
-// EMAIL_BOARD_ID variable.
+// which variables were set without setting them: two of the flag defaults
+// below are read at flag-registration time, so a test that exported
+// LLM_BRIDGE_URL to observe it would be racing every other test in this
+// package for one process-wide variable. It is read through the binary's
+// settings registry (workersettings), which refuses a misspelled
+// EMAIL_CLASSIFIER_ or EMAIL_BOARD_ID variable.
+//
+// Every store this binary reads and writes — the issues it files onto, the
+// mail it reads, the notes that route senders, the contacts tickets name, the
+// scheduler's settings — is a path under the one bridge address, derived here
+// from -bridge-url and never configured on its own.
 //
 // homeDirectory is an argument for the same reason: the registered command is
 // home-relative, and a test should not have to move HOME out from under the
 // process to assert what it resolves to.
 func parseFlags(args []string, environment servicesettings.Environment, homeDirectory string) (config, error) {
-	settings, err := schedulerconfig.EmailClassifier.NewSettingsRegistry(environment)
+	settings, err := workersettings.EmailClassifier.NewSettingsRegistry(environment)
 	if err != nil {
 		return config{}, fmt.Errorf("%w: %v", errSettingsRefused, err)
-	}
-	mailToken := settings.String(schedulerconfig.SettingMailstackToken)
-	if mailToken == "" {
-		mailToken = mailstackTokenWhenUnset
 	}
 	fs := flag.NewFlagSet("email-classifier", flag.ContinueOnError)
 	var c config
 	fs.BoolVar(&c.ListVocabularies, "list-vocabularies", false, "Print the vocabulary names a board's classifier.vocabulary may carry, as a JSON array, and exit.")
 	fs.BoolVar(&c.RegisterJob, "register", false, "Register this binary as a scheduler cron job and exit.")
-	fs.BoolVar(&c.DryRun, "dry-run", false, "Classify but write nothing to kanban-store.")
+	fs.BoolVar(&c.DryRun, "dry-run", false, "Classify but write nothing to the board.")
 	fs.BoolVar(&c.DumpDigest, "dump-digest", false, "Print the digest that would be sent and exit, without calling the model.")
-	fs.StringVar(&c.BoardID, "board-id", settings.String(schedulerconfig.SettingEmailBoardID), "Kanban board id (required except with -list-vocabularies). The board's classifier setting — vocabulary, mail_account_ids, hold_new_cards — says what this run files with.")
-	fs.StringVar(&c.KanbanURL, "kanban-url", settings.String(schedulerconfig.SettingKanbanStoreURL), "kanban-store base URL")
-	fs.StringVar(&c.MailURL, "mail-url", settings.String(schedulerconfig.SettingMailstackURL), "mailstack base URL")
-	fs.StringVar(&c.MailToken, "mail-token", mailToken, "mailstack bearer token")
-	fs.StringVar(&c.BridgeURL, "bridge-url", settings.String(schedulerconfig.SettingBridgeURL), "llm-bridge-server base URL, used to tell whether an agent is still working on a card")
+	fs.StringVar(&c.BoardID, "board-id", settings.String(workersettings.SettingEmailBoardID), "Kanban board id (required except with -list-vocabularies). The board's classifier setting — vocabulary, mail_account_ids, hold_new_cards — says what this run files with.")
+	fs.StringVar(&c.BridgeURL, "bridge-url", settings.String(workersettings.SettingBridgeURL), "llm-bridge-server base URL. The board, the mail, the routing notes, the contacts and the scheduler's settings are paths under it, and it tells whether an agent is still working on a card")
 	fs.IntVar(&c.MaxEmails, "max", maxEmailsPerTick, "Max emails to file per tick.")
 	fs.BoolVar(&c.Backfill, "backfill", false, "Keep walking past fully-filed pages, for working through mail history.")
 	fs.BoolVar(&c.MergePass, "merge", false, "Run the card-merge pass over the board and exit, filing no new mail.")
 	fs.BoolVar(&c.BackfillDue, "backfill-due", false, "Recover deadlines from existing card summaries into due_at, re-score, and exit. One-off: cards filed after this store their own date.")
 	fs.StringVar(&c.RefileUnreadSince, "refile-unread-since", "", "Unfile mail attached on or after this date (YYYY-MM-DD) that was never fetched or read, and exit. Drain it with -backfill afterwards. Empty means off.")
-	fs.StringVar(&c.NoteboardURL, "noteboard-url", settings.String(schedulerconfig.SettingNoteboardURL), "noteboard base URL, where routing notes live")
-	fs.StringVar(&c.PrincipalStoreURL, "principal-store-url", settings.String(schedulerconfig.SettingPrincipalStoreURL), "principal-store base URL, where a sender's address becomes the contact a ticket names as its requester")
 	fs.StringVar(&c.SenderQuery, "sender", "", "Report everything known about one email address — its routing note, the cards its mail feeds, the messages it sent — and exit. With -note, writes that note instead.")
 	fs.StringVar(&c.MessageQuery, "message", "", "Report or annotate one message by locator (account:message_id), and exit. With -note, writes that note instead.")
 	fs.StringVar(&c.NoteText, "note", "", "The routing note to store against -sender or -message. Pass \"\" with -delete-note to remove one.")
@@ -244,9 +234,12 @@ func parseFlags(args []string, environment servicesettings.Environment, homeDire
 		return config{}, err
 	}
 
-	c.SchedulerURL = settings.String(schedulerconfig.SettingSchedulerURL)
-	c.KanbanServiceToken = settings.String(schedulerconfig.SettingKanbanStoreServiceToken)
-	c.BridgeServiceToken = settings.String(schedulerconfig.SettingBridgeServiceToken)
+	c.IssuesURL = bridgestores.IssuesURL(c.BridgeURL)
+	c.MailURL = bridgestores.MailURL(c.BridgeURL)
+	c.NotesURL = bridgestores.NotesURL(c.BridgeURL)
+	c.PrincipalsURL = bridgestores.PrincipalsURL(c.BridgeURL)
+	c.SchedulerURL = bridgestores.SchedulerURL(c.BridgeURL)
+	c.BridgeServicePrincipalToken = settings.String(workersettings.SettingBridgeServicePrincipalToken)
 	c.BinaryPath = filepath.Join(homeDirectory, "bin", "email-classifier")
 	return c, nil
 }
@@ -307,6 +300,14 @@ func run() int {
 	if err := cfg.validate(); err != nil {
 		log.Fatal(err)
 	}
+	// llm-bridge-server gates every route; stamp this process's calls to it
+	// with its service principal token before the first of them. Every store
+	// this binary calls is under the bridge, so each call carries it, and
+	// nothing else this binary calls does.
+	if err := bridgeauth.StampRequestsToBridge(cfg.BridgeURL, cfg.BridgeServicePrincipalToken); err != nil {
+		log.Printf("email-classifier: %v", err)
+		return 1
+	}
 
 	if cfg.ListVocabularies {
 		// kanban-store's board editor asks this binary what a board's
@@ -331,7 +332,7 @@ func run() int {
 	// rather than global so the failure sites stay testable in isolation.
 	degraded := degradations.New("email")
 
-	kc := issuesclient.New(cfg.KanbanURL, cfg.KanbanServiceToken)
+	kc := issuesclient.New(cfg.IssuesURL)
 	board, err := kc.GetBoard(cfg.BoardID)
 	if errors.Is(err, issuesclient.ErrBoardNotFound) {
 		// Fatal rather than re-created: kanban-store resolves boards by name
@@ -351,9 +352,9 @@ func run() int {
 	// and produce a board that looks fine and means nothing.
 	if board.Classifier == nil {
 		log.Fatalf("board %q (%s) has no classifier setting — set one: "+
-			"PATCH %s/api/boards/%s {\"classifier\":{\"vocabulary\":…,\"mail_account_ids\":[…],\"hold_new_cards\":…}}; "+
+			"PATCH %s/boards/%s {\"classifier\":{\"vocabulary\":…,\"mail_account_ids\":[…],\"hold_new_cards\":…}}; "+
 			"the vocabulary must be one of %s",
-			board.Name, board.ID, cfg.KanbanURL, board.ID, strings.Join(vocabularyNames(), ", "))
+			board.Name, board.ID, cfg.IssuesURL, board.ID, strings.Join(vocabularyNames(), ", "))
 	}
 	if err := selectVocabulary(board.Classifier.Vocabulary); err != nil {
 		log.Fatalf("board %q (%s) classifier: %v", board.Name, board.ID, err)
@@ -363,8 +364,8 @@ func run() int {
 	// it needs none.
 	if !cfg.DumpDigest && board.Classifier.OrganizationID == "" {
 		log.Fatalf("board %q (%s) classifier has no organization_id: model calls run as llm-bridge-server operations for a "+
-			"principal-store group, which the board must name — PATCH %s/api/boards/%s with the whole classifier object plus \"organization_id\"",
-			board.Name, board.ID, cfg.KanbanURL, board.ID)
+			"principal-store group, which the board must name — PATCH %s/boards/%s with the whole classifier object plus \"organization_id\"",
+			board.Name, board.ID, cfg.IssuesURL, board.ID)
 	}
 	cfg.Classifier = *board.Classifier
 	// The operator changes these on the scheduler's settings page. A digest
@@ -400,13 +401,6 @@ func run() int {
 	// One gate per run, shared by the merge pass and the filing pass, so a
 	// session is resolved against the bridge at most once per tick however many
 	// cards carry it.
-	// llm-bridge-server gates every route; stamp this process's calls to it
-	// with the service token. Host-scoped, so noteboard, kanban-store,
-	// mailstack and the scheduler API are untouched.
-	if err := bridgeauth.StampRequestsToBridge(cfg.BridgeURL, cfg.BridgeServiceToken); err != nil {
-		log.Printf("email-classifier: %v", err)
-		return 1
-	}
 	gate := newSessionGate(cfg.BridgeURL)
 
 	if cfg.MergePass {
@@ -455,7 +449,7 @@ func run() int {
 	// One call, before any mail work. A note the user wrote is the cheapest
 	// signal this command has and it must reach every batch, so it is loaded
 	// with the board rather than per batch.
-	notes, err := loadRoutingNotes(newNoteboardClient(cfg.NoteboardURL))
+	notes, err := loadRoutingNotes(newNotesClient(cfg.NotesURL))
 	if err != nil {
 		// Notes make filing better; their absence must not stop it. Filing
 		// without them is the behavior this command had until today.
@@ -481,7 +475,7 @@ func run() int {
 	log.Printf("[email] sweep: scanned=%d repriced=%d retagged=%d skipped=%d",
 		sweep.Scanned, sweep.Repriced, sweep.Retagged, sweep.Skipped)
 
-	mc := newMailClient(cfg.MailURL, cfg.MailToken)
+	mc := newMailClient(cfg.MailURL)
 	listed, err := mc.listAccounts()
 	if err != nil {
 		log.Fatalf("list mail accounts: %v", err)
@@ -530,7 +524,7 @@ func run() int {
 	// its requester is the contact principal-store resolves the sender's
 	// address to. See ticket.go for which cards are skipped.
 	applier := &applier{cfg: cfg, kc: kc, state: state, gate: gate,
-		contacts: principalstore.New(cfg.PrincipalStoreURL)}
+		contacts: principalstore.New(cfg.PrincipalsURL)}
 	if err := applier.applyDirectRoutes(routed); err != nil {
 		log.Fatalf("apply direct routes: %v", err)
 	}
@@ -616,12 +610,10 @@ func classifyAndApply(ctx context.Context, cfg config, ap *applier, state *board
 // pieces of wiring that used to be read from the environment inside
 // registerSchedulerJob, and the classifier setting read off the board.
 //
-// The four base URLs and the two bearer tokens are the half of this struct with
-// something to get wrong. They are all strings, and one pair of them is
-// consumed positionally — newMailClient takes (MailURL, MailToken) — so a swap
-// compiles clean and is read by nothing else. Registering each flag directly
-// into its own named field, and giving a test a distinct value per variable, is
-// what makes a swap fail.
+// The store addresses are the half of this struct with something to get
+// wrong. They are all strings, all derived from the one bridge address, and a
+// swap of two compiles clean and is read by nothing else, so a test pins each
+// one to its own path under the bridge.
 type config struct {
 	// The flags.
 	ListVocabularies bool
@@ -629,10 +621,9 @@ type config struct {
 	DryRun           bool
 	DumpDigest       bool
 	BoardID          string
-	KanbanURL        string
-	MailURL          string
-	MailToken        string
-	BridgeURL        string
+	// BridgeURL is llm-bridge-server's address, the -bridge-url flag. The
+	// store addresses below are paths under it.
+	BridgeURL string
 	// FilingModelRole is the model-store role the filing pass and the
 	// deadline backfill ask for, and MergeModelRole the one the card-merge
 	// pass asks for, apart because it is called once per fifty cards. Both
@@ -643,10 +634,6 @@ type config struct {
 	Backfill        bool
 	MergePass       bool
 	BackfillDue     bool
-	NoteboardURL    string
-	// PrincipalStoreURL is where a sender's address is resolved to the contact
-	// a ticket points at. See applier.writeTicket.
-	PrincipalStoreURL string
 	// SenderQuery and MessageQuery name the entity a -sender / -message run is
 	// about. Both empty is the ordinary tick.
 	SenderQuery  string
@@ -660,14 +647,22 @@ type config struct {
 	// sweep the entire history of the board.
 	RefileUnreadSince string
 
-	// The wiring: where -register posts, and what it registers.
-	SchedulerURL string
-	BinaryPath   string
+	// The stores under the bridge: the boards and cards this run files onto
+	// (IssuesURL), the mail it reads (MailURL), the routing notes (NotesURL),
+	// where a sender's address is resolved to the contact a ticket points at
+	// (PrincipalsURL; see applier.writeTicket), and where -register posts and
+	// the model roles are read (SchedulerURL).
+	IssuesURL     string
+	MailURL       string
+	NotesURL      string
+	PrincipalsURL string
+	SchedulerURL  string
+	// BinaryPath is what -register registers.
+	BinaryPath string
 
-	// The tokens this binary presents as an internal service. Both stores
-	// gate every route.
-	KanbanServiceToken string
-	BridgeServiceToken string
+	// BridgeServicePrincipalToken is what this binary presents to the
+	// bridge, as its own principal.
+	BridgeServicePrincipalToken string
 
 	// Classifier is the board's classifier setting — the vocabulary, the
 	// mailstack accounts to read and whether new cards are parked — copied off

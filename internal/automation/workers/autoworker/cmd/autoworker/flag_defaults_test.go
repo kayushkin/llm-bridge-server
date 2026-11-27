@@ -53,11 +53,12 @@ func TestTheDefaultsThatShipAreTheOnesThisBinaryStartsWith(t *testing.T) {
 		{"-default-max-budget-usd", cfg.defaultMaxBudgetUSD, 0.0},
 
 		{"NATS_URL", cfg.natsURL, "nats://localhost:4222"},
-		{"KANBAN_STORE_URL", cfg.kanbanStoreURL, "http://localhost:8305"},
 		{"LLM_BRIDGE_URL", cfg.llmBridgeURL, "http://localhost:8160"},
-		{"NOTEBOARD_URL", cfg.noteboardURL, "http://localhost:8191"},
-		{"USAGE_STORE_URL", cfg.usageStoreURL, "http://localhost:8185"},
-		{"SCHEDULER_URL", cfg.schedulerURL, "http://localhost:8092"},
+		{"issues under the bridge", cfg.issuesURL, "http://localhost:8160/issues"},
+		{"usage under the bridge", cfg.usageURL, "http://localhost:8160/usage"},
+		{"scheduler under the bridge", cfg.schedulerURL, "http://localhost:8160/scheduler"},
+		{"models under the bridge", cfg.modelsURL, "http://localhost:8160/models"},
+		{"LLM_BRIDGE_SERVICE_PRINCIPAL_TOKEN", cfg.bridgeServicePrincipalToken, ""},
 
 		{"state path", cfg.statePath, "/home/someone/.config/autoworker/state.json"},
 		{"registered command", cfg.binaryPath, "/home/someone/bin/autoworker"},
@@ -67,15 +68,15 @@ func TestTheDefaultsThatShipAreTheOnesThisBinaryStartsWith(t *testing.T) {
 		}
 	}
 
-	// -prompt is checked against the constant rather than against its text: it
+	// -prompt is checked against defaultPrompt rather than against its text: it
 	// is a 40-line operating manual for the dispatched worker, and pinning that
 	// prose verbatim here would make every edit to it a failing test in a file
-	// about flag defaults. What this row pins is that the flag is wired to the
-	// constant at all — an empty or hardcoded default would dispatch a worker
-	// with no instructions, which reads as a confused session rather than as a
-	// configuration bug.
-	if cfg.prompt != defaultPrompt {
-		t.Error("-prompt default is not defaultPrompt")
+	// about flag defaults. What this row pins is that the flag is wired to
+	// defaultPrompt at all, for the configured bridge's issues — an empty or
+	// hardcoded default would dispatch a worker with no instructions, which
+	// reads as a confused session rather than as a configuration bug.
+	if cfg.prompt != defaultPrompt("http://localhost:8160/issues") {
+		t.Error("-prompt default is not defaultPrompt for the default bridge's issues")
 	}
 }
 
@@ -100,19 +101,16 @@ func TestDryRunShipsOffBecauseOnIsIndistinguishableFromAQuietWeek(t *testing.T) 
 // TestEachEnvironmentVariableReachesItsOwnField is the test the endpoints were
 // gathered into one struct for.
 //
-// Six of these are strings holding a base URL, and two of them — llmBridgeURL
-// and noteboardURL — are handed to budgetForCard positionally, side by side.
-// Swapping any pair compiles clean and passes every other test in the package,
-// because nothing else reads them. Giving each variable a distinct value and
-// asserting the field it lands in is what makes a swap fail.
+// Every store endpoint is a path under the one bridge URL, and two of them —
+// llmBridgeURL and issuesURL — are handed to budgetForCard positionally, side
+// by side. Swapping any pair compiles clean and passes every other test in the
+// package, because nothing else reads them. Asserting the path each one lands
+// on is what makes a swap fail.
 func TestEachEnvironmentVariableReachesItsOwnField(t *testing.T) {
 	cfg, err := parseFlags(nil, environmentWith(map[string]string{
-		"NATS_URL":         "nats://nats.example:4222",
-		"KANBAN_STORE_URL": "http://kanban.example",
-		"LLM_BRIDGE_URL":   "http://bridge.example",
-		"NOTEBOARD_URL":    "http://noteboard.example",
-		"USAGE_STORE_URL":  "http://usage.example",
-		"SCHEDULER_URL":    "http://scheduler.example",
+		"NATS_URL":                           "nats://nats.example:4222",
+		"LLM_BRIDGE_URL":                     "http://bridge.example",
+		"LLM_BRIDGE_SERVICE_PRINCIPAL_TOKEN": "a-service-principal-token",
 	}), "/home/someone")
 	if err != nil {
 		t.Fatalf("parsing an empty command line: %v", err)
@@ -124,11 +122,12 @@ func TestEachEnvironmentVariableReachesItsOwnField(t *testing.T) {
 		want     string
 	}{
 		{"NATS_URL", cfg.natsURL, "nats://nats.example:4222"},
-		{"KANBAN_STORE_URL", cfg.kanbanStoreURL, "http://kanban.example"},
 		{"LLM_BRIDGE_URL", cfg.llmBridgeURL, "http://bridge.example"},
-		{"NOTEBOARD_URL", cfg.noteboardURL, "http://noteboard.example"},
-		{"USAGE_STORE_URL", cfg.usageStoreURL, "http://usage.example"},
-		{"SCHEDULER_URL", cfg.schedulerURL, "http://scheduler.example"},
+		{"LLM_BRIDGE_URL issues", cfg.issuesURL, "http://bridge.example/issues"},
+		{"LLM_BRIDGE_URL usage", cfg.usageURL, "http://bridge.example/usage"},
+		{"LLM_BRIDGE_URL scheduler", cfg.schedulerURL, "http://bridge.example/scheduler"},
+		{"LLM_BRIDGE_URL models", cfg.modelsURL, "http://bridge.example/models"},
+		{"LLM_BRIDGE_SERVICE_PRINCIPAL_TOKEN", cfg.bridgeServicePrincipalToken, "a-service-principal-token"},
 	} {
 		if check.got != check.want {
 			t.Errorf("%s reached the wrong field: got %q, want %q", check.variable, check.got, check.want)
@@ -144,16 +143,21 @@ func TestAnUnsetVariableFallsBackAndASetOneDoesNot(t *testing.T) {
 	// One variable set, the rest not, so the fallback and the override are
 	// exercised against each other in a single parse.
 	cfg, err := parseFlags(nil, environmentWith(map[string]string{
-		"NOTEBOARD_URL": "http://noteboard.example",
+		"LLM_BRIDGE_URL": "http://bridge.example",
 	}), "/home/someone")
 	if err != nil {
 		t.Fatalf("parsing an empty command line: %v", err)
 	}
-	if cfg.noteboardURL != "http://noteboard.example" {
-		t.Errorf("a set variable was ignored: noteboardURL = %q", cfg.noteboardURL)
+	if cfg.issuesURL != "http://bridge.example/issues" {
+		t.Errorf("a set variable was ignored: issuesURL = %q", cfg.issuesURL)
 	}
-	if cfg.usageStoreURL != "http://localhost:8185" {
-		t.Errorf("an unset variable did not fall back: usageStoreURL = %q", cfg.usageStoreURL)
+	if cfg.natsURL != "nats://localhost:4222" {
+		t.Errorf("an unset variable did not fall back: natsURL = %q", cfg.natsURL)
+	}
+	// The prompt's addresses follow the bridge too: a worker told to PATCH the
+	// default bridge's issues would write to the wrong server.
+	if cfg.prompt != defaultPrompt("http://bridge.example/issues") {
+		t.Error("-prompt default does not name the configured bridge's issues")
 	}
 }
 

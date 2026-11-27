@@ -57,7 +57,7 @@ func review(kc *issuesclient.Client, cfg config) error {
 				fmt.Printf("  skip %s %-46s HELD\n", shortID(cardID), truncate(title, 46))
 				continue
 			}
-			done, err := alreadyReviewed(cfg.KanbanURL, cardID)
+			done, err := alreadyReviewed(cfg.IssuesURL, cardID)
 			if err != nil {
 				return err
 			}
@@ -73,7 +73,7 @@ func review(kc *issuesclient.Client, cfg config) error {
 
 			fmt.Printf("  REVIEW %s %-46s pr=%s as=%s instance=%s bundle=%q\n",
 				shortID(cardID), truncate(title, 46), prRef, reviewer.Slug, host.InstanceID, host.BundleID)
-			prompt := reviewerPrompt(reviewer, title, prRef, workingDir, cardID, cfg.KanbanURL)
+			prompt := reviewerPrompt(reviewer, title, prRef, workingDir, cardID, cfg.IssuesURL)
 			if cfg.DryRun {
 				fmt.Printf("      ── prompt ──\n%s      ────────────\n", indent(prompt))
 				reviewed++
@@ -102,7 +102,7 @@ func review(kc *issuesclient.Client, cfg config) error {
 			// Linking the session records the dispatch, attributed to the
 			// reviewer — the same one call that carries both who acted and what
 			// they acted on.
-			if err := linkAs(cfg.KanbanURL, cardID, boardvocabulary.LinkTypeSession, sessionID,
+			if err := linkAs(cfg.IssuesURL, cardID, boardvocabulary.LinkTypeSession, sessionID,
 				"demo-worker review", actorPrefixAgent+reviewer.Slug); err != nil {
 				return fmt.Errorf("link reviewer session: %w", err)
 			}
@@ -140,8 +140,8 @@ func pullRequestRef(card issuesclient.CardView) string {
 // of what happened and a tag is a second copy of it. A reviewer that ran and
 // then failed to write its verdict leaves no pull_request_reviewed event, and
 // the card is picked up again — which is the behavior worth having.
-func alreadyReviewed(kanbanURL, cardID string) (bool, error) {
-	events, err := listEvents(kanbanURL, cardID)
+func alreadyReviewed(issuesURL, cardID string) (bool, error) {
+	events, err := listEvents(issuesURL, cardID)
 	if err != nil {
 		return false, err
 	}

@@ -44,43 +44,43 @@ func doJSON(method, url string, body any, okStatuses ...int) error {
 	return fmt.Errorf("%s %s returned %d: %s", method, url, resp.StatusCode, strings.TrimSpace(string(raw)))
 }
 
-// patchItem edits the noteboard item behind a card, through kanban-store, which
+// patchItem edits the issue behind a card, through its card route, which
 // forwards the patch unchanged.
-func patchItem(kanbanURL, cardID string, patch map[string]any) error {
+func patchItem(issuesURL, cardID string, patch map[string]any) error {
 	return doJSON(http.MethodPatch,
-		fmt.Sprintf("%s/api/cards/%s", strings.TrimRight(kanbanURL, "/"), neturl.PathEscape(cardID)),
+		fmt.Sprintf("%s/cards/%s", strings.TrimRight(issuesURL, "/"), neturl.PathEscape(cardID)),
 		patch, http.StatusOK)
 }
 
 // addNote writes a note onto the card's timeline, attributed.
-func addNote(kanbanURL, cardID, boardID, actor, body string) error {
+func addNote(issuesURL, cardID, boardID, actor, body string) error {
 	return doJSON(http.MethodPost,
-		fmt.Sprintf("%s/api/cards/%s/notes", strings.TrimRight(kanbanURL, "/"), neturl.PathEscape(cardID)),
+		fmt.Sprintf("%s/cards/%s/notes", strings.TrimRight(issuesURL, "/"), neturl.PathEscape(cardID)),
 		map[string]any{"body": body, "board_id": boardID, "kind": "status", "actor": actor},
 		http.StatusCreated, http.StatusOK)
 }
 
 // linkAs creates a card link and says who created it.
 //
-// kanban-store reads the actor from the query string (body actor wins, else
+// The card route reads the actor from the query string (body actor wins, else
 // ?actor=), and issuesclient's AddCardLink has nowhere to put one — so the
 // events its links generate have always been anonymous. This is the same call
 // with attribution attached.
-func linkAs(kanbanURL, cardID, entityType, entityRef, label, actor string) error {
-	url := fmt.Sprintf("%s/api/cards/%s/links?actor=%s",
-		strings.TrimRight(kanbanURL, "/"), neturl.PathEscape(cardID), neturl.QueryEscape(actor))
+func linkAs(issuesURL, cardID, entityType, entityRef, label, actor string) error {
+	url := fmt.Sprintf("%s/cards/%s/links?actor=%s",
+		strings.TrimRight(issuesURL, "/"), neturl.PathEscape(cardID), neturl.QueryEscape(actor))
 	return doJSON(http.MethodPost, url, map[string]any{
 		"entity_type": entityType, "entity_ref": entityRef, "label": label,
 	}, http.StatusCreated, http.StatusOK)
 }
 
-// getItem reads a card's noteboard item.
+// getItem reads the issue behind a card.
 //
-// Straight from noteboard, because kanban-store has no single-card read — its
-// /api/cards/{id} answers PATCH and DELETE and 405s everything else. A card id
-// IS a noteboard item id, so this is the same record by its owner's route.
-func getItem(noteboardURL, cardID string) (map[string]any, error) {
-	url := fmt.Sprintf("%s/api/items/%s", strings.TrimRight(noteboardURL, "/"), neturl.PathEscape(cardID))
+// From the issue's item route, because the card routes have no single-card
+// read — /issues/cards/{id} answers PATCH and DELETE and 405s everything
+// else. A card id IS its issue's id, so /issues/items/{id} is the same record.
+func getItem(issuesURL, cardID string) (map[string]any, error) {
+	url := fmt.Sprintf("%s/items/%s", strings.TrimRight(issuesURL, "/"), neturl.PathEscape(cardID))
 	resp, err := httpClient.Get(url)
 	if err != nil {
 		return nil, fmt.Errorf("read item %s: %w", cardID, err)
@@ -99,9 +99,9 @@ func getItem(noteboardURL, cardID string) (map[string]any, error) {
 
 // unhold releases a parked card. Already-released is not an error: the point is
 // that it ends up runnable, not that we were the one to make it so.
-func unhold(kanbanURL, cardID string) error {
+func unhold(issuesURL, cardID string) error {
 	return doJSON(http.MethodPost,
-		fmt.Sprintf("%s/api/cards/%s/unhold", strings.TrimRight(kanbanURL, "/"), neturl.PathEscape(cardID)),
+		fmt.Sprintf("%s/cards/%s/unhold", strings.TrimRight(issuesURL, "/"), neturl.PathEscape(cardID)),
 		nil, http.StatusOK, http.StatusCreated, http.StatusConflict)
 }
 
@@ -112,8 +112,8 @@ type cardEvent struct {
 }
 
 // listEvents reads a card's action log.
-func listEvents(kanbanURL, cardID string) ([]cardEvent, error) {
-	url := fmt.Sprintf("%s/api/cards/%s/events", strings.TrimRight(kanbanURL, "/"), neturl.PathEscape(cardID))
+func listEvents(issuesURL, cardID string) ([]cardEvent, error) {
+	url := fmt.Sprintf("%s/cards/%s/events", strings.TrimRight(issuesURL, "/"), neturl.PathEscape(cardID))
 	resp, err := httpClient.Get(url)
 	if err != nil {
 		return nil, fmt.Errorf("read events for %s: %w", cardID, err)
@@ -136,8 +136,8 @@ func listEvents(kanbanURL, cardID string) ([]cardEvent, error) {
 // tick, because a tags patch REPLACES the whole list: writing a stale one
 // silently drops whatever the classifier added in between. An error is returned
 // rather than an empty list, since patching nil tags would erase them all.
-func retag(noteboardURL, cardID, remove, add string) ([]string, error) {
-	item, err := getItem(noteboardURL, cardID)
+func retag(issuesURL, cardID, remove, add string) ([]string, error) {
+	item, err := getItem(issuesURL, cardID)
 	if err != nil {
 		return nil, err
 	}

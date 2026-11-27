@@ -57,7 +57,7 @@ func TestUnreachableAccountIsRecordedWhileOthersStillFile(t *testing.T) {
 
 	_, err := collectUnfiled(
 		config{MaxEmails: maxEmailsPerTick},
-		newMailClient(mailstack.URL, "test-token"),
+		newMailClient(mailstack.URL),
 		accounts, state, degraded,
 	)
 	if err != nil {

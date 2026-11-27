@@ -9,8 +9,8 @@ import (
 // or writes anything.
 func TestARunThatStartsSessionsNeedsAModelRole(t *testing.T) {
 	for _, cfg := range []config{
-		{Dispatch: true, EmailBoardID: "e", WorkBoardID: "w", MaxBudget: 1, KanbanURL: "http://127.0.0.1:1"},
-		{Review: true, EmailBoardID: "e", WorkBoardID: "w", MaxBudget: 1, KanbanURL: "http://127.0.0.1:1"},
+		{Dispatch: true, EmailBoardID: "e", WorkBoardID: "w", MaxBudget: 1, IssuesURL: "http://127.0.0.1:1/issues"},
+		{Review: true, EmailBoardID: "e", WorkBoardID: "w", MaxBudget: 1, IssuesURL: "http://127.0.0.1:1/issues"},
 	} {
 		if err := run(cfg); err == nil || !strings.Contains(err.Error(), "no model role") {
 			t.Errorf("dispatch=%v review=%v: err = %v, want a refusal for the missing role", cfg.Dispatch, cfg.Review, err)

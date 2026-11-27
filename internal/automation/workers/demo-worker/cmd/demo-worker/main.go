@@ -38,9 +38,11 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/sessionmodelrole"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/boardvocabulary"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgeauth"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgestores"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/demoteam"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/schedulersettings"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/workersettings"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
@@ -75,15 +77,16 @@ type config struct {
 	// with auto-create and no unique constraint, so a rename forks the board.
 	EmailBoardID string
 	WorkBoardID  string
-	KanbanURL    string
-	NoteboardURL string
-	BridgeURL    string
-	RepoPath     string
+	// BridgeURL is llm-bridge-server's address; IssuesURL is where its
+	// issues answer under it (bridgestores.IssuesURL): the boards, the cards
+	// and every card's item.
+	BridgeURL string
+	IssuesURL string
+	RepoPath  string
 
-	// The tokens this binary presents as an internal service. Both stores
-	// gate every route.
-	KanbanServiceToken string
-	BridgeServiceToken string
+	// BridgeServicePrincipalToken is what this binary presents to the
+	// bridge, as its own principal.
+	BridgeServicePrincipalToken string
 
 	BuilderSlug  string
 	ReviewerSlug string
@@ -100,31 +103,27 @@ type config struct {
 }
 
 func main() {
-	settings, err := schedulerconfig.DemoWorker.NewSettingsRegistry(servicesettings.ProcessEnvironment())
+	settings, err := workersettings.DemoWorker.NewSettingsRegistry(servicesettings.ProcessEnvironment())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "demo-worker: %v\n", err)
 		os.Exit(1)
 	}
 	cfg := parseFlags(settings)
 	// llm-bridge-server gates every route; stamp this process's calls to it
-	// with the service token. Host-scoped, so nothing else sees the token.
-	if err := bridgeauth.StampRequestsToBridge(cfg.BridgeURL, cfg.BridgeServiceToken); err != nil {
-		fmt.Fprintf(os.Stderr, "demo-worker: %v\n", err)
-		os.Exit(1)
-	}
-	// kanban-store gates every route too, and this binary writes cards with its
-	// own client as well as through issuesclient. Host-scoped, like the above.
-	if err := issuesclient.StampRequestsToKanbanStore(cfg.KanbanURL, cfg.KanbanServiceToken); err != nil {
+	// with its service principal token. Host-scoped, so nothing else sees it.
+	// The issues are under the bridge, so this binary's own card writes and
+	// issuesclient's both carry it.
+	if err := bridgeauth.StampRequestsToBridge(cfg.BridgeURL, cfg.BridgeServicePrincipalToken); err != nil {
 		fmt.Fprintf(os.Stderr, "demo-worker: %v\n", err)
 		os.Exit(1)
 	}
 	if cfg.Dispatch || cfg.Review {
-		cfg.ModelRole, err = schedulersettings.ReadModelRole(context.Background(), settings.String(schedulerconfig.SettingSchedulerURL), schedulerconfig.SettingDemoWorkerModelRole)
+		cfg.ModelRole, err = schedulersettings.ReadModelRole(context.Background(), bridgestores.SchedulerURL(cfg.BridgeURL), schedulerconfig.SettingDemoWorkerModelRole)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "demo-worker: %v\n", err)
 			os.Exit(1)
 		}
-		cfg.ModelRoles = sessionmodelrole.New(settings.String(schedulerconfig.SettingModelStoreURL), cfg.BridgeURL)
+		cfg.ModelRoles = sessionmodelrole.New(bridgestores.ModelsURL(cfg.BridgeURL), cfg.BridgeURL)
 	}
 	if err := run(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "demo-worker: %v\n", err)
@@ -140,10 +139,8 @@ func parseFlags(settings *servicesettings.Registry) config {
 	flag.BoolVar(&c.DryRun, "dry-run", false, "Say what would happen and change nothing.")
 	flag.StringVar(&c.EmailBoardID, "email-board-id", "", "Id of the board the classifier files onto (required).")
 	flag.StringVar(&c.WorkBoardID, "work-board-id", "", "Id of the board the agents work from (required). Its default_instance_id says where sessions run and its default_bundle_id what they are provisioned with.")
-	flag.StringVar(&c.KanbanURL, "kanban-url", settings.String(schedulerconfig.SettingKanbanStoreURL), "kanban-store base URL")
-	flag.StringVar(&c.NoteboardURL, "noteboard-url", settings.String(schedulerconfig.SettingNoteboardURL), "noteboard base URL")
-	flag.StringVar(&c.BridgeURL, "bridge-url", settings.String(schedulerconfig.SettingBridgeURL),
-		"llm-bridge-server base URL. Sessions are created here directly rather than published to NATS, so a failure to start is an error rather than silence.")
+	flag.StringVar(&c.BridgeURL, "bridge-url", settings.String(workersettings.SettingBridgeURL),
+		"llm-bridge-server base URL. Sessions are created here directly rather than published to NATS, so a failure to start is an error rather than silence. The boards and cards are its /issues.")
 	flag.StringVar(&c.RepoPath, "repo", "", "The repo agents work in. Required: this machine's path is the caller's to give.")
 	flag.StringVar(&c.BuilderSlug, "builder", "northwind-builder", "Identity that does the building.")
 	flag.StringVar(&c.ReviewerSlug, "reviewer", "northwind-reviewer", "Identity that does the reviewing.")
@@ -151,8 +148,8 @@ func parseFlags(settings *servicesettings.Registry) config {
 	flag.Float64Var(&c.MaxBudget, "max-budget-usd", 10, "Per-card spend ceiling.")
 	flag.IntVar(&c.MaxPerTick, "max", 1, "Most cards to act on in one tick.")
 	flag.Parse()
-	c.KanbanServiceToken = settings.String(schedulerconfig.SettingKanbanStoreServiceToken)
-	c.BridgeServiceToken = settings.String(schedulerconfig.SettingBridgeServiceToken)
+	c.IssuesURL = bridgestores.IssuesURL(c.BridgeURL)
+	c.BridgeServicePrincipalToken = settings.String(workersettings.SettingBridgeServicePrincipalToken)
 	return c
 }
 
@@ -179,7 +176,7 @@ func run(cfg config) error {
 		fmt.Println("DRY RUN — nothing will be written or spawned")
 	}
 
-	kc := issuesclient.New(cfg.KanbanURL, cfg.KanbanServiceToken)
+	kc := issuesclient.New(cfg.IssuesURL)
 	if cfg.Promote {
 		if err := promote(kc, cfg); err != nil {
 			return err
@@ -237,7 +234,7 @@ type sessionHost struct {
 // reviewer's session under the builder's name, or the other way round.
 func sessionHostFromBoard(board *issuesclient.Board) (sessionHost, error) {
 	if board.DefaultInstanceID == "" {
-		return sessionHost{}, fmt.Errorf("board %q (%s) has no default_instance_id — set it (PATCH /api/boards/%s {\"default_instance_id\":…}); sessions have nowhere to run",
+		return sessionHost{}, fmt.Errorf("board %q (%s) has no default_instance_id — set it (PATCH /issues/boards/%s {\"default_instance_id\":…}); sessions have nowhere to run",
 			board.Name, board.ID, board.ID)
 	}
 	return sessionHost{InstanceID: board.DefaultInstanceID, BundleID: board.DefaultBundleID}, nil

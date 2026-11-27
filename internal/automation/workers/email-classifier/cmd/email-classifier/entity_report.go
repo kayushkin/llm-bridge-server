@@ -27,7 +27,7 @@ import (
 const senderMessageScanCap = 120
 
 func runEntityPass(cfg config, kc *issuesclient.Client, state *boardState) error {
-	nb := newNoteboardClient(cfg.NoteboardURL)
+	nb := newNotesClient(cfg.NotesURL)
 	notes, err := loadRoutingNotes(nb)
 	if err != nil {
 		return fmt.Errorf("load routing notes: %w", err)
@@ -84,7 +84,7 @@ func entityRefFor(cfg config) (string, error) {
 	return "", fmt.Errorf("pass -sender or -message")
 }
 
-func deleteNoteFor(nb *noteboardClient, notes *routingNotes, entityRef string, dryRun bool) error {
+func deleteNoteFor(nb *notesClient, notes *routingNotes, entityRef string, dryRun bool) error {
 	var note routingNote
 	var found bool
 	if address, ok := strings.CutPrefix(entityRef, entityTypeSenderPrefix); ok {
@@ -103,9 +103,9 @@ func deleteNoteFor(nb *noteboardClient, notes *routingNotes, entityRef string, d
 	if err := deleteRoutingNote(nb, note); err != nil {
 		return err
 	}
-	// noteboard's delete is reversible, and saying so is the difference between
+	// notes' delete is reversible, and saying so is the difference between
 	// a user who reaches for the restore route and one who retypes the note.
-	log.Printf("[entity] deleted routing note %s on %s (reversible: POST /api/items/%s/restore)",
+	log.Printf("[entity] deleted routing note %s on %s (reversible: POST /notes/items/%s/restore)",
 		note.ItemID, entityRef, note.ItemID)
 	return nil
 }
@@ -155,7 +155,7 @@ func reportEntity(cfg config, kc *issuesclient.Client, state *boardState, notes 
 // the mail on the cards it feeds. See senderMessageScanCap for why this is a
 // walk rather than a lookup.
 func reportMessagesFrom(cfg config, cards []*cardState, address string) {
-	mc := newMailClient(cfg.MailURL, cfg.MailToken)
+	mc := newMailClient(cfg.MailURL)
 	fmt.Printf("\nmessages from %s (reading the mail on those cards, cap %d):\n", address, senderMessageScanCap)
 
 	scanned, matched, failed := 0, 0, 0

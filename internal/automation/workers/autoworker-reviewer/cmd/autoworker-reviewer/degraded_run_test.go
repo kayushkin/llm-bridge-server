@@ -23,7 +23,7 @@ const (
 )
 
 func newRun(k *stubKanban, b *stubBridge) config {
-	return config{kanbanURL: k.URL(), bridgeURL: b.URL(), boardName: defaultBoardName}
+	return config{issuesURL: k.URL(), bridgeURL: b.URL(), boardName: defaultBoardName}
 }
 
 // awCard is a card the reviewer is supposed to act on: autoworker-minted session,

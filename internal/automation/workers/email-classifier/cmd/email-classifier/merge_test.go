@@ -32,7 +32,7 @@ func TestRetiringACardRecordsWhatMovedSoTheMergeCanBeUndone(t *testing.T) {
 	}))
 	defer kanban.Close()
 
-	kc := issuesclient.New(kanban.URL, "")
+	kc := issuesclient.New(kanban.URL)
 	kc.BoardID = "board-1"
 
 	moved := []issuesclient.CardLink{

@@ -1,5 +1,5 @@
 // spend-ceiling-guard holds any task whose cumulative agent spend has reached the
-// spend ceiling set on it (noteboard `auto_hold_at_usd`).
+// spend ceiling set on it (the issue's `auto_hold_at_usd`).
 //
 // This is the CUMULATIVE half of the ceiling. The other half lives in the
 // autoworker, which caps each session it dispatches at (ceiling - already spent)
@@ -27,7 +27,7 @@
 // descendants, a child inherits the nearest ancestor's ceiling, and a breach
 // holds the item that OWNS the ceiling — holding the child that happened to trip
 // it would leave the parent and its siblings spending against an empty pot.
-// Holding the owner withholds the whole subtree, because noteboard inherits a
+// Holding the owner withholds the whole subtree, because issues inherit a
 // hold down parent_id.
 //
 // Fire-and-forget, like the other curators: no state file, the stores ARE the
@@ -43,13 +43,14 @@ import (
 	"os"
 	"time"
 
-	schedulerconfig "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/config"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/boardvocabulary"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgeauth"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgestores"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/degradations"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issueitemsclient"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/spendtree"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/workersettings"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
@@ -60,40 +61,35 @@ type sessionAggregate struct {
 
 type noteboardItem = issueitemsclient.Item
 
-// config names the three services this guard reads and whether it is allowed to
-// write. It exists so run can be given stubs by a test; main fills it from the
-// service settings.
+// config names where this guard reads — llm-bridge-server, whose sessions give
+// the cost and whose issues give the items, their card links and the hold — and
+// whether it is allowed to write. It exists so run can be given a stub by a
+// test; main fills it from the service settings.
 type config struct {
-	kanbanURL          string
-	kanbanServiceToken string
-	bridgeURL          string
-	noteboardURL       string
-	dryRun             bool
+	bridgeURL string
+	dryRun    bool
 }
 
 func main() {
-	settings, err := schedulerconfig.SpendCeilingGuard.NewSettingsRegistry(servicesettings.ProcessEnvironment())
+	settings, err := workersettings.SpendCeilingGuard.NewSettingsRegistry(servicesettings.ProcessEnvironment())
 	if err != nil {
 		log.Fatal(err)
 	}
 	dryRun := flag.Bool("dry-run", false, "Report what would be held; change nothing.")
 	flag.Parse()
 
-	bridgeURL := settings.String(schedulerconfig.SettingBridgeURL)
+	bridgeURL := settings.String(workersettings.SettingBridgeURL)
 
 	// llm-bridge-server gates every route; stamp this process's calls to it
-	// with the service token. Host-scoped, so noteboard, kanban-store and the
-	// scheduler API are untouched.
-	if err := bridgeauth.StampRequestsToBridge(bridgeURL, settings.String(schedulerconfig.SettingBridgeServiceToken)); err != nil {
+	// with this binary's service principal token. Host-scoped, so nothing else
+	// ever sees it.
+	if err := bridgeauth.StampRequestsToBridge(bridgeURL, settings.String(workersettings.SettingBridgeServicePrincipalToken)); err != nil {
 		log.Fatal(err)
 	}
 
 	os.Exit(run(config{
-		kanbanURL:          settings.String(schedulerconfig.SettingKanbanStoreURL),
-		kanbanServiceToken: settings.String(schedulerconfig.SettingKanbanStoreServiceToken),
-		bridgeURL:          bridgeURL,
-		noteboardURL:       settings.String(schedulerconfig.SettingNoteboardURL),
-		dryRun:             *dryRun,
+		bridgeURL: bridgeURL,
+		dryRun:    *dryRun,
 	}))
 }
 
@@ -120,23 +116,24 @@ func run(cfg config) int {
 
 	// include_held=true: we must see parked items to build the tree. A held
 	// ancestor is exactly the thing whose descendants we need to reason about,
-	// and noteboard hides held items from discovery by default.
-	items, truncated, err := issueitemsclient.FetchEveryItemIncludingHeld(cfg.noteboardURL)
+	// and issues hide held items from discovery by default.
+	issuesURL := bridgestores.IssuesURL(cfg.bridgeURL)
+	items, truncated, err := issueitemsclient.FetchEveryItemIncludingHeld(issuesURL)
 	if err != nil {
-		log.Fatalf("noteboard items: %v", err)
+		log.Fatalf("issue items: %v", err)
 	}
 	if truncated {
 		// The tree is the instrument. An item this read never saw contributes no
 		// spend to its ancestor's total and is never checked as an owner of its
 		// own, so a short read prices every ceiling too low — in the direction
 		// that lets a task keep running.
-		degraded.Record("read only %d noteboard items before hitting the %d-page safety bound: the spend tree is incomplete and every ceiling below it is priced too LOW",
+		degraded.Record("read only %d issue items before hitting the %d-page safety bound: the spend tree is incomplete and every ceiling below it is priced too LOW",
 			len(items), issueitemsclient.MaxPages)
 	}
 	log.Printf("loaded cost for %d sessions, %d items", len(cost), len(items))
 
 	tree := spendtree.NewTree(toTreeItems(items))
-	qc := issuesclient.New(cfg.kanbanURL, cfg.kanbanServiceToken)
+	qc := issuesclient.New(issuesURL)
 
 	// A card's session links are how spend is attributed to an item. Cache per
 	// item: a subtree walk asks for the same parent's links once per descendant

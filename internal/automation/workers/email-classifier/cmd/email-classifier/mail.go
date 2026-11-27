@@ -12,7 +12,7 @@ import (
 
 // ============================ mailstack client ============================
 //
-// mailstack (:8195) caches nothing: every list is a live provider round trip,
+// mailstack (the bridge's /mail/) caches nothing: every list is a live provider round trip,
 // and a Gmail page of 50 costs 51 upstream API calls. So every function here is
 // treated as expensive, and the caller is expected to bound how many it makes
 // per tick rather than sweeping the mailbox.
@@ -24,16 +24,19 @@ import (
 // body has been fetched at least once — it ranks likeness, it does not resolve
 // identity, so the locator remains the only real address.
 
+// mailClient carries no credential of its own: its requests go out through
+// the default transport, which bridgeauth stamps with the binary's service
+// principal token.
 type mailClient struct {
 	BaseURL string
-	Token   string
 	HTTP    *http.Client
 }
 
-func newMailClient(baseURL, token string) *mailClient {
+// newMailClient returns a client for the mailstack at mailURL, the bridge's
+// address followed by /mail.
+func newMailClient(mailURL string) *mailClient {
 	return &mailClient{
-		BaseURL: strings.TrimRight(baseURL, "/"),
-		Token:   token,
+		BaseURL: strings.TrimRight(mailURL, "/"),
 		HTTP:    &http.Client{Timeout: 60 * time.Second},
 	}
 }
@@ -92,7 +95,6 @@ func (m *mailClient) do(path string, out any) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+m.Token)
 	resp, err := m.HTTP.Do(req)
 	if err != nil {
 		return err
@@ -199,7 +201,6 @@ func (m *mailClient) similarMessages(text, excludeAccountID, excludeProviderID s
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+m.Token)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := m.HTTP.Do(req)
 	if err != nil {

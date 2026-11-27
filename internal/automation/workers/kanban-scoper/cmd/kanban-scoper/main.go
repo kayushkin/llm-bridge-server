@@ -45,11 +45,13 @@ import (
 	schedulerconfig "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/config"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/boardvocabulary"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgeauth"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgestores"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/degradations"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/oneshot"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/schedulerjobs"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/schedulersettings"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/workersettings"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
@@ -74,11 +76,10 @@ const (
 var defaultColumns = []string{columnGoals, columnBacklog, columnInProgress, columnDone, columnFailed}
 
 type config struct {
-	KanbanURL          string
-	KanbanServiceToken string
-	BridgeURL          string
-	// SchedulerURL is where run reads the model role from.
-	SchedulerURL string
+	// BridgeURL is llm-bridge-server's address. The board is under its
+	// /issues, the model role under its /scheduler, and decomposition calls
+	// its /oneshot.
+	BridgeURL string
 	// ModelRole is the model-store role decomposition asks for. run reads it
 	// from the scheduler's stored settings once a tick has a parent to scope;
 	// the operator changes it on the scheduler's settings page.
@@ -90,25 +91,24 @@ type config struct {
 }
 
 func main() {
-	settings, err := schedulerconfig.KanbanScoper.NewSettingsRegistry(servicesettings.ProcessEnvironment())
+	settings, err := workersettings.KanbanScoper.NewSettingsRegistry(servicesettings.ProcessEnvironment())
 	if err != nil {
 		log.Fatal(err)
 	}
 	var (
 		registerFlag = flag.Bool("register", false, "Register/upsert this binary as a scheduler cron job and exit.")
-		dryRun       = flag.Bool("dry-run", false, "Decompose but do not write to kanban-store.")
+		dryRun       = flag.Bool("dry-run", false, "Decompose but do not write to the board.")
 		boardID      = flag.String("board-id", "", "Kanban board id to scope (required). Pinned by id so a rename in the UI cannot fork a second board.")
-		kanbanURL    = flag.String("kanban-url", settings.String(schedulerconfig.SettingKanbanStoreURL), "kanban-store base URL")
-		bridgeURL    = flag.String("bridge-url", settings.String(schedulerconfig.SettingBridgeURL), "llm-bridge-server base URL")
+		bridgeURL    = flag.String("bridge-url", settings.String(workersettings.SettingBridgeURL), "llm-bridge-server base URL; the board, the scheduler and the model calls are all under it")
 		maxScope     = flag.Int("max", maxScopePerTick, "Max parents to decompose per tick.")
-		roleTags     = flag.Bool("role-tags", settings.Boolean(schedulerconfig.SettingRoleTags), "TEAM-ORCHESTRATION step 1: require capability+role in decomposition and emit capability:/role: tags on sub-cards. OFF by default — when off, behavior is identical to the pre-team-orchestration scoper.")
+		roleTags     = flag.Bool("role-tags", settings.Boolean(workersettings.SettingRoleTags), "TEAM-ORCHESTRATION step 1: require capability+role in decomposition and emit capability:/role: tags on sub-cards. OFF by default — when off, behavior is identical to the pre-team-orchestration scoper.")
 	)
 	flag.Parse()
 
 	// llm-bridge-server gates every route; stamp this process's calls to it
-	// with the service token. Host-scoped, so noteboard, kanban-store and the
-	// scheduler API are untouched.
-	if err := bridgeauth.StampRequestsToBridge(*bridgeURL, settings.String(schedulerconfig.SettingBridgeServiceToken)); err != nil {
+	// with its service principal token. Every store this binary calls is
+	// under the bridge, so every call carries it.
+	if err := bridgeauth.StampRequestsToBridge(*bridgeURL, settings.String(workersettings.SettingBridgeServicePrincipalToken)); err != nil {
 		log.Fatal(err)
 	}
 
@@ -117,21 +117,18 @@ func main() {
 	}
 
 	if *registerFlag {
-		if err := registerSchedulerJob(settings.String(schedulerconfig.SettingSchedulerURL), *boardID); err != nil {
+		if err := registerSchedulerJob(bridgestores.SchedulerURL(*bridgeURL), *boardID); err != nil {
 			log.Fatalf("register: %v", err)
 		}
 		return
 	}
 
 	os.Exit(run(config{
-		KanbanURL:          *kanbanURL,
-		KanbanServiceToken: settings.String(schedulerconfig.SettingKanbanStoreServiceToken),
-		BridgeURL:          *bridgeURL,
-		SchedulerURL:       settings.String(schedulerconfig.SettingSchedulerURL),
-		BoardID:            *boardID,
-		MaxScope:           *maxScope,
-		DryRun:             *dryRun,
-		RoleTags:           *roleTags,
+		BridgeURL: *bridgeURL,
+		BoardID:   *boardID,
+		MaxScope:  *maxScope,
+		DryRun:    *dryRun,
+		RoleTags:  *roleTags,
 	}))
 }
 
@@ -173,7 +170,7 @@ func run(cfg config) int {
 	degraded := degradations.New("scoper")
 	ctx := context.Background()
 
-	kc := issuesclient.New(cfg.KanbanURL, cfg.KanbanServiceToken)
+	kc := issuesclient.New(bridgestores.IssuesURL(cfg.BridgeURL))
 	board, err := kc.EnsureBoardColumns(cfg.BoardID, defaultColumns)
 	if err != nil {
 		log.Fatalf("board %s: %v", cfg.BoardID, err)
@@ -190,7 +187,7 @@ func run(cfg config) int {
 		return degraded.ExitCode()
 	}
 
-	if cfg.ModelRole, err = schedulersettings.ReadModelRole(ctx, cfg.SchedulerURL, schedulerconfig.SettingKanbanScoperModelRole); err != nil {
+	if cfg.ModelRole, err = schedulersettings.ReadModelRole(ctx, bridgestores.SchedulerURL(cfg.BridgeURL), schedulerconfig.SettingKanbanScoperModelRole); err != nil {
 		log.Fatal(err)
 	}
 
@@ -326,7 +323,7 @@ func scopeParent(ctx context.Context, cfg config, kc *issuesclient.Client, p par
 			log.Printf("[%s] subtask %d %q: %s", p.title(), i, draft.Title, note)
 		}
 		// Persist parent linkage as a card_link, not a tag, so we can do
-		// reverse lookups via /api/entities/parent_card/<id>/cards.
+		// reverse lookups via /issues/entities/parent_card/<id>/cards.
 		childID, err := createSubcard(kc, backlogCol, draft.Title, draft.Body, draft.Tags, p.cardID)
 		if err != nil {
 			if errors.Is(err, errParentLinkRefused) {
@@ -452,7 +449,7 @@ func createSubcard(kc *issuesclient.Client, columnID, title, body string, tags [
 	bs, _ := json.Marshal(payload)
 	// PathEscape keeps the board id one path segment, as issuesclient does for
 	// every board id it sends.
-	createCardURL := fmt.Sprintf("%s/api/boards/%s/cards", kc.BaseURL, url.PathEscape(kc.BoardID))
+	createCardURL := fmt.Sprintf("%s/boards/%s/cards", kc.BaseURL, url.PathEscape(kc.BoardID))
 	resp, err := kc.HTTP.Post(createCardURL, "application/json", bytes.NewReader(bs))
 	if err != nil {
 		return "", err

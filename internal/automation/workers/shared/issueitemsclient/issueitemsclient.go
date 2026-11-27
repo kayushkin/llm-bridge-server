@@ -1,5 +1,7 @@
-// Package noteboarditems reads EVERY noteboard item, held ones included, and
-// says when it could not.
+// Package issueitemsclient reads EVERY issue's item, held ones included, from
+// llm-bridge-server's /issues/items, and says when it could not. Issues hold
+// every todo and card since noteboard split into issues and notes; a spend
+// ceiling and the parent edge it covers are an issue's fields.
 //
 // Both the autoworker and spend-ceiling-guard build internal/spendtree from this
 // read, so they share it: spendtree exists so the two cannot disagree about a
@@ -25,7 +27,7 @@ import (
 	"time"
 )
 
-// Item is the slice of a noteboard item the spend tree and its callers need.
+// Item is the slice of an issue's item the spend tree and its callers need.
 type Item struct {
 	ID            string   `json:"id"`
 	Title         string   `json:"title"`
@@ -42,11 +44,12 @@ const (
 	MaxPages = 200
 )
 
-// FetchEveryItemIncludingHeld reads every noteboard item and reports whether it
-// stopped at MaxPages before the end of the list.
+// FetchEveryItemIncludingHeld reads every issue's item from issuesURL
+// (bridgestores.IssuesURL) and reports whether it stopped at MaxPages before
+// the end of the list.
 //
 // include_held is required: a held ancestor still owns its subtree's ceiling,
-// and noteboard hides held items by default, so without it a parent edge
+// and the store hides held items by default, so without it a parent edge
 // dangles.
 //
 // Ordering is `created_at DESC, id`, a total order, so the window is stable
@@ -54,25 +57,25 @@ const (
 // hand the same id back twice, which the dedupe below absorbs; an item DELETED
 // mid-read shifts them the other way and can drop one, which it cannot. Both
 // callers read again within minutes, and the next read sees the row.
-func FetchEveryItemIncludingHeld(noteboardURL string) (items []Item, truncated bool, err error) {
+func FetchEveryItemIncludingHeld(issuesURL string) (items []Item, truncated bool, err error) {
 	client := &http.Client{Timeout: 30 * time.Second}
 	seen := map[string]bool{}
 	for page := 0; page < MaxPages; page++ {
-		url := fmt.Sprintf("%s/api/items?include_held=true&limit=%d&offset=%d",
-			noteboardURL, PageSize, page*PageSize)
+		url := fmt.Sprintf("%s/items?include_held=true&limit=%d&offset=%d",
+			issuesURL, PageSize, page*PageSize)
 		resp, err := client.Get(url)
 		if err != nil {
-			return nil, false, fmt.Errorf("noteboard items: %w", err)
+			return nil, false, fmt.Errorf("issue items: %w", err)
 		}
 		if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()
-			return nil, false, fmt.Errorf("noteboard items: %s", resp.Status)
+			return nil, false, fmt.Errorf("issue items: %s", resp.Status)
 		}
 		var batch []Item
 		decodeErr := json.NewDecoder(resp.Body).Decode(&batch)
 		resp.Body.Close()
 		if decodeErr != nil {
-			return nil, false, fmt.Errorf("decode noteboard items: %w", decodeErr)
+			return nil, false, fmt.Errorf("decode issue items: %w", decodeErr)
 		}
 		for _, it := range batch {
 			if seen[it.ID] {

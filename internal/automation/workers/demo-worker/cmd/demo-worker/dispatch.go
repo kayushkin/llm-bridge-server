@@ -65,7 +65,7 @@ func dispatch(kc *issuesclient.Client, cfg config) error {
 				continue
 			}
 
-			prompt := builderPrompt(identity, title, body, workingDir, cardID, cfg.RepoSlug, cfg.KanbanURL)
+			prompt := builderPrompt(identity, title, body, workingDir, cardID, cfg.RepoSlug, cfg.IssuesURL)
 			fmt.Printf("  DISPATCH %s %-48s as=%s dir=%s instance=%s bundle=%q cap=$%.2f\n",
 				shortID(cardID), truncate(title, 48), identity.Slug, workingDir, host.InstanceID, host.BundleID, cfg.MaxBudget)
 			if cfg.DryRun {
@@ -101,7 +101,7 @@ func dispatch(kc *issuesclient.Client, cfg config) error {
 			//
 			// The actor rides on the query string, which is how kanban-store reads
 			// it, so the one event has both who acted and what it acted on.
-			if err := linkAs(cfg.KanbanURL, cardID, boardvocabulary.LinkTypeSession, sessionID,
+			if err := linkAs(cfg.IssuesURL, cardID, boardvocabulary.LinkTypeSession, sessionID,
 				"demo-worker", actorPrefixAgent+identity.Slug); err != nil {
 				return fmt.Errorf("link session %s: %w", sessionID, err)
 			}

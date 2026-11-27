@@ -31,7 +31,7 @@ func TestCreateSubcardKeepsTheBoardIDOnePathSegment(t *testing.T) {
 	if _, err := createSubcard(kc, "column-1", "title", "body", nil, "parent-1"); err != nil {
 		t.Fatalf("createSubcard: %v", err)
 	}
-	if want := "/api/boards/board%2Fwith%3Fquery/cards"; gotEscapedPath != want {
+	if want := "/boards/board%2Fwith%3Fquery/cards"; gotEscapedPath != want {
 		t.Errorf("POST path = %q, want %q", gotEscapedPath, want)
 	}
 	if gotRawQuery != "" {

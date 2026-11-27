@@ -73,21 +73,21 @@ func TestThePromptCarriesTheSubTaskAndTellsTheWorkerToCloseItsOwnCard(t *testing
 	child := testCard("child-7")
 	child.Item["body"] = "Fix the flaky test in foo_test.go."
 
-	prompt := buildPrompt(parent, child, groupOf("goal-1", child), "")
+	prompt := buildPrompt(parent, child, groupOf("goal-1", child), "", testIssuesURL)
 	if !strings.Contains(prompt, "Fix the flaky test in foo_test.go.") {
 		t.Errorf("the prompt must carry the card's body — it is the task:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "PATCH http://localhost:8191/api/items/child-7 ") {
-		t.Errorf("the worker must be told to close its own card, child-7:\n%s", prompt)
+	if !strings.Contains(prompt, "PATCH "+testIssuesURL+"/items/child-7 ") {
+		t.Errorf("the worker must be told to close its own card, child-7, at the bridge's issues:\n%s", prompt)
 	}
-	if strings.Contains(prompt, "/api/items/goal-1") {
+	if strings.Contains(prompt, "/items/goal-1") {
 		t.Errorf("the worker must never be told to close the parent goal:\n%s", prompt)
 	}
 	if !strings.Contains(prompt, "You are picking up a sub-task") {
 		t.Errorf("a fresh session must be introduced to the workflow:\n%s", prompt)
 	}
 
-	revived := buildPrompt(parent, child, groupOf("goal-1", child), "sess-sibling")
+	revived := buildPrompt(parent, child, groupOf("goal-1", child), "sess-sibling", testIssuesURL)
 	if !strings.Contains(revived, "you already have context from a sibling task") {
 		t.Errorf("a revived session must be told its context comes from a sibling:\n%s", revived)
 	}
@@ -95,7 +95,7 @@ func TestThePromptCarriesTheSubTaskAndTellsTheWorkerToCloseItsOwnCard(t *testing
 
 func TestABodylessCardSaysSoInsteadOfLeavingABlank(t *testing.T) {
 	child := testCard("child-7")
-	prompt := buildPrompt(scopedParent{cardID: "goal-1"}, child, groupOf("goal-1", child), "")
+	prompt := buildPrompt(scopedParent{cardID: "goal-1"}, child, groupOf("goal-1", child), "", testIssuesURL)
 	if !strings.Contains(prompt, "(no body — see title)") {
 		t.Errorf("a card with no body must say so where the task goes:\n%s", prompt)
 	}

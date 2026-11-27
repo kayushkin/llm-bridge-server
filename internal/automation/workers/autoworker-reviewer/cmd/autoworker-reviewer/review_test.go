@@ -92,7 +92,7 @@ func runTicks(store *fakeStore, n int, sendErr error, dryRun bool) tickResult {
 	var r tickResult
 	for i := 0; i < n; i++ {
 		action := reviewCompletedSession(
-			store, "autoworker-test-1", dryRun,
+			store, "autoworker-test-1", testIssuesURL, dryRun,
 			func(string) error { r.sends++; return sendErr },
 			func(string) {},
 			func(string, ...any) {}, func(string, ...any) {},
@@ -197,7 +197,7 @@ func TestAPassIsCountedBeforeItIsSpent(t *testing.T) {
 		return nil
 	}}
 	action := reviewCompletedSession(
-		store, "autoworker-test-1", false,
+		store, "autoworker-test-1", testIssuesURL, false,
 		func(string) error { order = append(order, "send"); return nil },
 		func(string) {}, func(string, ...any) {}, func(string, ...any) {},
 	)
@@ -218,7 +218,7 @@ func TestAFailedPassTagSendsNothing(t *testing.T) {
 	store := &fakeStore{writeErrFor: failPassTagsOnly(fmt.Errorf("kanban-store: 503"))}
 	sends := 0
 	action := reviewCompletedSession(
-		store, "autoworker-test-1", false,
+		store, "autoworker-test-1", testIssuesURL, false,
 		func(string) error { sends++; return nil },
 		func(string) {}, func(string, ...any) {}, func(string, ...any) {},
 	)
@@ -242,7 +242,7 @@ func TestAnUnwritableStoreDoesNotWedgeSilently(t *testing.T) {
 	store := &fakeStore{writeErrFor: failWrites(fmt.Errorf("kanban-store: 503"))}
 	sends := 0
 	action := reviewCompletedSession(
-		store, "autoworker-test-1", false,
+		store, "autoworker-test-1", testIssuesURL, false,
 		func(string) error { sends++; return nil },
 		func(string) {}, func(string, ...any) {}, func(string, ...any) {},
 	)
@@ -264,7 +264,7 @@ func TestSettledSessionIsLeftAlone(t *testing.T) {
 	store := &fakeStore{tags: entityTags(tagSettled)}
 	sends := 0
 	action := reviewCompletedSession(
-		store, "autoworker-test-1", false,
+		store, "autoworker-test-1", testIssuesURL, false,
 		func(string) error { sends++; return nil },
 		func(string) {}, func(string, ...any) {}, func(string, ...any) {},
 	)
@@ -281,7 +281,7 @@ func TestSpentBudgetSettlesInsteadOfNudging(t *testing.T) {
 	store := &fakeStore{tags: entityTags(tagPassPrefix+"1", tagPassPrefix+"2")}
 	sends := 0
 	action := reviewCompletedSession(
-		store, "autoworker-test-1", false,
+		store, "autoworker-test-1", testIssuesURL, false,
 		func(string) error { sends++; return nil },
 		func(string) {}, func(string, ...any) {}, func(string, ...any) {},
 	)
@@ -301,7 +301,7 @@ func TestAnUnreadableStoreSkipsWithoutSending(t *testing.T) {
 	store := &fakeStore{readErr: fmt.Errorf("kanban-store: 503")}
 	sends := 0
 	action := reviewCompletedSession(
-		store, "autoworker-test-1", false,
+		store, "autoworker-test-1", testIssuesURL, false,
 		func(string) error { sends++; return nil },
 		func(string) {}, func(string, ...any) {}, func(string, ...any) {},
 	)
@@ -352,7 +352,7 @@ func TestNudgeTextCarriesThePassItWasCountedAs(t *testing.T) {
 	var sent []string
 	for i := 0; i < maxPasses; i++ {
 		reviewCompletedSession(
-			store, "autoworker-test-1", false,
+			store, "autoworker-test-1", testIssuesURL, false,
 			func(m string) error { sent = append(sent, m); return nil },
 			func(string) {}, func(string, ...any) {}, func(string, ...any) {},
 		)
@@ -368,5 +368,20 @@ func TestNudgeTextCarriesThePassItWasCountedAs(t *testing.T) {
 		if !store.hasTag(fmt.Sprintf("%s%d", tagPassPrefix, pass)) {
 			t.Errorf("nudge %d was sent but %s%d is not stored", pass, tagPassPrefix, pass)
 		}
+	}
+}
+
+// testIssuesURL stands for the bridge's /issues in the review tests.
+const testIssuesURL = "http://bridge.test/issues"
+
+// The nudge tells the session where its task's item is: under the issues of the
+// bridge the reviewer was pointed at, not at a standalone noteboard address.
+func TestTheNudgeNamesTheIssueItemUnderTheConfiguredBridge(t *testing.T) {
+	nudge := reviewNudge(testIssuesURL, 1, maxPasses)
+	if !strings.Contains(nudge, "PATCH "+testIssuesURL+"/items/<id>") {
+		t.Errorf("the nudge does not name %s/items/<id>:\n%s", testIssuesURL, nudge)
+	}
+	if strings.Contains(nudge, "%!") || strings.Contains(nudge, "8191") {
+		t.Errorf("the nudge is malformed or names the old noteboard:\n%s", nudge)
 	}
 }

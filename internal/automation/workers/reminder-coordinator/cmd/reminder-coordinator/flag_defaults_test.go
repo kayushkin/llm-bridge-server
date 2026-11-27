@@ -46,7 +46,7 @@ func TestTheDefaultsThatShipAreTheOnesThisBinaryStartsWith(t *testing.T) {
 		got  any
 		want any
 	}{
-		{"-noteboard-url", cfg.noteboardURL, "http://localhost:8191"},
+		{"-bridge-url", cfg.bridgeURL, "http://localhost:8160"},
 		{"-dash-url", cfg.dashURL, "http://localhost:8101"},
 		{"-ask", cfg.askPath, "/home/someone/bin/ask"},
 		{"-tag", cfg.scopeTag, "personal"},
@@ -81,11 +81,13 @@ func TestTheDigestHourAndMinuteDoNotSwapOnTheWayToTheCoordinator(t *testing.T) {
 }
 
 // The two base URLs are the other same-typed pair. Swapped, the coordinator
-// would ask noteboard for calendar events and dash for todos; both answer 404
-// and the tick reports a failure that names neither service.
+// would ask the bridge for calendar events and dash for todos; both answer 404
+// and the tick reports a failure that names neither service. The bridge URL
+// then splits in two: todos under its /issues, the digest note under its
+// /notes.
 func TestEachBaseURLReachesTheClientItIsFor(t *testing.T) {
 	cfg, err := parseFlags([]string{
-		"-noteboard-url", "http://notes.example",
+		"-bridge-url", "http://bridge.example",
 		"-dash-url", "http://dash.example",
 		"-ask", "/opt/ask",
 	}, noEnvironment)
@@ -94,12 +96,15 @@ func TestEachBaseURLReachesTheClientItIsFor(t *testing.T) {
 	}
 	coordinator := newCoordinator(cfg, time.UTC, time.Now())
 
-	noteboard, ok := coordinator.noteboard.(*NoteboardClient)
+	items, ok := coordinator.items.(*ItemsClient)
 	if !ok {
-		t.Fatalf("noteboard is %T, want *NoteboardClient", coordinator.noteboard)
+		t.Fatalf("items is %T, want *ItemsClient", coordinator.items)
 	}
-	if noteboard.BaseURL != "http://notes.example" {
-		t.Errorf("noteboard base URL = %q, want http://notes.example", noteboard.BaseURL)
+	if items.IssuesURL != "http://bridge.example/issues" {
+		t.Errorf("issues URL = %q, want http://bridge.example/issues", items.IssuesURL)
+	}
+	if items.NotesURL != "http://bridge.example/notes" {
+		t.Errorf("notes URL = %q, want http://bridge.example/notes", items.NotesURL)
 	}
 
 	calendar, ok := coordinator.calendar.(*GoogleCalendarMirror)
@@ -120,12 +125,12 @@ func TestEachBaseURLReachesTheClientItIsFor(t *testing.T) {
 }
 
 // Both clients join their base URL to a path that already starts with "/", so a
-// base URL entered with a trailing slash produces "//api/items". noteboard
-// answers that with a 404 rather than a redirect, and the tick fails on every
-// call rather than on a recognizable one.
+// base URL entered with a trailing slash would produce "//issues/items", which
+// the bridge answers with a 404 rather than a redirect, and the tick would fail
+// on every call rather than on a recognizable one.
 func TestATrailingSlashOnEitherBaseURLIsTrimmedBeforeAnyRequestIsBuilt(t *testing.T) {
 	cfg, err := parseFlags([]string{
-		"-noteboard-url", "http://notes.example/",
+		"-bridge-url", "http://bridge.example/",
 		"-dash-url", "http://dash.example///",
 	}, noEnvironment)
 	if err != nil {
@@ -133,8 +138,11 @@ func TestATrailingSlashOnEitherBaseURLIsTrimmedBeforeAnyRequestIsBuilt(t *testin
 	}
 	coordinator := newCoordinator(cfg, time.UTC, time.Now())
 
-	if got := coordinator.noteboard.(*NoteboardClient).BaseURL; got != "http://notes.example" {
-		t.Errorf("noteboard base URL = %q, want it trimmed to http://notes.example", got)
+	if got := coordinator.items.(*ItemsClient).IssuesURL; got != "http://bridge.example/issues" {
+		t.Errorf("issues URL = %q, want the bridge URL trimmed, then /issues", got)
+	}
+	if got := coordinator.items.(*ItemsClient).NotesURL; got != "http://bridge.example/notes" {
+		t.Errorf("notes URL = %q, want the bridge URL trimmed, then /notes", got)
 	}
 	if got := coordinator.calendar.(*GoogleCalendarMirror).DashURL; got != "http://dash.example" {
 		t.Errorf("dash URL = %q, want it trimmed to http://dash.example", got)
@@ -159,7 +167,7 @@ func TestTheRemainingConfigFieldsReachTheCoordinator(t *testing.T) {
 		t.Errorf("lookahead = %v, want 48h", coordinator.Lookahead)
 	}
 	if !coordinator.DryRun {
-		t.Error("dry run = false, want true — a -dry-run that does not reach the coordinator mutates noteboard and sends a herald session")
+		t.Error("dry run = false, want true — a -dry-run that does not reach the coordinator mutates the todos and sends a herald session")
 	}
 }
 
@@ -218,17 +226,17 @@ func TestTheCoordinatorsClockIsMovedIntoTheDigestZone(t *testing.T) {
 
 func TestTheEnvironmentSuppliesTheThreeDefaultsThatReadIt(t *testing.T) {
 	cfg, err := parseFlags(nil, environmentWith(map[string]string{
-		"NOTEBOARD_URL": "http://notes.from-env",
-		"DASH_URL":      "http://dash.from-env",
-		"ASK_BIN":       "/env/ask",
-		"REMINDER_TZ":   "Europe/Dublin",
+		"LLM_BRIDGE_URL": "http://bridge.from-env",
+		"DASH_URL":       "http://dash.from-env",
+		"ASK_BIN":        "/env/ask",
+		"REMINDER_TZ":    "Europe/Dublin",
 	}))
 	if err != nil {
 		t.Fatalf("parsing: %v", err)
 	}
 
-	if cfg.noteboardURL != "http://notes.from-env" {
-		t.Errorf("NOTEBOARD_URL ignored: got %q", cfg.noteboardURL)
+	if cfg.bridgeURL != "http://bridge.from-env" {
+		t.Errorf("LLM_BRIDGE_URL ignored: got %q", cfg.bridgeURL)
 	}
 	if cfg.dashURL != "http://dash.from-env" {
 		t.Errorf("DASH_URL ignored: got %q", cfg.dashURL)
@@ -246,15 +254,15 @@ func TestTheEnvironmentSuppliesTheThreeDefaultsThatReadIt(t *testing.T) {
 // box where none of the three are set, and is exactly how this binary runs.
 func TestAnEmptyEnvironmentVariableDoesNotBeatTheBuiltInDefault(t *testing.T) {
 	cfg, err := parseFlags(nil, environmentWith(map[string]string{
-		"NOTEBOARD_URL": "",
-		"DASH_URL":      "",
+		"LLM_BRIDGE_URL": "",
+		"DASH_URL":       "",
 	}))
 	if err != nil {
 		t.Fatalf("parsing: %v", err)
 	}
 
-	if cfg.noteboardURL != "http://localhost:8191" {
-		t.Errorf("an empty NOTEBOARD_URL took over: got %q", cfg.noteboardURL)
+	if cfg.bridgeURL != "http://localhost:8160" {
+		t.Errorf("an empty LLM_BRIDGE_URL took over: got %q", cfg.bridgeURL)
 	}
 	if cfg.dashURL != "http://localhost:8101" {
 		t.Errorf("an empty DASH_URL took over: got %q", cfg.dashURL)
@@ -262,13 +270,16 @@ func TestAnEmptyEnvironmentVariableDoesNotBeatTheBuiltInDefault(t *testing.T) {
 }
 
 func TestAnExplicitFlagBeatsTheEnvironment(t *testing.T) {
-	cfg, err := parseFlags([]string{"-noteboard-url", "http://notes.from-flag"},
-		environmentWith(map[string]string{"NOTEBOARD_URL": "http://notes.from-env"}))
+	cfg, err := parseFlags([]string{"-bridge-url", "http://bridge.from-flag"},
+		environmentWith(map[string]string{"LLM_BRIDGE_URL": "http://bridge.from-env"}))
 	if err != nil {
 		t.Fatalf("parsing: %v", err)
 	}
-	if cfg.noteboardURL != "http://notes.from-flag" {
-		t.Errorf("noteboard URL = %q, want the flag to win over the environment", cfg.noteboardURL)
+	if cfg.bridgeURL != "http://bridge.from-flag" {
+		t.Errorf("bridge URL = %q, want the flag to win over the environment", cfg.bridgeURL)
+	}
+	if _, err := parseFlags([]string{"-noteboard-url", "http://notes.example"}, noEnvironment); err == nil {
+		t.Error("-noteboard-url was accepted: todos and notes are under the bridge now, and a second address would be a second source")
 	}
 }
 

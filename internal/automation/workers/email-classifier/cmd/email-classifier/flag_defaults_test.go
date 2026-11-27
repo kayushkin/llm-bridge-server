@@ -64,22 +64,22 @@ func TestTheDefaultsThatShipAreTheOnesThisBinaryStartsWith(t *testing.T) {
 		{"-dry-run", cfg.DryRun, false},
 		{"-dump-digest", cfg.DumpDigest, false},
 		{"-board-id", cfg.BoardID, ""},
-		{"-kanban-url", cfg.KanbanURL, "http://localhost:8305"},
-		{"-mail-url", cfg.MailURL, "http://localhost:8195"},
-		{"-mail-token", cfg.MailToken, "changeme"},
 		{"-bridge-url", cfg.BridgeURL, "http://localhost:8160"},
 		{"-max", cfg.MaxEmails, 50},
 		{"-backfill", cfg.Backfill, false},
 		{"-merge", cfg.MergePass, false},
 		{"-backfill-due", cfg.BackfillDue, false},
 		{"-refile-unread-since", cfg.RefileUnreadSince, ""},
-		{"-noteboard-url", cfg.NoteboardURL, "http://localhost:8191"},
 		{"-sender", cfg.SenderQuery, ""},
 		{"-message", cfg.MessageQuery, ""},
 		{"-note", cfg.NoteText, ""},
 		{"-delete-note", cfg.DeleteNote, false},
 
-		{"SCHEDULER_URL", cfg.SchedulerURL, "http://localhost:8092"},
+		{"issues", cfg.IssuesURL, "http://localhost:8160/issues"},
+		{"mail", cfg.MailURL, "http://localhost:8160/mail"},
+		{"notes", cfg.NotesURL, "http://localhost:8160/notes"},
+		{"principals", cfg.PrincipalsURL, "http://localhost:8160/principals"},
+		{"scheduler", cfg.SchedulerURL, "http://localhost:8160/scheduler"},
 		{"registered command", cfg.BinaryPath, "/home/someone/bin/email-classifier"},
 	} {
 		if check.got != check.want {
@@ -114,6 +114,18 @@ func TestThereIsNoBoardToDefaultTo(t *testing.T) {
 	}
 	if err := cfg.validate(); err != nil {
 		t.Errorf("-list-vocabularies reads no board but was refused: %v", err)
+	}
+}
+
+// TestTheStandaloneStoreFlagsAreGone pins that a job still passing an address
+// or token of a standalone store fails at parse, loudly: every store is a path
+// under -bridge-url now, and a flag quietly ignored would look like it worked.
+func TestTheStandaloneStoreFlagsAreGone(t *testing.T) {
+	for _, removed := range []string{"-kanban-url=http://localhost:8305", "-mail-url=http://localhost:8195", "-mail-token=changeme",
+		"-noteboard-url=http://localhost:8191", "-principal-store-url=http://127.0.0.1:8314"} {
+		if outcome := parseFlagsInChildProcess(t, removed); !outcome.Failed {
+			t.Errorf("%s still parses; the store is a path under -bridge-url now", removed)
+		}
 	}
 }
 
@@ -155,7 +167,7 @@ func TestEveryNoOpSwitchShipsOff(t *testing.T) {
 		{"-sender", cfg.SenderQuery != "", "every tick reports on one address and returns, filing no new mail"},
 		{"-message", cfg.MessageQuery != "", "every tick reports on one message and returns, filing no new mail"},
 		{"-dump-digest", cfg.DumpDigest, "every tick prints the digest to stdout and never calls the model or writes a card"},
-		{"-dry-run", cfg.DryRun, "every tick classifies at full model cost and writes nothing to kanban-store"},
+		{"-dry-run", cfg.DryRun, "every tick classifies at full model cost and writes nothing to the board"},
 	} {
 		if check.on {
 			t.Errorf("%s ships ON: %s", check.flag, check.whatItDoes)
@@ -191,63 +203,66 @@ func TestTheTwoValuesThatDecideSpend(t *testing.T) {
 	}
 }
 
-// TestEachEnvironmentVariableReachesItsOwnField is the test the flag set was
-// registered into named fields for.
+// TestEachStoreIsItsOwnPathUnderTheBridge is the test the store addresses
+// were given named fields for.
 //
-// Six variables land in this config and all of them are strings that would
-// be accepted in each other's place. One pair is consumed positionally —
-// newMailClient takes (MailURL, MailToken) — so a swap compiles clean and
-// passes every other test in the package, because nothing else reads them. Giving each variable a distinct
-// value and asserting the field it lands in is what makes a swap fail.
-func TestEachEnvironmentVariableReachesItsOwnField(t *testing.T) {
+// Five addresses land in this config, all strings that would be accepted in
+// each other's place and all derived from one variable, so a swap compiles
+// clean and passes every other test in the package. Asserting each field's
+// path under a distinct bridge address is what makes a swap fail.
+func TestEachStoreIsItsOwnPathUnderTheBridge(t *testing.T) {
 	cfg, err := parseFlags(nil, environmentWith(map[string]string{
-		"EMAIL_BOARD_ID":   "board-from-the-environment",
-		"KANBAN_STORE_URL": "http://kanban.example",
-		"MAILSTACK_URL":    "http://mailstack.example",
-		"MAILSTACK_TOKEN":  "mail-token-value",
-		"LLM_BRIDGE_URL":   "http://bridge.example",
-		"SCHEDULER_URL":    "http://scheduler.example",
+		"EMAIL_BOARD_ID": "board-from-the-environment",
+		"LLM_BRIDGE_URL": "http://bridge.example",
 	}), "/home/someone")
 	if err != nil {
 		t.Fatalf("parsing an empty command line: %v", err)
 	}
 
 	for _, check := range []struct {
-		variable string
-		got      string
-		want     string
+		field string
+		got   string
+		want  string
 	}{
-		{"EMAIL_BOARD_ID", cfg.BoardID, "board-from-the-environment"},
-		{"KANBAN_STORE_URL", cfg.KanbanURL, "http://kanban.example"},
-		{"MAILSTACK_URL", cfg.MailURL, "http://mailstack.example"},
-		{"MAILSTACK_TOKEN", cfg.MailToken, "mail-token-value"},
-		{"LLM_BRIDGE_URL", cfg.BridgeURL, "http://bridge.example"},
-		{"SCHEDULER_URL", cfg.SchedulerURL, "http://scheduler.example"},
+		{"BoardID", cfg.BoardID, "board-from-the-environment"},
+		{"BridgeURL", cfg.BridgeURL, "http://bridge.example"},
+		{"IssuesURL", cfg.IssuesURL, "http://bridge.example/issues"},
+		{"MailURL", cfg.MailURL, "http://bridge.example/mail"},
+		{"NotesURL", cfg.NotesURL, "http://bridge.example/notes"},
+		{"PrincipalsURL", cfg.PrincipalsURL, "http://bridge.example/principals"},
+		{"SchedulerURL", cfg.SchedulerURL, "http://bridge.example/scheduler"},
 	} {
 		if check.got != check.want {
-			t.Errorf("%s reached the wrong field: got %q, want %q", check.variable, check.got, check.want)
+			t.Errorf("%s = %q, want %q", check.field, check.got, check.want)
 		}
+	}
+
+	// -bridge-url beats the variable, and the stores follow it.
+	cfg, err = parseFlags([]string{"-bridge-url=http://flag.example/"}, environmentWith(map[string]string{
+		"LLM_BRIDGE_URL": "http://bridge.example",
+	}), "/home/someone")
+	if err != nil {
+		t.Fatalf("parsing -bridge-url: %v", err)
+	}
+	if cfg.IssuesURL != "http://flag.example/issues" || cfg.MailURL != "http://flag.example/mail" {
+		t.Errorf("the stores did not follow -bridge-url: issues %q, mail %q", cfg.IssuesURL, cfg.MailURL)
 	}
 }
 
-// TestAnUnsetVariableFallsBackAndASetOneDoesNot pins the default's direction. It has
-// been the wrong way round in this family before: preferring the fallback over
-// the environment leaves every endpoint on localhost no matter what the unit
-// file says, which on this box is a working configuration and therefore silent.
-func TestAnUnsetVariableFallsBackAndASetOneDoesNot(t *testing.T) {
-	// One variable set, the rest not, so the fallback and the override are
-	// exercised against each other in a single parse.
+// TestTheServicePrincipalTokenReachesItsField pins that the credential is
+// read, and that a standalone store's token left in the environment stops
+// nothing: no binary owns those names, and none reads them.
+func TestTheServicePrincipalTokenReachesItsField(t *testing.T) {
 	cfg, err := parseFlags(nil, environmentWith(map[string]string{
-		"MAILSTACK_URL": "http://mailstack.example",
+		"LLM_BRIDGE_SERVICE_PRINCIPAL_TOKEN": "llm-bridge-service-principal-token-v1.test",
+		"MAILSTACK_TOKEN":                    "mail-token-value",
+		"KANBAN_STORE_SERVICE_TOKEN":         "kanban-token-value",
 	}), "/home/someone")
 	if err != nil {
 		t.Fatalf("parsing an empty command line: %v", err)
 	}
-	if cfg.MailURL != "http://mailstack.example" {
-		t.Errorf("a set variable was ignored: MailURL = %q", cfg.MailURL)
-	}
-	if cfg.KanbanURL != "http://localhost:8305" {
-		t.Errorf("an unset variable did not fall back: KanbanURL = %q", cfg.KanbanURL)
+	if cfg.BridgeServicePrincipalToken != "llm-bridge-service-principal-token-v1.test" {
+		t.Errorf("BridgeServicePrincipalToken = %q", cfg.BridgeServicePrincipalToken)
 	}
 }
 

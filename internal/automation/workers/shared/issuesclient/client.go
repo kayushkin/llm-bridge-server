@@ -1,7 +1,12 @@
-// Package kanbanclient is a small HTTP client for the local kanban-store
-// (default :8305). Used by autoworker (creates cards) and kanban-curator
-// (closes them). Intentionally narrow — only the calls the scheduler binaries
-// need; not a general-purpose SDK.
+// Package issuesclient is a small HTTP client for the boards and cards of
+// issues, which llm-bridge-server serves at /issues/ (the former kanban-store,
+// whose /api/… paths lost their /api). Used by autoworker (creates cards),
+// kanban-curator (closes them) and the other board workers. Intentionally
+// narrow — only the calls the job binaries need; not a general-purpose SDK.
+//
+// It carries no credential of its own: its requests go out through the
+// default transport, which bridgeauth stamps with the binary's service
+// principal token for the bridge's host.
 package issuesclient
 
 import (
@@ -27,43 +32,12 @@ type Client struct {
 	ColumnsByName map[string]string
 }
 
-// ServiceTokenHeader is where kanban-store reads the token an internal service
-// presents. kanban-store gates every route, so a job that sends no token is
-// answered 401 and does no work.
-const ServiceTokenHeader = "X-Kanban-Store-Service-Token"
-
-// ServiceTokenEnvironmentVariable holds that token for every binary in this
-// repo; the scheduler unit carries it, so the jobs it runs inherit it. Each
-// binary declares it in its settings (internal/config) and hands the value to
-// New and StampRequestsToKanbanStore; this package reads no environment.
-const ServiceTokenEnvironmentVariable = "KANBAN_STORE_SERVICE_TOKEN"
-
-// serviceTokenTransport puts the token on every request this client makes.
-// It sits in the transport rather than at each of the thirty-odd call sites
-// below, so a route added later carries it too.
-type serviceTokenTransport struct {
-	token string
-	base  http.RoundTripper
-}
-
-func (t *serviceTokenTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	// The caller's request must not be mutated; RoundTrip may be retried.
-	cloned := request.Clone(request.Context())
-	cloned.Header.Set(ServiceTokenHeader, t.token)
-	return t.base.RoundTrip(cloned)
-}
-
-// New builds a client that authenticates as an internal service with
-// serviceToken. An empty token is left off rather than sent blank, so the 401
-// names the missing header instead of a wrong token.
-func New(baseURL, serviceToken string) *Client {
-	httpClient := &http.Client{Timeout: 10 * time.Second}
-	if serviceToken != "" {
-		httpClient.Transport = &serviceTokenTransport{token: serviceToken, base: http.DefaultTransport}
-	}
+// New builds a client for the issues at issuesURL: llm-bridge-server's
+// address followed by /issues (bridgestores.IssuesURL).
+func New(issuesURL string) *Client {
 	return &Client{
-		BaseURL: strings.TrimRight(baseURL, "/"),
-		HTTP:    httpClient,
+		BaseURL: strings.TrimRight(issuesURL, "/"),
+		HTTP:    &http.Client{Timeout: 10 * time.Second},
 	}
 }
 
@@ -77,10 +51,10 @@ func New(baseURL, serviceToken string) *Client {
 // or "#" addresses a different endpoint than the one asked for, and none of it
 // surfaces as an error — the wrong request gets an ordinary 200:
 //
-//	"a/b"             -> /api/boards/a/b/columns        an extra path segment
-//	"sess?agent=root" -> /api/boards/sess?agent=root/…  a query string
-//	"sess#frag"       -> /api/boards/sess               the rest of the URL is dropped
-//	"../boards"       -> /api/boards/../boards/…        climbs out of the collection
+//	"a/b"             -> /boards/a/b/columns        an extra path segment
+//	"sess?agent=root" -> /boards/sess?agent=root/…  a query string
+//	"sess#frag"       -> /boards/sess               the rest of the URL is dropped
+//	"../boards"       -> /boards/../boards/…        climbs out of the collection
 //	"sess%2Fb"        -> arrives decoded, so a slash again
 //
 // PathEscape is a no-op for every well-formed kanban id, session id and tag,
@@ -158,7 +132,7 @@ func (c *Client) GetBoard(id string) (*Board, error) {
 	if id == "" {
 		return nil, errors.New("issuesclient: GetBoard called with an empty board id")
 	}
-	resp, err := c.HTTP.Get(fmt.Sprintf("%s/api/boards/%s", c.BaseURL, escapePathSegment(id)))
+	resp, err := c.HTTP.Get(fmt.Sprintf("%s/boards/%s", c.BaseURL, escapePathSegment(id)))
 	if err != nil {
 		return nil, err
 	}
@@ -257,14 +231,14 @@ func (e *EffectiveDefaults) Default(field DefaultField) (EffectiveDefault, bool)
 var ErrCardNotFound = errors.New("kanban card not found")
 
 // GetCardEffectiveDefaults asks kanban-store which defaults one card gets on
-// one board (GET /api/boards/{board}/cards/{card}/effective-defaults). A 404 is
+// one board (GET /boards/{board}/cards/{card}/effective-defaults). A 404 is
 // ErrCardNotFound; any other non-200 — 502 when kanban-store cannot read the
 // card from noteboard — is an error carrying the body.
 func (c *Client) GetCardEffectiveDefaults(boardID, cardID string) (*EffectiveDefaults, error) {
 	if boardID == "" || cardID == "" {
 		return nil, fmt.Errorf("issuesclient: GetCardEffectiveDefaults needs a board id and a card id, got board %q card %q", boardID, cardID)
 	}
-	resp, err := c.HTTP.Get(fmt.Sprintf("%s/api/boards/%s/cards/%s/effective-defaults", c.BaseURL, escapePathSegment(boardID), escapePathSegment(cardID)))
+	resp, err := c.HTTP.Get(fmt.Sprintf("%s/boards/%s/cards/%s/effective-defaults", c.BaseURL, escapePathSegment(boardID), escapePathSegment(cardID)))
 	if err != nil {
 		return nil, err
 	}
@@ -375,7 +349,7 @@ func (c *Client) FindBoard(name string) (*Board, error) {
 // writer silently follows the new one. A caller that pins a board id needs this
 // to confirm the id still resolves.
 func (c *Client) ListBoards() ([]Board, error) {
-	resp, err := c.HTTP.Get(c.BaseURL + "/api/boards")
+	resp, err := c.HTTP.Get(c.BaseURL + "/boards")
 	if err != nil {
 		return nil, err
 	}
@@ -408,7 +382,7 @@ func (c *Client) createBoard(name string) (*Board, error) {
 		"name":        name,
 		"description": "Auto-tracked agent dispatches (autoworker, scheduler agent jobs).",
 	})
-	resp, err := c.HTTP.Post(c.BaseURL+"/api/boards", "application/json", bytes.NewReader(body))
+	resp, err := c.HTTP.Post(c.BaseURL+"/boards", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -424,7 +398,7 @@ func (c *Client) createBoard(name string) (*Board, error) {
 }
 
 func (c *Client) ListColumns(boardID string) ([]Column, error) {
-	resp, err := c.HTTP.Get(fmt.Sprintf("%s/api/boards/%s/columns", c.BaseURL, escapePathSegment(boardID)))
+	resp, err := c.HTTP.Get(fmt.Sprintf("%s/boards/%s/columns", c.BaseURL, escapePathSegment(boardID)))
 	if err != nil {
 		return nil, err
 	}
@@ -445,7 +419,7 @@ func (c *Client) createColumn(boardID, name string, autoStatus *string) (*Column
 		payload["auto_status"] = *autoStatus
 	}
 	body, _ := json.Marshal(payload)
-	resp, err := c.HTTP.Post(fmt.Sprintf("%s/api/boards/%s/columns", c.BaseURL, escapePathSegment(boardID)),
+	resp, err := c.HTTP.Post(fmt.Sprintf("%s/boards/%s/columns", c.BaseURL, escapePathSegment(boardID)),
 		"application/json", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -500,7 +474,7 @@ type ColumnView struct {
 	Cards  []CardView `json:"cards"`
 }
 
-// BoardView is the assembled response from /api/boards/:id/cards.
+// BoardView is the assembled response from /boards/:id/cards.
 type BoardView struct {
 	Board   Board        `json:"board"`
 	Columns []ColumnView `json:"columns"`
@@ -508,7 +482,7 @@ type BoardView struct {
 
 // GetBoardView returns the full board+columns+cards tree.
 func (c *Client) GetBoardView(boardID string) (*BoardView, error) {
-	resp, err := c.HTTP.Get(fmt.Sprintf("%s/api/boards/%s/cards", c.BaseURL, escapePathSegment(boardID)))
+	resp, err := c.HTTP.Get(fmt.Sprintf("%s/boards/%s/cards", c.BaseURL, escapePathSegment(boardID)))
 	if err != nil {
 		return nil, err
 	}
@@ -575,7 +549,7 @@ func (c *Client) CreateCard(a CreateCardArgs) (cardID string, err error) {
 		payload["hold_reason"] = a.HoldReason
 	}
 	body, _ := json.Marshal(payload)
-	url := fmt.Sprintf("%s/api/boards/%s/cards", c.BaseURL, escapePathSegment(c.BoardID))
+	url := fmt.Sprintf("%s/boards/%s/cards", c.BaseURL, escapePathSegment(c.BoardID))
 	resp, err := c.HTTP.Post(url, "application/json", bytes.NewReader(body))
 	if err != nil {
 		return "", err
@@ -697,7 +671,7 @@ func (c *Client) PutTicket(cardID, requesterPrincipalID, channel, sourceEntityTy
 		"source_entity_ref":      sourceEntityRef,
 	})
 	req, err := http.NewRequest(http.MethodPut,
-		fmt.Sprintf("%s/api/cards/%s/ticket", c.BaseURL, escapePathSegment(cardID)), bytes.NewReader(body))
+		fmt.Sprintf("%s/cards/%s/ticket", c.BaseURL, escapePathSegment(cardID)), bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -721,7 +695,7 @@ func (c *Client) AddCardLink(cardID, entityType, entityRef, label string) error 
 	}
 	body, _ := json.Marshal(payload)
 	resp, err := c.HTTP.Post(
-		fmt.Sprintf("%s/api/cards/%s/links", c.BaseURL, escapePathSegment(cardID)),
+		fmt.Sprintf("%s/cards/%s/links", c.BaseURL, escapePathSegment(cardID)),
 		"application/json", bytes.NewReader(body),
 	)
 	if err != nil {
@@ -736,7 +710,7 @@ func (c *Client) AddCardLink(cardID, entityType, entityRef, label string) error 
 
 // ListCardLinks returns all entity-link rows for a card.
 func (c *Client) ListCardLinks(cardID string) ([]CardLink, error) {
-	resp, err := c.HTTP.Get(fmt.Sprintf("%s/api/cards/%s/links", c.BaseURL, escapePathSegment(cardID)))
+	resp, err := c.HTTP.Get(fmt.Sprintf("%s/cards/%s/links", c.BaseURL, escapePathSegment(cardID)))
 	if err != nil {
 		return nil, err
 	}
@@ -751,7 +725,7 @@ func (c *Client) ListCardLinks(cardID string) ([]CardLink, error) {
 	return links, nil
 }
 
-// CardPlacement is one row of GET /api/cards/{id}/placements: where the card
+// CardPlacement is one row of GET /cards/{id}/placements: where the card
 // sits on one board.
 type CardPlacement struct {
 	CardID   string  `json:"card_id"`
@@ -762,7 +736,7 @@ type CardPlacement struct {
 
 // ListCardPlacements returns every board placement a card has.
 func (c *Client) ListCardPlacements(cardID string) ([]CardPlacement, error) {
-	resp, err := c.HTTP.Get(fmt.Sprintf("%s/api/cards/%s/placements", c.BaseURL, escapePathSegment(cardID)))
+	resp, err := c.HTTP.Get(fmt.Sprintf("%s/cards/%s/placements", c.BaseURL, escapePathSegment(cardID)))
 	if err != nil {
 		return nil, err
 	}
@@ -811,7 +785,7 @@ func (c *Client) MoveCard(cardID, boardID, columnID string, position float64) (M
 		"position":  position,
 	}
 	body, _ := json.Marshal(payload)
-	req, _ := http.NewRequest("POST", fmt.Sprintf("%s/api/cards/%s/move", c.BaseURL, escapePathSegment(cardID)), bytes.NewReader(body))
+	req, _ := http.NewRequest("POST", fmt.Sprintf("%s/cards/%s/move", c.BaseURL, escapePathSegment(cardID)), bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
@@ -830,10 +804,9 @@ func (c *Client) MoveCard(cardID, boardID, columnID string, position float64) (M
 	return result, nil
 }
 
-// PatchCard updates fields on the noteboard item behind a card. kanban-store
-// forwards the body verbatim to noteboard's PATCH /api/items/:id, so the
-// accepted field names are noteboard's: title, body, tags, status, priority,
-// due_at, parent_id, links.
+// PatchCard updates fields on the issue behind a card. The card's id is its
+// issue's id, and the body reaches the issue's item as PATCH /issues/items/{id}
+// would take it: title, body, tags, status, priority, due_at, parent_id, links.
 //
 // Callers should send only the fields they are changing. noteboard's revision
 // snapshot covers title, body, tags, status, priority, list_id, parent_id and
@@ -841,7 +814,7 @@ func (c *Client) MoveCard(cardID, boardID, columnID string, position float64) (M
 // destroys the old value with no recoverable history.
 func (c *Client) PatchCard(cardID string, fields map[string]any) error {
 	payload, _ := json.Marshal(fields)
-	req, _ := http.NewRequest("PATCH", fmt.Sprintf("%s/api/cards/%s", c.BaseURL, escapePathSegment(cardID)), bytes.NewReader(payload))
+	req, _ := http.NewRequest("PATCH", fmt.Sprintf("%s/cards/%s", c.BaseURL, escapePathSegment(cardID)), bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
@@ -865,7 +838,7 @@ func (c *Client) PatchCardBody(cardID, body string) error {
 // reads this board's columns.
 func (c *Client) HoldCard(cardID, reason string) error {
 	payload, _ := json.Marshal(map[string]any{"reason": reason})
-	req, _ := http.NewRequest("POST", fmt.Sprintf("%s/api/cards/%s/hold", c.BaseURL, escapePathSegment(cardID)), bytes.NewReader(payload))
+	req, _ := http.NewRequest("POST", fmt.Sprintf("%s/cards/%s/hold", c.BaseURL, escapePathSegment(cardID)), bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
@@ -889,7 +862,7 @@ type EntityTag struct {
 
 // ListEntityTags returns all tags on a single (entity_type, entity_ref) pair.
 func (c *Client) ListEntityTags(entityType, entityRef string) ([]EntityTag, error) {
-	resp, err := c.HTTP.Get(fmt.Sprintf("%s/api/entities/%s/%s/tags",
+	resp, err := c.HTTP.Get(fmt.Sprintf("%s/entities/%s/%s/tags",
 		c.BaseURL, escapePathSegment(entityType), escapePathSegment(entityRef)))
 	if err != nil {
 		return nil, err
@@ -909,7 +882,7 @@ func (c *Client) ListEntityTags(entityType, entityRef string) ([]EntityTag, erro
 func (c *Client) AddEntityTag(entityType, entityRef, tag string) error {
 	body, _ := json.Marshal(map[string]any{"tag": tag})
 	resp, err := c.HTTP.Post(
-		fmt.Sprintf("%s/api/entities/%s/%s/tags", c.BaseURL, escapePathSegment(entityType), escapePathSegment(entityRef)),
+		fmt.Sprintf("%s/entities/%s/%s/tags", c.BaseURL, escapePathSegment(entityType), escapePathSegment(entityRef)),
 		"application/json", bytes.NewReader(body),
 	)
 	if err != nil {
@@ -925,7 +898,7 @@ func (c *Client) AddEntityTag(entityType, entityRef, tag string) error {
 // DeleteEntityTag removes a single tag from (entity_type, entity_ref).
 func (c *Client) DeleteEntityTag(entityType, entityRef, tag string) error {
 	req, _ := http.NewRequest("DELETE",
-		fmt.Sprintf("%s/api/entities/%s/%s/tags/%s", c.BaseURL, escapePathSegment(entityType), escapePathSegment(entityRef), escapePathSegment(tag)), nil)
+		fmt.Sprintf("%s/entities/%s/%s/tags/%s", c.BaseURL, escapePathSegment(entityType), escapePathSegment(entityRef), escapePathSegment(tag)), nil)
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return err
@@ -939,7 +912,7 @@ func (c *Client) DeleteEntityTag(entityType, entityRef, tag string) error {
 
 // ============================ Reverse lookups ============================
 
-// EntityCardEntry is one row from /api/entities/:type/:ref/cards.
+// EntityCardEntry is one row from /entities/:type/:ref/cards.
 type EntityCardEntry struct {
 	CardID string         `json:"card_id"`
 	Item   map[string]any `json:"item"`
@@ -947,7 +920,7 @@ type EntityCardEntry struct {
 
 // ListCardsForEntity returns the cards linked to (entity_type, entity_ref).
 func (c *Client) ListCardsForEntity(entityType, entityRef string) ([]EntityCardEntry, error) {
-	resp, err := c.HTTP.Get(fmt.Sprintf("%s/api/entities/%s/%s/cards",
+	resp, err := c.HTTP.Get(fmt.Sprintf("%s/entities/%s/%s/cards",
 		c.BaseURL, escapePathSegment(entityType), escapePathSegment(entityRef)))
 	if err != nil {
 		return nil, err
@@ -978,7 +951,7 @@ func statusErr(op string, resp *http.Response) error {
 // to learn what is already filed — would then see that email as unfiled and file
 // it a second time.
 func (c *Client) DeleteCardLink(linkID string) error {
-	req, _ := http.NewRequest("DELETE", fmt.Sprintf("%s/api/links/%s", c.BaseURL, escapePathSegment(linkID)), nil)
+	req, _ := http.NewRequest("DELETE", fmt.Sprintf("%s/links/%s", c.BaseURL, escapePathSegment(linkID)), nil)
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return err
@@ -997,7 +970,7 @@ func (c *Client) DeleteCardLink(linkID string) error {
 // taking a card off a board is a presentation decision, not a decision to
 // destroy the work it describes.
 func (c *Client) DetachCardFromBoard(boardID, cardID string) error {
-	req, _ := http.NewRequest("DELETE", fmt.Sprintf("%s/api/boards/%s/cards/%s", c.BaseURL, escapePathSegment(boardID), escapePathSegment(cardID)), nil)
+	req, _ := http.NewRequest("DELETE", fmt.Sprintf("%s/boards/%s/cards/%s", c.BaseURL, escapePathSegment(boardID), escapePathSegment(cardID)), nil)
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return err
@@ -1006,52 +979,5 @@ func (c *Client) DetachCardFromBoard(boardID, cardID string) error {
 	if resp.StatusCode != http.StatusOK {
 		return statusErr("detach card from board", resp)
 	}
-	return nil
-}
-
-// hostScopedServiceTokenTransport stamps the token only on requests to
-// kanban-store's host. A binary that calls kanban-store with its own
-// http.Client, rather than through Client above, also calls noteboard,
-// llm-bridge-server and mailstack through the same default transport, and
-// kanban-store's token has no business being sent to any of them.
-type hostScopedServiceTokenTransport struct {
-	host  string
-	token string
-	base  http.RoundTripper
-}
-
-func (t *hostScopedServiceTokenTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	if !strings.EqualFold(request.URL.Host, t.host) {
-		return t.base.RoundTrip(request)
-	}
-	cloned := request.Clone(request.Context())
-	cloned.Header.Set(ServiceTokenHeader, t.token)
-	return t.base.RoundTrip(cloned)
-}
-
-// StampRequestsToKanbanStore installs that transport as the process-wide
-// default, so every call to kanban-store carries the token however it was
-// made: http.Get, http.DefaultClient, or any client that left Transport nil.
-// It is the mirror of bridgeauth.StampRequestsToBridge and composes with it;
-// call each once, early in main, with the URL the binary will use.
-//
-// demo-worker needed it: it writes cards with its own client — attributed
-// links, notes, unhold — which the thirty-odd methods of Client do not cover,
-// and until 2026-09-18 every one of those calls was answered 401 once
-// kanban-store began gating its routes.
-//
-// An unset token is not an error: the binary is then talking to a
-// kanban-store that does not gate, and a 401 names the missing header if it
-// does.
-func StampRequestsToKanbanStore(kanbanURL, serviceToken string) error {
-	if serviceToken == "" {
-		return nil
-	}
-	parsed, err := url.Parse(kanbanURL)
-	if err != nil || parsed.Host == "" {
-		return fmt.Errorf("issuesclient: %q is not a URL with a host, so requests to kanban-store cannot be authenticated: %v", kanbanURL, err)
-	}
-	http.DefaultTransport = &hostScopedServiceTokenTransport{host: parsed.Host, token: serviceToken, base: http.DefaultTransport}
-	http.DefaultClient.Transport = http.DefaultTransport
 	return nil
 }

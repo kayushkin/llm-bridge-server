@@ -55,8 +55,10 @@ import (
 	schedulerconfig "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/config"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/sessionmodelrole"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgeauth"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgestores"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/schedulersettings"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/textcut"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/workersettings"
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )
@@ -112,7 +114,7 @@ type heraldPublisher interface {
 type connectFunc func() (heraldPublisher, error)
 
 func main() {
-	settings, err := schedulerconfig.Ask.NewSettingsRegistry(servicesettings.ProcessEnvironment())
+	settings, err := workersettings.Ask.NewSettingsRegistry(servicesettings.ProcessEnvironment())
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -122,15 +124,15 @@ func main() {
 		title        = flag.String("title", "", "Session display name. Put on one line with control characters removed, but kept at whatever length you give it. Defaults to a truncated form of the question.")
 		onReply      = flag.String("on-reply", "", "Instruction for what the agent should do once the user replies. Empty = just relay the alert; no action expected.")
 		reuseSession = flag.String("session", "", "Existing herald bus session id to deliver into as a new turn, instead of opening a new session. The adapter routes it to the bridge session it created for that id; -instance and -title are meaningless here and rejected.")
-		bridgeURL    = flag.String("bridge-url", settings.String(schedulerconfig.SettingBridgeURL), "llm-bridge-server base URL (for instance resolution).")
+		bridgeURL    = flag.String("bridge-url", settings.String(workersettings.SettingBridgeURL), "llm-bridge-server base URL (for instance resolution).")
 		dryRun       = flag.Bool("dry-run", false, "Print the resolved instance and prompt; do not publish.")
 	)
 	flag.Parse()
 
 	// llm-bridge-server gates every route; stamp this process's calls to it
-	// with the service token. Host-scoped, so the scheduler API, noteboard and
-	// kanban-store calls below are untouched.
-	if err := bridgeauth.StampRequestsToBridge(*bridgeURL, settings.String(schedulerconfig.SettingBridgeServiceToken)); err != nil {
+	// with its service principal token. The scheduler's settings and
+	// model-store's roles are paths under the bridge, so they carry it too.
+	if err := bridgeauth.StampRequestsToBridge(*bridgeURL, settings.String(workersettings.SettingBridgeServicePrincipalToken)); err != nil {
 		log.Fatal(err)
 	}
 
@@ -146,11 +148,11 @@ func main() {
 		now:          time.Now().UTC(),
 		heraldModelRole: func() (string, string, error) {
 			return readHeraldModelRole(context.Background(),
-				settings.String(schedulerconfig.SettingSchedulerURL),
-				sessionmodelrole.New(settings.String(schedulerconfig.SettingModelStoreURL), *bridgeURL))
+				bridgestores.SchedulerURL(*bridgeURL),
+				sessionmodelrole.New(bridgestores.ModelsURL(*bridgeURL), *bridgeURL))
 		},
 	}
-	natsURL := settings.String(schedulerconfig.SettingNATSURL)
+	natsURL := settings.String(workersettings.SettingNATSURL)
 	connect := func() (heraldPublisher, error) {
 		return natsbus.Connect(natsbus.Options{URL: natsURL, Name: askOrigin})
 	}

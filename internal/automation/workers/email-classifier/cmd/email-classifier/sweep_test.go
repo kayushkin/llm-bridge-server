@@ -18,7 +18,7 @@ func recordingKanban(t *testing.T) (*issuesclient.Client, map[string]string, fun
 	moves := map[string]string{} // card id -> column id
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/move") {
-			parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/cards/"), "/")
+			parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/cards/"), "/")
 			var body struct {
 				ColumnID string `json:"column_id"`
 			}
@@ -31,7 +31,7 @@ func recordingKanban(t *testing.T) (*issuesclient.Client, map[string]string, fun
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{}`))
 	}))
-	kc := issuesclient.New(srv.URL, "")
+	kc := issuesclient.New(srv.URL)
 	kc.BoardID = "board-1"
 	kc.ColumnsByName = map[string]string{
 		columnNoAction:        "col-none",

@@ -28,7 +28,7 @@ func TestACalendarReadFailureIsRecordedAsAShortfall(t *testing.T) {
 	digestNote := &model.Item{
 		ID: "digest", Type: "note", Title: digestTitle, Tags: []string{"personal", digestTag},
 	}
-	nb := newFakeNoteboard(digestNote)
+	nb := newFakeItemStores(digestNote)
 	coordinator, _, calendar := newTestCoordinator(t, time.Date(2026, 7, 20, 8, 0, 0, 0, loc), nb)
 	calendar.listErr = fmt.Errorf("auth-store error (404): no credentials for provider google")
 
@@ -68,7 +68,7 @@ func TestATickWithNothingToSayIsNotAShortfall(t *testing.T) {
 	digestNote := &model.Item{
 		ID: "digest", Type: "note", Title: digestTitle, Tags: []string{"personal", digestTag},
 	}
-	nb := newFakeNoteboard(digestNote)
+	nb := newFakeItemStores(digestNote)
 	// 06:00 is before the 07:30 digest hour, so nudgeOnce returns early.
 	coordinator, herald, _ := newTestCoordinator(t, time.Date(2026, 7, 20, 6, 0, 0, 0, loc), nb)
 
@@ -108,7 +108,7 @@ func TestAnExhaustedRollingSeriesIsNotAShortfall(t *testing.T) {
 			Mode:    model.ScheduleModeRolling,
 		},
 	}
-	nb := newFakeNoteboard(exhausted, digestNote)
+	nb := newFakeItemStores(exhausted, digestNote)
 	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 7, 20, 6, 0, 0, 0, loc), nb)
 
 	if err := coordinator.Run(); err != nil {
@@ -136,7 +136,7 @@ func TestAFullTickThatDidItsWholeJobIsGreen(t *testing.T) {
 		ID: "todo", Type: "todo", Title: "Call the plumber", Status: "open",
 		Tags: []string{"personal"}, DueAt: ptr(time.Date(2026, 7, 18, 9, 0, 0, 0, loc)),
 	}
-	nb := newFakeNoteboard(overdue, digestNote)
+	nb := newFakeItemStores(overdue, digestNote)
 	coordinator, herald, _ := newTestCoordinator(t, time.Date(2026, 7, 20, 8, 0, 0, 0, loc), nb)
 
 	if err := coordinator.Run(); err != nil {

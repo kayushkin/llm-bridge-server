@@ -32,8 +32,8 @@ func newStubKanban(t *testing.T) (*issuesclient.Client, *stubKanban) {
 		path := r.URL.Path
 
 		switch {
-		case r.Method == http.MethodPatch && strings.HasPrefix(path, "/api/cards/"):
-			cardID := strings.TrimPrefix(path, "/api/cards/")
+		case r.Method == http.MethodPatch && strings.HasPrefix(path, "/cards/"):
+			cardID := strings.TrimPrefix(path, "/cards/")
 			body, _ := payload["body"].(string)
 			rec.patchedBodies[cardID] = body
 			w.WriteHeader(http.StatusOK)
@@ -63,7 +63,7 @@ func newStubKanban(t *testing.T) (*issuesclient.Client, *stubKanban) {
 	}))
 	t.Cleanup(srv.Close)
 
-	kc := issuesclient.New(srv.URL, "")
+	kc := issuesclient.New(srv.URL)
 	kc.BoardID = "board-1"
 	kc.ColumnsByName = map[string]string{
 		"Backlog": "col-backlog", "In Progress": "col-inprogress",

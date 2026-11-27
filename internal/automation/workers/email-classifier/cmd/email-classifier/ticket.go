@@ -34,7 +34,7 @@ import (
 // was restarting would lose the filing as well as the ticket.
 
 // ticketChannelEmail is kanban-store's channel for mail. Its vocabulary is
-// served at GET /api/ticket-channels; this is the one value this binary uses.
+// served at GET /issues/ticket-channels; this is the one value this binary uses.
 const ticketChannelEmail = "email"
 
 // writeTicket gives a card its requester, its channel and the message that

@@ -9,12 +9,12 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgestores"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issueitemsclient"
 )
 
-// fleet stands up the three services one tick talks to — noteboard for the
-// items, the bridge for the cost table, kanban-store for a card's session links
-// and its hold. Every route answers the happy case by default; each test breaks
+// fleet stands up the three routes of the bridge one tick talks to — issues'
+// items, the cost table, and a card's session links and its hold. Every route answers the happy case by default; each test breaks
 // exactly one, so the shortfall it asserts can only have come from the route it
 // broke.
 type fleet struct {
@@ -55,15 +55,17 @@ func (f *fleet) start(t *testing.T) config {
 		f.holdStatus = http.StatusOK
 	}
 
-	noteboard := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/items" {
-			t.Errorf("stub noteboard got an unexpected %s %s", r.Method, r.URL.Path)
+	// One stub bridge answers all three, as the real one does: the session
+	// aggregates at its root, the issues' items and cards under /issues.
+	items := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/issues/items" {
+			t.Errorf("stub issues got an unexpected %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 		q := r.URL.Query()
 		if q.Get("include_held") != "true" {
-			t.Errorf("the guard asked noteboard for items without include_held=true; a held ancestor "+
+			t.Errorf("the guard asked issues for items without include_held=true; a held ancestor "+
 				"missing from the tree dangles every edge below it (query %q)", r.URL.RawQuery)
 		}
 		f.mu.Lock()
@@ -87,20 +89,18 @@ func (f *fleet) start(t *testing.T) config {
 			page = append(page, f.items[i])
 		}
 		_ = json.NewEncoder(w).Encode(page)
-	}))
-	t.Cleanup(noteboard.Close)
+	})
 
-	bridge := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	aggregates := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		out := []sessionAggregate{}
 		for id, c := range f.cost {
 			out = append(out, sessionAggregate{SessionID: id, CostUSD: c})
 		}
 		_ = json.NewEncoder(w).Encode(out)
-	}))
-	t.Cleanup(bridge.Close)
+	})
 
-	board := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path := strings.TrimPrefix(r.URL.Path, "/api/cards/")
+	cards := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/issues/cards/")
 		switch {
 		case strings.HasSuffix(path, "/links"):
 			id := strings.TrimSuffix(path, "/links")
@@ -137,10 +137,21 @@ func (f *fleet) start(t *testing.T) config {
 			t.Errorf("stub board got an unexpected %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusInternalServerError)
 		}
-	}))
-	t.Cleanup(board.Close)
+	})
 
-	return config{kanbanURL: board.URL, bridgeURL: bridge.URL, noteboardURL: noteboard.URL}
+	bridge := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/sessions/aggregates":
+			aggregates(w, r)
+		case strings.HasPrefix(r.URL.Path, "/issues/cards/"):
+			cards(w, r)
+		default:
+			items(w, r)
+		}
+	}))
+	t.Cleanup(bridge.Close)
+
+	return config{bridgeURL: bridge.URL}
 }
 
 func atoiOr(s string, def int) int {
@@ -309,7 +320,7 @@ func TestAnItemHandedBackTwiceIsCountedOnce(t *testing.T) {
 	items = append(items, items[issueitemsclient.PageSize-1], noteboardItem{ID: "tail"})
 
 	f := &fleet{items: items}
-	got, truncated, err := issueitemsclient.FetchEveryItemIncludingHeld(f.start(t).noteboardURL)
+	got, truncated, err := issueitemsclient.FetchEveryItemIncludingHeld(bridgestores.IssuesURL(f.start(t).bridgeURL))
 	if err != nil || truncated {
 		t.Fatalf("issueitemsclient.FetchEveryItemIncludingHeld(err=%v, truncated=%v)", err, truncated)
 	}

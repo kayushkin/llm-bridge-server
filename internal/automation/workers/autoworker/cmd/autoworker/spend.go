@@ -55,8 +55,8 @@ type sessionAggregate struct {
 // omits --max-budget-usd when the value is zero, which the CLI reads as
 // UNLIMITED. That inversion — the tightest possible ceiling becoming no ceiling
 // at all — is the one failure mode here that spends real money.
-func budgetForCard(qc *issuesclient.Client, bridgeURL, noteboardURL string, cand *queueCandidate) (float64, bool) {
-	tree, cost, err := loadSpendTree(bridgeURL, noteboardURL)
+func budgetForCard(qc *issuesclient.Client, bridgeURL, issuesURL string, cand *queueCandidate) (float64, bool) {
+	tree, cost, err := loadSpendTree(bridgeURL, issuesURL)
 	if errors.Is(err, errSpendTreeTruncated) {
 		// Unlike an unreadable tree, a truncated one says nothing about whether
 		// this card inherits a ceiling: its owner may be among the rows the read
@@ -137,8 +137,8 @@ func sessionsForItem(qc *issuesclient.Client) func(string) ([]string, error) {
 // it as one.
 var errSpendTreeTruncated = errors.New("spend tree truncated")
 
-func loadSpendTree(bridgeURL, noteboardURL string) (*spendtree.Tree, map[string]float64, error) {
-	items, truncated, err := issueitemsclient.FetchEveryItemIncludingHeld(noteboardURL)
+func loadSpendTree(bridgeURL, issuesURL string) (*spendtree.Tree, map[string]float64, error) {
+	items, truncated, err := issueitemsclient.FetchEveryItemIncludingHeld(issuesURL)
 	if err != nil {
 		return nil, nil, err
 	}

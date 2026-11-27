@@ -20,7 +20,7 @@ import (
 
 func testConfig(k *stubKanban, b *stubBridge) config {
 	return config{
-		kanbanURL:  k.URL(),
+		issuesURL:  k.URL(),
 		bridgeURL:  b.URL(),
 		boardID:    stubBoardID,
 		staleAfter: 2 * time.Hour,

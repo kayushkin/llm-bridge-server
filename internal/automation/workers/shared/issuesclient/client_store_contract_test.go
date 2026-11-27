@@ -35,7 +35,7 @@ import (
 // These tests answer every request with the canned response the call expects
 // and then assert on the path and body the client actually sent. The assertion
 // is the thing that fails. The fake is a plain handler and not a ServeMux:
-// ServeMux cleans "//api/boards" to "/api/boards" and redirects, which would
+// ServeMux cleans "//boards" to "/boards" and redirects, which would
 // hide a base URL whose trailing slash stopped being trimmed.
 
 // recordedRequest is one call the fake store saw.
@@ -98,7 +98,7 @@ func (s *recordingStore) count() int {
 // already resolved, so a test about card creation does not have to bootstrap a
 // board first.
 func (s *recordingStore) client() *Client {
-	c := New(s.server.URL, "")
+	c := New(s.server.URL)
 	c.BoardID = "board-1"
 	c.ColumnsByName = map[string]string{boardvocabulary.ColumnInProgress: "col-1"}
 	return c
@@ -139,7 +139,7 @@ func (f *fakeBoardStore) handler(t *testing.T) http.HandlerFunc {
 		}
 
 		switch {
-		// GET/POST /api/boards
+		// GET/POST /issues/boards
 		case len(parts) == 2 && parts[1] == "boards":
 			if r.Method == http.MethodGet {
 				writeJSON(w, http.StatusOK, f.boards)
@@ -153,7 +153,7 @@ func (f *fakeBoardStore) handler(t *testing.T) http.HandlerFunc {
 			f.boards = append(f.boards, board)
 			writeJSON(w, http.StatusCreated, board)
 
-		// GET/POST /api/boards/{id}/columns
+		// GET/POST /issues/boards/{id}/columns
 		case len(parts) == 4 && parts[1] == "boards" && parts[3] == "columns":
 			boardID := parts[2]
 			if r.Method == http.MethodGet {
@@ -220,7 +220,7 @@ func TestEnsureBoardBindsTheBoardNamedAndFinishesItsColumnSet(t *testing.T) {
 	srv := httptest.NewServer(store.handler(t))
 	defer srv.Close()
 
-	c := New(srv.URL, "")
+	c := New(srv.URL + "/issues")
 	want := boardvocabulary.AgentRunsColumns()
 	if err := c.EnsureBoard(boardvocabulary.BoardAgentRuns, want); err != nil {
 		t.Fatalf("EnsureBoard: %v", err)
@@ -285,7 +285,7 @@ func TestEnsureBoardGivesDoneAndFailedTheAutoStatusesThatDecideWhatClosingACardD
 	srv := httptest.NewServer(store.handler(t))
 	defer srv.Close()
 
-	c := New(srv.URL, "")
+	c := New(srv.URL + "/issues")
 	if err := c.EnsureBoard(boardvocabulary.BoardAgentRuns, boardvocabulary.AgentRunsColumns()); err != nil {
 		t.Fatalf("EnsureBoard: %v", err)
 	}
@@ -324,7 +324,7 @@ func TestEnsureBoardCreatesAMissingBoardUnderTheNameItWasAskedFor(t *testing.T) 
 	srv := httptest.NewServer(store.handler(t))
 	defer srv.Close()
 
-	c := New(srv.URL, "")
+	c := New(srv.URL + "/issues")
 	if err := c.EnsureBoard(boardvocabulary.BoardAutoworkerQueue, []string{boardvocabulary.ColumnQueued}); err != nil {
 		t.Fatalf("EnsureBoard: %v", err)
 	}
@@ -343,7 +343,7 @@ func TestEnsureBoardCreatesAMissingBoardUnderTheNameItWasAskedFor(t *testing.T) 
 // handed back to the caller.
 //
 // The caller's next move is to link the new card to a session, so an empty id
-// posts those links to /api/cards//links. Whatever that route does, the links do
+// posts those links to /cards//links. Whatever that route does, the links do
 // not reach the card — and the caller was told the card was created.
 func TestCreateCardRefusesAResponseThatNamesNoCard(t *testing.T) {
 	store := newRecordingStore(t, func(w http.ResponseWriter, r *http.Request) {
@@ -364,7 +364,7 @@ func TestCreateCardRefusesAResponseThatNamesNoCard(t *testing.T) {
 // guards that run before any request is made.
 //
 // Both are about a URL or a payload built from a blank id. Without the board
-// guard the card is posted to /api/boards//cards; without the column guard it is
+// guard the card is posted to /boards//cards; without the column guard it is
 // posted with column_id "", which the store accepts. The test asserts that NO
 // request was made, not merely that an error came back — a mutation that drops
 // either guard still returns an error, from the store, after writing something.
@@ -389,7 +389,7 @@ func TestCreateCardFailsBeforeTheWireWhenTheBoardOrColumnIsUnresolved(t *testing
 			store := newRecordingStore(t, func(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusCreated, map[string]any{"item": map[string]any{"id": "card-1"}})
 			})
-			c := New(store.server.URL, "")
+			c := New(store.server.URL)
 			tc.setUp(c)
 
 			if _, err := c.CreateCard(CreateCardArgs{
@@ -415,7 +415,7 @@ func TestCreateCardFailsBeforeTheWireWhenTheBoardOrColumnIsUnresolved(t *testing
 // still in flight, so one hung request quietly stops the job rather than erroring
 // once and recovering on the next tick.
 func TestNewSetsARequestTimeoutSoAWedgedStoreCannotHangATick(t *testing.T) {
-	if timeout := New("http://127.0.0.1:1", "").HTTP.Timeout; timeout <= 0 {
+	if timeout := New("http://127.0.0.1:1").HTTP.Timeout; timeout <= 0 {
 		t.Fatalf("New built a client with timeout %v; a zero timeout waits forever", timeout)
 	}
 }
@@ -423,7 +423,7 @@ func TestNewSetsARequestTimeoutSoAWedgedStoreCannotHangATick(t *testing.T) {
 // TestABaseURLWithATrailingSlashDoesNotDoubleTheSlashOnTheWire pins the trim.
 //
 // The base URL comes from configuration, so a trailing slash is a matter of how
-// someone typed it. Untrimmed, every request goes to //api/... — a path most
+// someone typed it. Untrimmed, every request goes to //boards... — a path most
 // routers answer with a 404 or a redirect, which is a whole binary failing on a
 // character nobody can see.
 //
@@ -435,11 +435,11 @@ func TestABaseURLWithATrailingSlashDoesNotDoubleTheSlashOnTheWire(t *testing.T) 
 		writeJSON(w, http.StatusOK, []Board{})
 	})
 
-	c := New(store.server.URL+"/", "")
+	c := New(store.server.URL + "/")
 	if _, err := c.FindBoard("Agent Runs"); err != nil {
 		t.Fatalf("FindBoard: %v", err)
 	}
-	if req := store.only(t); req.Path != "/api/boards" {
-		t.Errorf("requested %q, want %q — the base URL's trailing slash must be trimmed once, not sent", req.Path, "/api/boards")
+	if req := store.only(t); req.Path != "/boards" {
+		t.Errorf("requested %q, want %q — the base URL's trailing slash must be trimmed once, not sent", req.Path, "/boards")
 	}
 }

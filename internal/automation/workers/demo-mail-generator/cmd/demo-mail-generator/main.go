@@ -27,9 +27,11 @@ import (
 	schedulerconfig "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/config"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/demo-mail-generator/demomail"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgeauth"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgestores"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/demoteam"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/oneshot"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/schedulersettings"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/workersettings"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
@@ -42,14 +44,12 @@ const (
 )
 
 type config struct {
-	Repo      string
-	Account   string
-	MailURL   string
-	MailToken string
+	Repo    string
+	Account string
 
+	// BridgeURL is llm-bridge-server's address. The mail account, the
+	// scheduler's model role and the one-shot call are all under it.
 	BridgeURL string
-	// SchedulerURL is where run reads the model role from.
-	SchedulerURL string
 
 	Count  int
 	Purge  bool
@@ -58,15 +58,15 @@ type config struct {
 }
 
 func main() {
-	settings, err := schedulerconfig.DemoMailGenerator.NewSettingsRegistry(servicesettings.ProcessEnvironment())
+	settings, err := workersettings.DemoMailGenerator.NewSettingsRegistry(servicesettings.ProcessEnvironment())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "demo-mail-generator: %v\n", err)
 		os.Exit(1)
 	}
 	configuration := parseFlags(settings)
 	// llm-bridge-server gates every route; stamp this process's calls to it
-	// with the service token. Host-scoped, so nothing else sees the token.
-	if err := bridgeauth.StampRequestsToBridge(configuration.BridgeURL, settings.String(schedulerconfig.SettingBridgeServiceToken)); err != nil {
+	// with its service principal token. Host-scoped, so nothing else sees it.
+	if err := bridgeauth.StampRequestsToBridge(configuration.BridgeURL, settings.String(workersettings.SettingBridgeServicePrincipalToken)); err != nil {
 		fmt.Fprintf(os.Stderr, "demo-mail-generator: %v\n", err)
 		os.Exit(1)
 	}
@@ -80,15 +80,12 @@ func parseFlags(settings *servicesettings.Registry) config {
 	var c config
 	flag.StringVar(&c.Repo, "repo", "", "Repository the mail is about. Required: this machine's path is the caller's to give.")
 	flag.StringVar(&c.Account, "account", defaultAccount, "The LOCAL mailstack account to deliver to.")
-	flag.StringVar(&c.MailURL, "mail-url", settings.String(schedulerconfig.SettingMailstackURL), "mailstack base URL")
-	flag.StringVar(&c.MailToken, "mail-token", settings.String(schedulerconfig.SettingMailstackToken), "mailstack bearer token")
-	flag.StringVar(&c.BridgeURL, "bridge-url", settings.String(schedulerconfig.SettingBridgeURL), "llm-bridge-server base URL")
+	flag.StringVar(&c.BridgeURL, "bridge-url", settings.String(workersettings.SettingBridgeURL), "llm-bridge-server base URL")
 	flag.IntVar(&c.Count, "count", 2, "How many messages to write this tick.")
 	flag.BoolVar(&c.Purge, "purge", false, "Delete every message in the account first.")
 	flag.BoolVar(&c.DryRun, "dry-run", false, "Print what would be sent to the model and stop.")
 	flag.Int64Var(&c.Seed, "seed", 0, "Sender/kind seed. 0 uses the clock, so consecutive ticks differ.")
 	flag.Parse()
-	c.SchedulerURL = settings.String(schedulerconfig.SettingSchedulerURL)
 	return c
 }
 
@@ -97,7 +94,7 @@ func run(cfg config) error {
 		return fmt.Errorf("give -repo, the repository the mail is about")
 	}
 	ctx := context.Background()
-	mail := demomail.New(cfg.MailURL, cfg.MailToken)
+	mail := demomail.New(bridgestores.MailURL(cfg.BridgeURL))
 
 	if cfg.Purge {
 		removed, err := mail.Purge(ctx, cfg.Account)
@@ -145,7 +142,7 @@ func run(cfg config) error {
 	// to curl its own output has to get shell quoting right on a body full of
 	// newlines and apostrophes, and a body mangled that way looks delivered.
 	// Go posts it instead.
-	modelRole, err := schedulersettings.ReadModelRole(ctx, cfg.SchedulerURL, schedulerconfig.SettingDemoMailGeneratorModelRole)
+	modelRole, err := schedulersettings.ReadModelRole(ctx, bridgestores.SchedulerURL(cfg.BridgeURL), schedulerconfig.SettingDemoMailGeneratorModelRole)
 	if err != nil {
 		return err
 	}

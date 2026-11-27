@@ -26,8 +26,8 @@ import (
 // message and still decides. What changes is that it decides knowing what the
 // user knows.
 //
-// Notes live in noteboard, which is this host's canonical store for notes —
-// keeping them anywhere else would be a second place to look for the same kind
+// Notes live in notes (the bridge's /notes/, once noteboard), the canonical
+// store for notes — keeping them anywhere else would be a second place to look for the same kind
 // of thing. Each is an ordinary item of type `note`, carrying routingNoteTag so
 // they can be listed in one call, and one entity ref in `links` naming what it
 // is about:
@@ -40,7 +40,7 @@ import (
 // in the same vocabulary.
 
 const (
-	// routingNoteTag marks a noteboard item as a routing note. Every note
+	// routingNoteTag marks a note as a routing note. Every note
 	// carries it, and it is what makes them one list call rather than a search.
 	routingNoteTag = "email-routing-note"
 
@@ -94,24 +94,26 @@ func (n *routingNotes) count() int {
 	return len(n.all)
 }
 
-// ============================ noteboard client ============================
+// ============================ notes client ============================
 
-type noteboardClient struct {
+type notesClient struct {
 	BaseURL string
 	HTTP    *http.Client
 }
 
-func newNoteboardClient(baseURL string) *noteboardClient {
-	return &noteboardClient{
-		BaseURL: strings.TrimRight(baseURL, "/"),
+// newNotesClient returns a client for the notes at notesURL, the bridge's
+// address followed by /notes.
+func newNotesClient(notesURL string) *notesClient {
+	return &notesClient{
+		BaseURL: strings.TrimRight(notesURL, "/"),
 		HTTP:    &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
-// noteboardItem is the subset of an item this command reads. noteboard sends
+// noteItem is the subset of an item this command reads. notes sends
 // far more; naming only what is used keeps a schema change from silently
 // altering behavior here.
-type noteboardItem struct {
+type noteItem struct {
 	ID        string    `json:"id"`
 	Title     string    `json:"title"`
 	Body      string    `json:"body"`
@@ -120,7 +122,7 @@ type noteboardItem struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-func (c *noteboardClient) do(method, path string, payload any, out any) error {
+func (c *notesClient) do(method, path string, payload any, out any) error {
 	var body io.Reader
 	if payload != nil {
 		encoded, err := json.Marshal(payload)
@@ -143,7 +145,7 @@ func (c *noteboardClient) do(method, path string, payload any, out any) error {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return fmt.Errorf("noteboard %s %s: %s — %s", method, path, resp.Status, strings.TrimSpace(string(raw)))
+		return fmt.Errorf("notes %s %s: %s — %s", method, path, resp.Status, strings.TrimSpace(string(raw)))
 	}
 	if out == nil || len(raw) == 0 {
 		return nil
@@ -156,13 +158,13 @@ func (c *noteboardClient) do(method, path string, payload any, out any) error {
 // One call per tick regardless of how much mail is in the batch: the alternative
 // — asking per sender as each message is classified — would put a round trip in
 // the middle of the filing loop for a lookup that almost always misses.
-func loadRoutingNotes(c *noteboardClient) (*routingNotes, error) {
-	// noteboard answers a list route with a bare JSON array, not an object
+func loadRoutingNotes(c *notesClient) (*routingNotes, error) {
+	// notes answers a list route with a bare JSON array, not an object
 	// wrapping one. Decoding into a wrapper here failed against the live service
 	// while passing against a fake that invented the wrapper — so the fake in
 	// notes_test.go now serves an array too.
-	var items []noteboardItem
-	path := "/api/items?type=note&tag=" + url.QueryEscape(routingNoteTag) + "&limit=500"
+	var items []noteItem
+	path := "/items?type=note&tag=" + url.QueryEscape(routingNoteTag) + "&limit=500"
 	if err := c.do("GET", path, nil, &items); err != nil {
 		return nil, err
 	}
@@ -198,9 +200,9 @@ func loadRoutingNotes(c *noteboardClient) (*routingNotes, error) {
 //
 // Replacing rather than appending is deliberate: a routing note is the user's
 // current standing instruction about that mail, not a log of what they have
-// thought about it. noteboard keeps the previous text in item_revisions, so the
+// thought about it. notes keeps the previous text in item_revisions, so the
 // old wording is recoverable without keeping it in the live note.
-func upsertRoutingNote(c *noteboardClient, existing *routingNotes, entityRef, text string) (string, bool, error) {
+func upsertRoutingNote(c *notesClient, existing *routingNotes, entityRef, text string) (string, bool, error) {
 	var prior routingNote
 	var found bool
 	switch {
@@ -213,14 +215,14 @@ func upsertRoutingNote(c *noteboardClient, existing *routingNotes, entityRef, te
 	}
 
 	if found {
-		if err := c.do("PATCH", "/api/items/"+prior.ItemID, map[string]any{"body": text}, nil); err != nil {
+		if err := c.do("PATCH", "/items/"+prior.ItemID, map[string]any{"body": text}, nil); err != nil {
 			return "", false, err
 		}
 		return prior.ItemID, false, nil
 	}
 
-	var created noteboardItem
-	err := c.do("POST", "/api/items", map[string]any{
+	var created noteItem
+	err := c.do("POST", "/items", map[string]any{
 		"type":  "note",
 		"title": "Routing note — " + entityRef,
 		"body":  text,
@@ -233,10 +235,10 @@ func upsertRoutingNote(c *noteboardClient, existing *routingNotes, entityRef, te
 	return created.ID, true, nil
 }
 
-// deleteRoutingNote removes the note for an entity. noteboard's DELETE is
+// deleteRoutingNote removes the note for an entity. notes' DELETE is
 // reversible, so this is a hide rather than a destruction.
-func deleteRoutingNote(c *noteboardClient, note routingNote) error {
-	return c.do("DELETE", "/api/items/"+note.ItemID, nil, nil)
+func deleteRoutingNote(c *notesClient, note routingNote) error {
+	return c.do("DELETE", "/items/"+note.ItemID, nil, nil)
 }
 
 // ============================ digest rendering ============================

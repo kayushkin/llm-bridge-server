@@ -13,25 +13,25 @@ package issuesclient
 // re-judged against kanban-store internal/api/api.go, ticket.go and
 // tag_rules.go as of dbd1328:
 //
-//	GET    /api/boards                                  200
-//	GET    /api/boards/{b}                              200, 404
-//	GET    /api/boards/{b}/columns                      200
-//	GET    /api/boards/{b}/cards                        200
-//	POST   /api/boards/{b}/cards                        201
-//	DELETE /api/boards/{b}/cards/{c}                    200
-//	GET    /api/boards/{b}/cards/{c}/effective-defaults 200, 404
-//	POST   /api/cards/{c}/move                          200, 409 on WIP
-//	PATCH  /api/cards/{c}                               200
-//	POST   /api/cards/{c}/hold                          200
-//	PUT    /api/cards/{c}/ticket                        200
-//	GET    /api/cards/{c}/placements                    200
-//	GET    /api/cards/{c}/links                         200
-//	POST   /api/cards/{c}/links                         201
-//	DELETE /api/links/{l}                               200
-//	GET    /api/entities/{t}/{r}/tags                   200
-//	POST   /api/entities/{t}/{r}/tags                   201
-//	DELETE /api/entities/{t}/{r}/tags/{g}               200
-//	GET    /api/entities/{t}/{r}/cards                  200
+//	GET    /boards                                  200
+//	GET    /boards/{b}                              200, 404
+//	GET    /boards/{b}/columns                      200
+//	GET    /boards/{b}/cards                        200
+//	POST   /boards/{b}/cards                        201
+//	DELETE /boards/{b}/cards/{c}                    200
+//	GET    /boards/{b}/cards/{c}/effective-defaults 200, 404
+//	POST   /cards/{c}/move                          200, 409 on WIP
+//	PATCH  /cards/{c}                               200
+//	POST   /cards/{c}/hold                          200
+//	PUT    /cards/{c}/ticket                        200
+//	GET    /cards/{c}/placements                    200
+//	GET    /cards/{c}/links                         200
+//	POST   /cards/{c}/links                         201
+//	DELETE /links/{l}                               200
+//	GET    /entities/{t}/{r}/tags                   200
+//	POST   /entities/{t}/{r}/tags                   201
+//	DELETE /entities/{t}/{r}/tags/{g}               200
+//	GET    /entities/{t}/{r}/cards                  200
 //
 // MoveCard's auto-status and WIP cases live in move_card_test.go, and the
 // entity type sent verbatim is covered by id_path_test.go's entityType probe.
@@ -84,7 +84,7 @@ func newWireRecordingStore(t *testing.T, status int, body string) *wireRecording
 // client returns a client already bound to board b1 with a Todo column, so
 // CreateCard can run without the EnsureBoard round trips.
 func (store *wireRecordingStore) client() *Client {
-	client := New(store.server.URL, "")
+	client := New(store.server.URL)
 	client.BoardID = "b1"
 	client.ColumnsByName = map[string]string{"Todo": "col-todo"}
 	return client
@@ -124,50 +124,50 @@ func ignoreResult[T any](_ T, err error) error { return err }
 // success bodies are the smallest the client decodes without complaint.
 var everyCall = []protocolCall{
 	{"ListBoards", func(c *Client) error { return ignoreResult(c.ListBoards()) },
-		200, `[]`, "GET", "/api/boards"},
+		200, `[]`, "GET", "/boards"},
 	{"GetBoard", func(c *Client) error { return ignoreResult(c.GetBoard("b1")) },
-		200, `{"id":"b1"}`, "GET", "/api/boards/b1"},
+		200, `{"id":"b1"}`, "GET", "/boards/b1"},
 	{"ListColumns", func(c *Client) error { return ignoreResult(c.ListColumns("b1")) },
-		200, `[]`, "GET", "/api/boards/b1/columns"},
+		200, `[]`, "GET", "/boards/b1/columns"},
 	{"GetBoardView", func(c *Client) error { return ignoreResult(c.GetBoardView("b1")) },
-		200, `{}`, "GET", "/api/boards/b1/cards"},
+		200, `{}`, "GET", "/boards/b1/cards"},
 	{"CreateCard", func(c *Client) error {
 		return ignoreResult(c.CreateCard(CreateCardArgs{ColumnName: "Todo", Title: "t"}))
-	}, 201, `{"item":{"id":"card-1"}}`, "POST", "/api/boards/b1/cards"},
+	}, 201, `{"item":{"id":"card-1"}}`, "POST", "/boards/b1/cards"},
 	{"DetachCardFromBoard", func(c *Client) error { return c.DetachCardFromBoard("b1", "card-1") },
-		200, `{"status":"ok"}`, "DELETE", "/api/boards/b1/cards/card-1"},
+		200, `{"status":"ok"}`, "DELETE", "/boards/b1/cards/card-1"},
 	{"GetCardEffectiveDefaults", func(c *Client) error {
 		return ignoreResult(c.GetCardEffectiveDefaults("b1", "card-1"))
-	}, 200, `{"board_id":"b1","card_id":"card-1"}`, "GET", "/api/boards/b1/cards/card-1/effective-defaults"},
+	}, 200, `{"board_id":"b1","card_id":"card-1"}`, "GET", "/boards/b1/cards/card-1/effective-defaults"},
 	{"MoveCard", func(c *Client) error { return ignoreResult(c.MoveCard("card-1", "b1", "col-1", 3)) },
-		200, `{"placement":{}}`, "POST", "/api/cards/card-1/move"},
+		200, `{"placement":{}}`, "POST", "/cards/card-1/move"},
 	{"PatchCard", func(c *Client) error { return c.PatchCard("card-1", map[string]any{"title": "t"}) },
-		200, `{}`, "PATCH", "/api/cards/card-1"},
+		200, `{}`, "PATCH", "/cards/card-1"},
 	{"PatchCardBody", func(c *Client) error { return c.PatchCardBody("card-1", "hello") },
-		200, `{}`, "PATCH", "/api/cards/card-1"},
+		200, `{}`, "PATCH", "/cards/card-1"},
 	{"HoldCard", func(c *Client) error { return c.HoldCard("card-1", "parked") },
-		200, `{}`, "POST", "/api/cards/card-1/hold"},
+		200, `{}`, "POST", "/cards/card-1/hold"},
 	{"PutTicket", func(c *Client) error {
 		return c.PutTicket("card-1", "principal_000001", "email", "email", "msg-1")
-	}, 200, `{}`, "PUT", "/api/cards/card-1/ticket"},
+	}, 200, `{}`, "PUT", "/cards/card-1/ticket"},
 	{"ListCardPlacements", func(c *Client) error { return ignoreResult(c.ListCardPlacements("card-1")) },
-		200, `[]`, "GET", "/api/cards/card-1/placements"},
+		200, `[]`, "GET", "/cards/card-1/placements"},
 	{"ListCardLinks", func(c *Client) error { return ignoreResult(c.ListCardLinks("card-1")) },
-		200, `[]`, "GET", "/api/cards/card-1/links"},
+		200, `[]`, "GET", "/cards/card-1/links"},
 	// Shares its path with ListCardLinks and is told apart only by the verb.
 	{"AddCardLink", func(c *Client) error { return c.AddCardLink("card-1", "session", "sess-1", "label") },
-		201, `{}`, "POST", "/api/cards/card-1/links"},
+		201, `{}`, "POST", "/cards/card-1/links"},
 	{"DeleteCardLink", func(c *Client) error { return c.DeleteCardLink("link-1") },
-		200, `{"status":"ok"}`, "DELETE", "/api/links/link-1"},
+		200, `{"status":"ok"}`, "DELETE", "/links/link-1"},
 	{"ListEntityTags", func(c *Client) error { return ignoreResult(c.ListEntityTags("session", "sess-1")) },
-		200, `[]`, "GET", "/api/entities/session/sess-1/tags"},
+		200, `[]`, "GET", "/entities/session/sess-1/tags"},
 	{"AddEntityTag", func(c *Client) error { return c.AddEntityTag("session", "sess-1", "scoped") },
-		201, `{}`, "POST", "/api/entities/session/sess-1/tags"},
+		201, `{}`, "POST", "/entities/session/sess-1/tags"},
 	{"DeleteEntityTag", func(c *Client) error { return c.DeleteEntityTag("session", "sess-1", "scoped") },
-		200, `{"status":"ok"}`, "DELETE", "/api/entities/session/sess-1/tags/scoped"},
+		200, `{"status":"ok"}`, "DELETE", "/entities/session/sess-1/tags/scoped"},
 	{"ListCardsForEntity", func(c *Client) error {
 		return ignoreResult(c.ListCardsForEntity("parent_card", "card-9"))
-	}, 200, `[]`, "GET", "/api/entities/parent_card/card-9/cards"},
+	}, 200, `[]`, "GET", "/entities/parent_card/card-9/cards"},
 }
 
 // ============================ method and path ============================

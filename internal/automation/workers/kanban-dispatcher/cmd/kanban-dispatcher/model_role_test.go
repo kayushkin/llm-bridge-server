@@ -59,7 +59,7 @@ func TestACardWhoseHarnessCannotRunTheRoleIsNotDispatched(t *testing.T) {
 
 	var published []messages.BridgeInbound
 	err := run(runOptions{ModelRole: "openai-only", ModelRoles: stubModelRoles{},
-		BoardID: testBoardID, KanbanURL: kanbanServer.URL, BridgeURL: bridgeServer.URL, MaxDispatch: 10,
+		BoardID: testBoardID, BridgeURL: bridgeWithIssues(t, kanbanServer, bridgeServer), MaxDispatch: 10,
 		Publish: func(in messages.BridgeInbound) error {
 			published = append(published, in)
 			return nil
@@ -72,7 +72,7 @@ func TestACardWhoseHarnessCannotRunTheRoleIsNotDispatched(t *testing.T) {
 }
 
 func TestATickWithNoModelRoleStartsNothing(t *testing.T) {
-	err := run(runOptions{BoardID: testBoardID, KanbanURL: "http://127.0.0.1:1", MaxDispatch: 10})
+	err := run(runOptions{BoardID: testBoardID, BridgeURL: "http://127.0.0.1:1", MaxDispatch: 10})
 	if err == nil || !strings.Contains(err.Error(), "no model role") {
 		t.Errorf("err = %v, want a refusal before any read", err)
 	}

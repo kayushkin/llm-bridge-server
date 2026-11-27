@@ -277,7 +277,7 @@ func TestTheTitleBoundTheBoardEnforcesIsTheOneTheSchemaAdvertises(t *testing.T) 
 	}))
 	defer srv.Close()
 
-	kc := issuesclient.New(srv.URL, "")
+	kc := issuesclient.New(srv.URL)
 	kc.BoardID = "board-1"
 	kc.ColumnsByName = map[string]string{}
 	for _, s := range schemaStateEnum(t, "new_tasks") {

@@ -13,7 +13,7 @@ import (
 
 // Ported from 18ecd596 / f119a711 (test/the-mint-site-truncates-a-long-parent-id)
 // onto main's registerSchedulerJob, which takes the scheduler URL and the board
-// id as arguments instead of reading SCHEDULER_URL.
+// id as arguments; main passes the bridge's /scheduler.
 //
 // -register is the path an operator runs by hand on a deploy, and what it
 // writes is a cron job that fires the binary that spends. A wrong cadence, a

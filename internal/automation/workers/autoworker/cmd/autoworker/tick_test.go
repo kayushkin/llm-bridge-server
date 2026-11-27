@@ -167,7 +167,7 @@ func (d *dispatchRecorder) start(t *testing.T) *issuesclient.Client {
 	}))
 	t.Cleanup(srv.Close)
 
-	qc := issuesclient.New(srv.URL, "")
+	qc := issuesclient.New(srv.URL)
 	qc.BoardID = "board-1"
 	qc.ColumnsByName = map[string]string{
 		"Queued":      "col-queued",

@@ -36,13 +36,14 @@ import (
 	"strings"
 	"time"
 
-	schedulerconfig "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/config"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/boardvocabulary"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgeauth"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgesession"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgestores"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/degradations"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/schedulerjobs"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/workersettings"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
@@ -87,38 +88,37 @@ const (
 	reviewGrace = 30 * time.Minute
 )
 
-// config names the two services this curator talks to, the board it curates and
-// whether it is allowed to write. It exists so run can be handed stubs by a
-// test; main fills it from flags and the service settings.
+// config names where this curator reads and writes — the issues' boards and
+// cards, and the bridge's sessions — the board it curates and whether it is
+// allowed to write. It exists so run can be handed stubs by a test; main fills
+// it from flags and the service settings, issuesURL from the bridge's.
 type config struct {
-	kanbanURL          string
-	kanbanServiceToken string
-	bridgeURL          string
-	boardID            string
-	staleAfter         time.Duration
-	dryRun             bool
+	issuesURL  string
+	bridgeURL  string
+	boardID    string
+	staleAfter time.Duration
+	dryRun     bool
 }
 
 func main() {
-	settings, err := schedulerconfig.KanbanCurator.NewSettingsRegistry(servicesettings.ProcessEnvironment())
+	settings, err := workersettings.KanbanCurator.NewSettingsRegistry(servicesettings.ProcessEnvironment())
 	if err != nil {
 		log.Fatal(err)
 	}
 	var (
 		registerFlag = flag.Bool("register", false, "Register/upsert this binary as a scheduler cron job and exit. Honors -board-id and -job-name.")
 		jobName      = flag.String("job-name", "", "Scheduler job name for -register. Defaults to kanban-curator-tick for the \"Agent runs\" board, kanban-curator-<slug of the board name>-tick otherwise.")
-		dryRun       = flag.Bool("dry-run", false, "Report decisions; do not write to kanban-store.")
-		kanbanURL    = flag.String("kanban-url", settings.String(schedulerconfig.SettingKanbanStoreURL), "kanban-store base URL")
-		bridgeURL    = flag.String("bridge-url", settings.String(schedulerconfig.SettingBridgeURL), "llm-bridge-server base URL")
+		dryRun       = flag.Bool("dry-run", false, "Report decisions; do not write to the board.")
+		bridgeURL    = flag.String("bridge-url", settings.String(workersettings.SettingBridgeURL), "llm-bridge-server base URL; the board is its /issues")
 		boardID      = flag.String("board-id", "", "Kanban board id to curate (required). Pinned by id so a rename in the UI cannot fork a second board.")
 		staleAfter   = flag.Duration("stale-after", 2*time.Hour, "Reap an In Progress card whose session is idle/gone and has had no activity for longer than this.")
 	)
 	flag.Parse()
 
 	// llm-bridge-server gates every route; stamp this process's calls to it
-	// with the service token. Host-scoped, so noteboard, kanban-store and the
-	// scheduler API are untouched.
-	if err := bridgeauth.StampRequestsToBridge(*bridgeURL, settings.String(schedulerconfig.SettingBridgeServiceToken)); err != nil {
+	// with this binary's service principal token. Host-scoped, so nothing
+	// else ever sees it.
+	if err := bridgeauth.StampRequestsToBridge(*bridgeURL, settings.String(workersettings.SettingBridgeServicePrincipalToken)); err != nil {
 		log.Fatal(err)
 	}
 
@@ -127,20 +127,19 @@ func main() {
 	}
 
 	cfg := config{
-		kanbanURL:          *kanbanURL,
-		kanbanServiceToken: settings.String(schedulerconfig.SettingKanbanStoreServiceToken),
-		bridgeURL:          *bridgeURL,
-		boardID:            *boardID,
-		staleAfter:         *staleAfter,
-		dryRun:             *dryRun,
+		issuesURL:  bridgestores.IssuesURL(*bridgeURL),
+		bridgeURL:  *bridgeURL,
+		boardID:    *boardID,
+		staleAfter: *staleAfter,
+		dryRun:     *dryRun,
 	}
 
 	if *registerFlag {
-		board, err := getPinnedBoard(issuesclient.New(cfg.kanbanURL, cfg.kanbanServiceToken), cfg.boardID)
+		board, err := getPinnedBoard(issuesclient.New(cfg.issuesURL), cfg.boardID)
 		if err != nil {
 			log.Fatal(err)
 		}
-		if err := registerSchedulerJob(settings.String(schedulerconfig.SettingSchedulerURL), board, *jobName); err != nil {
+		if err := registerSchedulerJob(bridgestores.SchedulerURL(*bridgeURL), board, *jobName); err != nil {
 			log.Fatalf("register: %v", err)
 		}
 		return
@@ -190,7 +189,7 @@ func getPinnedBoard(kc *issuesclient.Client, boardID string) (*issuesclient.Boar
 func run(cfg config) int {
 	degraded := degradations.New("curator")
 
-	kc := issuesclient.New(cfg.kanbanURL, cfg.kanbanServiceToken)
+	kc := issuesclient.New(cfg.issuesURL)
 	board, err := getPinnedBoard(kc, cfg.boardID)
 	if err != nil {
 		log.Fatal(err)

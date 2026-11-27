@@ -133,10 +133,10 @@ func eligible(card issuesclient.CardView) (string, bool) {
 func place(kc *issuesclient.Client, cfg config, workBoardID, queuedColumn, cardID string, identity demoteam.Member) error {
 	// Released as it is taken. The card was parked so that whoever found it
 	// first would leave it alone; this pipeline is the one it was waiting for.
-	if err := unhold(cfg.KanbanURL, cardID); err != nil {
+	if err := unhold(cfg.IssuesURL, cardID); err != nil {
 		return fmt.Errorf("release the hold: %w", err)
 	}
-	if err := attachCard(cfg.KanbanURL, workBoardID, cardID, queuedColumn); err != nil {
+	if err := attachCard(cfg.IssuesURL, workBoardID, cardID, queuedColumn); err != nil {
 		return err
 	}
 	// The repo is what the agent works in; the identity is who it acts as. Both
@@ -151,17 +151,17 @@ func place(kc *issuesclient.Client, cfg config, workBoardID, queuedColumn, cardI
 	}
 	// The spend ceiling covers the card and everything under it, and is what
 	// both the harness cap and spend-ceiling-guard read.
-	tags, err := retag(cfg.NoteboardURL, cardID, tagWorkNotStarted, tagWorkQueued)
+	tags, err := retag(cfg.IssuesURL, cardID, tagWorkNotStarted, tagWorkQueued)
 	if err != nil {
 		return fmt.Errorf("re-read tags: %w", err)
 	}
-	if err := patchItem(cfg.KanbanURL, cardID, map[string]any{
+	if err := patchItem(cfg.IssuesURL, cardID, map[string]any{
 		"auto_hold_at_usd": cfg.MaxBudget,
 		"tags":             tags,
 	}); err != nil {
 		return fmt.Errorf("set ceiling: %w", err)
 	}
-	return addNote(cfg.KanbanURL, cardID, workBoardID, actorService,
+	return addNote(cfg.IssuesURL, cardID, workBoardID, actorService,
 		fmt.Sprintf("Queued for %s (%s) in %s, capped at $%.2f.",
 			identity.Name, identity.Role, cfg.RepoPath, cfg.MaxBudget))
 }
@@ -188,8 +188,8 @@ func truncate(s string, n int) string {
 
 // attachCard places an existing card on another board. PUT, not POST: POST
 // would create a second noteboard item and the two boards would drift apart.
-func attachCard(kanbanURL, boardID, cardID, columnID string) error {
+func attachCard(issuesURL, boardID, cardID, columnID string) error {
 	return doJSON(http.MethodPut,
-		fmt.Sprintf("%s/api/boards/%s/cards/%s", strings.TrimRight(kanbanURL, "/"), neturl.PathEscape(boardID), neturl.PathEscape(cardID)),
+		fmt.Sprintf("%s/boards/%s/cards/%s", strings.TrimRight(issuesURL, "/"), neturl.PathEscape(boardID), neturl.PathEscape(cardID)),
 		map[string]any{"column_id": columnID}, http.StatusCreated, http.StatusOK, http.StatusConflict)
 }

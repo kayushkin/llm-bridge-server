@@ -82,7 +82,7 @@ func TestMailFromAKnownSenderIsReadRatherThanFiledOnThatSendersCard(t *testing.T
 		Locator: "gmail-personal:alert-1",
 	}
 
-	routed, remaining := routeByMessageIdentity(newMailClient(mailstack.URL, "test-token"), state, []pendingEmail{email})
+	routed, remaining := routeByMessageIdentity(newMailClient(mailstack.URL), state, []pendingEmail{email})
 
 	if len(routed) != 0 {
 		t.Fatalf("mail was filed without being classified, onto %v — a repeat sender is not a repeat topic", routed[0].CardIDs)
@@ -117,7 +117,7 @@ func TestMessageIdentityStillPlacesDuplicatesAndReplies(t *testing.T) {
 		{Meta: messageMeta{ID: "reply", AccountID: "gmail-personal"}, Locator: "gmail-personal:reply"},
 	}
 
-	routed, remaining := routeByMessageIdentity(newMailClient(mailstack.URL, "test-token"), state, emails)
+	routed, remaining := routeByMessageIdentity(newMailClient(mailstack.URL), state, emails)
 
 	if len(remaining) != 0 {
 		t.Fatalf("%d message(s) went to the model that the headers already placed", len(remaining))

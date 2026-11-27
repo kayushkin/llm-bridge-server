@@ -14,7 +14,7 @@ import (
 
 // The double in noteboard_query_test.go answers 200 `[]` to any method on any
 // path. That is right for what it pins — escaping is a property of the request
-// line — but it leaves every other claim NoteboardClient makes about noteboard
+// line — but it leaves every other claim ItemsClient makes about the item stores
 // with no fixture behind it, and a claim with no fixture cannot be disagreed
 // with at all.
 //
@@ -32,6 +32,9 @@ import (
 //
 // and two behaviors that are characterised rather than fixed, each with its own
 // test saying so out loud.
+//
+// The same item routes now answer inside llm-bridge-server, with /api gone:
+// todos at /issues/items and notes at /notes/items. The stub serves both.
 
 // noteboardStub routes through a real http.ServeMux carrying noteboard's own
 // routes, so a wrong verb is 405 here because it is 405 there, and a path the
@@ -48,13 +51,27 @@ type noteboardStub struct {
 	listRequests int
 	// lastPatch is the decoded body of the last PATCH on the known item.
 	lastPatch map[string]any
+	// stores is "<method> <store prefix>" for every request, in order, so a
+	// test can see which store a call reached.
+	stores []string
 }
 
 func (n *noteboardStub) server(t *testing.T) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
+	for _, store := range []string{"/issues", "/notes"} {
+		n.registerItemRoutes(mux, store)
+	}
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return server
+}
 
-	mux.HandleFunc("/api/items", func(w http.ResponseWriter, r *http.Request) {
+// registerItemRoutes serves the item routes one store answers under its
+// prefix in the bridge, recording which store each request reached.
+func (n *noteboardStub) registerItemRoutes(mux *http.ServeMux, store string) {
+	mux.HandleFunc(store+"/items", func(w http.ResponseWriter, r *http.Request) {
+		n.stores = append(n.stores, r.Method+" "+store)
 		w.Header().Set("Content-Type", "application/json")
 		switch r.Method {
 		case http.MethodGet:
@@ -91,9 +108,10 @@ func (n *noteboardStub) server(t *testing.T) *httptest.Server {
 		}
 	})
 
-	mux.HandleFunc("/api/items/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc(store+"/items/", func(w http.ResponseWriter, r *http.Request) {
+		n.stores = append(n.stores, r.Method+" "+store)
 		w.Header().Set("Content-Type", "application/json")
-		id := strings.TrimPrefix(r.URL.Path, "/api/items/")
+		id := strings.TrimPrefix(r.URL.Path, store+"/items/")
 		if id != n.knownID {
 			w.WriteHeader(http.StatusNotFound)
 			w.Write([]byte(`{"error":"not found"}`))
@@ -114,10 +132,12 @@ func (n *noteboardStub) server(t *testing.T) *httptest.Server {
 			w.Write([]byte(`{"error":"method not allowed"}`))
 		}
 	})
+}
 
-	server := httptest.NewServer(mux)
-	t.Cleanup(server.Close)
-	return server
+// itemsClientFor is the client as newCoordinator builds it for a bridge at
+// bridgeURL: todos under /issues, notes under /notes.
+func itemsClientFor(bridgeURL string) *ItemsClient {
+	return &ItemsClient{IssuesURL: bridgeURL + "/issues", NotesURL: bridgeURL + "/notes"}
 }
 
 // ---------------------------------------------------------------- the refusals
@@ -127,9 +147,9 @@ func (n *noteboardStub) server(t *testing.T) *httptest.Server {
 // and the coordinator's log says the wrong thing about a live outage.
 func TestANoteboardRefusalReachesTheCallerAsItsStatus(t *testing.T) {
 	stub := &noteboardStub{knownID: "the-item"}
-	client := &NoteboardClient{BaseURL: stub.server(t).URL}
+	client := itemsClientFor(stub.server(t).URL)
 
-	err := client.Patch("some-other-item", map[string]any{"status": "done"})
+	err := client.PatchTodo("some-other-item", map[string]any{"status": "done"})
 	if err == nil {
 		t.Fatal("a PATCH against an id noteboard does not have was reported as success")
 	}
@@ -143,9 +163,9 @@ func TestANoteboardRefusalReachesTheCallerAsItsStatus(t *testing.T) {
 // refusal is JSON would report a wrong URL as a decode failure.
 func TestAnUnroutedPathIsReportedAsARefusalAndNotAsABadBody(t *testing.T) {
 	stub := &noteboardStub{knownID: "the-item"}
-	client := &NoteboardClient{BaseURL: stub.server(t).URL}
+	client := itemsClientFor(stub.server(t).URL)
 
-	err := client.do("GET", "/api/nosuchroute", nil, &[]map[string]any{})
+	err := client.do("GET", client.IssuesURL, "/nosuchroute", nil, &[]map[string]any{})
 	if err == nil {
 		t.Fatal("a 404 on an unrouted path was read as an empty result")
 	}
@@ -162,7 +182,7 @@ func TestAnUnroutedPathIsReportedAsARefusalAndNotAsABadBody(t *testing.T) {
 // occurrence from being materialized.
 func TestCreateItemAcceptsThe201NoteboardAnswersWith(t *testing.T) {
 	stub := &noteboardStub{knownID: "the-item"}
-	client := &NoteboardClient{BaseURL: stub.server(t).URL}
+	client := itemsClientFor(stub.server(t).URL)
 
 	title := "nightly probe"
 	created, err := client.CreateItem(&model.CreateItemRequest{
@@ -181,7 +201,7 @@ func TestCreateItemAcceptsThe201NoteboardAnswersWith(t *testing.T) {
 // the next reader should not have to re-probe to learn it.
 func TestAnEmptyListIsAnEmptyArray(t *testing.T) {
 	stub := &noteboardStub{knownID: "the-item"}
-	client := &NoteboardClient{BaseURL: stub.server(t).URL}
+	client := itemsClientFor(stub.server(t).URL)
 
 	items, err := client.ListOpen("a-tag-nothing-carries")
 	if err != nil {
@@ -201,7 +221,7 @@ func TestAnEmptyListIsAnEmptyArray(t *testing.T) {
 // and this is the 1114 that was measured.
 func TestListOpenReadsPastTheFirstFullPage(t *testing.T) {
 	stub := &noteboardStub{items: numberedItems(1114), knownID: "the-item"}
-	client := &NoteboardClient{BaseURL: stub.server(t).URL}
+	client := itemsClientFor(stub.server(t).URL)
 
 	items, err := client.ListOpen("personal")
 	if err != nil {
@@ -220,7 +240,7 @@ func TestListOpenReadsPastTheFirstFullPage(t *testing.T) {
 // child past the first page must still be in the answer.
 func TestListChildrenReadsPastTheFirstFullPage(t *testing.T) {
 	stub := &noteboardStub{items: numberedItems(501), knownID: "the-item"}
-	client := &NoteboardClient{BaseURL: stub.server(t).URL}
+	client := itemsClientFor(stub.server(t).URL)
 
 	items, err := client.ListChildren("the-template")
 	if err != nil {
@@ -235,7 +255,7 @@ func TestListChildrenReadsPastTheFirstFullPage(t *testing.T) {
 // back empty. That empty page is what separates "500 of 500" from "500 of more".
 func TestAnExactlyFullPageIsFollowedByAnEmptyOne(t *testing.T) {
 	stub := &noteboardStub{items: numberedItems(500), knownID: "the-item"}
-	client := &NoteboardClient{BaseURL: stub.server(t).URL}
+	client := itemsClientFor(stub.server(t).URL)
 
 	items, err := client.ListOpen("personal")
 	if err != nil {
@@ -249,8 +269,8 @@ func TestAnExactlyFullPageIsFollowedByAnEmptyOne(t *testing.T) {
 // The page bound is the one place the read can still stop early, so it must stop
 // loudly: a partial list returned as a whole one is the defect paging replaced.
 func TestAListLongerThanThePageBoundIsAnError(t *testing.T) {
-	stub := &noteboardStub{items: numberedItems(noteboardPageSize*noteboardMaxPages + 1), knownID: "the-item"}
-	client := &NoteboardClient{BaseURL: stub.server(t).URL}
+	stub := &noteboardStub{items: numberedItems(itemsPageSize*itemsMaxPages + 1), knownID: "the-item"}
+	client := itemsClientFor(stub.server(t).URL)
 
 	items, err := client.ListOpen("personal")
 	if err == nil {
@@ -279,9 +299,9 @@ func numberedItems(count int) []map[string]any {
 // records a hazard, not a live bug.
 func TestAPatchReturnsNilForAFieldNoteboardDropped(t *testing.T) {
 	stub := &noteboardStub{knownID: "the-item"}
-	client := &NoteboardClient{BaseURL: stub.server(t).URL}
+	client := itemsClientFor(stub.server(t).URL)
 
-	if err := client.Patch("the-item", map[string]any{"due_date": "2027-01-02T03:04:05Z"}); err != nil {
+	if err := client.PatchTodo("the-item", map[string]any{"due_date": "2027-01-02T03:04:05Z"}); err != nil {
 		t.Fatalf("expected the misspelled field to be accepted silently, got %v", err)
 	}
 	t.Log("characterised: a misspelled PATCH field is a 200 and a no-op — the only " +
@@ -298,7 +318,7 @@ func TestListScheduledKeepsOnlyItemsCarryingARule(t *testing.T) {
 		{"id": "with-rule", "type": "todo", "title": "x", "schedule": map[string]any{"rrule": "FREQ=WEEKLY", "tzid": "UTC"}},
 		{"id": "without-rule", "type": "todo", "title": "x"},
 	}}
-	client := &NoteboardClient{BaseURL: stub.server(t).URL}
+	client := itemsClientFor(stub.server(t).URL)
 
 	items, err := client.ListScheduled("personal")
 	if err != nil {
@@ -321,9 +341,9 @@ func TestFindByTagReturnsTheFirstMatchNoteboardAnswers(t *testing.T) {
 		{"id": "newest", "type": "note", "title": "x"},
 		{"id": "older", "type": "note", "title": "x"},
 	}}
-	client := &NoteboardClient{BaseURL: stub.server(t).URL}
+	client := itemsClientFor(stub.server(t).URL)
 
-	item, err := client.FindByTag("note", "personal-digest")
+	item, err := client.FindByTag(model.TypeNote, "personal-digest")
 	if err != nil {
 		t.Fatalf("FindByTag: %v", err)
 	}
@@ -337,12 +357,74 @@ func TestFindByTagReturnsTheFirstMatchNoteboardAnswers(t *testing.T) {
 // coordinator's bookkeeping with no error anywhere. The key must be `schedule`.
 func TestSetScheduleWritesTheScheduleKey(t *testing.T) {
 	stub := &noteboardStub{knownID: "the-item"}
-	client := &NoteboardClient{BaseURL: stub.server(t).URL}
+	client := itemsClientFor(stub.server(t).URL)
 
 	if err := client.SetSchedule("the-item", &model.Schedule{RRule: "FREQ=DAILY", TZID: "UTC"}, false); err != nil {
 		t.Fatalf("SetSchedule: %v", err)
 	}
 	if _, found := stub.lastPatch["schedule"]; !found || len(stub.lastPatch) != 1 {
 		t.Fatalf("PATCH body was %v, want exactly the key \"schedule\"", stub.lastPatch)
+	}
+}
+
+// ---------------------------------------------------------------- which store a call reaches
+
+// Todos live in issues and the digest note in notes. A todo's write that
+// reached notes, or the note's that reached issues, is refused there with a
+// 400 at best; at worst it lands on whatever that store holds under the id.
+// Each call must reach the store that holds its type.
+func TestEachCallReachesTheStoreThatHoldsItsType(t *testing.T) {
+	stub := &noteboardStub{knownID: "the-item"}
+	client := itemsClientFor(stub.server(t).URL)
+
+	calls := []struct {
+		name string
+		call func() error
+		want string
+	}{
+		{"ListOpen", func() error { _, err := client.ListOpen("personal"); return err }, "GET /issues"},
+		{"ListChildren", func() error { _, err := client.ListChildren("the-template"); return err }, "GET /issues"},
+		{"FindByTag todo", func() error { _, err := client.FindByTag(model.TypeTodo, "personal"); return err }, "GET /issues"},
+		{"FindByTag note", func() error { _, err := client.FindByTag(model.TypeNote, digestTag); return err }, "GET /notes"},
+		{"CreateItem todo", func() error {
+			_, err := client.CreateItem(&model.CreateItemRequest{Type: model.TypeTodo, Title: "occurrence"})
+			return err
+		}, "POST /issues"},
+		{"CreateItem note", func() error {
+			_, err := client.CreateItem(&model.CreateItemRequest{Type: model.TypeNote, Title: digestTitle})
+			return err
+		}, "POST /notes"},
+		{"PatchTodo", func() error { return client.PatchTodo("the-item", map[string]any{"status": "done"}) }, "PATCH /issues"},
+		{"SetSchedule", func() error {
+			return client.SetSchedule("the-item", &model.Schedule{RRule: "FREQ=DAILY", TZID: "UTC"}, false)
+		}, "PATCH /issues"},
+		{"PatchNote", func() error { return client.PatchNote("the-item", map[string]any{"body": "today"}) }, "PATCH /notes"},
+	}
+	for _, c := range calls {
+		stub.stores = nil
+		if err := c.call(); err != nil {
+			t.Errorf("%s: %v", c.name, err)
+			continue
+		}
+		if len(stub.stores) != 1 || stub.stores[0] != c.want {
+			t.Errorf("%s reached %v, want exactly %q", c.name, stub.stores, c.want)
+		}
+	}
+}
+
+// A type neither store holds the coordinator's way is refused before any
+// request, rather than sent to whichever store a guess picks.
+func TestATypeTheCoordinatorDoesNotRouteIsRefused(t *testing.T) {
+	stub := &noteboardStub{knownID: "the-item"}
+	client := itemsClientFor(stub.server(t).URL)
+
+	if _, err := client.FindByTag(model.TypeWorkspace, "personal"); err == nil {
+		t.Error("FindByTag of a workspace was sent somewhere")
+	}
+	if _, err := client.CreateItem(&model.CreateItemRequest{Type: "", Title: "untyped"}); err == nil {
+		t.Error("CreateItem with no type was sent somewhere")
+	}
+	if len(stub.stores) != 0 {
+		t.Errorf("refused calls still reached %v", stub.stores)
 	}
 }

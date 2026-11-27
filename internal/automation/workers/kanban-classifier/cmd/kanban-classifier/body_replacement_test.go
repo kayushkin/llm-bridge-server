@@ -64,8 +64,8 @@ func newBodyReplacementStub(t *testing.T) (*issuesclient.Client, *bodyReplacemen
 		rec.requests = append(rec.requests, r.Method+" "+path)
 
 		switch {
-		case r.Method == http.MethodPatch && strings.HasPrefix(path, "/api/cards/"):
-			cardID := strings.TrimPrefix(path, "/api/cards/")
+		case r.Method == http.MethodPatch && strings.HasPrefix(path, "/cards/"):
+			cardID := strings.TrimPrefix(path, "/cards/")
 			body, _ := payload["body"].(string)
 			rec.patchedBodies[cardID] = body
 			rec.patchCount[cardID]++
@@ -93,7 +93,7 @@ func newBodyReplacementStub(t *testing.T) (*issuesclient.Client, *bodyReplacemen
 	}))
 	t.Cleanup(srv.Close)
 
-	kc := issuesclient.New(srv.URL, "")
+	kc := issuesclient.New(srv.URL)
 	kc.BoardID = "board-1"
 	kc.ColumnsByName = map[string]string{
 		"Backlog": "col-backlog", "In Progress": "col-inprogress",
@@ -171,8 +171,8 @@ func TestNothingReadsTheCardBetweenDecidingToUpdateItAndReplacingIt(t *testing.T
 	}}, degradations.New("classifier"))
 
 	want := []string{
-		"POST /api/cards/card-1/move",
-		"PATCH /api/cards/card-1",
+		"POST /cards/card-1/move",
+		"PATCH /cards/card-1",
 	}
 	if !reflect.DeepEqual(rec.requests, want) {
 		t.Fatalf("the update path's requests changed.\n got: %v\nwant: %v", rec.requests, want)

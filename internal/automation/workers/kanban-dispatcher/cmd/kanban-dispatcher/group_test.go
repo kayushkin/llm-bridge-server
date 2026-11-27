@@ -74,7 +74,7 @@ func backlogGroupsOf(t *testing.T, backlog ...issuesclient.CardView) []backlogGr
 	kanban := scopedBoard(t, map[string][]issuesclient.CardView{columnBacklog: backlog})
 	server := httptest.NewServer(kanban)
 	defer server.Close()
-	return backlogGroups(issuesclient.New(server.URL, ""), &kanban.view, "parent", degradations.New("dispatcher"))
+	return backlogGroups(issuesclient.New(server.URL), &kanban.view, "parent", degradations.New("dispatcher"))
 }
 
 func TestEachUngroupedChildIsAGroupOfOne(t *testing.T) {
@@ -117,7 +117,7 @@ func TestAnUngroupedCardHasNoSiblingButItself(t *testing.T) {
 	})
 	server := httptest.NewServer(kanban)
 	defer server.Close()
-	got := groupSiblings(issuesclient.New(server.URL, ""), &kanban.view, groupOf("parent", testCard("card-next")), degradations.New("dispatcher"))
+	got := groupSiblings(issuesclient.New(server.URL), &kanban.view, groupOf("parent", testCard("card-next")), degradations.New("dispatcher"))
 	if len(got) != 1 || got[0].Placement.CardID != "card-next" {
 		t.Errorf("siblings = %v, want card-next alone", got)
 	}
@@ -163,7 +163,7 @@ func TestUngroupedCardsAreDispatchedTogetherIntoFreshSessions(t *testing.T) {
 
 func TestAnUngroupedWorkerIsToldItsSessionIsItsOwn(t *testing.T) {
 	card := testCard("card-a")
-	prompt := buildPrompt(scopedParent{cardID: "goal-1"}, card, groupOf("goal-1", card), "")
+	prompt := buildPrompt(scopedParent{cardID: "goal-1"}, card, groupOf("goal-1", card), "", testIssuesURL)
 	if !strings.Contains(prompt, "- Group: none — this sub-task was not grouped with any sibling") {
 		t.Errorf("the prompt must say the card has no group rather than print a substituted key:\n%s", prompt)
 	}
@@ -172,7 +172,7 @@ func TestAnUngroupedWorkerIsToldItsSessionIsItsOwn(t *testing.T) {
 	}
 
 	grouped := testCard("card-b", "group:api")
-	if prompt := buildPrompt(scopedParent{cardID: "goal-1"}, grouped, groupOf("goal-1", grouped), ""); !strings.Contains(prompt, "- Group: api\n") {
+	if prompt := buildPrompt(scopedParent{cardID: "goal-1"}, grouped, groupOf("goal-1", grouped), "", testIssuesURL); !strings.Contains(prompt, "- Group: api\n") {
 		t.Errorf("a grouped card's prompt must name its group without the namespace:\n%s", prompt)
 	}
 }

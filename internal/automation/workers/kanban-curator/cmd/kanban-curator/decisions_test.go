@@ -176,14 +176,14 @@ func TestACompletedSessionWithNoUsableTimestampStillWaitsForTheReviewer(t *testi
 
 func TestABoardThatNoLongerExistsIsRefusedNotReplaced(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "GET" || r.URL.Path != "/api/boards/board-gone" {
+		if r.Method != "GET" || r.URL.Path != "/boards/board-gone" {
 			t.Errorf("unexpected %s %s: a missing board must not be created or searched for", r.Method, r.URL.Path)
 		}
 		http.Error(w, "no such board", http.StatusNotFound)
 	}))
 	t.Cleanup(srv.Close)
 
-	board, err := getPinnedBoard(issuesclient.New(srv.URL, ""), "board-gone")
+	board, err := getPinnedBoard(issuesclient.New(srv.URL), "board-gone")
 	if err == nil {
 		t.Fatalf("getPinnedBoard returned board %+v for an id kanban-store does not have", board)
 	}

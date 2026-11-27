@@ -24,7 +24,7 @@ import (
 // branch protection needs a public repository or a paid plan, and this one is
 // private on a free one — so it is stated here AND backed by a pre-push hook in
 // the working tree. The prompt is a request; the hook is what refuses.
-func builderPrompt(identity demoteam.Member, title, body, workingDir, cardID, repoSlug, kanbanURL string) string {
+func builderPrompt(identity demoteam.Member, title, body, workingDir, cardID, repoSlug, issuesURL string) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "You are %s, %s.\n\n", identity.Name, identity.Voice)
@@ -60,11 +60,11 @@ HOW TO WORK
 	fmt.Fprintf(&b, `6. Record the pull request on the card. Two calls: the link is the lasting
    fact, the event is the moment it happened. Replace <N> with its number.
 
-   curl -s -X POST '%s/api/cards/%s/links?actor=agent:%s' \
+   curl -s -X POST '%s/cards/%s/links?actor=agent:%s' \
      -H 'Content-Type: application/json' \
      -d '{"entity_type":"pull_request","entity_ref":"%s#<N>","label":"<the PR title>"}'
 
-   curl -s -X POST %s/api/cards/%s/events \
+   curl -s -X POST %s/cards/%s/events \
      -H 'Content-Type: application/json' \
      -d '{"kind":"pull_request_opened","actor":"agent:%s","clock_state":"paused",
           "summary":"Opened PR #<N>, waiting on review",
@@ -74,16 +74,16 @@ HOW TO WORK
    sitting with a reviewer, and the card's clock should stop counting that
    against you until somebody looks at it.
 
-`, kanbanURL, cardID, identity.Slug, repoSlug, kanbanURL, cardID, identity.Slug, repoSlug)
+`, issuesURL, cardID, identity.Slug, repoSlug, issuesURL, cardID, identity.Slug, repoSlug)
 
 	fmt.Fprintf(&b, `7. Write what you did onto the card, so the board knows without reading the
    diff — including what you deliberately did NOT do:
 
-   curl -s -X POST %s/api/cards/%s/notes \
+   curl -s -X POST %s/cards/%s/notes \
      -H 'Content-Type: application/json' \
      -d '{"body":"<what you did and did not do>","kind":"coding-update","actor":"agent:%s"}'
 
-`, kanbanURL, cardID, identity.Slug)
+`, issuesURL, cardID, identity.Slug)
 
 	b.WriteString(`WHAT YOU MAY NOT DO
 
@@ -116,7 +116,7 @@ your next message, and you continue from there.
 // not assumed. A COMMENT review is permitted and is what it leaves. The
 // judgment itself is recorded on the card, where this system can act on it,
 // and that is the honest split until there is a second GitHub identity.
-func reviewerPrompt(identity demoteam.Member, title, prRef, workingDir, cardID, kanbanURL string) string {
+func reviewerPrompt(identity demoteam.Member, title, prRef, workingDir, cardID, issuesURL string) string {
 	number := prRef
 	if i := strings.LastIndex(prRef, "#"); i >= 0 {
 		number = prRef[i+1:]
@@ -156,20 +156,20 @@ func reviewerPrompt(identity demoteam.Member, title, prRef, workingDir, cardID, 
 	fmt.Fprintf(&b, `5. Record your verdict on the card, which is where this system reads it. Say
    plainly whether it is good to merge. Two calls:
 
-   curl -s -X POST %s/api/cards/%s/events \
+   curl -s -X POST %s/cards/%s/events \
      -H 'Content-Type: application/json' \
      -d '{"kind":"pull_request_reviewed","actor":"agent:%s","clock_state":"running",
           "summary":"Reviewed PR #%s: <approved | changes requested>",
           "detail":{"entity_type":"pull_request","entity_ref":"%s"}}'
 
-   curl -s -X POST %s/api/cards/%s/notes \
+   curl -s -X POST %s/cards/%s/notes \
      -H 'Content-Type: application/json' \
      -d '{"body":"<your verdict and the reasoning behind it>","kind":"review","actor":"agent:%s"}'
 
    clock_state is "running" deliberately: the review is done, the ball is back
    with whoever has to act on it, and the card's clock counts again.
 
-`, kanbanURL, cardID, identity.Slug, number, prRef, kanbanURL, cardID, identity.Slug)
+`, issuesURL, cardID, identity.Slug, number, prRef, issuesURL, cardID, identity.Slug)
 
 	b.WriteString(`WHAT YOU MAY NOT DO
 

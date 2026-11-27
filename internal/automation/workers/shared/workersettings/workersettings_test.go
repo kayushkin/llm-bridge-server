@@ -1,4 +1,4 @@
-package config
+package workersettings
 
 import (
 	"os"
@@ -9,13 +9,14 @@ import (
 
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
+
+	bridgeconfig "github.com/kayushkin/llm-bridge-server/internal/config"
 )
 
 // Every command under workers/<name>/cmd/ is a declared job binary, so a
-// binary added later cannot escape the scan by being on no list. The service
-// itself runs in llm-bridge-server and has no command.
+// binary added later cannot escape the scan by being on no list.
 func TestEveryBinaryInCmdIsADeclaredJob(t *testing.T) {
-	commands, err := filepath.Glob(filepath.Join("..", "..", "workers", "*", "cmd", "*"))
+	commands, err := filepath.Glob(filepath.Join("..", "..", "*", "cmd", "*"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,11 +54,12 @@ func TestEveryJobBinaryBuildsARegistryFromAnEmptyEnvironment(t *testing.T) {
 	}
 }
 
-// A job's environment is the scheduler's, which carries the service's own
-// variables and every other job's. No binary may refuse any of them.
-func TestNoJobBinaryRefusesAVariableAnotherBinaryOrTheServiceDeclares(t *testing.T) {
+// A job's environment is the scheduler's, and the scheduler runs in
+// llm-bridge-server: it carries the server's variables (its secrets
+// stripped) and every other job's. No binary may refuse any of them.
+func TestNoJobBinaryRefusesAVariableAnotherBinaryOrTheServerDeclares(t *testing.T) {
 	everyone := map[string]string{}
-	for _, definition := range SettingDefinitions() {
+	for _, definition := range bridgeconfig.SettingDefinitions() {
 		everyone[definition.EnvironmentVariable] = valueOfItsType(definition)
 	}
 	for _, binary := range JobBinaries {
@@ -69,9 +71,6 @@ func TestNoJobBinaryRefusesAVariableAnotherBinaryOrTheServiceDeclares(t *testing
 		if _, err := binary.NewSettingsRegistry(servicesettings.MapEnvironment(everyone)); err != nil {
 			t.Errorf("%s refuses the fleet's environment: %v", binary.Name, err)
 		}
-	}
-	if _, err := NewSettingsRegistry(servicesettings.MapEnvironment(everyone)); err != nil {
-		t.Errorf("the service refuses its jobs' variables: %v", err)
 	}
 }
 

@@ -3,7 +3,7 @@
 //
 // Registered as a scheduler shell job running every ~30 minutes. On each tick:
 //
-//  1. Pull /api/usage/limits from usage-store.
+//  1. Pull /usage/api/usage/limits from the bridge.
 //  2. For each provider (anthropic → claude_code, codex → codex):
 //     - Skip if the provider snapshot is stale (codex when no recent session).
 //     - Locate the weekly window (seven_day for anthropic, weekly for codex).
@@ -45,10 +45,12 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/sessionmodelrole"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/boardvocabulary"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgeauth"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgestores"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/degradations"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/schedulerjobs"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/schedulersettings"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/workersettings"
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )
@@ -190,9 +192,10 @@ type state struct {
 // The endpoints are here rather than at their call sites because they are the
 // half of the configuration with something to get wrong. They are all strings,
 // and several of them are passed positionally to the same function — bridgeURL
-// and noteboardURL reach budgetForCard side by side, and swapping them compiles
+// and issuesURL reach budgetForCard side by side, and swapping them compiles
 // clean, dispatches nothing, and reports success. Naming them once, in one
-// struct a test can read, is what makes that visible.
+// struct a test can read, is what makes that visible. Every store endpoint is
+// a path under the one bridge URL (bridgestores); parseFlags derives them.
 type config struct {
 	// The six flags.
 	registerJob         bool
@@ -203,20 +206,20 @@ type config struct {
 	defaultMaxBudgetUSD float64
 
 	// The wiring: service endpoints and the two home-relative paths.
-	natsURL        string
-	kanbanStoreURL string
-	llmBridgeURL   string
-	noteboardURL   string
-	usageStoreURL  string
-	schedulerURL   string
-	modelStoreURL  string
-	statePath      string
-	binaryPath     string
+	// issuesURL holds both the boards and cards and every issue's item, which
+	// is where the spend tree is read.
+	natsURL      string
+	llmBridgeURL string
+	issuesURL    string
+	usageURL     string
+	schedulerURL string
+	modelsURL    string
+	statePath    string
+	binaryPath   string
 
-	// The tokens this binary presents as an internal service. Both stores
-	// gate every route.
-	kanbanStoreServiceToken string
-	bridgeServiceToken      string
+	// bridgeServicePrincipalToken is what this binary presents to the bridge
+	// as its own principal; the bridge gates every route.
+	bridgeServicePrincipalToken string
 }
 
 // parseFlags builds the flag set and parses args into a config.
@@ -240,16 +243,16 @@ type config struct {
 //
 // The environment is an argument, not the process's own, so that a test states
 // which variables were set without setting them: the flag defaults are read at
-// registration time, and a test that exported NOTEBOARD_URL to observe it would
+// registration time, and a test that exported LLM_BRIDGE_URL to observe it would
 // race every other test in the package for one process-wide variable. It is
-// read through the binary's settings registry (internal/config), which refuses
+// read through the binary's settings registry (workersettings), which refuses
 // a misspelled AUTOWORKER_ variable.
 //
 // homeDirectory is an argument for the same reason: the state file and the
 // registered command are both home-relative, and a test should not have to
 // move HOME out from under the process to assert what they resolve to.
 func parseFlags(args []string, environment servicesettings.Environment, homeDirectory string) (config, error) {
-	settings, err := schedulerconfig.Autoworker.NewSettingsRegistry(environment)
+	settings, err := workersettings.Autoworker.NewSettingsRegistry(environment)
 	if err != nil {
 		return config{}, fmt.Errorf("%w: %v", errMalformedEnvironmentValue, err)
 	}
@@ -258,23 +261,22 @@ func parseFlags(args []string, environment servicesettings.Environment, homeDire
 	fs.BoolVar(&c.registerJob, "register", false, "Register (upsert) this binary as a scheduler cron job and exit.")
 	fs.BoolVar(&c.dryRun, "dry-run", false, "Report decisions; do not publish or update state.")
 	fs.Float64Var(&c.slackPercentPoints, "slack", 15, "Percent points below target before firing.")
-	fs.StringVar(&c.prompt, "prompt", defaultPrompt, "Prompt text sent to the worker agent.")
+	bridgeURL := settings.String(workersettings.SettingBridgeURL)
+	fs.StringVar(&c.prompt, "prompt", defaultPrompt(bridgestores.IssuesURL(bridgeURL)), "Prompt text sent to the worker agent.")
 	fs.StringVar(&c.timezone, "tz", "America/Los_Angeles", "IANA timezone for safe-window gating.")
-	fs.Float64Var(&c.defaultMaxBudgetUSD, "default-max-budget-usd", settings.Decimal(schedulerconfig.SettingDefaultMaxBudgetUSD),
+	fs.Float64Var(&c.defaultMaxBudgetUSD, "default-max-budget-usd", settings.Decimal(workersettings.SettingDefaultMaxBudgetUSD),
 		"Fleet-wide per-session spend cap in USD for sessions with no per-card ceiling (0 = off/uncapped). A card's own ceiling always wins.")
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
 	}
 
-	c.natsURL = settings.String(schedulerconfig.SettingNATSURL)
-	c.kanbanStoreURL = settings.String(schedulerconfig.SettingKanbanStoreURL)
-	c.llmBridgeURL = settings.String(schedulerconfig.SettingBridgeURL)
-	c.noteboardURL = settings.String(schedulerconfig.SettingNoteboardURL)
-	c.usageStoreURL = settings.String(schedulerconfig.SettingUsageStoreURL)
-	c.schedulerURL = settings.String(schedulerconfig.SettingSchedulerURL)
-	c.modelStoreURL = settings.String(schedulerconfig.SettingModelStoreURL)
-	c.kanbanStoreServiceToken = settings.String(schedulerconfig.SettingKanbanStoreServiceToken)
-	c.bridgeServiceToken = settings.String(schedulerconfig.SettingBridgeServiceToken)
+	c.natsURL = settings.String(workersettings.SettingNATSURL)
+	c.llmBridgeURL = bridgeURL
+	c.issuesURL = bridgestores.IssuesURL(bridgeURL)
+	c.usageURL = bridgestores.UsageURL(bridgeURL)
+	c.schedulerURL = bridgestores.SchedulerURL(bridgeURL)
+	c.modelsURL = bridgestores.ModelsURL(bridgeURL)
+	c.bridgeServicePrincipalToken = settings.String(workersettings.SettingBridgeServicePrincipalToken)
 	c.statePath = filepath.Join(homeDirectory, ".config", "autoworker", "state.json")
 	c.binaryPath = filepath.Join(homeDirectory, "bin", "autoworker")
 	return c, nil
@@ -353,9 +355,9 @@ func main() {
 	}
 
 	// llm-bridge-server gates every route; stamp this process's calls to it
-	// with the service token. Host-scoped, so noteboard, kanban-store and the
-	// scheduler API are untouched.
-	if err := bridgeauth.StampRequestsToBridge(cfg.llmBridgeURL, cfg.bridgeServiceToken); err != nil {
+	// with this binary's service principal token. Host-scoped, so nothing
+	// else ever sees it.
+	if err := bridgeauth.StampRequestsToBridge(cfg.llmBridgeURL, cfg.bridgeServicePrincipalToken); err != nil {
 		log.Fatal(err)
 	}
 	if err := cfg.validate(); err != nil {
@@ -391,7 +393,7 @@ func main() {
 	// The bus is closed before the exit rather than deferred, because os.Exit
 	// does not run deferred functions and a silently unclosed connection is the
 	// kind of thing that looks fine until the bus runs out of them.
-	code := run(cfg, readLaneModelRole(cfg.schedulerURL, sessionmodelrole.New(cfg.modelStoreURL, cfg.llmBridgeURL)), publish)
+	code := run(cfg, readLaneModelRole(cfg.schedulerURL, sessionmodelrole.New(cfg.modelsURL, cfg.llmBridgeURL)), publish)
 	closeBus()
 	os.Exit(code)
 }
@@ -416,7 +418,7 @@ func run(cfg config, modelRoleFor laneModelRoleReader, publish workerPublisher) 
 		log.Fatalf("timezone %q: %v", cfg.timezone, err)
 	}
 
-	lim, err := fetchLimits(cfg.usageStoreURL)
+	lim, err := fetchLimits(cfg.usageURL)
 	if err != nil {
 		log.Fatalf("fetch limits: %v", err)
 	}
@@ -461,7 +463,7 @@ func run(cfg config, modelRoleFor laneModelRoleReader, publish workerPublisher) 
 		// the fire decision.
 		if !queueTried {
 			var why string
-			queueClient, why = initQueueClient(cfg.kanbanStoreURL, cfg.kanbanStoreServiceToken, false)
+			queueClient, why = initQueueClient(cfg.issuesURL, false)
 			if why != "" {
 				degraded.Record("%s", why)
 			}
@@ -483,7 +485,7 @@ func run(cfg config, modelRoleFor laneModelRoleReader, publish workerPublisher) 
 		}
 		workerPrompt := cfg.prompt
 		if queueCard != nil {
-			workerPrompt = buildQueuePrompt(queueCard)
+			workerPrompt = buildQueuePrompt(cfg.issuesURL, queueCard)
 		}
 
 		maxBudgetUSD, why := resolveSessionBudget(queueCard, cfg.defaultMaxBudgetUSD)
@@ -522,7 +524,7 @@ func run(cfg config, modelRoleFor laneModelRoleReader, publish workerPublisher) 
 		}
 
 		if kc == nil {
-			kc = issuesclient.New(cfg.kanbanStoreURL, cfg.kanbanStoreServiceToken)
+			kc = issuesclient.New(cfg.issuesURL)
 			if err := kc.EnsureBoard(kanbanBoardName, boardvocabulary.AgentRunsColumns()); err != nil {
 				log.Printf("kanban: bootstrap %q failed: %v (continuing)", kanbanBoardName, err)
 				degraded.Record("the %q board could not be reached (%v), so this tick's dispatches have no telemetry card", kanbanBoardName, err)
@@ -565,7 +567,7 @@ func run(cfg config, modelRoleFor laneModelRoleReader, publish workerPublisher) 
 	// tick that already decided not to dispatch, so failing to read it costs the
 	// run nothing it meant to do.
 	if !queueTried {
-		if qc, _ := initQueueClient(cfg.kanbanStoreURL, cfg.kanbanStoreServiceToken, cfg.dryRun); qc != nil {
+		if qc, _ := initQueueClient(cfg.issuesURL, cfg.dryRun); qc != nil {
 			if cand, err := selectQueuedCard(qc, cfg, nil); err != nil {
 				log.Printf("queue: %v", err)
 			} else if cand != nil {
@@ -605,8 +607,8 @@ func run(cfg config, modelRoleFor laneModelRoleReader, publish workerPublisher) 
 // nil client and nothing recorded. Returning an error for that case would make
 // every caller re-derive which errors count, which is the distinction this
 // function is already making.
-func initQueueClient(kanbanStoreURL, kanbanStoreServiceToken string, dryRun bool) (*issuesclient.Client, string) {
-	qc := issuesclient.New(kanbanStoreURL, kanbanStoreServiceToken)
+func initQueueClient(issuesURL string, dryRun bool) (*issuesclient.Client, string) {
+	qc := issuesclient.New(issuesURL)
 	if dryRun {
 		board, err := qc.FindBoard(autoworkerQueueBoard)
 		if err != nil {
@@ -701,9 +703,9 @@ func markQueueCardDispatched(qc *issuesclient.Client, cand *queueCandidate, p pr
 }
 
 // buildQueuePrompt renders the worker prompt from a queued card. The card id
-// is the noteboard item id (kanban cards are noteboard items), so closing the
-// noteboard item also closes the card via the column's auto_status mapping.
-func buildQueuePrompt(c *queueCandidate) string {
+// is its issue's id, so closing the issue's item at issuesURL/items/{id} also
+// closes the card via the column's auto_status mapping.
+func buildQueuePrompt(issuesURL string, c *queueCandidate) string {
 	body := strings.TrimSpace(c.body)
 	if body == "" {
 		body = "(no body — see title)"
@@ -718,12 +720,12 @@ func buildQueuePrompt(c *queueCandidate) string {
 
 ## Instructions
 1. Do the work described above.
-2. When done, PATCH http://localhost:8191/api/items/%s with {"status":"done"} and a body update describing what you did. Kanban cards mirror noteboard items, so closing the noteboard item also closes the card.
+2. When done, PATCH %s/items/%s with {"status":"done"} and a body update describing what you did. Kanban cards mirror noteboard items, so closing the noteboard item also closes the card.
 3. If the task is ambiguous in intent or needs user input, leave a body update explaining why and exit; the card stays In Progress and a human will intervene.
 4. If the task is clear in intent but too large to finish in one session, split it into smaller queue cards rather than skipping it — preserve the parent's tags so children stay queued.
 
 Be self-contained. No chat; just work and close out the task.`,
-		c.cardID, c.title, body, c.cardID)
+		c.cardID, c.title, body, issuesURL, c.cardID)
 }
 
 // selectQueuedCard returns the top eligible card in the Queued column, in
@@ -808,7 +810,7 @@ func selectQueuedCard(qc *issuesclient.Client, cfg config, degraded *degradation
 		// and skipped, rather than dispatched: firing a session for it would
 		// either burn money past the ceiling or (worse) be handed a cap of 0,
 		// which the harness reads as unlimited.
-		budget, dispatchable := budgetForCard(qc, cfg.llmBridgeURL, cfg.noteboardURL, cand)
+		budget, dispatchable := budgetForCard(qc, cfg.llmBridgeURL, cfg.issuesURL, cand)
 		if !dispatchable {
 			if err := qc.HoldCard(cand.cardID, "spend ceiling reached"); err != nil {
 				// The card is over its ceiling and was not parked, so every
@@ -943,8 +945,8 @@ func inSafeWindow(p providerSpec, nowLocal time.Time) bool {
 	return minutesOfDay >= p.SafeStart && minutesOfDay < p.SafeEnd
 }
 
-func fetchLimits(usageStoreURL string) (limitsResponse, error) {
-	url := usageStoreURL + "/api/usage/limits"
+func fetchLimits(usageURL string) (limitsResponse, error) {
+	url := usageURL + "/api/usage/limits"
 	resp, err := http.Get(url)
 	if err != nil {
 		return nil, fmt.Errorf("GET %s: %w", url, err)
@@ -1155,14 +1157,21 @@ func registerSchedulerJob(schedURL, bin string) error {
 	})
 }
 
-const defaultPrompt = `You are the nightly todo-worker. The user is asleep; their subscription budget is under-utilised for this week and I am dispatching you to make useful progress on open todos without disturbing them.
+// defaultPrompt is the discovery prompt a worker gets when the queue has no
+// card for it. issuesURL is the bridge's /issues, where the todos are.
+func defaultPrompt(issuesURL string) string {
+	return fmt.Sprintf(defaultPromptFormat, issuesURL)
+}
+
+// defaultPromptFormat is defaultPrompt with the issues address as %[1]s.
+const defaultPromptFormat = `You are the nightly todo-worker. The user is asleep; their subscription budget is under-utilised for this week and I am dispatching you to make useful progress on open todos without disturbing them.
 
 Steps:
-1. GET http://localhost:8191/api/items?type=todo&status=open&exclude_tag=autoworker&exclude_tag=personal&sort=priority&limit=200 to read the noteboard todo list. (exclude_tag=autoworker drops machine-generated autoworker dispatch cards, which otherwise saturate the window and hide real todos. exclude_tag=personal drops the user's personal/life todos — those are theirs to do, never yours. sort=priority is what makes step 2 answerable: noteboard's default order is newest-created-first, so a limit applied to it drops the oldest todos whatever their priority, and the long-standing backlog is exactly the oldest part of the list. Keep the limit above the number of open todos; if the response ever comes back full, raise it rather than working from the truncated list.)
-   Noteboard withholds HELD todos from this list automatically — those are tasks the user has parked behind the hold gate and has not cleared for unattended work. NEVER pass include_held=true, here or to /api/search: that parameter exists for the board and notes UIs, which need to show the user their own parked work so they can press play on it. Using it to widen your own search would walk straight through the one gate that is there to stop you.
+1. GET %[1]s/items?type=todo&status=open&exclude_tag=autoworker&exclude_tag=personal&sort=priority&limit=200 to read the noteboard todo list. (exclude_tag=autoworker drops machine-generated autoworker dispatch cards, which otherwise saturate the window and hide real todos. exclude_tag=personal drops the user's personal/life todos — those are theirs to do, never yours. sort=priority is what makes step 2 answerable: noteboard's default order is newest-created-first, so a limit applied to it drops the oldest todos whatever their priority, and the long-standing backlog is exactly the oldest part of the list. Keep the limit above the number of open todos; if the response ever comes back full, raise it rather than working from the truncated list.)
+   Noteboard withholds HELD todos from this list automatically — those are tasks the user has parked behind the hold gate and has not cleared for unattended work. NEVER pass include_held=true, here or to %[1]s/items/search: that parameter exists for the board and notes UIs, which need to show the user their own parked work so they can press play on it. Using it to widen your own search would walk straight through the one gate that is there to stop you.
 2. Pick the highest-priority open todo that you can make real progress on autonomously without needing clarifying questions from the user. Prefer codebase tasks that have clear scope. Never pick a todo tagged "personal" even if one slips through — those are the user's own life tasks, not engineering work.
 3. Do the work. Use your normal tools: explore repos under ~/repos/, edit, build, test, commit only if the task is a true "commit me" (match the user's normal guidance about explicit commit requests).
-4. When the task is complete, PATCH http://localhost:8191/api/items/<id> with {"status":"done"} and a note in the body describing what you did.
+4. When the task is complete, PATCH %[1]s/items/<id> with {"status":"done"} and a note in the body describing what you did.
 5. If the top todo is ambiguous in intent or needs user input, leave it alone and try the next one.
 6. If the top todo is clear in intent but too large to finish in one session, do NOT skip it. Split it instead:
    - Break it into several smaller noteboard todos, each scoped to something an unattended session could plausibly finish. Preserve the parent's priority and tags on the children so its place in the queue is respected.

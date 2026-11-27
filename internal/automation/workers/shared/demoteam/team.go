@@ -131,7 +131,8 @@ func WithRole(role Role) []Member {
 // ============================ registration ============================
 
 // Register creates every member in agent-store and tags it with its governed
-// role in kanban-store, and is safe to run repeatedly.
+// role in issues (issuesURL is bridgestores.IssuesURL; nothing calls Register
+// today), and is safe to run repeatedly.
 //
 // Two stores because they hold two different things. agent-store owns the
 // identity — the slug everything joins on, the display name, the voice. The
@@ -139,7 +140,7 @@ func WithRole(role Role) []Member {
 // supports tagging any (entity_type, entity_ref) pair and already registers
 // `agent` as a type. Putting the role in agent-store's free-text `role` column
 // instead would bury a controlled value inside prompt prose.
-func Register(agentStoreURL, kanbanURL string) error {
+func Register(agentStoreURL, issuesURL string) error {
 	existing, err := existingSlugs(agentStoreURL)
 	if err != nil {
 		return err
@@ -156,7 +157,7 @@ func Register(agentStoreURL, kanbanURL string) error {
 			}
 		}
 		tag := map[string]any{"tag": "role:" + string(m.Role)}
-		url := fmt.Sprintf("%s/api/entities/agent/%s/tags", strings.TrimRight(kanbanURL, "/"), m.Slug)
+		url := fmt.Sprintf("%s/entities/agent/%s/tags", strings.TrimRight(issuesURL, "/"), m.Slug)
 		if err := post(url, tag); err != nil {
 			return fmt.Errorf("tag %s with %s: %w", m.Slug, m.Role, err)
 		}

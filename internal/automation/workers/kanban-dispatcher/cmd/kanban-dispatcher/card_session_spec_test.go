@@ -65,7 +65,7 @@ type fakeKanban struct {
 	// status is a child's noteboard status as the parent_card listing reports
 	// it; a child absent here is "open".
 	status map[string]string
-	// placements is what GET /api/cards/{id}/placements answers per card; a
+	// placements is what GET /cards/{id}/placements answers per card; a
 	// card absent here has none.
 	placements map[string][]issuesclient.CardPlacement
 	// failures makes one kind of request answer with the given status, keyed
@@ -100,15 +100,15 @@ func (f *fakeKanban) record(kind, cardID string, r *http.Request) {
 
 // fakeKanbanRoute names the kind of request a failure can be injected into.
 func fakeKanbanRoute(method, path string) string {
-	boardPath := strings.TrimPrefix(path, "/api/boards/")
+	boardPath := strings.TrimPrefix(path, "/boards/")
 	switch {
-	case method == "GET" && strings.HasPrefix(path, "/api/boards/") && !strings.Contains(boardPath, "/"):
+	case method == "GET" && strings.HasPrefix(path, "/boards/") && !strings.Contains(boardPath, "/"):
 		return "board"
-	case method == "GET" && strings.HasPrefix(path, "/api/boards/") && strings.HasSuffix(path, "/cards") && strings.Count(boardPath, "/") == 1:
+	case method == "GET" && strings.HasPrefix(path, "/boards/") && strings.HasSuffix(path, "/cards") && strings.Count(boardPath, "/") == 1:
 		return "view"
-	case method == "GET" && strings.HasPrefix(path, "/api/entities/note/") && strings.HasSuffix(path, "/tags"):
+	case method == "GET" && strings.HasPrefix(path, "/entities/note/") && strings.HasSuffix(path, "/tags"):
 		return "tags"
-	case method == "GET" && strings.HasPrefix(path, "/api/entities/parent_card/"):
+	case method == "GET" && strings.HasPrefix(path, "/entities/parent_card/"):
 		return "children"
 	case method == "GET" && strings.HasSuffix(path, "/links"):
 		return "links"
@@ -118,7 +118,7 @@ func fakeKanbanRoute(method, path string) string {
 		return "move"
 	case method == "GET" && strings.HasSuffix(path, "/placements"):
 		return "placements"
-	case method == "PATCH" && strings.HasPrefix(path, "/api/cards/"):
+	case method == "PATCH" && strings.HasPrefix(path, "/cards/"):
 		return "patch"
 	}
 	return ""
@@ -128,7 +128,7 @@ func (f *fakeKanban) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	path := r.URL.Path
-	boardPrefix := "/api/boards/" + f.board.ID
+	boardPrefix := "/boards/" + f.board.ID
 	writeJSON := func(v any) { json.NewEncoder(w).Encode(v) }
 	route := fakeKanbanRoute(r.Method, path)
 	if f.requests == nil {
@@ -153,15 +153,15 @@ func (f *fakeKanban) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		resolved.BoardID, resolved.CardID = f.board.ID, cardID
 		writeJSON(resolved)
-	case r.Method == "GET" && strings.HasPrefix(path, "/api/entities/note/") && strings.HasSuffix(path, "/tags"):
-		cardID := strings.TrimSuffix(strings.TrimPrefix(path, "/api/entities/note/"), "/tags")
+	case r.Method == "GET" && strings.HasPrefix(path, "/entities/note/") && strings.HasSuffix(path, "/tags"):
+		cardID := strings.TrimSuffix(strings.TrimPrefix(path, "/entities/note/"), "/tags")
 		tags := []issuesclient.EntityTag{}
 		if f.scoped[cardID] {
 			tags = append(tags, issuesclient.EntityTag{EntityType: "note", EntityRef: cardID, Tag: tagScoped})
 		}
 		writeJSON(tags)
-	case r.Method == "GET" && strings.HasPrefix(path, "/api/entities/parent_card/") && strings.HasSuffix(path, "/cards"):
-		parentID := strings.TrimSuffix(strings.TrimPrefix(path, "/api/entities/parent_card/"), "/cards")
+	case r.Method == "GET" && strings.HasPrefix(path, "/entities/parent_card/") && strings.HasSuffix(path, "/cards"):
+		parentID := strings.TrimSuffix(strings.TrimPrefix(path, "/entities/parent_card/"), "/cards")
 		entries := []issuesclient.EntityCardEntry{}
 		for _, id := range f.children[parentID] {
 			status := f.status[id]
@@ -171,30 +171,30 @@ func (f *fakeKanban) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			entries = append(entries, issuesclient.EntityCardEntry{CardID: id, Item: map[string]any{"id": id, "status": status}})
 		}
 		writeJSON(entries)
-	case r.Method == "GET" && strings.HasPrefix(path, "/api/cards/") && strings.HasSuffix(path, "/links"):
-		links := f.links[strings.TrimSuffix(strings.TrimPrefix(path, "/api/cards/"), "/links")]
+	case r.Method == "GET" && strings.HasPrefix(path, "/cards/") && strings.HasSuffix(path, "/links"):
+		links := f.links[strings.TrimSuffix(strings.TrimPrefix(path, "/cards/"), "/links")]
 		if links == nil {
 			links = []issuesclient.CardLink{}
 		}
 		writeJSON(links)
-	case r.Method == "POST" && strings.HasPrefix(path, "/api/cards/") && strings.HasSuffix(path, "/links"):
-		f.linked = append(f.linked, strings.TrimSuffix(strings.TrimPrefix(path, "/api/cards/"), "/links"))
-		f.record("link", strings.TrimSuffix(strings.TrimPrefix(path, "/api/cards/"), "/links"), r)
+	case r.Method == "POST" && strings.HasPrefix(path, "/cards/") && strings.HasSuffix(path, "/links"):
+		f.linked = append(f.linked, strings.TrimSuffix(strings.TrimPrefix(path, "/cards/"), "/links"))
+		f.record("link", strings.TrimSuffix(strings.TrimPrefix(path, "/cards/"), "/links"), r)
 		w.WriteHeader(http.StatusCreated)
 		w.Write([]byte(`{}`))
-	case r.Method == "POST" && strings.HasPrefix(path, "/api/cards/") && strings.HasSuffix(path, "/move"):
-		f.moved = append(f.moved, strings.TrimSuffix(strings.TrimPrefix(path, "/api/cards/"), "/move"))
-		f.record("move", strings.TrimSuffix(strings.TrimPrefix(path, "/api/cards/"), "/move"), r)
+	case r.Method == "POST" && strings.HasPrefix(path, "/cards/") && strings.HasSuffix(path, "/move"):
+		f.moved = append(f.moved, strings.TrimSuffix(strings.TrimPrefix(path, "/cards/"), "/move"))
+		f.record("move", strings.TrimSuffix(strings.TrimPrefix(path, "/cards/"), "/move"), r)
 		w.Write([]byte(`{}`))
-	case r.Method == "GET" && strings.HasPrefix(path, "/api/cards/") && strings.HasSuffix(path, "/placements"):
-		placements := f.placements[strings.TrimSuffix(strings.TrimPrefix(path, "/api/cards/"), "/placements")]
+	case r.Method == "GET" && strings.HasPrefix(path, "/cards/") && strings.HasSuffix(path, "/placements"):
+		placements := f.placements[strings.TrimSuffix(strings.TrimPrefix(path, "/cards/"), "/placements")]
 		if placements == nil {
 			placements = []issuesclient.CardPlacement{}
 		}
 		writeJSON(placements)
-	case r.Method == "PATCH" && strings.HasPrefix(path, "/api/cards/"):
-		f.patched = append(f.patched, strings.TrimPrefix(path, "/api/cards/"))
-		f.record("patch", strings.TrimPrefix(path, "/api/cards/"), r)
+	case r.Method == "PATCH" && strings.HasPrefix(path, "/cards/"):
+		f.patched = append(f.patched, strings.TrimPrefix(path, "/cards/"))
+		f.record("patch", strings.TrimPrefix(path, "/cards/"), r)
 		w.Write([]byte(`{}`))
 	default:
 		f.t.Errorf("unexpected kanban-store request %s %s", r.Method, path)
@@ -239,7 +239,7 @@ func productCardDefaults() issuesclient.EffectiveDefaults {
 
 func newDispatcher(kanban *fakeKanban, kanbanURL, bridgeURL string, published *[]messages.BridgeInbound) *backlogDispatcher {
 	return &backlogDispatcher{
-		kanban:             issuesclient.New(kanbanURL, ""),
+		kanban:             issuesclient.New(kanbanURL),
 		bridgeURL:          bridgeURL,
 		board:              &kanban.board,
 		view:               &kanban.view,
@@ -335,7 +335,7 @@ func TestACardWhoseInstanceOrAgentTheBridgeLacksIsNotDispatched(t *testing.T) {
 	defer kanbanServer.Close()
 	bridgeServer := fakeBridge(t, nil)
 	defer bridgeServer.Close()
-	kc := issuesclient.New(kanbanServer.URL, "")
+	kc := issuesclient.New(kanbanServer.URL)
 
 	_, err := resolveCardSessionSpec(kc, bridgeServer.URL, &kanban.board, "card-gone-instance")
 	if err == nil || !strings.Contains(err.Error(), "inst-gone") || !strings.Contains(err.Error(), "cat:x") {
@@ -438,7 +438,7 @@ func TestARunThatLeftACardUndispatchedFails(t *testing.T) {
 	kanban := build(false)
 	kanbanServer := httptest.NewServer(kanban)
 	defer kanbanServer.Close()
-	err := run(runOptions{ModelRole: "default", ModelRoles: stubModelRoles{}, BoardID: testBoardID, KanbanURL: kanbanServer.URL, BridgeURL: bridgeServer.URL, DryRun: true, MaxDispatch: 10})
+	err := run(runOptions{ModelRole: "default", ModelRoles: stubModelRoles{}, BoardID: testBoardID, BridgeURL: bridgeWithIssues(t, kanbanServer, bridgeServer), DryRun: true, MaxDispatch: 10})
 	if err == nil || !strings.Contains(err.Error(), "card-nowhere") || strings.Contains(err.Error(), "card-plain") {
 		t.Errorf("a run with a card nothing gives an instance must fail naming only that card, got %v", err)
 	}
@@ -446,7 +446,7 @@ func TestARunThatLeftACardUndispatchedFails(t *testing.T) {
 	resolvedKanban := build(true)
 	resolvedServer := httptest.NewServer(resolvedKanban)
 	defer resolvedServer.Close()
-	if err := run(runOptions{ModelRole: "default", ModelRoles: stubModelRoles{}, BoardID: testBoardID, KanbanURL: resolvedServer.URL, BridgeURL: bridgeServer.URL, DryRun: true, MaxDispatch: 10}); err != nil {
+	if err := run(runOptions{ModelRole: "default", ModelRoles: stubModelRoles{}, BoardID: testBoardID, BridgeURL: bridgeWithIssues(t, resolvedServer, bridgeServer), DryRun: true, MaxDispatch: 10}); err != nil {
 		t.Errorf("a run where every card resolves an instance must succeed — the board itself needs none: %v", err)
 	}
 }

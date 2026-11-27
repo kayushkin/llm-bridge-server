@@ -54,13 +54,14 @@ import (
 	"strings"
 	"time"
 
-	schedulerconfig "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/config"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/boardvocabulary"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgeauth"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgesession"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgestores"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/degradations"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/schedulerjobs"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/workersettings"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
@@ -96,15 +97,16 @@ const (
 // config is everything one tick reads from the outside, so a test can point the
 // whole run at stubs.
 type config struct {
-	kanbanURL          string
-	kanbanServiceToken string
-	bridgeURL          string
-	boardName          string
-	dryRun             bool
+	// issuesURL is the bridge's /issues: the board, its cards and the issues
+	// the nudge tells a session to update.
+	issuesURL string
+	bridgeURL string
+	boardName string
+	dryRun    bool
 }
 
 func main() {
-	settings, err := schedulerconfig.AutoworkerReviewer.NewSettingsRegistry(servicesettings.ProcessEnvironment())
+	settings, err := workersettings.AutoworkerReviewer.NewSettingsRegistry(servicesettings.ProcessEnvironment())
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -112,32 +114,30 @@ func main() {
 		registerFlag = flag.Bool("register", false, "Register/upsert this binary as a scheduler cron job and exit.")
 		jobName      = flag.String("job-name", "autoworker-reviewer-tick", "Scheduler job name for -register.")
 		dryRun       = flag.Bool("dry-run", false, "Report decisions; do not nudge sessions or tag.")
-		kanbanURL    = flag.String("kanban-url", settings.String(schedulerconfig.SettingKanbanStoreURL), "kanban-store base URL")
-		bridgeURL    = flag.String("bridge-url", settings.String(schedulerconfig.SettingBridgeURL), "llm-bridge-server base URL")
+		bridgeURL    = flag.String("bridge-url", settings.String(workersettings.SettingBridgeURL), "llm-bridge-server base URL; the board is its /issues")
 		boardName    = flag.String("board", defaultBoardName, "Kanban board name to review")
 	)
 	flag.Parse()
 
 	// llm-bridge-server gates every route; stamp this process's calls to it
-	// with the service token. Host-scoped, so the scheduler API, noteboard and
-	// kanban-store calls below are untouched.
-	if err := bridgeauth.StampRequestsToBridge(*bridgeURL, settings.String(schedulerconfig.SettingBridgeServiceToken)); err != nil {
+	// with this binary's service principal token. Host-scoped, so nothing
+	// else ever sees it.
+	if err := bridgeauth.StampRequestsToBridge(*bridgeURL, settings.String(workersettings.SettingBridgeServicePrincipalToken)); err != nil {
 		log.Fatal(err)
 	}
 
 	if *registerFlag {
-		if err := registerSchedulerJob(settings.String(schedulerconfig.SettingSchedulerURL), *jobName, *boardName); err != nil {
+		if err := registerSchedulerJob(bridgestores.SchedulerURL(*bridgeURL), *jobName, *boardName); err != nil {
 			log.Fatalf("register: %v", err)
 		}
 		return
 	}
 
 	os.Exit(run(config{
-		kanbanURL:          *kanbanURL,
-		kanbanServiceToken: settings.String(schedulerconfig.SettingKanbanStoreServiceToken),
-		bridgeURL:          *bridgeURL,
-		boardName:          *boardName,
-		dryRun:             *dryRun,
+		issuesURL: bridgestores.IssuesURL(*bridgeURL),
+		bridgeURL: *bridgeURL,
+		boardName: *boardName,
+		dryRun:    *dryRun,
 	}))
 }
 
@@ -170,7 +170,7 @@ func main() {
 func run(cfg config) int {
 	degraded := degradations.New("reviewer")
 
-	kc := issuesclient.New(cfg.kanbanURL, cfg.kanbanServiceToken)
+	kc := issuesclient.New(cfg.issuesURL)
 	board, err := kc.FindBoard(cfg.boardName)
 	if err != nil {
 		log.Fatalf("find board %q: %v", cfg.boardName, err)
@@ -258,7 +258,7 @@ func run(cfg config) int {
 		}
 
 		action := reviewCompletedSession(
-			kc, sessionID, cfg.dryRun,
+			kc, sessionID, cfg.issuesURL, cfg.dryRun,
 			func(message string) error { return sendMessage(cfg.bridgeURL, sessionID, message) },
 			func(note string) {
 				if err := stampBody(kc, c, note); err != nil {
@@ -398,6 +398,7 @@ type reviewStore interface {
 func reviewCompletedSession(
 	store reviewStore,
 	sessionID string,
+	issuesURL string,
 	dryRun bool,
 	send func(message string) error,
 	stamp func(note string),
@@ -450,7 +451,7 @@ func reviewCompletedSession(
 		return actionError
 	}
 
-	if err := send(reviewNudge(pass, maxPasses)); err != nil {
+	if err := send(reviewNudge(issuesURL, pass, maxPasses)); err != nil {
 		// Best-effort: never wedge the card on a send failure. Settle so the
 		// curator closes it as it would have without review. The pass tag is
 		// already stored, so the cap holds even if this settle fails.
@@ -471,16 +472,17 @@ func reviewCompletedSession(
 
 // reviewNudge is the self-review prompt sent to a completed autoworker session.
 // Sending it respawns the agent with full prior context (claude --resume).
-func reviewNudge(pass, max int) string {
+// issuesURL is where the session's task lives: the bridge's /issues.
+func reviewNudge(issuesURL string, pass, max int) string {
 	return fmt.Sprintf(`Automated self-review check (pass %d of %d).
 
 You earlier finished a turn on this autoworker task and your process exited, so it's queued to be marked complete. Before it closes:
 
 1. Re-read the original task and what you actually did this session.
-2. If there is obvious, self-contained work still remaining that you can finish RIGHT NOW without any user input or decision, do it now and update the noteboard item (PATCH http://localhost:8191/api/items/<id>) to reflect the new state.
+2. If there is obvious, self-contained work still remaining that you can finish RIGHT NOW without any user input or decision, do it now and update the noteboard item (PATCH %[3]s/items/<id>) to reflect the new state.
 3. If the task is genuinely complete, or the only work left needs a user decision / is blocked / is out of scope, do nothing further and state in one line why you're done.
 
-Do not invent or pad scope — only finish work that clearly belongs to this exact task. No chat; just work or sign off.`, pass, max)
+Do not invent or pad scope — only finish work that clearly belongs to this exact task. No chat; just work or sign off.`, pass, max, issuesURL)
 }
 
 // settleSession tags the session review-settled (so the curator may close the

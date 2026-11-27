@@ -13,7 +13,7 @@ import (
 func moveCardAgainst(t *testing.T, status int, body string) (MoveResult, error) {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.RequestURI != "/api/cards/card-1/move" {
+		if r.Method != http.MethodPost || r.RequestURI != "/cards/card-1/move" {
 			t.Errorf("unexpected request %s %s", r.Method, r.RequestURI)
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -22,7 +22,7 @@ func moveCardAgainst(t *testing.T, status int, body string) (MoveResult, error) 
 		_, _ = w.Write([]byte(body))
 	}))
 	defer srv.Close()
-	return New(srv.URL, "").MoveCard("card-1", "board-1", "col-1", 0)
+	return New(srv.URL).MoveCard("card-1", "board-1", "col-1", 0)
 }
 
 // kanban-store treats a failed auto-status patch as non-fatal: the move

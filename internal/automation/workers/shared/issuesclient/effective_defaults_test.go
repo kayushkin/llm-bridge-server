@@ -21,13 +21,13 @@ func effectiveDefaultsServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/boards/board-1/cards/card-1/effective-defaults":
+		case "/boards/board-1/cards/card-1/effective-defaults":
 			w.Write([]byte(documentedEffectiveDefaults))
-		case "/api/boards/board-1/cards/card-gone/effective-defaults":
+		case "/boards/board-1/cards/card-gone/effective-defaults":
 			http.Error(w, `{"error":"noteboard item not found: card-gone"}`, http.StatusNotFound)
-		case "/api/boards/board-1/cards/card-unreadable/effective-defaults":
+		case "/boards/board-1/cards/card-unreadable/effective-defaults":
 			http.Error(w, `{"error":"noteboard read of card card-unreadable failed: connection refused"}`, http.StatusBadGateway)
-		case "/api/boards/board-1/cards/card-confused/effective-defaults":
+		case "/boards/board-1/cards/card-confused/effective-defaults":
 			w.Write([]byte(`{"board_id":"board-1","card_id":"card-other","tags":[],"matched_rule_ids":[],"defaults":{}}`))
 		default:
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
@@ -40,7 +40,7 @@ func TestACardsEffectiveDefaultsAreReadWithTheirSources(t *testing.T) {
 	server := effectiveDefaultsServer(t)
 	defer server.Close()
 
-	resolved, err := New(server.URL, "").GetCardEffectiveDefaults("board-1", "card-1")
+	resolved, err := New(server.URL).GetCardEffectiveDefaults("board-1", "card-1")
 	if err != nil {
 		t.Fatalf("GetCardEffectiveDefaults: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestACardsEffectiveDefaultsAreReadWithTheirSources(t *testing.T) {
 func TestEffectiveDefaultsFailuresAreTold(t *testing.T) {
 	server := effectiveDefaultsServer(t)
 	defer server.Close()
-	client := New(server.URL, "")
+	client := New(server.URL)
 
 	_, err := client.GetCardEffectiveDefaults("board-1", "card-gone")
 	if !errors.Is(err, ErrCardNotFound) || !strings.Contains(err.Error(), "card-gone") {

@@ -12,7 +12,7 @@ import (
 // newBoundClient returns a Client already bound to a board and one column, so a
 // test can call CreateCard without going through EnsureBoard.
 func newBoundClient(baseURL string) *Client {
-	c := New(baseURL, "")
+	c := New(baseURL)
 	c.BoardID = "board-1"
 	c.ColumnsByName = map[string]string{"In Progress": "col-1"}
 	return c
@@ -29,12 +29,12 @@ type linkRecorder struct {
 
 func (lr *linkRecorder) handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/boards/board-1/cards", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/boards/board-1/cards", func(w http.ResponseWriter, r *http.Request) {
 		lr.cardPOSTs++
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(map[string]any{"item": map[string]any{"id": lr.newCardID}})
 	})
-	mux.HandleFunc("/api/cards/"+lr.newCardID+"/links", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/cards/"+lr.newCardID+"/links", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			EntityType string `json:"entity_type"`
 		}

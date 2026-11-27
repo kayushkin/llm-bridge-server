@@ -52,7 +52,7 @@ func TestRefileFindsOnlyTheMailItsCardNeverSaw(t *testing.T) {
 	}
 
 	found, read, unreachable := findMailFiledUnread(
-		newMailClient(mailstack.URL, "t"), state, noAgentGate(), since)
+		newMailClient(mailstack.URL), state, noAgentGate(), since)
 
 	if unreachable != 0 {
 		t.Fatalf("unreachable = %d, want 0", unreachable)
@@ -95,7 +95,7 @@ func TestRefileLeavesMailItCannotRefetch(t *testing.T) {
 	}
 
 	found, _, unreachable := findMailFiledUnread(
-		newMailClient(mailstack.URL, "t"), state, noAgentGate(), since)
+		newMailClient(mailstack.URL), state, noAgentGate(), since)
 
 	if len(found) != 0 {
 		t.Error("a message that cannot be fetched was queued for unfiling; the tick could not file it again")
@@ -133,7 +133,7 @@ func TestRefileWillNotStripACardAnAgentIsWorkingOn(t *testing.T) {
 	// model_generating is a working state either way.
 	gate := gateAgainst(t, "model_generating", time.Date(2026, 8, 13, 11, 0, 0, 0, time.UTC))
 
-	found, _, _ := findMailFiledUnread(newMailClient(mailstack.URL, "t"), state, gate, since)
+	found, _, _ := findMailFiledUnread(newMailClient(mailstack.URL), state, gate, since)
 
 	if len(found) != 0 {
 		t.Error("mail was pulled off a card an agent is mid-turn on")

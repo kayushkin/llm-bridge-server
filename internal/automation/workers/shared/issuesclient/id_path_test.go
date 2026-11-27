@@ -94,97 +94,97 @@ func TestAKanbanIDOrTagStaysOnePathSegment(t *testing.T) {
 	}{
 		{"ListColumns/boardID", func(c *Client, p string) []string {
 			c.ListColumns(p)
-			return []string{"api", "boards", p, "columns"}
+			return []string{"issues", "boards", p, "columns"}
 		}},
 		{"GetBoardView/boardID", func(c *Client, p string) []string {
 			c.GetBoardView(p)
-			return []string{"api", "boards", p, "cards"}
+			return []string{"issues", "boards", p, "cards"}
 		}},
 		{"CreateCard/BoardID", func(c *Client, p string) []string {
 			c.BoardID = p
 			c.ColumnsByName = map[string]string{"Todo": "col1"}
 			c.CreateCard(CreateCardArgs{ColumnName: "Todo", Title: "t"})
-			return []string{"api", "boards", p, "cards"}
+			return []string{"issues", "boards", p, "cards"}
 		}},
 		{"AddCardLink/cardID", func(c *Client, p string) []string {
 			c.AddCardLink(p, "session", ok, "")
-			return []string{"api", "cards", p, "links"}
+			return []string{"issues", "cards", p, "links"}
 		}},
 		{"ListCardLinks/cardID", func(c *Client, p string) []string {
 			c.ListCardLinks(p)
-			return []string{"api", "cards", p, "links"}
+			return []string{"issues", "cards", p, "links"}
 		}},
 		{"ListCardPlacements/cardID", func(c *Client, p string) []string {
 			c.ListCardPlacements(p)
-			return []string{"api", "cards", p, "placements"}
+			return []string{"issues", "cards", p, "placements"}
 		}},
 		{"MoveCard/cardID", func(c *Client, p string) []string {
 			c.MoveCard(p, "b1", "col1", 1)
-			return []string{"api", "cards", p, "move"}
+			return []string{"issues", "cards", p, "move"}
 		}},
 		{"PatchCardBody/cardID", func(c *Client, p string) []string {
 			c.PatchCardBody(p, "body")
-			return []string{"api", "cards", p}
+			return []string{"issues", "cards", p}
 		}},
 		{"ListEntityTags/entityRef", func(c *Client, p string) []string {
 			c.ListEntityTags("session", p)
-			return []string{"api", "entities", "session", p, "tags"}
+			return []string{"issues", "entities", "session", p, "tags"}
 		}},
 		{"ListEntityTags/entityType", func(c *Client, p string) []string {
 			c.ListEntityTags(p, ok)
-			return []string{"api", "entities", p, ok, "tags"}
+			return []string{"issues", "entities", p, ok, "tags"}
 		}},
 		{"AddEntityTag/entityRef", func(c *Client, p string) []string {
 			c.AddEntityTag("session", p, "tag")
-			return []string{"api", "entities", "session", p, "tags"}
+			return []string{"issues", "entities", "session", p, "tags"}
 		}},
 		{"DeleteEntityTag/entityRef", func(c *Client, p string) []string {
 			c.DeleteEntityTag("session", p, "tag")
-			return []string{"api", "entities", "session", p, "tags", "tag"}
+			return []string{"issues", "entities", "session", p, "tags", "tag"}
 		}},
 		{"DeleteEntityTag/tag", func(c *Client, p string) []string {
 			c.DeleteEntityTag("session", ok, p)
-			return []string{"api", "entities", "session", ok, "tags", p}
+			return []string{"issues", "entities", "session", ok, "tags", p}
 		}},
 		{"ListCardsForEntity/entityRef", func(c *Client, p string) []string {
 			c.ListCardsForEntity("session", p)
-			return []string{"api", "entities", "session", p, "cards"}
+			return []string{"issues", "entities", "session", p, "cards"}
 		}},
 		{"GetBoard/id", func(c *Client, p string) []string {
 			c.GetBoard(p)
-			return []string{"api", "boards", p}
+			return []string{"issues", "boards", p}
 		}},
 		{"GetCardEffectiveDefaults/boardID", func(c *Client, p string) []string {
 			c.GetCardEffectiveDefaults(p, ok)
-			return []string{"api", "boards", p, "cards", ok, "effective-defaults"}
+			return []string{"issues", "boards", p, "cards", ok, "effective-defaults"}
 		}},
 		{"GetCardEffectiveDefaults/cardID", func(c *Client, p string) []string {
 			c.GetCardEffectiveDefaults(ok, p)
-			return []string{"api", "boards", ok, "cards", p, "effective-defaults"}
+			return []string{"issues", "boards", ok, "cards", p, "effective-defaults"}
 		}},
 		{"PutTicket/cardID", func(c *Client, p string) []string {
 			c.PutTicket(p, "principal_000001", "chat", "session", ok)
-			return []string{"api", "cards", p, "ticket"}
+			return []string{"issues", "cards", p, "ticket"}
 		}},
 		{"PatchCard/cardID", func(c *Client, p string) []string {
 			c.PatchCard(p, map[string]any{"title": "t"})
-			return []string{"api", "cards", p}
+			return []string{"issues", "cards", p}
 		}},
 		{"HoldCard/cardID", func(c *Client, p string) []string {
 			c.HoldCard(p, "reason")
-			return []string{"api", "cards", p, "hold"}
+			return []string{"issues", "cards", p, "hold"}
 		}},
 		{"DeleteCardLink/linkID", func(c *Client, p string) []string {
 			c.DeleteCardLink(p)
-			return []string{"api", "links", p}
+			return []string{"issues", "links", p}
 		}},
 		{"DetachCardFromBoard/boardID", func(c *Client, p string) []string {
 			c.DetachCardFromBoard(p, ok)
-			return []string{"api", "boards", p, "cards", ok}
+			return []string{"issues", "boards", p, "cards", ok}
 		}},
 		{"DetachCardFromBoard/cardID", func(c *Client, p string) []string {
 			c.DetachCardFromBoard(ok, p)
-			return []string{"api", "boards", ok, "cards", p}
+			return []string{"issues", "boards", ok, "cards", p}
 		}},
 	}
 
@@ -192,7 +192,7 @@ func TestAKanbanIDOrTagStaysOnePathSegment(t *testing.T) {
 		for _, probe := range probeIDs {
 			t.Run(tc.name+"/"+probe, func(t *testing.T) {
 				srv, got := recorder(t)
-				c := New(srv.URL, "")
+				c := New(srv.URL + "/issues")
 				want := tc.call(c, probe)
 				assertSegments(t, tc.name, probe, *got, want)
 			})

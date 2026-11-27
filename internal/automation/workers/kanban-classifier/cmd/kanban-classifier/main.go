@@ -65,12 +65,14 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/boardvocabulary"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgeauth"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgesession"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgestores"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/degradations"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/oneshot"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/schedulerjobs"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/schedulersettings"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/textcut"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/workersettings"
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )
@@ -150,27 +152,26 @@ var errSettingsRefused = errors.New("settings refused")
 // unusable. ContinueOnError is what makes it callable at all — ExitOnError
 // would take the test binary down on a bad argument instead of returning.
 //
-// environment is an argument because six defaults are read at
-// flag-registration time; a test that exported KANBAN_STORE_URL to observe one
-// would race every other test in the package for a process-wide variable. It
-// is read through the binary's settings registry (internal/config), which
-// refuses a misspelled KANBAN_CLASSIFIER_ variable.
+// environment is an argument because defaults are read at flag-registration
+// time; a test that exported LLM_BRIDGE_URL to observe one would race every
+// other test in the package for a process-wide variable. It is read through
+// the binary's settings registry (workersettings), which refuses a misspelled
+// KANBAN_CLASSIFIER_ variable.
 // homeDirectory is an argument for the same reason: the registered command is
 // home-relative and a test should not have to move HOME out from under the
 // process to assert what it resolves to.
 func parseFlags(args []string, environment servicesettings.Environment, homeDirectory string) (config, error) {
-	settings, err := schedulerconfig.KanbanClassifier.NewSettingsRegistry(environment)
+	settings, err := workersettings.KanbanClassifier.NewSettingsRegistry(environment)
 	if err != nil {
 		return config{}, fmt.Errorf("%w: %v", errSettingsRefused, err)
 	}
 	fs := flag.NewFlagSet("kanban-classifier", flag.ContinueOnError)
 	var c config
 	fs.BoolVar(&c.RegisterJob, "register", false, "Register/upsert this binary as a scheduler cron job and exit.")
-	fs.BoolVar(&c.DryRun, "dry-run", false, "Classify but do not write to kanban-store.")
+	fs.BoolVar(&c.DryRun, "dry-run", false, "Classify but do not write to the board.")
 	fs.StringVar(&c.OneSession, "session", "", "Classify exactly one session id and exit (no candidate filtering).")
 	fs.StringVar(&c.BoardName, "board", defaultBoardName, "Kanban board name to write cards to.")
-	fs.StringVar(&c.KanbanURL, "kanban-url", settings.String(schedulerconfig.SettingKanbanStoreURL), "kanban-store base URL")
-	fs.StringVar(&c.BridgeURL, "bridge-url", settings.String(schedulerconfig.SettingBridgeURL), "llm-bridge-server base URL")
+	fs.StringVar(&c.BridgeURL, "bridge-url", settings.String(workersettings.SettingBridgeURL), "llm-bridge-server base URL; the board, the scheduler and the sessions are all under it")
 	fs.IntVar(&c.MaxClassify, "max", maxClassifyPerTick, "Max classifications per tick.")
 	fs.IntVar(&c.DigestBudget, "digest-budget", digestCharBudget, "Digest size in characters (~4 chars per token).")
 	fs.BoolVar(&c.DumpDigest, "dump-digest", false, "With -session: print the digest that would be sent and exit, without calling the model.")
@@ -181,9 +182,7 @@ func parseFlags(args []string, environment servicesettings.Environment, homeDire
 	// Derived rather than registered: the dedupe gates are rationing for the
 	// cron sweep, and naming a session by id is a human overruling them.
 	c.ExplicitSession = c.OneSession != ""
-	c.SchedulerURL = settings.String(schedulerconfig.SettingSchedulerURL)
-	c.KanbanServiceToken = settings.String(schedulerconfig.SettingKanbanStoreServiceToken)
-	c.BridgeServiceToken = settings.String(schedulerconfig.SettingBridgeServiceToken)
+	c.BridgeServicePrincipalToken = settings.String(workersettings.SettingBridgeServicePrincipalToken)
 	c.BinaryPath = filepath.Join(homeDirectory, "bin", "kanban-classifier")
 	return c, nil
 }
@@ -244,9 +243,9 @@ func run() int {
 	}
 
 	// llm-bridge-server gates every route; stamp this process's calls to it
-	// with the service token. Host-scoped, so noteboard, kanban-store and the
-	// scheduler API are untouched.
-	if err := bridgeauth.StampRequestsToBridge(cfg.BridgeURL, cfg.BridgeServiceToken); err != nil {
+	// with its service principal token. Every store this binary calls is
+	// under the bridge, so every call carries it.
+	if err := bridgeauth.StampRequestsToBridge(cfg.BridgeURL, cfg.BridgeServicePrincipalToken); err != nil {
 		log.Fatal(err)
 	}
 	if err := cfg.validate(); err != nil {
@@ -271,12 +270,12 @@ func run() int {
 	// The model role is the scheduler's stored setting, changed on its
 	// settings page. A digest dump never reaches the model, so it needs none.
 	if !cfg.DumpDigest {
-		if cfg.ModelRole, err = schedulersettings.ReadModelRole(ctx, cfg.SchedulerURL, schedulerconfig.SettingKanbanClassifierModelRole); err != nil {
+		if cfg.ModelRole, err = schedulersettings.ReadModelRole(ctx, bridgestores.SchedulerURL(cfg.BridgeURL), schedulerconfig.SettingKanbanClassifierModelRole); err != nil {
 			log.Fatal(err)
 		}
 	}
 
-	kc := issuesclient.New(cfg.KanbanURL, cfg.KanbanServiceToken)
+	kc := issuesclient.New(bridgestores.IssuesURL(cfg.BridgeURL))
 	board, err := kc.FindBoard(cfg.BoardName)
 	if err != nil {
 		log.Fatalf("find board %q: %v", cfg.BoardName, err)
@@ -369,7 +368,8 @@ func classifyTick(candidates []session, maxClassifications int, classifyOneSessi
 }
 
 type config struct {
-	KanbanURL string
+	// BridgeURL is llm-bridge-server's address: the sessions are at its root,
+	// the board under /issues and the model role under /scheduler.
 	BridgeURL string
 	// ModelRole is the model-store role classify asks for. run reads it from
 	// the scheduler's stored settings; it is not a flag.
@@ -387,16 +387,15 @@ type config struct {
 	// MaxClassify bounds how many model calls one tick pays for.
 	MaxClassify int
 
-	// SchedulerURL and BinaryPath are used only by -register. They are parsed
-	// with everything else so the registration payload is assertable without
-	// reaching the environment.
-	SchedulerURL string
-	BinaryPath   string
+	// BinaryPath is used only by -register. It is parsed with everything else
+	// so the registration payload is assertable without reaching the
+	// environment.
+	BinaryPath string
 
-	// The tokens this binary presents as an internal service. Both stores
-	// gate every route.
-	KanbanServiceToken string
-	BridgeServiceToken string
+	// BridgeServicePrincipalToken is the token this binary presents to
+	// llm-bridge-server as its own service principal. The bridge gates every
+	// route.
+	BridgeServicePrincipalToken string
 
 	// ExplicitSession is set when an operator named a single session on the
 	// command line. The dedupe gates below exist to ration the cron sweep, not
@@ -1672,7 +1671,7 @@ func schedulerJob(cfg config) schedulerjobs.Job {
 }
 
 func registerSchedulerJob(cfg config) error {
-	return schedulerjobs.RegisterIfAbsent(cfg.SchedulerURL, schedulerJob(cfg))
+	return schedulerjobs.RegisterIfAbsent(bridgestores.SchedulerURL(cfg.BridgeURL), schedulerJob(cfg))
 }
 
 // ============================ misc ============================

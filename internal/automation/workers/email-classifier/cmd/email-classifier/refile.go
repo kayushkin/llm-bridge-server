@@ -124,7 +124,7 @@ func splitLocator(locator string) (accountID, messageID string, ok bool) {
 }
 
 func runRefileUnreadPass(cfg config, kc *issuesclient.Client, state *boardState, gate *sessionGate, since time.Time) error {
-	mc := newMailClient(cfg.MailURL, cfg.MailToken)
+	mc := newMailClient(cfg.MailURL)
 
 	log.Printf("[refile] looking for mail filed without being read since %s", since.Format("2006-01-02"))
 	candidates, read, unreachable := findMailFiledUnread(mc, state, gate, since)

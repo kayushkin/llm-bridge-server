@@ -9,19 +9,19 @@ import (
 	"time"
 )
 
-func noteboardServing(t *testing.T, items []noteboardItem) *noteboardClient {
+func notesServing(t *testing.T, items []noteItem) *notesClient {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// A bare array, which is what noteboard actually sends. An earlier
+		// A bare array, which is what notes actually sends. An earlier
 		// version of this fake wrapped it in {"items": …}; the tests passed and
 		// the live run failed on the first call.
 		if items == nil {
-			items = []noteboardItem{}
+			items = []noteItem{}
 		}
 		json.NewEncoder(w).Encode(items)
 	}))
 	t.Cleanup(srv.Close)
-	return newNoteboardClient(srv.URL)
+	return newNotesClient(srv.URL)
 }
 
 func pendingFrom(address, locator, subject string) pendingEmail {
@@ -34,7 +34,7 @@ func pendingFrom(address, locator, subject string) pendingEmail {
 // TestARoutingNoteReachesTheModel is the point of the whole feature. A note the
 // user wrote is worthless if it never reaches the digest the model reads.
 func TestARoutingNoteReachesTheModel(t *testing.T) {
-	nb := noteboardServing(t, []noteboardItem{{
+	nb := notesServing(t, []noteItem{{
 		ID:    "note-1",
 		Body:  "This is my landlord. Anything from here needs a reply.",
 		Links: []string{"email_sender:landlord@example.com"},
@@ -68,7 +68,7 @@ func TestARoutingNoteReachesTheModel(t *testing.T) {
 // TestASenderNoteAndAMessageNoteBothSurvive — they say different things. A note
 // about one message does not cancel the standing instruction about the address.
 func TestASenderNoteAndAMessageNoteBothSurvive(t *testing.T) {
-	nb := noteboardServing(t, []noteboardItem{
+	nb := notesServing(t, []noteItem{
 		{ID: "n1", Body: "Only ever sends receipts.", Links: []string{"email_sender:billing@example.com"}},
 		{ID: "n2", Body: "This one is the disputed charge.", Links: []string{"email:gmail-personal:a1"}},
 	})
@@ -86,7 +86,7 @@ func TestASenderNoteAndAMessageNoteBothSurvive(t *testing.T) {
 // TestMailWithNoNoteGetsNoNoteLine — an empty label in every email would train
 // the model to skim past the field on the messages that do carry one.
 func TestMailWithNoNoteGetsNoNoteLine(t *testing.T) {
-	notes, _ := loadRoutingNotes(noteboardServing(t, nil))
+	notes, _ := loadRoutingNotes(notesServing(t, nil))
 	digest := buildDigest(&boardState{Cards: map[string]*cardState{}}, notes,
 		[]pendingEmail{pendingFrom("anyone@example.com", "gmail-personal:a1", "Hello")})
 	if strings.Contains(digest, "user_note") {
@@ -98,7 +98,7 @@ func TestMailWithNoNoteGetsNoNoteLine(t *testing.T) {
 // in whatever case the sender used; a note written as Landlord@Example.com must
 // still match mail from landlord@example.com.
 func TestNotesAreIndexedCaseInsensitivelyByAddress(t *testing.T) {
-	nb := noteboardServing(t, []noteboardItem{
+	nb := notesServing(t, []noteItem{
 		{ID: "n1", Body: "the landlord", Links: []string{"email_sender:Landlord@Example.com"}},
 	})
 	notes, _ := loadRoutingNotes(nb)
@@ -110,7 +110,7 @@ func TestNotesAreIndexedCaseInsensitivelyByAddress(t *testing.T) {
 // TestUnrelatedLinksOnANoteAreIgnored. A noteboard note may link to anything;
 // only the two email entity types mean something here.
 func TestUnrelatedLinksOnANoteAreIgnored(t *testing.T) {
-	nb := noteboardServing(t, []noteboardItem{
+	nb := notesServing(t, []noteItem{
 		{ID: "n1", Body: "about a repo", Links: []string{"repo:scheduler", "session:br_123"}},
 	})
 	notes, err := loadRoutingNotes(nb)

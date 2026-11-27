@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	schedulerconfig "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/config"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgestores"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )
 
@@ -53,7 +54,6 @@ func TestTheDefaultsThatShipAreTheOnesThisBinaryStartsWith(t *testing.T) {
 			want string
 		}{
 			{"-board", cfg.BoardName, "Agent runs"},
-			{"-kanban-url", cfg.KanbanURL, "http://localhost:8305"},
 			{"-bridge-url", cfg.BridgeURL, "http://localhost:8160"},
 			{"-session", cfg.OneSession, ""},
 		} {
@@ -78,9 +78,6 @@ func TestTheDefaultsThatShipAreTheOnesThisBinaryStartsWith(t *testing.T) {
 		// them on every session of every tick.
 		if cfg.ExplicitSession {
 			t.Error("ExplicitSession ships true with no -session; the per-session dedupe gates would be bypassed on the cron path")
-		}
-		if cfg.SchedulerURL != "http://localhost:8092" {
-			t.Errorf("SchedulerURL ships as %q, want http://localhost:8092", cfg.SchedulerURL)
 		}
 		if want := filepath.Join("/home/agent", "bin", "kanban-classifier"); cfg.BinaryPath != want {
 			t.Errorf("BinaryPath ships as %q, want %q", cfg.BinaryPath, want)
@@ -149,83 +146,81 @@ func TestTheTwoValuesThatDecideSpend(t *testing.T) {
 	}
 }
 
-// TestEachEnvironmentVariableReachesItsOwnField is the test the flag set was
-// registered into named fields for.
+// TestEveryStoreIsAPathUnderTheOneBridgeAddress pins where each call goes.
 //
-// Three variables land in this config and all are strings that would be
-// accepted in each other's place — base URLs. Nothing downstream would reject
-// a swap: issuesclient.New takes the kanban URL positionally, and oneshot.Call
-// and listSessions both take the bridge URL. Giving each variable a
-// distinct value and asserting the field it lands in is what makes a swap
-// fail.
-func TestEachEnvironmentVariableReachesItsOwnField(t *testing.T) {
-	cfg, err := parseFlags(nil, environmentWith(map[string]string{
-		"KANBAN_STORE_URL": "http://kanban.example",
-		"LLM_BRIDGE_URL":   "http://bridge.example",
-		"SCHEDULER_URL":    "http://scheduler.example",
-	}), "/home/agent")
+// The board and the scheduler used to have addresses of their own, and a swap
+// between them would have been accepted by nothing downstream. Now there is
+// one address: the board is its /issues and the model role its /scheduler,
+// and the sessions and /oneshot are at its root.
+func TestEveryStoreIsAPathUnderTheOneBridgeAddress(t *testing.T) {
+	cfg, err := parseFlags(nil, environmentWith(map[string]string{"LLM_BRIDGE_URL": "http://bridge.example"}), "/home/agent")
 	if err != nil {
 		t.Fatalf("parseFlags: %v", err)
 	}
+	if cfg.BridgeURL != "http://bridge.example" {
+		t.Errorf("LLM_BRIDGE_URL reached BridgeURL as %q", cfg.BridgeURL)
+	}
 	for _, row := range []struct {
-		variable string
-		got      string
-		want     string
+		store string
+		got   string
+		want  string
 	}{
-		{"KANBAN_STORE_URL", cfg.KanbanURL, "http://kanban.example"},
-		{"LLM_BRIDGE_URL", cfg.BridgeURL, "http://bridge.example"},
-		{"SCHEDULER_URL", cfg.SchedulerURL, "http://scheduler.example"},
+		{"issues", bridgestores.IssuesURL(cfg.BridgeURL), "http://bridge.example/issues"},
+		{"scheduler", bridgestores.SchedulerURL(cfg.BridgeURL), "http://bridge.example/scheduler"},
 	} {
 		if row.got != row.want {
-			t.Errorf("%s reached the wrong field: got %q, want %q", row.variable, row.got, row.want)
+			t.Errorf("%s is at %q, want %q", row.store, row.got, row.want)
+		}
+	}
+	for _, retired := range []string{"-kanban-url"} {
+		if _, err := parseFlags([]string{retired, "http://kanban.example"}, noEnvironment, "/home/agent"); err == nil {
+			t.Errorf("%s was accepted: the board is under the bridge now, and a second address would be a second source", retired)
 		}
 	}
 }
 
 // TestAFlagBeatsTheEnvironmentAndTheEnvironmentBeatsTheDefault pins the
-// precedence the whole seam rests on. envOr is consulted at registration time,
-// so the environment supplies the flag's *default* — an explicit argument still
-// has to win, and it does only because Parse runs after registration.
+// precedence the whole seam rests on. The environment supplies the flag's
+// *default* — an explicit argument still has to win, and it does only because
+// Parse runs after registration.
 func TestAFlagBeatsTheEnvironmentAndTheEnvironmentBeatsTheDefault(t *testing.T) {
-	environment := environmentWith(map[string]string{"KANBAN_STORE_URL": "http://from-environment"})
+	environment := environmentWith(map[string]string{"LLM_BRIDGE_URL": "http://from-environment"})
 
 	fromEnvironment, err := parseFlags(nil, environment, "/home/agent")
 	if err != nil {
 		t.Fatalf("parseFlags: %v", err)
 	}
-	if fromEnvironment.KanbanURL != "http://from-environment" {
-		t.Errorf("environment did not beat the built-in default: got %q", fromEnvironment.KanbanURL)
+	if fromEnvironment.BridgeURL != "http://from-environment" {
+		t.Errorf("environment did not beat the built-in default: got %q", fromEnvironment.BridgeURL)
 	}
 
-	fromFlag, err := parseFlags([]string{"-kanban-url", "http://from-flag"}, environment, "/home/agent")
+	fromFlag, err := parseFlags([]string{"-bridge-url", "http://from-flag"}, environment, "/home/agent")
 	if err != nil {
 		t.Fatalf("parseFlags: %v", err)
 	}
-	if fromFlag.KanbanURL != "http://from-flag" {
-		t.Errorf("-kanban-url did not beat the environment: got %q", fromFlag.KanbanURL)
+	if fromFlag.BridgeURL != "http://from-flag" {
+		t.Errorf("-bridge-url did not beat the environment: got %q", fromFlag.BridgeURL)
 	}
 
 	fromDefault, err := parseFlags(nil, noEnvironment, "/home/agent")
 	if err != nil {
 		t.Fatalf("parseFlags: %v", err)
 	}
-	if fromDefault.KanbanURL != "http://localhost:8305" {
-		t.Errorf("unset environment did not fall back to the built-in default: got %q", fromDefault.KanbanURL)
+	if fromDefault.BridgeURL != "http://localhost:8160" {
+		t.Errorf("unset environment did not fall back to the built-in default: got %q", fromDefault.BridgeURL)
 	}
 }
 
-// TestAnEmptyEnvironmentVariableIsTreatedAsUnset pins envOr's actual rule. It
-// tests for emptiness, not presence, so `KANBAN_STORE_URL=` falls back to the
-// default rather than sending every board write to the empty string — which
-// would fail at the first request rather than silently, but with an error
-// naming no host.
+// TestAnEmptyEnvironmentVariableIsTreatedAsUnset pins the registry's rule. It
+// tests for emptiness, not presence, so `LLM_BRIDGE_URL=` falls back to the
+// default rather than sending every call to the empty string.
 func TestAnEmptyEnvironmentVariableIsTreatedAsUnset(t *testing.T) {
-	cfg, err := parseFlags(nil, environmentWith(map[string]string{"KANBAN_STORE_URL": ""}), "/home/agent")
+	cfg, err := parseFlags(nil, environmentWith(map[string]string{"LLM_BRIDGE_URL": ""}), "/home/agent")
 	if err != nil {
 		t.Fatalf("parseFlags: %v", err)
 	}
-	if cfg.KanbanURL != "http://localhost:8305" {
-		t.Errorf("an empty KANBAN_STORE_URL was not treated as unset: got %q", cfg.KanbanURL)
+	if cfg.BridgeURL != "http://localhost:8160" {
+		t.Errorf("an empty LLM_BRIDGE_URL was not treated as unset: got %q", cfg.BridgeURL)
 	}
 }
 

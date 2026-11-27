@@ -460,7 +460,7 @@ func TestADryRunIsNotAShortfall(t *testing.T) {
 // does not create it. That is the state the system is supposed to be in before
 // its first real tick.
 func TestAQueueBoardThatDoesNotExistYetIsNotAShortfallOnADryRun(t *testing.T) {
-	client, why := initQueueClient(newStubEmptyBoards(t), "", true)
+	client, why := initQueueClient(newStubEmptyBoards(t), true)
 	if client != nil {
 		t.Errorf("a missing board returned a client")
 	}

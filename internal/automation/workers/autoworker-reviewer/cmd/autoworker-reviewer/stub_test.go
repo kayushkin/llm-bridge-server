@@ -32,13 +32,13 @@ type stubKanban struct {
 	boardName  string
 	cards      []stubCard
 	noBoard    bool
-	failLinks  int // status to answer GET /api/cards/{id}/links with
-	failTags   int // status to answer GET /api/entities/session/{id}/tags with
-	failAddTag int // status to answer POST /api/entities/session/{id}/tags with
+	failLinks  int // status to answer GET /cards/{id}/links with
+	failTags   int // status to answer GET /entities/session/{id}/tags with
+	failAddTag int // status to answer POST /entities/session/{id}/tags with
 	// failSettleTag answers only the review-settled write with this status, so a
 	// test can let the pass tag land and refuse the settle that follows it.
 	failSettleTag int
-	failPatch     int // status to answer PATCH /api/cards/{id} with
+	failPatch     int // status to answer PATCH /cards/{id} with
 
 	added   map[string][]string // session id -> tags added this run
 	patched map[string]string   // card id -> body it was patched with
@@ -83,22 +83,22 @@ func (k *stubKanban) card(id string) *stubCard {
 func (k *stubKanban) serve(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.Path
 	switch {
-	case p == "/api/boards" && r.Method == "GET":
+	case p == "/boards" && r.Method == "GET":
 		if k.noBoard {
 			writeStubJSON(w, 200, []map[string]string{})
 			return
 		}
 		writeStubJSON(w, 200, []map[string]string{{"id": stubBoardID, "name": k.boardName}})
 
-	case p == "/api/boards/"+stubBoardID+"/cards" && r.Method == "GET":
+	case p == "/boards/"+stubBoardID+"/cards" && r.Method == "GET":
 		writeStubJSON(w, 200, k.boardView())
 
-	case strings.HasPrefix(p, "/api/entities/session/") && strings.HasSuffix(p, "/tags") && r.Method == "GET":
+	case strings.HasPrefix(p, "/entities/session/") && strings.HasSuffix(p, "/tags") && r.Method == "GET":
 		if k.failTags != 0 {
 			http.Error(w, "tag store unavailable", k.failTags)
 			return
 		}
-		ref := strings.TrimSuffix(strings.TrimPrefix(p, "/api/entities/session/"), "/tags")
+		ref := strings.TrimSuffix(strings.TrimPrefix(p, "/entities/session/"), "/tags")
 		var tags []map[string]string
 		for _, c := range k.cards {
 			if c.sessionID == ref {
@@ -112,12 +112,12 @@ func (k *stubKanban) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		writeStubJSON(w, 200, tags)
 
-	case strings.HasPrefix(p, "/api/entities/session/") && strings.HasSuffix(p, "/tags") && r.Method == "POST":
+	case strings.HasPrefix(p, "/entities/session/") && strings.HasSuffix(p, "/tags") && r.Method == "POST":
 		if k.failAddTag != 0 {
 			http.Error(w, "tag refused", k.failAddTag)
 			return
 		}
-		ref := strings.TrimSuffix(strings.TrimPrefix(p, "/api/entities/session/"), "/tags")
+		ref := strings.TrimSuffix(strings.TrimPrefix(p, "/entities/session/"), "/tags")
 		var req struct {
 			Tag string `json:"tag"`
 		}
@@ -134,7 +134,7 @@ func (k *stubKanban) serve(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "links unavailable", k.failLinks)
 			return
 		}
-		cardID := strings.TrimSuffix(strings.TrimPrefix(p, "/api/cards/"), "/links")
+		cardID := strings.TrimSuffix(strings.TrimPrefix(p, "/cards/"), "/links")
 		var links []map[string]any
 		c := k.card(cardID)
 		if c != nil {
@@ -147,7 +147,7 @@ func (k *stubKanban) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		writeStubJSON(w, 200, links)
 
-	case strings.HasPrefix(p, "/api/cards/") && r.Method == "PATCH":
+	case strings.HasPrefix(p, "/cards/") && r.Method == "PATCH":
 		if k.failPatch != 0 {
 			http.Error(w, "patch refused", k.failPatch)
 			return
@@ -155,7 +155,7 @@ func (k *stubKanban) serve(w http.ResponseWriter, r *http.Request) {
 		var req map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		body, _ := req["body"].(string)
-		k.patched[strings.TrimPrefix(p, "/api/cards/")] = body
+		k.patched[strings.TrimPrefix(p, "/cards/")] = body
 		writeStubJSON(w, 200, map[string]string{"status": "ok"})
 
 	default:

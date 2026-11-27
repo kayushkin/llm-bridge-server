@@ -14,22 +14,22 @@ import (
 
 // ---------------------------------------------------------------- fakes
 
-type fakeNoteboard struct {
+type fakeItemStores struct {
 	items    []*model.Item
 	created  []*model.CreateItemRequest
 	patched  map[string]map[string]any
 	schedule map[string]*model.Schedule
 }
 
-func newFakeNoteboard(items ...*model.Item) *fakeNoteboard {
-	return &fakeNoteboard{
+func newFakeItemStores(items ...*model.Item) *fakeItemStores {
+	return &fakeItemStores{
 		items:    items,
 		patched:  map[string]map[string]any{},
 		schedule: map[string]*model.Schedule{},
 	}
 }
 
-func (f *fakeNoteboard) ListOpen(string) ([]*model.Item, error) {
+func (f *fakeItemStores) ListOpen(string) ([]*model.Item, error) {
 	open := []*model.Item{}
 	for _, item := range f.items {
 		if item.Status == "open" {
@@ -38,8 +38,8 @@ func (f *fakeNoteboard) ListOpen(string) ([]*model.Item, error) {
 	}
 	return open, nil
 }
-func (f *fakeNoteboard) ListAllStatuses(string) ([]*model.Item, error) { return f.items, nil }
-func (f *fakeNoteboard) ListScheduled(string) ([]*model.Item, error) {
+func (f *fakeItemStores) ListAllStatuses(string) ([]*model.Item, error) { return f.items, nil }
+func (f *fakeItemStores) ListScheduled(string) ([]*model.Item, error) {
 	scheduled := []*model.Item{}
 	for _, item := range f.items {
 		if item.Schedule != nil {
@@ -48,7 +48,7 @@ func (f *fakeNoteboard) ListScheduled(string) ([]*model.Item, error) {
 	}
 	return scheduled, nil
 }
-func (f *fakeNoteboard) ListChildren(parentID string) ([]*model.Item, error) {
+func (f *fakeItemStores) ListChildren(parentID string) ([]*model.Item, error) {
 	children := []*model.Item{}
 	for _, item := range f.items {
 		if item.ParentID != nil && *item.ParentID == parentID {
@@ -57,7 +57,7 @@ func (f *fakeNoteboard) ListChildren(parentID string) ([]*model.Item, error) {
 	}
 	return children, nil
 }
-func (f *fakeNoteboard) FindByTag(itemType, tag string) (*model.Item, error) {
+func (f *fakeItemStores) FindByTag(itemType, tag string) (*model.Item, error) {
 	for _, item := range f.items {
 		if item.Type != itemType {
 			continue
@@ -70,7 +70,7 @@ func (f *fakeNoteboard) FindByTag(itemType, tag string) (*model.Item, error) {
 	}
 	return nil, nil
 }
-func (f *fakeNoteboard) CreateItem(req *model.CreateItemRequest) (*model.Item, error) {
+func (f *fakeItemStores) CreateItem(req *model.CreateItemRequest) (*model.Item, error) {
 	f.created = append(f.created, req)
 	created := &model.Item{
 		ID: "created-" + req.Title, Type: req.Type, Title: req.Title,
@@ -80,14 +80,29 @@ func (f *fakeNoteboard) CreateItem(req *model.CreateItemRequest) (*model.Item, e
 	return created, nil
 }
 
-// Patch MERGES, because a real noteboard PATCH merges the fields it is given
-// into the row and leaves the rest alone. Replacing instead meant the last patch
-// of a tick silently erased every earlier one: a full Run() writes the digest
-// body and then stamps the sent-marker on the same note, so the body vanished
-// from the record and a test asserting on it saw an empty string. That is a fake
-// disagreeing with the service it stands in for, which reads as a coverage hole
-// in the code under test.
-func (f *fakeNoteboard) Patch(id string, fields map[string]any) error {
+// PatchTodo and PatchNote MERGE, because a real PATCH merges the fields it is
+// given into the row and leaves the rest alone. Replacing instead meant the
+// last patch of a tick silently erased every earlier one: a full Run() writes
+// the digest body and then stamps the sent-marker on the same note, so the body
+// vanished from the record and a test asserting on it saw an empty string. That
+// is a fake disagreeing with the service it stands in for, which reads as a
+// coverage hole in the code under test.
+//
+// Each refuses an item of the other store's type, as the two stores do: a todo
+// lives in issues and the digest note in notes, so a note's PATCH sent as a
+// todo's — or the other way — is a call that would reach the wrong store.
+func (f *fakeItemStores) PatchTodo(id string, fields map[string]any) error {
+	return f.patch(model.TypeTodo, id, fields)
+}
+func (f *fakeItemStores) PatchNote(id string, fields map[string]any) error {
+	return f.patch(model.TypeNote, id, fields)
+}
+func (f *fakeItemStores) patch(itemType, id string, fields map[string]any) error {
+	for _, item := range f.items {
+		if item.ID == id && item.Type != itemType {
+			return fmt.Errorf("fake: %s is a %s, patched as a %s", id, item.Type, itemType)
+		}
+	}
 	merged := f.patched[id]
 	if merged == nil {
 		merged = map[string]any{}
@@ -98,7 +113,7 @@ func (f *fakeNoteboard) Patch(id string, fields map[string]any) error {
 	}
 	return nil
 }
-func (f *fakeNoteboard) SetSchedule(id string, schedule *model.Schedule, dryRun bool) error {
+func (f *fakeItemStores) SetSchedule(id string, schedule *model.Schedule, dryRun bool) error {
 	if dryRun {
 		return nil
 	}
@@ -151,7 +166,7 @@ func pacific(t *testing.T) *time.Location {
 	return loc
 }
 
-func newTestCoordinator(t *testing.T, now time.Time, nb *fakeNoteboard) (*Coordinator, *fakeHerald, *fakeCalendar) {
+func newTestCoordinator(t *testing.T, now time.Time, nb *fakeItemStores) (*Coordinator, *fakeHerald, *fakeCalendar) {
 	t.Helper()
 	herald := &fakeHerald{}
 	calendar := &fakeCalendar{}
@@ -165,7 +180,7 @@ func newTestCoordinator(t *testing.T, now time.Time, nb *fakeNoteboard) (*Coordi
 		t.Fatalf("parseFlags with no arguments should yield the shipped defaults: %v", err)
 	}
 	coordinator := newCoordinator(config, pacific(t), now)
-	coordinator.noteboard = nb
+	coordinator.items = nb
 	coordinator.calendar = calendar
 	coordinator.herald = herald
 	return coordinator, herald, calendar
@@ -192,7 +207,7 @@ func TestMaterializedChildInheritsTagsSoTheAutoworkerNeverPicksItUp(t *testing.T
 		},
 	}
 
-	nb := newFakeNoteboard(template)
+	nb := newFakeItemStores(template)
 	// A tick just after the first occurrence.
 	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 7, 21, 10, 0, 0, 0, loc), nb)
 
@@ -244,7 +259,7 @@ func TestMaterializationIsIdempotentAcrossTicks(t *testing.T) {
 			RRule: "FREQ=MONTHLY;BYDAY=3TU", Mode: model.ScheduleModeInstance,
 		},
 	}
-	nb := newFakeNoteboard(template)
+	nb := newFakeItemStores(template)
 
 	// Twelve ticks across three hours, exactly as the scheduler would.
 	for tick := 0; tick < 12; tick++ {
@@ -281,7 +296,7 @@ func TestRecurringTemplateIsNotShownAsWork(t *testing.T) {
 		Tags: []string{"personal"}, DueAt: &anchor, ParentID: ptr("template"),
 	}
 
-	nb := newFakeNoteboard(template, occurrence)
+	nb := newFakeItemStores(template, occurrence)
 	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 7, 21, 10, 0, 0, 0, loc), nb)
 
 	board, err := coordinator.buildBoard()
@@ -322,7 +337,7 @@ func TestAnOverdueItemWithItsOwnNagStillOpensOnlyOneSession(t *testing.T) {
 		ID: "digest", Type: "note", Title: digestTitle, Tags: []string{"personal", digestTag},
 	}
 
-	nb := newFakeNoteboard(carTitle, digestNote)
+	nb := newFakeItemStores(carTitle, digestNote)
 	// A Monday at 10:30am: past the 7:30 digest hour AND past the 10am nag.
 	now := time.Date(2026, 7, 13, 10, 30, 0, 0, loc)
 	coordinator, herald, _ := newTestCoordinator(t, now, nb)
@@ -367,7 +382,7 @@ func TestANagFiresOnceNotOnEveryTick(t *testing.T) {
 		// Already sent today, so only the nag can speak.
 		Links: []string{"digest-sent:2026-07-13"},
 	}
-	nb := newFakeNoteboard(item, digestNote)
+	nb := newFakeItemStores(item, digestNote)
 
 	// Eight ticks through the two hours after the 10am nag.
 	sessions := 0
@@ -401,7 +416,7 @@ func TestANagStopsWhenTheItemIsDone(t *testing.T) {
 			Remind: &model.Remind{Nag: "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=10"},
 		},
 	}
-	nb := newFakeNoteboard(item)
+	nb := newFakeItemStores(item)
 	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 7, 13, 10, 30, 0, 0, loc), nb)
 
 	firing, err := coordinator.nagsFiringNow()
@@ -423,7 +438,7 @@ func TestTheDailyDigestNudgeIsSentOncePerDay(t *testing.T) {
 	digestNote := &model.Item{
 		ID: "digest", Type: "note", Title: digestTitle, Tags: []string{"personal", digestTag},
 	}
-	nb := newFakeNoteboard(undated, digestNote)
+	nb := newFakeItemStores(undated, digestNote)
 
 	sessions := 0
 	for tick := 0; tick < 10; tick++ {
@@ -461,7 +476,7 @@ func TestNothingIsSentBeforeTheDigestHour(t *testing.T) {
 		ID: "todo", Type: "todo", Title: "overdue thing", Status: "open",
 		Tags: []string{"personal"}, DueAt: ptr(time.Date(2026, 7, 1, 9, 0, 0, 0, loc)),
 	}
-	nb := newFakeNoteboard(overdue, digestNote)
+	nb := newFakeItemStores(overdue, digestNote)
 
 	coordinator, herald, _ := newTestCoordinator(t, time.Date(2026, 7, 13, 3, 0, 0, 0, loc), nb)
 	board, err := coordinator.buildBoard()
@@ -489,7 +504,7 @@ func TestRollingItemAdvancesToItsNextOccurrenceWhenDone(t *testing.T) {
 			RRule: "FREQ=MONTHLY;BYDAY=3TU", Mode: model.ScheduleModeRolling,
 		},
 	}
-	nb := newFakeNoteboard(item)
+	nb := newFakeItemStores(item)
 	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 7, 21, 10, 0, 0, 0, loc), nb)
 
 	if err := coordinator.rollCompletedRollingItems(); err != nil {
@@ -527,7 +542,7 @@ func TestExhaustedRollingSeriesStaysDone(t *testing.T) {
 			RRule: "FREQ=MONTHLY;BYDAY=3TU;COUNT=1", Mode: model.ScheduleModeRolling,
 		},
 	}
-	nb := newFakeNoteboard(item)
+	nb := newFakeItemStores(item)
 	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 7, 22, 10, 0, 0, 0, loc), nb)
 
 	if err := coordinator.rollCompletedRollingItems(); err != nil {
@@ -559,7 +574,7 @@ func TestCalendarIsOptInPerItem(t *testing.T) {
 		Tags: []string{"personal"}, DueAt: &soon,
 	}
 
-	nb := newFakeNoteboard(optedIn, notOptedIn)
+	nb := newFakeItemStores(optedIn, notOptedIn)
 	coordinator, _, calendar := newTestCoordinator(t, time.Date(2026, 7, 13, 10, 0, 0, 0, loc), nb)
 
 	if err := coordinator.syncCalendar(); err != nil {
@@ -587,7 +602,7 @@ func TestCompletedItemHasItsCalendarEventRemoved(t *testing.T) {
 			Remind: &model.Remind{Channels: []string{model.ChannelCalendar}},
 		},
 	}
-	nb := newFakeNoteboard(done)
+	nb := newFakeItemStores(done)
 	coordinator, _, calendar := newTestCoordinator(t, time.Date(2026, 7, 13, 10, 0, 0, 0, loc), nb)
 
 	if err := coordinator.syncCalendar(); err != nil {
@@ -613,7 +628,7 @@ func TestDigestSeparatesOverdueFromDueToday(t *testing.T) {
 	loc := pacific(t)
 	now := time.Date(2026, 7, 13, 8, 0, 0, 0, loc)
 
-	nb := newFakeNoteboard(
+	nb := newFakeItemStores(
 		&model.Item{ID: "a", Type: "todo", Title: "Overdue thing", Status: "open",
 			Tags: []string{"personal", "car"}, Priority: 3,
 			DueAt: ptr(time.Date(2026, 6, 30, 9, 0, 0, 0, loc))},
@@ -666,7 +681,7 @@ func TestNoOpenTodoCanFallThroughTheBuckets(t *testing.T) {
 		{ID: "undated", Type: "todo", Title: "undated", Status: "open", Tags: []string{"personal"}},
 	}
 
-	coordinator, _, _ := newTestCoordinator(t, now, newFakeNoteboard(items...))
+	coordinator, _, _ := newTestCoordinator(t, now, newFakeItemStores(items...))
 	board, err := coordinator.buildBoard()
 	if err != nil {
 		t.Fatalf("buildBoard: %v", err)
@@ -700,7 +715,7 @@ func TestNoOpenTodoCanFallThroughTheBuckets(t *testing.T) {
 func TestDigestShowsTodaysScheduleInOrderWithDayLoad(t *testing.T) {
 	loc := pacific(t)
 	now := time.Date(2026, 7, 20, 8, 0, 0, 0, loc)
-	nb := newFakeNoteboard(
+	nb := newFakeItemStores(
 		&model.Item{ID: "t", Type: "todo", Title: "A todo", Status: "open",
 			Tags: []string{"personal"}, DueAt: ptr(time.Date(2026, 7, 20, 15, 0, 0, 0, loc))},
 	)
@@ -739,7 +754,7 @@ func TestDigestShowsTodaysScheduleInOrderWithDayLoad(t *testing.T) {
 // even if the raw free hours look plentiful.
 func TestDayLoadFlagsAFragmentedDay(t *testing.T) {
 	loc := pacific(t)
-	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 7, 20, 8, 0, 0, 0, loc), newFakeNoteboard())
+	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 7, 20, 8, 0, 0, 0, loc), newFakeItemStores())
 	// Hourly meetings every other hour from 9 to 9 — free hours exist but never
 	// more than one at a stretch.
 	events := []CalendarEvent{}
@@ -761,7 +776,7 @@ func TestDayLoadFlagsAFragmentedDay(t *testing.T) {
 func TestDigestSurvivesCalendarReadFailure(t *testing.T) {
 	loc := pacific(t)
 	now := time.Date(2026, 7, 20, 8, 0, 0, 0, loc)
-	nb := newFakeNoteboard(
+	nb := newFakeItemStores(
 		&model.Item{ID: "t", Type: "todo", Title: "Still here", Status: "open",
 			Tags: []string{"personal"}, DueAt: ptr(time.Date(2026, 7, 20, 15, 0, 0, 0, loc))},
 	)
@@ -800,7 +815,7 @@ func TestTheDigestNoteIsFoundByTheLiteralTagWrittenOnIt(t *testing.T) {
 		ID: "digest", Type: "note", Title: "📆 Today — personal",
 		Tags: []string{"personal", "reminder-digest"},
 	}
-	nb := newFakeNoteboard(digestNote)
+	nb := newFakeItemStores(digestNote)
 	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 7, 13, 9, 0, 0, 0, loc), nb)
 
 	board, err := coordinator.buildBoard()
@@ -834,7 +849,7 @@ func TestARunSurvivesACalendarFailureAndStillWritesTheDigest(t *testing.T) {
 		ID: "todo", Type: "todo", Title: "Still here", Status: "open",
 		Tags: []string{"personal"}, DueAt: ptr(time.Date(2026, 7, 20, 15, 0, 0, 0, loc)),
 	}
-	nb := newFakeNoteboard(todo, digestNote)
+	nb := newFakeItemStores(todo, digestNote)
 	coordinator, _, calendar := newTestCoordinator(t, time.Date(2026, 7, 20, 8, 0, 0, 0, loc), nb)
 	calendar.listErr = fmt.Errorf("google timeout")
 
@@ -882,7 +897,7 @@ func TestAChildFromBeforeLastMaterializedAtExistedIsNotDuplicated(t *testing.T) 
 		ID: "child", Type: "todo", Title: "Water the plants", Status: "open",
 		Tags: []string{"personal"}, ParentID: ptr("template"), DueAt: &occurrence,
 	}
-	nb := newFakeNoteboard(template, existingChild)
+	nb := newFakeItemStores(template, existingChild)
 
 	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 7, 21, 9, 15, 0, 0, loc), nb)
 	if err := coordinator.materializeDueOccurrences(); err != nil {
@@ -911,7 +926,7 @@ func TestAnItemThatAskedOnlyForTheDigestGetsNoCalendarEvent(t *testing.T) {
 			Remind: &model.Remind{Channels: []string{model.ChannelDigest}},
 		},
 	}
-	nb := newFakeNoteboard(digestOnly)
+	nb := newFakeItemStores(digestOnly)
 	coordinator, _, calendar := newTestCoordinator(t, time.Date(2026, 7, 13, 10, 0, 0, 0, loc), nb)
 
 	if err := coordinator.syncCalendar(); err != nil {
@@ -943,7 +958,7 @@ func TestAnArchivedTemplateStopsProducingOccurrences(t *testing.T) {
 		ID: "archived", Type: "todo", Title: "Retired chore", Status: "archived",
 		Tags: []string{"personal"}, Schedule: schedule(),
 	}
-	nb := newFakeNoteboard(archived)
+	nb := newFakeItemStores(archived)
 	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 7, 21, 9, 15, 0, 0, loc), nb)
 	if err := coordinator.materializeDueOccurrences(); err != nil {
 		t.Fatalf("materializeDueOccurrences: %v", err)
@@ -959,7 +974,7 @@ func TestAnArchivedTemplateStopsProducingOccurrences(t *testing.T) {
 		ID: "done", Type: "todo", Title: "Live chore", Status: "done",
 		Tags: []string{"personal"}, Schedule: schedule(),
 	}
-	nbDone := newFakeNoteboard(done)
+	nbDone := newFakeItemStores(done)
 	coordinatorDone, _, _ := newTestCoordinator(t, time.Date(2026, 7, 21, 9, 15, 0, 0, loc), nbDone)
 	if err := coordinatorDone.materializeDueOccurrences(); err != nil {
 		t.Fatalf("materializeDueOccurrences: %v", err)
@@ -984,7 +999,7 @@ func TestARecurringTemplateIsNeverRolledInPlace(t *testing.T) {
 			RRule: "FREQ=MONTHLY;BYDAY=3TU", Mode: model.ScheduleModeInstance,
 		},
 	}
-	nb := newFakeNoteboard(template)
+	nb := newFakeItemStores(template)
 	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 7, 22, 9, 0, 0, 0, loc), nb)
 
 	if err := coordinator.rollCompletedRollingItems(); err != nil {
@@ -1006,7 +1021,7 @@ func TestMarkingTheDigestSentReplacesOnlyTheDayMarkers(t *testing.T) {
 		ID: "digest", Type: "note", Title: digestTitle, Tags: []string{"personal", digestTag},
 		Links: []string{"digest-sent:2026-07-12", "herald-session:2026-07-12:herald-yesterday", "https://example.com/keep-me"},
 	}
-	nb := newFakeNoteboard(digestNote)
+	nb := newFakeItemStores(digestNote)
 	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 7, 13, 8, 0, 0, 0, loc), nb)
 
 	if err := coordinator.recordRelayMarkers("herald-today", true); err != nil {
@@ -1058,7 +1073,7 @@ func TestALongIdleTemplateBackfillsOneDay(t *testing.T) {
 			LastMaterializedAt: nil,
 		},
 	}
-	nb := newFakeNoteboard(template)
+	nb := newFakeItemStores(template)
 	now := time.Date(2026, 7, 21, 10, 0, 0, 0, loc)
 	coordinator, _, _ := newTestCoordinator(t, now, nb)
 
@@ -1115,7 +1130,7 @@ func TestAnItemThatHasNeverNaggedFiresOnlyForARecentOccurrence(t *testing.T) {
 			Remind: &model.Remind{Nag: "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=10;BYMINUTE=0;BYSECOND=0"},
 		},
 	}
-	nb := newFakeNoteboard(item)
+	nb := newFakeItemStores(item)
 
 	// Sunday noon. The last weekday firing was Friday at 10am, 50 hours back.
 	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 7, 12, 12, 0, 0, 0, loc), nb)
@@ -1163,7 +1178,7 @@ func TestARollingItemNeverRollsBackwardsIntoThePast(t *testing.T) {
 			RRule: "FREQ=DAILY", Mode: model.ScheduleModeRolling,
 		},
 	}
-	nb := newFakeNoteboard(item)
+	nb := newFakeItemStores(item)
 	now := time.Date(2026, 7, 21, 10, 0, 0, 0, loc)
 	coordinator, _, _ := newTestCoordinator(t, now, nb)
 
@@ -1207,7 +1222,7 @@ func TestARollingItemCompletedEarlyAdvancesPastTheOccurrenceItFinished(t *testin
 			RRule: "FREQ=DAILY", Mode: model.ScheduleModeRolling,
 		},
 	}
-	nb := newFakeNoteboard(item)
+	nb := newFakeItemStores(item)
 	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 7, 21, 10, 0, 0, 0, loc), nb)
 
 	if err := coordinator.rollCompletedRollingItems(); err != nil {
@@ -1256,7 +1271,7 @@ func TestAnUnmovedCalendarEventIsNotRewrittenOnEveryTick(t *testing.T) {
 			Remind: &model.Remind{Channels: []string{model.ChannelCalendar}},
 		},
 	}
-	nb := newFakeNoteboard(settled)
+	nb := newFakeItemStores(settled)
 	coordinator, _, calendar := newTestCoordinator(t, time.Date(2026, 7, 13, 10, 0, 0, 0, loc), nb)
 
 	if err := coordinator.syncCalendar(); err != nil {
@@ -1291,7 +1306,7 @@ func TestAMovedDueDatePushesTheCalendarEventToTheNewTime(t *testing.T) {
 			Remind: &model.Remind{Channels: []string{model.ChannelCalendar}},
 		},
 	}
-	nb := newFakeNoteboard(moved)
+	nb := newFakeItemStores(moved)
 	coordinator, _, calendar := newTestCoordinator(t, time.Date(2026, 7, 13, 10, 0, 0, 0, loc), nb)
 
 	if err := coordinator.syncCalendar(); err != nil {
@@ -1338,7 +1353,7 @@ func TestAMovedDueDatePushesTheCalendarEventToTheNewTime(t *testing.T) {
 func TestTomorrowsEventsAreNotFoldedIntoTodaysSchedule(t *testing.T) {
 	loc := pacific(t)
 	now := time.Date(2026, 7, 20, 8, 0, 0, 0, loc)
-	coordinator, _, _ := newTestCoordinator(t, now, newFakeNoteboard())
+	coordinator, _, _ := newTestCoordinator(t, now, newFakeItemStores())
 	board, err := coordinator.buildBoard()
 	if err != nil {
 		t.Fatalf("buildBoard: %v", err)
@@ -1438,7 +1453,7 @@ func allDayEvent(summary, start, end string) CalendarEvent {
 func TestTodaysScheduleBoundsAllDayEventsToToday(t *testing.T) {
 	loc := pacific(t)
 	now := time.Date(2026, 7, 20, 8, 0, 0, 0, loc)
-	coordinator, _, _ := newTestCoordinator(t, now, newFakeNoteboard())
+	coordinator, _, _ := newTestCoordinator(t, now, newFakeItemStores())
 	board, err := coordinator.buildBoard()
 	if err != nil {
 		t.Fatalf("buildBoard: %v", err)
@@ -1490,7 +1505,7 @@ func TestAllDayWindowDoesNotDriftInAZoneEastOfUTC(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadLocation: %v", err)
 	}
-	coordinator, _, _ := newTestCoordinator(t, time.Time{}, newFakeNoteboard())
+	coordinator, _, _ := newTestCoordinator(t, time.Time{}, newFakeItemStores())
 	coordinator.Location = tokyo
 	coordinator.Now = time.Date(2026, 7, 20, 8, 0, 0, 0, tokyo)
 	board, err := coordinator.buildBoard()
@@ -1522,7 +1537,7 @@ func TestAllDayWindowDoesNotDriftInAZoneEastOfUTC(t *testing.T) {
 func TestAllDayEventWithNoEndDateCoversItsOwnDay(t *testing.T) {
 	loc := pacific(t)
 	now := time.Date(2026, 7, 20, 8, 0, 0, 0, loc)
-	coordinator, _, _ := newTestCoordinator(t, now, newFakeNoteboard())
+	coordinator, _, _ := newTestCoordinator(t, now, newFakeItemStores())
 	board, err := coordinator.buildBoard()
 	if err != nil {
 		t.Fatalf("buildBoard: %v", err)
@@ -1549,7 +1564,7 @@ func TestAllDayEventWithNoEndDateCoversItsOwnDay(t *testing.T) {
 // and still went green.
 func TestDayLoadReportsItsHoursToTheNearestHalfHour(t *testing.T) {
 	loc := pacific(t)
-	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 7, 20, 8, 0, 0, 0, loc), newFakeNoteboard())
+	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 7, 20, 8, 0, 0, 0, loc), newFakeItemStores())
 
 	// The work block (8am–4:30pm) leaves 5.5 hours of the 14-hour window. A
 	// 90-minute evening event takes 1.5 of them, leaving 4h free and a 3.5h
@@ -1601,7 +1616,7 @@ func TestABucketIsRenderedInDueDateOrderNotInTheOrderNoteboardReturned(t *testin
 
 	// Handed over latest-due first, which is the wrong order and is also the
 	// order a real noteboard listing arrives in.
-	nb := newFakeNoteboard(
+	nb := newFakeItemStores(
 		&model.Item{ID: "friday", Type: "todo", Title: "Friday thing", Status: "open",
 			Tags: []string{"personal"}, DueAt: ptr(time.Date(2026, 7, 17, 9, 0, 0, 0, loc))},
 		&model.Item{ID: "wednesday", Type: "todo", Title: "Wednesday thing", Status: "open",
@@ -1657,7 +1672,7 @@ func TestTheDayLoadBandsStraddleTheirThresholds(t *testing.T) {
 	loc := pacific(t)
 	// A Saturday: on a work day the working hours are charged as busy and
 	// cover the morning this fixture measures.
-	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 7, 25, 8, 0, 0, 0, loc), newFakeNoteboard())
+	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 7, 25, 8, 0, 0, 0, loc), newFakeItemStores())
 
 	for _, row := range []struct {
 		name          string
@@ -1696,7 +1711,7 @@ func TestThePriorityMarkStraddlesItsRank(t *testing.T) {
 	now := time.Date(2026, 7, 13, 8, 0, 0, 0, loc)
 	due := time.Date(2026, 7, 13, 15, 0, 0, 0, loc)
 
-	nb := newFakeNoteboard(
+	nb := newFakeItemStores(
 		&model.Item{ID: "p2", Type: "todo", Title: "Rank two todo", Status: "open",
 			Tags: []string{"personal"}, Priority: 2, DueAt: &due},
 		&model.Item{ID: "p3", Type: "todo", Title: "Rank three todo", Status: "open",
@@ -1731,7 +1746,7 @@ func TestTheThisWeekHorizonStraddlesTheSeventhDay(t *testing.T) {
 	loc := pacific(t)
 	now := time.Date(2026, 7, 13, 8, 0, 0, 0, loc)
 
-	nb := newFakeNoteboard(
+	nb := newFakeItemStores(
 		&model.Item{ID: "sixth", Type: "todo", Title: "Sixth day out", Status: "open",
 			Tags: []string{"personal"}, DueAt: ptr(time.Date(2026, 7, 19, 9, 0, 0, 0, loc))},
 		&model.Item{ID: "seventh", Type: "todo", Title: "Seventh day out", Status: "open",
@@ -1828,7 +1843,7 @@ func contains(haystack, needle string) bool {
 func newNudgeFixture(t *testing.T, now time.Time, items ...*model.Item) (*Coordinator, *fakeHerald, *fakeCalendar) {
 	t.Helper()
 	note := &model.Item{ID: "digest", Type: "note", Title: digestTitle, Tags: []string{"personal", digestTag}}
-	return newTestCoordinator(t, now, newFakeNoteboard(append(items, note)...))
+	return newTestCoordinator(t, now, newFakeItemStores(append(items, note)...))
 }
 
 // The nudge used to say "4 overdue, 1 due today" and nothing else. A count is not
@@ -2045,7 +2060,7 @@ func TestTheNudgeSaysTheBoardIsClearRatherThanSayingNothing(t *testing.T) {
 // wrong, and no fixture built on whole days would catch it.
 func TestLatenessIsCountedInCalendarDaysAcrossADaylightSavingBoundary(t *testing.T) {
 	loc := pacific(t)
-	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 3, 10, 8, 0, 0, 0, loc), newFakeNoteboard())
+	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 3, 10, 8, 0, 0, 0, loc), newFakeItemStores())
 
 	// Due Thu 5 Mar (PST), now Tue 10 Mar (PDT); DST began Sun 8 Mar.
 	late := &model.Item{
@@ -2075,7 +2090,7 @@ func TestLatenessIsCountedInCalendarDaysAcrossADaylightSavingBoundary(t *testing
 // Tuesday morning as free is offering time that is already gone.
 func TestWorkHoursAreNotCountedAsOpenTime(t *testing.T) {
 	loc := pacific(t)
-	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 7, 20, 8, 0, 0, 0, loc), newFakeNoteboard())
+	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 7, 20, 8, 0, 0, 0, loc), newFakeItemStores())
 
 	// Nothing on the calendar at all. The window is 14 hours; work takes 8.5 of
 	// them, so 5.5 are left and the whole of it is one stretch after 4:30pm.
@@ -2101,7 +2116,7 @@ func TestWorkHoursAreNotCountedAsOpenTime(t *testing.T) {
 // than a day off with the same meeting on it.
 func TestAMeetingInsideWorkHoursCostsNoExtraFreeTime(t *testing.T) {
 	loc := pacific(t)
-	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 7, 20, 8, 0, 0, 0, loc), newFakeNoteboard())
+	coordinator, _, _ := newTestCoordinator(t, time.Date(2026, 7, 20, 8, 0, 0, 0, loc), newFakeItemStores())
 
 	free := coordinator.measureDay([]CalendarEvent{{
 		Summary: "Standup",
@@ -2249,8 +2264,8 @@ func TestAnUnusableWorkingDayIsReportedAndNotJustRefused(t *testing.T) {
 func TestTheWeekendCarriesNoWorkingDay(t *testing.T) {
 	loc := pacific(t)
 	// 2026-07-18 is a Saturday; 2026-07-20 is the Monday after it.
-	saturday, _, _ := newTestCoordinator(t, time.Date(2026, 7, 18, 9, 0, 0, 0, loc), newFakeNoteboard())
-	monday, _, _ := newTestCoordinator(t, time.Date(2026, 7, 20, 9, 0, 0, 0, loc), newFakeNoteboard())
+	saturday, _, _ := newTestCoordinator(t, time.Date(2026, 7, 18, 9, 0, 0, 0, loc), newFakeItemStores())
+	monday, _, _ := newTestCoordinator(t, time.Date(2026, 7, 20, 9, 0, 0, 0, loc), newFakeItemStores())
 
 	if free := saturday.measureDay(nil).Free; free != 14*time.Hour {
 		t.Errorf("Saturday free = %s, want the whole 14-hour window", free)
@@ -2324,7 +2339,7 @@ func TestALaterFiringTheSameDayReusesTheMorningSession(t *testing.T) {
 	digestNote := &model.Item{
 		ID: "digest", Type: "note", Title: digestTitle, Tags: []string{"personal", digestTag},
 	}
-	nb := newFakeNoteboard(nagged, digestNote)
+	nb := newFakeItemStores(nagged, digestNote)
 	coordinator, herald, _ := newTestCoordinator(t, morning, nb)
 	board, err := coordinator.buildBoard()
 	if err != nil {

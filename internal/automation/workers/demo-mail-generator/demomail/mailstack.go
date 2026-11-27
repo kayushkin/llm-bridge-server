@@ -1,4 +1,7 @@
-// Package demomail delivers generated mail into a local mailstack account.
+// Package demomail delivers generated mail into a local mailstack account,
+// through llm-bridge-server's /mail/ (bridgestores.MailURL). Its requests go
+// out through the default transport, which bridgeauth stamps with the binary's
+// service principal token; mailstack's own bearer is retired.
 //
 // Local accounts only. mailstack refuses an append to google, microsoft or imap
 // — appending to a real provider would mean either sending mail or forging a
@@ -43,14 +46,14 @@ type Message struct {
 // Client appends to one mailstack.
 type Client struct {
 	BaseURL string
-	Token   string
 	HTTP    *http.Client
 }
 
-func New(baseURL, token string) *Client {
+// New returns a client for the mailstack at mailURL, the bridge's address
+// followed by /mail.
+func New(mailURL string) *Client {
 	return &Client{
-		BaseURL: strings.TrimRight(baseURL, "/"),
-		Token:   token,
+		BaseURL: strings.TrimRight(mailURL, "/"),
 		HTTP:    &http.Client{Timeout: 30 * time.Second},
 	}
 }
@@ -68,9 +71,6 @@ func (c *Client) Append(ctx context.Context, accountID string, m Message) (strin
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if c.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.Token)
-	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("mailstack unreachable: %w", err)
@@ -123,9 +123,6 @@ func (c *Client) Purge(ctx context.Context, accountID string) (int, error) {
 func (c *Client) listIDs(ctx context.Context, accountID, folder string) ([]string, error) {
 	url := fmt.Sprintf("%s/api/messages?account=%s&folder=%s&limit=100", c.BaseURL, accountID, folder)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if c.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.Token)
-	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return nil, err
@@ -153,9 +150,6 @@ func (c *Client) listIDs(ctx context.Context, accountID, folder string) ([]strin
 func (c *Client) permDelete(ctx context.Context, accountID, messageID string) error {
 	url := fmt.Sprintf("%s/api/messages/%s/perm-delete?account=%s", c.BaseURL, messageID, accountID)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
-	if c.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.Token)
-	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return err

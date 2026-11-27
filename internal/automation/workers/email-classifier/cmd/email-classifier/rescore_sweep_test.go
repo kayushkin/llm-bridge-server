@@ -57,7 +57,7 @@ func newFakeKanban(t *testing.T) *fakeKanban {
 	f := &fakeKanban{}
 	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPatch {
-			t.Errorf("fake kanban-store got a %s %s; the sweep must only PATCH", r.Method, r.URL.Path)
+			t.Errorf("fake issues got a %s %s; the sweep must only PATCH", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
@@ -67,7 +67,7 @@ func newFakeKanban(t *testing.T) *fakeKanban {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		// /api/cards/{id}
+		// /cards/{id}
 		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 		cardID := parts[len(parts)-1]
 
@@ -87,7 +87,7 @@ func newFakeKanban(t *testing.T) *fakeKanban {
 }
 
 func (f *fakeKanban) client() *issuesclient.Client {
-	return issuesclient.New(f.server.URL, "")
+	return issuesclient.New(f.server.URL)
 }
 
 func (f *fakeKanban) recorded() []patchRecord {

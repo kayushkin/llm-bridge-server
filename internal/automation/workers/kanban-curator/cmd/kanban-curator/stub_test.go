@@ -32,10 +32,10 @@ type stubKanban struct {
 	cards     []stubCard
 	settled   map[string]bool     // session id -> reviewer has signed off
 	otherTags map[string][]string // session id -> tags on it that are not the sign-off
-	failLinks int                 // status to answer GET /api/cards/{id}/links with
-	failTags  int                 // status to answer GET /api/entities/session/{id}/tags with
-	failPatch int                 // status to answer PATCH /api/cards/{id} with
-	failMove  int                 // status to answer POST /api/cards/{id}/move with
+	failLinks int                 // status to answer GET /cards/{id}/links with
+	failTags  int                 // status to answer GET /entities/session/{id}/tags with
+	failPatch int                 // status to answer PATCH /cards/{id} with
+	failMove  int                 // status to answer POST /cards/{id}/move with
 	moved     map[string]string   // card id -> column id it was moved to
 	movedPos  map[string]float64  // card id -> position within that column
 	patched   map[string]string   // card id -> body it was patched with
@@ -67,18 +67,18 @@ func (k *stubKanban) URL() string { return k.server.URL }
 func (k *stubKanban) serve(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.Path
 	switch {
-	case p == "/api/boards/"+stubBoardID && r.Method == "GET":
+	case p == "/boards/"+stubBoardID && r.Method == "GET":
 		writeStubJSON(w, 200, map[string]string{"id": stubBoardID, "name": k.boardName})
 
-	case p == "/api/boards/"+stubBoardID+"/cards" && r.Method == "GET":
+	case p == "/boards/"+stubBoardID+"/cards" && r.Method == "GET":
 		writeStubJSON(w, 200, k.boardView())
 
-	case strings.HasPrefix(p, "/api/entities/session/") && strings.HasSuffix(p, "/tags"):
+	case strings.HasPrefix(p, "/entities/session/") && strings.HasSuffix(p, "/tags"):
 		if k.failTags != 0 {
 			http.Error(w, "tag store unavailable", k.failTags)
 			return
 		}
-		ref := strings.TrimSuffix(strings.TrimPrefix(p, "/api/entities/session/"), "/tags")
+		ref := strings.TrimSuffix(strings.TrimPrefix(p, "/entities/session/"), "/tags")
 		var tags []map[string]string
 		for _, tag := range k.otherTags[ref] {
 			tags = append(tags, map[string]string{"tag": tag})
@@ -93,7 +93,7 @@ func (k *stubKanban) serve(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "links unavailable", k.failLinks)
 			return
 		}
-		cardID := strings.TrimSuffix(strings.TrimPrefix(p, "/api/cards/"), "/links")
+		cardID := strings.TrimSuffix(strings.TrimPrefix(p, "/cards/"), "/links")
 		var links []map[string]any
 		for _, c := range k.cards {
 			if c.cardID == cardID && c.sessionID != "" {
@@ -114,12 +114,12 @@ func (k *stubKanban) serve(w http.ResponseWriter, r *http.Request) {
 			Position float64 `json:"position"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
-		cardID := strings.TrimSuffix(strings.TrimPrefix(p, "/api/cards/"), "/move")
+		cardID := strings.TrimSuffix(strings.TrimPrefix(p, "/cards/"), "/move")
 		k.moved[cardID] = req.ColumnID
 		k.movedPos[cardID] = req.Position
 		writeStubJSON(w, 200, map[string]string{"status": "ok"})
 
-	case strings.HasPrefix(p, "/api/cards/") && r.Method == "PATCH":
+	case strings.HasPrefix(p, "/cards/") && r.Method == "PATCH":
 		if k.failPatch != 0 {
 			http.Error(w, "patch refused", k.failPatch)
 			return
@@ -127,7 +127,7 @@ func (k *stubKanban) serve(w http.ResponseWriter, r *http.Request) {
 		var req map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		body, _ := req["body"].(string)
-		k.patched[strings.TrimPrefix(p, "/api/cards/")] = body
+		k.patched[strings.TrimPrefix(p, "/cards/")] = body
 		writeStubJSON(w, 200, map[string]string{"status": "ok"})
 
 	default:

@@ -64,7 +64,7 @@ func TestOnlyMailWithARecordedMessageIDCanBeCitedAsPrecedent(t *testing.T) {
 	server := fakeSimilaritySearch(t, hits, nil)
 	defer server.Close()
 
-	examples, err := similarFiledExamples(newMailClient(server.URL, "t"), boardWithReadAndUnreadFilings(),
+	examples, err := similarFiledExamples(newMailClient(server.URL), boardWithReadAndUnreadFilings(),
 		pendingEmail{Meta: messageMeta{ID: "new-1", AccountID: "a", Subject: "Receipt for order 101"}})
 	if err != nil {
 		t.Fatalf("similarFiledExamples: %v", err)
@@ -87,7 +87,7 @@ func TestExamplesPerCardAreCappedSoOneBucketCannotFillTheList(t *testing.T) {
 	server := fakeSimilaritySearch(t, hits, nil)
 	defer server.Close()
 
-	examples, err := similarFiledExamples(newMailClient(server.URL, "t"), boardWithReadAndUnreadFilings(),
+	examples, err := similarFiledExamples(newMailClient(server.URL), boardWithReadAndUnreadFilings(),
 		pendingEmail{Meta: messageMeta{ID: "new-1", AccountID: "a"}})
 	if err != nil {
 		t.Fatalf("similarFiledExamples: %v", err)
@@ -109,7 +109,7 @@ func TestTheEmailBeingClassifiedIsExcludedFromItsOwnSearch(t *testing.T) {
 	server := fakeSimilaritySearch(t, nil, &gotExclude)
 	defer server.Close()
 
-	_, err := similarFiledExamples(newMailClient(server.URL, "t"), boardWithReadAndUnreadFilings(),
+	_, err := similarFiledExamples(newMailClient(server.URL), boardWithReadAndUnreadFilings(),
 		pendingEmail{Meta: messageMeta{ID: "self-id", AccountID: "acct-1"}})
 	if err != nil {
 		t.Fatalf("similarFiledExamples: %v", err)

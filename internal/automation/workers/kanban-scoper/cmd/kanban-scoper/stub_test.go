@@ -12,8 +12,8 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// The stubs below stand in for kanban-store and llm-bridge-server's oneshot
-// route, which is where the decomposition call goes. Each fault field is a status code: zero means "answer
+// The stubs below stand in for the board under llm-bridge-server's /issues and
+// its oneshot route, which is where the decomposition call goes. Each fault field is a status code: zero means "answer
 // normally", non-zero means answer with that status, which is how every failure
 // this suite is about arrives in production — the service answering, just not
 // with the status the client wanted.
@@ -47,10 +47,10 @@ type stubKanban struct {
 	// reachable. A column row that is present under the right name and carries a
 	// blank id is: EnsureBoard sees the name, skips creation, and caches "".
 	blankBacklogID bool
-	failTags       int // status to answer GET /api/entities/note/{id}/tags with
-	failCreate     int // status to answer POST /api/boards/{id}/cards with
-	failLink       int // status to answer POST /api/cards/{id}/links with
-	failStamp      int // status to answer POST /api/entities/note/{id}/tags with
+	failTags       int // status to answer GET /entities/note/{id}/tags with
+	failCreate     int // status to answer POST /boards/{id}/cards with
+	failLink       int // status to answer POST /cards/{id}/links with
+	failStamp      int // status to answer POST /entities/note/{id}/tags with
 
 	created []map[string]any  // every card body the scoper posted
 	linked  map[string]string // child card id -> parent it was linked to
@@ -85,16 +85,16 @@ func (k *stubKanban) columns() []map[string]any {
 func (k *stubKanban) serve(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.Path
 	switch {
-	case r.Method == "GET" && p == "/api/boards/"+stubBoardID:
+	case r.Method == "GET" && p == "/boards/"+stubBoardID:
 		writeJSON(w, 200, map[string]any{"id": stubBoardID, "name": stubBoardName})
 
-	case r.Method == "GET" && p == "/api/boards/"+stubBoardID+"/columns":
+	case r.Method == "GET" && p == "/boards/"+stubBoardID+"/columns":
 		writeJSON(w, 200, k.columns())
 
 	// The board view. Only the Goals column carries cards; every other column
 	// is present and empty, which is what the live board looks like on the
 	// ticks this job actually has.
-	case r.Method == "GET" && p == "/api/boards/"+stubBoardID+"/cards":
+	case r.Method == "GET" && p == "/boards/"+stubBoardID+"/cards":
 		var colViews []map[string]any
 		for _, col := range k.columns() {
 			var cards []map[string]any
@@ -114,7 +114,7 @@ func (k *stubKanban) serve(w http.ResponseWriter, r *http.Request) {
 		})
 
 	// createSubcard posts here directly rather than through issuesclient.
-	case r.Method == "POST" && p == "/api/boards/"+stubBoardID+"/cards":
+	case r.Method == "POST" && p == "/boards/"+stubBoardID+"/cards":
 		if k.failCreate != 0 {
 			w.WriteHeader(k.failCreate)
 			fmt.Fprint(w, "board refused the card")
@@ -131,15 +131,15 @@ func (k *stubKanban) serve(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprint(w, "board refused the link")
 			return
 		}
-		cardID := strings.TrimSuffix(strings.TrimPrefix(p, "/api/cards/"), "/links")
+		cardID := strings.TrimSuffix(strings.TrimPrefix(p, "/cards/"), "/links")
 		var payload map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&payload)
 		ref, _ := payload["entity_ref"].(string)
 		k.linked[cardID] = ref
 		writeJSON(w, 201, map[string]any{"id": "link-" + cardID})
 
-	case strings.HasPrefix(p, "/api/entities/note/") && strings.HasSuffix(p, "/tags"):
-		ref := strings.TrimSuffix(strings.TrimPrefix(p, "/api/entities/note/"), "/tags")
+	case strings.HasPrefix(p, "/entities/note/") && strings.HasSuffix(p, "/tags"):
+		ref := strings.TrimSuffix(strings.TrimPrefix(p, "/entities/note/"), "/tags")
 		if r.Method == "GET" {
 			if k.failTags != 0 {
 				w.WriteHeader(k.failTags)
@@ -242,14 +242,27 @@ func newStubScheduler(t *testing.T) *httptest.Server {
 	return server
 }
 
-// testConfig wires a run at the three stubs and nowhere else.
+// newStubBridge is llm-bridge-server as the scoper reaches it: the board under
+// /issues, the scheduler's settings under /scheduler, and /oneshot at the
+// root, each answered by its stub with the prefix taken off.
+func newStubBridge(t *testing.T, issues, scheduler, oneshot http.Handler) *httptest.Server {
+	mux := http.NewServeMux()
+	mux.Handle("/issues/", http.StripPrefix("/issues", issues))
+	mux.Handle("/scheduler/", http.StripPrefix("/scheduler", scheduler))
+	mux.Handle("/", oneshot)
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return server
+}
+
+// testConfig wires a run at the three stubs, behind one bridge address, and
+// nowhere else.
 func testConfig(k *stubKanban, decomposer *stubModel) config {
+	bridge := newStubBridge(decomposer.t, k.server.Config.Handler, newStubScheduler(decomposer.t).Config.Handler, decomposer.server.Config.Handler)
 	return config{
-		KanbanURL:    k.URL(),
-		BridgeURL:    decomposer.URL(),
-		SchedulerURL: newStubScheduler(decomposer.t).URL,
-		BoardID:      stubBoardID,
-		MaxScope:     maxScopePerTick,
+		BridgeURL: bridge.URL,
+		BoardID:   stubBoardID,
+		MaxScope:  maxScopePerTick,
 	}
 }
 

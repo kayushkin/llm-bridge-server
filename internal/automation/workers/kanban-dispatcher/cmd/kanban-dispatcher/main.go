@@ -64,11 +64,13 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgeauth"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgeclient"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgesession"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgestores"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/degradations"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/schedulerjobs"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/schedulersettings"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/textcut"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/workersettings"
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )
@@ -112,7 +114,7 @@ const (
 )
 
 func main() {
-	settings, err := schedulerconfig.KanbanDispatcher.NewSettingsRegistry(servicesettings.ProcessEnvironment())
+	settings, err := workersettings.KanbanDispatcher.NewSettingsRegistry(servicesettings.ProcessEnvironment())
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -120,16 +122,15 @@ func main() {
 		registerFlag = flag.Bool("register", false, "Register/upsert this binary as a scheduler cron job and exit.")
 		dryRun       = flag.Bool("dry-run", false, "Decide but do not publish or move cards.")
 		boardID      = flag.String("board-id", "", "Kanban board id to dispatch on (required). The board owns what a session runs with — per card, its tag rules matched against the card's tags, then its own default_instance_id, default_agent_id and default_bundle_id — and this job owns only when.")
-		kanbanURL    = flag.String("kanban-url", settings.String(schedulerconfig.SettingKanbanStoreURL), "kanban-store base URL")
-		bridgeURL    = flag.String("bridge-url", settings.String(schedulerconfig.SettingBridgeURL), "llm-bridge-server base URL")
+		bridgeURL    = flag.String("bridge-url", settings.String(workersettings.SettingBridgeURL), "llm-bridge-server base URL; the board, the scheduler and model-store are all under it")
 		maxDispatch  = flag.Int("max", maxDispatchPerTick, "Max sub-card dispatches per tick.")
 	)
 	flag.Parse()
 
 	// llm-bridge-server gates every route; stamp this process's calls to it
-	// with the service token. Host-scoped, so the scheduler API, noteboard and
-	// kanban-store calls below are untouched.
-	if err := bridgeauth.StampRequestsToBridge(*bridgeURL, settings.String(schedulerconfig.SettingBridgeServiceToken)); err != nil {
+	// with its service principal token. Every store this binary calls is
+	// under the bridge, so every call carries it.
+	if err := bridgeauth.StampRequestsToBridge(*bridgeURL, settings.String(workersettings.SettingBridgeServicePrincipalToken)); err != nil {
 		log.Fatal(err)
 	}
 
@@ -138,28 +139,26 @@ func main() {
 	}
 
 	if *registerFlag {
-		if err := registerSchedulerJob(settings.String(schedulerconfig.SettingSchedulerURL), *boardID); err != nil {
+		if err := registerSchedulerJob(bridgestores.SchedulerURL(*bridgeURL), *boardID); err != nil {
 			log.Fatalf("register: %v", err)
 		}
 		return
 	}
 
 	// Read once per tick: every fresh session this tick starts runs on it.
-	modelRole, err := schedulersettings.ReadModelRole(context.Background(), settings.String(schedulerconfig.SettingSchedulerURL), schedulerconfig.SettingKanbanDispatcherModelRole)
+	modelRole, err := schedulersettings.ReadModelRole(context.Background(), bridgestores.SchedulerURL(*bridgeURL), schedulerconfig.SettingKanbanDispatcherModelRole)
 	if err != nil {
 		log.Fatalf("[dispatcher] %v", err)
 	}
 
 	err = run(runOptions{
-		ModelRole:          modelRole,
-		ModelRoles:         sessionmodelrole.New(settings.String(schedulerconfig.SettingModelStoreURL), *bridgeURL),
-		BoardID:            *boardID,
-		KanbanURL:          *kanbanURL,
-		KanbanServiceToken: settings.String(schedulerconfig.SettingKanbanStoreServiceToken),
-		BridgeURL:          *bridgeURL,
-		NATSURL:            settings.String(schedulerconfig.SettingNATSURL),
-		DryRun:             *dryRun,
-		MaxDispatch:        *maxDispatch,
+		ModelRole:   modelRole,
+		ModelRoles:  sessionmodelrole.New(bridgestores.ModelsURL(*bridgeURL), *bridgeURL),
+		BoardID:     *boardID,
+		BridgeURL:   *bridgeURL,
+		NATSURL:     settings.String(workersettings.SettingNATSURL),
+		DryRun:      *dryRun,
+		MaxDispatch: *maxDispatch,
 	})
 	if err != nil {
 		log.Fatalf("[dispatcher] %v", err)
@@ -174,14 +173,12 @@ type runOptions struct {
 	// ModelRole resolves to.
 	ModelRoles sessionmodelrole.RoleChecker
 	BoardID    string
-	KanbanURL  string
-	// KanbanServiceToken is what the kanban-store client presents; kanban-store
-	// gates every route.
-	KanbanServiceToken string
-	BridgeURL          string
-	NATSURL            string
-	DryRun             bool
-	MaxDispatch        int
+	// BridgeURL is llm-bridge-server's address: the board is under its
+	// /issues, and the sessions, instances and agents at its root.
+	BridgeURL   string
+	NATSURL     string
+	DryRun      bool
+	MaxDispatch int
 	// Publish sends one BridgeInbound. Left nil, run connects to NATSURL and
 	// publishes there. A test sets it, because a test that reached the write
 	// path through the real bus would dispatch a real agent session and spend
@@ -215,7 +212,7 @@ func run(options runOptions) error {
 		return fmt.Errorf("no model role to start sessions on: a session that names none runs on whatever the bridge's harness default is")
 	}
 	degraded := degradations.New("dispatcher")
-	kc := issuesclient.New(options.KanbanURL, options.KanbanServiceToken)
+	kc := issuesclient.New(bridgestores.IssuesURL(options.BridgeURL))
 	board, err := kc.GetBoard(options.BoardID)
 	if errors.Is(err, issuesclient.ErrBoardNotFound) {
 		return fmt.Errorf("board %s does not exist — refusing to create a replacement, since a second board is exactly the fork pinning the id prevents", options.BoardID)
@@ -384,8 +381,9 @@ func run(options runOptions) error {
 // currentPlacement returns the column id this card is on for the given board.
 // Empty string means the card is not placed on this board (orphaned).
 //
-// It reads through the kanban client so the request carries the service token.
-// It used to be a bare http.Get, which kanban-store answers 401 — and because
+// It reads through the issues client so the request goes out on the stamped
+// transport with the bridge credential. It used to be a bare http.Get, which
+// kanban-store answered 401 — and because
 // the closure pass treated a failed read as "nothing to move", every closure
 // was skipped in silence.
 func currentPlacement(kc *issuesclient.Client, cardID, boardID string) (string, error) {
@@ -472,7 +470,7 @@ func (d *backlogDispatcher) dispatchBacklog(parents []scopedParent) (dispatched 
 			if sessionID == "" {
 				sessionID = mintSessionID(p.cardID, g)
 			}
-			prompt := buildPrompt(p, child, g, reusedSessionID)
+			prompt := buildPrompt(p, child, g, reusedSessionID, bridgestores.IssuesURL(d.bridgeURL))
 			displayName := fmt.Sprintf("tcl %s · %s", g.displayKey(), time.Now().Format("Jan 2 15:04"))
 
 			groupNote := ""
@@ -639,7 +637,7 @@ func backlogGroups(kc *issuesclient.Client, view *issuesclient.BoardView, parent
 }
 
 // listChildCardIDs returns the ids of the cards linked to a parent card, read
-// from the kanban-store the -kanban-url flag names.
+// from the issues under the bridge the -bridge-url flag names.
 func listChildCardIDs(kc *issuesclient.Client, parentID string) ([]string, error) {
 	entries, err := kc.ListCardsForEntity(linkTypeParent, parentID)
 	if err != nil {
@@ -871,7 +869,7 @@ func resolveCardSessionSpec(kc *issuesclient.Client, bridgeURL string, board *is
 	}
 	instance, ok := defaults.Default(issuesclient.DefaultFieldInstance)
 	if !ok {
-		return cardSessionSpec{}, fmt.Errorf("%w: neither a tag rule matching the card's tags %q nor board %q (%s) sets default_instance_id — add a tag rule (PUT /api/boards/%s/tag-rules) or set the board's (PATCH /api/boards/%s); there is no fallback instance",
+		return cardSessionSpec{}, fmt.Errorf("%w: neither a tag rule matching the card's tags %q nor board %q (%s) sets default_instance_id — add a tag rule (PUT /issues/boards/%s/tag-rules) or set the board's (PATCH /issues/boards/%s); there is no fallback instance",
 			errCardHasNoInstance, defaults.Tags, board.Name, board.ID, board.ID, board.ID)
 	}
 	harness, err := bridgeclient.InstanceHarnessType(bridgeURL, instance.Value)
@@ -942,7 +940,7 @@ func buildBridgeInbound(sessionID, displayName, prompt string, fresh bool, spec 
 	return in, nil
 }
 
-func buildPrompt(p scopedParent, child issuesclient.CardView, g backlogGroup, reusedSessionID string) string {
+func buildPrompt(p scopedParent, child issuesclient.CardView, g backlogGroup, reusedSessionID, issuesURL string) string {
 	childID := child.Placement.CardID
 	title := childTitle(child)
 	body, _ := child.Item["body"].(string)
@@ -974,12 +972,12 @@ func buildPrompt(p scopedParent, child issuesclient.CardView, g backlogGroup, re
 
 ## Instructions
 1. Do the work described above.
-2. When done, PATCH http://localhost:8191/api/items/%s with {"status":"done"} and a body update describing what you did.
+2. When done, PATCH %s/items/%s with {"status":"done"} and a body update describing what you did.
 3. Then exit cleanly. The kanban-curator will detect session completion and move the card to Done.
 4. If the task is blocked or unclear, leave a body update explaining why and exit; the card stays In Progress and a human will intervene.
 
 Be self-contained. No chat; just work and close out the sub-task.`,
-		header, childID, title, body, p.title(), p.cardID, group, childID)
+		header, childID, title, body, p.title(), p.cardID, group, issuesURL, childID)
 }
 
 func childTitle(c issuesclient.CardView) string {

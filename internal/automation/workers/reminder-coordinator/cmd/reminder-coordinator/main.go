@@ -15,7 +15,7 @@
 // already said. Cadence lived in cron lines and hardcoded shell scripts rather
 // than on the todo, so there was nowhere for that knowledge to live.
 //
-// Now cadence lives on the item (noteboard's `schedule` field, RFC 5545), and
+// Now cadence lives on the item (an issue's `schedule` field, RFC 5545), and
 // exactly one process reads it. Nothing CAN double-nudge, because there is only
 // one nudger.
 //
@@ -53,8 +53,10 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/boundedtext"
-	schedulerconfig "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/config"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgeauth"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgestores"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/degradations"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/workersettings"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/items/model"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )
@@ -78,7 +80,9 @@ const (
 
 // config is every value reminder-coordinator reads off its command line.
 type config struct {
-	noteboardURL string
+	// bridgeURL is llm-bridge-server's address: the todos are under its
+	// /issues and the digest note under its /notes.
+	bridgeURL    string
 	dashURL      string
 	askPath      string
 	scopeTag     string
@@ -95,6 +99,10 @@ type config struct {
 	// reads dash-server's token.
 	runtimeDirectory  string
 	sessionBusAddress string
+
+	// Not a flag: the token this binary presents to llm-bridge-server as its
+	// own service principal.
+	bridgeServicePrincipalToken string
 }
 
 // errSettingsRefused marks a parseFlags error that came from the environment:
@@ -120,28 +128,28 @@ var errSettingsRefused = errors.New("settings refused")
 //
 // The environment is an argument, not the process's own, so that a test states
 // which variables were set without setting them: the defaults below are read
-// at flag-registration time, so a test that exported NOTEBOARD_URL to observe
+// at flag-registration time, so a test that exported LLM_BRIDGE_URL to observe
 // it would be racing every other test in the package for one process-wide
 // variable. It is read through the binary's settings registry
-// (internal/config), which refuses a misspelled REMINDER_ variable. The -ask
+// (workersettings), which refuses a misspelled REMINDER_ variable. The -ask
 // default is ~/bin/ask, from the home directory the registry is built in.
 func parseFlags(args []string, environment servicesettings.Environment) (config, error) {
-	settings, err := schedulerconfig.ReminderCoordinator.NewSettingsRegistry(environment)
+	settings, err := workersettings.ReminderCoordinator.NewSettingsRegistry(environment)
 	if err != nil {
 		return config{}, fmt.Errorf("%w: %v", errSettingsRefused, err)
 	}
 	fs := flag.NewFlagSet("reminder-coordinator", flag.ContinueOnError)
 	var c config
-	fs.StringVar(&c.noteboardURL, "noteboard-url", settings.String(schedulerconfig.SettingNoteboardURL), "noteboard base URL — the source of truth for todos and their rules.")
-	fs.StringVar(&c.dashURL, "dash-url", settings.String(schedulerconfig.SettingDashURL), "dash base URL, for the authenticated Google Calendar proxy.")
-	fs.StringVar(&c.askPath, "ask", settings.String(schedulerconfig.SettingAskPath), "path to the herald `ask` binary.")
+	fs.StringVar(&c.bridgeURL, "bridge-url", settings.String(workersettings.SettingBridgeURL), "llm-bridge-server base URL — its issues are the source of truth for todos and their rules, and its notes hold the digest note.")
+	fs.StringVar(&c.dashURL, "dash-url", settings.String(workersettings.SettingDashURL), "dash base URL, for the authenticated Google Calendar proxy.")
+	fs.StringVar(&c.askPath, "ask", settings.String(workersettings.SettingAskPath), "path to the herald `ask` binary.")
 	fs.StringVar(&c.scopeTag, "tag", "personal", "only items carrying this tag are coordinated. Keeps the ~40 bot/coding todos out of the digest.")
 	fs.IntVar(&c.digestHour, "digest-hour", 7, "local hour to send the daily digest nudge.")
 	fs.IntVar(&c.digestMinute, "digest-minute", 30, "local minute to send the daily digest nudge.")
 	fs.StringVar(&c.workStart, "work-start", "08:00", "local time the working day begins. Hours inside it are not open time, so they are never offered as room for a todo.")
 	fs.StringVar(&c.workEnd, "work-end", "16:30", "local time the working day ends.")
 	fs.StringVar(&c.workDays, "work-days", "Mon,Tue,Wed,Thu,Fri", "days the working hours apply to. A day not named here is free all the way from 8am.")
-	fs.StringVar(&c.timezone, "tz", settings.String(schedulerconfig.SettingTimezone), "IANA zone the daily digest hour is interpreted in.")
+	fs.StringVar(&c.timezone, "tz", settings.String(workersettings.SettingTimezone), "IANA zone the daily digest hour is interpreted in.")
 	fs.DurationVar(&c.lookahead, "lookahead", 7*24*time.Hour, "how far ahead to materialize occurrences of a recurring template.")
 	fs.BoolVar(&c.dryRun, "dry-run", false, "report what would change; mutate nothing, send nothing.")
 	if err := fs.Parse(args); err != nil {
@@ -176,8 +184,9 @@ func parseFlags(args []string, environment servicesettings.Environment) (config,
 	if _, err := parseWorkDays(c.workDays); err != nil {
 		return reject("-work-days: %w", err)
 	}
-	c.runtimeDirectory = settings.String(schedulerconfig.SettingRuntimeDirectory)
-	c.sessionBusAddress = settings.String(schedulerconfig.SettingSessionBusAddress)
+	c.runtimeDirectory = settings.String(workersettings.SettingRuntimeDirectory)
+	c.sessionBusAddress = settings.String(workersettings.SettingSessionBusAddress)
+	c.bridgeServicePrincipalToken = settings.String(workersettings.SettingBridgeServicePrincipalToken)
 	return c, nil
 }
 
@@ -236,15 +245,15 @@ func parseDailyTime(value string) (dailyTime, error) {
 // This is lifted out of main() for the same reason the flag set is, and it is
 // the half of main() with something to get wrong. Nine flags reach eight fields
 // and a two-field struct; the pairs that read alike — digest hour against digest
-// minute, noteboard URL against dash URL — would swap without a compile error
+// minute, bridge URL against dash URL — would swap without a compile error
 // and without a test noticing. Trimming the trailing slash off both base URLs
 // happens here too, and that was unreachable as well: every URL the suite builds
 // a client with is already clean.
 func newCoordinator(c config, location *time.Location, now time.Time) *Coordinator {
 	return &Coordinator{
-		noteboard: &NoteboardClient{BaseURL: strings.TrimRight(c.noteboardURL, "/")},
-		calendar:  &GoogleCalendarMirror{DashURL: strings.TrimRight(c.dashURL, "/"), RuntimeDirectory: c.runtimeDirectory, SessionBusAddress: c.sessionBusAddress},
-		herald:    &Herald{AskPath: c.askPath},
+		items:    &ItemsClient{IssuesURL: bridgestores.IssuesURL(c.bridgeURL), NotesURL: bridgestores.NotesURL(c.bridgeURL)},
+		calendar: &GoogleCalendarMirror{DashURL: strings.TrimRight(c.dashURL, "/"), RuntimeDirectory: c.runtimeDirectory, SessionBusAddress: c.sessionBusAddress},
+		herald:   &Herald{AskPath: c.askPath},
 		// The subject matches the prefix this command's own error lines already
 		// carry, so a reader of scheduler run history meets one voice rather than
 		// two. Constructed here rather than left nil for a caller to supply: every
@@ -311,6 +320,15 @@ func run() int {
 		return 2
 	}
 
+	// llm-bridge-server gates every route; stamp this process's calls to it
+	// with its service principal token. Host-scoped, so the dash calls carry
+	// only dash's own token. The ask processes this spawns inherit the
+	// variable, since it is not one of the server's secrets childprocessenv
+	// strips.
+	if err := bridgeauth.StampRequestsToBridge(cfg.bridgeURL, cfg.bridgeServicePrincipalToken); err != nil {
+		log.Fatal(err)
+	}
+
 	location, err := time.LoadLocation(cfg.timezone)
 	if err != nil {
 		log.Fatalf("reminder-coordinator: bad -tz %q: %v", cfg.timezone, err)
@@ -339,18 +357,22 @@ func (d dailyTime) OnDay(day time.Time) time.Time {
 }
 
 // The collaborators are interfaces so the coordinator's decisions can be tested
-// without a noteboard, a dash, or a live herald session. The decisions are the
+// without the bridge's issues and notes, a dash, or a live herald session. The decisions are the
 // whole point: whether a child inherits its parent's tags, whether a nag fires
 // twice, whether two sessions can open at once. Those are exactly the things that
 // are invisible in production until they have already gone wrong.
-type noteboardAPI interface {
+// itemStores is where the coordinator's items live: its todos in issues and
+// its digest note in notes. A todo's PATCH and the note's are separate
+// methods, so neither can reach the other store.
+type itemStores interface {
 	ListOpen(tag string) ([]*model.Item, error)
 	ListAllStatuses(tag string) ([]*model.Item, error)
 	ListScheduled(tag string) ([]*model.Item, error)
 	ListChildren(parentID string) ([]*model.Item, error)
 	FindByTag(itemType, tag string) (*model.Item, error)
 	CreateItem(req *model.CreateItemRequest) (*model.Item, error)
-	Patch(id string, fields map[string]any) error
+	PatchTodo(id string, fields map[string]any) error
+	PatchNote(id string, fields map[string]any) error
 	SetSchedule(id string, schedule *model.Schedule, dryRun bool) error
 }
 
@@ -371,9 +393,9 @@ type heraldRelay interface {
 }
 
 type Coordinator struct {
-	noteboard noteboardAPI
-	calendar  calendarMirror
-	herald    heraldRelay
+	items    itemStores
+	calendar calendarMirror
+	herald   heraldRelay
 
 	// Degraded collects the ways one tick fell short of its job, so the shortfall
 	// reaches scheduler run history rather than living only in the log body. It is
@@ -457,7 +479,7 @@ func (c *Coordinator) Run() error {
 // scan of the template's existing children for one already carrying that due
 // date, which also covers a child created before this field existed.
 func (c *Coordinator) materializeDueOccurrences() error {
-	templates, err := c.noteboard.ListScheduled(c.ScopeTag)
+	templates, err := c.items.ListScheduled(c.ScopeTag)
 	if err != nil {
 		return err
 	}
@@ -493,7 +515,7 @@ func (c *Coordinator) materializeDueOccurrences() error {
 			continue
 		}
 
-		existing, err := c.noteboard.ListChildren(template.ID)
+		existing, err := c.items.ListChildren(template.ID)
 		if err != nil {
 			return fmt.Errorf("children of %s: %w", template.ID, err)
 		}
@@ -515,7 +537,7 @@ func (c *Coordinator) materializeDueOccurrences() error {
 		if latest != nil && (template.Schedule.LastMaterializedAt == nil || latest.After(*template.Schedule.LastMaterializedAt)) {
 			advanced := *template.Schedule
 			advanced.LastMaterializedAt = latest
-			if err := c.noteboard.SetSchedule(template.ID, &advanced, c.DryRun); err != nil {
+			if err := c.items.SetSchedule(template.ID, &advanced, c.DryRun); err != nil {
 				return fmt.Errorf("advance last_materialized_at on %s: %w", template.ID, err)
 			}
 		}
@@ -548,7 +570,7 @@ func (c *Coordinator) materializeOccurrence(template *model.Item, occurrence tim
 		// Deliberately NO schedule: the child is one occurrence, not a series. A
 		// child that inherited the rule would itself start spawning children.
 	}
-	if _, err := c.noteboard.CreateItem(child); err != nil {
+	if _, err := c.items.CreateItem(child); err != nil {
 		return fmt.Errorf("create occurrence of %s: %w", template.ID, err)
 	}
 	return nil
@@ -573,7 +595,7 @@ func hasChildDueAt(children []*model.Item, occurrence time.Time) bool {
 // item is left done. That is how a rolling item retires itself rather than
 // reopening forever.
 func (c *Coordinator) rollCompletedRollingItems() error {
-	items, err := c.noteboard.ListScheduled(c.ScopeTag)
+	items, err := c.items.ListScheduled(c.ScopeTag)
 	if err != nil {
 		return err
 	}
@@ -603,7 +625,7 @@ func (c *Coordinator) rollCompletedRollingItems() error {
 		if c.DryRun {
 			continue
 		}
-		if err := c.noteboard.Patch(item.ID, map[string]any{
+		if err := c.items.PatchTodo(item.ID, map[string]any{
 			"status": "open",
 			"due_at": next.Format(time.RFC3339),
 		}); err != nil {
@@ -647,7 +669,7 @@ func (b *Board) All() []*model.Item {
 func (b *Board) HasActionable() bool { return len(b.Overdue) > 0 || len(b.DueToday) > 0 }
 
 func (c *Coordinator) buildBoard() (*Board, error) {
-	items, err := c.noteboard.ListOpen(c.ScopeTag)
+	items, err := c.items.ListOpen(c.ScopeTag)
 	if err != nil {
 		return nil, err
 	}
@@ -711,7 +733,7 @@ func isTemplate(item *model.Item) bool {
 // last_nagged_at is what stops a */15 tick from re-nagging 96 times a day about
 // the same 10am firing.
 func (c *Coordinator) nagsFiringNow() ([]*model.Item, error) {
-	items, err := c.noteboard.ListScheduled(c.ScopeTag)
+	items, err := c.items.ListScheduled(c.ScopeTag)
 	if err != nil {
 		return nil, err
 	}
@@ -762,7 +784,7 @@ func (c *Coordinator) nagsFiringNow() ([]*model.Item, error) {
 func (c *Coordinator) writeDigestNote(board *Board, events []CalendarEvent, calErr error) error {
 	body := c.renderDigest(board, events, calErr)
 
-	existing, err := c.noteboard.FindByTag(model.TypeNote, digestTag)
+	existing, err := c.items.FindByTag(model.TypeNote, digestTag)
 	if err != nil {
 		return err
 	}
@@ -776,7 +798,7 @@ func (c *Coordinator) writeDigestNote(board *Board, events []CalendarEvent, calE
 			fmt.Println(body)
 			return nil
 		}
-		_, err := c.noteboard.CreateItem(&model.CreateItemRequest{
+		_, err := c.items.CreateItem(&model.CreateItemRequest{
 			Type:  model.TypeNote,
 			Title: digestTitle,
 			Body:  &body,
@@ -793,7 +815,7 @@ func (c *Coordinator) writeDigestNote(board *Board, events []CalendarEvent, calE
 		fmt.Println(body)
 		return nil
 	}
-	return c.noteboard.Patch(existing.ID, map[string]any{"body": body})
+	return c.items.PatchNote(existing.ID, map[string]any{"body": body})
 }
 
 func (c *Coordinator) renderDigest(board *Board, events []CalendarEvent, calErr error) string {
@@ -1276,7 +1298,7 @@ func (c *Coordinator) nudgeOnce(board *Board, events []CalendarEvent, calErr err
 		stamped := *item.Schedule
 		naggedAt := c.Now
 		stamped.LastNaggedAt = &naggedAt
-		if err := c.noteboard.SetSchedule(item.ID, &stamped, false); err != nil {
+		if err := c.items.SetSchedule(item.ID, &stamped, false); err != nil {
 			return fmt.Errorf("stamp last_nagged_at on %s: %w", item.ID, err)
 		}
 	}
@@ -1316,7 +1338,7 @@ func (c *Coordinator) dailyDigestIsDue() (bool, error) {
 		return false, nil
 	}
 
-	note, err := c.noteboard.FindByTag(model.TypeNote, digestTag)
+	note, err := c.items.FindByTag(model.TypeNote, digestTag)
 	if err != nil {
 		return false, err
 	}
@@ -1344,7 +1366,7 @@ func (c *Coordinator) dailyDigestIsDue() (bool, error) {
 // Only today's marker of each kind is kept: the note carries one line of state
 // per kind, not a growing log of every day the digest ever went out.
 func (c *Coordinator) recordRelayMarkers(sessionID string, digestSent bool) error {
-	note, err := c.noteboard.FindByTag(model.TypeNote, digestTag)
+	note, err := c.items.FindByTag(model.TypeNote, digestTag)
 	if err != nil || note == nil {
 		return err
 	}
@@ -1364,7 +1386,7 @@ func (c *Coordinator) recordRelayMarkers(sessionID string, digestSent bool) erro
 		}
 		links = append(links, link)
 	}
-	return c.noteboard.Patch(note.ID, map[string]any{"links": links})
+	return c.items.PatchNote(note.ID, map[string]any{"links": links})
 }
 
 func digestSentMarker(day time.Time) string {
@@ -1379,7 +1401,7 @@ func heraldSessionMarker(day time.Time, sessionID string) string {
 // opened today, or "" when today has not spoken yet (including before the
 // digest note first exists).
 func (c *Coordinator) todaysHeraldSessionID() (string, error) {
-	note, err := c.noteboard.FindByTag(model.TypeNote, digestTag)
+	note, err := c.items.FindByTag(model.TypeNote, digestTag)
 	if err != nil || note == nil {
 		return "", err
 	}
@@ -1426,7 +1448,7 @@ func (c *Coordinator) syncCalendar() error {
 
 	// Every scoped item in any status: an item that was done or un-opted-in still
 	// has an event to take down.
-	items, err := c.noteboard.ListAllStatuses(c.ScopeTag)
+	items, err := c.items.ListAllStatuses(c.ScopeTag)
 	if err != nil {
 		return err
 	}
@@ -1451,7 +1473,7 @@ func (c *Coordinator) syncCalendar() error {
 			if err != nil {
 				return err
 			}
-			if err := c.noteboard.Patch(item.ID, map[string]any{
+			if err := c.items.PatchTodo(item.ID, map[string]any{
 				"links": withCalendarLinks(otherLinks, newID, item.DueAt),
 			}); err != nil {
 				return err
@@ -1465,7 +1487,7 @@ func (c *Coordinator) syncCalendar() error {
 			if err := c.calendar.UpdateEvent(token, eventID, item); err != nil {
 				return err
 			}
-			if err := c.noteboard.Patch(item.ID, map[string]any{
+			if err := c.items.PatchTodo(item.ID, map[string]any{
 				"links": withCalendarLinks(otherLinks, eventID, item.DueAt),
 			}); err != nil {
 				return err
@@ -1479,7 +1501,7 @@ func (c *Coordinator) syncCalendar() error {
 			if err := c.calendar.DeleteEvent(token, eventID); err != nil {
 				return err
 			}
-			if err := c.noteboard.Patch(item.ID, map[string]any{"links": otherLinks}); err != nil {
+			if err := c.items.PatchTodo(item.ID, map[string]any{"links": otherLinks}); err != nil {
 				return err
 			}
 		}
@@ -1599,20 +1621,28 @@ func (h *Herald) Relay(from, title, message, reuseSessionID string) (string, err
 	return sessionID, nil
 }
 
-// ------------------------------------------------------------------ noteboard
+// ------------------------------------------------------------------ issues and notes
 
-type NoteboardClient struct{ BaseURL string }
+// ItemsClient reads and writes the two stores the coordinator's items live in,
+// both under llm-bridge-server: every todo, with its rule, in issues
+// (IssuesURL, bridgestores.IssuesURL), and the standing digest note in notes
+// (NotesURL). Each call goes to the store that holds its type, and a type
+// neither holds the coordinator's way is refused rather than sent somewhere.
+type ItemsClient struct {
+	IssuesURL string
+	NotesURL  string
+}
 
-func (n *NoteboardClient) ListOpen(tag string) ([]*model.Item, error) {
-	return n.listEveryPage(url.Values{"type": {"todo"}, "status": {"open"}, "tag": {tag}})
+func (n *ItemsClient) ListOpen(tag string) ([]*model.Item, error) {
+	return n.listEveryPage(n.IssuesURL, url.Values{"type": {"todo"}, "status": {"open"}, "tag": {tag}})
 }
 
 // ListAllStatuses covers the calendar teardown path: an item that was completed
 // or archived still has an event to take down.
-func (n *NoteboardClient) ListAllStatuses(tag string) ([]*model.Item, error) {
+func (n *ItemsClient) ListAllStatuses(tag string) ([]*model.Item, error) {
 	all := []*model.Item{}
 	for _, status := range []string{"open", "done", "archived"} {
-		items, err := n.listEveryPage(url.Values{"type": {"todo"}, "status": {status}, "tag": {tag}})
+		items, err := n.listEveryPage(n.IssuesURL, url.Values{"type": {"todo"}, "status": {status}, "tag": {tag}})
 		if err != nil {
 			return nil, err
 		}
@@ -1624,7 +1654,7 @@ func (n *NoteboardClient) ListAllStatuses(tag string) ([]*model.Item, error) {
 // ListScheduled returns scoped items in any status that carry a rule. Status is
 // not filtered: a `done` rolling item is exactly what the roll step looks for,
 // and a template keeps producing regardless of its own status.
-func (n *NoteboardClient) ListScheduled(tag string) ([]*model.Item, error) {
+func (n *ItemsClient) ListScheduled(tag string) ([]*model.Item, error) {
 	items, err := n.ListAllStatuses(tag)
 	if err != nil {
 		return nil, err
@@ -1642,13 +1672,30 @@ func (n *NoteboardClient) ListScheduled(tag string) ([]*model.Item, error) {
 // duplicate occurrence. An instance-mode template keeps one child per occurrence
 // and never retires them, so this is the list that grows without anyone deciding
 // it should — and a guard that reads only some of the children cannot see a
-// duplicate among the rest.
-func (n *NoteboardClient) ListChildren(parentID string) ([]*model.Item, error) {
-	return n.listEveryPage(url.Values{"parent_id": {parentID}})
+// duplicate among the rest. A template and its occurrences are todos, so the
+// children are read from issues.
+func (n *ItemsClient) ListChildren(parentID string) ([]*model.Item, error) {
+	return n.listEveryPage(n.IssuesURL, url.Values{"parent_id": {parentID}})
 }
 
-func (n *NoteboardClient) FindByTag(itemType, tag string) (*model.Item, error) {
-	items, err := n.list("/api/items?" + url.Values{
+// storeURLForType is the store that holds items of itemType: issues for a
+// todo, notes for a note. The coordinator makes and reads no other type.
+func (n *ItemsClient) storeURLForType(itemType string) (string, error) {
+	switch itemType {
+	case model.TypeTodo:
+		return n.IssuesURL, nil
+	case model.TypeNote:
+		return n.NotesURL, nil
+	}
+	return "", fmt.Errorf("reminder-coordinator reads and writes only todos (in issues) and notes (in notes), not %q items", itemType)
+}
+
+func (n *ItemsClient) FindByTag(itemType, tag string) (*model.Item, error) {
+	storeURL, err := n.storeURLForType(itemType)
+	if err != nil {
+		return nil, err
+	}
+	items, err := n.list(storeURL, "/items?"+url.Values{
 		"type": {itemType}, "tag": {tag}, "limit": {"10"},
 	}.Encode())
 	if err != nil {
@@ -1660,79 +1707,88 @@ func (n *NoteboardClient) FindByTag(itemType, tag string) (*model.Item, error) {
 	return items[0], nil
 }
 
-func (n *NoteboardClient) CreateItem(req *model.CreateItemRequest) (*model.Item, error) {
+func (n *ItemsClient) CreateItem(req *model.CreateItemRequest) (*model.Item, error) {
+	storeURL, err := n.storeURLForType(req.Type)
+	if err != nil {
+		return nil, err
+	}
 	var created model.Item
-	if err := n.do("POST", "/api/items", req, &created); err != nil {
+	if err := n.do("POST", storeURL, "/items", req, &created); err != nil {
 		return nil, err
 	}
 	return &created, nil
 }
 
-// itemPath addresses one noteboard item, keeping the id inside a single path
-// segment however it is spelled. The id is not ours: noteboard assigns it and the
+// itemPath addresses one item, keeping the id inside a single path segment
+// however it is spelled. The id is not ours: the store assigns it and the
 // coordinator reads it back off a list answer, so nothing here constrains its
 // shape. An id carrying "/" opens further segments and re-points the request at
-// another noteboard route; "?" or "#" ends the path early, so the call addresses a
+// another route; "?" or "#" ends the path early, so the call addresses a
 // DIFFERENT item and reports success.
 //
 // This one is a WRITE, which is what separates it from the read sites. A
-// re-pointed PATCH does not return the wrong answer — it edits the wrong row, on a
-// service with no auth at all, and answers 200. `~/CLAUDE.md` records that an
-// UPDATE in noteboard is the one operation that can still destroy data, because
-// its revision snapshot covers 8 of 20 columns and not `rank`, `due_at` or
-// `schedule` — the very fields SetSchedule writes through here.
+// re-pointed PATCH does not return the wrong answer — it edits the wrong row and
+// answers 200. An UPDATE is the one operation that can still destroy data,
+// because the revision snapshot covers 8 of 20 columns and not `rank`, `due_at`
+// or `schedule` — the very fields SetSchedule writes through here.
 //
 // PathEscape, not QueryEscape, for the same reason calendarEventPath gives: this
 // is a path position, and QueryEscape writes a space as "+", a literal plus in a
 // path segment. The query-string sites a few lines up correctly use url.Values
 // instead, because PathEscape does not escape "&".
 func itemPath(id string) string {
-	return "/api/items/" + url.PathEscape(id)
+	return "/items/" + url.PathEscape(id)
 }
 
-func (n *NoteboardClient) Patch(id string, fields map[string]any) error {
-	return n.do("PATCH", itemPath(id), fields, nil)
+// PatchTodo changes fields of a todo, in issues.
+func (n *ItemsClient) PatchTodo(id string, fields map[string]any) error {
+	return n.do("PATCH", n.IssuesURL, itemPath(id), fields, nil)
+}
+
+// PatchNote changes fields of a note — the digest note — in notes.
+func (n *ItemsClient) PatchNote(id string, fields map[string]any) error {
+	return n.do("PATCH", n.NotesURL, itemPath(id), fields, nil)
 }
 
 // SetSchedule writes back the coordinator's bookkeeping (last_materialized_at,
-// last_nagged_at) without disturbing the rest of the rule.
-func (n *NoteboardClient) SetSchedule(id string, schedule *model.Schedule, dryRun bool) error {
+// last_nagged_at) on a todo without disturbing the rest of the rule.
+func (n *ItemsClient) SetSchedule(id string, schedule *model.Schedule, dryRun bool) error {
 	if dryRun {
 		return nil
 	}
-	return n.Patch(id, map[string]any{"schedule": schedule})
+	return n.PatchTodo(id, map[string]any{"schedule": schedule})
 }
 
-// noteboardPageSize and noteboardMaxPages bound listEveryPage. noteboard caps a
-// page at the limit it is asked for and says nothing about what it left behind,
-// so each list method used to ask for a fixed 500 and could not tell 500 of 500
-// from 500 of 1,114 (measured on :8191, 2026-09-07). Raising the constant would
-// have bought the same defect a later date, so the read pages instead, and the
-// one remaining bound is an error rather than a silent cut.
+// itemsPageSize and itemsMaxPages bound listEveryPage. The store caps a page at
+// the limit it is asked for and says nothing about what it left behind, so each
+// list method used to ask for a fixed 500 and could not tell 500 of 500 from 500
+// of 1,114 (measured on noteboard, 2026-09-07). Raising the constant would have
+// bought the same defect a later date, so the read pages instead, and the one
+// remaining bound is an error rather than a silent cut.
 const (
-	noteboardPageSize = 500
-	noteboardMaxPages = 200
+	itemsPageSize = 500
+	itemsMaxPages = 200
 )
 
-// listEveryPage reads every item matching query, one page at a time, and fails
-// if the list is still going after noteboardMaxPages pages.
+// listEveryPage reads every item at storeURL matching query, one page at a
+// time, and fails if the list is still going after itemsMaxPages pages.
 //
-// noteboard orders by `created_at DESC, id`, a total order, and honors offset
-// together with type, status, tag and parent_id (checked on :8191, 2026-09-27).
-// An item created mid-read pushes rows toward later pages and can hand one back
-// twice, which the dedupe absorbs; an item deleted mid-read can drop one, which
-// the next run reads again.
-func (n *NoteboardClient) listEveryPage(query url.Values) ([]*model.Item, error) {
+// The store orders by `created_at DESC, id`, a total order, and honors offset
+// together with type, status, tag and parent_id (checked on noteboard,
+// 2026-09-27). An item created mid-read pushes rows toward later pages and can
+// hand one back twice, which the dedupe absorbs; an item deleted mid-read can
+// drop one, which the next run reads again.
+func (n *ItemsClient) listEveryPage(storeURL string, query url.Values) ([]*model.Item, error) {
 	all := []*model.Item{}
 	seen := map[string]bool{}
-	for page := 0; page < noteboardMaxPages; page++ {
+	for page := 0; page < itemsMaxPages; page++ {
 		pageQuery := url.Values{}
 		for name, values := range query {
 			pageQuery[name] = values
 		}
-		pageQuery.Set("limit", strconv.Itoa(noteboardPageSize))
-		pageQuery.Set("offset", strconv.Itoa(page*noteboardPageSize))
-		batch, err := n.list("/api/items?" + pageQuery.Encode())
+		pageQuery.Set("limit", strconv.Itoa(itemsPageSize))
+		pageQuery.Set("offset", strconv.Itoa(page*itemsPageSize))
+		batch, err := n.list(storeURL, "/items?"+pageQuery.Encode())
 		if err != nil {
 			return nil, err
 		}
@@ -1745,23 +1801,23 @@ func (n *NoteboardClient) listEveryPage(query url.Values) ([]*model.Item, error)
 		}
 		// A page shorter than the limit is the end of the list, and the only
 		// normal way out of this loop.
-		if len(batch) < noteboardPageSize {
+		if len(batch) < itemsPageSize {
 			return all, nil
 		}
 	}
-	return nil, fmt.Errorf("noteboard list %s: still full after %d pages of %d — refusing to act on a partial list",
-		query.Encode(), noteboardMaxPages, noteboardPageSize)
+	return nil, fmt.Errorf("list %s %s: still full after %d pages of %d — refusing to act on a partial list",
+		storeURL, query.Encode(), itemsMaxPages, itemsPageSize)
 }
 
-func (n *NoteboardClient) list(path string) ([]*model.Item, error) {
+func (n *ItemsClient) list(storeURL, path string) ([]*model.Item, error) {
 	var items []*model.Item
-	if err := n.do("GET", path, nil, &items); err != nil {
+	if err := n.do("GET", storeURL, path, nil, &items); err != nil {
 		return nil, err
 	}
 	return items, nil
 }
 
-func (n *NoteboardClient) do(method, path string, body, out any) error {
+func (n *ItemsClient) do(method, storeURL, path string, body, out any) error {
 	var payload io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -1771,7 +1827,7 @@ func (n *NoteboardClient) do(method, path string, body, out any) error {
 		payload = bytes.NewReader(encoded)
 	}
 
-	request, err := http.NewRequest(method, n.BaseURL+path, payload)
+	request, err := http.NewRequest(method, storeURL+path, payload)
 	if err != nil {
 		return err
 	}
@@ -1788,7 +1844,7 @@ func (n *NoteboardClient) do(method, path string, body, out any) error {
 		return err
 	}
 	if response.StatusCode >= 300 {
-		return fmt.Errorf("%s %s: HTTP %s — %s", method, path, response.Status, strings.TrimSpace(string(raw)))
+		return fmt.Errorf("%s %s%s: HTTP %s — %s", method, storeURL, path, response.Status, strings.TrimSpace(string(raw)))
 	}
 	if out == nil || len(raw) == 0 {
 		return nil
@@ -1977,8 +2033,8 @@ func (g *GoogleCalendarMirror) CreateEvent(token string, item *model.Item) (stri
 
 // calendarEventPath addresses one event, keeping the id inside a single path
 // segment however it is spelled. The id is not ours: splitCalendarLinks trims it
-// off an entry in a noteboard item's `links` array, and noteboard constrains
-// nothing in that array. An id carrying "/" opens further segments and re-points
+// off an entry in a todo's `links` array, and issues constrain nothing in
+// that array. An id carrying "/" opens further segments and re-points
 // the request at another dash route; "?" or "#" ends the path early, so the call
 // addresses a DIFFERENT event and reports success. Both requests carry the
 // DASH_TOKEN, so a re-pointed path is an authenticated call the coordinator never

@@ -158,7 +158,7 @@ func TestGroupSiblingsAreTheParentsCardsInTheSameGroupOnly(t *testing.T) {
 	}
 	server := httptest.NewServer(kanban)
 	defer server.Close()
-	got := groupSiblings(issuesclient.New(server.URL, ""), &kanban.view, groupOf("parent", testCard("card-next", "group:a")), degradations.New("dispatcher"))
+	got := groupSiblings(issuesclient.New(server.URL), &kanban.view, groupOf("parent", testCard("card-next", "group:a")), degradations.New("dispatcher"))
 	var ids []string
 	for _, c := range got {
 		ids = append(ids, c.Placement.CardID)
@@ -225,7 +225,7 @@ func TestCurrentPlacementAnswersForTheBoardAskedAbout(t *testing.T) {
 		w.Write([]byte(`[{"card_id":"c1","board_id":"board-elsewhere","column_id":"col-x"},{"card_id":"c1","board_id":"` + testBoardID + `","column_id":"col-done"}]`))
 	}))
 	defer server.Close()
-	column, err := currentPlacement(issuesclient.New(server.URL, ""), "c1", testBoardID)
+	column, err := currentPlacement(issuesclient.New(server.URL), "c1", testBoardID)
 	if err != nil || column != "col-done" {
 		t.Errorf("currentPlacement = %q, %v; want col-done, the column on %s", column, err, testBoardID)
 	}

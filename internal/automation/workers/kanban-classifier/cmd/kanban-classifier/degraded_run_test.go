@@ -120,7 +120,7 @@ func (b *bridgeAndBoard) start(t *testing.T) (config, *issuesclient.Client) {
 	}))
 	t.Cleanup(bridge.Close)
 
-	kc := issuesclient.New(board.URL, "")
+	kc := issuesclient.New(board.URL)
 	kc.BoardID = "board-1"
 	kc.ColumnsByName = map[string]string{
 		"In Progress": "col-inprogress", "Blocked": "col-blocked",
