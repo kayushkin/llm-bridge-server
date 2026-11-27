@@ -88,7 +88,7 @@ func harnessConfigString(t *testing.T, sess *store.Session, key string) (string,
 // go in follows the harness's delivery: Claude Code keeps its own system
 // prompt and gets the text appended; Codex gets it as its whole prompt.
 func TestInjectedContextFollowsTheCardTagsAndTheDelivery(t *testing.T) {
-	srv := &Server{cfg: &config.Config{}, agentStore: contextTestAgentStore(t), issueReads: fakeKanbanCards(t, map[string][]string{"card-billing": {"billing"}, "card-other": {"ops"}})}
+	srv := (&Server{cfg: &config.Config{}, agentStore: contextTestAgentStore(t), issueReads: fakeKanbanCards(t, map[string][]string{"card-billing": {"billing"}, "card-other": {"ops"}})}).withServicesComposed()
 	ctx := context.Background()
 
 	claudeCode := &store.Session{SessionID: "br_cc", Harness: msg.HarnessClaudeCode, CardID: "card-billing"}
@@ -126,7 +126,7 @@ func TestInjectedContextFollowsTheCardTagsAndTheDelivery(t *testing.T) {
 // The prompt is looked up in the directory the harness runs in, by the same
 // rule the spawn uses: the session's own directory, else the instance's.
 func TestInjectedContextUsesTheSpawnsWorkingDirectory(t *testing.T) {
-	srv := &Server{cfg: &config.Config{}, agentStore: contextTestAgentStore(t), issueReads: fakeKanbanCards(t, map[string][]string{"card-billing": {"billing"}})}
+	srv := (&Server{cfg: &config.Config{}, agentStore: contextTestAgentStore(t), issueReads: fakeKanbanCards(t, map[string][]string{"card-billing": {"billing"}})}).withServicesComposed()
 	for name, run := range map[string]struct {
 		sess *store.Session
 		inst *msg.Instance

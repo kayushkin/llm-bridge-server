@@ -28,7 +28,7 @@ func fakeToolStore(t *testing.T, body string) *fakeToolRegistry {
 }
 
 func newServerWithToolRegistry(tools toolRegistry) *Server {
-	return &Server{cfg: &config.Config{}, toolRegistry: tools}
+	return (&Server{cfg: &config.Config{}, toolRegistry: tools}).withServicesComposed()
 }
 
 func TestInjectMCPConfigNoOpIfKeyAbsent(t *testing.T) {

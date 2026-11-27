@@ -306,7 +306,7 @@ func TestDiscoverHarnessesNormalizesANilCapabilityList(t *testing.T) {
 		}
 	})
 
-	srv := &Server{cfg: &config.Config{ImagesDir: t.TempDir()}}
+	srv := (&Server{cfg: &config.Config{ImagesDir: t.TempDir()}}).withServicesComposed()
 
 	statuses := srv.discoverHarnesses()
 	var found *HarnessStatus

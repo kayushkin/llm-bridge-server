@@ -133,7 +133,7 @@ func TestWriteHookDecisionWithUpdatedInput(t *testing.T) {
 // asks already parked on the banner, while leaving AskUserQuestion
 // (user_input) asks parked so their answer payload isn't stripped.
 func TestAutoAllowParkedPermissionAsks(t *testing.T) {
-	srv := &Server{parkedAsks: newParkedAsks()}
+	srv := (&Server{parkedAsks: newParkedAsks()}).withServicesComposed()
 	const bridgeID = "bridge-1"
 
 	permCh := srv.parkedAsks.park(bridgeID, "req-perm")

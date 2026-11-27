@@ -54,7 +54,7 @@ func mcpServerNames(t *testing.T, sess *store.Session) map[string]json.RawMessag
 }
 
 func TestComputerUseJoinsTheSessionsOtherServersUnderItsOwnName(t *testing.T) {
-	srv := &Server{}
+	srv := (&Server{}).withServicesComposed()
 	sess := computerUseSession(t, msg.HarnessClaudeCode,
 		`{"computer_use":true,"mcp_config":"{\"mcpServers\":{\"notes\":{\"command\":\"notes-mcp\"}}}"}`)
 	if err := srv.injectComputerUse(sess, runnerInstance(true), reportedTool); err != nil {
@@ -76,7 +76,7 @@ func TestComputerUseJoinsTheSessionsOtherServersUnderItsOwnName(t *testing.T) {
 }
 
 func TestComputerUseIsRefusedNamingWhatIsMissing(t *testing.T) {
-	srv := &Server{}
+	srv := (&Server{}).withServicesComposed()
 	cases := []struct {
 		name    string
 		sess    *store.Session
@@ -100,7 +100,7 @@ func TestComputerUseIsRefusedNamingWhatIsMissing(t *testing.T) {
 }
 
 func TestASessionThatDidNotAskIsUntouched(t *testing.T) {
-	srv := &Server{}
+	srv := (&Server{}).withServicesComposed()
 	sess := computerUseSession(t, msg.HarnessClaudeCode, `{"model":"x"}`)
 	if err := srv.injectComputerUse(sess, runnerInstance(true), reportedTool); err != nil {
 		t.Fatal(err)
@@ -111,7 +111,7 @@ func TestASessionThatDidNotAskIsUntouched(t *testing.T) {
 }
 
 func TestARunnerSessionGetsItsMCPConfigFileAsJSON(t *testing.T) {
-	srv := &Server{}
+	srv := (&Server{}).withServicesComposed()
 	path := filepath.Join(t.TempDir(), "mcp.json")
 	if err := os.WriteFile(path, []byte(`{"mcpServers":{"notes":{"command":"notes-mcp"}}}`), 0o600); err != nil {
 		t.Fatal(err)

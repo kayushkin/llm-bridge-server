@@ -311,28 +311,7 @@ func New(st *store.Store, as *agents.Store, ms *memories.Store, hs *machines.Sto
 	// machine.
 	srv.harness.SetTurnEndObserver(srv.onTurnEnd)
 	srv.harness.SetUnpromptedTurnStartObserver(srv.onUnpromptedTurnStart)
-	srv.grantChecker = &grantcheck.Checker{Dependencies: grantcheck.Dependencies{
-		GrantStore:               func() grantcheck.GrantReader { return srv.grantStore },
-		GrantsPrincipalDirectory: func() grants.PrincipalDirectory { return srv.grantsPrincipalDirectory },
-		PrincipalLookupCache: func() grantcheck.PrincipalLookupCache {
-			if srv.principalLookupCache == nil {
-				return nil
-			}
-			return srv.principalLookupCache
-		},
-	}}
-	srv.briefService = &briefs.Service{Dependencies: briefs.Dependencies{
-		Harness:        srv.harness,
-		Store:          st,
-		TurnClassifier: srv.turnClassifierForBriefs,
-		Sessions:       srv,
-	}}
-	srv.chatLinkService = &chatlinks.Service{Dependencies: chatlinks.Dependencies{
-		Store:             st,
-		Settings:          srv.settings,
-		ReferenceResolver: srv.referenceResolver.Load,
-		Sessions:          srv,
-	}}
+	srv.composeServices()
 	if cfg.ChatLinksNATSURL != "" && cfg.MultichatURL != "" {
 		srv.chatLinkService.ChatLinks = &chatlinks.ChatLinks{
 			MultichatURL: cfg.MultichatURL,

@@ -379,7 +379,7 @@ func (fs *frameStream) take(t *testing.T, want int) []sseFrame {
 // frames correctly but never writes the id line closes no gap at all.
 func TestSessionListEventsReplaysOverHTTP(t *testing.T) {
 	hub := newSessionHub(nil)
-	srv := &Server{sessionHub: hub}
+	srv := (&Server{sessionHub: hub}).withServicesComposed()
 	ts := httptest.NewServer(http.HandlerFunc(srv.handleSessionListEvents))
 	defer ts.Close()
 
@@ -432,7 +432,7 @@ func TestSessionListEventsReplaysOverHTTP(t *testing.T) {
 
 func TestSessionListEventsTellsClientWhenItCannotResume(t *testing.T) {
 	hub := newSessionHub(nil)
-	srv := &Server{sessionHub: hub}
+	srv := (&Server{sessionHub: hub}).withServicesComposed()
 	ts := httptest.NewServer(http.HandlerFunc(srv.handleSessionListEvents))
 	defer ts.Close()
 

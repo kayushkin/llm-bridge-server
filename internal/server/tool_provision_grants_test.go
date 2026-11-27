@@ -57,8 +57,8 @@ func fakeToolStoreWithOptIns(t *testing.T, optIns map[string][]map[string]any) (
 }
 
 func newServerWithGrants(tools toolRegistry, grantStoreURL string) *Server {
-	return &Server{cfg: &config.Config{}, toolRegistry: tools, grantStore: testGrantReaderAt(grantStoreURL),
-		principalLookupCache: principalLookupCacheAnswering(humanPrincipalForGrantTests)}
+	return (&Server{cfg: &config.Config{}, toolRegistry: tools, grantStore: testGrantReaderAt(grantStoreURL),
+		principalLookupCache: principalLookupCacheAnswering(humanPrincipalForGrantTests)}).withServicesComposed()
 }
 
 // humanPrincipalForGrantTests is the principal the grant tests run as: a
