@@ -58,13 +58,13 @@ principal who will own every record.
 Through the server, as a signed-in person (`$BRIDGE` is its address):
 
 ```sh
-curl -s -X POST $BRIDGE/people-store/persons -H 'Content-Type: application/json' \
+curl -s -X POST $BRIDGE/people/persons -H 'Content-Type: application/json' \
   -d '{"display_name":"Alice Smith","birthday":"--05-14","how_met":"book club","tags":["neighbors"]}'
-curl -s -X POST $BRIDGE/people-store/persons/person_000001/identities \
+curl -s -X POST $BRIDGE/people/persons/person_000001/identities \
   -d '{"kind":"email","value":"Alice@Example.com","linked_by":"operator"}'
-curl -s '$BRIDGE/people-store/identities/resolve?kind=email&value=alice@example.com'
-curl -s -X POST $BRIDGE/people-store/persons/person_000001/relationships -d '{"person_id":"person_000002","kind":"sibling"}'
-curl -s '$BRIDGE/people-store/persons?q=ali'
+curl -s '$BRIDGE/people/identities/resolve?kind=email&value=alice@example.com'
+curl -s -X POST $BRIDGE/people/persons/person_000001/relationships -d '{"person_id":"person_000002","kind":"sibling"}'
+curl -s '$BRIDGE/people/persons?q=ali'
 ```
 
 ## Importing from multichat
@@ -77,8 +77,8 @@ auth-store as provider `multichat`).
 Then review:
 
 ```sh
-curl -s '$BRIDGE/people-store/suggestions?status=proposed&sort=activity'
-curl -s -X POST $BRIDGE/people-store/suggestions/suggestion_000001/accept -d '{}'
+curl -s '$BRIDGE/people/suggestions?status=proposed&sort=activity'
+curl -s -X POST $BRIDGE/people/suggestions/suggestion_000001/accept -d '{}'
 ```
 
 ## License

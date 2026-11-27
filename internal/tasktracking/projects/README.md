@@ -19,7 +19,7 @@ Every route is an operator route: the service token, an administrator, or an
 administrator's session agent token. No row has an owner, and links name
 sessions, people and notes.
 
-`llm-bridge-server import-project-store -sqlite <file>` copies a standalone
+`llm-bridge-server import-projects -sqlite <file>` copies a standalone
 project-store's SQLite file (a copy made with `sqlite3 .backup`) into an empty
 module, keeping every id, number and time, and numbers on from the last number
 the standalone store handed out.
@@ -44,12 +44,12 @@ the standalone store handed out.
 ## The session filer
 
 `POST /projects/session-filings/run` runs one pass, as before. With
-`project_store.session_filer.enabled` on (off by default) the server also runs
-a pass every `project_store.session_filer.interval` (default 5m), logging each
+`projects.session_filer.enabled` on (off by default) the server also runs
+a pass every `projects.session_filer.interval` (default 5m), logging each
 pass and every session it could not judge. Its role, minimum confidence, wait
 before filing without a brief, window and sessions per pass are the
 `project_store.session_filer.*` settings, and the suggestions' role is
-`project_store.suggestion_model_role`; all are read at start.
+`projects.suggestion_model_role`; all are read at start.
 
 ## Tests
 

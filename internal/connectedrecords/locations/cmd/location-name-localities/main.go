@@ -2,7 +2,7 @@
 // trip end in location-store whose locality is empty, offline. The first run
 // downloads GeoNames' public list of towns of 1000 people or more into
 // LOCATION_STORE_GEONAMES_DIRECTORY, which must be the directory
-// llm-bridge-server's location_store.geonames_directory names, since the
+// llm-bridge-server's locations.geonames_directory names, since the
 // store reads the files from there; the download asks for the public files
 // and sends nothing about anyone. The towns are then looked up
 // inside location-store: no coordinate leaves the host. A locality already set
@@ -30,7 +30,7 @@ func main() {
 		fmt.Fprintf(flag.CommandLine.Output(), `usage: location-name-localities [-dry-run] [-download-again]
 
 LOCATION_STORE_GEONAMES_DIRECTORY (required) must name the directory
-llm-bridge-server's location_store.geonames_directory names: the GeoNames
+llm-bridge-server's locations.geonames_directory names: the GeoNames
 files are downloaded there, and the store reads them from there.
 LOCATION_STORE_URL is where location-store answers.
 
@@ -48,7 +48,7 @@ LOCATION_STORE_URL is where location-store answers.
 	client := storeclient.New(settings.String(locations.SettingLocationStoreURL))
 
 	// The files must land where the store reads them: the directory the
-	// server's location_store.geonames_directory names, which
+	// server's locations.geonames_directory names, which
 	// LOCATION_STORE_GEONAMES_DIRECTORY must name too.
 	dir := settings.String(locations.SettingGeonamesDirectory)
 	if *downloadAgain || !geonames.Present(dir) {

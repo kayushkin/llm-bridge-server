@@ -7,7 +7,7 @@ package server
 // guesses about who is in someone's photos.
 //
 // A round runs every pass that is on once for each owner named in
-// photo_store.face_passes.owner_principal_ids, as that owner: the pass reads
+// photos.face_passes.owner_principal_ids, as that owner: the pass reads
 // and writes photo-store, people-store, journal-store and message-store
 // through their own handlers with a caller that is the owner and sees no one
 // else's records, so two owners' faces are never grouped or matched together,
@@ -61,17 +61,17 @@ type photoFacePassSettings struct {
 // combination that could not run.
 func (s *Server) readPhotoFacePassSettings() (photoFacePassSettings, error) {
 	settings := photoFacePassSettings{
-		owners:            s.settings.StringList(config.SettingPhotoStoreFacePassesOwnerPrincipalIDs),
-		interval:          s.settings.Duration(config.SettingPhotoStoreFacePassesInterval),
+		owners:            s.settings.StringList(config.SettingPhotosFacePassesOwnerPrincipalIDs),
+		interval:          s.settings.Duration(config.SettingPhotosFacePassesInterval),
 		multichatURL:      strings.TrimRight(s.cfg.MultichatURL, "/"),
-		grouping:          s.settings.Boolean(config.SettingPhotoStoreFaceGroupingEnabled),
-		matching:          s.settings.Boolean(config.SettingPhotoStorePeopleMatchingEnabled),
-		modelCheckLimit:   s.settings.Integer(config.SettingPhotoStorePeopleMatchingModelCheckLimit),
-		modelCheckRole:    s.settings.String(config.SettingPhotoStorePeopleMatchingModelCheckRole),
-		guessing:          s.settings.Boolean(config.SettingPhotoStoreFaceGroupGuessingEnabled),
-		guessModels:       s.settings.StringList(config.SettingPhotoStoreFaceGroupGuessingModels),
-		contextOnlyModels: s.settings.StringList(config.SettingPhotoStoreFaceGroupGuessingContextModels),
-		guessLimit:        s.settings.Integer(config.SettingPhotoStoreFaceGroupGuessingLimit),
+		grouping:          s.settings.Boolean(config.SettingPhotosFaceGroupingEnabled),
+		matching:          s.settings.Boolean(config.SettingPhotosPeopleMatchingEnabled),
+		modelCheckLimit:   s.settings.Integer(config.SettingPhotosPeopleMatchingModelCheckLimit),
+		modelCheckRole:    s.settings.String(config.SettingPhotosPeopleMatchingModelCheckRole),
+		guessing:          s.settings.Boolean(config.SettingPhotosFaceGroupGuessingEnabled),
+		guessModels:       s.settings.StringList(config.SettingPhotosFaceGroupGuessingModels),
+		contextOnlyModels: s.settings.StringList(config.SettingPhotosFaceGroupGuessingContextModels),
+		guessLimit:        s.settings.Integer(config.SettingPhotosFaceGroupGuessingLimit),
 	}
 	return settings, checkPhotoFacePassSettings(settings)
 }
@@ -84,12 +84,12 @@ func checkPhotoFacePassSettings(settings photoFacePassSettings) error {
 	}
 	var problems []string
 	for _, owner := range settings.owners {
-		if err := ownership.CheckPrincipalID(config.SettingPhotoStoreFacePassesOwnerPrincipalIDs, owner); err != nil {
+		if err := ownership.CheckPrincipalID(config.SettingPhotosFacePassesOwnerPrincipalIDs, owner); err != nil {
 			problems = append(problems, err.Error())
 		}
 	}
 	if settings.interval <= 0 {
-		problems = append(problems, config.SettingPhotoStoreFacePassesInterval+" must be longer than nothing")
+		problems = append(problems, config.SettingPhotosFacePassesInterval+" must be longer than nothing")
 	}
 	if settings.matching || settings.guessing {
 		if settings.multichatURL == "" {
@@ -98,23 +98,23 @@ func checkPhotoFacePassSettings(settings photoFacePassSettings) error {
 	}
 	if settings.matching {
 		if settings.modelCheckLimit < 0 {
-			problems = append(problems, config.SettingPhotoStorePeopleMatchingModelCheckLimit+" is below 0")
+			problems = append(problems, config.SettingPhotosPeopleMatchingModelCheckLimit+" is below 0")
 		}
 		if settings.modelCheckLimit > 0 && settings.modelCheckRole == "" {
-			problems = append(problems, config.SettingPhotoStorePeopleMatchingModelCheckRole+" is empty, and the model check asks it")
+			problems = append(problems, config.SettingPhotosPeopleMatchingModelCheckRole+" is empty, and the model check asks it")
 		}
 	}
 	if settings.guessing {
 		if len(settings.guessModels) == 0 {
-			problems = append(problems, config.SettingPhotoStoreFaceGroupGuessingModels+" names no model")
+			problems = append(problems, config.SettingPhotosFaceGroupGuessingModels+" names no model")
 		}
 		for _, model := range settings.contextOnlyModels {
 			if !slices.Contains(settings.guessModels, model) {
-				problems = append(problems, fmt.Sprintf("%s names %s, which %s does not", config.SettingPhotoStoreFaceGroupGuessingContextModels, model, config.SettingPhotoStoreFaceGroupGuessingModels))
+				problems = append(problems, fmt.Sprintf("%s names %s, which %s does not", config.SettingPhotosFaceGroupGuessingContextModels, model, config.SettingPhotosFaceGroupGuessingModels))
 			}
 		}
 		if settings.guessLimit <= 0 {
-			problems = append(problems, config.SettingPhotoStoreFaceGroupGuessingLimit+" must be at least 1")
+			problems = append(problems, config.SettingPhotosFaceGroupGuessingLimit+" must be at least 1")
 		}
 	}
 	if len(problems) > 0 {
@@ -134,7 +134,7 @@ func (s *Server) StartPhotoFacePasses(ctx context.Context) error {
 	}
 	if !settings.grouping && !settings.matching && !settings.guessing {
 		log.Printf("photo-store: no face pass runs here (%s, %s and %s are off)",
-			config.SettingPhotoStoreFaceGroupingEnabled, config.SettingPhotoStorePeopleMatchingEnabled, config.SettingPhotoStoreFaceGroupGuessingEnabled)
+			config.SettingPhotosFaceGroupingEnabled, config.SettingPhotosPeopleMatchingEnabled, config.SettingPhotosFaceGroupGuessingEnabled)
 		return nil
 	}
 	if s.photosAndLocations.Load() == nil || s.connectedRecords.Load() == nil {
@@ -144,7 +144,7 @@ func (s *Server) StartPhotoFacePasses(ctx context.Context) error {
 		return errors.New("photo-store face passes: people matching and face group guessing read message-store, so EnableMessageActivityAndTimeLedgerStores must run first")
 	}
 	if len(settings.owners) == 0 {
-		log.Printf("photo-store: face passes are on, and %s names no owner, so they run for nobody", config.SettingPhotoStoreFacePassesOwnerPrincipalIDs)
+		log.Printf("photo-store: face passes are on, and %s names no owner, so they run for nobody", config.SettingPhotosFacePassesOwnerPrincipalIDs)
 		return nil
 	}
 	log.Printf("photo-store: face passes (grouping %t, people matching %t with %d model checks, group guessing %t) run every %s for %d owners",

@@ -129,7 +129,7 @@ func TestEveryEnvironmentVariableTheServerReadsIsDeclared(t *testing.T) {
 	// Programs kept in this repo that are not this server and read their own
 	// environment: the git hook git runs for every command, and the commands below.
 	otherPrograms := map[string]bool{
-		filepath.Join("internal", "repositories", "workgraphstore", "cmd", "work-graph-hook"): true,
+		filepath.Join("internal", "repositories", "gitactivity", "cmd", "work-graph-hook"): true,
 		// aiauth's own command line, which a person runs to sign in to a provider.
 		filepath.Join("internal", "agents", "aiauth", "cmd", "aiauth"): true,
 	}

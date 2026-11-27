@@ -36,9 +36,9 @@ func openMailModule(ctx context.Context, url string) (*sql.DB, error) {
 // — mailstack fetches mail only when a request asks for it, and sends none.
 // The returned function closes the pool.
 func enableMail(ctx context.Context, cfg *config.Config, srv *server.Server, accessStores *access.Stores) (func(), error) {
-	providerConnections := cfg.Settings.Boolean(config.SettingMailstackProviderConnectionsEnabled)
+	providerConnections := cfg.Settings.Boolean(config.SettingMailProviderConnectionsEnabled)
 	if providerConnections && cfg.AuthStoreToken == "" {
-		return nil, fmt.Errorf("mailstack: %s is on but auth_store.token is not set: Gmail and Outlook tokens are read from auth-store", config.SettingMailstackProviderConnectionsEnabled)
+		return nil, fmt.Errorf("mailstack: %s is on but auth_store.token is not set: Gmail and Outlook tokens are read from auth-store", config.SettingMailProviderConnectionsEnabled)
 	}
 	pool, err := openMailModule(ctx, cfg.PostgresURL)
 	if err != nil {
@@ -60,7 +60,7 @@ func enableMail(ctx context.Context, cfg *config.Config, srv *server.Server, acc
 	if providerConnections {
 		log.Printf("postgres: mailstack open, served at /mail/; Gmail, Outlook and IMAP accounts reach their providers, with tokens from auth-store at %s", cfg.AuthStoreURL)
 	} else {
-		log.Printf("postgres: mailstack open, served at /mail/; only local accounts answer, since %s is off and no mail provider is reached", config.SettingMailstackProviderConnectionsEnabled)
+		log.Printf("postgres: mailstack open, served at /mail/; only local accounts answer, since %s is off and no mail provider is reached", config.SettingMailProviderConnectionsEnabled)
 	}
 	return func() {
 		if err := mail.Shutdown(context.Background()); err != nil {
@@ -75,16 +75,16 @@ func enableMail(ctx context.Context, cfg *config.Config, srv *server.Server, acc
 // importMailstackCmd copies a standalone mailstack's two SQLite files into
 // the mail module, keeping every row, id and time, and prints what it copied.
 // It refuses a module that already holds any row. Attachment bytes are
-// file-store's, and import-file-store carries them.
+// file-store's, and import-files carries them.
 func importMailstackCmd(args []string) {
-	flags := flag.NewFlagSet("import-mailstack", flag.ExitOnError)
+	flags := flag.NewFlagSet("import-mail", flag.ExitOnError)
 	accountsPath := flags.String("accounts-sqlite", "", "the standalone mailstack's accounts.db to copy (a copy of it, made with sqlite3 .backup, while the store runs)")
 	localMailPath := flags.String("local-mail-sqlite", "", "its local-mail.db, copied the same way; leave it out when the store never had a local account and so never made the file")
 	if err := flags.Parse(args); err != nil {
 		os.Exit(2)
 	}
 	if *accountsPath == "" || flags.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "usage: llm-bridge-server import-mailstack -accounts-sqlite <file> [-local-mail-sqlite <file>]")
+		fmt.Fprintln(os.Stderr, "usage: llm-bridge-server import-mail -accounts-sqlite <file> [-local-mail-sqlite <file>]")
 		os.Exit(2)
 	}
 	ctx := context.Background()

@@ -66,7 +66,7 @@ func budgetVerdict(limits UsageLimits, budget []BudgetLimit, now time.Time) stri
 	return strings.Join(reasons, "; ")
 }
 
-// ParseBudgetLimits reads the eval_store.default_budget_limits setting's
+// ParseBudgetLimits reads the evaluations.default_budget_limits setting's
 // subscription.window:percent pairs, in a stable order.
 func ParseBudgetLimits(pairs map[string]string) ([]BudgetLimit, error) {
 	keys := make([]string, 0, len(pairs))

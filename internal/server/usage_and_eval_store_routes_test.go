@@ -158,7 +158,7 @@ func TestEvalStoreRoutesAnswerAndRunsStayOffUntilTheSettingIsOn(t *testing.T) {
 	}
 	runID := createSyntheticEvalRun(t, gated)
 	refused := gated.requestAsService(t, "POST", "/evaluations/runs/"+runID+"/start")
-	if refused.Code != http.StatusServiceUnavailable || !strings.Contains(refused.Body.String(), "eval_store.runs.enabled") {
+	if refused.Code != http.StatusServiceUnavailable || !strings.Contains(refused.Body.String(), "evaluations.runs.enabled") {
 		t.Fatalf("start while runs are off = %d %s, want 503 naming the setting", refused.Code, refused.Body)
 	}
 	if principal := gated.requestAsPrincipal(t, firstTestPrincipalID, "GET", "/evaluations/suites", nil); principal.Code != http.StatusForbidden || !strings.Contains(principal.Body.String(), "operator_route") {

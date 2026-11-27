@@ -261,7 +261,7 @@ func SuggestionPrompt(rollup Rollup, activity []ActivityEvent, now time.Time) st
 // SuggestNextSteps asks a model for next steps and stores them as proposals.
 func SuggestNextSteps(ctx context.Context, store *Store, owners *Owners, projectID, requestedBy string) ([]Suggestion, error) {
 	if owners.SuggestionModelRole == "" {
-		return nil, fmt.Errorf("%w: no model role is set for suggestions (project_store.suggestion_model_role)", ErrInvalid)
+		return nil, fmt.Errorf("%w: no model role is set for suggestions (projects.suggestion_model_role)", ErrInvalid)
 	}
 	rollup, err := BuildRollup(ctx, store, owners, projectID)
 	if err != nil {

@@ -8,7 +8,7 @@ the standalone service served on `:8340` behind that prefix. Package
 `internal/connectedrecords/budget`; the books are in Postgres, in the
 schema `budget`, which the role `budget_module` owns (`Module()`); the server
 provisions and migrates it and hands the pool to `New(db)`.
-`llm-bridge-server import-budget-store -sqlite <file> -owner <principal id>`
+`llm-bridge-server import-budget -sqlite <file> -owner <principal id>`
 copies a standalone store's SQLite file in, keeping every id. Bodies are
 JSON, except an import, whose body is the file. Timestamps are epoch seconds;
 dates are `YYYY-MM-DD`; months are `YYYY-MM`. Errors are `{"error": "…"}`.
@@ -301,7 +301,7 @@ transaction by `budget_transaction_id`. `PATCH /marketplace-order-lines/{id}
 
 ## Plaid: banks that stay current
 
-Off unless the server's `budget_store.plaid_environment` names an environment
+Off unless the server's `budget.plaid_environment` names an environment
 (`sandbox`, `production`); the server then reaches auth-store with its own
 `auth_store.url` and `auth_store.token`, and refuses to start without the
 token. Every route here answers 503 while off. The team's keys are auth-store's credential

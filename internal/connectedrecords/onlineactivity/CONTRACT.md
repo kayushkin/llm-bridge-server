@@ -129,7 +129,7 @@ daylight saving, and refuses one it does not know or that two zones share.
 
 ## Moving a standalone store in
 
-`llm-bridge-server import-activity-store` (the server's command) runs
+`llm-bridge-server import-online-activity` (the server's command) runs
 `ImportStandaloneDatabase`: it copies a standalone SQLite file (a `.backup`
 copy) and its `attachments` folder into an empty module for one owner,
 keeping every id and numbering on after the highest. Each live attachment's

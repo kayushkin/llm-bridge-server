@@ -431,7 +431,7 @@ func (s *Server) backendFor(accountID string) (backend.Backend, *accounts.Accoun
 
 // ErrProviderConnectionsOff is a read or change on a Gmail, Outlook or IMAP
 // account while this server makes no connection to mail providers.
-var ErrProviderConnectionsOff = errors.New("this server makes no connection to mail providers (mailstack.provider_connections.enabled is off), so only local accounts answer")
+var ErrProviderConnectionsOff = errors.New("this server makes no connection to mail providers (mail.provider_connections.enabled is off), so only local accounts answer")
 
 // errorCodeProviderConnectionsOff is the 503 code of ErrProviderConnectionsOff.
 const errorCodeProviderConnectionsOff = "mail_provider_connections_off"

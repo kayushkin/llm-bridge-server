@@ -4,7 +4,7 @@ Persistent memory with full-text search for the [llm-bridge](https://github.com/
 
 A memory store that gives AI agents cross-session knowledge retention. Memories are ranked by BM25 relevance, weighted by importance and recency, and automatically decayed and compacted over time. A context builder assembles prompt context within a token budget.
 
-It is a module of llm-bridge-server: its records live in Postgres (schema `memories`, role `memories_module`, built by `migrations/*.sql`) and its routes are mounted on the server at the same paths as before (`/memories…`), as operator routes. Until 2026-11 it kept a SQLite file and had a standalone command; `llm-bridge-server import-memory-store -sqlite <file>` copies such a file into the module, keeping every id (`ImportStandaloneDatabase`).
+It is a module of llm-bridge-server: its records live in Postgres (schema `memories`, role `memories_module`, built by `migrations/*.sql`) and its routes are mounted on the server at the same paths as before (`/memories…`), as operator routes. Until 2026-11 it kept a SQLite file and had a standalone command; `llm-bridge-server import-memories -sqlite <file>` copies such a file into the module, keeping every id (`ImportStandaloneDatabase`).
 
 ```
   ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐

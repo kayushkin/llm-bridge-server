@@ -468,7 +468,7 @@ func (filer *SessionFiler) repoName(ctx context.Context, repoStoreID int64, repo
 // Run does one filing pass. One pass runs at a time; a second is a conflict.
 func (filer *SessionFiler) Run(ctx context.Context, request SessionFilerRunRequest) (SessionFilerReport, error) {
 	if filer.ModelRole == "" {
-		return SessionFilerReport{}, fmt.Errorf("%w: no model role is set for the session filer (project_store.session_filer.model_role)", ErrInvalid)
+		return SessionFilerReport{}, fmt.Errorf("%w: no model role is set for the session filer (projects.session_filer.model_role)", ErrInvalid)
 	}
 	if request.SinceDays < 0 || request.SinceDays > MaximumSessionFilerWindowDays {
 		return SessionFilerReport{}, fmt.Errorf("%w: since_days must be from 1 to %d", ErrInvalid, MaximumSessionFilerWindowDays)

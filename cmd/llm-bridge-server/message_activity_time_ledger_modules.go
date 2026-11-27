@@ -38,8 +38,8 @@ var (
 // stores do, through importConnectedRecordsStoreCmd.
 func init() {
 	for command, module := range map[string]connectedRecordsModule{
-		"import-message-store":     messageStoreModule,
-		"import-time-ledger-store": timeLedgerStoreModule,
+		"import-messages":     messageStoreModule,
+		"import-time-ledger": timeLedgerStoreModule,
 	} {
 		if _, taken := connectedRecordsImports[command]; taken {
 			panic("two connected records imports are named " + command)
@@ -86,11 +86,11 @@ func enableMessageActivityAndTimeLedgerStores(ctx context.Context, cfg *config.C
 
 // importActivityStoreCmd copies a standalone activity-store's SQLite file
 // into its Postgres module, owned by -owner, and carries every attachment's
-// bytes from -attachments into file-store (file_store.data_directory),
+// bytes from -attachments into file-store (files.data_directory),
 // checking each one's SHA-256. It prints how many rows of each table it
 // copied, and nothing of the records.
 func importActivityStoreCmd(args []string) {
-	flags := flag.NewFlagSet("import-activity-store", flag.ExitOnError)
+	flags := flag.NewFlagSet("import-online-activity", flag.ExitOnError)
 	sqlitePath := flags.String("sqlite", "", "the standalone activity-store database to copy (a copy of it, made with sqlite3 .backup, while the store runs)")
 	attachments := flags.String("attachments", "", "the standalone store's attachments directory (its data directory's attachments/), which is only read")
 	owner := flags.String("owner", "", "the principal-store id of the person who owns every record copied (principal_000001)")
@@ -98,7 +98,7 @@ func importActivityStoreCmd(args []string) {
 		os.Exit(2)
 	}
 	if *sqlitePath == "" || *attachments == "" || *owner == "" || flags.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "usage: llm-bridge-server import-activity-store -sqlite <file> -attachments <directory> -owner <principal id>")
+		fmt.Fprintln(os.Stderr, "usage: llm-bridge-server import-online-activity -sqlite <file> -attachments <directory> -owner <principal id>")
 		os.Exit(2)
 	}
 	if err := ownership.CheckPrincipalID("-owner", *owner); err != nil {
@@ -115,14 +115,14 @@ func importActivityStoreCmd(args []string) {
 		importFailed(err)
 	}
 	defer fileStoreDB.Close()
-	fileStore, err := files.New(fileStoreDB, cfg.Settings.String(config.SettingFileStoreDataDirectory))
+	fileStore, err := files.New(fileStoreDB, cfg.Settings.String(config.SettingFilesDataDirectory))
 	if err != nil {
 		importFailed(err)
 	}
 	fileStoreCalls := files.NewServer(fileStore, func() files.Limits {
 		return files.Limits{
-			MaximumFileBytes:   int64(cfg.Settings.Integer(config.SettingFileStoreMaximumFileBytes)),
-			InlineContentTypes: cfg.Settings.StringList(config.SettingFileStoreInlineContentTypes),
+			MaximumFileBytes:   int64(cfg.Settings.Integer(config.SettingFilesMaximumFileBytes)),
+			InlineContentTypes: cfg.Settings.StringList(config.SettingFilesInlineContentTypes),
 		}
 	})
 	db, err := activityStoreModule.open(ctx, url)

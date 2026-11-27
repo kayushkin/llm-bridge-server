@@ -49,4 +49,4 @@ snapshot-store/
 
 ## Moving the SQLite file in
 
-`llm-bridge-server import-snapshot-store -sqlite <copy of snapshots.db>` copies every row of the SQLite file the server kept until the move into the module. The blobs stay in the git folder, which the store keeps using where it is (`snapshot_store.git_path`).
+`llm-bridge-server import-snapshots -sqlite <copy of snapshots.db>` copies every row of the SQLite file the server kept until the move into the module. The blobs stay in the git folder, which the store keeps using where it is (`snapshots.git_path`).

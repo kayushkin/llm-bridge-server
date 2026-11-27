@@ -9,7 +9,7 @@ Package `internal/agents/evaluations`. Records live in the Postgres module
 `evaluations` (role `evaluations_module`); only that role and the login that
 provisions it can read the schema. **Cases hold real mail**: nothing derived
 from a case — prompt, answer, verdict reason — may go in this repository, its
-tests or its commit messages. `llm-bridge-server import-eval-store -sqlite
+tests or its commit messages. `llm-bridge-server import-evaluations -sqlite
 <file>` copies a standalone eval-store's SQLite file into the module, keeping
 every id, and prints only counts.
 
@@ -70,9 +70,9 @@ reads none refuses any, and only `GET /cases/{id}` returns it.
 `case_selection` (`{"mode":"all"}` or `{"mode":"sample","size":N,"seed":S}`,
 frozen into `case_ids` at creation), `budget_limits` (`[{"subscription":"codex",
 "window":"weekly","max_used_percent":60}, …]`; defaults from
-`eval_store.default_budget_limits`), `concurrency`, `organization_id` (the
+`evaluations.default_budget_limits`), `concurrency`, `organization_id` (the
 principal-store group billed, recorded at start; default
-`eval_store.organization_id`; a run with neither refuses to start), `model_prices` (every model's provider and
+`evaluations.organization_id`; a run with neither refuses to start), `model_prices` (every model's provider and
 list price from model-store, frozen at creation), `prediction_id`, `note`,
 `origin` (`live` or `legacy-import`).
 
@@ -106,7 +106,7 @@ the run's `organization_id`. Prices come from model-store's
 `model` is the model-store id. Idempotency key:
 `eval-store:<run>:<case>:<answer|judge>:<model>:<attempt>`; correlation id: the
 run id. A resumed run sends the same keys and is handed the first receipts.
-Calls are made in batches of `eval_store.budget_check_every_calls`, with
+Calls are made in batches of `evaluations.budget_check_every_calls`, with
 usage-store read before each.
 
 ## Routes
@@ -180,6 +180,6 @@ reach below 10⁷).
 
 eval-store's settings are llm-bridge-server's, `eval_store.*` in
 `internal/config/usage_and_eval_settings.go`, read at start. Runs are carried
-out only when `eval_store.runs.enabled` is on (off by default): off, `POST
+out only when `evaluations.runs.enabled` is on (off by default): off, `POST
 /runs/{id}/start` and `/resume` answer 503 and every other route answers. On,
 the runs a previous process left going are marked `interrupted` at start.

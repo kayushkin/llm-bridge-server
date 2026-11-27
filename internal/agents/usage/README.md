@@ -8,7 +8,7 @@ model whose subscription has a fresh window at 100%.
 
 Records live in the Postgres module `usage` (role `usage_module`): limit
 snapshots, spend keys, daily spend, top-ups, and the spend snapshots an older
-version wrote. `llm-bridge-server import-usage-store -sqlite <file>` copies a
+version wrote. `llm-bridge-server import-usage -sqlite <file>` copies a
 standalone usage-store's SQLite file into the module, keeping every id.
 
 ## Packages
@@ -48,20 +48,20 @@ The settings are llm-bridge-server's, `usage_store.*` in
 `internal/config/usage_and_eval_settings.go`, read at start.
 
 - **Limits** are read in the background only when
-  `usage_store.limits_refresh.enabled` is on (off by default). Each provider is
-  read every `usage_store.limits_refresh.idle_interval` (15m), and every
+  `usage.limits_refresh.enabled` is on (off by default). Each provider is
+  read every `usage.limits_refresh.idle_interval` (15m), and every
   `watched_interval` (2m) while the usage page has called `/limits/watch` within
   `watcher_expiry` (3m). A failed read waits one watched interval, doubling up to
   the idle interval. Anthropic's usage endpoint shares its rate limit with every
   Claude Code process on the login, which is why nothing reads it faster.
-  Codex limits need `usage_store.codex_command`.
+  Codex limits need `usage.codex_command`.
 - A snapshot is stale three idle intervals after it was taken; the routes set
   `stale_after` when they answer.
-- **Spend** is read only when `usage_store.spend_refresh.enabled` is on: at
+- **Spend** is read only when `usage.spend_refresh.enabled` is on: at
   start the server lists auth-store's Anthropic credentials (`auth_store.url`,
   `auth_store.token`), resolves each `api_key` one and takes the first whose key
   starts `sk-ant-admin`; every resolve shows in auth-store's audit trail. It
-  reads every `usage_store.spend_refresh.interval` (1h). A model missing from
+  reads every `usage.spend_refresh.interval` (1h). A model missing from
   `spend/pricing.go` is priced at $0 and logged.
 
 ## Snapshot rows

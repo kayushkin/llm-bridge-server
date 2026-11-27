@@ -92,7 +92,7 @@ var usageAndEvalStoreRouteDescriptions = map[string]routeDescription{
 	"GET /evaluations/runs/{id}":                            {routeGroupEvalStore, "One run and its progress"},
 	"PATCH /evaluations/runs/{id}":                          {routeGroupEvalStore, "Change a run's `prediction_id` or `note`"},
 	"DELETE /evaluations/runs/{id}":                         {routeGroupEvalStore, "Delete a run with its answers, verdicts and checks; 409 while it is going"},
-	"POST /evaluations/runs/{id}/start":                     {routeGroupEvalStore, "Start a created run (202); 503 while `eval_store.runs.enabled` is off"},
+	"POST /evaluations/runs/{id}/start":                     {routeGroupEvalStore, "Start a created run (202); 503 while `evaluations.runs.enabled` is off"},
 	"POST /evaluations/runs/{id}/resume":                    {routeGroupEvalStore, "Make what a run is missing, and with `retry_failed` what failed (202); 503 while runs are off"},
 	"POST /evaluations/runs/{id}/stop":                      {routeGroupEvalStore, "Finish the calls in flight, then stop"},
 	"GET /evaluations/runs/{id}/answers":                    {routeGroupEvalStore, "A run's answers; bodies only with `include_bodies=true`"},

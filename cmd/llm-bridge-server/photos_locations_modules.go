@@ -35,7 +35,7 @@ func enablePhotosAndLocations(ctx context.Context, cfg *config.Config, srv *serv
 		}
 	}
 	modules := server.PhotosAndLocationsModules{Photos: photos, Locations: locations,
-		GeonamesDirectory: cfg.Settings.String(config.SettingLocationStoreGeonamesDirectory)}
+		GeonamesDirectory: cfg.Settings.String(config.SettingLocationsGeonamesDirectory)}
 	if err := srv.EnablePhotosAndLocations(modules); err != nil {
 		closePools()
 		return nil, err
@@ -51,9 +51,9 @@ func enablePhotosAndLocations(ctx context.Context, cfg *config.Config, srv *serv
 // importPhotoStoreCmd copies a standalone photo-store's SQLite file into the
 // photos module, stamping every record with the owner -owner names, and
 // carries each photo's thumbnail from the standalone data directory into the
-// file-store module under file_store.data_directory.
+// file-store module under files.data_directory.
 func importPhotoStoreCmd(args []string) {
-	flags := flag.NewFlagSet("import-photo-store", flag.ExitOnError)
+	flags := flag.NewFlagSet("import-photos", flag.ExitOnError)
 	sqlitePath := flags.String("sqlite", "", "the standalone photo-store database to copy (a copy of it, made with sqlite3 .backup, while the store runs)")
 	thumbnails := flags.String("thumbnails", "", "the standalone store's thumbnails directory (its data directory's thumbnails/), which is only read")
 	carry := flags.String("carry", string(files.CopyBlobs), "how each thumbnail is put in file-store: copy, or link (a hard link, on one file system, which takes no room)")
@@ -62,7 +62,7 @@ func importPhotoStoreCmd(args []string) {
 		os.Exit(2)
 	}
 	if *sqlitePath == "" || *thumbnails == "" || *owner == "" || flags.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "usage: llm-bridge-server import-photo-store -sqlite <file> -thumbnails <directory> -owner <principal id> [-carry copy|link]")
+		fmt.Fprintln(os.Stderr, "usage: llm-bridge-server import-photos -sqlite <file> -thumbnails <directory> -owner <principal id> [-carry copy|link]")
 		os.Exit(2)
 	}
 	if err := ownership.CheckPrincipalID("-owner", *owner); err != nil {
@@ -79,13 +79,13 @@ func importPhotoStoreCmd(args []string) {
 		importFailed(err)
 	}
 	defer fileStoreDB.Close()
-	dataDirectory := cfg.Settings.String(config.SettingFileStoreDataDirectory)
+	dataDirectory := cfg.Settings.String(config.SettingFilesDataDirectory)
 	fileStore, err := files.New(fileStoreDB, dataDirectory)
 	if err != nil {
 		importFailed(err)
 	}
 	limits := func() files.Limits {
-		return files.Limits{MaximumFileBytes: int64(cfg.Settings.Integer(config.SettingFileStoreMaximumFileBytes))}
+		return files.Limits{MaximumFileBytes: int64(cfg.Settings.Integer(config.SettingFilesMaximumFileBytes))}
 	}
 	db, err := openModuleDescribedBy(ctx, url, photos.Module)
 	if err != nil {
@@ -103,14 +103,14 @@ func importPhotoStoreCmd(args []string) {
 // into the locations module, stamping every record with the owner -owner
 // names.
 func importLocationStoreCmd(args []string) {
-	flags := flag.NewFlagSet("import-location-store", flag.ExitOnError)
+	flags := flag.NewFlagSet("import-locations", flag.ExitOnError)
 	sqlitePath := flags.String("sqlite", "", "the standalone location-store database to copy (a copy of it, made with sqlite3 .backup, while the store runs)")
 	owner := flags.String("owner", "", "the principal-store id of the person who owns every record copied (principal_000001)")
 	if err := flags.Parse(args); err != nil {
 		os.Exit(2)
 	}
 	if *sqlitePath == "" || *owner == "" || flags.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "usage: llm-bridge-server import-location-store -sqlite <file> -owner <principal id>")
+		fmt.Fprintln(os.Stderr, "usage: llm-bridge-server import-locations -sqlite <file> -owner <principal id>")
 		os.Exit(2)
 	}
 	if err := ownership.CheckPrincipalID("-owner", *owner); err != nil {

@@ -20,7 +20,7 @@ import (
 // bridgeOwnStores are the stores the server kept in SQLite files of its own
 // until they moved into Postgres: harness-store (module harnesses), hook-store
 // (hooks), snapshot-store (snapshots, with its blobs still in the git folder
-// snapshot_store.git_path names) and the operations queue (operations).
+// snapshots.git_path names) and the operations queue (operations).
 type bridgeOwnStores struct {
 	harnesses  *machines.Store
 	hooks      *hooks.Store
@@ -117,15 +117,15 @@ func importBridgeOwnStoreCmd(command string, args []string, describe func() (pos
 // answers true, or answers false when command is not one of them.
 func runBridgeOwnStoreImportCommand(command string, args []string) bool {
 	switch command {
-	case "import-harness-store":
+	case "import-machines":
 		importBridgeOwnStoreCmd(command, args, machines.Module, func(ctx context.Context, db *sql.DB, path string) (any, error) {
 			return machines.ImportStandaloneDatabase(ctx, db, path)
 		})
-	case "import-hook-store":
+	case "import-hooks":
 		importBridgeOwnStoreCmd(command, args, hooks.Module, func(ctx context.Context, db *sql.DB, path string) (any, error) {
 			return hooks.ImportStandaloneDatabase(ctx, db, path)
 		})
-	case "import-snapshot-store":
+	case "import-snapshots":
 		importBridgeOwnStoreCmd(command, args, snapshots.Module, func(ctx context.Context, db *sql.DB, path string) (any, error) {
 			return snapshots.ImportStandaloneDatabase(ctx, db, path)
 		})

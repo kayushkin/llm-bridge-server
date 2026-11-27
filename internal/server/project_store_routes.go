@@ -36,7 +36,7 @@ func (s *Server) projectStoreRoute(route func(*projects.Handlers, http.ResponseW
 // RunProjectStoreSessionFiler runs a filing pass, then waits interval, until
 // ctx ends. It is what the scheduler job that calls the standalone store's
 // POST /session-filings/run does, in this process; main starts it only when
-// project_store.session_filer.enabled is on. A pass that fails, or fails to
+// projects.session_filer.enabled is on. A pass that fails, or fails to
 // judge some session, is logged and the next pass tries again, as the next
 // run of the job would.
 func (s *Server) RunProjectStoreSessionFiler(ctx context.Context, interval time.Duration) {

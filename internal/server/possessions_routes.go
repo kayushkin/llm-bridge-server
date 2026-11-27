@@ -15,12 +15,12 @@ package server
 // principal, harness-store through its Go store, model calls through the
 // one-shot router priced at model-store's list price, and originals' bytes in
 // the file-store module. Only article-store is outside this process, called
-// over HTTP at possession_store.article_store_url.
+// over HTTP at possessions.article_store_url.
 //
 // The photo review and the background reading of covers' wearer boxes spend
 // money on model calls, so they run only when
-// possession_store.review_worker.enabled is on, for the owners
-// possession_store.review_worker.owner_principal_ids names, each as that
+// possessions.review_worker.enabled is on, for the owners
+// possessions.review_worker.owner_principal_ids names, each as that
 // owner (StartPossessionReviewWorkers).
 
 import (
@@ -267,27 +267,27 @@ func (s *Server) registerPossessionsRoutes() {
 }
 
 // StartPossessionReviewWorkers runs possession-store's review worker for each
-// owner possession_store.review_worker.owner_principal_ids names, as that
-// owner, until ctx ends, when possession_store.review_worker.enabled is on.
+// owner possessions.review_worker.owner_principal_ids names, as that
+// owner, until ctx ends, when possessions.review_worker.enabled is on.
 // main calls it after EnablePossessions, once every store the worker asks is
 // open.
 func (s *Server) StartPossessionReviewWorkers(ctx context.Context) error {
-	if !s.settings.Boolean(config.SettingPossessionStoreReviewWorkerEnabled) {
-		log.Printf("possession-store: the review worker is off (%s); queued photos wait", config.SettingPossessionStoreReviewWorkerEnabled)
+	if !s.settings.Boolean(config.SettingPossessionsReviewWorkerEnabled) {
+		log.Printf("possession-store: the review worker is off (%s); queued photos wait", config.SettingPossessionsReviewWorkerEnabled)
 		return nil
 	}
 	stores := s.possessions.Load()
 	if stores == nil {
 		return errors.New("possession-store review worker: EnablePossessions must run first")
 	}
-	owners := s.settings.StringList(config.SettingPossessionStoreReviewWorkerOwnerPrincipalIDs)
+	owners := s.settings.StringList(config.SettingPossessionsReviewWorkerOwnerPrincipalIDs)
 	for _, owner := range owners {
-		if err := ownership.CheckPrincipalID(config.SettingPossessionStoreReviewWorkerOwnerPrincipalIDs, owner); err != nil {
+		if err := ownership.CheckPrincipalID(config.SettingPossessionsReviewWorkerOwnerPrincipalIDs, owner); err != nil {
 			return err
 		}
 	}
 	if len(owners) == 0 {
-		log.Printf("possession-store: the review worker is on, and %s names no owner, so it reviews nobody's photos", config.SettingPossessionStoreReviewWorkerOwnerPrincipalIDs)
+		log.Printf("possession-store: the review worker is on, and %s names no owner, so it reviews nobody's photos", config.SettingPossessionsReviewWorkerOwnerPrincipalIDs)
 		return nil
 	}
 	for _, owner := range owners {

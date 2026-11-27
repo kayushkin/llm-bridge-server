@@ -44,7 +44,7 @@ func openSchedulerModule(ctx context.Context, url string) (*sql.DB, error) {
 // and serves them from srv at /scheduler/ and /rules/. Neither acts on
 // its own unless its setting says so: scheduler.runs.enabled starts the cron
 // ticker, run now, the bus commands and event triggers, and
-// rule_store.reactor.enabled starts the reactor. While the standalone
+// rules.reactor.enabled starts the reactor. While the standalone
 // scheduler and rule-store run, a second process acting on the same jobs and
 // rules would run every job and decide every rule twice. The returned
 // function stops both and closes the pools.
@@ -217,13 +217,13 @@ func openRuleStoreModule(ctx context.Context, url string) (*sql.DB, error) {
 // reads sessions from this server and cards and entity tags from kanban-store,
 // both in this process as the internal service, as the standalone rule-store
 // read them with the two service tokens; so it runs after kanban-store is
-// enabled. The reactor runs only while rule_store.reactor.enabled is on.
+// enabled. The reactor runs only while rules.reactor.enabled is on.
 func enableRuleStore(ctx context.Context, cfg *config.Config, srv *server.Server) (func(), error) {
 	settings := cfg.Settings
-	reactorEnabled := settings.Boolean(config.SettingRuleStoreReactorEnabled)
-	sweepInterval := settings.Duration(config.SettingRuleStoreSweepInterval)
+	reactorEnabled := settings.Boolean(config.SettingRulesReactorEnabled)
+	sweepInterval := settings.Duration(config.SettingRulesSweepInterval)
 	if reactorEnabled && sweepInterval <= 0 {
-		return nil, fmt.Errorf("rule-store: %s is %s; it must be longer than nothing", config.SettingRuleStoreSweepInterval, sweepInterval)
+		return nil, fmt.Errorf("rule-store: %s is %s; it must be longer than nothing", config.SettingRulesSweepInterval, sweepInterval)
 	}
 	kanbanClient, err := srv.KanbanStoreHTTPClientAsInternalService()
 	if err != nil {
@@ -267,7 +267,7 @@ func enableRuleStore(ctx context.Context, cfg *config.Config, srv *server.Server
 		go reactor.Run(lifetime)
 		log.Printf("rule-store: the reactor runs here, sweeping every %s; %d live runs were applying when the last process stopped, and are interrupted", sweepInterval, interrupted)
 	} else {
-		reactor.SwitchOff(config.SettingRuleStoreReactorEnabled + " is off on this server")
+		reactor.SwitchOff(config.SettingRulesReactorEnabled + " is off on this server")
 	}
 	routes := http.NewServeMux()
 	rules.RegisterHandlers(lifetime, routes, store, reactor, kanban)
@@ -275,7 +275,7 @@ func enableRuleStore(ctx context.Context, cfg *config.Config, srv *server.Server
 	if reactorEnabled {
 		log.Printf("postgres: rule-store open, served at /rules/; its reactor runs here")
 	} else {
-		log.Printf("postgres: rule-store open, served at /rules/; %s is off, so no rule decides here", config.SettingRuleStoreReactorEnabled)
+		log.Printf("postgres: rule-store open, served at /rules/; %s is off, so no rule decides here", config.SettingRulesReactorEnabled)
 	}
 	return func() {
 		stop()
@@ -308,7 +308,7 @@ func hostOf(baseURL string) string {
 // importRuleStoreCmd copies a standalone rule-store's SQLite file into its
 // module, keeping every id, and prints how many rows it copied.
 func importRuleStoreCmd(args []string) {
-	path := importArguments("import-rule-store", "rule-store", args)
+	path := importArguments("import-rules", "rule-store", args)
 	ctx := context.Background()
 	pool, err := openRuleStoreModule(ctx, importPostgresURL())
 	if err != nil {

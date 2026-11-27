@@ -89,7 +89,7 @@ func (s *Server) readUsageStoreLimits(context.Context) (map[string]modelrouting.
 
 // EvalStoreOptions are the eval-store settings the runner takes.
 type EvalStoreOptions struct {
-	// RunsEnabled is eval_store.runs.enabled: off, start and resume answer 503.
+	// RunsEnabled is evaluations.runs.enabled: off, start and resume answer 503.
 	RunsEnabled              bool
 	Defaults                 evaluations.RunDefaults
 	OperationPollingInterval time.Duration
@@ -103,13 +103,13 @@ type EvalStoreOptions struct {
 // eval-store called them with the service token alone.
 func (s *Server) EnableEvalStore(store *evaluations.Store, options EvalStoreOptions) (*evaluations.Runner, error) {
 	if options.RunsEnabled && options.OperationPollingInterval <= 0 {
-		return nil, fmt.Errorf("eval-store: %s is %s; it must be longer than nothing", config.SettingEvalStoreOperationPollingInterval, options.OperationPollingInterval)
+		return nil, fmt.Errorf("eval-store: %s is %s; it must be longer than nothing", config.SettingEvaluationsOperationPollingInterval, options.OperationPollingInterval)
 	}
 	thisServer := evalStoreInThisServer{server: s}
 	bridge := &evaluations.BridgeOperations{Operations: thisServer, PollInterval: options.OperationPollingInterval}
 	runner := evaluations.NewRunner(store, bridge, thisServer, thisServer, options.Defaults)
 	if !options.RunsEnabled {
-		runner.SwitchRunsOff(config.SettingEvalStoreRunsEnabled + " is off on this server")
+		runner.SwitchRunsOff(config.SettingEvaluationsRunsEnabled + " is off on this server")
 	}
 	routes := http.NewServeMux()
 	evaluations.RegisterHandlers(routes, store, runner, bridge)

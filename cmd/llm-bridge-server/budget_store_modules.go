@@ -30,11 +30,11 @@ func enableBudgetStore(ctx context.Context, cfg *config.Config, srv *server.Serv
 		}
 	}
 	store := budget.New(db)
-	if environment := cfg.Settings.String(config.SettingBudgetStorePlaidEnvironment); environment != "" {
+	if environment := cfg.Settings.String(config.SettingBudgetPlaidEnvironment); environment != "" {
 		if cfg.AuthStoreURL == "" || cfg.AuthStoreToken == "" {
 			closePool()
 			return nil, fmt.Errorf("budget-store: %s is %q, and auth_store.url or auth_store.token is empty: Plaid's keys and every bank's access token live in auth-store",
-				config.SettingBudgetStorePlaidEnvironment, environment)
+				config.SettingBudgetPlaidEnvironment, environment)
 		}
 		store.SetPlaidVault(budget.AuthStoreVault{BaseURL: cfg.AuthStoreURL, Token: cfg.AuthStoreToken, PlaidEnvironment: environment,
 			Client: &http.Client{Timeout: 30 * time.Second}})
@@ -55,14 +55,14 @@ func enableBudgetStore(ctx context.Context, cfg *config.Config, srv *server.Serv
 // importBudgetStoreCmd copies a standalone budget-store's SQLite file into the
 // budget module, every row owned by the principal -owner names.
 func importBudgetStoreCmd(args []string) {
-	flags := flag.NewFlagSet("import-budget-store", flag.ExitOnError)
+	flags := flag.NewFlagSet("import-budget", flag.ExitOnError)
 	sqlitePath := flags.String("sqlite", "", "the standalone budget-store database to copy (a copy of it, made with sqlite3 .backup, while the store runs)")
 	owner := flags.String("owner", "", "the principal-store id of the person whose books every row copied is in (principal_000001)")
 	if err := flags.Parse(args); err != nil {
 		os.Exit(2)
 	}
 	if *sqlitePath == "" || *owner == "" || flags.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "usage: llm-bridge-server import-budget-store -sqlite <file> -owner <principal id>")
+		fmt.Fprintln(os.Stderr, "usage: llm-bridge-server import-budget -sqlite <file> -owner <principal id>")
 		os.Exit(2)
 	}
 	if err := ownership.CheckPrincipalID("-owner", *owner); err != nil {

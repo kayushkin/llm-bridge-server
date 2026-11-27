@@ -77,7 +77,7 @@ import toolstore "github.com/kayushkin/llm-bridge-server/internal/agents/tools"
 - `SeedRegistry(ctx, store)` — the rows the server writes at start; `InvokeRegisteredLocalTool` and `RegisteredLocalTools` — the in-process tools
 - `NewHandlers(store, HandlerOptions)` — one method per route, which the server mounts under its prefix
 - `HandlerOptions` — pluggable callbacks: `ResolveCredential`, `InvokeLocal`, `ListLocals`. Each optional.
-- `ImportStandaloneDatabase(ctx, db, path)` — copies a standalone tool-store's SQLite file into an empty module, keeping every id (`llm-bridge-server import-tool-store`)
+- `ImportStandaloneDatabase(ctx, db, path)` — copies a standalone tool-store's SQLite file into an empty module, keeping every id (`llm-bridge-server import-tools`)
 
 ### `schema` — JSON Schema helpers
 

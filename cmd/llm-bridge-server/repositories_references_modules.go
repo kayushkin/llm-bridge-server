@@ -79,35 +79,35 @@ func enableRepositoriesAndReferences(ctx context.Context, cfg *config.Config, sr
 
 	// repo-store and work-graph-store.
 	repoStore := repos.New(repoStoreDB)
-	pullRequestSyncEnabled := settings.Boolean(config.SettingRepoStorePullRequestSyncEnabled)
+	pullRequestSyncEnabled := settings.Boolean(config.SettingReposPullRequestSyncEnabled)
 	var syncer *repos.PullRequestSyncer
 	syncerOffReason := ""
-	github, err := repos.NewGitHubCommandLine(settings.String(config.SettingRepoStoreGitHubCommandLine))
+	github, err := repos.NewGitHubCommandLine(settings.String(config.SettingReposGitHubCommandLine))
 	switch {
 	case err == nil:
 		syncer = repos.NewPullRequestSyncer(repoStore, github)
 	case pullRequestSyncEnabled:
-		return fail(fmt.Errorf("repo-store: %s is on, and %s: %w", config.SettingRepoStorePullRequestSyncEnabled, config.SettingRepoStoreGitHubCommandLine, err))
+		return fail(fmt.Errorf("repo-store: %s is on, and %s: %w", config.SettingReposPullRequestSyncEnabled, config.SettingReposGitHubCommandLine, err))
 	default:
-		syncerOffReason = fmt.Sprintf("this server cannot run gh (%s): %v", config.SettingRepoStoreGitHubCommandLine, err)
+		syncerOffReason = fmt.Sprintf("this server cannot run gh (%s): %v", config.SettingReposGitHubCommandLine, err)
 		log.Printf("repo-store: %s; stored pull requests stay readable, and no repo can be synced", syncerOffReason)
 	}
 	workGraph := gitactivity.New(workGraphStoreDB)
 	srv.EnableRepositories(repoStore, syncer, syncerOffReason, workGraph)
 	if pullRequestSyncEnabled {
-		interval := settings.Duration(config.SettingRepoStorePullRequestSyncInterval)
+		interval := settings.Duration(config.SettingReposPullRequestSyncInterval)
 		if interval <= 0 {
-			return fail(fmt.Errorf("repo-store: %s is %s; it must be longer than nothing", config.SettingRepoStorePullRequestSyncInterval, interval))
+			return fail(fmt.Errorf("repo-store: %s is %s; it must be longer than nothing", config.SettingReposPullRequestSyncInterval, interval))
 		}
 		go syncer.RunEvery(ctx, interval)
 		log.Printf("repo-store: the pull-request sync runs every %s", interval)
 	} else {
-		log.Printf("repo-store: the pull-request sync runs no passes here (%s is off)", config.SettingRepoStorePullRequestSyncEnabled)
+		log.Printf("repo-store: the pull-request sync runs no passes here (%s is off)", config.SettingReposPullRequestSyncEnabled)
 	}
-	if settings.Boolean(config.SettingWorkGraphStoreIngestEnabled) {
+	if settings.Boolean(config.SettingGitActivityIngestEnabled) {
 		ingester := &gitactivity.Ingester{
 			Store:       workGraph,
-			SpoolPath:   settings.String(config.SettingWorkGraphStoreSpoolPath),
+			SpoolPath:   settings.String(config.SettingGitActivitySpoolPath),
 			RepoStore:   gitactivity.RepoStoreModule{Store: repoStore},
 			Interval:    2 * time.Second,
 			SettleDelay: 200 * time.Millisecond,
@@ -115,11 +115,11 @@ func enableRepositoriesAndReferences(ctx context.Context, cfg *config.Config, sr
 		go ingester.Run(ctx)
 		log.Printf("work-graph-store: ingesting the git hook's spool %s", ingester.SpoolPath)
 	} else {
-		log.Printf("work-graph-store: not reading the git hook's spool (%s is off)", config.SettingWorkGraphStoreIngestEnabled)
+		log.Printf("work-graph-store: not reading the git hook's spool (%s is off)", config.SettingGitActivityIngestEnabled)
 	}
 
 	// file-store.
-	dataDirectory := settings.String(config.SettingFileStoreDataDirectory)
+	dataDirectory := settings.String(config.SettingFilesDataDirectory)
 	files, err := files.New(fileStoreDB, dataDirectory)
 	if err != nil {
 		return fail(fmt.Errorf("file-store: %w", err))
@@ -129,13 +129,13 @@ func enableRepositoriesAndReferences(ctx context.Context, cfg *config.Config, sr
 	}
 
 	// reference-store.
-	serviceURLs := settings.StringMap(config.SettingReferenceStoreServiceURLs)
+	serviceURLs := settings.StringMap(config.SettingReferencesServiceURLs)
 	for service := range serviceURLs {
 		if slices.Contains(server.InProcessReferenceServices, service) {
-			return fail(fmt.Errorf("reference-store: %s names %s, which runs in this server and is asked here; take it out", config.SettingReferenceStoreServiceURLs, service))
+			return fail(fmt.Errorf("reference-store: %s names %s, which runs in this server and is asked here; take it out", config.SettingReferencesServiceURLs, service))
 		}
 	}
-	siteURLs := settings.StringMap(config.SettingReferenceStoreSiteURLs)
+	siteURLs := settings.StringMap(config.SettingReferencesSiteURLs)
 	if err := references.ValidateReferenceConfiguration(references.Types, serviceURLs, siteURLs); err != nil {
 		return fail(fmt.Errorf("reference-store: %w", err))
 	}
@@ -148,20 +148,20 @@ func enableRepositoriesAndReferences(ctx context.Context, cfg *config.Config, sr
 		Credentials: &references.Credentials{
 			AuthStoreURL:       cfg.AuthStoreURL,
 			AuthStoreToken:     cfg.AuthStoreToken,
-			AuthStoreProviders: settings.StringMap(config.SettingReferenceStoreAuthStoreProviders),
+			AuthStoreProviders: settings.StringMap(config.SettingReferencesAuthStoreProviders),
 			HTTPClient:         client,
 			TTL:                5 * time.Minute,
 		},
 		Access: &references.AccessChecker{
 			Directory: server.ReferenceAccessDirectory(accessStores.Principals, accessStores.Grants, access.GrantsPrincipalDirectory(accessStores.Principals)),
-			TTL:       seconds(config.SettingReferenceStoreAccessCacheSeconds),
+			TTL:       seconds(config.SettingReferencesAccessCacheSeconds),
 		},
 		HTTPClient:    client,
 		InProcess:     srv.InProcessReferenceReaders(),
-		RecordTTL:     seconds(config.SettingReferenceStoreRecordCacheSeconds),
-		MissTTL:       seconds(config.SettingReferenceStoreMissCacheSeconds),
-		LookupTimeout: seconds(config.SettingReferenceStoreLookupTimeout),
-		Concurrency:   settings.Integer(config.SettingReferenceStoreLookupConcurrency),
+		RecordTTL:     seconds(config.SettingReferencesRecordCacheSeconds),
+		MissTTL:       seconds(config.SettingReferencesMissCacheSeconds),
+		LookupTimeout: seconds(config.SettingReferencesLookupTimeout),
+		Concurrency:   settings.Integer(config.SettingReferencesLookupConcurrency),
 	}); err != nil {
 		return fail(err)
 	}
@@ -174,7 +174,7 @@ func enableRepositoriesAndReferences(ctx context.Context, cfg *config.Config, sr
 // importRepoStoreCmd copies a standalone repo-store's SQLite file into the
 // Postgres module, keeping every id and time.
 func importRepoStoreCmd(args []string) {
-	sqlitePath := importArguments("import-repo-store", "repo-store", args)
+	sqlitePath := importArguments("import-repos", "repo-store", args)
 	ctx := context.Background()
 	db, err := openModuleDescribedBy(ctx, importPostgresURL(), repos.Module)
 	if err != nil {
@@ -195,7 +195,7 @@ func importRepoStoreCmd(args []string) {
 // into the Postgres module, keeping every id and time. The hook's spool is
 // not touched.
 func importWorkGraphStoreCmd(args []string) {
-	sqlitePath := importArguments("import-work-graph-store", "work-graph-store", args)
+	sqlitePath := importArguments("import-git-activity", "work-graph-store", args)
 	ctx := context.Background()
 	db, err := openModuleDescribedBy(ctx, importPostgresURL(), gitactivity.Module)
 	if err != nil {
@@ -212,9 +212,9 @@ func importWorkGraphStoreCmd(args []string) {
 
 // importFileStoreCmd copies a standalone file-store's records into the
 // Postgres module and carries every blob a record names into this server's
-// file_store.data_directory, checking each one's SHA-256.
+// files.data_directory, checking each one's SHA-256.
 func importFileStoreCmd(args []string) {
-	flags := flag.NewFlagSet("import-file-store", flag.ExitOnError)
+	flags := flag.NewFlagSet("import-files", flag.ExitOnError)
 	sqlitePath := flags.String("sqlite", "", "the standalone file-store database to copy (a copy of it, made with sqlite3 .backup, while the store runs)")
 	blobs := flags.String("blobs", "", "the standalone store's blobs directory (its data directory's blobs/), which is only read")
 	carry := flags.String("carry", string(files.CopyBlobs), "how each blob is put in this server's data directory: copy, or link (a hard link, on one file system)")
@@ -222,7 +222,7 @@ func importFileStoreCmd(args []string) {
 		os.Exit(2)
 	}
 	if *sqlitePath == "" || *blobs == "" || flags.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "usage: llm-bridge-server import-file-store -sqlite <file> -blobs <directory> [-carry copy|link]")
+		fmt.Fprintln(os.Stderr, "usage: llm-bridge-server import-files -sqlite <file> -blobs <directory> [-carry copy|link]")
 		os.Exit(2)
 	}
 	postgresURL := importPostgresURL()
@@ -233,7 +233,7 @@ func importFileStoreCmd(args []string) {
 		importFailed(err)
 	}
 	defer db.Close()
-	dataDirectory := cfg.Settings.String(config.SettingFileStoreDataDirectory)
+	dataDirectory := cfg.Settings.String(config.SettingFilesDataDirectory)
 	fileStore, err := files.New(db, dataDirectory)
 	if err != nil {
 		importFailed(err)
@@ -244,7 +244,7 @@ func importFileStoreCmd(args []string) {
 	}
 	fmt.Printf("files: %d (%d deleted), numbering on after %d\n", counts.Files, counts.DeletedFiles, counts.LastFileNumber)
 	fmt.Printf("blobs: %d, %d bytes, in %s (%d were there already)\n", counts.Blobs, counts.BlobBytes, dataDirectory, counts.BlobsAlreadyHere)
-	settingOf := map[string]string{"maximum_file_bytes": config.SettingFileStoreMaximumFileBytes, "inline_content_types": config.SettingFileStoreInlineContentTypes}
+	settingOf := map[string]string{"maximum_file_bytes": config.SettingFilesMaximumFileBytes, "inline_content_types": config.SettingFilesInlineContentTypes}
 	keys := make([]string, 0, len(counts.StoredSettings))
 	for key := range counts.StoredSettings {
 		keys = append(keys, key)

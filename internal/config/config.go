@@ -58,7 +58,7 @@ type Config struct {
 	PeerAttachmentMaximumBytes       int
 	PeerAttachmentsMaximumTotalBytes int
 	// FileStoreMaximumFileBytes and FileStoreInlineContentTypes seed
-	// file_store.maximum_file_bytes and file_store.inline_content_types, the
+	// files.maximum_file_bytes and files.inline_content_types, the
 	// first start each key exists; the stored row decides after.
 	FileStoreMaximumFileBytes   int
 	FileStoreInlineContentTypes []string
@@ -79,8 +79,8 @@ type Config struct {
 	// SkillStoreDataDirectory holds the files of every skill the skill-store
 	// module records (skills/<id>/) and the sources it clones (repos/<name>/);
 	// the rows are in Postgres. SkillStoreInstallDirectory is where an
-	// installed skill is copied. LLMBRIDGE_SKILL_STORE_DATA_DIRECTORY and
-	// LLMBRIDGE_SKILL_STORE_INSTALL_DIRECTORY.
+	// installed skill is copied. LLMBRIDGE_SKILLS_DATA_DIRECTORY and
+	// LLMBRIDGE_SKILLS_INSTALL_DIRECTORY.
 	SkillStoreDataDirectory    string
 	SkillStoreInstallDirectory string
 	// LocalToolsPinchtabURL, LocalToolsPinchtabToken and LocalToolsBraveAPIKey
@@ -411,8 +411,8 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		SignInDiscordClientSecretCredentialID: settings.String("sign_in.discord_client_secret_credential_id"),
 		SignInDiscordRedirectURL:              settings.String("sign_in.discord_redirect_url"),
 		DiscoveryPrincipalID:                  settings.String("discovery.principal_id"),
-		SkillStoreDataDirectory:               settings.String("skill_store.data_directory"),
-		SkillStoreInstallDirectory:            settings.String("skill_store.install_directory"),
+		SkillStoreDataDirectory:               settings.String("skills.data_directory"),
+		SkillStoreInstallDirectory:            settings.String("skills.install_directory"),
 		LocalToolsPinchtabURL:                 settings.String("local_tools.pinchtab_url"),
 		LocalToolsPinchtabToken:               settings.String("local_tools.pinchtab_token"),
 		LocalToolsBraveAPIKey:                 settings.String("local_tools.brave_api_key"),
@@ -420,7 +420,7 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		ChatLinksNATSURL:                      settings.String("chat_links.nats_url"),
 		MultichatURL:                          settings.String("multichat.url"),
 		HealthcheckURL:                        settings.String("healthcheck.url"),
-		SnapshotStoreGit:                      settings.String("snapshot_store.git_path"),
+		SnapshotStoreGit:                      settings.String("snapshots.git_path"),
 		PurposeFolders:                        purposeFoldersOver(settings.StringMap("session.purpose_folders")),
 		PTYRingBufferBytes:                    settings.Integer("pty.ring_buffer_bytes"),
 		IdleTimeout:                           settings.Duration(SettingSessionIdleTimeout),
@@ -442,8 +442,8 @@ func LoadFrom(environment servicesettings.Environment) (*Config, error) {
 		ServiceToken:                          settings.String("service_token"),
 		PeerAttachmentMaximumBytes:            settings.Integer(SettingPeerAttachmentMaximumBytes),
 		PeerAttachmentsMaximumTotalBytes:      settings.Integer(SettingPeerAttachmentsMaximumTotalBytes),
-		FileStoreMaximumFileBytes:             settings.Integer(SettingFileStoreMaximumFileBytes),
-		FileStoreInlineContentTypes:           settings.StringList(SettingFileStoreInlineContentTypes),
+		FileStoreMaximumFileBytes:             settings.Integer(SettingFilesMaximumFileBytes),
+		FileStoreInlineContentTypes:           settings.StringList(SettingFilesInlineContentTypes),
 	}
 	productiondefaults.PanicIfUsedUnderTest(cfg.GuardedAddresses())
 	return cfg, nil

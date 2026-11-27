@@ -49,22 +49,22 @@ func enablePossessions(ctx context.Context, cfg *config.Config, srv *server.Serv
 	if err != nil {
 		return nil, fmt.Errorf("possession-store: %w", err)
 	}
-	location, err := time.LoadLocation(settings.String(config.SettingPossessionStoreOwnerTimeZone))
+	location, err := time.LoadLocation(settings.String(config.SettingPossessionsOwnerTimeZone))
 	if err != nil {
-		return nil, fmt.Errorf("possession-store: %s: %w", config.SettingPossessionStoreOwnerTimeZone, err)
+		return nil, fmt.Errorf("possession-store: %s: %w", config.SettingPossessionsOwnerTimeZone, err)
 	}
 	var reviewOwners []string
-	if settings.Boolean(config.SettingPossessionStoreReviewWorkerEnabled) {
-		reviewOwners = settings.StringList(config.SettingPossessionStoreReviewWorkerOwnerPrincipalIDs)
+	if settings.Boolean(config.SettingPossessionsReviewWorkerEnabled) {
+		reviewOwners = settings.StringList(config.SettingPossessionsReviewWorkerOwnerPrincipalIDs)
 	}
 	module := server.PossessionsModule{
 		Open:                   open,
-		FirstReaderRole:        settings.ModelRole(config.SettingPossessionStoreFirstReaderRole),
-		SecondReaderRole:       settings.ModelRole(config.SettingPossessionStoreSecondReaderRole),
+		FirstReaderRole:        settings.ModelRole(config.SettingPossessionsFirstReaderRole),
+		SecondReaderRole:       settings.ModelRole(config.SettingPossessionsSecondReaderRole),
 		OwnerLocation:          location,
-		ReviewImageLongestSide: settings.Integer(config.SettingPossessionStoreReviewImageLongestSide),
-		CoverCacheDirectory:    settings.String(config.SettingPossessionStoreCoverCacheDirectory),
-		ArticleStoreURL:        settings.String(config.SettingPossessionStoreArticleStoreURL),
+		ReviewImageLongestSide: settings.Integer(config.SettingPossessionsReviewImageLongestSide),
+		CoverCacheDirectory:    settings.String(config.SettingPossessionsCoverCacheDirectory),
+		ArticleStoreURL:        settings.String(config.SettingPossessionsArticleStoreURL),
 		ReviewOwners:           reviewOwners,
 	}
 	if err := srv.EnablePossessions(module); err != nil {
@@ -81,9 +81,9 @@ func enablePossessions(ctx context.Context, cfg *config.Config, srv *server.Serv
 // importPossessionStoreCmd copies a standalone possession-store's SQLite file
 // into the possessions module, stamping every record with the owner -owner
 // names, and carries each original from the standalone data directory's
-// originals/ into the file-store module under file_store.data_directory.
+// originals/ into the file-store module under files.data_directory.
 func importPossessionStoreCmd(args []string) {
-	flags := flag.NewFlagSet("import-possession-store", flag.ExitOnError)
+	flags := flag.NewFlagSet("import-possessions", flag.ExitOnError)
 	sqlitePath := flags.String("sqlite", "", "the standalone possession-store database to copy (a copy of it, made with sqlite3 .backup, while the store runs)")
 	originals := flags.String("originals", "", "the standalone store's originals directory (its data directory's originals/), which is only read")
 	carry := flags.String("carry", string(files.CopyBlobs), "how each original is put in file-store: copy, or link (a hard link, on one file system, which takes no room)")
@@ -92,7 +92,7 @@ func importPossessionStoreCmd(args []string) {
 		os.Exit(2)
 	}
 	if *sqlitePath == "" || *originals == "" || *owner == "" || flags.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "usage: llm-bridge-server import-possession-store -sqlite <file> -originals <directory> -owner <principal id> [-carry copy|link]")
+		fmt.Fprintln(os.Stderr, "usage: llm-bridge-server import-possessions -sqlite <file> -originals <directory> -owner <principal id> [-carry copy|link]")
 		os.Exit(2)
 	}
 	if err := ownership.CheckPrincipalID("-owner", *owner); err != nil {
@@ -109,13 +109,13 @@ func importPossessionStoreCmd(args []string) {
 		importFailed(err)
 	}
 	defer fileStoreDB.Close()
-	dataDirectory := cfg.Settings.String(config.SettingFileStoreDataDirectory)
+	dataDirectory := cfg.Settings.String(config.SettingFilesDataDirectory)
 	fileStore, err := files.New(fileStoreDB, dataDirectory)
 	if err != nil {
 		importFailed(err)
 	}
 	limits := func() files.Limits {
-		return files.Limits{MaximumFileBytes: int64(cfg.Settings.Integer(config.SettingFileStoreMaximumFileBytes))}
+		return files.Limits{MaximumFileBytes: int64(cfg.Settings.Integer(config.SettingFilesMaximumFileBytes))}
 	}
 	open, err := openPossessionStore(ctx, url)
 	if err != nil {

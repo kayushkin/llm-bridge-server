@@ -268,4 +268,4 @@ func ImportStandaloneDatabase(ctx context.Context, root *Store, sqlitePath, orig
 
 // standaloneImportActor is added_by on every original an import carried: the
 // standalone store kept no record of who added a file.
-const standaloneImportActor = "import-possession-store"
+const standaloneImportActor = "import-possessions"

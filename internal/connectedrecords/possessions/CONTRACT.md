@@ -33,14 +33,14 @@ The store reads llm-bridge-server's settings (`GET /settings` there):
 
 | Setting | Default | What it is |
 |---|---|---|
-| `possession_store.review_worker.enabled` | `false` | review queued photos, and read covers' wearer boxes in the background; off, queued photos wait |
-| `possession_store.review_worker.owner_principal_ids` | empty | the owners whose photos the worker reviews, each as that owner |
-| `possession_store.first_reader_role` | `possession-photo-reader` | model-store role of the first reader; it also reads answers given in words |
-| `possession_store.second_reader_role` | `possession-photo-second-reader` | model-store role of the second reader |
-| `possession_store.owner_time_zone` | `UTC` | an outfit read from a photo was worn on the photo's day in this zone |
-| `possession_store.review_image_longest_side` | `2048` | size of the original the readers see; without one they see photo-store's 1024-pixel thumbnail |
-| `possession_store.cover_cache_directory` | under the server's folder | outfit covers already cut; any file may be deleted |
-| `possession_store.article_store_url` | empty | article-store, outside the server: product listings are saved and read there |
+| `possessions.review_worker.enabled` | `false` | review queued photos, and read covers' wearer boxes in the background; off, queued photos wait |
+| `possessions.review_worker.owner_principal_ids` | empty | the owners whose photos the worker reviews, each as that owner |
+| `possessions.first_reader_role` | `possession-photo-reader` | model-store role of the first reader; it also reads answers given in words |
+| `possessions.second_reader_role` | `possession-photo-second-reader` | model-store role of the second reader |
+| `possessions.owner_time_zone` | `UTC` | an outfit read from a photo was worn on the photo's day in this zone |
+| `possessions.review_image_longest_side` | `2048` | size of the original the readers see; without one they see photo-store's 1024-pixel thumbnail |
+| `possessions.cover_cache_directory` | under the server's folder | outfit covers already cut; any file may be deleted |
+| `possessions.article_store_url` | empty | article-store, outside the server: product listings are saved and read there |
 
 Model calls go through the server's one-shot router, in process, priced at
 model-store's list price. photo-store, location-store, harness-store,
@@ -495,7 +495,7 @@ already stored, with no model call:
 piece boxes span. `ignored_owner_photo_id` names a pick no longer among the
 outfit's photos. `wearer_face_found` says whether the frame holds a face.
 An outfit with no photo answers all four null. Cutting a full-size original
-takes about a second, so cuts are kept in `possession_store.cover_cache_directory` by
+takes about a second, so cuts are kept in `possessions.cover_cache_directory` by
 photo and frame (any file there may be deleted), `GET /outfits` starts
 cutting the listed covers not cut yet in the background, and at most two
 are cut at once.

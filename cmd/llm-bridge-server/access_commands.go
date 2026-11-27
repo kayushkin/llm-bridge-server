@@ -24,19 +24,19 @@ type accessImport struct {
 }
 
 var accessImports = map[string]accessImport{
-	"import-principal-store": {principals.Module, func(ctx context.Context, db *sql.DB, path string) (string, error) {
+	"import-principals": {principals.Module, func(ctx context.Context, db *sql.DB, path string) (string, error) {
 		counts, err := principals.ImportStandaloneDatabase(ctx, db, path)
 		return fmt.Sprintf("%+v", counts), err
 	}},
-	"import-grant-store": {grants.Module, func(ctx context.Context, db *sql.DB, path string) (string, error) {
+	"import-grants": {grants.Module, func(ctx context.Context, db *sql.DB, path string) (string, error) {
 		counts, err := grants.ImportStandaloneDatabase(ctx, db, path)
 		return fmt.Sprintf("%+v", counts), err
 	}},
-	"import-sign-in-store": {signin.Module, func(ctx context.Context, db *sql.DB, path string) (string, error) {
+	"import-sign-in": {signin.Module, func(ctx context.Context, db *sql.DB, path string) (string, error) {
 		counts, err := signin.ImportStandaloneDatabase(ctx, db, path)
 		return fmt.Sprintf("%+v", counts), err
 	}},
-	"import-permission-store": {permissions.Module, func(ctx context.Context, db *sql.DB, path string) (string, error) {
+	"import-permissions": {permissions.Module, func(ctx context.Context, db *sql.DB, path string) (string, error) {
 		counts, err := permissions.ImportStandaloneDatabase(ctx, db, path)
 		return fmt.Sprintf("%+v", counts), err
 	}},

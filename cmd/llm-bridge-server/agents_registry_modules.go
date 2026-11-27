@@ -69,13 +69,13 @@ func openAgentsRegistryModules(ctx context.Context, cfg *config.Config) *agentsR
 // importAgentStoreCmd copies a standalone agent-store's SQLite file into its
 // module, keeping every id. It writes no prompt file: the rows only.
 func importAgentStoreCmd(args []string) {
-	importAgentsStoreCmd("import-agent-store", args, agents.Module, func(ctx context.Context, db *sql.DB, path string) (any, error) {
+	importAgentsStoreCmd("import-agents", args, agents.Module, func(ctx context.Context, db *sql.DB, path string) (any, error) {
 		return agents.ImportStandaloneDatabase(ctx, db, path)
 	})
 }
 
 func importMemoryStoreCmd(args []string) {
-	importAgentsStoreCmd("import-memory-store", args, memories.Module, func(ctx context.Context, db *sql.DB, path string) (any, error) {
+	importAgentsStoreCmd("import-memories", args, memories.Module, func(ctx context.Context, db *sql.DB, path string) (any, error) {
 		return memories.ImportStandaloneDatabase(ctx, db, path)
 	})
 }
@@ -83,7 +83,7 @@ func importMemoryStoreCmd(args []string) {
 // importModelStoreCmd copies a standalone model-store's registry into its
 // module. Its credential tables stay in the file: auth-store holds credentials.
 func importModelStoreCmd(args []string) {
-	importAgentsStoreCmd("import-model-store", args, models.Module, func(ctx context.Context, db *sql.DB, path string) (any, error) {
+	importAgentsStoreCmd("import-models", args, models.Module, func(ctx context.Context, db *sql.DB, path string) (any, error) {
 		return models.ImportStandaloneDatabase(ctx, db, path)
 	})
 }

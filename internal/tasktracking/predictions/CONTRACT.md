@@ -18,7 +18,7 @@ when `LLMBRIDGE_POSTGRES_URL` is set; without it the routes answer 503
 `prediction_store_off`. All timestamps are epoch seconds (`bigint`, 0 =
 unset). Tags are a `jsonb` array.
 
-`llm-bridge-server import-prediction-store -sqlite <file>` copies a standalone
+`llm-bridge-server import-predictions -sqlite <file>` copies a standalone
 prediction-store's SQLite file in, keeping every number, id, time and
 soft-deleted row, into an empty module only, and numbers on after the highest
 it copied.

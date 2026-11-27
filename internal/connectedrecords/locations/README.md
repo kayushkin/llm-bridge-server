@@ -16,7 +16,7 @@ the same paths it served as a standalone service on `:8333`. Its records
 are in Postgres, in the schema `locations`, which the role
 `locations_module` owns (`Module()`); the server provisions and migrates it
 and hands the pool to `New(db, geonamesDirectory)`. The GeoNames directory
-is the server's `location_store.geonames_directory` setting: the store reads
+is the server's `locations.geonames_directory` setting: the store reads
 the town files from there, and answers 409 on the passes that need them
 until they are there.
 
@@ -62,7 +62,7 @@ location-name-localities                                 # needs LOCATION_STORE_
 
 `location-name-localities` downloads the GeoNames files to
 `LOCATION_STORE_GEONAMES_DIRECTORY`, which must name the same directory as
-the server's `location_store.geonames_directory`.
+the server's `locations.geonames_directory`.
 
 ## What changed in the move
 

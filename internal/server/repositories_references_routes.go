@@ -103,8 +103,8 @@ func (s *Server) EnableRepositories(repoStore *repos.Store, syncer *repos.PullRe
 // force are judged now, since a value seeded from the environment never
 // passed through PUT. main calls it once, before the server listens.
 func (s *Server) EnableFileStore(fileStore *files.Store) error {
-	s.settings.SetValidator(config.SettingFileStoreMaximumFileBytes, files.ValidateMaximumFileBytes)
-	s.settings.SetValidator(config.SettingFileStoreInlineContentTypes, files.ValidateInlineContentTypes)
+	s.settings.SetValidator(config.SettingFilesMaximumFileBytes, files.ValidateMaximumFileBytes)
+	s.settings.SetValidator(config.SettingFilesInlineContentTypes, files.ValidateInlineContentTypes)
 	if err := s.checkFileStoreSettings(); err != nil {
 		return err
 	}
@@ -121,8 +121,8 @@ func (s *Server) EnableFileStore(fileStore *files.Store) error {
 // stored settings at the time of each request.
 func (s *Server) fileStoreLimits() files.Limits {
 	return files.Limits{
-		MaximumFileBytes:   int64(s.settings.Integer(config.SettingFileStoreMaximumFileBytes)),
-		InlineContentTypes: s.settings.StringList(config.SettingFileStoreInlineContentTypes),
+		MaximumFileBytes:   int64(s.settings.Integer(config.SettingFilesMaximumFileBytes)),
+		InlineContentTypes: s.settings.StringList(config.SettingFilesInlineContentTypes),
 	}
 }
 
@@ -131,10 +131,10 @@ func (s *Server) fileStoreLimits() files.Limits {
 func (s *Server) checkFileStoreSettings() error {
 	limits := s.fileStoreLimits()
 	if err := files.ValidateMaximumFileBytes(fmt.Sprint(limits.MaximumFileBytes)); err != nil {
-		return fmt.Errorf("%s: %w", config.SettingFileStoreMaximumFileBytes, err)
+		return fmt.Errorf("%s: %w", config.SettingFilesMaximumFileBytes, err)
 	}
 	if err := files.ValidateInlineContentTypes(strings.Join(limits.InlineContentTypes, ",")); err != nil {
-		return fmt.Errorf("%s: %w", config.SettingFileStoreInlineContentTypes, err)
+		return fmt.Errorf("%s: %w", config.SettingFilesInlineContentTypes, err)
 	}
 	return nil
 }

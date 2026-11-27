@@ -493,7 +493,7 @@ func TestThePassNeverFilesUnderAProjectTheModelMadeUpAndStopsAtItsLimit(t *testi
 func TestAPassIsRefusedWithoutAModelRoleAndWhileAnotherRuns(t *testing.T) {
 	store := newTestStore(t)
 	filer := &SessionFiler{Store: store, Owners: &Owners{}, MinimumConfidence: 0.8, Window: time.Hour, SessionsPerPass: 5}
-	if _, err := filer.Run(t.Context(), SessionFilerRunRequest{}); err == nil || !strings.Contains(err.Error(), "project_store.session_filer.model_role") {
+	if _, err := filer.Run(t.Context(), SessionFilerRunRequest{}); err == nil || !strings.Contains(err.Error(), "projects.session_filer.model_role") {
 		t.Errorf("a pass with no model role: %v", err)
 	}
 	filer.ModelRole = "balanced"

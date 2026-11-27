@@ -44,7 +44,7 @@ func openProjectStoreModule(ctx context.Context, url string) (*sql.DB, error) {
 }
 
 // enableTaskTrackingModules opens noteboard, kanban-store and project-store in
-// Postgres, serves them from srv, and when project_store.session_filer.enabled
+// Postgres, serves them from srv, and when projects.session_filer.enabled
 // is on starts the filer's passes. kanban-store calls noteboard and the access
 // stores in this process; project-store calls noteboard, kanban-store,
 // repo-store, work-graph-store, the scheduler and this server's sessions,
@@ -76,7 +76,7 @@ func enableTaskTrackingModules(ctx context.Context, cfg *config.Config, srv *ser
 	noteboardStore := items.New(noteboardDB)
 	srv.EnableNoteboard(noteboardStore)
 
-	kanbanMessageTriggersEnabled := cfg.Settings.Boolean(config.SettingKanbanStoreMessageTriggersEnabled)
+	kanbanMessageTriggersEnabled := cfg.Settings.Boolean(config.SettingIssuesMessageTriggersEnabled)
 	if err := server.CheckKanbanStoreConfiguration(cfg, kanbanMessageTriggersEnabled); err != nil {
 		closeModules()
 		return nil, fmt.Errorf("kanban-store: %w", err)
@@ -94,16 +94,16 @@ func enableTaskTrackingModules(ctx context.Context, cfg *config.Config, srv *ser
 		Principals:          projects.PrincipalStoreModule{Store: principals},
 		Noteboard:           projects.NoteboardModule{Store: noteboardStore},
 		Bridge:              srv.ProjectStoreBridge(),
-		SuggestionModelRole: settings.String(config.SettingProjectStoreSuggestionModelRole),
+		SuggestionModelRole: settings.String(config.SettingProjectsSuggestionModelRole),
 	}
 	filer := &projects.SessionFiler{
 		Store:                          projectStore,
 		Owners:                         owners,
-		ModelRole:                      settings.String(config.SettingProjectStoreSessionFilerModelRole),
-		MinimumConfidence:              settings.Decimal(config.SettingProjectStoreSessionFilerMinimumConfidence),
-		QuietBeforeFilingWithoutABrief: settings.Duration(config.SettingProjectStoreSessionFilerQuietBeforeFilingWithoutABrief),
-		Window:                         settings.Duration(config.SettingProjectStoreSessionFilerWindow),
-		SessionsPerPass:                settings.Integer(config.SettingProjectStoreSessionFilerSessionsPerPass),
+		ModelRole:                      settings.String(config.SettingProjectsSessionFilerModelRole),
+		MinimumConfidence:              settings.Decimal(config.SettingProjectsSessionFilerMinimumConfidence),
+		QuietBeforeFilingWithoutABrief: settings.Duration(config.SettingProjectsSessionFilerQuietBeforeFilingWithoutABrief),
+		Window:                         settings.Duration(config.SettingProjectsSessionFilerWindow),
+		SessionsPerPass:                settings.Integer(config.SettingProjectsSessionFilerSessionsPerPass),
 	}
 	if err := filer.Validate(); err != nil {
 		closeModules()
@@ -112,16 +112,16 @@ func enableTaskTrackingModules(ctx context.Context, cfg *config.Config, srv *ser
 	srv.EnableProjectStore(&projects.Handlers{Store: projectStore, Owners: owners, SessionFiler: filer})
 	log.Printf("postgres: noteboard open, served at /noteboard/; kanban-store open, served at /issues/ (%s); project-store open, served at /projects/", srv.KanbanStoreDescription())
 
-	if settings.Boolean(config.SettingProjectStoreSessionFilerEnabled) {
-		interval := settings.Duration(config.SettingProjectStoreSessionFilerInterval)
+	if settings.Boolean(config.SettingProjectsSessionFilerEnabled) {
+		interval := settings.Duration(config.SettingProjectsSessionFilerInterval)
 		if interval <= 0 {
 			closeModules()
-			return nil, fmt.Errorf("project-store: %s is %s; it must be longer than nothing", config.SettingProjectStoreSessionFilerInterval, interval)
+			return nil, fmt.Errorf("project-store: %s is %s; it must be longer than nothing", config.SettingProjectsSessionFilerInterval, interval)
 		}
 		go srv.RunProjectStoreSessionFiler(ctx, interval)
 		log.Printf("project-store: the session filer runs a pass every %s", interval)
 	} else {
-		log.Printf("project-store: the session filer runs no passes here (%s is off); POST /projects/session-filings/run runs one", config.SettingProjectStoreSessionFilerEnabled)
+		log.Printf("project-store: the session filer runs no passes here (%s is off); POST /projects/session-filings/run runs one", config.SettingProjectsSessionFilerEnabled)
 	}
 	return closeModules, nil
 }
@@ -149,7 +149,7 @@ func importNoteboardCmd(args []string) {
 // importProjectStoreCmd copies a standalone project-store's SQLite file into
 // the Postgres module, keeping every id, number and time.
 func importProjectStoreCmd(args []string) {
-	sqlitePath := importArguments("import-project-store", "project-store", args)
+	sqlitePath := importArguments("import-projects", "project-store", args)
 	ctx := context.Background()
 	db, err := openProjectStoreModule(ctx, importPostgresURL())
 	if err != nil {
@@ -172,7 +172,7 @@ func importProjectStoreCmd(args []string) {
 // what it copied, one line per table. It refuses a module that already holds
 // any row.
 func importKanbanStoreCmd(args []string) {
-	sqlitePath := importArguments("import-kanban-store", "kanban-store", args)
+	sqlitePath := importArguments("import-issues", "kanban-store", args)
 	ctx := context.Background()
 	db, err := openKanbanStoreModule(ctx, importPostgresURL())
 	if err != nil {

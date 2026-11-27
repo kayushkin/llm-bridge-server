@@ -108,7 +108,7 @@ func enableSessionLog(ctx context.Context, cfg *config.Config, srv *server.Serve
 // table, and prints what it copied. It refuses a module that already holds
 // any row.
 func importLogStoreCmd(args []string) {
-	sqlitePath := importArguments("import-log-store", "log-store", args)
+	sqlitePath := importArguments("import-session-log", "log-store", args)
 	ctx := context.Background()
 	module, err := sessionlogstore.Module()
 	if err != nil {

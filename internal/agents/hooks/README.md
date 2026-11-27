@@ -47,4 +47,4 @@ This store is one component of the [llm-bridge](https://github.com/kayushkin/llm
 
 ## Moving the SQLite file in
 
-`llm-bridge-server import-hook-store -sqlite <copy of hooks.db>` copies every hook of the SQLite file the server kept until the move into the module, with its id, and refuses a module that already holds one.
+`llm-bridge-server import-hooks -sqlite <copy of hooks.db>` copies every hook of the SQLite file the server kept until the move into the module, with its id, and refuses a module that already holds one.

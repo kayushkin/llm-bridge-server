@@ -159,7 +159,7 @@ func (r *Runner) StartRun(id string, retryFailed bool) (*Run, error) {
 		organizationID = r.defaults.OrganizationID
 	}
 	if organizationID == "" {
-		return nil, invalidf("run %s names no organization and eval_store.organization_id is not set: the bridge needs a principal-store group to bill", id)
+		return nil, invalidf("run %s names no organization and evaluations.organization_id is not set: the bridge needs a principal-store group to bill", id)
 	}
 	if err := r.store.markRunStarted(id, organizationID); err != nil {
 		return nil, err

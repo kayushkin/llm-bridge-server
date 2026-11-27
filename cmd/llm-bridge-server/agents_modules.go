@@ -124,22 +124,22 @@ func importAgentsStoreCmd(command string, args []string, describe func() (postgr
 }
 
 func importToolStoreCmd(args []string) {
-	importAgentsStoreCmd("import-tool-store", args, tools.Module, func(ctx context.Context, db *sql.DB, path string) (any, error) {
+	importAgentsStoreCmd("import-tools", args, tools.Module, func(ctx context.Context, db *sql.DB, path string) (any, error) {
 		return tools.ImportStandaloneDatabase(ctx, db, path)
 	})
 }
 
 // importSkillStoreCmd copies the rows only: the skill files stay in the
 // standalone store's data directory until they are copied into
-// skill_store.data_directory.
+// skills.data_directory.
 func importSkillStoreCmd(args []string) {
-	importAgentsStoreCmd("import-skill-store", args, skills.Module, func(ctx context.Context, db *sql.DB, path string) (any, error) {
+	importAgentsStoreCmd("import-skills", args, skills.Module, func(ctx context.Context, db *sql.DB, path string) (any, error) {
 		return skills.ImportStandaloneDatabase(ctx, db, path)
 	})
 }
 
 func importBundleStoreCmd(args []string) {
-	importAgentsStoreCmd("import-bundle-store", args, bundles.Module, func(ctx context.Context, db *sql.DB, path string) (any, error) {
+	importAgentsStoreCmd("import-bundles", args, bundles.Module, func(ctx context.Context, db *sql.DB, path string) (any, error) {
 		return bundles.ImportStandaloneDatabase(ctx, db, path)
 	})
 }

@@ -51,7 +51,7 @@ creds, _ := s.ListInstanceCredentials("laptop-cc")
 - `machines.user` is `operating_system_user`, since Postgres reserves `user`. `msg.Machine.User` is unchanged.
 - No table declares a foreign key. SQLite never enforced the ones its file declared, and the live file holds rows that break them, so deleting a machine leaves its instances, and deleting an instance leaves its bindings, as before. Card 882d977a-dfaf-47da-9857-205285dba647 holds the decision to change that.
 
-`llm-bridge-server import-harness-store -sqlite <copy of harness.db>` copies every row of the SQLite file into the module, keeping every id (`m_…`, `inst_…`, `enr_…`), and refuses a module that already holds one.
+`llm-bridge-server import-machines -sqlite <copy of harness.db>` copies every row of the SQLite file into the module, keeping every id (`m_…`, `inst_…`, `enr_…`), and refuses a module that already holds one.
 
 ## API
 

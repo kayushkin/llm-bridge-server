@@ -25,7 +25,7 @@ log-store (github.com/kayushkin/log-store) and runs inside the bridge, as the
   prefix (`/session-log/api/v1/events`, `/session-log/health`, …), operator only:
   every session's events, with no owner on a row, and an ingest route that
   writes into any session.
-- **Import:** `llm-bridge-server import-log-store -sqlite <copy of events.db>`
+- **Import:** `llm-bridge-server import-session-log -sqlite <copy of events.db>`
   copies every table of a standalone log-store's SQLite file, with every event
   id, body and time, by COPY in one transaction. It refuses a module that holds
   any row, and a file whose projection backfills have not finished.
@@ -171,7 +171,7 @@ default) of events the stream may already have sent.
 1. Stop the server, copy `bridge.db` (`sqlite3 bridge.db ".backup <archive>"`, or a
    copy without its `events` table that keeps `sqlite_sequence`), and keep the archive:
    it is the only copy of the events stored before.
-2. Import log-store into this module (`llm-bridge-server import-log-store`) and the
+2. Import log-store into this module (`llm-bridge-server import-session-log`) and the
    copy into `bridge_core` (`llm-bridge-server import-bridge-database -sqlite <copy>`),
    before the first start. The server refuses to start on an empty `bridge_core`
    while a file is at `database.path`.

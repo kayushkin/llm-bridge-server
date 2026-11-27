@@ -24,15 +24,16 @@
 # What it runs, and nothing else (no store runs as a unit of its own):
 #   the server, with its front end at /ui/ and demo login switched on. It holds
 #   every store the consolidation moved in, in its own process and in Postgres
-#   modules, each under /<store>/: the access stores, the agent stores
-#   (tool-store, skill-store, bundle-store, agent-store, model-store,
-#   memory-store, usage-store, eval-store), the task stores (noteboard,
-#   kanban-store also under /kanban/, project-store, prediction-store), the
-#   repository stores, file-store (bytes under data/file-store), log-store,
-#   mailstack, the scheduler and rule-store, and the connected records stores
-#   (people-store, calendar-store, journal-store, message-store,
-#   activity-store, time-ledger-store, photo-store, location-store,
-#   budget-store, possession-store); and reference-store, which keeps no
+#   modules, each under the prefix its package is named for: the access
+#   stores (/principals/, /grants/, /sign-in/, /permissions/), the agent stores
+#   (/tools/, /skills/, /bundles/, agent-store at the root, /models/,
+#   memory-store at the root, /usage/, /evaluations/), the task stores
+#   (/noteboard/, /issues/, /projects/, /predictions/), the repository stores
+#   (/repos/, /git-activity/), file-store at /file-storage/ (bytes under
+#   data/file-store), /session-log/, /mail/, /scheduler/ and /rules/, and the
+#   connected records stores (/people/, /calendar/, /journal/, /messages/,
+#   /online-activity/, /time-ledger/, /photos/, /locations/, /budget/,
+#   /possessions/); and /references/, which keeps no
 #   records. Every background loop (scheduler runs, the rule reactor, usage
 #   refreshes, eval runs, face passes, the possession review worker, mail
 #   provider connections, bank sync) is off, as it is by default.
@@ -52,7 +53,7 @@
 # An instance installed before principal-store, grant-store, tool-store,
 # permission-store, kanban-store, reference-store and log-store moved into the
 # server ran each as a unit of its own. The first install of a server that holds them
-# copies each one's SQLite file into the server's module, once (import-<store>,
+# copies each one's SQLite file into the server's module, once (import_command_of,
 # keeping every id), then removes the unit and leaves the file where it was,
 # unused. reference-store kept no records, so only its unit goes.
 # agent-store, memory-store, model-store, harness-store, hook-store,
@@ -110,7 +111,7 @@ wait_for() { # <what> <url>
 }
 
 # server_command runs the server binary for a one-off command (mint-enroll,
-# import-<store>) with the unit's environment. The files are read line by
+# an import) with the unit's environment. The files are read line by
 # line, not sourced: the Postgres URL holds a "&", which a shell would take for
 # the end of a command.
 server_command() { # <argument>...
@@ -232,6 +233,30 @@ retired_store_database() { # <store>
   esac
 }
 
+# import_command_of names the server's subcommand that imports a store's
+# SQLite file. The stores keep their old names here, since the markers under
+# data/imported/ carry them; the subcommands were renamed with the packages on
+# 2026-11-27.
+import_command_of() { # <store>
+  case "$1" in
+    principal-store)  echo import-principals ;;
+    grant-store)      echo import-grants ;;
+    tool-store)       echo import-tools ;;
+    permission-store) echo import-permissions ;;
+    kanban-store)     echo import-issues ;;
+    log-store)        echo import-session-log ;;
+    agent-store)      echo import-agents ;;
+    memory-store)     echo import-memories ;;
+    model-store)      echo import-models ;;
+    harness-store)    echo import-machines ;;
+    hook-store)       echo import-hooks ;;
+    snapshot-store)   echo import-snapshots ;;
+    operations)       echo import-operations ;;
+    bridge-database)  echo import-bridge-database ;;
+    *) fail "no import subcommand is known for $1" ;;
+  esac
+}
+
 # import_retired_stores copies each retired store's SQLite file into the
 # server's module of that store, once: data/imported/<store> records that it
 # was done and what was copied. The import refuses a module that already holds
@@ -240,7 +265,7 @@ retired_store_database() { # <store>
 # left as they were. The store is stopped by then; the file read is a .backup
 # of it, so its write-ahead log is included.
 import_retired_stores() {
-  local store database copy
+  local store database copy command
   mkdir -p "$ROOT/data/imported"
   for store in "${RETIRED_STORES[@]}" "${EMBEDDED_STORES[@]}"; do
     database="$(retired_store_database "$store")"
@@ -250,8 +275,9 @@ import_retired_stores() {
     copy="$ROOT/data/imported/$store.copy.db"
     rm -f "$copy" "$copy-shm" "$copy-wal"
     sqlite3 "$database" ".backup '$copy'"
-    server_command "import-$store" -sqlite "$copy" > "$ROOT/data/imported/$store.out" 2>&1 ||
-      fail "import-$store failed; nothing of it was imported, and $UNIT_PREFIX-$store is left in place: see $ROOT/data/imported/$store.out"
+    command="$(import_command_of "$store")"
+    server_command "$command" -sqlite "$copy" > "$ROOT/data/imported/$store.out" 2>&1 ||
+      fail "$command failed; nothing of it was imported, and $UNIT_PREFIX-$store is left in place: see $ROOT/data/imported/$store.out"
     rm -f "$copy" "$copy-shm" "$copy-wal"
     mv "$ROOT/data/imported/$store.out" "$ROOT/data/imported/$store"
     echo "    $(cat "$ROOT/data/imported/$store")"
@@ -334,15 +360,15 @@ LLMBRIDGE_CONFORMANCE_PATH=$ROOT/data/conformance.json
 LLMBRIDGE_IMAGES_DIR=$ROOT/data/images
 LLMBRIDGE_SESSION_FILES_DIR=$ROOT/data/session-files
 LLMBRIDGE_RUNNER_ASSETS_DIR=$ROOT/runner-assets
-LLMBRIDGE_SKILL_STORE_DATA_DIRECTORY=$ROOT/data/skill-store
-LLMBRIDGE_SKILL_STORE_INSTALL_DIRECTORY=$ROOT/home/.claude/skills
+LLMBRIDGE_SKILLS_DATA_DIRECTORY=$ROOT/data/skill-store
+LLMBRIDGE_SKILLS_INSTALL_DIRECTORY=$ROOT/home/.claude/skills
 LLMBRIDGE_LOCAL_TOOLS_PINCHTAB_URL=$nowhere
 LLMBRIDGE_HEALTHCHECK_URL=$nowhere
 AUTH_STORE_URL=$nowhere
-LLMBRIDGE_FILE_STORE_DATA_DIRECTORY=$ROOT/data/file-store
-LLMBRIDGE_WORK_GRAPH_STORE_SPOOL_PATH=$ROOT/data/work-graph-store/ref-updates.jsonl
-LLMBRIDGE_LOCATION_STORE_GEONAMES_DIRECTORY=$ROOT/data/location-store/geonames
-LLMBRIDGE_POSSESSION_STORE_COVER_CACHE_DIRECTORY=$ROOT/data/possession-store/outfit-covers
+LLMBRIDGE_FILES_DATA_DIRECTORY=$ROOT/data/file-store
+LLMBRIDGE_GIT_ACTIVITY_SPOOL_PATH=$ROOT/data/work-graph-store/ref-updates.jsonl
+LLMBRIDGE_LOCATIONS_GEONAMES_DIRECTORY=$ROOT/data/location-store/geonames
+LLMBRIDGE_POSSESSIONS_COVER_CACHE_DIRECTORY=$ROOT/data/possession-store/outfit-covers
 LLMBRIDGE_POSTGRES_URL=postgres://$POSTGRES_SERVER_LOGIN@/$POSTGRES_DATABASE?host=$POSTGRES_SOCKET_DIR&port=$POSTGRES_PORT
 EOF
 
@@ -436,13 +462,13 @@ EOF
        INSERT INTO model_roles (role, model_id) VALUES ('default', 'test-instance-model');" >/dev/null
   fi
 
-  local principal_store="$BASE/principal-store"
-  if [ "$(bridge_curl -f "$principal_store/principals" | jq '[.[] | select(.kind == "human")] | length')" = "0" ]; then
+  local principals="$BASE/principals"
+  if [ "$(bridge_curl -f "$principals/principals" | jq '[.[] | select(.kind == "human")] | length')" = "0" ]; then
     step "making an administrator to sign in as"
     local principal_id
-    principal_id="$(bridge_curl -f -X POST "$principal_store/principals" -H 'Content-Type: application/json' \
+    principal_id="$(bridge_curl -f -X POST "$principals/principals" -H 'Content-Type: application/json' \
       -d '{"kind":"human","display_name":"Test operator"}' | jq -r '.id')"
-    bridge_curl -f -o /dev/null -X PATCH "$principal_store/principals/$principal_id" -H 'Content-Type: application/json' -d '{"is_administrator":true}'
+    bridge_curl -f -o /dev/null -X PATCH "$principals/principals/$principal_id" -H 'Content-Type: application/json' -d '{"is_administrator":true}'
   fi
 
   if [ ! -f "$ROOT/runner/config.json" ]; then
@@ -480,7 +506,7 @@ status_instance() {
   if curl -fsS -o /dev/null "$BASE/health" 2>/dev/null; then
     echo "  machines:   $(bridge_curl "$BASE/machines" | jq -r '[.[] | "\(.name) (\(.transport))"] | join(", ")')"
     echo "  instances:  $(bridge_curl "$BASE/instances" | jq -r '[.[] | "\(.id) \(.harness_type // .harness)"] | join(", ")')"
-    echo "  sign in as: $(bridge_curl -f "$BASE/principal-store/principals" | jq -r '[.[] | select(.kind == "human") | "\(.id) \(.display_name)"] | join(", ")')"
+    echo "  sign in as: $(bridge_curl -f "$BASE/principals/principals" | jq -r '[.[] | select(.kind == "human") | "\(.id) \(.display_name)"] | join(", ")')"
   else
     echo "  the server is not answering"
   fi

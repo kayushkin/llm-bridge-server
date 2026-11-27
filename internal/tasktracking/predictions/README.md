@@ -33,7 +33,7 @@ AUTH="Authorization: Bearer $LLM_BRIDGE_PRINCIPAL_TOKEN"   # an administrator's 
 
 # state a claim — resolution_criteria, category, provenance and a ladder
 # probability are all required
-curl -s -X POST "$BRIDGE/prediction-store/predictions" -H "$AUTH" \
+curl -s -X POST "$BRIDGE/predictions/predictions" -H "$AUTH" \
   -H 'Content-Type: application/json' \
   -d '{"claim":"The 502s are auth-store token refresh, not nginx",
        "resolution_criteria":"journalctl -u auth-store --since 14:00 | grep refresh, against the 502 timestamps in /var/log/nginx/error.log. Resolves true if every 502 sits inside a refresh window, false if any 502 falls outside one",
@@ -41,18 +41,18 @@ curl -s -X POST "$BRIDGE/prediction-store/predictions" -H "$AUTH" \
        "due_at":1788400000,"tags":["ops"],"author":"claude"}'
 
 # revise it — the old number stays, this appends
-curl -s -X POST "$BRIDGE/prediction-store/predictions/prediction_000001/estimates" -H "$AUTH" \
+curl -s -X POST "$BRIDGE/predictions/predictions/prediction_000001/estimates" -H "$AUTH" \
   -H 'Content-Type: application/json' \
   -d '{"probability":0.9,"rationale":"refresh failures at 14:02 and 14:31","provenance":"measured"}'
 
 # record what happened — once; a second call is a 409
-curl -s -X POST "$BRIDGE/prediction-store/predictions/prediction_000001/resolve" -H "$AUTH" \
+curl -s -X POST "$BRIDGE/predictions/predictions/prediction_000001/resolve" -H "$AUTH" \
   -H 'Content-Type: application/json' \
   -d '{"outcome":"true","note":"token TTL was 300s"}'
 
-curl -s -H "$AUTH" "$BRIDGE/prediction-store/calibration?group_by=category"   # what am I wrong about
-curl -s -H "$AUTH" "$BRIDGE/prediction-store/base-rates"                      # how often this kind comes true
-curl -s -H "$AUTH" "$BRIDGE/prediction-store/predictions?status=open&overdue=1"
+curl -s -H "$AUTH" "$BRIDGE/predictions/calibration?group_by=category"   # what am I wrong about
+curl -s -H "$AUTH" "$BRIDGE/predictions/base-rates"                      # how often this kind comes true
+curl -s -H "$AUTH" "$BRIDGE/predictions/predictions?status=open&overdue=1"
 ```
 
 The criterion above is written as the two commands that settle it and the

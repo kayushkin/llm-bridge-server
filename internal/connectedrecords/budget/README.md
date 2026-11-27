@@ -45,5 +45,5 @@ journeys in the same process.
 
 ```bash
 go test ./internal/connectedrecords/budget/...   # needs POSTGRESTEST_ADMINISTRATOR_URL
-llm-bridge-server import-budget-store -sqlite <copy of budget-store.db> -owner <principal id>
+llm-bridge-server import-budget -sqlite <copy of budget-store.db> -owner <principal id>
 ```

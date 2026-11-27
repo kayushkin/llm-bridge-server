@@ -88,13 +88,13 @@ const SettingGeonamesDirectory = "geonames_directory"
 // LocalityNamingSettingDefinitions declares every environment variable
 // location-name-localities reads. The GeoNames directory is where it
 // downloads the town dump, and must be the directory the server's
-// location_store.geonames_directory names, which the store reads: the store
+// locations.geonames_directory names, which the store reads: the store
 // no longer answers where its data is.
 func LocalityNamingSettingDefinitions() []servicesettings.Definition {
 	return []servicesettings.Definition{
 		locationStoreURLDefinition(),
 		{Key: SettingGeonamesDirectory, EnvironmentVariable: "LOCATION_STORE_GEONAMES_DIRECTORY", Kind: msg.ServiceSettingKindPath, ValueType: msg.ServiceSettingValueTypeString, Required: true,
-			Description: "Where the GeoNames town files are downloaded: the directory llm-bridge-server's location_store.geonames_directory names, which location-store reads them from."},
+			Description: "Where the GeoNames town files are downloaded: the directory llm-bridge-server's locations.geonames_directory names, which location-store reads them from."},
 	}
 }
 

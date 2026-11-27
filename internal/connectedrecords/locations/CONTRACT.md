@@ -54,7 +54,7 @@ The commands are HTTP clients of the routes. Each reads its own settings:
 | Variable | Default | What it is |
 |---|---|---|
 | `LOCATION_STORE_URL` | `http://127.0.0.1:8333` | the commands: where location-store answers |
-| `LOCATION_STORE_GEONAMES_DIRECTORY` | (required) | `location-name-localities`: where it downloads the GeoNames files. It must name the directory llm-bridge-server's `location_store.geonames_directory` names, which the store reads them from |
+| `LOCATION_STORE_GEONAMES_DIRECTORY` | (required) | `location-name-localities`: where it downloads the GeoNames files. It must name the directory llm-bridge-server's `locations.geonames_directory` names, which the store reads them from |
 | `PHOTO_STORE_URL` | `http://127.0.0.1:8329` | `location-import-photos`: where photo-store answers |
 | `DASH_URL` | `http://localhost:8101` | `location-match-calendar`: where dash answers, the one way to Google Calendar |
 | `DASH_TOKEN` | (secret, required) | `location-match-calendar` and `location-suggest-place-names`: dash's bearer token, sent only to `DASH_URL`, never printed. The store itself never holds it |
@@ -91,7 +91,7 @@ country_code, time_zone, geonames_id, distance_meters, described_by}`, null
 until named. `location-name-localities` names them offline from GeoNames'
 `cities1000` (towns of 1000 people or more, parts of towns left out) with
 first-level region and country names, downloaded once to the directory
-the server's `location_store.geonames_directory` names: of the towns whose reach (15 m × √population) covers the
+the server's `locations.geonames_directory` names: of the towns whose reach (15 m × √population) covers the
 coordinate, the most populous, else the nearest. A visit is named from its
 own coordinate, else its place's. Filling never replaces a locality already
 set, and copies the record to `revisions` first (reason `locality`).
@@ -400,7 +400,7 @@ A `PATCH` with an unknown key, or `null` on a field that is not a link, is a
 | `DELETE` | `/places/{id}`, `/visits/{id}`, `/trips/{id}` | soft, **204**; again is a no-op |
 | `POST` | `/places/{id}/restore`, `/visits/{id}/restore`, `/trips/{id}/restore` | answers the record |
 | `GET` | `/places/{id}/revisions`, `/visits/{id}/revisions`, `/trips/{id}/revisions` | newest first: `{revision_id, entity_type, entity_id, reason, replaced_at, row}`, `row` the whole record as it was |
-| `POST` | `/localities/fill` | `{dry_run}`: names every empty locality (see *Localities*). Answers `{places, visits, trip_starts, trip_ends, already_named, no_coordinate, no_town_nearby, distinct_towns, geonames_towns_in}`. **409** until the GeoNames files are in the directory `location_store.geonames_directory` names |
+| `POST` | `/localities/fill` | `{dry_run}`: names every empty locality (see *Localities*). Answers `{places, visits, trip_starts, trip_ends, already_named, no_coordinate, no_town_nearby, distinct_towns, geonames_towns_in}`. **409** until the GeoNames files are in the directory `locations.geonames_directory` names |
 | `GET` | `/home-periods` | earliest first; `?include_deleted=true` |
 | `GET` | `/home-periods/{id}` | |
 | `POST` | `/journeys/group` | `{dry_run, away_distance_meters, minimum_away_seconds, home_change_days, return_break_seconds}`, 0 = default. Answers `{dry_run, request, home_periods, journeys:[{action, trip_id, title, started_at, ended_at, mode, nights, farthest_meters, child_trip_ids, children_attached, children_detached, children_kept_elsewhere, notes}], deleted_journey_ids, home_places_marked, notes}`; `action` is `create`, `update`, `unchanged` or `skip`. A dry run writes nothing and answers `trip_id` `""` for a journey it would create. **409** without the GeoNames files |

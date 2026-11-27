@@ -10,11 +10,11 @@ import (
 // under /scheduler/ and /rules/ whatever these say; the switches below
 // say only whether this process acts on them. Each is read once, at start.
 const (
-	SettingSchedulerRunsEnabled    = "scheduler.runs.enabled"
-	SettingSchedulerNATSURL        = "scheduler.nats_url"
-	SettingSchedulerNoteboardURL   = "scheduler.noteboard_url"
-	SettingRuleStoreReactorEnabled = "rule_store.reactor.enabled"
-	SettingRuleStoreSweepInterval  = "rule_store.sweep_interval"
+	SettingSchedulerRunsEnabled  = "scheduler.runs.enabled"
+	SettingSchedulerNATSURL      = "scheduler.nats_url"
+	SettingSchedulerNoteboardURL = "scheduler.noteboard_url"
+	SettingRulesReactorEnabled   = "rules.reactor.enabled"
+	SettingRulesSweepInterval    = "rules.sweep_interval"
 )
 
 // automationSettingDefinitions declares the settings above.
@@ -26,9 +26,9 @@ func automationSettingDefinitions() []servicesettings.Definition {
 			Description: "The NATS server the scheduler's agent jobs publish their first turn on (bridge.inbound), its bus commands answer on, its event triggers read, and its run log goes to. Read only while scheduler.runs.enabled is on. Empty runs shell jobs only: an agent job's run ends in error, no event trigger fires and no bus command is answered."},
 		{Key: SettingSchedulerNoteboardURL, EnvironmentVariable: "LLMBRIDGE_SCHEDULER_NOTEBOARD_URL", Kind: msg.ServiceSettingKindWiring, ValueType: msg.ServiceSettingValueTypeString,
 			Description: "The noteboard address written into an agent job's prompt, for its agent to read and rewrite the job's workspace. Required while scheduler.runs.enabled is on and scheduler.nats_url is set."},
-		{Key: SettingRuleStoreReactorEnabled, EnvironmentVariable: "LLMBRIDGE_RULE_STORE_REACTOR_ENABLED", Kind: msg.ServiceSettingKindBehavior, ValueType: msg.ServiceSettingValueTypeBoolean, Default: "false",
+		{Key: SettingRulesReactorEnabled, EnvironmentVariable: "LLMBRIDGE_RULES_REACTOR_ENABLED", Kind: msg.ServiceSettingKindBehavior, ValueType: msg.ServiceSettingValueTypeBoolean, Default: "false",
 			Description: "Whether this server runs rule-store's reactor: it follows this server's sessions, checks every active rule against each change and on the sweep, records each decision and, for a live rule, makes its calls. Off, rules, revisions, activations and runs are still read and written at /rules/, nothing is decided and activate's background check is skipped. Turn it on only after the standalone rule-store has stopped: two reactors would decide every rule twice and a live rule would act twice. Read at start."},
-		{Key: SettingRuleStoreSweepInterval, EnvironmentVariable: "LLMBRIDGE_RULE_STORE_SWEEP_INTERVAL", Kind: msg.ServiceSettingKindBehavior, ValueType: msg.ServiceSettingValueTypeDuration, Default: "1m",
-			Description: "How often the reactor checks every active rule with a time condition against every session rule-store holds. Read only while rule_store.reactor.enabled is on."},
+		{Key: SettingRulesSweepInterval, EnvironmentVariable: "LLMBRIDGE_RULES_SWEEP_INTERVAL", Kind: msg.ServiceSettingKindBehavior, ValueType: msg.ServiceSettingValueTypeDuration, Default: "1m",
+			Description: "How often the reactor checks every active rule with a time condition against every session rule-store holds. Read only while rules.reactor.enabled is on."},
 	}
 }

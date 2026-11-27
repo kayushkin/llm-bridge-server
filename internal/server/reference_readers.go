@@ -51,7 +51,7 @@ import (
 
 // InProcessReferenceServices are the services, by the name the type rows
 // use, whose records reference-store reads in this process. Every other
-// service a type names is asked over HTTP at reference_store.service_urls.
+// service a type names is asked over HTTP at references.service_urls.
 var InProcessReferenceServices = []string{
 	"llm-bridge-server",
 	"agent-store",

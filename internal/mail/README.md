@@ -2,7 +2,7 @@
 
 Read and write email across Gmail, Outlook (Microsoft Graph) and IMAP accounts, plus local accounts this module owns outright. It runs inside llm-bridge-server, mounted at `/mail/` with its own paths behind the prefix, and keeps its records in the Postgres module `mail` (role `mail_module`, migrations in `mailmodule/migrations`).
 
-Until the move it was a service of its own on `:8195` with two SQLite files, `accounts.db` and `local-mail.db`. `llm-bridge-server import-mailstack -accounts-sqlite <file> [-local-mail-sqlite <file>]` copies both into the module, keeping every row and number.
+Until the move it was a service of its own on `:8195` with two SQLite files, `accounts.db` and `local-mail.db`. `llm-bridge-server import-mail -accounts-sqlite <file> [-local-mail-sqlite <file>]` copies both into the module, keeping every row and number.
 
 ## Who may call it
 
@@ -17,7 +17,7 @@ An unreadable message is 404, exactly like a missing one. A store that cannot an
 
 ## Reaching mail providers
 
-Gmail, Outlook and IMAP accounts reach their providers only when the server is built with provider connections on (`mailstack.provider_connections.enabled` in the bridge, off by default). Off, every read or change on such an account answers 503 `mail_provider_connections_off` and no token is asked of auth-store; local accounts answer either way. Nothing here fetches mail on a timer, and no route sends mail.
+Gmail, Outlook and IMAP accounts reach their providers only when the server is built with provider connections on (`mail.provider_connections.enabled` in the bridge, off by default). Off, every read or change on such an account answers 503 `mail_provider_connections_off` and no token is asked of auth-store; local accounts answer either way. Nothing here fetches mail on a timer, and no route sends mail.
 
 ## What it keeps
 

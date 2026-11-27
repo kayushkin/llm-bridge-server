@@ -47,9 +47,9 @@ var (
 
 // connectedRecordsImports are the import commands, by name.
 var connectedRecordsImports = map[string]connectedRecordsModule{
-	"import-people-store":   peopleStoreModule,
-	"import-calendar-store": calendarStoreModule,
-	"import-journal-store":  journalStoreModule,
+	"import-people":   peopleStoreModule,
+	"import-calendar": calendarStoreModule,
+	"import-journal":  journalStoreModule,
 }
 
 func (store connectedRecordsModule) open(ctx context.Context, url string) (*sql.DB, error) {

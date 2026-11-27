@@ -11,7 +11,7 @@
 > store's own; the server's `kanban_store.*`, `multichat.url`, `auth_store.*`,
 > `file_store.*` and `reference_store.url` settings wire it. Noteboard,
 > principal-store, grant-store, bundle-store, agent-store and harness-store are
-> asked in the same process. `llm-bridge-server import-kanban-store -sqlite
+> asked in the same process. `llm-bridge-server import-issues -sqlite
 > <file>` copies a standalone database in. The rest of this file describes the
 > standalone service, which still runs until the landing day.
 

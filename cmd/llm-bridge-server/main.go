@@ -31,92 +31,92 @@ func main() {
 		case "mint-enroll":
 			mintEnrollCmd(os.Args[2:])
 			return
-		case "import-prediction-store":
+		case "import-predictions":
 			importPredictionStoreCmd(os.Args[2:])
 			return
-		case "import-tool-store":
+		case "import-tools":
 			importToolStoreCmd(os.Args[2:])
 			return
-		case "import-skill-store":
+		case "import-skills":
 			importSkillStoreCmd(os.Args[2:])
 			return
-		case "import-bundle-store":
+		case "import-bundles":
 			importBundleStoreCmd(os.Args[2:])
 			return
-		case "import-repo-store":
+		case "import-repos":
 			importRepoStoreCmd(os.Args[2:])
 			return
-		case "import-work-graph-store":
+		case "import-git-activity":
 			importWorkGraphStoreCmd(os.Args[2:])
 			return
-		case "import-file-store":
+		case "import-files":
 			importFileStoreCmd(os.Args[2:])
 			return
-		case "import-agent-store":
+		case "import-agents":
 			importAgentStoreCmd(os.Args[2:])
 			return
-		case "import-memory-store":
+		case "import-memories":
 			importMemoryStoreCmd(os.Args[2:])
 			return
-		case "import-model-store":
+		case "import-models":
 			importModelStoreCmd(os.Args[2:])
 			return
-		case "import-usage-store":
+		case "import-usage":
 			importUsageStoreCmd(os.Args[2:])
 			return
-		case "import-eval-store":
+		case "import-evaluations":
 			importEvalStoreCmd(os.Args[2:])
 			return
 		case "import-noteboard":
 			importNoteboardCmd(os.Args[2:])
 			return
-		case "import-project-store":
+		case "import-projects":
 			importProjectStoreCmd(os.Args[2:])
 			return
-		case "import-kanban-store":
+		case "import-issues":
 			importKanbanStoreCmd(os.Args[2:])
 			return
-		case "import-log-store":
+		case "import-session-log":
 			importLogStoreCmd(os.Args[2:])
 			return
-		case "import-people-store", "import-calendar-store", "import-journal-store", "import-message-store", "import-time-ledger-store":
+		case "import-people", "import-calendar", "import-journal", "import-messages", "import-time-ledger":
 			importConnectedRecordsStoreCmd(os.Args[1], os.Args[2:])
 			return
-		case "import-activity-store":
+		case "import-online-activity":
 			importActivityStoreCmd(os.Args[2:])
 			return
-		case "import-photo-store":
+		case "import-photos":
 			importPhotoStoreCmd(os.Args[2:])
 			return
-		case "import-location-store":
+		case "import-locations":
 			importLocationStoreCmd(os.Args[2:])
 			return
-		case "import-budget-store":
+		case "import-budget":
 			importBudgetStoreCmd(os.Args[2:])
 			return
-		case "import-possession-store":
+		case "import-possessions":
 			importPossessionStoreCmd(os.Args[2:])
 			return
-		case "import-mailstack":
+		case "import-mail":
 			importMailstackCmd(os.Args[2:])
 			return
 		case "import-scheduler":
 			importSchedulerCmd(os.Args[2:])
 			return
-		case "import-rule-store":
+		case "import-rules":
 			importRuleStoreCmd(os.Args[2:])
 			return
 		case "import-bridge-database":
 			importBridgeDatabaseCmd(os.Args[2:])
 			return
-		case "import-principal-store", "import-grant-store", "import-sign-in-store", "import-permission-store":
+		case "import-principals", "import-grants", "import-sign-in", "import-permissions":
 			importAccessStoreCmd(os.Args[1], os.Args[2:])
 			return
 		case "make-sign-in-link":
 			makeSignInLinkCmd(os.Args[2:])
 			return
 		case "-h", "--help":
-			fmt.Fprintln(os.Stderr, "usage: llm-bridge-server [mint-enroll [-ttl 15m] | import-bridge-database -sqlite <file> | import-prediction-store -sqlite <file> | import-principal-store|import-grant-store|import-sign-in-store|import-permission-store -sqlite <file> | make-sign-in-link <principal id> | import-noteboard -sqlite <file> | import-project-store -sqlite <file> | import-kanban-store -sqlite <file> | import-log-store -sqlite <file> | import-tool-store -sqlite <file> | import-skill-store -sqlite <file> | import-bundle-store -sqlite <file> | import-agent-store|import-memory-store|import-model-store -sqlite <file> | import-usage-store|import-eval-store -sqlite <file> | import-repo-store -sqlite <file> | import-work-graph-store -sqlite <file> | import-file-store -sqlite <file> -blobs <directory> [-carry copy|link] | import-people-store|import-calendar-store|import-journal-store|import-message-store|import-time-ledger-store -sqlite <file> -owner <principal id> | import-activity-store -sqlite <file> -attachments <directory> -owner <principal id> | import-mailstack -accounts-sqlite <file> [-local-mail-sqlite <file>] | import-scheduler -sqlite <file> [-newest-runs-per-job <n>] | import-rule-store -sqlite <file> | import-photo-store -sqlite <file> -thumbnails <directory> -owner <principal id> [-carry copy|link] | import-location-store -sqlite <file> -owner <principal id> | import-budget-store -sqlite <file> -owner <principal id> | import-possession-store -sqlite <file> -originals <directory> -owner <principal id> [-carry copy|link] | import-harness-store|import-hook-store|import-snapshot-store|import-operations -sqlite <file>]")
+			fmt.Fprintln(os.Stderr, "usage: llm-bridge-server [mint-enroll [-ttl 15m] | import-bridge-database -sqlite <file> | import-predictions -sqlite <file> | import-principals|import-grants|import-sign-in|import-permissions -sqlite <file> | make-sign-in-link <principal id> | import-noteboard -sqlite <file> | import-projects -sqlite <file> | import-issues -sqlite <file> | import-session-log -sqlite <file> | import-tools -sqlite <file> | import-skills -sqlite <file> | import-bundles -sqlite <file> | import-agents|import-memories|import-models -sqlite <file> | import-usage|import-evaluations -sqlite <file> | import-repos -sqlite <file> | import-git-activity -sqlite <file> | import-files -sqlite <file> -blobs <directory> [-carry copy|link] | import-people|import-calendar|import-journal|import-messages|import-time-ledger -sqlite <file> -owner <principal id> | import-online-activity -sqlite <file> -attachments <directory> -owner <principal id> | import-mail -accounts-sqlite <file> [-local-mail-sqlite <file>] | import-scheduler -sqlite <file> [-newest-runs-per-job <n>] | import-rules -sqlite <file> | import-photos -sqlite <file> -thumbnails <directory> -owner <principal id> [-carry copy|link] | import-locations -sqlite <file> -owner <principal id> | import-budget -sqlite <file> -owner <principal id> | import-possessions -sqlite <file> -originals <directory> -owner <principal id> [-carry copy|link] | import-machines|import-hooks|import-snapshots|import-operations -sqlite <file>]")
 			os.Exit(0)
 		}
 	}
@@ -376,13 +376,13 @@ func mintEnrollCmd(args []string) {
 // it copied. It refuses a module that already holds any row. It reads the
 // Postgres URL from the same setting the server does.
 func importPredictionStoreCmd(args []string) {
-	fs := flag.NewFlagSet("import-prediction-store", flag.ExitOnError)
+	fs := flag.NewFlagSet("import-predictions", flag.ExitOnError)
 	sqlitePath := fs.String("sqlite", "", "the standalone prediction-store database to copy (a copy of it, made with sqlite3 .backup, while the store runs)")
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
 	}
 	if *sqlitePath == "" || fs.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "usage: llm-bridge-server import-prediction-store -sqlite <file>")
+		fmt.Fprintln(os.Stderr, "usage: llm-bridge-server import-predictions -sqlite <file>")
 		os.Exit(2)
 	}
 	cfg := config.Load()

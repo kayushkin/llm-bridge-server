@@ -265,7 +265,7 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, snap)
 	case "codex":
 		if s.codex == nil {
-			writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("codex limits are off: usage_store.codex_command is not set or not found"))
+			writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("codex limits are off: usage.codex_command is not set or not found"))
 			return
 		}
 		snap, raw, err := s.codex.Read(r.Context())

@@ -58,7 +58,7 @@ type kanbanStoreHandlers struct {
 type KanbanStoreOwners struct {
 	Noteboard *items.Store
 	Access    *access.Stores
-	// MessageTriggersEnabled is kanban_store.message_triggers.enabled: send
+	// MessageTriggersEnabled is issues.message_triggers.enabled: send
 	// through multichat, or record each delivery not_configured.
 	MessageTriggersEnabled bool
 }
@@ -100,7 +100,7 @@ func (s *Server) KanbanStoreDescription() string {
 	if handlers == nil {
 		return errKanbanStoreOff.Error()
 	}
-	triggers := "message triggers are recorded not_configured and nothing is sent (" + config.SettingKanbanStoreMessageTriggersEnabled + " is off)"
+	triggers := "message triggers are recorded not_configured and nothing is sent (" + config.SettingIssuesMessageTriggersEnabled + " is off)"
 	if handlers.messageTriggersEnabled {
 		triggers = "message triggers send through multichat at " + s.cfg.MultichatURL
 	}
@@ -113,10 +113,10 @@ func (s *Server) KanbanStoreDescription() string {
 func CheckKanbanStoreConfiguration(cfg *config.Config, messageTriggersEnabled bool) error {
 	if messageTriggersEnabled {
 		if cfg.MultichatURL == "" {
-			return fmt.Errorf("%s is on but multichat.url is not set: message triggers send through multichat", config.SettingKanbanStoreMessageTriggersEnabled)
+			return fmt.Errorf("%s is on but multichat.url is not set: message triggers send through multichat", config.SettingIssuesMessageTriggersEnabled)
 		}
 		if cfg.AuthStoreToken == "" {
-			return fmt.Errorf("%s is on but auth_store.token is not set: message triggers read multichat's API token from auth-store provider \"multichat\"", config.SettingKanbanStoreMessageTriggersEnabled)
+			return fmt.Errorf("%s is on but auth_store.token is not set: message triggers read multichat's API token from auth-store provider \"multichat\"", config.SettingIssuesMessageTriggersEnabled)
 		}
 	}
 	return nil

@@ -90,7 +90,7 @@ no brief, so its name, folder and repos; `none`), the `goal` judged, the
 `repo_store_ids` the session moved refs in, the `project_id` the model picked
 (`""` when none fits), its `confidence` from 0 to 1, `why`, the `model`, and
 `status`. The filer files a pick at or above its minimum confidence (the server's
-`project_store.session_filer.minimum_confidence`) as `filed`; anything else is
+`projects.session_filer.minimum_confidence`) as `filed`; anything else is
 `proposed` and waits for accept or dismiss. `nothing_to_file` is a chat with no
 aim: a test message, or one with no name and no brief. A session someone else
 filed is never judged, and filing a session through `POST /projects/{id}/links`

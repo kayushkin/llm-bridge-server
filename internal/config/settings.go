@@ -73,12 +73,18 @@ var RetiredStoredSettingKeys = []string{
 	"operations.completion_instance",
 	"operations.completion_instances",
 	"session_actions.review_model",
+	"file_store.maximum_file_bytes",
+	"file_store.inline_content_types",
 }
 
 // RenamedStoredSettingKeys maps an old stored key to the key that carries its
 // value now. The value moves only when the new key holds no row yet.
 var RenamedStoredSettingKeys = map[string]string{
 	"operations.completion_instances": SettingOneShotInstanceByProvider,
+	// file-store's package became files on 2026-11-27, and its settings
+	// moved from file_store.* with it.
+	"file_store.maximum_file_bytes":   SettingFilesMaximumFileBytes,
+	"file_store.inline_content_types": SettingFilesInlineContentTypes,
 }
 
 // HarnessProxyEnvironmentVariable is the variable that names the backend the
@@ -222,13 +228,13 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "auth-store, which resolves the credentials bound to a harness instance."},
 
 		// Paths.
-		{Key: "skill_store.data_directory", EnvironmentVariable: "LLMBRIDGE_SKILL_STORE_DATA_DIRECTORY", Kind: path, ValueType: text, Default: productiondefaults.SkillStoreDataDirectory(),
+		{Key: "skills.data_directory", EnvironmentVariable: "LLMBRIDGE_SKILLS_DATA_DIRECTORY", Kind: path, ValueType: text, Default: productiondefaults.SkillStoreDataDirectory(),
 			Description: "The directory the skill-store module keeps skill files in (skills/<id>/, beside each SKILL.md) and clones its sources into (repos/<name>/). Its rows, SKILL.md text and seed file versions are in Postgres. Moving it leaves the files behind: copy them along, or every skill file read answers that the file is missing until each source is synced again."},
-		{Key: "skill_store.install_directory", EnvironmentVariable: "LLMBRIDGE_SKILL_STORE_INSTALL_DIRECTORY", Kind: path, ValueType: text, Default: productiondefaults.SkillStoreInstallDirectory(),
+		{Key: "skills.install_directory", EnvironmentVariable: "LLMBRIDGE_SKILLS_INSTALL_DIRECTORY", Kind: path, ValueType: text, Default: productiondefaults.SkillStoreInstallDirectory(),
 			Description: "Where the skill-store module copies an installed skill, which is where Claude Code on this machine reads skills from. A local source may not overlap it."},
 		{Key: "database.path", EnvironmentVariable: "LLMBRIDGE_DB_PATH", Kind: path, ValueType: text, Default: productiondefaults.BridgeDatabasePath(),
 			Description: "Where this server's SQLite database was before its records moved to the bridge_core module in Postgres. The server opens no database here: it refuses to start on an empty bridge_core module while a file is at this path (copy it in with import-bridge-database), and the path's folder holds peer message attachments and self-update logs."},
-		{Key: "snapshot_store.git_path", EnvironmentVariable: "LLMBRIDGE_SNAPSHOT_GIT", Kind: path, ValueType: text, Default: productiondefaults.SnapshotStoreGitPath(),
+		{Key: "snapshots.git_path", EnvironmentVariable: "LLMBRIDGE_SNAPSHOT_GIT", Kind: path, ValueType: text, Default: productiondefaults.SnapshotStoreGitPath(),
 			Description: "The bare git repository snapshot-store keeps file contents in."},
 		{Key: "images.directory", EnvironmentVariable: "LLMBRIDGE_IMAGES_DIR", Kind: path, ValueType: text, Default: "images",
 			Description: "Where the harness logos served at /images/ are kept."},
@@ -370,10 +376,10 @@ func (c *Config) StoredSettingSeeds() map[string]string {
 		seeds[SettingPeerAttachmentMaximumBytes] = strconv.Itoa(c.PeerAttachmentMaximumBytes)
 	}
 	if c.FileStoreMaximumFileBytes > 0 {
-		seeds[SettingFileStoreMaximumFileBytes] = strconv.Itoa(c.FileStoreMaximumFileBytes)
+		seeds[SettingFilesMaximumFileBytes] = strconv.Itoa(c.FileStoreMaximumFileBytes)
 	}
 	if len(c.FileStoreInlineContentTypes) > 0 {
-		seeds[SettingFileStoreInlineContentTypes] = strings.Join(c.FileStoreInlineContentTypes, ",")
+		seeds[SettingFilesInlineContentTypes] = strings.Join(c.FileStoreInlineContentTypes, ",")
 	}
 	if c.PeerAttachmentsMaximumTotalBytes > 0 {
 		seeds[SettingPeerAttachmentsMaximumTotalBytes] = strconv.Itoa(c.PeerAttachmentsMaximumTotalBytes)

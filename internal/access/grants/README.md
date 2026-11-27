@@ -33,15 +33,15 @@ Through llm-bridge-server, as a principal or with its service token:
 
 ```bash
 # The Data Team may be offered Playwright (tool-store id 13)
-curl -s -X POST "$BRIDGE/grant-store/grants" -H "X-LLM-Bridge-Service-Token: $TOKEN" \
+curl -s -X POST "$BRIDGE/grants/grants" -H "X-LLM-Bridge-Service-Token: $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"principal_id":"principal_000006","relation":"can_use","resource_type":"tool","resource_id":"13","note":"e2e"}'
 
 # What a session started as principal_000001 would be offered — its own grants plus its groups'
-curl -s "$BRIDGE/grant-store/principals/principal_000001/effective?relation=can_use&resource_type=tool" -H "X-LLM-Bridge-Service-Token: $TOKEN"
+curl -s "$BRIDGE/grants/principals/principal_000001/effective?relation=can_use&resource_type=tool" -H "X-LLM-Bridge-Service-Token: $TOKEN"
 
 # Who holds a grant on tool 13
-curl -s "$BRIDGE/grant-store/grants?resource_type=tool&resource_id=13" -H "X-LLM-Bridge-Service-Token: $TOKEN"
+curl -s "$BRIDGE/grants/grants?resource_type=tool&resource_id=13" -H "X-LLM-Bridge-Service-Token: $TOKEN"
 ```
 
 Tests run on Postgres: `export POSTGRESTEST_ADMINISTRATOR_URL="$(scripts/test-postgres.sh start)"`

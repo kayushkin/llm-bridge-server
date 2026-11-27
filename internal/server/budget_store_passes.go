@@ -8,7 +8,7 @@ package server
 // trip matching suggests the spending dated during each journey.
 //
 // A round runs every pass that is on once for each owner named in
-// budget_store.passes.owner_principal_ids, in that owner's books only, so
+// budget.passes.owner_principal_ids, in that owner's books only, so
 // two owners' money is never matched together. Trip matching reads the
 // owner's journeys from location-store in this process, narrowed to that
 // owner. What a pass reports is logged as counts, never an amount or a
@@ -56,27 +56,27 @@ func checkBudgetStorePassSettings(settings budgetStorePassSettings) error {
 	}
 	var problems []string
 	for _, owner := range settings.owners {
-		if err := ownership.CheckPrincipalID(config.SettingBudgetStorePassesOwnerPrincipalIDs, owner); err != nil {
+		if err := ownership.CheckPrincipalID(config.SettingBudgetPassesOwnerPrincipalIDs, owner); err != nil {
 			problems = append(problems, err.Error())
 		}
 	}
 	if settings.interval <= 0 {
-		problems = append(problems, config.SettingBudgetStorePassesInterval+" must be longer than nothing")
+		problems = append(problems, config.SettingBudgetPassesInterval+" must be longer than nothing")
 	}
 	if settings.bankSync && !settings.plaidIsOn {
-		problems = append(problems, config.SettingBudgetStoreBankSyncEnabled+" is on, and Plaid is off: "+config.SettingBudgetStorePlaidEnvironment+" is empty")
+		problems = append(problems, config.SettingBudgetBankSyncEnabled+" is on, and Plaid is off: "+config.SettingBudgetPlaidEnvironment+" is empty")
 	}
 	if settings.trips {
 		if len(settings.tripHomeMarkers) == 0 {
-			problems = append(problems, config.SettingBudgetStoreTripMatchingHomeMarkers+" names no marker, and trip matching would suggest every charge made at home")
+			problems = append(problems, config.SettingBudgetTripMatchingHomeMarkers+" names no marker, and trip matching would suggest every charge made at home")
 		}
 		if settings.tripTimeZoneName == "" {
-			problems = append(problems, config.SettingBudgetStoreTripMatchingTimeZone+" is empty")
+			problems = append(problems, config.SettingBudgetTripMatchingTimeZone+" is empty")
 		} else if settings.tripTimeZone == nil {
-			problems = append(problems, config.SettingBudgetStoreTripMatchingTimeZone+" "+settings.tripTimeZoneName+" is not an IANA time zone")
+			problems = append(problems, config.SettingBudgetTripMatchingTimeZone+" "+settings.tripTimeZoneName+" is not an IANA time zone")
 		}
 		if settings.tripLookbackDays <= 0 {
-			problems = append(problems, config.SettingBudgetStoreTripMatchingLookbackDays+" must be at least 1")
+			problems = append(problems, config.SettingBudgetTripMatchingLookbackDays+" must be at least 1")
 		}
 		if !settings.locationStoreIsServed {
 			problems = append(problems, "trip matching reads location-store, which this server does not serve: EnablePhotosAndLocations must run first")
@@ -91,15 +91,15 @@ func checkBudgetStorePassSettings(settings budgetStorePassSettings) error {
 // readBudgetStorePassSettings reads the settings and checks them.
 func (s *Server) readBudgetStorePassSettings(module *budgetStoreModule) (budgetStorePassSettings, error) {
 	settings := budgetStorePassSettings{
-		owners:                s.settings.StringList(config.SettingBudgetStorePassesOwnerPrincipalIDs),
-		interval:              s.settings.Duration(config.SettingBudgetStorePassesInterval),
-		bankSync:              s.settings.Boolean(config.SettingBudgetStoreBankSyncEnabled),
-		recurringBills:        s.settings.Boolean(config.SettingBudgetStoreRecurringBillDetectionEnabled),
-		interests:             s.settings.Boolean(config.SettingBudgetStoreInterestMatchingEnabled),
-		trips:                 s.settings.Boolean(config.SettingBudgetStoreTripMatchingEnabled),
-		tripHomeMarkers:       s.settings.StringList(config.SettingBudgetStoreTripMatchingHomeMarkers),
-		tripTimeZoneName:      s.settings.String(config.SettingBudgetStoreTripMatchingTimeZone),
-		tripLookbackDays:      s.settings.Integer(config.SettingBudgetStoreTripMatchingLookbackDays),
+		owners:                s.settings.StringList(config.SettingBudgetPassesOwnerPrincipalIDs),
+		interval:              s.settings.Duration(config.SettingBudgetPassesInterval),
+		bankSync:              s.settings.Boolean(config.SettingBudgetBankSyncEnabled),
+		recurringBills:        s.settings.Boolean(config.SettingBudgetRecurringBillDetectionEnabled),
+		interests:             s.settings.Boolean(config.SettingBudgetInterestMatchingEnabled),
+		trips:                 s.settings.Boolean(config.SettingBudgetTripMatchingEnabled),
+		tripHomeMarkers:       s.settings.StringList(config.SettingBudgetTripMatchingHomeMarkers),
+		tripTimeZoneName:      s.settings.String(config.SettingBudgetTripMatchingTimeZone),
+		tripLookbackDays:      s.settings.Integer(config.SettingBudgetTripMatchingLookbackDays),
 		plaidIsOn:             module.store.PlaidIsOn(),
 		locationStoreIsServed: s.photosAndLocations.Load() != nil,
 	}
@@ -125,12 +125,12 @@ func (s *Server) StartBudgetStorePasses(ctx context.Context) error {
 		return err
 	}
 	if !settings.anyOn() {
-		log.Printf("budget-store: no pass runs here (%s, %s, %s and %s are off)", config.SettingBudgetStoreBankSyncEnabled,
-			config.SettingBudgetStoreRecurringBillDetectionEnabled, config.SettingBudgetStoreInterestMatchingEnabled, config.SettingBudgetStoreTripMatchingEnabled)
+		log.Printf("budget-store: no pass runs here (%s, %s, %s and %s are off)", config.SettingBudgetBankSyncEnabled,
+			config.SettingBudgetRecurringBillDetectionEnabled, config.SettingBudgetInterestMatchingEnabled, config.SettingBudgetTripMatchingEnabled)
 		return nil
 	}
 	if len(settings.owners) == 0 {
-		log.Printf("budget-store: passes are on, and %s names no owner, so they run for nobody", config.SettingBudgetStorePassesOwnerPrincipalIDs)
+		log.Printf("budget-store: passes are on, and %s names no owner, so they run for nobody", config.SettingBudgetPassesOwnerPrincipalIDs)
 		return nil
 	}
 	log.Printf("budget-store: passes (bank sync %t, recurring bills %t, interests %t, trips %t) run every %s for %d owners",
