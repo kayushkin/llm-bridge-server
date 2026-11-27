@@ -9,7 +9,6 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/agents/bundles"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/tools"
-	"github.com/kayushkin/llm-bridge-server/internal/bundleclient"
 )
 
 // fakeToolRegistry stands in for the tool-store module in tests that pin how
@@ -162,34 +161,34 @@ func provisionAnswering(body string) func(tools.ProvisionRequest) string {
 // that could not answer did.
 type fakeBundleResolver struct {
 	bundleID     string
-	resolution   *bundleclient.Resolution
+	resolution   *bundles.ResolveResponse
 	err          error
 	resolveCalls []string
 }
 
-func (resolver *fakeBundleResolver) CheckExists(_ context.Context, bundleID string) error {
+func (resolver *fakeBundleResolver) CheckSessionBundleExists(_ context.Context, bundleID string) error {
 	if resolver.err != nil {
 		return resolver.err
 	}
-	if _, err := bundleclient.ParseID(bundleID); err != nil {
-		return fmt.Errorf("%w: %v", bundleclient.ErrNotFound, err)
+	if _, err := bundles.ParseSessionBundleID(bundleID); err != nil {
+		return fmt.Errorf("%w: %v", bundles.ErrSessionBundleNotFound, err)
 	}
 	if bundleID != resolver.bundleID {
-		return fmt.Errorf("%w: bundle-store has no bundle %s", bundleclient.ErrNotFound, bundleID)
+		return fmt.Errorf("%w: bundle-store has no bundle %s", bundles.ErrSessionBundleNotFound, bundleID)
 	}
 	return nil
 }
 
-func (resolver *fakeBundleResolver) Resolve(_ context.Context, bundleID string) (*bundleclient.Resolution, error) {
+func (resolver *fakeBundleResolver) ResolveSessionBundle(_ context.Context, bundleID string) (*bundles.ResolveResponse, error) {
 	resolver.resolveCalls = append(resolver.resolveCalls, bundleID)
 	if resolver.err != nil {
 		return nil, resolver.err
 	}
-	if _, err := bundleclient.ParseID(bundleID); err != nil {
-		return nil, fmt.Errorf("%w: %v", bundleclient.ErrNotFound, err)
+	if _, err := bundles.ParseSessionBundleID(bundleID); err != nil {
+		return nil, fmt.Errorf("%w: %v", bundles.ErrSessionBundleNotFound, err)
 	}
 	if bundleID != resolver.bundleID {
-		return nil, fmt.Errorf("%w: bundle not applicable: bundle id %s does not exist", bundleclient.ErrNotFound, bundleID)
+		return nil, fmt.Errorf("%w: bundle not applicable: bundle id %s does not exist", bundles.ErrSessionBundleNotFound, bundleID)
 	}
 	return resolver.resolution, nil
 }

@@ -84,7 +84,7 @@ func restrictedServer(t *testing.T, tools toolRegistry, deniedToolIDs []int64, d
 	t.Helper()
 	srv, st, instanceID := serverWithHarnessDefaults(t, msg.HarnessDefaults{})
 	srv.toolRegistry = tools
-	srv.bundleClient = bundleStoreDenying(t, deniedToolIDs, deniedReadPaths)
+	srv.bundleStore = bundleStoreDenying(t, deniedToolIDs, deniedReadPaths)
 	return srv, st, instanceID
 }
 
@@ -193,7 +193,7 @@ func TestARestrictedCodexSessionIsRefused(t *testing.T) {
 	srv, _, instanceID := testServerWithInstance(t, msg.HarnessCodex)
 	toolStore := newObservingToolStore(t, reviewedClaudeCodeTools())
 	srv.toolRegistry = toolStore
-	srv.bundleClient = bundleStoreDenying(t, []int64{102}, nil)
+	srv.bundleStore = bundleStoreDenying(t, []int64{102}, nil)
 	body := createSessionExpectingRefusal(t, srv, msg.CreateSessionRequest{InstanceID: instanceID, BundleID: "6", Harness: msg.HarnessCodex})
 	if !strings.Contains(body, "built_in_tool_allow_list_unenforceable") || !strings.Contains(body, "only claude_code") {
 		t.Errorf("refusal %q does not say codex cannot be held to an allow list", body)

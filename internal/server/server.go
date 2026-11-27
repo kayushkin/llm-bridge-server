@@ -120,9 +120,9 @@ type Server struct {
 	// restartDrain holds new turns while a deploy waits to restart this
 	// server (restart_drain.go).
 	restartDrain restartDrainState
-	// bundleClient checks a bundle_id at creation and resolves it at spawn;
+	// bundleStore checks a bundle_id at creation and resolves it at spawn;
 	// nil while the bundle-store module is off (bundle_store_routes.go).
-	bundleClient bundleResolver
+	bundleStore bundleResolver
 	// toolRegistry answers the tool offer, the harness tool denials and the
 	// harness tool reports; nil while the tool-store module is off
 	// (tool_store_routes.go, tool_registry.go).

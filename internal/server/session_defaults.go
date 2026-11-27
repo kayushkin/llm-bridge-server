@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/kayushkin/llm-bridge-server/internal/bundleclient"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/bundles"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -49,14 +49,14 @@ type pinnedSettingLayers map[msg.EffectiveSettingKey]msg.EffectiveConfigLayer
 // none. A bundle that cannot be resolved is an error: the spawn would refuse
 // the session anyway, and deciding its model without the bundle would pin the
 // wrong one.
-func (s *Server) sessionBundleResolution(ctx context.Context, sess *store.Session) (*bundleclient.Resolution, error) {
+func (s *Server) sessionBundleResolution(ctx context.Context, sess *store.Session) (*bundles.ResolveResponse, error) {
 	if sess.BundleID == "" {
 		return nil, nil
 	}
-	if s.bundleClient == nil {
+	if s.bundleStore == nil {
 		return nil, fmt.Errorf("session %s names bundle %s and %s", sess.SessionID, sess.BundleID, bundleStoreOffMessage)
 	}
-	resolution, err := s.bundleClient.Resolve(ctx, sess.BundleID)
+	resolution, err := s.bundleStore.ResolveSessionBundle(ctx, sess.BundleID)
 	if err != nil {
 		return nil, fmt.Errorf("resolve bundle %s: %w", sess.BundleID, err)
 	}

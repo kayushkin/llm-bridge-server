@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/kayushkin/llm-bridge-server/internal/agents/bundles"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/tools"
-	"github.com/kayushkin/llm-bridge-server/internal/bundleclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -115,7 +115,7 @@ type harnessToolDenials struct {
 // and maps the bundle's denied ids onto them. A denied id that is not a
 // harness tool was an MCP tool, which bundle-store already left out of the
 // offer; a harness tool of another harness does not apply to this session.
-func (s *Server) decideHarnessToolDenials(ctx context.Context, harness msg.Harness, bundle *bundleclient.Resolution) (*harnessToolDenials, error) {
+func (s *Server) decideHarnessToolDenials(ctx context.Context, harness msg.Harness, bundle *bundles.ResolveResponse) (*harnessToolDenials, error) {
 	if s.toolRegistry == nil {
 		if bundle != nil && (len(bundle.DeniedTools) > 0 || len(bundle.DeniedReadPaths) > 0) {
 			return nil, fmt.Errorf("the session's bundle denies tools or paths, and %s, so they cannot be named", toolStoreOffMessage)
@@ -190,7 +190,7 @@ func unionInOrder(lists ...[]string) []string {
 // bundleRestrictsSession reports whether a session's bundle denies any tool or
 // read path. Such a session gets an allow list of built-in tools, not just a
 // deny list, so a tool nobody has reviewed is off in it from the first session.
-func bundleRestrictsSession(bundle *bundleclient.Resolution) bool {
+func bundleRestrictsSession(bundle *bundles.ResolveResponse) bool {
 	return bundle != nil && (len(bundle.DeniedTools) > 0 || len(bundle.DeniedReadPaths) > 0)
 }
 

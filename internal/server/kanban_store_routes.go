@@ -25,7 +25,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/access"
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
 	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
-	"github.com/kayushkin/llm-bridge-server/internal/bundleclient"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/bundles"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/inprocesshttp"
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
@@ -321,11 +321,11 @@ type kanbanBundles struct {
 }
 
 func (owner kanbanBundles) CheckBundleExists(id string) error {
-	if owner.server.bundleClient == nil {
+	if owner.server.bundleStore == nil {
 		return errors.New(bundleStoreOffMessage)
 	}
-	err := owner.server.bundleClient.CheckExists(context.Background(), id)
-	if errors.Is(err, bundleclient.ErrNotFound) {
+	err := owner.server.bundleStore.CheckSessionBundleExists(context.Background(), id)
+	if errors.Is(err, bundles.ErrSessionBundleNotFound) {
 		return fmt.Errorf("%w: %v", issuesbundles.ErrNotFound, err)
 	}
 	return err

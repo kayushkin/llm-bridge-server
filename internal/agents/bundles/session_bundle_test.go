@@ -1,9 +1,10 @@
-package bundleclient
+package bundles_test
 
 import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/kayushkin/llm-bridge-server/internal/agents/bundles"
@@ -31,19 +32,18 @@ func upsert(t *testing.T, store *bundles.Store, bundle *bundles.Bundle) int64 {
 	return stored.ID
 }
 
-// The client answers from the module in this process: a bundle resolves with
-// base, its tools, skills and denials; a disabled or missing one, or a name,
-// is ErrNotFound; and a disabled bundle still exists.
-func TestTheClientAnswersFromTheModule(t *testing.T) {
+// A session's bundle id resolves with base, its tools, skills and denials; a
+// disabled or missing one, or a name, is ErrSessionBundleNotFound; and a
+// disabled bundle still exists.
+func TestASessionBundleIsCheckedAndResolvedByID(t *testing.T) {
 	store := newBundleStore(t)
 	ctx := context.Background()
 	upsert(t, store, &bundles.Bundle{Name: "base", Enabled: true, Members: []bundles.Member{{Kind: bundles.MemberSkill, ID: 40, Name: "a-skill"}}})
 	docker := upsert(t, store, &bundles.Bundle{Name: "docker", Enabled: true, DeniedReadPaths: []string{"/proc/**"}, Model: "a-model",
 		Members: []bundles.Member{{Kind: bundles.MemberTool, ID: 13, Name: "a-tool"}, {Kind: bundles.MemberTool, ID: 102, Name: "a-shell", Effect: bundles.MemberDeny}}})
 	off := upsert(t, store, &bundles.Bundle{Name: "off", Enabled: false})
-	client := New(store)
 
-	resolution, err := client.Resolve(ctx, strconv.FormatInt(docker, 10))
+	resolution, err := store.ResolveSessionBundle(ctx, strconv.FormatInt(docker, 10))
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -60,15 +60,23 @@ func TestTheClientAnswersFromTheModule(t *testing.T) {
 		t.Errorf("denied read paths %v, model %q", resolution.DeniedReadPaths, resolution.Model)
 	}
 
-	if err := client.CheckExists(ctx, strconv.FormatInt(off, 10)); err != nil {
+	if err := store.CheckSessionBundleExists(ctx, strconv.FormatInt(off, 10)); err != nil {
 		t.Errorf("a disabled bundle exists: %v", err)
 	}
 	for _, id := range []string{strconv.FormatInt(off, 10), "999", "docker"} {
-		if _, err := client.Resolve(ctx, id); !errors.Is(err, ErrNotFound) {
-			t.Errorf("resolve %s: err = %v, want ErrNotFound", id, err)
+		if _, err := store.ResolveSessionBundle(ctx, id); !errors.Is(err, bundles.ErrSessionBundleNotFound) {
+			t.Errorf("resolve %s: err = %v, want ErrSessionBundleNotFound", id, err)
 		}
 	}
-	if err := client.CheckExists(ctx, "999"); !errors.Is(err, ErrNotFound) {
-		t.Errorf("check 999: err = %v, want ErrNotFound", err)
+	if err := store.CheckSessionBundleExists(ctx, "999"); !errors.Is(err, bundles.ErrSessionBundleNotFound) {
+		t.Errorf("check 999: err = %v, want ErrSessionBundleNotFound", err)
+	}
+}
+
+// A name is refused before the store is asked: the store keys by id.
+func TestASessionBundleNameIsRefusedWithoutAsking(t *testing.T) {
+	var store *bundles.Store
+	if err := store.CheckSessionBundleExists(t.Context(), "docker"); err == nil || !strings.Contains(err.Error(), "renameable") {
+		t.Fatalf("want a refusal naming the reason, got %v", err)
 	}
 }

@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/kayushkin/llm-bridge-server/internal/agents/bundles"
-	"github.com/kayushkin/llm-bridge-server/internal/bundleclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -16,7 +15,7 @@ import (
 // the given model and effort, with no tools or skills.
 func bundleStoreNaming(t *testing.T, model, effort string) *fakeBundleResolver {
 	t.Helper()
-	return &fakeBundleResolver{bundleID: "6", resolution: &bundleclient.Resolution{
+	return &fakeBundleResolver{bundleID: "6", resolution: &bundles.ResolveResponse{
 		Bundles:         []bundles.BundleRef{{ID: 6, Name: "reviewer"}},
 		DeniedTools:     []bundles.MemberRef{},
 		DeniedReadPaths: []string{},
@@ -108,7 +107,7 @@ func TestACreatorWhoNamesNothingGetsTheHarnessDefaultsPinnedByTheServer(t *testi
 
 func TestTheBundleOutranksTheHarnessDefaultForModelAndEffort(t *testing.T) {
 	srv, st, instanceID := serverWithHarnessDefaults(t, dispatcherDefaults)
-	srv.bundleClient = bundleStoreNaming(t, "alt", "low")
+	srv.bundleStore = bundleStoreNaming(t, "alt", "low")
 	sess := createSessionForDefaults(t, srv, st, msg.CreateSessionRequest{InstanceID: instanceID, BundleID: "6"})
 	pinned := pinnedOn(t, sess)
 
@@ -132,7 +131,7 @@ func TestTheBundleOutranksTheHarnessDefaultForModelAndEffort(t *testing.T) {
 
 func TestTheSessionsOwnValueOutranksTheBundleAndTheDefaultEvenWhenItIsZeroOrEmpty(t *testing.T) {
 	srv, st, instanceID := serverWithHarnessDefaults(t, dispatcherDefaults)
-	srv.bundleClient = bundleStoreNaming(t, "alt", "low")
+	srv.bundleStore = bundleStoreNaming(t, "alt", "low")
 	sess := createSessionForDefaults(t, srv, st, msg.CreateSessionRequest{
 		InstanceID: instanceID, BundleID: "6", MaxBudget: float64Ptr(0),
 		HarnessConfig: json.RawMessage(`{"model":"mock-model","effort":"medium","disabled_tools":[]}`),
@@ -184,7 +183,7 @@ func TestAPinnedSettingDoesNotMoveWhenTheDefaultChangesAndBecomesTheSessionsOwnW
 
 func TestADryRunReportsWhatCreateWouldPinForADispatcher(t *testing.T) {
 	srv, _, instanceID := serverWithHarnessDefaults(t, dispatcherDefaults)
-	srv.bundleClient = bundleStoreNaming(t, "", "low")
+	srv.bundleStore = bundleStoreNaming(t, "", "low")
 	resp := doJSON(t, srv, "GET", "/effective-config?instance_id="+instanceID+"&bundle_id=6", nil)
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)

@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/kayushkin/llm-bridge-server/internal/agents/bundles"
-	"github.com/kayushkin/llm-bridge-server/internal/bundleclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -20,7 +19,7 @@ func bundleStoreDenying(t *testing.T, deniedToolIDs []int64, deniedReadPaths []s
 	if deniedReadPaths == nil {
 		deniedReadPaths = []string{}
 	}
-	return &fakeBundleResolver{bundleID: "6", resolution: &bundleclient.Resolution{
+	return &fakeBundleResolver{bundleID: "6", resolution: &bundles.ResolveResponse{
 		Bundles:         []bundles.BundleRef{{ID: 6, Name: "support-read-only"}},
 		Skills:          []bundles.MemberRef{},
 		Tools:           []bundles.MemberRef{},
@@ -34,7 +33,7 @@ func serverWithBundleAndToolStore(t *testing.T, bundles bundleResolver) (*Server
 	srv, st, instanceID := serverWithHarnessDefaults(t, msg.HarnessDefaults{})
 	tools, _ := fakeToolStoreWithOptIns(t, nil)
 	srv.toolRegistry = tools
-	srv.bundleClient = bundles
+	srv.bundleStore = bundles
 	return srv, st, instanceID
 }
 
@@ -111,7 +110,7 @@ func TestDeniedReadPathsOnACodexSessionAreRefused(t *testing.T) {
 	srv, _, instanceID := testServerWithInstance(t, msg.HarnessCodex)
 	tools, _ := fakeToolStoreWithOptIns(t, nil)
 	srv.toolRegistry = tools
-	srv.bundleClient = bundleStoreDenying(t, []int64{103}, []string{"/proc/**"})
+	srv.bundleStore = bundleStoreDenying(t, []int64{103}, []string{"/proc/**"})
 	body := createSessionExpectingRefusal(t, srv, msg.CreateSessionRequest{InstanceID: instanceID, BundleID: "6", Harness: msg.HarnessCodex})
 	if !strings.Contains(body, "only claude_code enforces") {
 		t.Errorf("refusal %q does not say codex cannot enforce it", body)

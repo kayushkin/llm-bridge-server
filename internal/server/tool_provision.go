@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/agents/bundles"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/tools"
-	"github.com/kayushkin/llm-bridge-server/internal/bundleclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -86,7 +86,7 @@ type toolOffer struct {
 	// Notes are what was consulted and how it narrowed or did not decide.
 	Notes []string
 	// Resolution is bundle-store's answer when Source is toolOfferBundle.
-	Resolution *bundleclient.Resolution
+	Resolution *bundles.ResolveResponse
 	// NarrowedByGrants is true when a principal's can_use grants cut the
 	// bundle's or the instance's list.
 	NarrowedByGrants bool
@@ -139,10 +139,10 @@ func (s *Server) resolveToolOffer(ctx context.Context, sess *store.Session, cfg 
 }
 
 func (s *Server) resolveBundleToolOffer(ctx context.Context, sess *store.Session) (*toolOffer, error) {
-	if s.bundleClient == nil {
+	if s.bundleStore == nil {
 		return nil, fmt.Errorf("session %s was started with bundle %s but %s", sess.SessionID, sess.BundleID, bundleStoreOffMessage)
 	}
-	resolution, err := s.bundleClient.Resolve(ctx, sess.BundleID)
+	resolution, err := s.bundleStore.ResolveSessionBundle(ctx, sess.BundleID)
 	if err != nil {
 		return nil, fmt.Errorf("session %s was started with bundle %s, which could not be resolved, so it was not started: %w", sess.SessionID, sess.BundleID, err)
 	}

@@ -5,7 +5,6 @@ import (
 	"net/http"
 
 	"github.com/kayushkin/llm-bridge-server/internal/agents/bundles"
-	"github.com/kayushkin/llm-bridge-server/internal/bundleclient"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 )
 
@@ -14,11 +13,11 @@ import (
 // the two questions session creation and spawn ask it, answered in process.
 
 // bundleResolver is what session creation and spawn ask about a bundle.
-// bundleclient.Client answers it from the module; nil is a server whose
+// *bundles.Store answers it from the module; nil is a server whose
 // bundle-store module is off.
 type bundleResolver interface {
-	CheckExists(ctx context.Context, bundleID string) error
-	Resolve(ctx context.Context, bundleID string) (*bundleclient.Resolution, error)
+	CheckSessionBundleExists(ctx context.Context, bundleID string) error
+	ResolveSessionBundle(ctx context.Context, bundleID string) (*bundles.ResolveResponse, error)
 }
 
 // bundleStoreOffMessage says why a server has no bundle-store.
@@ -29,7 +28,7 @@ const bundleStoreOffMessage = "this server's bundle-store module is off (" + con
 // open, before the server takes requests; until then, and on a server with no
 // Postgres URL, the routes answer 503 and a session naming a bundle is refused.
 func (s *Server) EnableBundleStore(store *bundles.Store) {
-	s.bundleClient = bundleclient.New(store)
+	s.bundleStore = store
 	s.bundleStoreHandlers.Store(bundles.NewHandlers(store))
 }
 

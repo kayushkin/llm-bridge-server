@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/kayushkin/llm-bridge-server/internal/agents/bundles"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models"
-	"github.com/kayushkin/llm-bridge-server/internal/bundleclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -74,7 +74,7 @@ func (s *Server) resolveModelSelection(ctx context.Context, sess *store.Session)
 
 // resolveModelSelectionWithBundle is resolveModelSelection for a caller that
 // has already resolved the session's bundle (nil when it has none).
-func (s *Server) resolveModelSelectionWithBundle(sess *store.Session, bundle *bundleclient.Resolution) (msg.ModelSelection, error) {
+func (s *Server) resolveModelSelectionWithBundle(sess *store.Session, bundle *bundles.ResolveResponse) (msg.ModelSelection, error) {
 	if sess == nil {
 		return msg.ModelSelection{}, fmt.Errorf("resolve model: nil session")
 	}

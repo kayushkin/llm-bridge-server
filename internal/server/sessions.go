@@ -15,7 +15,7 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/conformance"
 	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
-	"github.com/kayushkin/llm-bridge-server/internal/bundleclient"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/bundles"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/kanbanclient"
 	"github.com/kayushkin/llm-bridge-server/internal/machines"
@@ -469,13 +469,13 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// nobody hands out would fail at spawn, far from the request that caused
 	// it. A bundle's name is refused by shape: it is renameable.
 	if req.BundleID != "" {
-		if s.bundleClient == nil {
+		if s.bundleStore == nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "bundle_store_not_configured",
 				"bundle_id was given but "+bundleStoreOffMessage+", so it cannot be checked")
 			return
 		}
-		if err := s.bundleClient.CheckExists(r.Context(), req.BundleID); err != nil {
-			if errors.Is(err, bundleclient.ErrNotFound) {
+		if err := s.bundleStore.CheckSessionBundleExists(r.Context(), req.BundleID); err != nil {
+			if errors.Is(err, bundles.ErrSessionBundleNotFound) {
 				writeJSONError(w, http.StatusBadRequest, "unknown_bundle", fmt.Sprintf(
 					"bundle_id %q is not a bundle bundle-store has: %v", req.BundleID, err))
 				return

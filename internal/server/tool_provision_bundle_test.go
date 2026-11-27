@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/kayushkin/llm-bridge-server/internal/agents/bundles"
-	"github.com/kayushkin/llm-bridge-server/internal/bundleclient"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -16,11 +15,11 @@ import (
 
 // fakeBundleStore knows bundle 6 and resolves it, with base, to the given
 // tools and skills, and answers any other id as bundle-store does a missing
-// one: an error wrapping bundleclient.ErrNotFound, never a smaller bundle. It
+// one: an error wrapping bundles.ErrSessionBundleNotFound, never a smaller bundle. It
 // records each id it was asked to resolve.
 func fakeBundleStore(t *testing.T, bundleID string, toolIDs []int64, skillIDs []int64) (*fakeBundleResolver, *[]string) {
 	t.Helper()
-	resolver := &fakeBundleResolver{bundleID: bundleID, resolution: &bundleclient.Resolution{
+	resolver := &fakeBundleResolver{bundleID: bundleID, resolution: &bundles.ResolveResponse{
 		Bundles:         []bundles.BundleRef{{ID: 1, Name: "base"}, {ID: 6, Name: "docker"}},
 		Skills:          memberRefs("skill", skillIDs...),
 		Tools:           memberRefs("tool", toolIDs...),
@@ -31,7 +30,7 @@ func fakeBundleStore(t *testing.T, bundleID string, toolIDs []int64, skillIDs []
 }
 
 func newServerWithBundles(tools toolRegistry, bundles bundleResolver, grantStoreURL string) *Server {
-	s := &Server{cfg: &config.Config{}, toolRegistry: tools, bundleClient: bundles}
+	s := &Server{cfg: &config.Config{}, toolRegistry: tools, bundleStore: bundles}
 	if grantStoreURL != "" {
 		s.grantStore = testGrantReaderAt(grantStoreURL)
 		s.principalLookupCache = principalLookupCacheAnswering(humanPrincipalForGrantTests)
@@ -167,13 +166,4 @@ func TestInjectMCPConfigNamedToolsBeatTheBundle(t *testing.T) {
 	}
 	path := mcpConfigPath(t, sess)
 	t.Cleanup(func() { os.Remove(path) })
-}
-
-// bundleclient refuses a name before it asks the store: bundle-store keys by
-// id. A client with no store would panic if it asked.
-func TestBundleClientRefusesANameWithoutCalling(t *testing.T) {
-	c := bundleclient.New(nil)
-	if err := c.CheckExists(t.Context(), "docker"); err == nil || !strings.Contains(err.Error(), "renameable") {
-		t.Fatalf("want a refusal naming the reason, got %v", err)
-	}
 }

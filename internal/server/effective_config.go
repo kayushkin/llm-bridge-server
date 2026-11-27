@@ -280,9 +280,9 @@ func (s *Server) effectiveConfigFor(ctx context.Context, sess *store.Session, su
 			if setting.Record == "" {
 				setting.Record = "sessions.bundle_id"
 			}
-			if s.bundleClient == nil {
+			if s.bundleStore == nil {
 				warn("the session names bundle %s but %s; a spawn would be refused", sess.BundleID, bundleStoreOffMessage)
-			} else if resolution, err := s.bundleClient.Resolve(ctx, sess.BundleID); err != nil {
+			} else if resolution, err := s.bundleStore.ResolveSessionBundle(ctx, sess.BundleID); err != nil {
 				warn("bundle %s could not be resolved, so a spawn would be refused: %v", sess.BundleID, err)
 			} else {
 				names := make([]string, 0, len(resolution.Bundles))
