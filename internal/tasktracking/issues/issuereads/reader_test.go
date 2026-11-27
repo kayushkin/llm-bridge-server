@@ -1,4 +1,4 @@
-package server
+package issuereads
 
 import (
 	"context"
@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads/issuereadstest"
 
 	issuesapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/api"
 	issuesmodel "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/model"
@@ -18,14 +20,14 @@ func issueItem(id string) map[string]any { return map[string]any{"id": id} }
 // session with cards, and with no cards (not a refusal) for any other: an
 // unknown session ref is 200 [] on the route, so a lookup aimed at the wrong
 // id would read as "no todo" without this distinction in a test.
-func issueReaderWithSessionCards(sessionID string, cards []issuesmodel.EntityCardView) (*issueReader, *fakeIssueStore) {
-	store := &fakeIssueStore{EntityCardsAnswer: func(entityType, entityRef string) ([]issuesmodel.EntityCardView, error) {
+func issueReaderWithSessionCards(sessionID string, cards []issuesmodel.EntityCardView) (*Reader, *issuereadstest.Store) {
+	store := &issuereadstest.Store{EntityCardsAnswer: func(entityType, entityRef string) ([]issuesmodel.EntityCardView, error) {
 		if entityType != "session" || entityRef != sessionID {
 			return []issuesmodel.EntityCardView{}, nil
 		}
 		return cards, nil
 	}}
-	return newIssueReader(store), store
+	return New(store), store
 }
 
 func TestLinkedTodoForSessionTakesTheFirstCard(t *testing.T) {
@@ -122,7 +124,7 @@ func TestLinkedTodoForSessionWithNoLinks(t *testing.T) {
 // confident empty string: the caller treats "" as "this session has no todo".
 func TestLinkedTodoForSessionErrors(t *testing.T) {
 	for _, status := range []int{http.StatusInternalServerError, http.StatusBadGateway} {
-		client := newIssueReader(&fakeIssueStore{EntityCardsAnswer: func(string, string) ([]issuesmodel.EntityCardView, error) {
+		client := New(&issuereadstest.Store{EntityCardsAnswer: func(string, string) ([]issuesmodel.EntityCardView, error) {
 			return nil, &issuesapi.Refusal{Status: status, Message: "noteboard: connection refused"}
 		}})
 		_, err := client.LinkedTodoForSession(context.Background(), "br_1")
@@ -163,7 +165,7 @@ func TestLookupsAreMadeAsTheInternalService(t *testing.T) {
 }
 
 func TestCardTagsAndItsNotFound(t *testing.T) {
-	client := newIssueReader(&fakeIssueStore{CardTagsAnswer: func(cardID string) ([]string, error) {
+	client := New(&issuereadstest.Store{CardTagsAnswer: func(cardID string) ([]string, error) {
 		if cardID == "card-1" {
 			return []string{"billing"}, nil
 		}

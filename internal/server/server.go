@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access/grantcheck"
 
 	"github.com/kayushkin/llm-bridge-server/internal/chatlinks"
@@ -156,7 +158,7 @@ type Server struct {
 	// to?" when a signal is minted, and every other read this server makes of
 	// kanban-store. EnableIssues sets it; nil until then, which leaves
 	// every signal unlinked rather than guessing.
-	issueReads *issueReader
+	issueReads *issuereads.Reader
 	// kanbanStore answers /issues/ once EnableIssues
 	// has run (kanban_store_routes.go); nil answers them 503.
 	kanbanStore atomic.Pointer[kanbanStoreHandlers]

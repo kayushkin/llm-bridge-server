@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads"
+
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
@@ -642,7 +644,7 @@ func (s *Server) handleDryRunEffectiveConfig(w http.ResponseWriter, r *http.Requ
 		}
 	}
 	if subject.CardID != "" && s.issueReads != nil {
-		if _, err := s.issueReads.CardTags(ctx, subject.CardID); errors.Is(err, errIssueNotFound) {
+		if _, err := s.issueReads.CardTags(ctx, subject.CardID); errors.Is(err, issuereads.ErrNotFound) {
 			answer.Warnings = append(answer.Warnings, fmt.Sprintf("POST /sessions would refuse this session: card_id %q is not a card kanban-store has: %v", subject.CardID, err))
 		}
 	}

@@ -8,6 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads/issuereadstest"
+
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads"
+
 	"github.com/kayushkin/llm-bridge-server/internal/agents"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -17,9 +21,9 @@ import (
 
 // fakeKanbanCards answers a card's tags for the cards given, and 404 for any
 // other card.
-func fakeKanbanCards(t *testing.T, tagsByCard map[string][]string) *issueReader {
+func fakeKanbanCards(t *testing.T, tagsByCard map[string][]string) *issuereads.Reader {
 	t.Helper()
-	return newIssueReader(&fakeIssueStore{CardTagsAnswer: func(cardID string) ([]string, error) {
+	return issuereads.New(&issuereadstest.Store{CardTagsAnswer: func(cardID string) ([]string, error) {
 		tags, known := tagsByCard[cardID]
 		if !known {
 			return nil, &issuesapi.Refusal{Status: http.StatusNotFound, Message: "card not found"}

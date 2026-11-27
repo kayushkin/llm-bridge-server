@@ -23,6 +23,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
 
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
@@ -97,7 +99,7 @@ func (s *Server) EnableIssues(store *issuesdb.Store, owners KanbanStoreOwners) {
 		checker:   s.grantResourceChecker(owners.Access.Principals),
 	}})
 	handler := api.Handler()
-	s.issueReads = newIssueReader(api)
+	s.issueReads = issuereads.New(api)
 	s.kanbanStore.Store(&kanbanStoreHandlers{handler: handler, store: store, api: api, messageTriggersEnabled: owners.MessageTriggersEnabled})
 }
 

@@ -11,6 +11,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads"
+
+	"github.com/kayushkin/llm-bridge-server/internal/serversentevents"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access/grantcheck"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
@@ -325,7 +329,7 @@ func (s *Server) handleOperationEvents(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	keepalive := time.NewTicker(sseKeepaliveInterval)
+	keepalive := time.NewTicker(serversentevents.SseKeepaliveInterval)
 	defer keepalive.Stop()
 	for {
 		events, err := coordinator.Store().EventsAfter(operationID, lastSequence)
@@ -462,7 +466,7 @@ func (s *Server) BoardTaxonomy(ctx context.Context, boardID, principalID string)
 		return msg.ClassificationTaxonomy{}, "", errors.New("kanban-store is not configured, so no board taxonomy can be read")
 	}
 	taxonomy, revision, err := s.issueReads.BoardTaxonomy(ctx, boardID, principalID)
-	if errors.Is(err, errIssueNotFound) {
+	if errors.Is(err, issuereads.ErrNotFound) {
 		return msg.ClassificationTaxonomy{}, "", fmt.Errorf("%w: %w", executors.ErrTaxonomyBoardNotFound, err)
 	}
 	return taxonomy, revision, err

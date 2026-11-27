@@ -7,6 +7,10 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads/issuereadstest"
+
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads"
+
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	issuesapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/api"
@@ -17,13 +21,13 @@ import (
 // testServerWithKanban is testServer wired to a stub kanban-store. kanban
 // answers the session-cards reverse lookup in this process; pass nil for a
 // store that refuses every read 502, as it does when noteboard is down.
-func testServerWithKanban(t *testing.T, kanban *fakeIssueStore) (*Server, *store.Store) {
+func testServerWithKanban(t *testing.T, kanban *issuereadstest.Store) (*Server, *store.Store) {
 	t.Helper()
 	dir := t.TempDir()
 	st := newTestBridgeStore(t)
 
 	if kanban == nil {
-		kanban = &fakeIssueStore{EntityCardsAnswer: func(string, string) ([]issuesmodel.EntityCardView, error) {
+		kanban = &issuereadstest.Store{EntityCardsAnswer: func(string, string) ([]issuesmodel.EntityCardView, error) {
 			return nil, &issuesapi.Refusal{Status: http.StatusBadGateway, Message: "noteboard did not answer"}
 		}}
 	}
@@ -35,7 +39,7 @@ func testServerWithKanban(t *testing.T, kanban *fakeIssueStore) (*Server, *store
 	testAuthorizationConfig(cfg)
 	srv := New(st, nil, nil, nil, nil, nil, nil, cfg)
 	enableTestSessionEvents(t, srv, st)
-	srv.issueReads = newIssueReader(kanban)
+	srv.issueReads = issuereads.New(kanban)
 	return srv, st
 }
 
@@ -49,8 +53,8 @@ func testServerWithKanban(t *testing.T, kanban *fakeIssueStore) (*Server, *store
 // and the signal is minted unlinked with nothing logged. A stub that serves
 // the canned card for every ref cannot tell a right id from a wrong one, so
 // it certifies whichever id the caller happens to pass.
-func newSessionCardsStub(todoByRef map[string]string) *fakeIssueStore {
-	return &fakeIssueStore{EntityCardsAnswer: func(entityType, entityRef string) ([]issuesmodel.EntityCardView, error) {
+func newSessionCardsStub(todoByRef map[string]string) *issuereadstest.Store {
+	return &issuereadstest.Store{EntityCardsAnswer: func(entityType, entityRef string) ([]issuesmodel.EntityCardView, error) {
 		todo, linked := todoByRef[entityRef]
 		if entityType != "session" || !linked {
 			return []issuesmodel.EntityCardView{}, nil
@@ -60,7 +64,7 @@ func newSessionCardsStub(todoByRef map[string]string) *fakeIssueStore {
 }
 
 // cardsForSession links one bridge session id to one todo.
-func cardsForSession(bridgeID, todoID string) *fakeIssueStore {
+func cardsForSession(bridgeID, todoID string) *issuereadstest.Store {
 	return newSessionCardsStub(map[string]string{bridgeID: todoID})
 }
 
@@ -149,7 +153,7 @@ func TestDerivedSignalsCarryTheLinkedTodo(t *testing.T) {
 // way. A kanban-store that is down, wedged or absent may cost the todo
 // pointer; it may never cost the signal.
 func TestSignalIsStillRecordedWhenTheLookupFails(t *testing.T) {
-	cases := map[string]*fakeIssueStore{
+	cases := map[string]*issuereadstest.Store{
 		"store errors": {EntityCardsAnswer: func(string, string) ([]issuesmodel.EntityCardView, error) {
 			return nil, &issuesapi.Refusal{Status: http.StatusInternalServerError, Message: "boom"}
 		}},

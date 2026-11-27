@@ -15,7 +15,7 @@
 // noteboard item — so the card ids it returns for a session are todo ids
 // directly, with no second join and no name matching.
 
-package server
+package issuereads
 
 import (
 	"context"
@@ -47,72 +47,72 @@ type issueStore interface {
 	PublishClassificationDecision(caller issuesapi.Caller, publication msg.BoardClassificationDecisionPublication) (*issuesmodel.ClassificationDecision, bool, error)
 }
 
-// issueReader is kanban-store in this process. Safe for concurrent use.
-type issueReader struct {
-	store issueStore
+// Reader is kanban-store in this process. Safe for concurrent use.
+type Reader struct {
+	Store issueStore
 }
 
-// newIssueReader builds a client of store.
-func newIssueReader(store issueStore) *issueReader {
+// New builds a client of store.
+func New(store issueStore) *Reader {
 	if store == nil {
 		panic("newIssueReader needs kanban-store")
 	}
-	return &issueReader{store: store}
+	return &Reader{Store: store}
 }
 
-// issuesInternalService is the caller of every read this server makes for itself.
-var issuesInternalService = issuesapi.Caller{InternalService: true}
+// InternalService is the caller of every read this server makes for itself.
+var InternalService = issuesapi.Caller{InternalService: true}
 
-// errIssueNotFound is kanban-store answering 404: the card or board is not one it
+// ErrNotFound is kanban-store answering 404: the card or board is not one it
 // has. Any other failure is the store not answering, and is not this error.
-var errIssueNotFound = errors.New("not found")
+var ErrNotFound = errors.New("not found")
 
-// issueReadFailure is a refusal of a call made as the internal service: a 404 is
-// errIssueNotFound, and every other status is named in the message.
-func issueReadFailure(what string, err error) error {
+// ReadFailure is a refusal of a call made as the internal service: a 404 is
+// ErrIssueNotFound, and every other status is named in the message.
+func ReadFailure(what string, err error) error {
 	var refusal *issuesapi.Refusal
 	if errors.As(err, &refusal) {
 		if refusal.Status == http.StatusNotFound {
-			return fmt.Errorf("%w: kanban-store %s: status 404: %s", errIssueNotFound, what, refusal.Message)
+			return fmt.Errorf("%w: kanban-store %s: status 404: %s", ErrNotFound, what, refusal.Message)
 		}
 		return fmt.Errorf("kanban-store %s: status %d: %s", what, refusal.Status, refusal.Message)
 	}
 	return fmt.Errorf("kanban-store %s: %w", what, err)
 }
 
-// issueReadFailureAsPrincipal is a refusal of a call made as a principal: a board it
-// may not view (403 or 404) is errIssueNotFound, the same as a missing one.
-func issueReadFailureAsPrincipal(what string, err error) error {
+// ReadFailureAsPrincipal is a refusal of a call made as a principal: a board it
+// may not view (403 or 404) is ErrIssueNotFound, the same as a missing one.
+func ReadFailureAsPrincipal(what string, err error) error {
 	var refusal *issuesapi.Refusal
 	if errors.As(err, &refusal) && (refusal.Status == http.StatusNotFound || refusal.Status == http.StatusForbidden) {
-		return fmt.Errorf("%w: kanban-store %s: status %d: %s", errIssueNotFound, what, refusal.Status, refusal.Message)
+		return fmt.Errorf("%w: kanban-store %s: status %d: %s", ErrNotFound, what, refusal.Status, refusal.Message)
 	}
-	return issueReadFailure(what, err)
+	return ReadFailure(what, err)
 }
 
-// issuesCallerAs is the caller a read names: the principal, whose board grants
+// CallerAs is the caller a read names: the principal, whose board grants
 // decide, or the internal service when it names none.
-func issuesCallerAs(principalID string) issuesapi.Caller {
+func CallerAs(principalID string) issuesapi.Caller {
 	if principalID == "" {
-		return issuesInternalService
+		return InternalService
 	}
 	return issuesapi.Caller{PrincipalID: principalID}
 }
 
-// linkedIssueCard is the card a session is linked to, with the text of the work it
+// LinkedCard is the card a session is linked to, with the text of the work it
 // carries. A card id IS a noteboard item id, and Title and Body are that
 // item's — read here off the reverse lookup rather than fetched again.
-type linkedIssueCard struct {
+type LinkedCard struct {
 	ID    string
 	Title string
 	Body  string
 }
 
-// issueCardLink is one link on a card, as kanban-store returns it. EntityType is
+// CardLink is one link on a card, as kanban-store returns it. EntityType is
 // open on the store side; the two this client reads are "email" (ref
 // "<account_id>:<provider message id>") and "email_sender" (a lowercased
 // address).
-type issueCardLink struct {
+type CardLink struct {
 	EntityType string `json:"entity_type"`
 	EntityRef  string `json:"entity_ref"`
 	Label      string `json:"label"`
@@ -132,7 +132,7 @@ type issueCardLink struct {
 // An orphaned link is skipped rather than returned. Its card id would still
 // resolve to nothing in a todo view, and pointing a signal at a deleted item
 // is worse than leaving it unlinked.
-func (c *issueReader) LinkedTodoForSession(ctx context.Context, sessionID string) (string, error) {
+func (c *Reader) LinkedTodoForSession(ctx context.Context, sessionID string) (string, error) {
 	card, err := c.LinkedCardForSession(ctx, sessionID)
 	if err != nil || card == nil {
 		return "", err
@@ -142,13 +142,13 @@ func (c *issueReader) LinkedTodoForSession(ctx context.Context, sessionID string
 
 // LinkedCardForSession returns the card this session is linked to, with its
 // title and body, or nil when there is none.
-func (c *issueReader) LinkedCardForSession(_ context.Context, sessionID string) (*linkedIssueCard, error) {
+func (c *Reader) LinkedCardForSession(_ context.Context, sessionID string) (*LinkedCard, error) {
 	if sessionID == "" {
 		return nil, fmt.Errorf("session id is required")
 	}
-	cards, err := c.store.EntityCards(issuesInternalService, "session", sessionID)
+	cards, err := c.Store.EntityCards(InternalService, "session", sessionID)
 	if err != nil {
-		return nil, issueReadFailure("linked-todo lookup", err)
+		return nil, ReadFailure("linked-todo lookup", err)
 	}
 	for _, card := range cards {
 		if card.CardID == "" {
@@ -167,7 +167,7 @@ func (c *issueReader) LinkedCardForSession(_ context.Context, sessionID string) 
 		if err != nil {
 			return nil, fmt.Errorf("linked card %s item: %w", card.CardID, err)
 		}
-		return &linkedIssueCard{ID: card.CardID, Title: title, Body: body}, nil
+		return &LinkedCard{ID: card.CardID, Title: title, Body: body}, nil
 	}
 	return nil, nil
 }
@@ -186,25 +186,25 @@ func issueItemTextField(issueItem map[string]any, field string) (string, error) 
 }
 
 // CardLinks returns every link on a card.
-func (c *issueReader) CardLinks(_ context.Context, cardID string) ([]issueCardLink, error) {
+func (c *Reader) CardLinks(_ context.Context, cardID string) ([]CardLink, error) {
 	if cardID == "" {
 		return nil, fmt.Errorf("card id is required")
 	}
-	stored, err := c.store.CardLinks(issuesInternalService, cardID)
+	stored, err := c.Store.CardLinks(InternalService, cardID)
 	if err != nil {
-		return nil, issueReadFailure("card links", err)
+		return nil, ReadFailure("card links", err)
 	}
-	links := make([]issueCardLink, len(stored))
+	links := make([]CardLink, len(stored))
 	for i, link := range stored {
-		links[i] = issueCardLink{EntityType: link.EntityType, EntityRef: link.EntityRef, Label: link.Label}
+		links[i] = CardLink{EntityType: link.EntityType, EntityRef: link.EntityRef, Label: link.Label}
 	}
 	return links, nil
 }
 
-// issueCardEvent is an action to record on a card's timeline. Kind is one of
+// CardEvent is an action to record on a card's timeline. Kind is one of
 // kanban-store's event kinds ("waiting_started", "waiting_ended", …); the
 // store supplies the clock state those kinds imply, so none is sent here.
-type issueCardEvent struct {
+type CardEvent struct {
 	Kind    string
 	Actor   string
 	Summary string
@@ -212,33 +212,33 @@ type issueCardEvent struct {
 }
 
 // PostCardEvent records an action on a card's timeline.
-func (c *issueReader) PostCardEvent(_ context.Context, cardID string, event issueCardEvent) error {
+func (c *Reader) PostCardEvent(_ context.Context, cardID string, event CardEvent) error {
 	if cardID == "" {
 		return fmt.Errorf("card id is required")
 	}
 	if event.Kind == "" {
 		return fmt.Errorf("event kind is required")
 	}
-	_, err := c.store.RecordCardEvent(issuesInternalService, cardID, issuesmodel.CreateCardEventRequest{
+	_, err := c.Store.RecordCardEvent(InternalService, cardID, issuesmodel.CreateCardEventRequest{
 		Kind: issuesmodel.EventKind(event.Kind), Actor: event.Actor, Summary: event.Summary, Detail: event.Detail,
 	})
 	if err != nil {
-		return issueReadFailure("card event", err)
+		return ReadFailure("card event", err)
 	}
 	return nil
 }
 
 // CardTags returns the tags of one card — its noteboard item's tags. A card
 // kanban-store does not have, or whose noteboard item is gone, is
-// errIssueNotFound: either way there are no tags to read, and an empty list would
+// ErrIssueNotFound: either way there are no tags to read, and an empty list would
 // pass for "no tags".
-func (c *issueReader) CardTags(_ context.Context, cardID string) ([]string, error) {
+func (c *Reader) CardTags(_ context.Context, cardID string) ([]string, error) {
 	if cardID == "" {
 		return nil, fmt.Errorf("card id is required")
 	}
-	tags, err := c.store.CardTags(issuesInternalService, cardID)
+	tags, err := c.Store.CardTags(InternalService, cardID)
 	if err != nil {
-		return nil, issueReadFailure("card read", err)
+		return nil, ReadFailure("card read", err)
 	}
 	return tags, nil
 }
@@ -251,19 +251,19 @@ type EffectiveDefaults = issuesmodel.EffectiveDefaults
 
 // EffectiveDefaults reads a board's resolved defaults: for a card when cardID
 // is given, else for a card that would carry tags.
-func (c *issueReader) EffectiveDefaults(_ context.Context, boardID, cardID string, tags []string) (*EffectiveDefaults, error) {
+func (c *Reader) EffectiveDefaults(_ context.Context, boardID, cardID string, tags []string) (*EffectiveDefaults, error) {
 	if boardID == "" {
 		return nil, fmt.Errorf("board id is required")
 	}
 	var resolved *issuesmodel.EffectiveDefaults
 	var err error
 	if cardID != "" {
-		resolved, err = c.store.CardEffectiveDefaults(issuesInternalService, boardID, cardID)
+		resolved, err = c.Store.CardEffectiveDefaults(InternalService, boardID, cardID)
 	} else {
-		resolved, err = c.store.BoardEffectiveDefaults(issuesInternalService, boardID, tags)
+		resolved, err = c.Store.BoardEffectiveDefaults(InternalService, boardID, tags)
 	}
 	if err != nil {
-		return nil, issueReadFailure("effective defaults", err)
+		return nil, ReadFailure("effective defaults", err)
 	}
 	return resolved, nil
 }
@@ -273,16 +273,16 @@ func (c *issueReader) EffectiveDefaults(_ context.Context, boardID, cardID strin
 // The revision moves only when the taxonomy does, not when anything else on
 // the board is edited. With a principalID the read is made as that
 // principal, so kanban-store's can_view decides: a board they may not view is
-// errIssueNotFound, the same as a missing one. With none it is made as this
+// ErrIssueNotFound, the same as a missing one. With none it is made as this
 // service.
-func (c *issueReader) BoardTaxonomy(_ context.Context, boardID, principalID string) (msg.ClassificationTaxonomy, string, error) {
+func (c *Reader) BoardTaxonomy(_ context.Context, boardID, principalID string) (msg.ClassificationTaxonomy, string, error) {
 	what := "read board " + boardID + " classification"
 	if principalID != "" {
 		what += " as " + principalID
 	}
-	classification, err := c.store.BoardClassification(issuesCallerAs(principalID), boardID)
+	classification, err := c.Store.BoardClassification(CallerAs(principalID), boardID)
 	if err != nil {
-		return msg.ClassificationTaxonomy{}, "", issueReadFailureAsPrincipal(what, err)
+		return msg.ClassificationTaxonomy{}, "", ReadFailureAsPrincipal(what, err)
 	}
 	if classification.BoardID != boardID {
 		return msg.ClassificationTaxonomy{}, "", fmt.Errorf("kanban-store answered board %s with board %q", boardID, classification.BoardID)

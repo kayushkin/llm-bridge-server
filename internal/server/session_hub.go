@@ -13,16 +13,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/serversentevents"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
 
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 )
-
-// sseKeepaliveInterval is how often an otherwise-silent SSE stream emits a
-// comment frame. It must stay comfortably below the idle read timeout of any
-// intermediary in front of the server — nginx's proxy_read_timeout defaults to
-// 60s, which is the shortest one this server is actually deployed behind.
-const sseKeepaliveInterval = 25 * time.Second
 
 // sessionListReplayCapacity is how many past frames the hub keeps so a client
 // that reconnects with a Last-Event-ID can be handed exactly what it missed.
@@ -367,7 +363,7 @@ func (s *Server) handleSessionListEvents(w http.ResponseWriter, r *http.Request)
 		flusher.Flush()
 	}
 
-	keepalive := time.NewTicker(sseKeepaliveInterval)
+	keepalive := time.NewTicker(serversentevents.SseKeepaliveInterval)
 	defer keepalive.Stop()
 
 	ctx := r.Context()

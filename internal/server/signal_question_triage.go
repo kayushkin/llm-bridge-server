@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads"
+
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -91,7 +93,7 @@ type triageQuestion struct {
 // cardContext is what triage knows about the card the worker is on: its text,
 // and the mail it was filed from when that can be resolved.
 type cardContext struct {
-	Card *linkedIssueCard
+	Card *issuereads.LinkedCard
 	// Customer is the sender of the card's oldest linked mail — the person
 	// who asked for the work. Nil when the card has no mail link or mailstack
 	// could not be asked.
@@ -382,7 +384,7 @@ func (s *Server) recordCardWaiting(cardID, sessionID, summary string) {
 		return
 	}
 	detail, _ := json.Marshal(map[string]string{"entity_type": "session", "entity_ref": sessionID})
-	err := s.issueReads.PostCardEvent(context.Background(), cardID, issueCardEvent{
+	err := s.issueReads.PostCardEvent(context.Background(), cardID, issuereads.CardEvent{
 		Kind:    "waiting_started",
 		Actor:   "service:llm-bridge-server",
 		Summary: summary,
@@ -400,7 +402,7 @@ func (s *Server) recordCardWaitingEnded(cardID, sessionID, summary string) {
 		return
 	}
 	detail, _ := json.Marshal(map[string]string{"entity_type": "session", "entity_ref": sessionID})
-	err := s.issueReads.PostCardEvent(context.Background(), cardID, issueCardEvent{
+	err := s.issueReads.PostCardEvent(context.Background(), cardID, issuereads.CardEvent{
 		Kind:    "waiting_ended",
 		Actor:   "service:llm-bridge-server",
 		Summary: summary,

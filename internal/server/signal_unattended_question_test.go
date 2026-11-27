@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads/issuereadstest"
+
 	"github.com/kayushkin/llm-bridge-server/internal/mail/backend"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	issuesmodel "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/model"
@@ -87,8 +89,8 @@ type cardStub struct {
 	events []issuesmodel.CreateCardEventRequest
 }
 
-func (c *cardStub) kanbanStore(cardID string) *fakeIssueStore {
-	return &fakeIssueStore{
+func (c *cardStub) kanbanStore(cardID string) *issuereadstest.Store {
+	return &issuereadstest.Store{
 		EntityCardsAnswer: func(string, string) ([]issuesmodel.EntityCardView, error) {
 			return []issuesmodel.EntityCardView{{CardID: cardID, Item: map[string]any{"id": cardID, "title": "Add catalog product count to /health", "body": "Helena asks for a products count on /health."}}}, nil
 		},

@@ -8,6 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads/issuereadstest"
+
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads"
+
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	issuesapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/api"
@@ -101,7 +105,7 @@ func TestEffectiveConfigAttributesAPinnedModel(t *testing.T) {
 // none, and attributes each to the board or to the tag rule that set it.
 func TestDryRunEffectiveConfigTakesTheBoardsDefaults(t *testing.T) {
 	srv, _, instanceID := testServerWithInstance(t, msg.HarnessClaudeCode)
-	srv.issueReads = newIssueReader(&fakeIssueStore{BoardEffectiveDefaultsAnswer: func(boardID string, tags []string) (*issuesmodel.EffectiveDefaults, error) {
+	srv.issueReads = issuereads.New(&issuereadstest.Store{BoardEffectiveDefaultsAnswer: func(boardID string, tags []string) (*issuesmodel.EffectiveDefaults, error) {
 		if boardID != "board-1" || len(tags) != 1 || tags[0] != "urgent" {
 			t.Errorf("unexpected kanban-store read of board %s with tags %v", boardID, tags)
 			return nil, &issuesapi.Refusal{Status: http.StatusNotFound, Message: "not found"}

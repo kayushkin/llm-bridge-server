@@ -12,6 +12,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads"
+
+	"github.com/kayushkin/llm-bridge-server/internal/serversentevents"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access/grantcheck"
 
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/sendanswer"
@@ -520,7 +524,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if _, err := s.issueReads.CardTags(r.Context(), req.CardID); err != nil {
-			if errors.Is(err, errIssueNotFound) {
+			if errors.Is(err, issuereads.ErrNotFound) {
 				httpjson.WriteJSONError(w, http.StatusBadRequest, "unknown_card", fmt.Sprintf(
 					"card_id %q is not a card kanban-store has: %v", req.CardID, err))
 				return
@@ -1077,7 +1081,7 @@ func (s *Server) handleSessionEvents(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	keepalive := time.NewTicker(sseKeepaliveInterval)
+	keepalive := time.NewTicker(serversentevents.SseKeepaliveInterval)
 	defer keepalive.Stop()
 
 	ctx := r.Context()
