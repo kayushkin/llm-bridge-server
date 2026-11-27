@@ -4,9 +4,9 @@
 // the service from it, and a test holds every os.Getenv in the service's code
 // to it.
 //
-// It covers the service and the packages it imports. The job binaries in cmd/
-// each start in a job's shell and read their own variables; they are declared
-// in jobs.go, one registry per binary.
+// It covers the service and the packages it imports. The job binaries under
+// internal/automation/workers each start in a job's shell and read their own
+// variables; package workersettings declares them, one registry per binary.
 package config
 
 import (
@@ -42,6 +42,9 @@ const (
 	SettingNATSURL      = "nats_url"
 	SettingBridgeURL    = "llm_bridge_url"
 	SettingNoteboardURL = "noteboard_url"
+	// SettingBridgeServiceToken is the token the daemon presents to
+	// llm-bridge-server.
+	SettingBridgeServiceToken = "llm_bridge_service_token"
 )
 
 // The values in force with nothing set.

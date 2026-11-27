@@ -7,13 +7,19 @@
 > job unless the server's `scheduler.runs.enabled` is on; off, the jobs, holds,
 > runs and stored model roles are read and written and run now answers 503.
 > `scheduler.nats_url` gives agent jobs, event triggers and the bus commands
-> their NATS, and `scheduler.noteboard_url` the address agent prompts name.
+> their NATS, and `scheduler.notes_url` the address agent prompts name.
 > `GET /scheduler/settings` describes only the stored model roles.
 > `llm-bridge-server import-scheduler -sqlite <copy> [-newest-runs-per-job N]`
 > copies a standalone scheduler in, keeping every job id, hold and run. The
 > standalone daemon (`cmd/scheduler`) and its `deploy.sh` are gone from this
-> copy; the job binaries under `cmd/` are still separate programs that a
-> shell job runs. Everything below about SQLite, the port and the unit
+> copy. The job binaries a shell job runs (autoworker, kanban-dispatcher,
+> reminder-coordinator and the rest) are not part of the scheduler any more:
+> each is in `internal/automation/workers/<name>/cmd/<name>`, with the packages
+> only it uses beside it and the shared ones in `internal/automation/workers/shared`.
+> They reach every store as a path under llm-bridge-server (`LLM_BRIDGE_URL`)
+> with a service principal token (`LLM_BRIDGE_SERVICE_PRINCIPAL_TOKEN`); see
+> `workers/shared/workersettings` and `workers/shared/bridgestores`. Everything
+> below about SQLite, the port, the unit and the binaries' old store addresses
 > describes the standalone service.
 
 Centralized job scheduler for the inber ecosystem.
@@ -136,15 +142,17 @@ board. The role is the session's own choice, so it outranks a model the bundle
 names; on 2026-09-30 no bundle in bundle-store named one. A card whose
 instance's harness cannot run the role's first model is not dispatched.
 
-The twelve job binaries in `cmd/` (`ask`, `autoworker`, `email-classifier`,
-`reminder-coordinator` and the rest) serve no HTTP, so they are not on the
-settings page. Each declares what it reads in `internal/config/jobs.go` and
-builds its own registry at start; a test holds every environment read in the
-binary and the packages it imports to that list. A binary owns only the names
-that are its alone — `AUTOWORKER_`, `DEMO_MAIL_`, `EMAIL_CLASSIFIER_` and
-`EMAIL_BOARD_ID`, `KANBAN_CLASSIFIER_`, `KANBAN_SCOPER_`, `REMINDER_` — and a set
-variable under one of them that it does not declare stops it with exit 1. The
-shared addresses and the two service tokens are declared and owned by nobody.
+The twelve job binaries under `internal/automation/workers` (`ask`,
+`autoworker`, `email-classifier`, `reminder-coordinator` and the rest) serve no
+HTTP, so they are not on the settings page. Each declares what it reads in
+`workers/shared/workersettings` and builds its own registry at start; a test
+holds every environment read in the binary and the packages it imports to that
+list. A binary owns only the names that are its alone — `AUTOWORKER_`,
+`DEMO_MAIL_`, `EMAIL_CLASSIFIER_` and `EMAIL_BOARD_ID`, `KANBAN_CLASSIFIER_`,
+`KANBAN_SCOPER_`, `REMINDER_` — and a set variable under one of them that it
+does not declare stops it with exit 1. The bridge address, its token and
+`NATS_URL` are declared and owned by nobody. A binary reads its model role from
+`<bridge>/scheduler/settings`.
 
 
 ## Autoworker kanban contract
