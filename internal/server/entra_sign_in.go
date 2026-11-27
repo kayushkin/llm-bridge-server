@@ -35,8 +35,8 @@ import (
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 )
 
@@ -394,8 +394,8 @@ func (s *Server) handleEntraSignInCallback(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	resolution, err := s.principalClient.ResolveIdentityBinding(r.Context(), entraIdentityProvider, end.TenantID, end.Subject)
-	if errors.Is(err, principalclient.ErrIdentityNotProvisioned) {
+	resolution, err := s.resolveIdentityBinding(r.Context(), entraIdentityProvider, end.TenantID, end.Subject)
+	if errors.Is(err, principals.ErrNotFound) {
 		refuseByRedirect(loginOutcomeIdentityNotProvisioned, fmt.Sprintf(
 			"no principal is bound to Entra tenant %s object %s; an administrator links it with POST /admin/identity-bindings", end.TenantID, end.Subject))
 		return
@@ -491,4 +491,29 @@ func (s *Server) handleListLoginAttempts(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, attempts)
+}
+
+// resolveIdentityBinding asks principal-store which principal an outside
+// identity is bound to. It returns an error wrapping principals.ErrNotFound
+// when no active binding names the identity, and any other error when the
+// store could not answer. An answer whose binding does not name the identity
+// asked about is an error, not a match.
+func (s *Server) resolveIdentityBinding(ctx context.Context, provider, tenantID, subject string) (*principals.IdentityBindingResolution, error) {
+	resolution, err := s.principalStore.ResolveIdentity(ctx, provider, tenantID, subject)
+	if errors.Is(err, principals.ErrNotFound) {
+		return nil, fmt.Errorf("identity is not bound to any principal: %w", err)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("principal-store: resolving a %s identity: %w", provider, err)
+	}
+	if resolution == nil || resolution.Binding == nil || resolution.Principal == nil {
+		return nil, fmt.Errorf("principal-store resolved a %s identity to no binding or no principal", provider)
+	}
+	binding, principal := resolution.Binding, resolution.Principal
+	if binding.Provider != provider || !strings.EqualFold(binding.TenantID, tenantID) || !strings.EqualFold(binding.Subject, subject) ||
+		binding.UnlinkedAt != 0 || principal.ID != binding.PrincipalID {
+		return nil, fmt.Errorf("principal-store resolved a %s identity to binding %s of principal %s, which is not an active binding of the identity asked about",
+			provider, binding.ID, principal.ID)
+	}
+	return resolution, nil
 }

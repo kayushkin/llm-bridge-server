@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
+	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -16,7 +16,7 @@ func TestExternalDiscoveryRetainsConfiguredOwnerAndRejectsDisabledOwner(t *testi
 	for _, disabled := range []bool{false, true} {
 		t.Run(map[bool]string{false: "active", true: "disabled"}[disabled], func(t *testing.T) {
 			srv, st := testServer(t)
-			owner := principalclient.Principal{ID: "local-owner", Kind: "human"}
+			owner := principals.Principal{ID: "local-owner", Kind: "human"}
 			if disabled {
 				owner.DisabledAt = 1
 			}
@@ -33,7 +33,7 @@ func TestExternalDiscoveryRetainsConfiguredOwnerAndRejectsDisabledOwner(t *testi
 			}))
 			defer directory.Close()
 			srv.cfg.DiscoveryPrincipalID = owner.ID
-			srv.principalClient = testPrincipalDirectoryAt(directory.URL)
+			srv.principalStore = testPrincipalDirectoryAt(directory.URL)
 			now := time.Now().UTC()
 			srv.recordExternalSession(context.Background(), msg.StoredSession{Harness: msg.HarnessCodex, HarnessSessionID: "external-owner-fixture", Source: msg.PurposeChat, CreatedAt: now, UpdatedAt: now}, "")
 			row, err := st.GetSessionByHarnessSessionID("external-owner-fixture")

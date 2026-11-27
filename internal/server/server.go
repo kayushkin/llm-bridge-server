@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
 	"github.com/kayushkin/llm-bridge-server/internal/agents"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/bundles"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/hooks"
@@ -90,14 +91,19 @@ type Server struct {
 	// startOnInstance spawns at most one harness process per session.
 	harnessStartLockBySessionID sync.Map
 	authClient                  *authstoreclient.Client
-	// permClient, grantClient and principalClient are the access stores in
+	// permissionEngine, grantStore and principalStore are the access stores in
 	// this process (access_routes.go): permission-store's verdict on a tool
 	// call, a session principal's effective grants at spawn, and the
 	// principal behind every request. EnableAccess sets them; nil until then,
 	// and every use of a nil one answers that access is off.
-	permClient      permissionEvaluator
-	grantClient     grantReader
-	principalClient principalDirectory
+	permissionEngine permissionEvaluator
+	grantStore       grantReader
+	principalStore   principalDirectory
+	// grantsPrincipalDirectory and grantsResourceChecker are what grant-store
+	// asks about principals and resources when this server reads or writes
+	// grants, as grant-store's own routes do.
+	grantsPrincipalDirectory grants.PrincipalDirectory
+	grantsResourceChecker    grants.ResourceChecker
 	// access answers /principal-store/, /grant-store/, /sign-in-store/ and
 	// /permission-store/ once EnableAccess has run; nil answers them 503.
 	access atomic.Pointer[accessRouteHandlers]

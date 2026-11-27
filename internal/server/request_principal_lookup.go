@@ -21,7 +21,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
+	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 )
 
@@ -39,7 +39,7 @@ const principalLookupCacheLifetime = 30 * time.Second
 
 // cachedPrincipal is one principal-store answer and the moment it was read.
 type cachedPrincipal struct {
-	principal principalclient.Principal
+	principal principals.Principal
 	readAt    time.Time
 }
 
@@ -52,7 +52,7 @@ type principalLookupCache struct {
 	principalsByID   map[string]cachedPrincipal
 	lifetime         time.Duration
 	now              func() time.Time
-	readFromUpstream func(ctx context.Context, principalID string) (principalclient.Principal, error)
+	readFromUpstream func(ctx context.Context, principalID string) (principals.Principal, error)
 }
 
 // newPrincipalLookupCache reads through the server's principal directory as
@@ -63,18 +63,22 @@ func newPrincipalLookupCache(server *Server) *principalLookupCache {
 		principalsByID: map[string]cachedPrincipal{},
 		lifetime:       principalLookupCacheLifetime,
 		now:            time.Now,
-		readFromUpstream: func(ctx context.Context, principalID string) (principalclient.Principal, error) {
-			if server.principalClient == nil {
-				return principalclient.Principal{}, errAccessOff
+		readFromUpstream: func(ctx context.Context, principalID string) (principals.Principal, error) {
+			if server.principalStore == nil {
+				return principals.Principal{}, errAccessOff
 			}
-			return server.principalClient.Get(ctx, principalID)
+			principal, err := server.principalStore.Get(ctx, principalID, false)
+			if err != nil {
+				return principals.Principal{}, fmt.Errorf("principal-store: reading %s: %w", principalID, err)
+			}
+			return *principal, nil
 		},
 	}
 }
 
 // lookUp returns principal-store's record for principalID, from the cache when
 // it was read less than lifetime ago and from principal-store otherwise.
-func (cache *principalLookupCache) lookUp(ctx context.Context, principalID string) (principalclient.Principal, error) {
+func (cache *principalLookupCache) lookUp(ctx context.Context, principalID string) (principals.Principal, error) {
 	cache.mutex.Lock()
 	cached, known := cache.principalsByID[principalID]
 	fresh := known && cache.now().Sub(cached.readAt) < cache.lifetime
@@ -85,7 +89,7 @@ func (cache *principalLookupCache) lookUp(ctx context.Context, principalID strin
 
 	principal, err := cache.readFromUpstream(ctx, principalID)
 	if err != nil {
-		return principalclient.Principal{}, err
+		return principals.Principal{}, err
 	}
 	cache.mutex.Lock()
 	cache.principalsByID[principalID] = cachedPrincipal{principal: principal, readAt: cache.now()}
@@ -121,7 +125,7 @@ func (s *Server) callerForPrincipalID(ctx context.Context, principalID, subjectD
 	// no server that gates a request and cannot read the caller's principal.
 	principal, err := s.principalLookupCache.lookUp(ctx, principalID)
 	if err != nil {
-		if errors.Is(err, principalclient.ErrNotFound) {
+		if errors.Is(err, principals.ErrNotFound) {
 			return requestCaller{}, &requestCredentialError{http.StatusBadRequest, "unknown_principal", fmt.Sprintf(
 				"%s %s, which principal-store does not have: %v", subjectDescription, principalID, err)}
 		}

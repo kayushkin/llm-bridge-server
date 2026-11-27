@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
+	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -190,14 +190,14 @@ func TestTypedValuesTakeThePlacesTheMessageNamesThem(t *testing.T) {
 // administrator, and most sessions it manages have no principal at all.
 func TestATargetSessionActionFollowsTheRoutesRuleForAdministrators(t *testing.T) {
 	srv, st := sessionsForTargetActions(t)
-	principalsByID := map[string]principalclient.Principal{
+	principalsByID := map[string]principals.Principal{
 		"principal_000001": {ID: "principal_000001", Kind: "human", ActsAsCaller: true, IsAdministrator: true},
 		"principal_000002": {ID: "principal_000002", Kind: "human", ActsAsCaller: true},
 	}
-	srv.principalLookupCache.readFromUpstream = func(_ context.Context, principalID string) (principalclient.Principal, error) {
+	srv.principalLookupCache.readFromUpstream = func(_ context.Context, principalID string) (principals.Principal, error) {
 		principal, found := principalsByID[principalID]
 		if !found {
-			return principalclient.Principal{}, principalclient.ErrNotFound
+			return principals.Principal{}, principals.ErrNotFound
 		}
 		return principal, nil
 	}

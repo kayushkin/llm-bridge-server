@@ -26,12 +26,12 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 	"github.com/kayushkin/llm-bridge-server/internal/access/signin"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/calendar"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/journal"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/people"
-	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	noteboardapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/api"
 	noteboardmodel "github.com/kayushkin/llm-bridge-server/internal/tasktracking/noteboard/model"
@@ -68,7 +68,7 @@ type ConnectedRecordsModules struct {
 // the server listens. Until then their routes answer 503, and chat links and
 // sign-in cannot read who owns an account.
 func (s *Server) EnableConnectedRecords(ctx context.Context, modules ConnectedRecordsModules) error {
-	if s.principalClient == nil {
+	if s.principalStore == nil {
 		return errors.New("connected records: EnableAccess must run first, since people-store checks every principal_id with principal-store")
 	}
 	resolver := s.referenceResolver.Load()
@@ -80,7 +80,7 @@ func (s *Server) EnableConnectedRecords(ctx context.Context, modules ConnectedRe
 		return errors.New("connected records: EnableNoteboard must run first, since journal-store's promote-todo makes its todo in noteboard")
 	}
 
-	peopleStore := people.New(modules.People, peoplePrincipalChecker{principals: s.principalClient})
+	peopleStore := people.New(modules.People, peoplePrincipalChecker{principals: s.principalStore})
 	peopleMux := http.NewServeMux()
 	people.RegisterHandlers(peopleMux, peopleStore)
 
@@ -187,8 +187,8 @@ type peoplePrincipalChecker struct {
 }
 
 func (checker peoplePrincipalChecker) CheckPrincipal(ctx context.Context, id string) error {
-	err := checker.principals.CheckExists(ctx, id)
-	if errors.Is(err, principalclient.ErrNotFound) {
+	_, err := checker.principals.Get(ctx, id, false)
+	if errors.Is(err, principals.ErrNotFound) {
 		return fmt.Errorf("%w: principal-store holds no principal %s", people.ErrInvalid, id)
 	}
 	if err != nil {
@@ -268,8 +268,8 @@ func (people signInPeople) stores() (*connectedRecordsStores, error) {
 // ownerIsAnAdministrator asks principal-store whether the owner of a record
 // is an administrator now.
 func (people signInPeople) ownerIsAnAdministrator(ctx context.Context, ownerPrincipalID string) (bool, error) {
-	principal, err := people.server.principalClient.Get(ctx, ownerPrincipalID)
-	if errors.Is(err, principalclient.ErrNotFound) {
+	principal, err := people.server.principalStore.Get(ctx, ownerPrincipalID, false)
+	if errors.Is(err, principals.ErrNotFound) {
 		return false, nil
 	}
 	if err != nil {

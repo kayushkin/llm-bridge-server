@@ -12,9 +12,9 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/access"
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
+	"github.com/kayushkin/llm-bridge-server/internal/access/permissions"
 	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 	"github.com/kayushkin/llm-bridge-server/internal/access/signin"
-	"github.com/kayushkin/llm-bridge-server/internal/permclient"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -268,7 +268,7 @@ func TestOnlyAnAdministratorOrTheInternalServiceChangesAGrant(t *testing.T) {
 	}
 
 	// The grant is read in process at spawn: the member is now held to it.
-	ids, err := test.server.grantClient.EffectiveResourceIDs(ctx, accessTestMemberID, "can_dispatch_on", "instance")
+	ids, err := test.server.effectiveGrantResourceIDs(ctx, accessTestMemberID, "can_dispatch_on", "instance")
 	if err != nil || len(ids) != 1 || ids[0] != test.instanceID {
 		t.Fatalf("the member's effective can_dispatch_on = %v %v, want [%s]", ids, err, test.instanceID)
 	}
@@ -372,7 +372,7 @@ func TestOnlyAnAdministratorChangesOrReadsPermissionRules(t *testing.T) {
 		t.Fatalf("POST /permission-store/rules as the administrator = %d %s, want 201", response.Code, response.Body)
 	}
 	// The prehook asks the same engine, so the new rule binds the next verdict.
-	verdict, err := test.server.permClient.Evaluate(context.Background(), permclient.Request{Tool: "Bash", Input: json.RawMessage(`{"command":"rm -rf /tmp/x"}`)})
+	verdict, err := test.server.permissionEngine.Evaluate(context.Background(), permissions.EvaluateRequest{Tool: "Bash", Input: json.RawMessage(`{"command":"rm -rf /tmp/x"}`)})
 	if err != nil || verdict.Outcome != "deny" || verdict.MatchedRuleID != "test-deny-rm" {
 		t.Fatalf("verdict after the rule = %+v %v, want deny by test-deny-rm", verdict, err)
 	}

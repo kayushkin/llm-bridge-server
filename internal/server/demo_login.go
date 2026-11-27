@@ -31,7 +31,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
+	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 )
 
@@ -141,9 +141,9 @@ func (s *Server) handleDemoLogin(w http.ResponseWriter, r *http.Request) {
 			"principal_id %q is not a principal-store id (principal_000001); a name or email is not accepted, because neither is unique", request.PrincipalID))
 		return
 	}
-	principal, err := s.principalClient.Get(r.Context(), request.PrincipalID)
+	principal, err := s.principalStore.Get(r.Context(), request.PrincipalID, false)
 	if err != nil {
-		if errors.Is(err, principalclient.ErrNotFound) {
+		if errors.Is(err, principals.ErrNotFound) {
 			writeJSONError(w, http.StatusBadRequest, "unknown_principal", fmt.Sprintf(
 				"principal_id %s does not exist in principal-store: %v", request.PrincipalID, err))
 			return

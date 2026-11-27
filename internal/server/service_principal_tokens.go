@@ -34,7 +34,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
+	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -96,17 +96,17 @@ func (s *Server) principalOfServicePrincipalToken(ctx context.Context, r *http.R
 
 // principalThatHoldsServicePrincipalTokens reads a principal and refuses one
 // whose kind principal-store says may not hold a service principal token.
-func (s *Server) principalThatHoldsServicePrincipalTokens(ctx context.Context, principalID string) (principalclient.Principal, *requestCredentialError) {
+func (s *Server) principalThatHoldsServicePrincipalTokens(ctx context.Context, principalID string) (principals.Principal, *requestCredentialError) {
 	principal, err := s.principalLookupCache.lookUp(ctx, principalID)
-	if errors.Is(err, principalclient.ErrNotFound) {
-		return principalclient.Principal{}, &requestCredentialError{http.StatusBadRequest, "unknown_principal", fmt.Sprintf(
+	if errors.Is(err, principals.ErrNotFound) {
+		return principals.Principal{}, &requestCredentialError{http.StatusBadRequest, "unknown_principal", fmt.Sprintf(
 			"principal %s is not in principal-store", principalID)}
 	}
 	if err != nil {
-		return principalclient.Principal{}, &requestCredentialError{http.StatusBadGateway, "principal_store_unavailable", err.Error()}
+		return principals.Principal{}, &requestCredentialError{http.StatusBadGateway, "principal_store_unavailable", err.Error()}
 	}
 	if !principal.HoldsServicePrincipalTokens {
-		return principalclient.Principal{}, &requestCredentialError{http.StatusForbidden, "principal_does_not_hold_service_principal_tokens", fmt.Sprintf(
+		return principals.Principal{}, &requestCredentialError{http.StatusForbidden, "principal_does_not_hold_service_principal_tokens", fmt.Sprintf(
 			"principal %s is a %s, and principal-store says only a kind with holds_service_principal_tokens (a service) may hold a service principal token", principalID, principal.Kind)}
 	}
 	return principal, nil

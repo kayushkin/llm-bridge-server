@@ -28,9 +28,6 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 	"github.com/kayushkin/llm-bridge-server/internal/access/signin"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	"github.com/kayushkin/llm-bridge-server/internal/grantclient"
-	"github.com/kayushkin/llm-bridge-server/internal/permclient"
-	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
 )
 
 // errAccessOff is every use of an access store on a server whose access
@@ -39,30 +36,35 @@ import (
 var errAccessOff = errors.New("access is off: principal-store, grant-store, sign-in-store and permission-store are not open on this server (" +
 	config.PostgresURLEnvironmentVariable + ")")
 
-// principalDirectory is principal-store as this server reads and writes it;
-// principalclient.Client is the one in production.
+// principalDirectory is principal-store as this server reads and writes it:
+// *principals.Store in production, a fake in tests. It answers a disabled
+// principal like any other — a departed human's grants are dormant, not
+// invalid — and principals.ErrNotFound for one it does not have, or for an
+// identity no active binding names.
 type principalDirectory interface {
-	CheckExists(ctx context.Context, principalID string) error
-	Get(ctx context.Context, principalID string) (principalclient.Principal, error)
-	GroupIDsOf(ctx context.Context, principalID string) ([]string, error)
-	ResolveIdentityBinding(ctx context.Context, provider, tenantID, subject string) (principalclient.IdentityResolution, error)
-	Create(ctx context.Context, kind, displayName string) (string, error)
-	SetAdministrator(ctx context.Context, principalID string, isAdministrator bool) error
-	AddMember(ctx context.Context, groupID, memberID string) error
+	Get(ctx context.Context, id string, includeDisabledMemberships bool) (*principals.Principal, error)
+	ListGroups(ctx context.Context, memberID string, includeDisabled bool) ([]*principals.Principal, error)
+	ResolveIdentity(ctx context.Context, provider, tenantID, subject string) (*principals.IdentityBindingResolution, error)
+	Create(ctx context.Context, input *principals.Principal) (*principals.Principal, error)
+	Patch(ctx context.Context, id string, patch principals.Patch) (*principals.Principal, error)
+	AddMember(ctx context.Context, groupID, memberID string) (created bool, err error)
 	RemoveMember(ctx context.Context, groupID, memberID string) error
 }
 
-// grantReader is grant-store as this server reads and writes it;
-// grantclient.Client is the one in production.
+// grantReader is grant-store as this server reads and writes it:
+// *grants.Store in production, a fake in tests. Effective answers
+// grants.ErrNotFound for a principal principal-store does not have, never an
+// empty list, so a spawn can tell "nothing granted" from "no such principal".
 type grantReader interface {
-	EffectiveResourceIDs(ctx context.Context, principalID, relation, resourceType string) ([]string, error)
-	Create(ctx context.Context, input grantclient.GrantInput) (string, error)
+	Effective(ctx context.Context, directory grants.PrincipalDirectory, principalID, relation, resourceType string) ([]*grants.Grant, error)
+	Create(ctx context.Context, directory grants.PrincipalDirectory, checker grants.ResourceChecker, request grants.GrantRequest) (*grants.Grant, bool, error)
 }
 
 // permissionEvaluator is permission-store's verdict on one tool call;
-// permclient.Client is the one in production.
+// *permissions.Engine is the one in production. A failure is an error, never a
+// verdict: no rule was consulted.
 type permissionEvaluator interface {
-	Evaluate(ctx context.Context, request permclient.Request) (*permclient.Result, error)
+	Evaluate(ctx context.Context, request permissions.EvaluateRequest) (permissions.EvaluateResponse, error)
 }
 
 // accessRouteHandlers is what answers the mounted routes.
@@ -86,9 +88,11 @@ type accessRouteHandlers struct {
 func (s *Server) EnableAccess(stores *access.Stores) {
 	grantsDirectory := access.GrantsPrincipalDirectory(stores.Principals)
 	checker := s.grantResourceChecker(stores.Principals)
-	s.principalClient = principalclient.New(stores.Principals)
-	s.grantClient = grantclient.New(stores.Grants, grantsDirectory, checker)
-	s.permClient = permclient.New(stores.PermissionEngine)
+	s.principalStore = stores.Principals
+	s.grantStore = stores.Grants
+	s.grantsPrincipalDirectory = grantsDirectory
+	s.grantsResourceChecker = checker
+	s.permissionEngine = stores.PermissionEngine
 
 	principals := principals.NewHandlers(stores.Principals)
 	handlers := &accessRouteHandlers{

@@ -11,12 +11,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
+	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/operations"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/executors"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/operationstore"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	"github.com/kayushkin/llm-bridge-server/internal/grantclient"
-	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
 )
@@ -136,12 +136,12 @@ func (s *Server) checkOperationOrganization(ctx context.Context, caller requestC
 		return 0, "", ""
 	}
 	principalID := caller.principalID
-	groupIDs, err := s.principalClient.GroupIDsOf(ctx, principalID)
+	groups, err := s.principalStore.ListGroups(ctx, principalID, false)
 	if err != nil {
-		return http.StatusBadGateway, "principal_store_unavailable", err.Error()
+		return http.StatusBadGateway, "principal_store_unavailable", fmt.Sprintf("principal-store: the groups of %s: %v", principalID, err)
 	}
-	for _, groupID := range groupIDs {
-		if groupID == organizationID {
+	for _, group := range groups {
+		if group.ID == organizationID {
 			return 0, "", ""
 		}
 	}
@@ -154,9 +154,9 @@ func (s *Server) checkOrganizationIsAnActiveGroup(ctx context.Context, organizat
 	if organizationID == "" {
 		return http.StatusBadRequest, "organization_required", "organization_id is required: the principal-store group the operation runs for"
 	}
-	organization, err := s.principalClient.Get(ctx, organizationID)
+	organization, err := s.principalStore.Get(ctx, organizationID, false)
 	switch {
-	case errors.Is(err, principalclient.ErrNotFound):
+	case errors.Is(err, principals.ErrNotFound):
 		return http.StatusBadRequest, "unknown_organization", fmt.Sprintf("principal-store has no principal %s", organizationID)
 	case err != nil:
 		return http.StatusBadGateway, "principal_store_unavailable", err.Error()
@@ -495,7 +495,7 @@ func (s *Server) checkOperationGrant(ctx context.Context, caller requestCaller, 
 	}
 	granted, err := s.grantedResourcesOf(ctx, grantSubjectOfCaller(caller), operationRunGrantRelation, operationTypeResourceType)
 	switch {
-	case errors.Is(err, grantclient.ErrPrincipalUnknown):
+	case errors.Is(err, grants.ErrNotFound):
 		return http.StatusBadRequest, "unknown_principal", err.Error()
 	case err != nil:
 		return http.StatusBadGateway, "grant_store_unavailable", err.Error()

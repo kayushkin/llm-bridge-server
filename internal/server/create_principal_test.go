@@ -39,11 +39,11 @@ func principalRequest(instanceID, principalID string) msg.CreateSessionRequest {
 func TestCreateSessionStoresAKnownPrincipalAndRefusesAnUnknownOne(t *testing.T) {
 	srv, st, instanceID := testServerWithInstance(t, msg.HarnessMock)
 	directory := fakePrincipalStore(t, "principal_000001")
-	srv.principalClient = testPrincipalDirectoryAt(directory.URL)
+	srv.principalStore = testPrincipalDirectoryAt(directory.URL)
 	srv.principalLookupCache = newPrincipalLookupCache(srv)
 	// No grants at all: the gate lets everything through, which is the case
 	// this test is about — the principal check itself.
-	srv.grantClient = testGrantReaderAt(fakeGrantStoreByRelation(t, "principal_000001", map[string][]string{}).URL)
+	srv.grantStore = testGrantReaderAt(fakeGrantStoreByRelation(t, "principal_000001", map[string][]string{}).URL)
 
 	created := postCreateSession(t, srv, principalRequest(instanceID, "principal_000001"))
 	if created.PrincipalID != "principal_000001" {

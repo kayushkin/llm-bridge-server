@@ -21,9 +21,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/grantclient"
-	"github.com/kayushkin/llm-bridge-server/internal/permclient"
-	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
+	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
+	"github.com/kayushkin/llm-bridge-server/internal/access/permissions"
+	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 )
 
 // httpPrincipalDirectoryForTests talks to one principal-store.
@@ -37,41 +37,34 @@ func testPrincipalDirectoryAt(base string) *httpPrincipalDirectoryForTests {
 	return &httpPrincipalDirectoryForTests{url: strings.TrimSuffix(base, "/"), http: &http.Client{Timeout: 5 * time.Second}}
 }
 
-// CheckExists returns nil when principal-store has the principal, an error
-// wrapping principalclient.ErrNotFound when it says it does not, and any other error when it
-// could not be asked or answered something else.
-func (c *httpPrincipalDirectoryForTests) CheckExists(ctx context.Context, principalID string) error {
-	_, err := c.Get(ctx, principalID)
-	return err
-}
-
-// Get returns principal-store's record for principalID, with the same error
-// contract as CheckExists. A 2xx whose body is not a principal record with the
+// Get returns principal-store's record for principalID, an error wrapping
+// principals.ErrNotFound when it says it has none, and any other error when it
+// could not be asked or answered something else. A 2xx whose body is not a principal record with the
 // requested id and a kind is an error, not an empty principal.
-func (c *httpPrincipalDirectoryForTests) Get(ctx context.Context, principalID string) (principalclient.Principal, error) {
+func (c *httpPrincipalDirectoryForTests) Get(ctx context.Context, principalID string, _ bool) (*principals.Principal, error) {
 	requestURL := c.url + "/principals/" + url.PathEscape(principalID)
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
-		return principalclient.Principal{}, fmt.Errorf("build GET %s: %w", requestURL, err)
+		return nil, fmt.Errorf("build GET %s: %w", requestURL, err)
 	}
 	response, err := c.http.Do(request)
 	if err != nil {
-		return principalclient.Principal{}, fmt.Errorf("principal-store unreachable: GET %s: %w", requestURL, err)
+		return nil, fmt.Errorf("principal-store unreachable: GET %s: %w", requestURL, err)
 	}
 	defer response.Body.Close()
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
-		return principalclient.Principal{}, fmt.Errorf("read principal-store response: %w", err)
+		return nil, fmt.Errorf("read principal-store response: %w", err)
 	}
 	if response.StatusCode/100 == 2 {
-		var principal principalclient.Principal
+		var principal principals.Principal
 		if err := json.Unmarshal(body, &principal); err != nil {
-			return principalclient.Principal{}, fmt.Errorf("principal-store answered GET %s with %s and a body that is not a principal: %w", requestURL, response.Status, err)
+			return nil, fmt.Errorf("principal-store answered GET %s with %s and a body that is not a principal: %w", requestURL, response.Status, err)
 		}
 		if principal.ID != principalID || principal.Kind == "" {
-			return principalclient.Principal{}, fmt.Errorf("principal-store answered GET %s with a record for id %q kind %q, not the principal asked for", requestURL, principal.ID, principal.Kind)
+			return nil, fmt.Errorf("principal-store answered GET %s with a record for id %q kind %q, not the principal asked for", requestURL, principal.ID, principal.Kind)
 		}
-		return principal, nil
+		return &principal, nil
 	}
 	var parsed struct {
 		Error string `json:"error"`
@@ -79,18 +72,18 @@ func (c *httpPrincipalDirectoryForTests) Get(ctx context.Context, principalID st
 	_ = json.Unmarshal(body, &parsed)
 	switch {
 	case response.StatusCode == http.StatusNotFound && parsed.Error != "":
-		return principalclient.Principal{}, fmt.Errorf("%w: %s", principalclient.ErrNotFound, parsed.Error)
+		return nil, fmt.Errorf("%w: %s", principals.ErrNotFound, parsed.Error)
 	case response.StatusCode == http.StatusNotFound:
-		return principalclient.Principal{}, fmt.Errorf("principal-store answered GET %s with 404 and no JSON error, which is Go's answer for a route that does not exist, not for a missing principal: check LLMBRIDGE_PRINCIPAL_STORE_URL", requestURL)
+		return nil, fmt.Errorf("principal-store answered GET %s with 404 and no JSON error, which is Go's answer for a route that does not exist, not for a missing principal: check LLMBRIDGE_PRINCIPAL_STORE_URL", requestURL)
 	default:
-		return principalclient.Principal{}, fmt.Errorf("principal-store answered GET %s with %s: %s", requestURL, response.Status, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("principal-store answered GET %s with %s: %s", requestURL, response.Status, strings.TrimSpace(string(body)))
 	}
 }
 
-// GroupIDsOf returns the ids of the active groups principalID is a direct
-// member of. principal-store answers only for a human; asking about any
-// other kind is an error from the store, passed on.
-func (c *httpPrincipalDirectoryForTests) GroupIDsOf(ctx context.Context, principalID string) ([]string, error) {
+// ListGroups returns the active groups principalID is a direct member of,
+// each with only its id. principal-store answers only for a human; asking
+// about any other kind is an error from the store, passed on.
+func (c *httpPrincipalDirectoryForTests) ListGroups(ctx context.Context, principalID string, _ bool) ([]*principals.Principal, error) {
 	requestURL := c.url + "/principals/" + url.PathEscape(principalID) + "/groups"
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
@@ -116,45 +109,45 @@ func (c *httpPrincipalDirectoryForTests) GroupIDsOf(ctx context.Context, princip
 	if err := json.Unmarshal(body, &groups); err != nil {
 		return nil, fmt.Errorf("principal-store answered GET %s with a body that is not a list of principals: %w", requestURL, err)
 	}
-	ids := make([]string, 0, len(groups))
+	listed := make([]*principals.Principal, 0, len(groups))
 	for _, group := range groups {
-		ids = append(ids, group.ID)
+		listed = append(listed, &principals.Principal{ID: group.ID, Kind: principals.KindGroup})
 	}
-	return ids, nil
+	return listed, nil
 }
 
-// ResolveIdentityBinding asks principal-store which principal an outside
-// identity is bound to. It returns an error wrapping principalclient.ErrIdentityNotProvisioned
+// ResolveIdentity asks principal-store which principal an outside identity is
+// bound to. It returns an error wrapping principals.ErrNotFound
 // when principal-store answers 404 with its own error body, and any other
 // error when it could not be asked or answered something else. A 2xx whose
 // binding does not name the identity asked about is an error, not a match.
-func (c *httpPrincipalDirectoryForTests) ResolveIdentityBinding(ctx context.Context, provider, tenantID, subject string) (principalclient.IdentityResolution, error) {
+func (c *httpPrincipalDirectoryForTests) ResolveIdentity(ctx context.Context, provider, tenantID, subject string) (*principals.IdentityBindingResolution, error) {
 	query := url.Values{"provider": {provider}, "tenant_id": {tenantID}, "subject": {subject}}
 	requestURL := c.url + "/identity-bindings/resolve?" + query.Encode()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
-		return principalclient.IdentityResolution{}, fmt.Errorf("build GET %s: %w", requestURL, err)
+		return nil, fmt.Errorf("build GET %s: %w", requestURL, err)
 	}
 	response, err := c.http.Do(request)
 	if err != nil {
-		return principalclient.IdentityResolution{}, fmt.Errorf("principal-store unreachable: GET %s: %w", requestURL, err)
+		return nil, fmt.Errorf("principal-store unreachable: GET %s: %w", requestURL, err)
 	}
 	defer response.Body.Close()
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
-		return principalclient.IdentityResolution{}, fmt.Errorf("read principal-store response: %w", err)
+		return nil, fmt.Errorf("read principal-store response: %w", err)
 	}
 	if response.StatusCode/100 == 2 {
-		var resolution principalclient.IdentityResolution
-		if err := json.Unmarshal(body, &resolution); err != nil {
-			return principalclient.IdentityResolution{}, fmt.Errorf("principal-store answered GET %s with %s and a body that is not an identity resolution: %w", requestURL, response.Status, err)
+		var resolution principals.IdentityBindingResolution
+		if err := json.Unmarshal(body, &resolution); err != nil || resolution.Binding == nil || resolution.Principal == nil {
+			return nil, fmt.Errorf("principal-store answered GET %s with %s and a body that is not an identity resolution: %w", requestURL, response.Status, err)
 		}
 		binding := resolution.Binding
 		if binding.ID == "" || binding.Provider != provider || !strings.EqualFold(binding.TenantID, tenantID) || !strings.EqualFold(binding.Subject, subject) ||
 			binding.UnlinkedAt != 0 || resolution.Principal.ID == "" || resolution.Principal.ID != binding.PrincipalID || resolution.Principal.Kind == "" {
-			return principalclient.IdentityResolution{}, fmt.Errorf("principal-store answered GET %s with binding %+v and principal %q, which is not an active binding of the identity asked about", requestURL, binding, resolution.Principal.ID)
+			return nil, fmt.Errorf("principal-store answered GET %s with binding %+v and principal %q, which is not an active binding of the identity asked about", requestURL, binding, resolution.Principal.ID)
 		}
-		return resolution, nil
+		return &resolution, nil
 	}
 	var parsed struct {
 		Error string `json:"error"`
@@ -162,36 +155,38 @@ func (c *httpPrincipalDirectoryForTests) ResolveIdentityBinding(ctx context.Cont
 	_ = json.Unmarshal(body, &parsed)
 	switch {
 	case response.StatusCode == http.StatusNotFound && parsed.Error != "":
-		return principalclient.IdentityResolution{}, fmt.Errorf("%w: %s", principalclient.ErrIdentityNotProvisioned, parsed.Error)
+		return nil, fmt.Errorf("%w: %s", principals.ErrNotFound, parsed.Error)
 	case response.StatusCode == http.StatusNotFound:
-		return principalclient.IdentityResolution{}, fmt.Errorf("principal-store answered GET %s with 404 and no JSON error, which is Go's answer for a route that does not exist, not for an unprovisioned identity: check LLMBRIDGE_PRINCIPAL_STORE_URL", requestURL)
+		return nil, fmt.Errorf("principal-store answered GET %s with 404 and no JSON error, which is Go's answer for a route that does not exist, not for an unprovisioned identity: check LLMBRIDGE_PRINCIPAL_STORE_URL", requestURL)
 	default:
-		return principalclient.IdentityResolution{}, fmt.Errorf("principal-store answered GET %s with %s: %s", requestURL, response.Status, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("principal-store answered GET %s with %s: %s", requestURL, response.Status, strings.TrimSpace(string(body)))
 	}
 }
 
-// Create makes a principal of the given kind and returns its id.
-func (c *httpPrincipalDirectoryForTests) Create(ctx context.Context, kind, displayName string) (string, error) {
-	var created struct {
-		ID string `json:"id"`
-	}
-	if err := c.write(ctx, http.MethodPost, "/principals", map[string]string{"kind": kind, "display_name": displayName}, &created); err != nil {
-		return "", err
+// Create makes a principal of the input's kind and display name.
+func (c *httpPrincipalDirectoryForTests) Create(ctx context.Context, input *principals.Principal) (*principals.Principal, error) {
+	var created principals.Principal
+	if err := c.write(ctx, http.MethodPost, "/principals", map[string]string{"kind": input.Kind, "display_name": input.DisplayName}, &created); err != nil {
+		return nil, err
 	}
 	if created.ID == "" {
-		return "", fmt.Errorf("principal-store answered POST /principals with no id")
+		return nil, fmt.Errorf("principal-store answered POST /principals with no id")
 	}
-	return created.ID, nil
+	return &created, nil
 }
 
-// SetAdministrator sets principal-store's is_administrator on a principal.
-func (c *httpPrincipalDirectoryForTests) SetAdministrator(ctx context.Context, principalID string, isAdministrator bool) error {
-	return c.write(ctx, http.MethodPatch, "/principals/"+url.PathEscape(principalID), map[string]bool{"is_administrator": isAdministrator}, nil)
+// Patch sets principal-store's is_administrator on a principal, the one field
+// this server patches.
+func (c *httpPrincipalDirectoryForTests) Patch(ctx context.Context, principalID string, patch principals.Patch) (*principals.Principal, error) {
+	if patch.IsAdministrator == nil {
+		return nil, fmt.Errorf("the fake principal-store patches only is_administrator")
+	}
+	return &principals.Principal{ID: principalID}, c.write(ctx, http.MethodPatch, "/principals/"+url.PathEscape(principalID), map[string]bool{"is_administrator": *patch.IsAdministrator}, nil)
 }
 
 // AddMember puts a principal in a group. Already a member is not an error.
-func (c *httpPrincipalDirectoryForTests) AddMember(ctx context.Context, groupID, memberID string) error {
-	return c.write(ctx, http.MethodPut, "/principals/"+url.PathEscape(groupID)+"/members/"+url.PathEscape(memberID), nil, nil)
+func (c *httpPrincipalDirectoryForTests) AddMember(ctx context.Context, groupID, memberID string) (bool, error) {
+	return true, c.write(ctx, http.MethodPut, "/principals/"+url.PathEscape(groupID)+"/members/"+url.PathEscape(memberID), nil, nil)
 }
 
 // RemoveMember takes a principal out of a group.
@@ -256,20 +251,19 @@ type grantRowForTests struct {
 	ResourceID   string `json:"resource_id"`
 }
 
-// EffectiveResourceIDs returns the resource ids the principal's effective
-// grants of one relation name, for one resource type. An empty answer means
-// the principal — and every group they are in — holds no such grant; it is
-// not an error.
-func (c *httpGrantReaderForTests) EffectiveResourceIDs(ctx context.Context, principalID, relation, resourceType string) ([]string, error) {
-	grants, err := c.effective(ctx, principalID, relation, resourceType)
+// Effective answers the principal's effective grants of one relation on one
+// resource type, as grant-store's GET /principals/{id}/effective does. The
+// directory is grant-store's own business, so the fake does not ask it.
+func (c *httpGrantReaderForTests) Effective(ctx context.Context, _ grants.PrincipalDirectory, principalID, relation, resourceType string) ([]*grants.Grant, error) {
+	rows, err := c.effective(ctx, principalID, relation, resourceType)
 	if err != nil {
 		return nil, err
 	}
-	ids := make([]string, 0, len(grants))
-	for _, g := range grants {
-		ids = append(ids, g.ResourceID)
+	effective := make([]*grants.Grant, 0, len(rows))
+	for _, row := range rows {
+		effective = append(effective, &grants.Grant{ID: row.ID, PrincipalID: row.PrincipalID, Relation: relation, ResourceType: row.ResourceType, ResourceID: row.ResourceID})
 	}
-	return ids, nil
+	return effective, nil
 }
 
 func (c *httpGrantReaderForTests) effective(ctx context.Context, principalID, relation, resourceType string) ([]grantRowForTests, error) {
@@ -290,7 +284,7 @@ func (c *httpGrantReaderForTests) effective(ctx context.Context, principalID, re
 	}
 	switch {
 	case response.StatusCode == http.StatusNotFound:
-		return nil, fmt.Errorf("%w: grant-store answered GET %s with 404: %s", grantclient.ErrPrincipalUnknown, requestURL, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("%w: grant-store answered GET %s with 404: %s", grants.ErrNotFound, requestURL, strings.TrimSpace(string(body)))
 	case response.StatusCode/100 != 2:
 		return nil, fmt.Errorf("grant-store answered GET %s with %s: %s", requestURL, response.Status, strings.TrimSpace(string(body)))
 	}
@@ -304,34 +298,34 @@ func (c *httpGrantReaderForTests) effective(ctx context.Context, principalID, re
 // Create records a grant with the service token and returns its id. grant-store
 // is idempotent on the active tuple, so a grant that already exists answers
 // with its id too.
-func (c *httpGrantReaderForTests) Create(ctx context.Context, input grantclient.GrantInput) (string, error) {
+func (c *httpGrantReaderForTests) Create(ctx context.Context, _ grants.PrincipalDirectory, _ grants.ResourceChecker, input grants.GrantRequest) (*grants.Grant, bool, error) {
 	data, err := json.Marshal(input)
 	if err != nil {
-		return "", err
+		return nil, false, err
 	}
 	requestURL := c.url + "/grants"
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, strings.NewReader(string(data)))
 	if err != nil {
-		return "", fmt.Errorf("build POST %s: %w", requestURL, err)
+		return nil, false, fmt.Errorf("build POST %s: %w", requestURL, err)
 	}
 	request.Header.Set("Content-Type", "application/json")
 	response, err := c.http.Do(request)
 	if err != nil {
-		return "", fmt.Errorf("grant-store unreachable: POST %s: %w", requestURL, err)
+		return nil, false, fmt.Errorf("grant-store unreachable: POST %s: %w", requestURL, err)
 	}
 	defer response.Body.Close()
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
-		return "", fmt.Errorf("read grant-store response: %w", err)
+		return nil, false, fmt.Errorf("read grant-store response: %w", err)
 	}
 	if response.StatusCode/100 != 2 {
-		return "", fmt.Errorf("grant-store answered POST %s with %s: %s", requestURL, response.Status, strings.TrimSpace(string(body)))
+		return nil, false, fmt.Errorf("grant-store answered POST %s with %s: %s", requestURL, response.Status, strings.TrimSpace(string(body)))
 	}
 	var created grantRowForTests
 	if err := json.Unmarshal(body, &created); err != nil || created.ID == "" {
-		return "", fmt.Errorf("grant-store answered POST %s with a body that is not a grant: %s", requestURL, strings.TrimSpace(string(body)))
+		return nil, false, fmt.Errorf("grant-store answered POST %s with a body that is not a grant: %s", requestURL, strings.TrimSpace(string(body)))
 	}
-	return created.ID, nil
+	return &grants.Grant{ID: created.ID, PrincipalID: created.PrincipalID, ResourceType: created.ResourceType, ResourceID: created.ResourceID}, true, nil
 }
 
 // httpPermissionEvaluatorForTests is a permission-store /evaluate caller. Safe for concurrent use.
@@ -358,37 +352,37 @@ func testPermissionEvaluatorAt(baseURL string) *httpPermissionEvaluatorForTests 
 // consulted, so there is nothing to report but the failure. The prehook
 // turns that into an "ask" for a session with a human attached and a deny
 // for one without (writeHookNoVerdict). Neither path silently allows.
-func (c *httpPermissionEvaluatorForTests) Evaluate(ctx context.Context, req permclient.Request) (*permclient.Result, error) {
-	body, err := json.Marshal(map[string]any{"bridge_id": req.BridgeSessionID, "instance_id": req.InstanceID, "tool": req.Tool, "input": req.Input})
+func (c *httpPermissionEvaluatorForTests) Evaluate(ctx context.Context, req permissions.EvaluateRequest) (permissions.EvaluateResponse, error) {
+	body, err := json.Marshal(map[string]any{"bridge_id": req.BridgeID, "instance_id": req.InstanceID, "tool": req.Tool, "input": req.Input})
 	if err != nil {
-		return nil, fmt.Errorf("marshal evaluate request: %w", err)
+		return permissions.EvaluateResponse{}, fmt.Errorf("marshal evaluate request: %w", err)
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url+"/evaluate", bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("build evaluate request: %w", err)
+		return permissions.EvaluateResponse{}, fmt.Errorf("build evaluate request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("permission-store unreachable: %w", err)
+		return permissions.EvaluateResponse{}, fmt.Errorf("permission-store unreachable: %w", err)
 	}
 	defer resp.Body.Close()
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read evaluate response: %w", err)
+		return permissions.EvaluateResponse{}, fmt.Errorf("read evaluate response: %w", err)
 	}
 	if resp.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("permission-store HTTP %d: %s", resp.StatusCode, string(respBody))
+		return permissions.EvaluateResponse{}, fmt.Errorf("permission-store HTTP %d: %s", resp.StatusCode, string(respBody))
 	}
-	var parsed permclient.Result
+	var parsed permissions.EvaluateResponse
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return nil, fmt.Errorf("decode evaluate response: %w", err)
+		return permissions.EvaluateResponse{}, fmt.Errorf("decode evaluate response: %w", err)
 	}
 	switch parsed.Outcome {
 	case "allow", "deny", "ask":
-		return &parsed, nil
+		return parsed, nil
 	}
-	return nil, fmt.Errorf("permission-store returned unknown outcome %q", parsed.Outcome)
+	return permissions.EvaluateResponse{}, fmt.Errorf("permission-store returned unknown outcome %q", parsed.Outcome)
 }
 
 // useFakePrincipalStore points server's principal reads, and the identity
@@ -396,7 +390,7 @@ func (c *httpPermissionEvaluatorForTests) Evaluate(ctx context.Context, req perm
 // base. Only the pass-through handler is set on the mounted routes, so a test
 // that calls /principal-store/ itself uses the real stores instead.
 func useFakePrincipalStore(server *Server, base string) {
-	server.principalClient = testPrincipalDirectoryAt(base)
+	server.principalStore = testPrincipalDirectoryAt(base)
 	server.access.Store(&accessRouteHandlers{principalStoreRoot: reverseProxyTo(base)})
 }
 

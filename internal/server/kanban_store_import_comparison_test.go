@@ -5,11 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
-	"github.com/kayushkin/llm-bridge-server/internal/references"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/kayushkin/llm-bridge-server/internal/references"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access"
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"

@@ -53,10 +53,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
+	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	"github.com/kayushkin/llm-bridge-server/internal/grantclient"
-	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -114,9 +114,9 @@ var peerAccessLevelsWithGroups = []peerAccessLevelDefinition{
 		displayName: "Run sessions",
 		description: "Start sessions on any of this server's instances, as any agent, with any tool; see and drive only the sessions it started.",
 		grants: []msg.PeerAccessLevelGrant{
-			{Relation: "can_dispatch_on", ResourceType: "instance", ResourceID: grantclient.AllResources},
-			{Relation: "can_run_as", ResourceType: "agent", ResourceID: grantclient.AllResources},
-			{Relation: "can_use", ResourceType: "tool", ResourceID: grantclient.AllResources},
+			{Relation: "can_dispatch_on", ResourceType: "instance", ResourceID: grants.AllResources},
+			{Relation: "can_run_as", ResourceType: "agent", ResourceID: grants.AllResources},
+			{Relation: "can_use", ResourceType: "tool", ResourceID: grants.AllResources},
 		},
 	},
 	{
@@ -130,7 +130,7 @@ var peerAccessLevelsWithGroups = []peerAccessLevelDefinition{
 		displayName: "Observe",
 		description: "Read every session on any of this server's instances, and the catalog; start, send to, stop or change nothing.",
 		grants: []msg.PeerAccessLevelGrant{
-			{Relation: observeSessionsRelation, ResourceType: "instance", ResourceID: grantclient.AllResources},
+			{Relation: observeSessionsRelation, ResourceType: "instance", ResourceID: grants.AllResources},
 		},
 	},
 }
@@ -601,13 +601,14 @@ func (s *Server) handleProvisionPeerAccessLevel(w http.ResponseWriter, r *http.R
 		writeJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
-	groupID, err := s.principalClient.Create(r.Context(), principalclient.KindGroup, "Linked servers: "+strings.ToLower(definition.displayName))
+	group, err := s.principalStore.Create(r.Context(), &principals.Principal{Kind: principals.KindGroup, DisplayName: "Linked servers: " + strings.ToLower(definition.displayName)})
 	if err != nil {
-		writeJSONError(w, http.StatusBadGateway, "principal_store_failed", err.Error())
+		writeJSONError(w, http.StatusBadGateway, "principal_store_failed", fmt.Sprintf("principal-store: creating a %s principal: %v", principals.KindGroup, err))
 		return
 	}
+	groupID := group.ID
 	for _, levelGrant := range definition.grants {
-		if _, err := s.grantClient.Create(r.Context(), grantclient.GrantInput{
+		if _, _, err := s.grantStore.Create(r.Context(), s.grantsPrincipalDirectory, s.grantsResourceChecker, grants.GrantRequest{
 			PrincipalID: groupID, Relation: levelGrant.Relation, ResourceType: levelGrant.ResourceType, ResourceID: levelGrant.ResourceID,
 			Note: "peer access level " + definition.key + ", provisioned by " + administratorID,
 		}); err != nil {
@@ -642,13 +643,13 @@ func (s *Server) peerLevelEffectOf(ctx context.Context, request msg.PeerGrantReq
 		if request.GroupPrincipalID == "" {
 			return peerLevelEffect{}, &requestCredentialError{http.StatusBadRequest, "group_principal_id_required", "level group needs group_principal_id"}
 		}
-		group, err := s.principalClient.Get(ctx, request.GroupPrincipalID)
+		group, err := s.principalStore.Get(ctx, request.GroupPrincipalID, false)
 		switch {
-		case errors.Is(err, principalclient.ErrNotFound):
+		case errors.Is(err, principals.ErrNotFound):
 			return peerLevelEffect{}, &requestCredentialError{http.StatusBadRequest, "unknown_principal", err.Error()}
 		case err != nil:
 			return peerLevelEffect{}, &requestCredentialError{http.StatusBadGateway, "principal_store_unavailable", err.Error()}
-		case group.Kind != principalclient.KindGroup:
+		case group.Kind != principals.KindGroup:
 			return peerLevelEffect{}, &requestCredentialError{http.StatusBadRequest, "principal_not_a_group", fmt.Sprintf("%s is a %q, not a group", group.ID, group.Kind)}
 		case group.DisabledAt != 0:
 			return peerLevelEffect{}, &requestCredentialError{http.StatusBadRequest, "principal_disabled", group.ID + " is disabled"}
@@ -675,11 +676,13 @@ func (s *Server) peerLevelEffectOf(ctx context.Context, request msg.PeerGrantReq
 // applyPeerLevelEffect makes the peer principal what the level says.
 func (s *Server) applyPeerLevelEffect(ctx context.Context, peerPrincipalID string, effect peerLevelEffect) error {
 	defer s.principalLookupCache.forget(peerPrincipalID)
-	if err := s.principalClient.SetAdministrator(ctx, peerPrincipalID, effect.isAdministrator); err != nil {
+	if err := s.setPrincipalAdministrator(ctx, peerPrincipalID, effect.isAdministrator); err != nil {
 		return err
 	}
 	if effect.groupPrincipalID != "" {
-		return s.principalClient.AddMember(ctx, effect.groupPrincipalID, peerPrincipalID)
+		if _, err := s.principalStore.AddMember(ctx, effect.groupPrincipalID, peerPrincipalID); err != nil {
+			return fmt.Errorf("principal-store: adding %s to group %s: %w", peerPrincipalID, effect.groupPrincipalID, err)
+		}
 	}
 	return nil
 }
@@ -688,12 +691,23 @@ func (s *Server) applyPeerLevelEffect(ctx context.Context, peerPrincipalID strin
 func (s *Server) undoPeerLevelEffect(ctx context.Context, grant store.PeerGrant) error {
 	defer s.principalLookupCache.forget(grant.PeerPrincipalID)
 	if grant.Level == msg.PeerAccessLevelAdministrator {
-		if err := s.principalClient.SetAdministrator(ctx, grant.PeerPrincipalID, false); err != nil {
+		if err := s.setPrincipalAdministrator(ctx, grant.PeerPrincipalID, false); err != nil {
 			return err
 		}
 	}
 	if grant.GroupPrincipalID != "" {
-		return s.principalClient.RemoveMember(ctx, grant.GroupPrincipalID, grant.PeerPrincipalID)
+		if err := s.principalStore.RemoveMember(ctx, grant.GroupPrincipalID, grant.PeerPrincipalID); err != nil {
+			return fmt.Errorf("principal-store: removing %s from group %s: %w", grant.PeerPrincipalID, grant.GroupPrincipalID, err)
+		}
+	}
+	return nil
+}
+
+// setPrincipalAdministrator sets principal-store's is_administrator on a
+// principal: the one flag this server writes on a peer principal.
+func (s *Server) setPrincipalAdministrator(ctx context.Context, principalID string, isAdministrator bool) error {
+	if _, err := s.principalStore.Patch(ctx, principalID, principals.Patch{IsAdministrator: &isAdministrator}); err != nil {
+		return fmt.Errorf("principal-store: setting is_administrator on %s: %w", principalID, err)
 	}
 	return nil
 }
@@ -704,10 +718,11 @@ func (s *Server) peerPrincipalOfConnection(ctx context.Context, connection store
 	if connection.PeerPrincipalID != "" {
 		return connection.PeerPrincipalID, nil
 	}
-	principalID, err := s.principalClient.Create(ctx, principalclient.KindPeer, connection.DisplayName)
+	created, err := s.principalStore.Create(ctx, &principals.Principal{Kind: principals.KindPeer, DisplayName: connection.DisplayName})
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("principal-store: creating a %s principal: %w", principals.KindPeer, err)
 	}
+	principalID := created.ID
 	if err := s.store.SetPeerConnectionPeerPrincipal(connection.ID, principalID); err != nil {
 		return "", fmt.Errorf("principal-store made %s for %s and it could not be recorded on the connection: %w", principalID, connection.ID, err)
 	}

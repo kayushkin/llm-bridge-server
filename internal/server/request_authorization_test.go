@@ -155,7 +155,7 @@ func newGatedTestServerConfigured(t *testing.T, grantsByPrincipal map[string]map
 	enableTestSessionEvents(t, gated.server, bridgeStore)
 	useFakePrincipalStore(gated.server, principals.server.URL)
 	gated.server.useKanbanStoreHandlerForTests(kanban.handler)
-	gated.server.grantClient = testGrantReaderAt(fakeGrantStoreForPrincipals(t, grantsByPrincipal).URL)
+	gated.server.grantStore = testGrantReaderAt(fakeGrantStoreForPrincipals(t, grantsByPrincipal).URL)
 	gated.server.principalLookupCache.now = gated.clock.Now
 	return gated
 }

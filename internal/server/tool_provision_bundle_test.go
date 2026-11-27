@@ -33,7 +33,7 @@ func fakeBundleStore(t *testing.T, bundleID string, toolIDs []int64, skillIDs []
 func newServerWithBundles(tools toolRegistry, bundles bundleResolver, grantStoreURL string) *Server {
 	s := &Server{cfg: &config.Config{}, toolRegistry: tools, bundleClient: bundles}
 	if grantStoreURL != "" {
-		s.grantClient = testGrantReaderAt(grantStoreURL)
+		s.grantStore = testGrantReaderAt(grantStoreURL)
 		s.principalLookupCache = principalLookupCacheAnswering(humanPrincipalForGrantTests)
 	}
 	return s

@@ -222,7 +222,7 @@ func postPrehookToRoute(t *testing.T, srv *Server, route, bridgeID, body string)
 func prehookServerWithDeadStore(t *testing.T) (*Server, *store.Store) {
 	t.Helper()
 	srv, st := testServer(t)
-	srv.permClient = testPermissionEvaluatorAt("http://127.0.0.1:1")
+	srv.permissionEngine = testPermissionEvaluatorAt("http://127.0.0.1:1")
 	return srv, st
 }
 
@@ -330,7 +330,7 @@ func TestPrehookSendsScopeUnderPermissionStoreKeys(t *testing.T) {
 		_, _ = w.Write([]byte(`{"outcome":"allow","matched_rule_id":"test-allow","atoms":[]}`))
 	}))
 	defer fakeStore.Close()
-	srv.permClient = testPermissionEvaluatorAt(fakeStore.URL)
+	srv.permissionEngine = testPermissionEvaluatorAt(fakeStore.URL)
 
 	decision, _ := postPrehook(t, srv, "bridge-scoped",
 		`{"tool_name":"Bash","tool_input":{"command":"ls"}}`)

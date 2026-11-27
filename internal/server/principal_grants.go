@@ -8,7 +8,7 @@ package server
 // does this principal's effective grants of one relation allow this resource?
 // The answer has three rules, and they live here so no caller restates them:
 //
-//   - A grant naming resource_id "*" (grantclient.AllResources) names every
+//   - A grant naming resource_id "*" (grants.AllResources) names every
 //     resource of its type.
 //   - A principal holding no grant of the relation is not restricted by it —
 //     the lenient rule the operator chose on 2026-09-11 — unless
@@ -28,10 +28,11 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 
-	"github.com/kayushkin/llm-bridge-server/internal/grantclient"
+	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
 )
 
 // grantSubject is whose grants decide: a principal, and, when a connected
@@ -92,7 +93,7 @@ func (granted grantedResources) restrictsOnItsOwn() bool {
 // resource, directly or as "*".
 func (granted grantedResources) namesOnItsOwn(resourceID string) bool {
 	for _, grantedID := range granted.resourceIDs {
-		if grantedID == grantclient.AllResources || grantedID == resourceID {
+		if grantedID == grants.AllResources || grantedID == resourceID {
 			return true
 		}
 	}
@@ -138,7 +139,7 @@ func (granted grantedResources) permits(resourceID string) bool {
 
 // namesAll reports whether a grant names every resource of the type.
 func (granted grantedResources) namesAll() bool {
-	return granted.names(grantclient.AllResources)
+	return granted.names(grants.AllResources)
 }
 
 // describe says what the grants are, for a refusal or a note.
@@ -183,10 +184,10 @@ func (s *Server) grantedResourcesOf(ctx context.Context, subject grantSubject, r
 }
 
 func (s *Server) grantedResourcesOfOnePrincipal(ctx context.Context, principalID, relation, resourceType string, partOfIntersection bool) (grantedResources, error) {
-	if s.grantClient == nil {
+	if s.grantStore == nil {
 		return grantedResources{}, fmt.Errorf("%s's %s grants are read from grant-store, and this server has none (LLMBRIDGE_GRANT_STORE_URL)", principalID, relation)
 	}
-	resourceIDs, err := s.grantClient.EffectiveResourceIDs(ctx, principalID, relation, resourceType)
+	resourceIDs, err := s.effectiveGrantResourceIDs(ctx, principalID, relation, resourceType)
 	if err != nil {
 		return grantedResources{}, fmt.Errorf("could not read %s's %s grants: %w", principalID, relation, err)
 	}
@@ -271,4 +272,26 @@ func (granted grantedResources) permitsTool(toolID int64) bool {
 // or as "*".
 func (granted grantedResources) namesTool(toolID int64) bool {
 	return granted.names(strconv.FormatInt(toolID, 10))
+}
+
+// effectiveGrantResourceIDs returns the resource ids the principal's effective
+// grants of one relation name, for one resource type: its own active grants
+// and every active group's, with the groups read from principal-store on each
+// call, so a membership change is visible at the next spawn. An empty answer
+// means the principal and every group it is in hold no such grant; a
+// principal principal-store does not have is an error wrapping
+// grants.ErrNotFound.
+func (s *Server) effectiveGrantResourceIDs(ctx context.Context, principalID, relation, resourceType string) ([]string, error) {
+	effective, err := s.grantStore.Effective(ctx, s.grantsPrincipalDirectory, principalID, relation, resourceType)
+	if errors.Is(err, grants.ErrNotFound) {
+		return nil, fmt.Errorf("principal unknown: %w", err)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("grant-store: the effective %s grants of %s on %s: %w", relation, principalID, resourceType, err)
+	}
+	ids := make([]string, 0, len(effective))
+	for _, grant := range effective {
+		ids = append(ids, grant.ResourceID)
+	}
+	return ids, nil
 }

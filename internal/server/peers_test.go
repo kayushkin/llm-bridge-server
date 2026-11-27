@@ -20,9 +20,9 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
-	"github.com/kayushkin/llm-bridge-server/internal/grantclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -145,7 +145,7 @@ func (directory *writablePrincipalDirectory) isMember(groupID, memberID string) 
 // effective grants with what the test set (setEffective), nothing otherwise.
 type recordingGrantStore struct {
 	mutex     sync.Mutex
-	created   []grantclient.GrantInput
+	created   []grants.GrantRequest
 	effective map[string][]string
 	server    *httptest.Server
 }
@@ -164,12 +164,12 @@ func (grants *recordingGrantStore) setEffective(principalID, relation, resourceT
 
 func newRecordingGrantStore(t *testing.T) *recordingGrantStore {
 	t.Helper()
-	grants := &recordingGrantStore{effective: map[string][]string{}}
+	recorder := &recordingGrantStore{effective: map[string][]string{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /principals/{id}/effective", func(w http.ResponseWriter, r *http.Request) {
-		grants.mutex.Lock()
-		resourceIDs := grants.effective[effectiveGrantKey(r.PathValue("id"), r.URL.Query().Get("relation"), r.URL.Query().Get("resource_type"))]
-		grants.mutex.Unlock()
+		recorder.mutex.Lock()
+		resourceIDs := recorder.effective[effectiveGrantKey(r.PathValue("id"), r.URL.Query().Get("relation"), r.URL.Query().Get("resource_type"))]
+		recorder.mutex.Unlock()
 		answer := []map[string]string{}
 		for index, resourceID := range resourceIDs {
 			answer = append(answer, map[string]string{"id": fmt.Sprintf("grant_%06d", index+1), "principal_id": r.PathValue("id"),
@@ -178,18 +178,18 @@ func newRecordingGrantStore(t *testing.T) *recordingGrantStore {
 		_ = json.NewEncoder(w).Encode(answer)
 	})
 	mux.HandleFunc("POST /grants", func(w http.ResponseWriter, r *http.Request) {
-		var input grantclient.GrantInput
+		var input grants.GrantRequest
 		_ = json.NewDecoder(r.Body).Decode(&input)
-		grants.mutex.Lock()
-		grants.created = append(grants.created, input)
-		id := fmt.Sprintf("grant_%06d", len(grants.created))
-		grants.mutex.Unlock()
+		recorder.mutex.Lock()
+		recorder.created = append(recorder.created, input)
+		id := fmt.Sprintf("grant_%06d", len(recorder.created))
+		recorder.mutex.Unlock()
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]string{"id": id})
 	})
-	grants.server = httptest.NewServer(mux)
-	t.Cleanup(grants.server.Close)
-	return grants
+	recorder.server = httptest.NewServer(mux)
+	t.Cleanup(recorder.server.Close)
+	return recorder
 }
 
 // fakeAuthStore keeps credentials in memory.
@@ -268,9 +268,9 @@ func newPeerTestServer(t *testing.T, demoLoginEnabled bool, configure ...func(*c
 	directory := newWritablePrincipalDirectory(t)
 	grants := newRecordingGrantStore(t)
 	auth, authServer := newFakeAuthStore(t)
-	gated.server.principalClient = testPrincipalDirectoryAt(directory.server.URL)
+	gated.server.principalStore = testPrincipalDirectoryAt(directory.server.URL)
 	gated.server.principalLookupCache = newPrincipalLookupCache(gated.server)
-	gated.server.grantClient = testGrantReaderAt(grants.server.URL)
+	gated.server.grantStore = testGrantReaderAt(grants.server.URL)
 	gated.server.authClient = authstoreclient.New(authServer.URL, "test-token", "llm-bridge-server")
 	return &peerTestServer{gatedTestServer: gated, directory: directory, grants: grants, auth: auth}
 }

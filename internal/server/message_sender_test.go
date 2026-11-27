@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/principalclient"
+	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -18,8 +18,8 @@ func TestAHeldMessageIsSentInItsSendersName(t *testing.T) {
 	srv, st, session := drainTestServer(t)
 	srv.principalLookupCache = &principalLookupCache{
 		principalsByID: map[string]cachedPrincipal{}, lifetime: time.Minute, now: time.Now,
-		readFromUpstream: func(_ context.Context, principalID string) (principalclient.Principal, error) {
-			return principalclient.Principal{ID: principalID, Kind: "human", DisplayName: "Priya Raman"}, nil
+		readFromUpstream: func(_ context.Context, principalID string) (principals.Principal, error) {
+			return principals.Principal{ID: principalID, Kind: "human", DisplayName: "Priya Raman"}, nil
 		},
 	}
 	srv.startRestartDrain(time.Hour, "test deploy")

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/permissions"
 	"github.com/kayushkin/llm-bridge-server/internal/ids"
-	"github.com/kayushkin/llm-bridge-server/internal/permclient"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -167,7 +167,7 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 	// permission-store evaluation. Custom's raw approval/sandbox knobs
 	// are harness-side concerns; rule evaluation is unchanged.
 
-	if s.permClient == nil {
+	if s.permissionEngine == nil {
 		s.writeHookNoVerdict(w, r, unattended, "permission-store client not configured")
 		return
 	}
@@ -178,11 +178,11 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 	if sess != nil {
 		instanceID = sess.InstanceID
 	}
-	res, err := s.permClient.Evaluate(r.Context(), permclient.Request{
-		BridgeSessionID: bridgeID,
-		InstanceID:      instanceID,
-		Tool:            payload.ToolName,
-		Input:           payload.ToolInput,
+	res, err := s.permissionEngine.Evaluate(r.Context(), permissions.EvaluateRequest{
+		BridgeID:   bridgeID,
+		InstanceID: instanceID,
+		Tool:       payload.ToolName,
+		Input:      payload.ToolInput,
 	})
 	if err != nil {
 		// Pass the client's error through rather than labeling it. Evaluate

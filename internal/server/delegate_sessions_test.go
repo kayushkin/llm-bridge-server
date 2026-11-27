@@ -115,9 +115,9 @@ func TestADelegatingAgentReachesNoSessionItDidNotStart(t *testing.T) {
 
 func TestADelegateRunsWithItsSessionsPrincipalAndNoOther(t *testing.T) {
 	srv, st, instanceID := testServerWithInstance(t, msg.HarnessMock)
-	srv.principalClient = testPrincipalDirectoryAt(fakePrincipalStore(t, "principal_000001").URL)
+	srv.principalStore = testPrincipalDirectoryAt(fakePrincipalStore(t, "principal_000001").URL)
 	srv.principalLookupCache = newPrincipalLookupCache(srv)
-	srv.grantClient = testGrantReaderAt(fakeGrantStoreByRelation(t, "principal_000001", map[string][]string{}).URL)
+	srv.grantStore = testGrantReaderAt(fakeGrantStoreByRelation(t, "principal_000001", map[string][]string{}).URL)
 
 	withoutPrincipal := newSessionForSignals(t, st, "br_without_principal", msg.SessionTypeInteractive)
 	request := delegateRequest(instanceID)

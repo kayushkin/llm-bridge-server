@@ -34,7 +34,7 @@ func (s *Server) validateDiscoveryPrincipal(ctx context.Context) error {
 	if s.cfg.DiscoveryPrincipalID == "" {
 		return nil
 	}
-	principal, err := s.principalClient.Get(ctx, s.cfg.DiscoveryPrincipalID)
+	principal, err := s.principalStore.Get(ctx, s.cfg.DiscoveryPrincipalID, false)
 	if err != nil {
 		return fmt.Errorf("discovery owner: %w", err)
 	}

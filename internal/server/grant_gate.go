@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/grantclient"
+	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -120,7 +120,7 @@ func grantGateStatus(err error) (int, string) {
 	if errors.Is(err, ErrNotGranted) {
 		return 403, "not_granted"
 	}
-	if errors.Is(err, grantclient.ErrPrincipalUnknown) {
+	if errors.Is(err, grants.ErrNotFound) {
 		return 400, "unknown_principal"
 	}
 	return 502, "grant_store_unavailable"
