@@ -29,7 +29,7 @@ type Server struct {
 // RegisterHandlers adds the routes of possessions and their kinds, their
 // photos, originals, merges, wearable groups, products and purchases to
 // mux, and answers their patterns. The photo review's routes are
-// ReviewServer's and the outfits' OutfitServer's.
+// review.Server's and the outfits' outfits.Server's.
 func (server *Server) RegisterHandlers(mux *http.ServeMux) []string {
 	var patterns []string
 	register := HandlerOn(mux, server.narrowedTo)

@@ -14,7 +14,7 @@ import (
 // Server serves the routes of the photo review, the owner's questions,
 // the wearable audit and the passes that read outside sources (eBay mail,
 // budget-store's order lines, product listings). Reviewer reaches no records
-// until a request narrows it to its scope (server_scope.go).
+// until a request narrows it to its scope (possessions/server_scope.go).
 type Server struct {
 	Reviewer *Reviewer
 }

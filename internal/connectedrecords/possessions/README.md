@@ -18,5 +18,16 @@ keeps its records in Postgres, each owned by one person.
   the store asks the owner a question.
 - **Purchases** are kept line by line; eBay orders are budget-store's.
 
+The code is three packages, so an agent can hold the one it changes:
+
+| Package | Holds |
+|---|---|
+| `possessions` | the schema and migrations of every record, ids, owners, kinds, merges, products, purchases, originals, wearable groups, photos, the importer, and those records' routes |
+| `possessions/review` | the photo review, sightings and owner questions, the wearable audit, picture matches, classifying, product listings, eBay mail and order lines, and their routes; it reaches outfits only through `OutfitSteps` |
+| `possessions/outfits` | outfits, their merges and covers, looks, slots, rebuilds, outfit readings, consolidation and identification, and their routes; `NewReviewer` wires it as the review's `OutfitSteps` |
+
+`possessionstest` holds the fixtures their tests share. The bridge mounts
+the three packages' route servers on one mux (`internal/server/possessions_routes.go`).
+
 `CONTRACT.md` is the API. `cmd/possession-add-photos` brings photos in
 through the bridge and queues them for review.

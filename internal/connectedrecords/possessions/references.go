@@ -31,7 +31,7 @@ func (server *Server) kindImage(ctx context.Context, kind RecordType, id string)
 }
 
 // PossessionsRoute is the route the record readers answer possessions
-// under, besides each kind's own. Outfits are OutfitServer's.
+// under, besides each kind's own. Outfits are outfits.Server's.
 const PossessionsRoute = "possessions"
 
 func kindOfRoute(route string) (RecordType, bool) {

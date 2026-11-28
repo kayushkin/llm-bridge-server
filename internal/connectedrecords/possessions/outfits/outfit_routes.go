@@ -13,7 +13,7 @@ import (
 // Server serves the outfits' routes: outfits, their merges and covers,
 // looks and slots, rebuilds, and the passes that read and identify them.
 // Reviewer reaches no records until a request narrows it to its scope
-// (server_scope.go).
+// (possessions/server_scope.go).
 type Server struct {
 	Reviewer *Reviewer
 }

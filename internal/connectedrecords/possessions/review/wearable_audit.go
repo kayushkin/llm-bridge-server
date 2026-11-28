@@ -20,7 +20,7 @@ import (
 // linked to a piece shows that piece (CheckWearableLinks), which recorded
 // pieces are one piece recorded twice (CheckWearableDuplicates), and which
 // outfits are one outfit recorded twice (ConsolidateOutfits, in
-// outfit_consolidation.go). The operator chose on 2026-11-07: when both
+// outfits/outfit_consolidation.go). The operator chose on 2026-11-07: when both
 // readers agree, act at once, every merge undoable; when they disagree, ask.
 
 // AuditRun says what one audit pass did.

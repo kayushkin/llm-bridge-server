@@ -16,7 +16,7 @@ import (
 // beside pictures of the recorded pieces it could be, and each picks one.
 // In an open group they see the covers of up to pieceMatchCandidates
 // nearest pieces and may say none (a new piece). In a closed group
-// (wearable_groups.go) they see every owned member, with up to
+// (possessions/wearable_groups.go) they see every owned member, with up to
 // closedMemberPictures photos of each, and must pick one or say they cannot
 // tell: nothing in a closed group is recorded as new.
 

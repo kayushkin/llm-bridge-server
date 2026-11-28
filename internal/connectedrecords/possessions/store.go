@@ -1,8 +1,11 @@
 // Package possessions keeps an inventory of the things a person owns:
 // one core record per possession, a table of its own for each kind of thing
 // (garments, computers, computer parts, audio devices, musical instruments,
-// vehicles and the rest), outfits made of wearables, products and purchases,
-// and the photo review in which two models settle what a photo shows.
+// vehicles and the rest), products and purchases. It holds the schema and
+// migrations of every record the store keeps, their ids and their owners.
+// The photo review, in which two models settle what a photo shows, is
+// package review beneath it, and outfits made of wearables are package
+// outfits beneath that.
 //
 // Every record is cited elsewhere by its id (possession_000001,
 // garment_000001…), which reference-store's type list claims, so a chat or a
