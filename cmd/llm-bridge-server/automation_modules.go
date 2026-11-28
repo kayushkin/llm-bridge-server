@@ -69,9 +69,10 @@ func enableScheduler(ctx context.Context, cfg *config.Config, srv *server.Server
 	runsEnabled := settings.Boolean(config.SettingSchedulerRunsEnabled)
 	natsURL := settings.String(config.SettingSchedulerNATSURL)
 	notesURL := settings.String(config.SettingSchedulerNotesURL)
-	if runsEnabled && natsURL != "" && notesURL == "" {
-		return nil, fmt.Errorf("scheduler: %s is on and %s is set, so agent jobs run, but %s is not set: their prompts would name no workspace address",
-			config.SettingSchedulerRunsEnabled, config.SettingSchedulerNATSURL, config.SettingSchedulerNotesURL)
+	agentJobPrincipalID := settings.String(config.SettingSchedulerAgentJobPrincipalID)
+	if runsEnabled && notesURL == "" {
+		return nil, fmt.Errorf("scheduler: %s is on, so agent jobs run, but %s is not set: their prompts would name no workspace address",
+			config.SettingSchedulerRunsEnabled, config.SettingSchedulerNotesURL)
 	}
 
 	pool, err := openSchedulerModule(ctx, cfg.PostgresURL)
@@ -132,11 +133,18 @@ func enableScheduler(ctx context.Context, cfg *config.Config, srv *server.Server
 		}
 		log.Printf("scheduler: runs are on; %d runs were going when the last process stopped, and are interrupted", len(interrupted))
 		scheduler.SetLogger(logger)
+		// Agent jobs start their sessions through this server's session core,
+		// as the principal the setting names.
+		agents := executor.NewAgentExecutor(srv.SchedulerBridge(), notesURL, agentJobPrincipalID,
+			func() string { return storedSettings.ModelRole(schedulerconfig.SettingAgentJobModelRole) },
+			sessionmodelrole.SourcesChecker{Sources: srv.SchedulerModelRoleSources()})
+		scheduler.SetAgentExecutor(agents)
+		if agentJobPrincipalID == "" {
+			log.Printf("scheduler: %s is empty, so agent jobs start sessions as no principal: their agents hold no token, and a job with a workspace fails its run", config.SettingSchedulerAgentJobPrincipalID)
+		} else {
+			log.Printf("scheduler: agent jobs start sessions as %s", agentJobPrincipalID)
+		}
 		if natsClient != nil {
-			agents := executor.NewAgentExecutor(natsClient, srv.SchedulerBridge(), notesURL,
-				func() string { return storedSettings.ModelRole(schedulerconfig.SettingAgentJobModelRole) },
-				sessionmodelrole.SourcesChecker{Sources: srv.SchedulerModelRoleSources()})
-			scheduler.SetAgentExecutor(agents)
 			busHandler, err := bus.NewHandler(natsURL, store, scheduler, logger, roles.CheckRole)
 			if err != nil {
 				return fail(fmt.Errorf("bus commands: %w", err))
@@ -151,7 +159,7 @@ func enableScheduler(ctx context.Context, cfg *config.Config, srv *server.Server
 				return fail(fmt.Errorf("event triggers: %w", err))
 			}
 		} else {
-			log.Printf("scheduler: %s is not set, so only shell jobs run: an agent job's run ends in error, and no event trigger or bus command is answered", config.SettingSchedulerNATSURL)
+			log.Printf("scheduler: %s is not set, so no event trigger fires and no bus command is answered", config.SettingSchedulerNATSURL)
 		}
 	}
 	if err := scheduler.Start(); err != nil {

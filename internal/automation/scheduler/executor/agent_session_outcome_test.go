@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -82,6 +83,16 @@ func (bridge *sessionAnswers) Instances() ([]msg.Instance, error) {
 	return nil, nil
 }
 
+func (bridge *sessionAnswers) CreateSession(ctx context.Context, request msg.CreateSessionRequest) (*msg.ManagedSession, error) {
+	bridge.t.Error("an outcome wait created a session")
+	return nil, nil
+}
+
+func (bridge *sessionAnswers) SendMessage(ctx context.Context, sessionID string, request msg.SendMessageRequest) error {
+	bridge.t.Error("an outcome wait sent a message")
+	return nil
+}
+
 func (bridge *sessionAnswers) Session(sessionID string) (*msg.ManagedSession, error) {
 	if sessionID != "scheduler-claude-code-1" {
 		bridge.t.Errorf("unexpected session %s", sessionID)
@@ -107,8 +118,8 @@ func answerNoSuchSession() (*msg.ManagedSession, error) {
 	return nil, fmt.Errorf("session scheduler-claude-code-1: %w", ErrSessionNotFound)
 }
 
-// The adapter creates the session a moment after the publish, so a 404 and a
-// session still at work are waited out until the turn ends.
+// A session not there yet and a session still at work are waited out until
+// the turn ends.
 func TestTheRunFollowsTheSessionToTheEndOfItsTurn(t *testing.T) {
 	publishedAt := time.Now()
 	executor, _ := fakeBridge(t,

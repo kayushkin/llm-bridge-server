@@ -1,6 +1,8 @@
-// Package sendanswer is the answer to one message sent into a session, as
-// POST /sessions/{id}/send writes it and a sender inside this server reads it.
-package sendanswer
+// Package sessionanswer is the answer of a session route that a caller inside
+// this server also calls in Go: POST /sessions, which creates a session, and
+// POST /sessions/{id}/send, which sends a message into one. The route writes
+// it, and a caller inside this server reads the same answer.
+package sessionanswer
 
 import (
 	"bytes"
@@ -10,9 +12,9 @@ import (
 	"strings"
 )
 
-// Answer is the answer to one send: the status, content type and
-// body POST /sessions/{id}/send writes. A sender inside this server reads the
-// same answer a person calling the route gets.
+// Answer is the answer to one create or send: the status, content type and
+// body the route writes. A caller inside this server reads the same answer a
+// person calling the route gets.
 type Answer struct {
 	Status      int
 	contentType string

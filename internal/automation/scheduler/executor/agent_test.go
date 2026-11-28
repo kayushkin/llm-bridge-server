@@ -31,10 +31,10 @@ func TestWorkingMemoryPreambleCarriesTheContract(t *testing.T) {
 // The preamble goes in FRONT of the job's prompt: the agent must read its memory
 // before it starts reasoning, not after it has already decided.
 func TestPreamblePrecedesThePrompt(t *testing.T) {
-	e := &AgentExecutor{} // no NATS client: Run bails before publishing
+	e := &AgentExecutor{} // no bridge: Run bails before starting a session
 	run := AgentRun{Agent: "claude-code", Prompt: "JUDGE THE DRIFT", WorkspaceID: "ws-123"}
 
-	// Run without a client returns early, so exercise the composition directly —
+	// Run without a bridge returns early, so exercise the composition directly —
 	// this is the exact expression Run uses.
 	composed := workingMemoryPreamble("http://localhost:8191", run.WorkspaceID) + run.Prompt
 
@@ -45,7 +45,7 @@ func TestPreamblePrecedesThePrompt(t *testing.T) {
 		t.Fatal("memory preamble must come BEFORE the task, not after")
 	}
 	if got := e.Run(run); got.Status != "error" {
-		t.Fatalf("Run with no NATS client should fail loudly, got %q", got.Status)
+		t.Fatalf("Run with no bridge should fail loudly, got %q", got.Status)
 	}
 }
 

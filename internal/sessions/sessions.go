@@ -26,7 +26,7 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/grantcheck"
 
-	"github.com/kayushkin/llm-bridge-server/internal/sessions/sendanswer"
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/sessionanswer"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
 
@@ -281,12 +281,56 @@ func (s *Service) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 		req.DisplayName, req.SessionID,
 	)
 
+	creation, admitted := s.sessionCreationOfRequest(w, r, &req)
+	if !admitted {
+		return
+	}
+	sess, refusal := s.createSession(r.Context(), req, creation)
+	if sess == nil {
+		refusal.Write(w)
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+
+	// PTY sessions need an attach token so the browser can hand it to the
+	// /attach WS upgrade. The token lives only on the in-memory AttachHub
+	// (it dies with the pty), so we serialize it alongside the persisted
+	// session via an inline-embedded wrapper rather than adding a transient
+	// field to ManagedSession.
+	if sess.Mode == msg.SessionModePTY {
+		if hub := s.Harness.AttachHubFor(sess.SessionID); hub != nil {
+			httpjson.WriteJSON(w, createSessionResponse{Session: sess, AttachToken: hub.Token()})
+			return
+		}
+	}
+	httpjson.WriteJSON(w, sess)
+}
+
+// sessionCreation is who is creating a session, as the create checks it.
+type sessionCreation struct {
+	// peerOrigin is the connected server the session is started through, and
+	// the remote user it acts for, or nil.
+	peerOrigin *store.SessionPeerOrigin
+	// startedAsAnotherPrincipalBy is the principal starting the session as
+	// another principal it holds can_start_sessions_as on, or empty.
+	startedAsAnotherPrincipalBy string
+	// managerSessionReachable says whether the creator may name parent as the
+	// new session's manager. Nil for a creator that reaches every session.
+	managerSessionReachable func(ctx context.Context, parent *store.Session) (bool, error)
+}
+
+// sessionCreationOfRequest reads who a POST /sessions acts as and settles the
+// principal the session runs as into req. It answers false, having written
+// the refusal, when that caller may not create the session it asks for.
+func (s *Service) sessionCreationOfRequest(w http.ResponseWriter, r *http.Request, req *CreateSessionRequest) (sessionCreation, bool) {
+	var creation sessionCreation
 	// A session's agent starts a delegate under its own session, as that
 	// session's principal (delegate_sessions.go).
 	if caller, ok := requestcaller.FromRequest(r); ok && caller.DelegatingAgentOfSessionID != "" {
-		if refusal := delegateRequestRefusal(&req, caller.DelegatingAgentOfSessionID, caller.PrincipalID); refusal != nil {
+		if refusal := delegateRequestRefusal(req, caller.DelegatingAgentOfSessionID, caller.PrincipalID); refusal != nil {
 			refusal.Write(w)
-			return
+			return creation, false
 		}
 	}
 
@@ -297,7 +341,6 @@ func (s *Service) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// internal service are not restricted here. Naming another principal
 	// without the grant is refused rather than overwritten, so a client bug
 	// that sends the wrong id is visible.
-	startedAsAnotherPrincipalBy := ""
 	if callerPrincipalID, restricted := requestcaller.PrincipalRestrictingRequest(r); restricted {
 		if req.PrincipalID != "" && req.PrincipalID != callerPrincipalID {
 			caller, _ := requestcaller.FromRequest(r)
@@ -306,15 +349,15 @@ func (s *Service) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 				var err error
 				if allowed, err = s.Login.MayStartSessionsAs(r.Context(), grantcheck.SubjectOfCaller(caller), req.PrincipalID); err != nil {
 					httpjson.WriteJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
-					return
+					return creation, false
 				}
 			}
 			if !allowed {
 				httpjson.WriteJSONError(w, http.StatusForbidden, "principal_mismatch", fmt.Sprintf(
 					"principal_id %q is not the logged-in principal %s, which holds no %s grant on it; a session can only be created as yourself (omit principal_id)", req.PrincipalID, callerPrincipalID, login.StartSessionsAsRelation))
-				return
+				return creation, false
 			}
-			startedAsAnotherPrincipalBy = callerPrincipalID
+			creation.startedAsAnotherPrincipalBy = callerPrincipalID
 		} else {
 			req.PrincipalID = callerPrincipalID
 		}
@@ -327,7 +370,7 @@ func (s *Service) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 		if req.PrincipalID != "" && req.PrincipalID != caller.PrincipalID {
 			httpjson.WriteJSONError(w, http.StatusForbidden, "principal_mismatch", fmt.Sprintf(
 				"principal_id %q is not %s, the principal this connected server's user is mapped to; omit principal_id", req.PrincipalID, caller.PrincipalID))
-			return
+			return creation, false
 		}
 		req.PrincipalID = caller.PrincipalID
 	}
@@ -343,35 +386,61 @@ func (s *Service) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// origin the new session keeps: a connected server acting for one of its
 	// users starts it limited by that server's grants too, and so does an
 	// agent whose own session was started that way.
-	creatorSubject := grantcheck.Subject{PrincipalID: req.PrincipalID}
-	var creatorPeerOrigin *store.SessionPeerOrigin
 	if caller, ok := requestcaller.FromRequest(r); ok {
 		switch {
 		case caller.Peer.ActsForRemoteUser():
-			creatorPeerOrigin = &store.SessionPeerOrigin{PeerPrincipalID: caller.Peer.PeerPrincipalID, RemotePrincipalID: caller.Peer.RemoteUserPrincipalID}
+			creation.peerOrigin = &store.SessionPeerOrigin{PeerPrincipalID: caller.Peer.PeerPrincipalID, RemotePrincipalID: caller.Peer.RemoteUserPrincipalID}
 		case caller.DelegatingAgentOfSessionID != "":
 			origin, found, err := s.Store.SessionPeerOriginOfLineage(caller.DelegatingAgentOfSessionID)
 			if err != nil {
 				httpjson.WriteJSONError(w, http.StatusInternalServerError, "session_peer_origin_lookup_failed", err.Error())
-				return
+				return creation, false
 			}
 			if found {
-				creatorPeerOrigin = &origin
+				creation.peerOrigin = &origin
 			}
 		}
 	}
-	if creatorPeerOrigin != nil {
-		creatorSubject.ThroughPeerPrincipalID = creatorPeerOrigin.PeerPrincipalID
+	if scope, restricted := requestcaller.SessionScopeRestrictingRequest(r); restricted {
+		caller, _ := requestcaller.FromRequest(r)
+		creation.managerSessionReachable = func(ctx context.Context, parent *store.Session) (bool, error) {
+			if scope.Reaches(s.Store, parent) {
+				return true, nil
+			}
+			return s.Login.CallerStartedSessionAndMayDriveIt(ctx, caller, parent)
+		}
+	}
+	return creation, true
+}
+
+// CreateSessionFromThisServer creates a session this server itself starts,
+// such as a scheduler agent job's: every check and step of POST /sessions for
+// the internal service acting as nobody, after the touch of keep-awake that
+// route's wrapper makes. The session runs as the principal req names, or as
+// none when it names none.
+func (s *Service) CreateSessionFromThisServer(ctx context.Context, req CreateSessionRequest) (*store.Session, sessionanswer.Answer) {
+	if s.KeepAwake() != nil {
+		// Taking a block can wait on a child starting; the create must not.
+		go s.KeepAwake().Touch()
+	}
+	return s.createSession(ctx, req, sessionCreation{})
+}
+
+// createSession creates the session req describes, for the creator creation
+// describes: every check and step of POST /sessions after it has read who
+// is asking. It answers the session, or nil and the refusal the route writes.
+func (s *Service) createSession(ctx context.Context, req CreateSessionRequest, creation sessionCreation) (*store.Session, sessionanswer.Answer) {
+	creatorSubject := grantcheck.Subject{PrincipalID: req.PrincipalID}
+	if creation.peerOrigin != nil {
+		creatorSubject.ThroughPeerPrincipalID = creation.peerOrigin.PeerPrincipalID
 	}
 
 	h := msg.Harness(req.Harness)
 	if !harnesscatalog.IsValidHarness(h) {
-		http.Error(w, "invalid harness", http.StatusBadRequest)
-		return
+		return nil, sessionanswer.PlainText(http.StatusBadRequest, "invalid harness")
 	}
 	if reason, oneShotOnly := harnesscatalog.OneShotOnlyHarnesses[h]; oneShotOnly {
-		httpjson.WriteJSONError(w, http.StatusBadRequest, "harness_has_no_sessions", reason)
-		return
+		return nil, sessionanswer.JSONError(http.StatusBadRequest, "harness_has_no_sessions", reason)
 	}
 
 	// Classification. Type and Origin are rejected when absent or unknown;
@@ -389,15 +458,13 @@ func (s *Service) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// So an unknown purpose is stored and logged, and session-taxonomy-guard
 	// reports it — visible, not fatal.
 	if !msg.ValidSessionType(req.Type) {
-		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_session_type", fmt.Sprintf(
+		return nil, sessionanswer.JSONError(http.StatusBadRequest, "invalid_session_type", fmt.Sprintf(
 			"type must be one of %v, got %q — see SessionType in llm-bridge/msg/server.go",
 			msg.SessionTypes(), req.Type))
-		return
 	}
 	if strings.TrimSpace(req.Origin) == "" {
-		httpjson.WriteJSONError(w, http.StatusBadRequest, "missing_origin",
+		return nil, sessionanswer.JSONError(http.StatusBadRequest, "missing_origin",
 			"origin is required: name the service or script creating this session (e.g. \"scheduler\", \"healthcheck\", \"frontend-dash\")")
-		return
 	}
 	if problems := msg.ClassifyPurpose(req.Type, req.Purpose, req.Origin); len(problems) > 0 {
 		for _, p := range problems {
@@ -416,12 +483,10 @@ func (s *Service) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 		// always allowed
 	case msg.SessionModePTY:
 		if !harnesscatalog.HarnessSupportsPTY[h] {
-			http.Error(w, `{"error":{"code":"pty_unsupported","message":"harness does not support pty mode"}}`, http.StatusBadRequest)
-			return
+			return nil, sessionanswer.PlainText(http.StatusBadRequest, `{"error":{"code":"pty_unsupported","message":"harness does not support pty mode"}}`)
 		}
 	default:
-		http.Error(w, fmt.Sprintf("invalid mode: %q", mode), http.StatusBadRequest)
-		return
+		return nil, sessionanswer.PlainText(http.StatusBadRequest, fmt.Sprintf("invalid mode: %q", mode))
 	}
 
 	// Spend ceiling. Absent and zero both mean "no ceiling" — see the
@@ -433,8 +498,7 @@ func (s *Service) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 	maxBudgetUSD := 0.0
 	if req.MaxBudget != nil {
 		if *req.MaxBudget < 0 {
-			http.Error(w, `{"error":{"code":"invalid_max_budget","message":"max_budget must not be negative; omit it or send 0 for no ceiling"}}`, http.StatusBadRequest)
-			return
+			return nil, sessionanswer.PlainText(http.StatusBadRequest, `{"error":{"code":"invalid_max_budget","message":"max_budget must not be negative; omit it or send 0 for no ceiling"}}`)
 		}
 		maxBudgetUSD = *req.MaxBudget
 	}
@@ -443,14 +507,12 @@ func (s *Service) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// fallback. harness-store is the single source of truth for which
 	// instance runs a session.
 	if s.HarnessStore() == nil {
-		http.Error(w, "harness-store not configured", http.StatusServiceUnavailable)
-		return
+		return nil, sessionanswer.PlainText(http.StatusServiceUnavailable, "harness-store not configured")
 	}
 
 	inst, err := resolveInstance(s.HarnessStore(), req.InstanceID, h)
 	if err != nil {
-		http.Error(w, err.message, err.status)
-		return
+		return nil, sessionanswer.PlainText(err.status, err.message)
 	}
 
 	// Who the session is started as. Optional; when given it must be a
@@ -460,24 +522,20 @@ func (s *Service) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// display name or email is refused by shape: neither is unique.
 	if req.PrincipalID != "" {
 		if !strings.HasPrefix(req.PrincipalID, "principal_") {
-			httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_principal_id", fmt.Sprintf(
+			return nil, sessionanswer.JSONError(http.StatusBadRequest, "invalid_principal_id", fmt.Sprintf(
 				"principal_id %q is not a principal-store id (principal_000001); a name or email is not accepted, because neither is unique", req.PrincipalID))
-			return
 		}
 		if s.PrincipalStore() == nil {
-			httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "principal_store_not_configured",
+			return nil, sessionanswer.JSONError(http.StatusServiceUnavailable, "principal_store_not_configured",
 				"principal_id was given but this server has no principal-store to check it with (LLMBRIDGE_PRINCIPAL_STORE_URL)")
-			return
 		}
-		if _, err := s.PrincipalStore().Get(r.Context(), req.PrincipalID, false); err != nil {
+		if _, err := s.PrincipalStore().Get(ctx, req.PrincipalID, false); err != nil {
 			if errors.Is(err, principals.ErrNotFound) {
-				httpjson.WriteJSONError(w, http.StatusBadRequest, "unknown_principal", fmt.Sprintf(
+				return nil, sessionanswer.JSONError(http.StatusBadRequest, "unknown_principal", fmt.Sprintf(
 					"principal_id %s does not exist in principal-store: %v", req.PrincipalID, err))
-				return
 			}
-			httpjson.WriteJSONError(w, http.StatusBadGateway, "principal_store_unavailable", fmt.Sprintf(
+			return nil, sessionanswer.JSONError(http.StatusBadGateway, "principal_store_unavailable", fmt.Sprintf(
 				"could not confirm principal_id %s with principal-store, so the session was not created: %v", req.PrincipalID, err))
-			return
 		}
 	}
 
@@ -488,19 +546,16 @@ func (s *Service) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// it. A bundle's name is refused by shape: it is renameable.
 	if req.BundleID != "" {
 		if s.BundleStore() == nil {
-			httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "bundle_store_not_configured",
+			return nil, sessionanswer.JSONError(http.StatusServiceUnavailable, "bundle_store_not_configured",
 				"bundle_id was given but "+BundleStoreOffMessage+", so it cannot be checked")
-			return
 		}
-		if err := s.BundleStore().CheckSessionBundleExists(r.Context(), req.BundleID); err != nil {
+		if err := s.BundleStore().CheckSessionBundleExists(ctx, req.BundleID); err != nil {
 			if errors.Is(err, bundles.ErrSessionBundleNotFound) {
-				httpjson.WriteJSONError(w, http.StatusBadRequest, "unknown_bundle", fmt.Sprintf(
+				return nil, sessionanswer.JSONError(http.StatusBadRequest, "unknown_bundle", fmt.Sprintf(
 					"bundle_id %q is not a bundle bundle-store has: %v", req.BundleID, err))
-				return
 			}
-			httpjson.WriteJSONError(w, http.StatusBadGateway, "bundle_store_unavailable", fmt.Sprintf(
+			return nil, sessionanswer.JSONError(http.StatusBadGateway, "bundle_store_unavailable", fmt.Sprintf(
 				"could not confirm bundle_id %s with bundle-store, so the session was not created: %v", req.BundleID, err))
-			return
 		}
 	}
 
@@ -510,14 +565,13 @@ func (s *Service) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 		if err := s.Login.CheckAgentExists(req.AgentID); err != nil {
 			switch {
 			case errors.Is(err, login.ErrUnknownAgent):
-				httpjson.WriteJSONError(w, http.StatusBadRequest, "unknown_agent", err.Error())
+				return nil, sessionanswer.JSONError(http.StatusBadRequest, "unknown_agent", err.Error())
 			case errors.Is(err, login.ErrAgentStoreNotConfigured):
-				httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "agent_store_not_configured", err.Error())
+				return nil, sessionanswer.JSONError(http.StatusServiceUnavailable, "agent_store_not_configured", err.Error())
 			default:
-				httpjson.WriteJSONError(w, http.StatusInternalServerError, "agent_store_unavailable", fmt.Sprintf(
+				return nil, sessionanswer.JSONError(http.StatusInternalServerError, "agent_store_unavailable", fmt.Sprintf(
 					"could not confirm agent_id %s, so the session was not created: %v", req.AgentID, err))
 			}
-			return
 		}
 	}
 
@@ -527,19 +581,16 @@ func (s *Service) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// spawn without them, far from the request that caused it.
 	if req.CardID != "" {
 		if s.IssueReads() == nil {
-			httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "kanban_store_not_configured",
+			return nil, sessionanswer.JSONError(http.StatusServiceUnavailable, "kanban_store_not_configured",
 				"card_id was given but this server has no kanban-store to check it with (kanban-store is off)")
-			return
 		}
-		if _, err := s.IssueReads().CardTags(r.Context(), req.CardID); err != nil {
+		if _, err := s.IssueReads().CardTags(ctx, req.CardID); err != nil {
 			if errors.Is(err, issuereads.ErrNotFound) {
-				httpjson.WriteJSONError(w, http.StatusBadRequest, "unknown_card", fmt.Sprintf(
+				return nil, sessionanswer.JSONError(http.StatusBadRequest, "unknown_card", fmt.Sprintf(
 					"card_id %q is not a card kanban-store has: %v", req.CardID, err))
-				return
 			}
-			httpjson.WriteJSONError(w, http.StatusBadGateway, "kanban_store_unavailable", fmt.Sprintf(
+			return nil, sessionanswer.JSONError(http.StatusBadGateway, "kanban_store_unavailable", fmt.Sprintf(
 				"could not confirm card_id %s with kanban-store, so the session was not created: %v", req.CardID, err))
-			return
 		}
 	}
 
@@ -549,26 +600,21 @@ func (s *Service) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 	if req.ManagerSessionID != "" {
 		parent, err := s.Store.GetSession(req.ManagerSessionID)
 		if errors.Is(err, sql.ErrNoRows) {
-			httpjson.WriteJSONError(w, http.StatusBadRequest, "unknown_manager_session", fmt.Sprintf(
+			return nil, sessionanswer.JSONError(http.StatusBadRequest, "unknown_manager_session", fmt.Sprintf(
 				"manager_session_id %q is not a session this server has", req.ManagerSessionID))
-			return
 		}
 		if err != nil {
-			httpjson.WriteJSONError(w, http.StatusInternalServerError, "manager_session_lookup_failed", fmt.Sprintf(
+			return nil, sessionanswer.JSONError(http.StatusInternalServerError, "manager_session_lookup_failed", fmt.Sprintf(
 				"could not read manager_session_id %s, so the session was not created: %v", req.ManagerSessionID, err))
-			return
 		}
-		if scope, restricted := requestcaller.SessionScopeRestrictingRequest(r); restricted && !scope.Reaches(s.Store, parent) {
-			caller, _ := requestcaller.FromRequest(r)
-			drives, err := s.Login.CallerStartedSessionAndMayDriveIt(r.Context(), caller, parent)
+		if creation.managerSessionReachable != nil {
+			reachable, err := creation.managerSessionReachable(ctx, parent)
 			if err != nil {
-				httpjson.WriteJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
-				return
+				return nil, sessionanswer.JSONError(http.StatusBadGateway, "grant_store_unavailable", err.Error())
 			}
-			if !drives {
-				httpjson.WriteJSONError(w, http.StatusBadRequest, "unknown_manager_session", fmt.Sprintf(
+			if !reachable {
+				return nil, sessionanswer.JSONError(http.StatusBadRequest, "unknown_manager_session", fmt.Sprintf(
 					"manager_session_id %q is not a session this server has", req.ManagerSessionID))
-				return
 			}
 		}
 		managerSession = parent
@@ -582,15 +628,13 @@ func (s *Service) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 	if bridgeID == "" {
 		bridgeID = generateBridgeID()
 	} else if _, err := s.Store.GetSession(bridgeID); err == nil {
-		http.Error(w, "session_id already exists", http.StatusConflict)
-		return
+		return nil, sessionanswer.PlainText(http.StatusConflict, "session_id already exists")
 	}
 
 	if req.PrincipalID != "" {
-		if err := s.checkPrincipalMayRunHere(r.Context(), creatorSubject, &store.Session{SessionID: bridgeID, PrincipalID: req.PrincipalID, AgentID: req.AgentID}, inst); err != nil {
+		if err := s.checkPrincipalMayRunHere(ctx, creatorSubject, &store.Session{SessionID: bridgeID, PrincipalID: req.PrincipalID, AgentID: req.AgentID}, inst); err != nil {
 			status, code := grantGateStatus(err)
-			httpjson.WriteJSONError(w, status, code, err.Error())
-			return
+			return nil, sessionanswer.JSONError(status, code, err.Error())
 		}
 	}
 
@@ -634,7 +678,7 @@ func (s *Service) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// model_selection.go. A session whose model cannot be resolved is not
 	// created: the alternative was a row that spawned on whatever the harness
 	// felt like while the picker showed the user's pick.
-	if err := s.snapshotSessionDefaultsIntoSession(r.Context(), sess, req.MaxBudget != nil); err != nil {
+	if err := s.snapshotSessionDefaultsIntoSession(ctx, sess, req.MaxBudget != nil); err != nil {
 		code := "model_unresolvable"
 		switch {
 		case errors.Is(err, errDeniedReadPathsUnenforceable):
@@ -645,36 +689,32 @@ func (s *Service) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 			code = "tool_store_unavailable"
 		}
 		body, _ := json.Marshal(map[string]any{"error": map[string]string{"code": code, "message": err.Error()}})
-		http.Error(w, string(body), http.StatusUnprocessableEntity)
-		return
+		return nil, sessionanswer.PlainText(http.StatusUnprocessableEntity, string(body))
 	}
 
 	// The origin goes in before the session does, so no session started for a
 	// connected server's user ever exists without the peer's limits.
-	if creatorPeerOrigin != nil {
-		origin := *creatorPeerOrigin
+	if creation.peerOrigin != nil {
+		origin := *creation.peerOrigin
 		origin.SessionID = sess.SessionID
 		if err := s.Store.RecordSessionPeerOrigin(origin); err != nil {
-			httpjson.WriteJSONError(w, http.StatusInternalServerError, "session_peer_origin_not_recorded", err.Error())
-			return
+			return nil, sessionanswer.JSONError(http.StatusInternalServerError, "session_peer_origin_not_recorded", err.Error())
 		}
 	}
 	// The starter goes in before the session does, so no session started as
 	// another principal ever exists without saying who may drive it.
-	if startedAsAnotherPrincipalBy != "" {
-		if err := s.Store.RecordSessionStarter(store.SessionStarter{SessionID: sess.SessionID, PrincipalID: startedAsAnotherPrincipalBy, RecordedBy: startedAsAnotherPrincipalBy}); err != nil {
-			httpjson.WriteJSONError(w, http.StatusInternalServerError, "session_starter_not_recorded", err.Error())
-			return
+	if creation.startedAsAnotherPrincipalBy != "" {
+		if err := s.Store.RecordSessionStarter(store.SessionStarter{SessionID: sess.SessionID, PrincipalID: creation.startedAsAnotherPrincipalBy, RecordedBy: creation.startedAsAnotherPrincipalBy}); err != nil {
+			return nil, sessionanswer.JSONError(http.StatusInternalServerError, "session_starter_not_recorded", err.Error())
 		}
 	}
 	if err := s.Store.CreateSession(sess); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return nil, sessionanswer.PlainText(http.StatusInternalServerError, err.Error())
 	}
 
 	if req.AutoStart {
 		credID := s.HarnessStore().FirstEnabledCredentialID(inst.ID)
-		if _, startErr := s.StartOnInstance(r.Context(), sess, inst, credID); startErr != nil {
+		if _, startErr := s.StartOnInstance(ctx, sess, inst, credID); startErr != nil {
 			// The cause goes on the session's status and in the log. Until
 			// 2026-10-19 it went nowhere: br_1791866142589272438 errored in
 			// its creation second, the create answered 201, and only a retry
@@ -685,20 +725,7 @@ func (s *Service) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.WriteHeader(http.StatusCreated)
-
-	// PTY sessions need an attach token so the browser can hand it to the
-	// /attach WS upgrade. The token lives only on the in-memory AttachHub
-	// (it dies with the pty), so we serialize it alongside the persisted
-	// session via an inline-embedded wrapper rather than adding a transient
-	// field to ManagedSession.
-	if sess.Mode == msg.SessionModePTY {
-		if hub := s.Harness.AttachHubFor(sess.SessionID); hub != nil {
-			httpjson.WriteJSON(w, createSessionResponse{Session: sess, AttachToken: hub.Token()})
-			return
-		}
-	}
-	httpjson.WriteJSON(w, sess)
+	return sess, sessionanswer.JSON(http.StatusCreated, sess)
 }
 
 // createSessionResponse is the JSON shape returned by POST /sessions. It
@@ -827,7 +854,7 @@ func (s *Service) HandleSendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if sess.ControlledBy == msg.ControlledByHarness {
-		sendanswer.NotBridgeControlled().Write(w)
+		sessionanswer.NotBridgeControlled().Write(w)
 		return
 	}
 	var req SendMessageRequest
@@ -844,26 +871,26 @@ func (s *Service) HandleSendMessage(w http.ResponseWriter, r *http.Request) {
 // calls it directly, so its message is checked and sent exactly as a
 // person's is; such a caller goes through SendMessageFromThisServer, which
 // also does what the route's wrapper does.
-func (s *Service) sendMessageToSession(ctx context.Context, bridgeID string, req SendMessageRequest, senderPrincipalID string) sendanswer.Answer {
+func (s *Service) sendMessageToSession(ctx context.Context, bridgeID string, req SendMessageRequest, senderPrincipalID string) sessionanswer.Answer {
 	sess, err := s.Store.GetSession(bridgeID)
 	if err != nil {
-		return sendanswer.PlainText(http.StatusNotFound, "session not found")
+		return sessionanswer.PlainText(http.StatusNotFound, "session not found")
 	}
 
 	// Sending to a harness subagent would spawn a fresh agent rather than
 	// reach the one that ran, for the same reason resume does — see the gate
 	// in HandleResumeSession. The parent is the addressable session.
 	if sess.ControlledBy == msg.ControlledByHarness {
-		return sendanswer.NotBridgeControlled()
+		return sessionanswer.NotBridgeControlled()
 	}
 
 	// Message and Blocks are mutually exclusive — fail fast at the boundary
 	// so harnesses never see both populated.
 	if req.Message != "" && len(req.Blocks) > 0 {
-		return sendanswer.PlainText(http.StatusBadRequest, "message and blocks are mutually exclusive")
+		return sessionanswer.PlainText(http.StatusBadRequest, "message and blocks are mutually exclusive")
 	}
 	if req.Message == "" && len(req.Blocks) == 0 {
-		return sendanswer.PlainText(http.StatusBadRequest, "message or blocks must be set")
+		return sessionanswer.PlainText(http.StatusBadRequest, "message or blocks must be set")
 	}
 
 	// Refuse to spend past the session's ceiling. Checked before the
@@ -876,22 +903,22 @@ func (s *Service) sendMessageToSession(ctx context.Context, bridgeID string, req
 	// While the server drains before a restart, a new turn waits: the
 	// message is kept and sent once the drain ends (restart_drain.go).
 	if heldMessageID, held, err := s.HoldMessageIfRestartDraining(bridgeID, req, senderPrincipalID, "send"); err != nil {
-		return sendanswer.JSONError(http.StatusInternalServerError, "hold_failed", err.Error())
+		return sessionanswer.JSONError(http.StatusInternalServerError, "hold_failed", err.Error())
 	} else if held {
-		return sendanswer.JSON(http.StatusAccepted, msg.SendMessageResponse{Status: msg.SendStatusHeld, HeldMessageID: heldMessageID})
+		return sessionanswer.JSON(http.StatusAccepted, msg.SendMessageResponse{Status: msg.SendStatusHeld, HeldMessageID: heldMessageID})
 	}
 
 	if s.Harness.Get(bridgeID) == nil {
 		if sess.InstanceID == "" || s.HarnessStore() == nil {
-			return sendanswer.PlainText(http.StatusInternalServerError, "session has no instance bound")
+			return sessionanswer.PlainText(http.StatusInternalServerError, "session has no instance bound")
 		}
 		inst, err := s.HarnessStore().GetInstance(sess.InstanceID)
 		if err != nil {
-			return sendanswer.PlainText(http.StatusInternalServerError, fmt.Sprintf("instance not found: %v", err))
+			return sessionanswer.PlainText(http.StatusInternalServerError, fmt.Sprintf("instance not found: %v", err))
 		}
 		credID := s.HarnessStore().FirstEnabledCredentialID(inst.ID)
 		if _, startErr := s.StartOnInstance(ctx, sess, inst, credID); startErr != nil {
-			return sendanswer.PlainText(http.StatusInternalServerError, fmt.Sprintf("failed to start harness: %v", startErr))
+			return sessionanswer.PlainText(http.StatusInternalServerError, fmt.Sprintf("failed to start harness: %v", startErr))
 		}
 	}
 
@@ -904,7 +931,7 @@ func (s *Service) sendMessageToSession(ctx context.Context, bridgeID string, req
 	}
 	sender, err := s.MessageSenders.Of(ctx, senderPrincipalID)
 	if err != nil {
-		return sendanswer.JSONError(http.StatusBadGateway, "principal_store_unavailable", err.Error())
+		return sessionanswer.JSONError(http.StatusBadGateway, "principal_store_unavailable", err.Error())
 	}
 	sender.Stamp(&userEvent)
 	// Persist before forwarding to the harness. If either store can't take
@@ -914,7 +941,7 @@ func (s *Service) sendMessageToSession(ctx context.Context, bridgeID string, req
 	// seen the message yet. BroadcastEvent now writes both stores and returns
 	// the log-store error if it fails.
 	if _, err := s.Harness.BroadcastEvent(&userEvent); err != nil {
-		return sendanswer.PlainText(http.StatusInternalServerError, fmt.Sprintf("persist user_message: %v", err))
+		return sessionanswer.PlainText(http.StatusInternalServerError, fmt.Sprintf("persist user_message: %v", err))
 	}
 
 	if name := DisplayNameFromMessage(req.Message); name != "" {
@@ -924,7 +951,7 @@ func (s *Service) sendMessageToSession(ctx context.Context, bridgeID string, req
 	}
 
 	if err := s.Harness.Send(bridgeID, req.Message, req.Blocks); err != nil {
-		return sendanswer.PlainText(http.StatusInternalServerError, err.Error())
+		return sessionanswer.PlainText(http.StatusInternalServerError, err.Error())
 	}
 
 	// Replying to a chat that was marked done reopens it: pull it back out of
@@ -948,7 +975,7 @@ func (s *Service) sendMessageToSession(ctx context.Context, bridgeID string, req
 	// channel, not through the next message.
 	s.Signals.CloseQuestionsAnsweredByMessage(bridgeID, req.Message)
 
-	return sendanswer.JSON(http.StatusOK, msg.SendMessageResponse{Status: msg.SendStatusSent, MessageID: userEvent.MessageID})
+	return sessionanswer.JSON(http.StatusOK, msg.SendMessageResponse{Status: msg.SendStatusSent, MessageID: userEvent.MessageID})
 }
 
 // SendMessageFromThisServer sends a message the server itself sends — a
@@ -958,7 +985,7 @@ func (s *Service) sendMessageToSession(ctx context.Context, bridgeID string, req
 // senders were let through request authorization when they started (the
 // person who pressed the button, the link's owner) or are the server's own,
 // so no route rule is skipped.
-func (s *Service) SendMessageFromThisServer(ctx context.Context, sessionID string, req SendMessageRequest, senderPrincipalID string) sendanswer.Answer {
+func (s *Service) SendMessageFromThisServer(ctx context.Context, sessionID string, req SendMessageRequest, senderPrincipalID string) sessionanswer.Answer {
 	if s.KeepAwake() != nil {
 		// Taking a block can wait on a child starting; the send must not.
 		go s.KeepAwake().Touch()
@@ -1001,12 +1028,12 @@ func overBudgetRefusalBody(spendUSD, maxBudgetUSD float64) map[string]any {
 
 // overBudgetSendAnswer is writeRefusalIfOverBudget's refusal as a send
 // answer, and true, when the session has spent its ceiling.
-func (s *Service) overBudgetSendAnswer(bridgeID string) (sendanswer.Answer, bool) {
+func (s *Service) overBudgetSendAnswer(bridgeID string) (sessionanswer.Answer, bool) {
 	over, spendUSD, maxBudgetUSD := s.Harness.SessionOverBudget(bridgeID)
 	if !over {
-		return sendanswer.Answer{}, false
+		return sessionanswer.Answer{}, false
 	}
-	return sendanswer.JSON(http.StatusPaymentRequired, overBudgetRefusalBody(spendUSD, maxBudgetUSD)), true
+	return sessionanswer.JSON(http.StatusPaymentRequired, overBudgetRefusalBody(spendUSD, maxBudgetUSD)), true
 }
 
 func (s *Service) HandleSessionEvents(w http.ResponseWriter, r *http.Request) {

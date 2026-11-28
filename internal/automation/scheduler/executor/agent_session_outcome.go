@@ -28,28 +28,30 @@ func AgentSessionWaitLimit(timeoutSeconds int) time.Duration {
 	return DefaultAgentSessionWaitLimit
 }
 
-// A run used to end as success the moment its message reached NATS. On
+// A run used to end as success the moment its message reached NATS, which is
+// how agent jobs started their sessions until 2026-11-27. On
 // 2026-09-14 the Claude subscription had hit its weekly limit: every job
 // session that day got one error reply and spent nothing, and the scheduler
 // recorded all four runs as success. So a run now follows its session to the
 // end of the turn it started, and its status is what the session did.
 
-// runResultFromSession reads one snapshot of the session a run published to.
-// It returns settled=false while the session has not yet settled since
-// publishedAt.
+// runResultFromSession reads one snapshot of the session a run sent its turn
+// to. It returns settled=false while the session has not yet settled since
+// sentAt.
 //
-// A state stamped before publishedAt belongs to an earlier turn and says
-// nothing about this one. The scheduler creates a session and sends its first
-// message in one inbound message, so a new session goes from starting straight
-// into its turn and is never idle before it; any settled state stamped after
-// publishedAt is therefore the end of the turn this run started.
+// A state stamped before sentAt belongs to an earlier turn and says nothing
+// about this one. The scheduler creates a session with no status and sends its
+// first message before it reads the session, so a new session goes from
+// starting straight into its turn and is never idle before it; any settled
+// state stamped after sentAt is therefore the end of the turn this run
+// started.
 //
 //   - error, aborted, disconnected: the turn failed or the session was taken
 //     away, and the run is an error.
 //   - idle, completed, awaiting_user: the turn ended, and the run succeeded.
 //   - anything else: still working, or parked on a permission prompt; wait.
-func runResultFromSession(session *msg.ManagedSession, publishedAt time.Time) (result Result, settled bool) {
-	if session.Status == nil || session.Status.ChangedAt.Before(publishedAt) {
+func runResultFromSession(session *msg.ManagedSession, sentAt time.Time) (result Result, settled bool) {
+	if session.Status == nil || session.Status.ChangedAt.Before(sentAt) {
 		return Result{}, false
 	}
 	status := session.Status
@@ -86,22 +88,21 @@ func (e *AgentExecutor) readSession(sessionID string) (*msg.ManagedSession, erro
 }
 
 // waitForSessionOutcome polls the session until runResultFromSession settles
-// it, or until waitLimit passes. A session the bridge does not know yet, or a
-// read that fails, is waited out: the adapter creates the session a moment
-// after the publish. When the limit
-// passes the run is a timeout, and the session is left as it is.
-func (e *AgentExecutor) waitForSessionOutcome(sessionID string, publishedAt time.Time, waitLimit time.Duration) Result {
+// it, or until waitLimit passes. A session the bridge does not know, or a read
+// that fails, is waited out. When the limit passes the run is a timeout, and
+// the session is left as it is.
+func (e *AgentExecutor) waitForSessionOutcome(sessionID string, sentAt time.Time, waitLimit time.Duration) Result {
 	pollInterval := e.sessionPollInterval
 	if pollInterval <= 0 {
 		pollInterval = defaultSessionPollInterval
 	}
-	deadline := publishedAt.Add(waitLimit)
+	deadline := sentAt.Add(waitLimit)
 	lastSeen := "the bridge never answered"
 	for {
 		session, err := e.readSession(sessionID)
 		switch {
 		case err == nil:
-			if result, settled := runResultFromSession(session, publishedAt); settled {
+			if result, settled := runResultFromSession(session, sentAt); settled {
 				return result
 			}
 			if session.Status == nil {

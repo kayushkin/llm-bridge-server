@@ -9,7 +9,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge-server/internal/machines"
 	"github.com/kayushkin/llm-bridge-server/internal/repositories/repos"
-	"github.com/kayushkin/llm-bridge-server/internal/sessions/sendanswer"
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/sessionanswer"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
@@ -37,7 +37,7 @@ type Dependencies struct {
 
 // Host is the sessions, callers and scheduler jobs a session action reaches.
 type Host interface {
-	SendMessageFromThisServer(ctx context.Context, sessionID string, req msg.SendMessageRequest, senderPrincipalID string) sendanswer.Answer
+	SendMessageFromThisServer(ctx context.Context, sessionID string, req msg.SendMessageRequest, senderPrincipalID string) sessionanswer.Answer
 	StopSession(bridgeID string) error
 }
 
