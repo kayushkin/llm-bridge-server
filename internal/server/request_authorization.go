@@ -48,21 +48,6 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 )
 
-// serviceTokenHeader carries LLMBRIDGE_SERVICE_TOKEN from an internal service.
-const serviceTokenHeader = "X-LLM-Bridge-Service-Token"
-
-// peerTokenHeader carries a peer token: another llm-bridge-server acting here
-// as the peer principal this server issued the token for (peers.go).
-const peerTokenHeader = "X-LLM-Bridge-Peer-Token"
-
-// peerUserHeader names, beside a peer token, which of the calling server's
-// own principals a request is for: its principal-store id there (phase 2 of
-// design note d107154a). This server acts for that user as the local
-// principal its administrator mapped the pair to (peer_users.go), allowed only
-// what both principals' grants allow. It means nothing without a peer token,
-// and the calling server sets it itself, never from a client's header.
-const peerUserHeader = "X-LLM-Bridge-Peer-User"
-
 // routeAccessClass says who may call a route and how a principal is limited.
 type routeAccessClass int
 
@@ -130,7 +115,7 @@ const (
 	routePrincipalManagesOwnLoginSessions
 	// routePrincipalActsThroughPeerConnection is the connection proxy: any
 	// principal of this server may call a connected one through it, named
-	// there as itself (peerUserHeader) unless it is an administrator, who
+	// there as itself (PeerUserHeader) unless it is an administrator, who
 	// acts as this whole server everywhere but in starting a session. A peer
 	// may not go on through it to a third server.
 	routePrincipalActsThroughPeerConnection
@@ -855,22 +840,22 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	presentedPeerTokens, peerTokenPresent := r.Header[http.CanonicalHeaderKey(peerTokenHeader)]
-	presentedPeerUsers, peerUserPresent := r.Header[http.CanonicalHeaderKey(peerUserHeader)]
+	presentedPeerTokens, peerTokenPresent := r.Header[http.CanonicalHeaderKey(requestcaller.PeerTokenHeader)]
+	presentedPeerUsers, peerUserPresent := r.Header[http.CanonicalHeaderKey(requestcaller.PeerUserHeader)]
 	if peerUserPresent && !peerTokenPresent {
 		httpjson.WriteJSONError(w, http.StatusBadRequest, "peer_user_without_peer_token", fmt.Sprintf(
-			"%s names a connected server's user and means nothing without %s", peerUserHeader, peerTokenHeader))
+			"%s names a connected server's user and means nothing without %s", requestcaller.PeerUserHeader, requestcaller.PeerTokenHeader))
 		return
 	}
-	if _, serviceTokenPresent := r.Header[http.CanonicalHeaderKey(serviceTokenHeader)]; peerTokenPresent && serviceTokenPresent {
+	if _, serviceTokenPresent := r.Header[http.CanonicalHeaderKey(requestcaller.ServiceTokenHeader)]; peerTokenPresent && serviceTokenPresent {
 		httpjson.WriteJSONError(w, http.StatusBadRequest, "ambiguous_credentials", fmt.Sprintf(
-			"%s and %s were both sent; a request comes from one caller", serviceTokenHeader, peerTokenHeader))
+			"%s and %s were both sent; a request comes from one caller", requestcaller.ServiceTokenHeader, requestcaller.PeerTokenHeader))
 		return
 	}
 
-	if presentedServiceToken, present := r.Header[http.CanonicalHeaderKey(serviceTokenHeader)]; present {
+	if presentedServiceToken, present := r.Header[http.CanonicalHeaderKey(requestcaller.ServiceTokenHeader)]; present {
 		if len(presentedServiceToken) != 1 || subtle.ConstantTimeCompare([]byte(presentedServiceToken[0]), []byte(s.cfg.ServiceToken)) != 1 {
-			httpjson.WriteJSONError(w, http.StatusUnauthorized, "invalid_service_token", serviceTokenHeader+" does not match this server's service token")
+			httpjson.WriteJSONError(w, http.StatusUnauthorized, "invalid_service_token", requestcaller.ServiceTokenHeader+" does not match this server's service token")
 			return
 		}
 		assertedPrincipalHeaderName := principalIdentityHeaderNameIn(r.Header)
@@ -910,7 +895,7 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 	if headerName := principalIdentityHeaderNameIn(r.Header); headerName != "" {
 		httpjson.WriteJSONError(w, http.StatusUnauthorized, "principal_header_without_service_token", fmt.Sprintf(
 			"%s says which principal a request acts as and is believed only from a caller presenting %s; sign in with GET /auth/entra/start or POST /auth/demo-login instead",
-			headerName, serviceTokenHeader))
+			headerName, requestcaller.ServiceTokenHeader))
 		return
 	}
 
@@ -938,7 +923,7 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 	socketConnectionID, arrivedOverPeerSocket := peerSocketConnectionOfRequest(r)
 	if arrivedOverPeerSocket && !peerTokenPresent && rule.class != routePeerConnectionCall {
 		httpjson.WriteJSONError(w, http.StatusForbidden, "peer_socket_requires_peer_token", fmt.Sprintf(
-			"a request over a peer socket must present %s, or be a connection call; %s is neither", peerTokenHeader, pattern))
+			"a request over a peer socket must present %s, or be a connection call; %s is neither", requestcaller.PeerTokenHeader, pattern))
 		return
 	}
 
@@ -948,12 +933,12 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 	if peerTokenPresent {
 		if len(presentedPeerTokens) != 1 || strings.TrimSpace(presentedPeerTokens[0]) == "" {
 			httpjson.WriteJSONError(w, http.StatusBadRequest, "ambiguous_peer_token", fmt.Sprintf(
-				"%s was sent %d times or empty; a request presents one peer token", peerTokenHeader, len(presentedPeerTokens)))
+				"%s was sent %d times or empty; a request presents one peer token", requestcaller.PeerTokenHeader, len(presentedPeerTokens)))
 			return
 		}
 		if _, hasAuthorization := r.Header["Authorization"]; hasAuthorization {
 			httpjson.WriteJSONError(w, http.StatusBadRequest, "ambiguous_credentials", fmt.Sprintf(
-				"%s and an Authorization header were both sent; a request comes from one caller", peerTokenHeader))
+				"%s and an Authorization header were both sent; a request comes from one caller", requestcaller.PeerTokenHeader))
 			return
 		}
 		if !arrivedOverPeerSocket && s.cfg.DemoLoginEnabled {
@@ -984,7 +969,7 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 		if peerUserPresent {
 			if len(presentedPeerUsers) != 1 || strings.TrimSpace(presentedPeerUsers[0]) == "" {
 				httpjson.WriteJSONError(w, http.StatusBadRequest, "ambiguous_peer_user", fmt.Sprintf(
-					"%s was sent %d times or empty; a request names one user", peerUserHeader, len(presentedPeerUsers)))
+					"%s was sent %d times or empty; a request names one user", requestcaller.PeerUserHeader, len(presentedPeerUsers)))
 				return
 			}
 			caller, credentialError = s.callerForPeerUser(r.Context(), caller, strings.TrimSpace(presentedPeerUsers[0]))
@@ -1212,7 +1197,7 @@ func (s *Server) serveAsCaller(w http.ResponseWriter, r *http.Request, pattern s
 // a header this server refuses to believe must be found however it is spelled.
 func principalIdentityHeaderNameIn(header http.Header) string {
 	for key, values := range header {
-		if !strings.EqualFold(key, principalIdentityHeader) {
+		if !strings.EqualFold(key, requestcaller.PrincipalIdentityHeader) {
 			continue
 		}
 		for _, value := range values {
@@ -1243,7 +1228,7 @@ func (s *Server) principalOfRequest(r *http.Request, rule routeAccessRule) (stri
 		if rule.class != routePrincipalOrSessionAgentThroughStoreProxy && !isSessionAgentToken(token) {
 			return "", "", "", requestcaller.NewCredentialError(http.StatusUnauthorized, "authorization_header_not_accepted", fmt.Sprintf(
 				"an Authorization header is accepted on %s/, %s/, %s/ and %s/ as a session agent token, and elsewhere only as an administrator's session agent token; this route takes the login cookie or %s",
-				issuesMountPrefix, grantsMountPrefix, mailMountPrefix, referencesMountPrefix, serviceTokenHeader))
+				issuesMountPrefix, grantsMountPrefix, mailMountPrefix, referencesMountPrefix, requestcaller.ServiceTokenHeader))
 		}
 		if token == "" {
 			return "", "", "", requestcaller.NewCredentialError(http.StatusUnauthorized, "invalid_session_agent_token",
@@ -1315,4 +1300,26 @@ func pathValueForPattern(pattern, escapedPath, pathValueName string) (string, er
 		return value, nil
 	}
 	return "", errors.New("pattern " + pattern + " has no path value named " + pathValueName)
+}
+
+// routeClassesRefusedToPeerUsers are the classes whose answer comes from a
+// store or record this server cannot narrow to the intersection of two
+// principals, so a connected server's user is refused them: the store
+// proxies act as the principal in another store, and operations and login
+// sessions are a principal's own with no peer origin.
+var routeClassesRefusedToPeerUsers = []routeAccessClass{
+	routePrincipalOrSessionAgentThroughStoreProxy,
+	routePrincipalCreatesOperation,
+	routePrincipalOwnsOperation,
+	routePrincipalSeesOwnOperationsOnly,
+	routePrincipalManagesOwnLoginSessions,
+}
+
+func routeClassIsRefusedToPeerUsers(class routeAccessClass) bool {
+	for _, refused := range routeClassesRefusedToPeerUsers {
+		if refused == class {
+			return true
+		}
+	}
+	return false
 }

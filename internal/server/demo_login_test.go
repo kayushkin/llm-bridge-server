@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads/issuereadstest"
 
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads"
@@ -511,7 +513,7 @@ func TestAClientSentPrincipalHeaderIsRefusedWithoutTheServiceToken(t *testing.T)
 	cookie := loginCookieFrom(t, demoLogin(t, server, "principal_000001"))
 
 	for name, addHeader := range map[string]func(http.Header){
-		"canonical":     func(h http.Header) { h.Set(principalIdentityHeader, "principal_000002") },
+		"canonical":     func(h http.Header) { h.Set(requestcaller.PrincipalIdentityHeader, "principal_000002") },
 		"non-canonical": func(h http.Header) { h["x-principal-id"] = []string{"principal_000002"} },
 	} {
 		for _, path := range []string{"/issues/boards", "/health", "/sessions"} {

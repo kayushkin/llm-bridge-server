@@ -5,6 +5,8 @@ import (
 	"net/http/httputil"
 	"net/url"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/machines/machinestest"
 
 	"encoding/json"
@@ -136,7 +138,7 @@ func doJSON(t *testing.T, srv http.Handler, method, path string, body any) *http
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	req.Header.Set(serviceTokenHeader, testServiceToken)
+	req.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
 	return w.Result()
@@ -169,7 +171,7 @@ func testAuthorizationConfig(cfg *config.Config) {
 // their requests by hand instead.
 func asInternalService(srv *Server) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.Header.Set(serviceTokenHeader, testServiceToken)
+		r.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
 		srv.ServeHTTP(w, r)
 	})
 }

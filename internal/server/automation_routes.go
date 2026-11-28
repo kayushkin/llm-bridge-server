@@ -5,6 +5,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/sessionactions"
 
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
@@ -154,8 +156,8 @@ func (s *Server) HTTPClientToThisServer(timeout time.Duration) (string, *http.Cl
 	asInternalService := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		request := r.Clone(r.Context())
 		request.Header.Del("Authorization")
-		request.Header.Del(principalIdentityHeader)
-		request.Header.Set(serviceTokenHeader, s.cfg.ServiceToken)
+		request.Header.Del(requestcaller.PrincipalIdentityHeader)
+		request.Header.Set(requestcaller.ServiceTokenHeader, s.cfg.ServiceToken)
 		s.ServeHTTP(w, request)
 	})
 	client := inprocesshttp.Client(asInternalService)

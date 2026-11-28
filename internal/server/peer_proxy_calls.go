@@ -41,6 +41,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -187,7 +189,7 @@ func (calls *peerProxyCalls) settle(key string, read *peerProxyRead) {
 // the headers forwarded and the body.
 func sharedProxiedReadKey(connectionID, method, pathAndQuery string, header http.Header, body []byte) string {
 	hash := sha256.New()
-	for _, name := range append([]string{peerUserHeader}, requestHeadersForwardedToPeers...) {
+	for _, name := range append([]string{requestcaller.PeerUserHeader}, requestHeadersForwardedToPeers...) {
 		fmt.Fprintf(hash, "%s=%q\n", name, header.Values(name))
 	}
 	hash.Write(body)

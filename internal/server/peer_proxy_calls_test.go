@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -172,7 +174,7 @@ func TestProxiedRequestOnlyReads(t *testing.T) {
 func TestSharedProxiedReadKeyTellsCallersAndBodiesApart(t *testing.T) {
 	base := sharedProxiedReadKey("c1", "POST", "/sessions/validators", http.Header{}, []byte(`{"ids":["a"]}`))
 	named := http.Header{}
-	named.Set(peerUserHeader, "principal_000002")
+	named.Set(requestcaller.PeerUserHeader, "principal_000002")
 	for name, other := range map[string]string{
 		"another body":       sharedProxiedReadKey("c1", "POST", "/sessions/validators", http.Header{}, []byte(`{"ids":["b"]}`)),
 		"another user":       sharedProxiedReadKey("c1", "POST", "/sessions/validators", named, []byte(`{"ids":["a"]}`)),

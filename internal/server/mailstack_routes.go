@@ -23,6 +23,8 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httproutes"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
 
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
@@ -73,7 +75,7 @@ func (s *Server) serveMailstack(w http.ResponseWriter, r *http.Request, caller *
 		httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "mailstack_off", errMailstackOff.Error())
 		return
 	}
-	storePath, err := url.Parse(escapedPathAfterPrefix(r.URL, mailMountPrefix))
+	storePath, err := url.Parse(httproutes.EscapedPathAfterPrefix(r.URL, mailMountPrefix))
 	if err != nil {
 		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_path", fmt.Sprintf("the path after %s/ is not one mailstack can read: %v", mailMountPrefix, err))
 		return

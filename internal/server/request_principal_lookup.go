@@ -114,9 +114,9 @@ func (s *Server) callerActingAsPrincipal(ctx context.Context, principalID string
 func (s *Server) callerAssertedByInternalService(ctx context.Context, principalID string) (requestcaller.Caller, *requestcaller.CredentialError) {
 	if !isWellFormedPrincipalID(principalID) {
 		return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusBadRequest, "invalid_principal_id", fmt.Sprintf(
-			"%s: %q is not a principal-store id (principal_000001); a name or an email is not accepted, because neither is unique", principalIdentityHeader, principalID))
+			"%s: %q is not a principal-store id (principal_000001); a name or an email is not accepted, because neither is unique", requestcaller.PrincipalIdentityHeader, principalID))
 	}
-	return s.CallerForPrincipalID(ctx, principalID, principalIdentityHeader+" names")
+	return s.CallerForPrincipalID(ctx, principalID, requestcaller.PrincipalIdentityHeader+" names")
 }
 
 // CallerForPrincipalID reads principalID from principal-store and turns the
@@ -160,7 +160,7 @@ func (s *Server) CallerForPrincipalID(ctx context.Context, principalID, subjectD
 func (s *Server) callerOfPeerToken(ctx context.Context, presentedToken, socketConnectionID string, arrivedOverPeerSocket bool) (requestcaller.Caller, *requestcaller.CredentialError) {
 	grant, err := s.store.GetPeerGrantByTokenHash(hashPeerSecret(presentedToken))
 	if errors.Is(err, store.ErrPeerGrantNotFound) {
-		return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "peer_token_unknown", peerTokenHeader+" is not a peer token this server issued")
+		return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "peer_token_unknown", requestcaller.PeerTokenHeader+" is not a peer token this server issued")
 	}
 	if err != nil {
 		return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusInternalServerError, "peer_token_lookup_failed", fmt.Sprintf("could not look up the peer token: %v", err))

@@ -32,6 +32,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/accesstokens"
+
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -208,9 +210,9 @@ func (s *Server) handleEntraSignInStart(w http.ResponseWriter, r *http.Request) 
 		httpjson.WriteJSONError(w, http.StatusBadGateway, "entra_discovery_failed", err.Error())
 		return
 	}
-	state, stateErr := randomURLSafeToken(loginSessionRandomBytes)
-	nonce, nonceErr := randomURLSafeToken(loginSessionRandomBytes)
-	browserBinding, bindingErr := randomURLSafeToken(loginSessionRandomBytes)
+	state, stateErr := accesstokens.RandomURLSafe(loginSessionRandomBytes)
+	nonce, nonceErr := accesstokens.RandomURLSafe(loginSessionRandomBytes)
+	browserBinding, bindingErr := accesstokens.RandomURLSafe(loginSessionRandomBytes)
 	if err := errors.Join(stateErr, nonceErr, bindingErr); err != nil {
 		httpjson.WriteJSONError(w, http.StatusInternalServerError, "random_source_failed", err.Error())
 		return
@@ -219,10 +221,10 @@ func (s *Server) handleEntraSignInStart(w http.ResponseWriter, r *http.Request) 
 	now := s.loginClock().UTC().Truncate(time.Second)
 	attempt := store.LoginAttempt{
 		Provider:           entraIdentityProvider,
-		StateHash:          sha256Hex(state),
-		NonceHash:          sha256Hex(nonce),
+		StateHash:          accesstokens.SHA256Hex(state),
+		NonceHash:          accesstokens.SHA256Hex(nonce),
 		CodeVerifier:       verifier,
-		BrowserBindingHash: sha256Hex(browserBinding),
+		BrowserBindingHash: accesstokens.SHA256Hex(browserBinding),
 		ReturnTo:           returnTo,
 		CreatedAt:          now,
 		ExpiresAt:          now.Add(loginAttemptLifetime),
@@ -274,7 +276,7 @@ func (s *Server) handleEntraSignInCallback(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	now := s.loginClock().UTC()
-	attempt, err := s.store.ConsumeLoginAttemptByStateHash(sha256Hex(state), now)
+	attempt, err := s.store.ConsumeLoginAttemptByStateHash(accesstokens.SHA256Hex(state), now)
 	switch {
 	case errors.Is(err, store.ErrLoginAttemptNotFound):
 		httpjson.WriteJSONError(w, http.StatusBadRequest, "login_attempt_unknown", "the callback's state names no sign-in this server started")
@@ -312,7 +314,7 @@ func (s *Server) handleEntraSignInCallback(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	bindingCookie, err := r.Cookie(entraBrowserBindingCookieName)
-	if err != nil || subtle.ConstantTimeCompare([]byte(sha256Hex(bindingCookie.Value)), []byte(attempt.BrowserBindingHash)) != 1 {
+	if err != nil || subtle.ConstantTimeCompare([]byte(accesstokens.SHA256Hex(bindingCookie.Value)), []byte(attempt.BrowserBindingHash)) != 1 {
 		refuse(http.StatusBadRequest, loginOutcomeBrowserBindingMismatch,
 			"the callback did not come from the browser that started this sign-in; start again from this browser")
 		return
@@ -357,7 +359,7 @@ func (s *Server) handleEntraSignInCallback(w http.ResponseWriter, r *http.Reques
 		refuse(http.StatusUnauthorized, loginOutcomeIDTokenInvalid, err.Error())
 		return
 	}
-	if subtle.ConstantTimeCompare([]byte(sha256Hex(idToken.Nonce)), []byte(attempt.NonceHash)) != 1 {
+	if subtle.ConstantTimeCompare([]byte(accesstokens.SHA256Hex(idToken.Nonce)), []byte(attempt.NonceHash)) != 1 {
 		refuse(http.StatusUnauthorized, loginOutcomeNonceMismatch, "the ID token's nonce is not the one this sign-in sent")
 		return
 	}

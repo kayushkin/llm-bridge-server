@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/signals"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
@@ -113,7 +115,7 @@ func TestMailstackNarrowsAMemberToItsTicketsAndItsGrants(t *testing.T) {
 	test := newMailstackTestServer(t)
 	forging := accessTestCaller{"member with a login cookie naming the administrator", func(test *accessTestServer, request *http.Request) {
 		addLoginCookie(request, test.memberCookie)
-		request.Header.Set(principalIdentityHeader, accessTestAdministratorID)
+		request.Header.Set(requestcaller.PrincipalIdentityHeader, accessTestAdministratorID)
 	}}
 	for _, path := range []string{test.metadataPath(test.unlinkedMessageID), "/mail/api/accounts"} {
 		if response := test.call(t, forging, "GET", path, ""); response.Code != http.StatusUnauthorized {

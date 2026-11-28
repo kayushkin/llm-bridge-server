@@ -25,6 +25,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/chatlinks"
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
@@ -350,7 +352,7 @@ func (s *Server) asTheInternalService() http.Handler {
 				served.Header.Set(kept, value)
 			}
 		}
-		served.Header.Set(serviceTokenHeader, s.cfg.ServiceToken)
+		served.Header.Set(requestcaller.ServiceTokenHeader, s.cfg.ServiceToken)
 		s.ServeHTTP(w, served)
 	})
 }

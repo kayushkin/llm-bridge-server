@@ -18,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/machines/machinestest"
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
@@ -185,7 +187,7 @@ func (gated *gatedTestServer) requestAs(t *testing.T, cookie *http.Cookie, metho
 func (gated *gatedTestServer) requestAsService(t *testing.T, method, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	request := httptest.NewRequest(method, path, nil)
-	request.Header.Set(serviceTokenHeader, testServiceToken)
+	request.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
 	return serve(gated.server, request)
 }
 
@@ -195,8 +197,8 @@ func (gated *gatedTestServer) requestAsService(t *testing.T, method, path string
 func (gated *gatedTestServer) requestAsServiceAssertingPrincipal(t *testing.T, principalID, method, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	request := httptest.NewRequest(method, path, nil)
-	request.Header.Set(serviceTokenHeader, testServiceToken)
-	request.Header.Set(principalIdentityHeader, principalID)
+	request.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
+	request.Header.Set(requestcaller.PrincipalIdentityHeader, principalID)
 	return serve(gated.server, request)
 }
 
@@ -358,7 +360,7 @@ func TestAnAdministratorReachesTheOperatorRoutesAndTheStoreProxies(t *testing.T)
 		t.Fatalf("kanban-store received %d requests, want 1", len(recorded))
 	}
 	if got := recorded[0].principalIDsSeen(); len(got) != 1 || got[0] != administratorTestPrincipalID {
-		t.Errorf("kanban-store saw %s %v, want [%s]: the store makes its own administrator check", principalIdentityHeader, got, administratorTestPrincipalID)
+		t.Errorf("kanban-store saw %s %v, want [%s]: the store makes its own administrator check", requestcaller.PrincipalIdentityHeader, got, administratorTestPrincipalID)
 	}
 
 	// An unclassified route is not a per-resource check. Nobody has decided
@@ -507,7 +509,7 @@ func TestATrustedCallerMayAssertWhichPrincipalARequestIsFor(t *testing.T) {
 	}
 	// The same token with no assertion stays unrestricted.
 	if response := gated.requestAsService(t, "GET", "/bridge-prefs"); response.Code != http.StatusOK {
-		t.Errorf("service token with no %s on an operator route = %d, want 200", principalIdentityHeader, response.Code)
+		t.Errorf("service token with no %s on an operator route = %d, want 200", requestcaller.PrincipalIdentityHeader, response.Code)
 	}
 
 	// The administrator rule applies to an asserted principal too.
@@ -528,10 +530,10 @@ func TestATrustedCallerMayAssertWhichPrincipalARequestIsFor(t *testing.T) {
 		t.Fatalf("kanban-store received %d requests, want 1", len(recorded))
 	}
 	if got := recorded[0].principalIDsSeen(); len(got) != 1 || got[0] != secondTestPrincipalID {
-		t.Errorf("kanban-store saw %s %v, want exactly [%s]", principalIdentityHeader, got, secondTestPrincipalID)
+		t.Errorf("kanban-store saw %s %v, want exactly [%s]", requestcaller.PrincipalIdentityHeader, got, secondTestPrincipalID)
 	}
 	for _, key := range recorded[0].HeaderKeyNames {
-		if strings.EqualFold(key, serviceTokenHeader) {
+		if strings.EqualFold(key, requestcaller.ServiceTokenHeader) {
 			t.Errorf("kanban-store saw this server's service token under %q", key)
 		}
 	}
@@ -648,7 +650,7 @@ func TestGatedServerRefusesAnonymousOperatorAndUnclassifiedRequests(t *testing.T
 	}
 
 	wrongToken := httptest.NewRequest("GET", "/bridge-prefs", nil)
-	wrongToken.Header.Set(serviceTokenHeader, "not-the-service-token-but-long-enough-000")
+	wrongToken.Header.Set(requestcaller.ServiceTokenHeader, "not-the-service-token-but-long-enough-000")
 	wrongToken.AddCookie(cookie)
 	if response := serve(gated.server, wrongToken); response.Code != http.StatusUnauthorized {
 		t.Errorf("wrong service token = %d, want 401 even alongside a valid cookie", response.Code)

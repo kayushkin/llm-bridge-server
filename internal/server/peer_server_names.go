@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
@@ -162,4 +163,26 @@ func (s *Server) tellConnectedServersThisServersName() {
 		}
 		cancel()
 	}
+}
+
+// longestServerName bounds server.name: it travels in a header and is drawn
+// as a folder heading.
+const longestServerName = 80
+
+// checkServerNameValue refuses a name that cannot travel in a header or be
+// drawn on one line.
+func checkServerNameValue(value string) error {
+	trimmed := strings.TrimSpace(value)
+	if trimmed != value {
+		return errors.New("a server name has no spaces at either end")
+	}
+	if len([]rune(value)) > longestServerName {
+		return fmt.Errorf("a server name is at most %d characters", longestServerName)
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) {
+			return errors.New("a server name has no control characters or line breaks")
+		}
+	}
+	return nil
 }

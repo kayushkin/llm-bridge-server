@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access"
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
 	issuesdb "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/db"
@@ -172,7 +174,7 @@ func TestKanbanStoreIgnoresForgedIdentityAndStoreTokens(t *testing.T) {
 
 	forgingAnAdministrator := accessTestCaller{"member with a login cookie naming the administrator in X-Principal-Id", func(test *accessTestServer, request *http.Request) {
 		addLoginCookie(request, test.memberCookie)
-		request.Header.Set(principalIdentityHeader, accessTestAdministratorID)
+		request.Header.Set(requestcaller.PrincipalIdentityHeader, accessTestAdministratorID)
 	}}
 	for _, path := range []string{"/issues/boards", "/issues/boards/" + test.unseenBoardID} {
 		response := test.call(t, forgingAnAdministrator, "GET", path, "")

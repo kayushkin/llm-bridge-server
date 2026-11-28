@@ -8,6 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/accesstokens"
+
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -27,7 +31,7 @@ func loginSessionsOfList(t *testing.T, recorder *httptest.ResponseRecorder) []lo
 
 func loginSessionIDOfCookie(t *testing.T, gated *gatedTestServer, cookie *http.Cookie) string {
 	t.Helper()
-	session, err := gated.store.GetLoginSessionByTokenHash(sha256Hex(cookie.Value))
+	session, err := gated.store.GetLoginSessionByTokenHash(accesstokens.SHA256Hex(cookie.Value))
 	if err != nil {
 		t.Fatalf("no login session for the cookie: %v", err)
 	}
@@ -41,7 +45,7 @@ func TestTheDatabaseKeepsOnlyAHashOfTheLoginToken(t *testing.T) {
 	if len(cookie.Value) < 43 {
 		t.Fatalf("cookie token %q is shorter than 32 random bytes encoded", cookie.Value)
 	}
-	session, err := gated.store.GetLoginSessionByTokenHash(sha256Hex(cookie.Value))
+	session, err := gated.store.GetLoginSessionByTokenHash(accesstokens.SHA256Hex(cookie.Value))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +187,7 @@ func TestAnAdministratorListsAndRevokesAnyonesLoginSessions(t *testing.T) {
 		t.Fatalf("service token listing = %d %s", response.Code, response.Body.String())
 	}
 	request := httptest.NewRequest("POST", "/auth/sessions/"+listed[0].ID+"/revoke", strings.NewReader(`{"reason":"x"}`))
-	request.Header.Set(serviceTokenHeader, testServiceToken)
+	request.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
 	if response := serve(gated.server, request); response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "revoke_requires_a_principal") {
 		t.Fatalf("service token revoking as nobody = %d %s", response.Code, response.Body.String())
 	}
@@ -245,15 +249,15 @@ func TestACookieAuthenticatedUnsafeRequestNeedsItsCSRFToken(t *testing.T) {
 	// stale login cookie rides along.
 	asService := httptest.NewRequest("POST", "/sessions", createBody())
 	asService.Header.Set("Content-Type", "application/json")
-	asService.Header.Set(serviceTokenHeader, testServiceToken)
+	asService.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
 	asService.AddCookie(cookie)
 	if response := serve(gated.server, asService); response.Code != http.StatusCreated {
 		t.Fatalf("POST /sessions with the service token = %d %s, want 201", response.Code, response.Body.String())
 	}
 	asServiceForPrincipal := httptest.NewRequest("POST", "/sessions", createBody())
 	asServiceForPrincipal.Header.Set("Content-Type", "application/json")
-	asServiceForPrincipal.Header.Set(serviceTokenHeader, testServiceToken)
-	asServiceForPrincipal.Header.Set(principalIdentityHeader, firstTestPrincipalID)
+	asServiceForPrincipal.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
+	asServiceForPrincipal.Header.Set(requestcaller.PrincipalIdentityHeader, firstTestPrincipalID)
 	if response := serve(gated.server, asServiceForPrincipal); response.Code != http.StatusCreated {
 		t.Fatalf("POST /sessions with the service token for a principal = %d %s, want 201", response.Code, response.Body.String())
 	}

@@ -53,6 +53,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/accesstokens"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access/grantcheck"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
@@ -82,9 +84,6 @@ const (
 	// for the credential this server presents on connection calls.
 	peerCredentialProvider           = "llm-bridge-peer"
 	peerConnectionCredentialProvider = "llm-bridge-peer-connection"
-	// peerConnectionCredentialHeader carries a connection's credential on
-	// connection calls made by https and when opening a socket.
-	peerConnectionCredentialHeader = "X-LLM-Bridge-Peer-Connection"
 
 	peerConnectPath       = "/peer/connect"
 	peerSocketPath        = "/peer/socket"
@@ -100,7 +99,7 @@ const (
 // hashPeerSecret is how a passphrase, a credential or a token is kept and
 // looked up: never the value itself.
 func hashPeerSecret(value string) string {
-	return sha256Hex(value)
+	return accesstokens.SHA256Hex(value)
 }
 
 // peerAccessLevelDefinition is a level that puts the peer in a group of this
@@ -166,7 +165,7 @@ func administratorMakingPeerChange(w http.ResponseWriter, r *http.Request) (stri
 	principalID, identified := requestcaller.PrincipalIdentityOfRequest(r)
 	if !identified {
 		httpjson.WriteJSONError(w, http.StatusForbidden, "peer_change_requires_a_principal", fmt.Sprintf(
-			"a change to a peer connection records which administrator made it; send %s with the service token", principalIdentityHeader))
+			"a change to a peer connection records which administrator made it; send %s with the service token", requestcaller.PrincipalIdentityHeader))
 		return "", false
 	}
 	return principalID, true
@@ -210,7 +209,7 @@ func (s *Server) handleCreatePeerConnectionInvite(w http.ResponseWriter, r *http
 		return
 	}
 	var request msg.PeerConnectionInviteRequest
-	if !decodeAdministrationBody(w, r, &request, "created_by") {
+	if !httpjson.DecodeAdministrationBody(w, r, &request, "created_by") {
 		return
 	}
 	lifetime := peerInviteDefaultLifetime
@@ -222,7 +221,7 @@ func (s *Server) handleCreatePeerConnectionInvite(w http.ResponseWriter, r *http
 			"expires_in_seconds must be between 1 and %d, or left out for %d", int64(peerInviteLongestLifetime/time.Second), int64(peerInviteDefaultLifetime/time.Second)))
 		return
 	}
-	passphrase, err := randomURLSafeToken(peerSecretRandomBytes)
+	passphrase, err := accesstokens.RandomURLSafe(peerSecretRandomBytes)
 	if err != nil {
 		httpjson.WriteJSONError(w, http.StatusInternalServerError, "random_source_failed", err.Error())
 		return
@@ -261,7 +260,7 @@ func (s *Server) handleCreatePeerConnection(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	var request msg.PeerConnectRequest
-	if !decodeAdministrationBody(w, r, &request, "created_by") {
+	if !httpjson.DecodeAdministrationBody(w, r, &request, "created_by") {
 		return
 	}
 	remoteBaseURL, err := peerBaseURLOf("base_url", request.BaseURL)
@@ -300,7 +299,7 @@ func (s *Server) handleCreatePeerConnection(w http.ResponseWriter, r *http.Reque
 		}
 		transport = msg.PeerTransportDirect
 	}
-	inboundCredential, err := randomURLSafeToken(peerSecretRandomBytes)
+	inboundCredential, err := accesstokens.RandomURLSafe(peerSecretRandomBytes)
 	if err != nil {
 		httpjson.WriteJSONError(w, http.StatusInternalServerError, "random_source_failed", err.Error())
 		return
@@ -403,7 +402,7 @@ func (s *Server) handlePeerConnect(w http.ResponseWriter, r *http.Request) {
 		inviteError.Write(w)
 		return
 	}
-	credentialForThem, err := randomURLSafeToken(peerSecretRandomBytes)
+	credentialForThem, err := accesstokens.RandomURLSafe(peerSecretRandomBytes)
 	if err != nil {
 		httpjson.WriteJSONError(w, http.StatusInternalServerError, "random_source_failed", err.Error())
 		return
@@ -745,7 +744,7 @@ func (s *Server) handleGrantPeerAccess(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request msg.PeerGrantRequest
-	if !decodeAdministrationBody(w, r, &request, "created_by") {
+	if !httpjson.DecodeAdministrationBody(w, r, &request, "created_by") {
 		return
 	}
 	connection, ok := s.livePeerConnectionOf(w, r)
@@ -781,7 +780,7 @@ func (s *Server) handleGrantPeerAccess(w http.ResponseWriter, r *http.Request) {
 		httpjson.WriteJSONError(w, http.StatusBadGateway, "principal_store_failed", err.Error())
 		return
 	}
-	token, err := randomURLSafeToken(peerSecretRandomBytes)
+	token, err := accesstokens.RandomURLSafe(peerSecretRandomBytes)
 	if err != nil {
 		httpjson.WriteJSONError(w, http.StatusInternalServerError, "random_source_failed", err.Error())
 		return
@@ -825,7 +824,7 @@ func (s *Server) handleRevokePeerGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request msg.PeerReasonRequest
-	if !decodeAdministrationBody(w, r, &request, "revoked_by") {
+	if !httpjson.DecodeAdministrationBody(w, r, &request, "revoked_by") {
 		return
 	}
 	if strings.TrimSpace(request.Reason) == "" {
@@ -915,13 +914,13 @@ func (s *Server) connectionOfConnectionCall(r *http.Request) (store.PeerConnecti
 // connectionPresentingCredential finds the live connection whose credential
 // the request presents in X-LLM-Bridge-Peer-Connection.
 func (s *Server) connectionPresentingCredential(r *http.Request) (store.PeerConnection, *requestcaller.CredentialError) {
-	presented := r.Header.Values(peerConnectionCredentialHeader)
+	presented := r.Header.Values(requestcaller.PeerConnectionCredentialHeader)
 	if len(presented) != 1 || strings.TrimSpace(presented[0]) == "" {
-		return store.PeerConnection{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "peer_connection_credential_missing", "send one "+peerConnectionCredentialHeader)
+		return store.PeerConnection{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "peer_connection_credential_missing", "send one "+requestcaller.PeerConnectionCredentialHeader)
 	}
 	connection, err := s.store.GetPeerConnectionByInboundCredentialHash(hashPeerSecret(presented[0]))
 	if errors.Is(err, store.ErrPeerConnectionNotFound) {
-		return store.PeerConnection{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "peer_connection_credential_unknown", peerConnectionCredentialHeader+" names no connection here")
+		return store.PeerConnection{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "peer_connection_credential_unknown", requestcaller.PeerConnectionCredentialHeader+" names no connection here")
 	}
 	if err != nil {
 		return store.PeerConnection{}, requestcaller.NewCredentialError(http.StatusInternalServerError, "store_failed", err.Error())
@@ -1010,7 +1009,7 @@ func (s *Server) handleReceivePeerAccessRevoked(w http.ResponseWriter, r *http.R
 func (s *Server) handlePeerSelf(w http.ResponseWriter, r *http.Request) {
 	caller, ok := requestcaller.FromRequest(r)
 	if !ok || caller.Peer == nil {
-		httpjson.WriteJSONError(w, http.StatusBadRequest, "not_a_peer", fmt.Sprintf("GET %s answers a caller presenting %s", peerSelfPath, peerTokenHeader))
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "not_a_peer", fmt.Sprintf("GET %s answers a caller presenting %s", peerSelfPath, requestcaller.PeerTokenHeader))
 		return
 	}
 	httpjson.WriteJSON(w, msg.PeerGrantSelf{GrantID: caller.Peer.GrantID, ConnectionID: caller.Peer.ConnectionID, PeerPrincipalID: caller.PrincipalID,
@@ -1046,7 +1045,7 @@ func (s *Server) handleRemovePeerConnection(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	var request msg.PeerReasonRequest
-	if !decodeAdministrationBody(w, r, &request, "removed_by") {
+	if !httpjson.DecodeAdministrationBody(w, r, &request, "removed_by") {
 		return
 	}
 	if strings.TrimSpace(request.Reason) == "" {
@@ -1230,7 +1229,7 @@ func (s *Server) sendOverPeerConnection(ctx context.Context, client *http.Client
 		if err != nil {
 			return nil, err
 		}
-		request.Header.Set(peerConnectionCredentialHeader, credential)
+		request.Header.Set(requestcaller.PeerConnectionCredentialHeader, credential)
 	}
 	response, err := client.Do(request)
 	if err != nil {
@@ -1280,7 +1279,7 @@ func (s *Server) callWithHeldAccessThrough(ctx context.Context, client *http.Cli
 	if header == nil {
 		header = http.Header{}
 	}
-	header.Set(peerTokenHeader, resolved.Secret())
+	header.Set(requestcaller.PeerTokenHeader, resolved.Secret())
 	return s.sendOverPeerConnection(ctx, client, connection, method, path, header, body, contentLength, false)
 }
 

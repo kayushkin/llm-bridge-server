@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/accesstokens"
+
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 )
@@ -273,7 +275,7 @@ func TestEntraSignInStartsWithPKCEAndAHashedState(t *testing.T) {
 		t.Fatalf("authorize URL %s is not an authorization code request with PKCE, state and nonce", started.authorizeURL)
 	}
 	attempt := harness.onlyAttempt(t)
-	if attempt.StateHash != sha256Hex(started.state) || attempt.NonceHash != sha256Hex(started.nonce) || attempt.ReturnTo != "/chat" ||
+	if attempt.StateHash != accesstokens.SHA256Hex(started.state) || attempt.NonceHash != accesstokens.SHA256Hex(started.nonce) || attempt.ReturnTo != "/chat" ||
 		attempt.Outcome != "" || attempt.ExpiresAt.Sub(attempt.CreatedAt) != loginAttemptLifetime {
 		t.Fatalf("attempt %+v", attempt)
 	}
@@ -293,7 +295,7 @@ func TestEntraSignInWithABoundIdentityCreatesALoginSessionAndRedirects(t *testin
 	if cookie == nil || !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode {
 		t.Fatalf("callback set no HttpOnly, Lax login cookie: %+v", response.Result().Cookies())
 	}
-	session, err := harness.gated.store.GetLoginSessionByTokenHash(sha256Hex(cookie.Value))
+	session, err := harness.gated.store.GetLoginSessionByTokenHash(accesstokens.SHA256Hex(cookie.Value))
 	if err != nil || session.Method != store.LoginSessionMethodEntra || session.PrincipalID != firstTestPrincipalID ||
 		session.IdentityBindingID != "identity_binding_000001" {
 		t.Fatalf("login session %+v, %v", session, err)

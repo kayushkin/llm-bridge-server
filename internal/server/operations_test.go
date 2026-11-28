@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/operations"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/executors"
@@ -157,7 +159,7 @@ func TestTheOrganizationIsCheckedWithPrincipalStore(t *testing.T) {
 	}
 	// Nor need the internal service, which starts operations as nobody.
 	request := httptest.NewRequest("POST", "/operations", strings.NewReader(`{"type":"classification.run","organization_id":"principal_000006","idempotency_key":"k-service","input":{"taxonomy":{"name":"t","axes":[{"name":"a","values":[{"name":"b"}]}]},"items":[{"id":"1","text":"t"}]}}`))
-	request.Header.Set(serviceTokenHeader, testServiceToken)
+	request.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
 	response := serve(gated.server, request)
 	if response.Code != http.StatusAccepted || decodeReceipt(t, response).PrincipalID != "" {
 		t.Errorf("service: %d %s", response.Code, response.Body.String())
@@ -300,7 +302,7 @@ func TestTheEventStreamFollowsAnOperationToItsEnd(t *testing.T) {
 func (gated *gatedTestServer) requestAsServiceWithBody(t *testing.T, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	request := httptest.NewRequest(method, path, strings.NewReader(body))
-	request.Header.Set(serviceTokenHeader, testServiceToken)
+	request.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
 	return serve(gated.server, request)
 }
 

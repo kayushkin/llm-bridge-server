@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httproutes"
+
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -148,7 +150,7 @@ func TestLogStoreSessionURLIsGivenTheDecodedId(t *testing.T) {
 // surfaces as an upstream 404 rather than a quiet hit on a different resource.
 func TestAPrefixMissForwardsThePathWhole(t *testing.T) {
 	u, _ := url.Parse("/api/agent-store/agents/x")
-	if got, want := escapedPathAfterPrefix(u, "/api/skill-store"), "/api/agent-store/agents/x"; got != want {
+	if got, want := httproutes.EscapedPathAfterPrefix(u, "/api/skill-store"), "/api/agent-store/agents/x"; got != want {
 		t.Errorf("escapedPathAfterPrefix = %q, want %q", got, want)
 	}
 }
@@ -158,7 +160,7 @@ func TestAPrefixMissForwardsThePathWhole(t *testing.T) {
 // A naive TrimPrefix on the escaped path reads this as a miss.
 func TestAnEscapeInsideTheMountPrefixIsStillAMatch(t *testing.T) {
 	u, _ := url.Parse("/api/skill%2Dstore/skills/a%2Fb")
-	if got, want := escapedPathAfterPrefix(u, "/api/skill-store"), "/skills/a%2Fb"; got != want {
+	if got, want := httproutes.EscapedPathAfterPrefix(u, "/api/skill-store"), "/skills/a%2Fb"; got != want {
 		t.Errorf("escapedPathAfterPrefix = %q, want %q — the escaped prefix was read as a miss", got, want)
 	}
 }
@@ -166,7 +168,7 @@ func TestAnEscapeInsideTheMountPrefixIsStillAMatch(t *testing.T) {
 // A request to the bare mount has no remainder, and the empty string says so.
 func TestTheBareMountHasNoRemainder(t *testing.T) {
 	u, _ := url.Parse("/api/skill-store")
-	if got := escapedPathAfterPrefix(u, "/api/skill-store"); got != "" {
+	if got := httproutes.EscapedPathAfterPrefix(u, "/api/skill-store"); got != "" {
 		t.Errorf("escapedPathAfterPrefix = %q, want \"\"", got)
 	}
 }

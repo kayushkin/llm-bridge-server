@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models"
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
@@ -18,7 +20,7 @@ import (
 func serviceSettingsRequest(method, path, body string, asOperator bool) *http.Request {
 	request := httptest.NewRequest(method, path, strings.NewReader(body))
 	if asOperator {
-		request.Header.Set(serviceTokenHeader, testServiceToken)
+		request.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
 	}
 	return request
 }

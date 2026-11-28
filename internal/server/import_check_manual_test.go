@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/sessionlog"
 	sessionlogserver "github.com/kayushkin/llm-bridge-server/internal/sessionlog/server"
@@ -106,7 +108,7 @@ func TestImportedBridgeDatabaseAnswersTheCoreRoutes(t *testing.T) {
 	answers := map[string]answer{}
 	for path := range paths {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
-		request.Header.Set(serviceTokenHeader, testServiceToken)
+		request.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
 		recorder := httptest.NewRecorder()
 		srv.ServeHTTP(recorder, request)
 		body := recorder.Body.Bytes()

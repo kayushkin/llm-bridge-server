@@ -17,7 +17,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
@@ -26,10 +25,6 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/keepawake"
 	"github.com/kayushkin/llm-bridge/msg"
 )
-
-// longestServerName bounds server.name: it travels in a header and is drawn
-// as a folder heading.
-const longestServerName = 80
 
 // keepAwakeCheckInterval is how often keep-awake looks at the sessions.
 const keepAwakeCheckInterval = 30 * time.Second
@@ -47,24 +42,6 @@ func (s *Server) thisServerDescription() string {
 		return fmt.Sprintf("server %q (%s)", name, s.store.ThisServerID())
 	}
 	return "server " + s.store.ThisServerID()
-}
-
-// checkServerNameValue refuses a name that cannot travel in a header or be
-// drawn on one line.
-func checkServerNameValue(value string) error {
-	trimmed := strings.TrimSpace(value)
-	if trimmed != value {
-		return errors.New("a server name has no spaces at either end")
-	}
-	if len([]rune(value)) > longestServerName {
-		return fmt.Errorf("a server name is at most %d characters", longestServerName)
-	}
-	for _, character := range value {
-		if unicode.IsControl(character) {
-			return errors.New("a server name has no control characters or line breaks")
-		}
-	}
-	return nil
 }
 
 // checkKeepAwakeGraceMinutesValue refuses a negative grace.

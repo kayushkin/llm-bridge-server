@@ -21,17 +21,15 @@ package server
 // the sign-in routes, which create the session the token belongs to.
 
 import (
-	"crypto/rand"
-	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"time"
+
+	"github.com/kayushkin/llm-bridge-server/internal/access/accesstokens"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
 
@@ -61,38 +59,22 @@ const csrfTokenHeader = "X-CSRF-Token"
 // token before encoding.
 const loginSessionRandomBytes = 32
 
-// randomURLSafeToken returns n bytes from crypto/rand, base64url-encoded. A
-// failure of the system's random source is not something to work around.
-func randomURLSafeToken(n int) (string, error) {
-	buffer := make([]byte, n)
-	if _, err := rand.Read(buffer); err != nil {
-		return "", fmt.Errorf("read crypto/rand: %w", err)
-	}
-	return base64.RawURLEncoding.EncodeToString(buffer), nil
-}
-
-// sha256Hex is how a token is kept and looked up: never the token itself.
-func sha256Hex(value string) string {
-	sum := sha256.Sum256([]byte(value))
-	return hex.EncodeToString(sum[:])
-}
-
 // recordLoginSession creates a login session for principalID and returns it
 // with the token its cookie must carry. The caller has already decided the
 // principal may sign in, and sets the cookie with setLoginSessionCookie once
 // anything else it must record about the sign-in is recorded.
 func (s *Server) recordLoginSession(r *http.Request, principalID string, method store.LoginSessionMethod, identityBindingID string) (store.LoginSession, string, error) {
-	token, err := randomURLSafeToken(loginSessionRandomBytes)
+	token, err := accesstokens.RandomURLSafe(loginSessionRandomBytes)
 	if err != nil {
 		return store.LoginSession{}, "", fmt.Errorf("make a login session token: %w", err)
 	}
-	csrfToken, err := randomURLSafeToken(loginSessionRandomBytes)
+	csrfToken, err := accesstokens.RandomURLSafe(loginSessionRandomBytes)
 	if err != nil {
 		return store.LoginSession{}, "", fmt.Errorf("make a CSRF token: %w", err)
 	}
 	now := s.loginClock().UTC().Truncate(time.Second)
 	session := store.LoginSession{
-		TokenHash:         sha256Hex(token),
+		TokenHash:         accesstokens.SHA256Hex(token),
 		CSRFToken:         csrfToken,
 		PrincipalID:       principalID,
 		Method:            method,
@@ -146,7 +128,7 @@ func (s *Server) liveLoginSessionOfRequest(r *http.Request) (store.LoginSession,
 		return store.LoginSession{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "not_logged_in", fmt.Sprintf(
 			"no %s cookie: sign in with GET /auth/entra/start or POST /auth/demo-login", loginSessionCookieName))
 	}
-	session, err := s.store.GetLoginSessionByTokenHash(sha256Hex(cookie.Value))
+	session, err := s.store.GetLoginSessionByTokenHash(accesstokens.SHA256Hex(cookie.Value))
 	if errors.Is(err, store.ErrLoginSessionNotFound) {
 		return store.LoginSession{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "login_session_unknown",
 			"the login cookie names no login session this server issued; sign in again")
@@ -327,7 +309,7 @@ func (s *Server) handleRevokeLoginSession(w http.ResponseWriter, r *http.Request
 	caller, callerIsPrincipal := requestcaller.FromRequest(r)
 	if !callerIsPrincipal {
 		httpjson.WriteJSONError(w, http.StatusForbidden, "revoke_requires_a_principal", fmt.Sprintf(
-			"a revocation records who made it; send %s with the service token", principalIdentityHeader))
+			"a revocation records who made it; send %s with the service token", requestcaller.PrincipalIdentityHeader))
 		return
 	}
 	var request revokeLoginSessionRequest

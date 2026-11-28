@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -74,7 +76,7 @@ func TestAServicePrincipalTokenActsAsItsPrincipalHeldToItsGrants(t *testing.T) {
 
 	expectRefusal(t, server.requestAsPrincipal(t, administratorTestPrincipalID, "GET", "/service-principal-tokens", nil), http.StatusOK, "", "an administrator lists the tokens")
 	bare := httptest.NewRequest("POST", "/service-principal-tokens", strings.NewReader(`{"principal_id":"`+testServicePrincipalID+`","description":"x"}`))
-	bare.Header.Set(serviceTokenHeader, testServiceToken)
+	bare.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
 	expectRefusal(t, serve(server.server, bare), http.StatusForbidden, "service_principal_change_requires_a_principal", "the service token alone issues a token")
 	expectRefusal(t, server.requestAsAdministrator(t, "POST", "/service-principal-tokens", map[string]string{"principal_id": testPersonPrincipalID, "description": "a person"}),
 		http.StatusForbidden, "principal_does_not_hold_service_principal_tokens", "a token for a person")
@@ -257,7 +259,7 @@ func TestSelfNamesThePrincipalATokenActsAs(t *testing.T) {
 		t.Fatalf("administrator self = %+v", administrator)
 	}
 	bare := httptest.NewRequest("GET", "/self", nil)
-	bare.Header.Set(serviceTokenHeader, testServiceToken)
+	bare.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
 	if internal := decodeAnswer[msg.CallerSelf](t, serve(server.server, bare), http.StatusOK, "self as the service token"); !internal.InternalService || internal.PrincipalID != "" {
 		t.Fatalf("internal self = %+v", internal)
 	}

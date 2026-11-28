@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -64,8 +66,8 @@ new file mode 100644
 func uploadPeerAttachment(t *testing.T, server *peerTestServer, name string, data []byte) *httptest.ResponseRecorder {
 	t.Helper()
 	request := httptest.NewRequest("POST", "/peer-message-attachments?name="+url.QueryEscape(name)+"&media_type=text%2Fx-patch", bytes.NewReader(data))
-	request.Header.Set(serviceTokenHeader, testServiceToken)
-	request.Header.Set(principalIdentityHeader, administratorTestPrincipalID)
+	request.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
+	request.Header.Set(requestcaller.PrincipalIdentityHeader, administratorTestPrincipalID)
 	return serve(server.server, request)
 }
 

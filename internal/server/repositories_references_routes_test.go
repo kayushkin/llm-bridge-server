@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/sessionfiles"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
@@ -178,9 +180,9 @@ func resolveThroughTheServer(t *testing.T, gated *gatedTestServer, principalID s
 	body, _ := json.Marshal(map[string][]string{"ids": ids})
 	request := httptest.NewRequest(http.MethodPost, "/references/resolve", strings.NewReader(string(body)))
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set(serviceTokenHeader, testServiceToken)
+	request.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
 	if principalID != "" {
-		request.Header.Set(principalIdentityHeader, principalID)
+		request.Header.Set(requestcaller.PrincipalIdentityHeader, principalID)
 	}
 	response := serve(gated.server, request)
 	var answer struct {

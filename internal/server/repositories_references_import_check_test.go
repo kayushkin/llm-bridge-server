@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/filestorage/files"
 	"github.com/kayushkin/llm-bridge-server/internal/repositories/gitactivity"
 	"github.com/kayushkin/llm-bridge-server/internal/repositories/repos"
@@ -76,7 +78,7 @@ func TestImportedRepositoriesAndFilesAnswer(t *testing.T) {
 		if path, ids, isResolve := strings.Cut(line, " "); isResolve {
 			body, _ := json.Marshal(map[string][]string{"ids": strings.Split(ids, ",")})
 			request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(string(body)))
-			request.Header.Set(serviceTokenHeader, testServiceToken)
+			request.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
 			request.Header.Set("Content-Type", "application/json")
 			response = serve(gated.server, request)
 		} else {

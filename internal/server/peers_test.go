@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/gorilla/websocket"
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
@@ -284,8 +286,8 @@ func (gated *gatedTestServer) requestAsAdministrator(t *testing.T, method, path 
 		t.Fatal(err)
 	}
 	request := httptest.NewRequest(method, path, bytes.NewReader(data))
-	request.Header.Set(serviceTokenHeader, testServiceToken)
-	request.Header.Set(principalIdentityHeader, administratorTestPrincipalID)
+	request.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
+	request.Header.Set(requestcaller.PrincipalIdentityHeader, administratorTestPrincipalID)
 	return serve(gated.server, request)
 }
 
@@ -304,8 +306,8 @@ func (gated *gatedTestServer) requestAsPrincipal(t *testing.T, principalID, meth
 		reader = bytes.NewReader(nil)
 	}
 	request := httptest.NewRequest(method, path, reader)
-	request.Header.Set(serviceTokenHeader, testServiceToken)
-	request.Header.Set(principalIdentityHeader, principalID)
+	request.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
+	request.Header.Set(requestcaller.PrincipalIdentityHeader, principalID)
 	return serve(gated.server, request)
 }
 
@@ -474,7 +476,7 @@ func TestTwoServersConnectDirectly(t *testing.T) {
 
 	decodeAnswer[msg.PeerGrantRevoked](t, accepting.requestAsAdministrator(t, "POST", "/peer-connections/"+acceptingID+"/revoke-grant", map[string]any{"reason": "test over"}), http.StatusOK, "revoke")
 	request, _ := http.NewRequest("GET", acceptingOverTLS.URL+peerSelfPath, nil)
-	request.Header.Set(peerTokenHeader, token)
+	request.Header.Set(requestcaller.PeerTokenHeader, token)
 	answer, err := peerHTTPClient.Do(request)
 	if err != nil {
 		t.Fatal(err)
@@ -499,7 +501,7 @@ func TestPeerConnectionRefusals(t *testing.T) {
 		t.Fatalf("a connect with demo login on = %d %s, want 409", answer.Code, answer.Body)
 	}
 	byHTTPS := httptest.NewRequest("GET", "/peer/self", nil)
-	byHTTPS.Header.Set(peerTokenHeader, "anything")
+	byHTTPS.Header.Set(requestcaller.PeerTokenHeader, "anything")
 	if answer := serve(withDemoLogin.server, byHTTPS); answer.Code != http.StatusConflict {
 		t.Fatalf("a peer token by https with demo login on = %d %s, want 409", answer.Code, answer.Body)
 	}
@@ -534,7 +536,7 @@ func TestPeerConnectionRefusals(t *testing.T) {
 	var body bytes.Buffer
 	body.WriteString(`{"level":"administrator"}`)
 	request := httptest.NewRequest("POST", "/peer-connection-invites", &body)
-	request.Header.Set(serviceTokenHeader, testServiceToken)
+	request.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
 	if answer := serve(withDemoLogin.server, request); answer.Code != http.StatusForbidden {
 		t.Fatalf("a change with the service token and no administrator = %d %s, want 403", answer.Code, answer.Body)
 	}
@@ -680,8 +682,8 @@ func TestPeerUsersActAsMappedPrincipalsWithinBothGrants(t *testing.T) {
 	}
 
 	sent := httptest.NewRequest("GET", "/instances", nil)
-	sent.Header.Set(serviceTokenHeader, testServiceToken)
-	sent.Header.Set(peerUserHeader, remoteUser)
+	sent.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
+	sent.Header.Set(requestcaller.PeerUserHeader, remoteUser)
 	if answer := serve(accepting.server, sent); answer.Code != http.StatusBadRequest || !strings.Contains(answer.Body.String(), "peer_user_without_peer_token") {
 		t.Fatalf("a user header with no peer token = %d %s, want 400", answer.Code, answer.Body)
 	}
@@ -719,8 +721,8 @@ func TestSessionEventsStreamThroughTheSocket(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	request, _ := http.NewRequestWithContext(ctx, "GET", initiatingOverHTTP.URL+"/peer-connections/"+initiatingID+"/proxy/session-events", nil)
-	request.Header.Set(serviceTokenHeader, testServiceToken)
-	request.Header.Set(principalIdentityHeader, administratorTestPrincipalID)
+	request.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
+	request.Header.Set(requestcaller.PrincipalIdentityHeader, administratorTestPrincipalID)
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatal(err)
@@ -824,8 +826,8 @@ func TestAPeerSocketServesOnlySoManyRequestsAtOnce(t *testing.T) {
 	var requestNumber atomic.Int64
 	get := func() (*http.Response, error) {
 		request, _ := http.NewRequest("GET", fmt.Sprintf("%s/peer-connections/%s/proxy/a-request-that-waits?n=%d", initiatingOverHTTP.URL, initiatingID, requestNumber.Add(1)), nil)
-		request.Header.Set(serviceTokenHeader, testServiceToken)
-		request.Header.Set(principalIdentityHeader, administratorTestPrincipalID)
+		request.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
+		request.Header.Set(requestcaller.PrincipalIdentityHeader, administratorTestPrincipalID)
 		return http.DefaultClient.Do(request)
 	}
 	results := make(chan int, peerSocketMostRequestsServedAtOnce)
@@ -1098,7 +1100,7 @@ func TestASessionAnAdministratorStartsRunsAsThem(t *testing.T) {
 	}
 	data, _ := json.Marshal(body)
 	request := httptest.NewRequest("POST", "/sessions", bytes.NewReader(data))
-	request.Header.Set(serviceTokenHeader, testServiceToken)
+	request.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
 	if got := principalOf(serve(gated.server, request), "the internal service starts a session"); got != "" {
 		t.Errorf("the internal service's session runs as %q, want no principal", got)
 	}

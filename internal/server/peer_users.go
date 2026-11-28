@@ -5,7 +5,7 @@ package server
 // one of its own principals.
 //
 // On the calling side, the connection proxy sends the caller's principal id in
-// peerUserHeader beside the peer token (peer_connection_proxy.go). On this
+// PeerUserHeader beside the peer token (peer_connection_proxy.go). On this
 // side, an administrator maps (peer principal, remote principal id) to a local
 // principal (POST /peer-user-mappings). A request naming a mapped user then:
 //
@@ -148,28 +148,6 @@ func (s *Server) mayObserveEverySession(r *http.Request, caller requestcaller.Ca
 	return granted.RequiresAGrantAndNames("*"), nil
 }
 
-// routeClassesRefusedToPeerUsers are the classes whose answer comes from a
-// store or record this server cannot narrow to the intersection of two
-// principals, so a connected server's user is refused them: the store
-// proxies act as the principal in another store, and operations and login
-// sessions are a principal's own with no peer origin.
-var routeClassesRefusedToPeerUsers = []routeAccessClass{
-	routePrincipalOrSessionAgentThroughStoreProxy,
-	routePrincipalCreatesOperation,
-	routePrincipalOwnsOperation,
-	routePrincipalSeesOwnOperationsOnly,
-	routePrincipalManagesOwnLoginSessions,
-}
-
-func routeClassIsRefusedToPeerUsers(class routeAccessClass) bool {
-	for _, refused := range routeClassesRefusedToPeerUsers {
-		if refused == class {
-			return true
-		}
-	}
-	return false
-}
-
 // handleListPeerUserMappings: GET /peer-user-mappings[?peer_principal_id=].
 func (s *Server) handleListPeerUserMappings(w http.ResponseWriter, r *http.Request) {
 	mappings, err := s.store.ListPeerUserMappings(strings.TrimSpace(r.URL.Query().Get("peer_principal_id")))
@@ -190,7 +168,7 @@ func (s *Server) handleCreatePeerUserMapping(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	var request msg.PeerUserMappingRequest
-	if !decodeAdministrationBody(w, r, &request, "created_by") {
+	if !httpjson.DecodeAdministrationBody(w, r, &request, "created_by") {
 		return
 	}
 	request.PeerPrincipalID = strings.TrimSpace(request.PeerPrincipalID)
@@ -235,7 +213,7 @@ func (s *Server) handleRemovePeerUserMapping(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	var request msg.PeerReasonRequest
-	if !decodeAdministrationBody(w, r, &request, "removed_by") {
+	if !httpjson.DecodeAdministrationBody(w, r, &request, "removed_by") {
 		return
 	}
 	if strings.TrimSpace(request.Reason) == "" {

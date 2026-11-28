@@ -173,7 +173,7 @@ func (s *Server) requestIsTheInternalServiceActingAsItself(r *http.Request) bool
 	if principalIdentityHeaderNameIn(r.Header) != "" {
 		return false
 	}
-	presented := r.Header.Values(serviceTokenHeader)
+	presented := r.Header.Values(requestcaller.ServiceTokenHeader)
 	return len(presented) == 1 && s.cfg.ServiceToken != "" &&
 		subtle.ConstantTimeCompare([]byte(presented[0]), []byte(s.cfg.ServiceToken)) == 1
 }

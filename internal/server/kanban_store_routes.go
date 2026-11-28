@@ -23,6 +23,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httproutes"
+
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
@@ -154,7 +156,7 @@ func (s *Server) serveKanbanStore(w http.ResponseWriter, r *http.Request, mountP
 			mountPrefix+"/ answers a principal or this server's service token")
 		return
 	}
-	storePath, err := url.Parse(escapedPathAfterPrefix(r.URL, mountPrefix))
+	storePath, err := url.Parse(httproutes.EscapedPathAfterPrefix(r.URL, mountPrefix))
 	if err != nil {
 		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_path", fmt.Sprintf("the path after %s/ is not one kanban-store can read: %v", mountPrefix, err))
 		return

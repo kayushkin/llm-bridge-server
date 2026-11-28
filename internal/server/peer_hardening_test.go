@@ -114,8 +114,8 @@ func TestRevokingAGrantEndsAStreamAlreadyOpen(t *testing.T) {
 	initiatingOverHTTP := httptest.NewServer(initiating.server)
 	t.Cleanup(initiatingOverHTTP.Close)
 	streamRequest, _ := http.NewRequest("GET", initiatingOverHTTP.URL+"/peer-connections/"+initiatingID+"/proxy/a-stream-that-waits", nil)
-	streamRequest.Header.Set(serviceTokenHeader, testServiceToken)
-	streamRequest.Header.Set(principalIdentityHeader, administratorTestPrincipalID)
+	streamRequest.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
+	streamRequest.Header.Set(requestcaller.PrincipalIdentityHeader, administratorTestPrincipalID)
 	go func() {
 		if answer, err := http.DefaultClient.Do(streamRequest); err == nil {
 			_, _ = io.Copy(io.Discard, answer.Body)

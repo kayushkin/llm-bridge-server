@@ -124,7 +124,7 @@ func administratorMakingServicePrincipalChange(w http.ResponseWriter, r *http.Re
 	principalID, identified := requestcaller.PrincipalIdentityOfRequest(r)
 	if !identified {
 		httpjson.WriteJSONError(w, http.StatusForbidden, "service_principal_change_requires_a_principal", fmt.Sprintf(
-			"a change to service principal tokens or session starters records which administrator made it; send %s with the service token", principalIdentityHeader))
+			"a change to service principal tokens or session starters records which administrator made it; send %s with the service token", requestcaller.PrincipalIdentityHeader))
 		return "", false
 	}
 	return principalID, true

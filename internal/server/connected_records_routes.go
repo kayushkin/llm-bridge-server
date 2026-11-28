@@ -144,7 +144,7 @@ func (s *Server) connectedRecordsRoute(mountPrefix, storeName, offCode string, h
 		} else if s.requestIsTheInternalServiceActingAsItself(r) {
 			if requirePrincipal {
 				httpjson.WriteJSONError(w, http.StatusForbidden, strings.ReplaceAll(storeName, "-", "_")+"_requires_a_principal", fmt.Sprintf(
-					"%s answers only its owner's or an administrator's principal; send the service token with %s naming the person it is for", storeName, principalIdentityHeader))
+					"%s answers only its owner's or an administrator's principal; send the service token with %s naming the person it is for", storeName, requestcaller.PrincipalIdentityHeader))
 				return
 			}
 			caller = ownership.Caller{SeesEveryOwner: true}

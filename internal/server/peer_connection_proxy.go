@@ -13,7 +13,7 @@ package server
 //
 // Any principal of this server may use it (phase 2 of design note d107154a).
 // A caller who is not an administrator here is named to the other server in
-// peerUserHeader by its own principal id, set here from the verified caller
+// PeerUserHeader by its own principal id, set here from the verified caller
 // and never from a header the client sent; the other server acts for it as
 // the principal its administrator mapped it to, allowed only what both that
 // principal and this server's peer principal may do there, and refuses it
@@ -40,6 +40,8 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+
+	"github.com/kayushkin/llm-bridge-server/internal/httproutes"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
 
@@ -99,7 +101,7 @@ func (s *Server) handlePeerConnectionProxy(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	path := escapedPathAfterPrefix(r.URL, peerConnectionProxyMountPrefix(connection.ID))
+	path := httproutes.EscapedPathAfterPrefix(r.URL, peerConnectionProxyMountPrefix(connection.ID))
 	startsASession := proxiedRequestStartsASession(r.Method, path)
 	if r.URL.RawQuery != "" {
 		path += "?" + r.URL.RawQuery
@@ -120,7 +122,7 @@ func (s *Server) handlePeerConnectionProxy(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		if caller.PrincipalID != "" && (!caller.IsAdministrator || startsASession) {
-			header.Set(peerUserHeader, caller.PrincipalID)
+			header.Set(requestcaller.PeerUserHeader, caller.PrincipalID)
 		}
 	}
 	// A principal restricted to its grants, such as a service, calls through
@@ -134,7 +136,7 @@ func (s *Server) handlePeerConnectionProxy(w http.ResponseWriter, r *http.Reques
 			"%s; grant can_call_through on peer_connection %s to call through it", callThrough.Describe(), connection.ID))
 		return
 	}
-	if proxiedRequestOnlyReads(r.Method, escapedPathAfterPrefix(r.URL, peerConnectionProxyMountPrefix(connection.ID)), header) {
+	if proxiedRequestOnlyReads(r.Method, httproutes.EscapedPathAfterPrefix(r.URL, peerConnectionProxyMountPrefix(connection.ID)), header) {
 		s.serveSharedProxiedRead(w, r, connection, path, header)
 		return
 	}
