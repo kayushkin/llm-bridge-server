@@ -134,30 +134,6 @@ func (s *Server) sessionIsDelegateOf(sessionID, managerSessionID string) bool {
 	return err == nil && session.ManagerSessionID == managerSessionID
 }
 
-// delegateRequestRefusal holds a create request from a session's agent to its
-// own session: the delegate sits under that session and runs as its
-// principal. It fills in either when the request leaves it empty, and refuses
-// a request that names another, so a caller that asked for more is told so.
-func delegateRequestRefusal(req *CreateSessionRequest, agentSessionID, agentPrincipalID string) *requestcaller.CredentialError {
-	if req.ManagerSessionID != "" && req.ManagerSessionID != agentSessionID {
-		return requestcaller.NewCredentialError(http.StatusForbidden, "delegate_manager_mismatch", fmt.Sprintf(
-			"manager_session_id %q is not %s, the session this posting token belongs to; an agent starts delegates only under its own session (omit manager_session_id)",
-			req.ManagerSessionID, agentSessionID))
-	}
-	if req.PrincipalID != "" && req.PrincipalID != agentPrincipalID {
-		own := "no principal"
-		if agentPrincipalID != "" {
-			own = "principal " + agentPrincipalID
-		}
-		return requestcaller.NewCredentialError(http.StatusForbidden, "delegate_principal_mismatch", fmt.Sprintf(
-			"principal_id %q is not the principal of session %s, which runs with %s; a delegate runs with its session's principal and no other (omit principal_id)",
-			req.PrincipalID, agentSessionID, own))
-	}
-	req.ManagerSessionID = agentSessionID
-	req.PrincipalID = agentPrincipalID
-	return nil
-}
-
 // serveSessionReadingAgent answers a read-only session route for a session's
 // agent. Who the agent reads as is decided the way every other caller's is:
 //

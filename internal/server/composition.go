@@ -1,6 +1,7 @@
 package server
 
 import (
+	"net/http"
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/grantcheck"
@@ -15,10 +16,13 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/automation/operations"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/operationroutes"
 	"github.com/kayushkin/llm-bridge-server/internal/chatlinks"
+	"github.com/kayushkin/llm-bridge-server/internal/harness"
+	"github.com/kayushkin/llm-bridge-server/internal/inprocesshttp"
 	"github.com/kayushkin/llm-bridge-server/internal/machines"
 	"github.com/kayushkin/llm-bridge-server/internal/machines/machineroutes"
 	"github.com/kayushkin/llm-bridge-server/internal/peers"
 	"github.com/kayushkin/llm-bridge-server/internal/sessionactions"
+	"github.com/kayushkin/llm-bridge-server/internal/sessionlog"
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/briefs"
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/messagesender"
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/sessionfiles"
@@ -193,4 +197,23 @@ type sessionActionModelsInThisServer struct {
 // ModelListPrice is the server's model-store list price.
 func (models sessionActionModelsInThisServer) ModelListPrice(model string) (inputPerMillion, outputPerMillion float64, known bool) {
 	return models.server.ModelListPrice(model)
+}
+
+// EnableSessionLog serves log-store's routes from handler and has the harness
+// manager write and read every session event through events. main calls it
+// once the module is provisioned, migrated and open, before any session
+// starts or resumes. In the server both are the log-store module's server;
+// a test may give a fake log-store's handler and the HTTP client over it.
+func (s *Server) EnableSessionLog(handler http.Handler, events harness.SessionEventLog) {
+	s.sessionLog.Store(&sessionLogModule{handler: handler, client: inprocesshttp.Client(handler)})
+	s.harness.SetSessionEventLog(events)
+}
+
+// UseSessionEventStore names where the harness manager stores every event
+// and where this server reads them back: the stream, the stream head, crash
+// recovery, the renamer, the brief pass, the reaper and wakeup redelivery:
+// the session log, the only copy. main calls it once, after EnableSessionLog
+// and before any session starts or resumes.
+func (s *Server) UseSessionEventStore(events sessionlog.Store) {
+	s.harness.SetSessionEventStore(events)
 }

@@ -22,9 +22,6 @@ type bundleResolver interface {
 	ResolveSessionBundle(ctx context.Context, bundleID string) (*bundles.ResolveResponse, error)
 }
 
-// bundleStoreOffMessage says why a server has no bundle-store.
-const bundleStoreOffMessage = "this server's bundle-store module is off (" + config.PostgresURLEnvironmentVariable + " is not set)"
-
 // EnableBundles serves the store's routes from store and answers session
 // bundles from it. main calls it once the module is provisioned, migrated and
 // open, before the server takes requests; until then, and on a server with no
