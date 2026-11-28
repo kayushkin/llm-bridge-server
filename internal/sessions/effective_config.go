@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/harnesscatalog"
+
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/harnessconfig"
 
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads"
@@ -611,7 +613,7 @@ func (s *Service) HandleDryRunEffectiveConfig(w http.ResponseWriter, r *http.Req
 		}
 		subject.Harness = inst.HarnessType
 	}
-	if !IsValidHarness(subject.Harness) {
+	if !harnesscatalog.IsValidHarness(subject.Harness) {
 		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_harness", "harness is required (or an instance_id to take it from)")
 		return
 	}

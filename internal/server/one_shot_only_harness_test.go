@@ -5,7 +5,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/sessions"
+	"github.com/kayushkin/llm-bridge-server/internal/harnesscatalog"
 
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -32,7 +32,7 @@ func TestCreateSession_RefusesAOneShotOnlyHarness(t *testing.T) {
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		t.Fatalf("body is not a JSON error: %s", body)
 	}
-	if envelope.Error.Code != "harness_has_no_sessions" || envelope.Error.Message != sessions.OneShotOnlyHarnesses[msg.HarnessDatabricks] {
+	if envelope.Error.Code != "harness_has_no_sessions" || envelope.Error.Message != harnesscatalog.OneShotOnlyHarnesses[msg.HarnessDatabricks] {
 		t.Errorf("error = %+v", envelope.Error)
 	}
 }
@@ -40,8 +40,8 @@ func TestCreateSession_RefusesAOneShotOnlyHarness(t *testing.T) {
 // Every one-shot-only harness is one this gateway surfaces; a stale entry
 // would refuse sessions on a harness nobody can pick.
 func TestOneShotOnlyHarnessesAreEnabled(t *testing.T) {
-	for harness, reason := range sessions.OneShotOnlyHarnesses {
-		if !sessions.IsValidHarness(harness) {
+	for harness, reason := range harnesscatalog.OneShotOnlyHarnesses {
+		if !harnesscatalog.IsValidHarness(harness) {
 			t.Errorf("oneShotOnlyHarnesses names %q, which this gateway does not surface", harness)
 		}
 		if reason == "" {

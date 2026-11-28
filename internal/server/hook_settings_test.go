@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/harnesscatalog"
+
 	"github.com/kayushkin/llm-bridge-server/internal/sessions"
 
 	"github.com/kayushkin/llm-bridge-server/internal/httproutes"
@@ -400,7 +402,7 @@ func TestInjectHookSettings_OnlyGatedHarnessesGetAPermissionGate(t *testing.T) {
 // the point: whoever takes the decision must come here and say which it was.
 func TestSupportedPermissionModesForOutrunsTheGate(t *testing.T) {
 	// aider has no entry in HarnessSupportedPermissionModes and no gate arm.
-	modes := sessions.SupportedPermissionModesFor(msg.HarnessAider)
+	modes := harnesscatalog.SupportedPermissionModesFor(msg.HarnessAider)
 
 	if !slices.Contains(modes, msg.PermissionModeBlockAll) {
 		t.Fatalf("characterisation drifted: aider no longer offered block_all (got %v) — card 49a697df's decision may have been taken; update this test and the comments it guards", modes)

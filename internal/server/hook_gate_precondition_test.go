@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/sessions"
+	"github.com/kayushkin/llm-bridge-server/internal/harnesscatalog"
 
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -50,7 +50,7 @@ var claudeCodeShapedHarnesses = []msg.Harness{
 // rather than quietly opening the gate.
 func TestEnablingAHarnessKeepsItsPermissionGate(t *testing.T) {
 	for _, h := range claudeCodeShapedHarnesses {
-		_, disabled := sessions.DisabledHarnesses[h]
+		_, disabled := harnesscatalog.DisabledHarnesses[h]
 		wired := injectsClaudeCodeSettings(t, h)
 
 		switch {

@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/harnesscatalog"
+
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
 	"github.com/kayushkin/llm-bridge/msg"
@@ -56,7 +58,7 @@ func (s *Service) HandleSwitchMode(w http.ResponseWriter, r *http.Request) {
 	case msg.SessionModeEvents:
 		// always supported
 	case msg.SessionModePTY:
-		if !HarnessSupportsPTY[msg.Harness(sess.Harness)] {
+		if !harnesscatalog.HarnessSupportsPTY[msg.Harness(sess.Harness)] {
 			http.Error(w, `{"error":{"code":"pty_unsupported","message":"harness does not support pty mode"}}`, http.StatusBadRequest)
 			return
 		}

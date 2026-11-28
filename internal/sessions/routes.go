@@ -14,10 +14,6 @@ func (s *Service) Mount(mux httproutes.Mux, touchingKeepAwake func(http.HandlerF
 	s.PermissionGate.Mount(mux)
 	// log-store's own routes.
 	mux.HandleFunc("/session-log/", s.serveLogStoreMount)
-	mux.HandleFunc("GET /health", s.HandleHealth)
-	mux.HandleFunc("GET /harnesses", s.HandleHarnesses)
-	mux.HandleFunc("GET /harnesses/{name}/capabilities", s.HandleHarnessCapabilities)
-	mux.HandleFunc("GET /harnesses/{name}/agents", s.HandleHarnessAgents)
 	mux.HandleFunc("GET /ui/", s.HandleUserInterface)
 	mux.HandleFunc("GET /{$}", s.HandleRootRedirectsToUserInterface)
 	mux.HandleFunc("GET /sessions", s.HandleListSessions)
@@ -74,8 +70,6 @@ func (s *Service) Mount(mux httproutes.Mux, touchingKeepAwake func(http.HandlerF
 		mux.HandleFunc("GET /sessions/{id}/tools/{tool_use_id}/snapshots", s.HandleGetSnapshots)
 		mux.HandleFunc("GET /snapshots/blob/{sha}", s.HandleGetSnapshotBlob)
 	}
-	mux.HandleFunc("GET /conformance", s.HandleConformanceGet)
-	mux.HandleFunc("POST /conformance/run", s.HandleConformanceRun)
 	mux.HandleFunc("GET /bridge-prefs", s.HandleBridgePrefs)
 	mux.HandleFunc("PUT /bridge-prefs", s.HandleBridgePrefs)
 	mux.HandleFunc("POST /admin/file-inactive", s.HandleFileInactive)

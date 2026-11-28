@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/harnesscatalog"
 	"github.com/kayushkin/llm-bridge-server/internal/keepawake"
 	"github.com/kayushkin/llm-bridge-server/internal/sessions"
 
@@ -43,6 +44,12 @@ func (s *Server) composeServices() {
 	// The session core is reached by most of the others and reaches most of
 	// them, so it is made first and given its dependencies last.
 	s.sessions = &sessions.Service{}
+	s.harnessCatalog = &harnesscatalog.Service{Dependencies: harnesscatalog.Dependencies{
+		AgentStore: func() *agents.Store { return s.agentStore },
+		CfState:    s.cfState,
+		Cfg:        s.cfg,
+		Store:      s.store,
+	}}
 	s.grantChecker = &grantcheck.Checker{Dependencies: grantcheck.Dependencies{
 		GrantStore:               func() grantcheck.GrantReader { return s.grantStore },
 		GrantsPrincipalDirectory: func() grants.PrincipalDirectory { return s.grantsPrincipalDirectory },
@@ -191,7 +198,6 @@ func (s *Server) composeServices() {
 		BridgePrefs:     s.bridgePrefs,
 		BriefService:    s.briefService,
 		BundleStore:     func() sessions.BundleStore { return s.bundleStore },
-		CfState:         s.cfState,
 		Cfg:             s.cfg,
 		ChatLinkService: s.chatLinkService,
 		GrantChecker:    s.grantChecker,

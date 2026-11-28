@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/sessions"
+	"github.com/kayushkin/llm-bridge-server/internal/harnesscatalog"
 
 	"github.com/kayushkin/llm-bridge-server/conformance"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -27,10 +27,10 @@ func goodMatrix() *msg.ConformanceMatrix {
 // not overwrite the last-good matrix, on disk or in memory.
 func TestCommitRunKeepsLastGoodMatrixWhenNoHarnessRan(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "conformance.json")
-	state := &sessions.ConformanceState{Path: path, Matrix: goodMatrix()}
+	state := &harnesscatalog.ConformanceState{Path: path, Matrix: goodMatrix()}
 	state.Save()
 
-	state.CommitRun(&msg.ConformanceMatrix{GeneratedAt: time.Now()}, sessions.RunOutcome{
+	state.CommitRun(&msg.ConformanceMatrix{GeneratedAt: time.Now()}, harnesscatalog.RunOutcome{
 		MissingBinaries: []msg.Harness{msg.HarnessClaudeCode, msg.HarnessCodex},
 	})
 
@@ -42,7 +42,7 @@ func TestCommitRunKeepsLastGoodMatrixWhenNoHarnessRan(t *testing.T) {
 			state.Matrix.GeneratedAt, goodMatrix().GeneratedAt)
 	}
 
-	reloaded := &sessions.ConformanceState{Path: path}
+	reloaded := &harnesscatalog.ConformanceState{Path: path}
 	reloaded.Load()
 	if reloaded.Matrix == nil || len(reloaded.Matrix.Harnesses) != 1 {
 		t.Fatalf("persisted matrix was clobbered by a zero-result run: %+v", reloaded.Matrix)
@@ -54,9 +54,9 @@ func TestCommitRunKeepsLastGoodMatrixWhenNoHarnessRan(t *testing.T) {
 // string. Reporting only launch errors left last_run_error empty in exactly the
 // case it exists for, and a destructive run read as a clean one.
 func TestCommitRunReportsThatNoWrapperBinaryWasOnPath(t *testing.T) {
-	state := &sessions.ConformanceState{Path: filepath.Join(t.TempDir(), "conformance.json"), Matrix: goodMatrix()}
+	state := &harnesscatalog.ConformanceState{Path: filepath.Join(t.TempDir(), "conformance.json"), Matrix: goodMatrix()}
 
-	state.CommitRun(&msg.ConformanceMatrix{GeneratedAt: time.Now()}, sessions.RunOutcome{
+	state.CommitRun(&msg.ConformanceMatrix{GeneratedAt: time.Now()}, harnesscatalog.RunOutcome{
 		MissingBinaries: []msg.Harness{msg.HarnessClaudeCode, msg.HarnessCodex},
 	})
 
@@ -74,7 +74,7 @@ func TestCommitRunReportsThatNoWrapperBinaryWasOnPath(t *testing.T) {
 // even if some harnesses failed to launch along the way.
 func TestCommitRunReplacesMatrixWhenHarnessesRan(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "conformance.json")
-	state := &sessions.ConformanceState{Path: path, Matrix: goodMatrix()}
+	state := &harnesscatalog.ConformanceState{Path: path, Matrix: goodMatrix()}
 	state.Save()
 
 	fresh := &msg.ConformanceMatrix{
@@ -84,13 +84,13 @@ func TestCommitRunReplacesMatrixWhenHarnessesRan(t *testing.T) {
 			{Harness: "codex"},
 		},
 	}
-	state.CommitRun(fresh, sessions.RunOutcome{HarnessErrors: []string{"nanoclaw: image not found"}})
+	state.CommitRun(fresh, harnesscatalog.RunOutcome{HarnessErrors: []string{"nanoclaw: image not found"}})
 
 	if got := len(state.Matrix.Harnesses); got != 2 {
 		t.Fatalf("fresh results were not committed: got %d harnesses, want 2", got)
 	}
 
-	reloaded := &sessions.ConformanceState{Path: path}
+	reloaded := &harnesscatalog.ConformanceState{Path: path}
 	reloaded.Load()
 	if reloaded.Matrix == nil || len(reloaded.Matrix.Harnesses) != 2 {
 		t.Fatalf("fresh results were not persisted: %+v", reloaded.Matrix)
@@ -108,13 +108,13 @@ func TestCommitRunReplacesMatrixWhenHarnessesRan(t *testing.T) {
 // whose binary vanished was never tested, so committing the run throws away the
 // results it last reported. That loss has to be visible.
 func TestCommitRunReportsDiscardedResults(t *testing.T) {
-	state := &sessions.ConformanceState{Path: filepath.Join(t.TempDir(), "conformance.json"), Matrix: goodMatrix()}
+	state := &harnesscatalog.ConformanceState{Path: filepath.Join(t.TempDir(), "conformance.json"), Matrix: goodMatrix()}
 
 	// goodMatrix holds claudecode's results; this run only reached aider.
 	state.CommitRun(&msg.ConformanceMatrix{
 		GeneratedAt: time.Now(),
 		Harnesses:   []msg.ConformanceHarnessResult{{Harness: "aider"}},
-	}, sessions.RunOutcome{MissingBinaries: []msg.Harness{msg.HarnessClaudeCode}})
+	}, harnesscatalog.RunOutcome{MissingBinaries: []msg.Harness{msg.HarnessClaudeCode}})
 
 	if !strings.Contains(state.LastRunError, string(msg.HarnessClaudeCode)) {
 		t.Errorf("claudecode's last-good results were discarded without a word: got %q", state.LastRunError)
@@ -125,12 +125,12 @@ func TestCommitRunReportsDiscardedResults(t *testing.T) {
 // never installed are the steady state, and crying wolf about them on every run
 // would make last_run_error useless as a signal.
 func TestCommitRunStaysQuietWhenNoResultsAreLost(t *testing.T) {
-	state := &sessions.ConformanceState{Path: filepath.Join(t.TempDir(), "conformance.json"), Matrix: goodMatrix()}
+	state := &harnesscatalog.ConformanceState{Path: filepath.Join(t.TempDir(), "conformance.json"), Matrix: goodMatrix()}
 
 	state.CommitRun(&msg.ConformanceMatrix{
 		GeneratedAt: time.Now(),
 		Harnesses:   []msg.ConformanceHarnessResult{{Harness: "claudecode"}, {Harness: "aider"}},
-	}, sessions.RunOutcome{MissingBinaries: []msg.Harness{msg.HarnessGoose}})
+	}, harnesscatalog.RunOutcome{MissingBinaries: []msg.Harness{msg.HarnessGoose}})
 
 	if state.LastRunError != "" {
 		t.Errorf("a never-installed harness was reported as an error: got %q", state.LastRunError)
@@ -139,8 +139,8 @@ func TestCommitRunStaysQuietWhenNoResultsAreLost(t *testing.T) {
 
 // A clean run clears the error from the previous failed run.
 func TestCommitRunClearsPreviousRunError(t *testing.T) {
-	state := &sessions.ConformanceState{Path: filepath.Join(t.TempDir(), "conformance.json")}
-	state.CommitRun(&msg.ConformanceMatrix{}, sessions.RunOutcome{
+	state := &harnesscatalog.ConformanceState{Path: filepath.Join(t.TempDir(), "conformance.json")}
+	state.CommitRun(&msg.ConformanceMatrix{}, harnesscatalog.RunOutcome{
 		MissingBinaries: []msg.Harness{msg.HarnessCodex},
 	})
 	if state.LastRunError == "" {
@@ -149,7 +149,7 @@ func TestCommitRunClearsPreviousRunError(t *testing.T) {
 
 	state.CommitRun(&msg.ConformanceMatrix{
 		Harnesses: []msg.ConformanceHarnessResult{{Harness: "aider"}},
-	}, sessions.RunOutcome{})
+	}, harnesscatalog.RunOutcome{})
 
 	if state.LastRunError != "" {
 		t.Errorf("stale error survived a clean run: got %q", state.LastRunError)
@@ -162,14 +162,14 @@ func TestCommitRunClearsPreviousRunError(t *testing.T) {
 func TestPlanConformanceRunReportsEveryHarnessSkippedForAnEmptyPath(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 
-	targets, outcome := sessions.PlanConformanceRun()
+	targets, outcome := harnesscatalog.PlanConformanceRun()
 
 	if len(targets) != 0 {
 		t.Fatalf("resolved %d harness binaries against an empty PATH: %+v", len(targets), targets)
 	}
-	if len(outcome.MissingBinaries) != len(sessions.AllHarnesses) {
+	if len(outcome.MissingBinaries) != len(harnesscatalog.AllHarnesses) {
 		t.Fatalf("skipped harnesses went unrecorded: got %d, want %d (every enabled harness)",
-			len(outcome.MissingBinaries), len(sessions.AllHarnesses))
+			len(outcome.MissingBinaries), len(harnesscatalog.AllHarnesses))
 	}
 }
 
@@ -183,7 +183,7 @@ func TestPlanConformanceRunFindsHarnessOnPath(t *testing.T) {
 	}
 	t.Setenv("PATH", dir)
 
-	targets, outcome := sessions.PlanConformanceRun()
+	targets, outcome := harnesscatalog.PlanConformanceRun()
 
 	if len(targets) != 1 || targets[0].Harness != msg.HarnessClaudeCode {
 		t.Fatalf("the one harness on PATH was not planned as a target: %+v", targets)

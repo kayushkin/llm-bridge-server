@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/sessions"
+	"github.com/kayushkin/llm-bridge-server/internal/harnesscatalog"
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -132,7 +132,7 @@ var auditedColumns = []capabilityColumn{
 }
 
 func harnessHasCapability(h msg.Harness, capability string) bool {
-	for _, c := range sessions.HarnessCapabilities[h] {
+	for _, c := range harnesscatalog.HarnessCapabilities[h] {
 		if c == capability {
 			return true
 		}
@@ -186,7 +186,7 @@ func TestCapabilityNamesAreConsumed(t *testing.T) {
 		"budget":        true,
 		"system_prompt": true,
 	}
-	for h, caps := range sessions.HarnessCapabilities {
+	for h, caps := range harnesscatalog.HarnessCapabilities {
 		for _, c := range caps {
 			if !consumed[c] {
 				t.Errorf("harness %q is granted capability %q, which no UI reads and no handler acts on; "+
@@ -219,7 +219,7 @@ func TestEmptyCapabilitiesSerializeAsAnEmptyList(t *testing.T) {
 	// list, normalized the way DiscoverHarnesses normalizes it. This half can
 	// legitimately find nothing to check; it is no longer the only path to the
 	// assertion above, so finding nothing is no longer silence.
-	for h, caps := range sessions.HarnessCapabilities {
+	for h, caps := range harnesscatalog.HarnessCapabilities {
 		if len(caps) != 0 {
 			continue
 		}
@@ -258,7 +258,7 @@ func assertCapabilitiesSerializeAsAnEmptyList(t *testing.T, name string, capabil
 // DiscoverHarnesses that turns that into an empty slice before it reaches a
 // client.
 func TestNilCapabilitiesAreNormalized(t *testing.T) {
-	var caps []string = sessions.HarnessCapabilities["not-a-harness"]
+	var caps []string = harnesscatalog.HarnessCapabilities["not-a-harness"]
 	if caps != nil {
 		t.Fatalf("expected a nil lookup for an unknown harness, got %v", caps)
 	}
@@ -297,21 +297,21 @@ func TestNilCapabilitiesAreNormalized(t *testing.T) {
 // fails OPEN. A null here shows every chat control for a harness that
 // supports none of them.
 func TestDiscoverHarnessesNormalizesANilCapabilityList(t *testing.T) {
-	victim := sessions.AllHarnesses[0]
-	saved, had := sessions.HarnessCapabilities[victim]
-	delete(sessions.HarnessCapabilities, victim)
+	victim := harnesscatalog.AllHarnesses[0]
+	saved, had := harnesscatalog.HarnessCapabilities[victim]
+	delete(harnesscatalog.HarnessCapabilities, victim)
 	t.Cleanup(func() {
 		if had {
-			sessions.HarnessCapabilities[victim] = saved
+			harnesscatalog.HarnessCapabilities[victim] = saved
 		} else {
-			delete(sessions.HarnessCapabilities, victim)
+			delete(harnesscatalog.HarnessCapabilities, victim)
 		}
 	})
 
 	srv := (&Server{cfg: &config.Config{ImagesDir: t.TempDir()}}).withServicesComposed()
 
-	statuses := srv.sessions.DiscoverHarnesses()
-	var found *sessions.HarnessStatus
+	statuses := srv.harnessCatalog.DiscoverHarnesses()
+	var found *harnesscatalog.HarnessStatus
 	for i := range statuses {
 		if statuses[i].Name == string(victim) {
 			found = &statuses[i]

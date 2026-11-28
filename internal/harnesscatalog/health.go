@@ -1,4 +1,4 @@
-package sessions
+package harnesscatalog
 
 import (
 	"errors"

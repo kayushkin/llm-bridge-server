@@ -5,9 +5,9 @@ import (
 	"regexp"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/sessions/hookvocabulary"
+	"github.com/kayushkin/llm-bridge-server/internal/harnesscatalog"
 
-	"github.com/kayushkin/llm-bridge-server/internal/sessions"
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/hookvocabulary"
 
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -23,16 +23,16 @@ import (
 // breaks the build here until it is either described or explicitly disabled.
 func TestHarnessTablesCoverCanonicalSet(t *testing.T) {
 	for _, h := range msg.AllHarnesses {
-		if reason, disabled := sessions.DisabledHarnesses[h]; disabled {
+		if reason, disabled := harnesscatalog.DisabledHarnesses[h]; disabled {
 			if reason == "" {
 				t.Errorf("harness %q is disabled with an empty reason; state why so the omission stays a decision", h)
 			}
 			continue
 		}
-		if _, ok := sessions.HarnessMetadata[h]; !ok {
+		if _, ok := harnesscatalog.HarnessMetadata[h]; !ok {
 			t.Errorf("harness %q is enabled but missing from harnessMetadata; add an entry or list it in disabledHarnesses", h)
 		}
-		if _, ok := sessions.HarnessCapabilities[h]; !ok {
+		if _, ok := harnesscatalog.HarnessCapabilities[h]; !ok {
 			t.Errorf("harness %q is enabled but missing from harnessCapabilities; add an entry or list it in disabledHarnesses", h)
 		}
 	}
@@ -70,7 +70,7 @@ func TestCompactCapabilityMatchesTheHarnesses(t *testing.T) {
 	}
 
 	has := func(h msg.Harness) bool {
-		for _, c := range sessions.HarnessCapabilities[h] {
+		for _, c := range harnesscatalog.HarnessCapabilities[h] {
 			if c == "compact" {
 				return true
 			}
@@ -184,15 +184,15 @@ func harnessTableKeys[V any](name string, table map[msg.Harness]V) harnessKeyedT
 // goes red rather than leaving that as a sentence nobody re-checks.
 func harnessKeyedTables() []harnessKeyedTable {
 	return []harnessKeyedTable{
-		harnessTableKeys("HarnessMetadata", sessions.HarnessMetadata),
-		harnessTableKeys("HarnessSupportedProviders", sessions.HarnessSupportedProviders),
+		harnessTableKeys("HarnessMetadata", harnesscatalog.HarnessMetadata),
+		harnessTableKeys("HarnessSupportedProviders", harnesscatalog.HarnessSupportedProviders),
 		harnessTableKeys("HarnessHookEvents", hookvocabulary.HarnessHookEvents),
-		harnessTableKeys("HarnessSupportsPTY", sessions.HarnessSupportsPTY),
-		harnessTableKeys("HarnessSupportsDisableNetwork", sessions.HarnessSupportsDisableNetwork),
-		harnessTableKeys("HarnessSupportedPermissionModes", sessions.HarnessSupportedPermissionModes),
-		harnessTableKeys("HarnessCapabilities", sessions.HarnessCapabilities),
-		harnessTableKeys("DisabledHarnesses", sessions.DisabledHarnesses),
-		harnessTableKeys("OneShotOnlyHarnesses", sessions.OneShotOnlyHarnesses),
+		harnessTableKeys("HarnessSupportsPTY", harnesscatalog.HarnessSupportsPTY),
+		harnessTableKeys("HarnessSupportsDisableNetwork", harnesscatalog.HarnessSupportsDisableNetwork),
+		harnessTableKeys("HarnessSupportedPermissionModes", harnesscatalog.HarnessSupportedPermissionModes),
+		harnessTableKeys("HarnessCapabilities", harnesscatalog.HarnessCapabilities),
+		harnessTableKeys("DisabledHarnesses", harnesscatalog.DisabledHarnesses),
+		harnessTableKeys("OneShotOnlyHarnesses", harnesscatalog.OneShotOnlyHarnesses),
 		harnessTableKeys("HookConfigKeyByHarness", hookvocabulary.HookConfigKeyByHarness),
 		harnessTableKeys("PermissionGateRouteByHarness", hookvocabulary.PermissionGateRouteByHarness),
 	}
@@ -229,7 +229,7 @@ func TestHarnessKeyedTablesNameOnlyCanonicalHarnesses(t *testing.T) {
 // about adding one would say so — the omission would look exactly like a table
 // that had been considered and cleared.
 // harnessKeyedTableFiles are the files that declare the harness-keyed tables.
-var harnessKeyedTableFiles = []string{"../sessions/health.go", "../sessions/hookvocabulary/hook_vocabulary.go"}
+var harnessKeyedTableFiles = []string{"../harnesscatalog/health.go", "../sessions/hookvocabulary/hook_vocabulary.go"}
 
 func TestEveryHarnessKeyedTableIsListedHere(t *testing.T) {
 	var source []byte
@@ -277,9 +277,9 @@ func TestEveryHarnessKeyedTableIsListedHere(t *testing.T) {
 // owned literals at the bottom of this test (copilot_cli must stay invalid,
 // claude_code must stay valid) are what make those two rows the exception.
 func TestAllHarnessesExcludesDisabled(t *testing.T) {
-	seen := make(map[msg.Harness]bool, len(sessions.AllHarnesses))
-	for _, h := range sessions.AllHarnesses {
-		if _, off := sessions.DisabledHarnesses[h]; off {
+	seen := make(map[msg.Harness]bool, len(harnesscatalog.AllHarnesses))
+	for _, h := range harnesscatalog.AllHarnesses {
+		if _, off := harnesscatalog.DisabledHarnesses[h]; off {
 			t.Errorf("harness %q is in disabledHarnesses but still present in allHarnesses; isValidHarness would accept it and spawn its binary", h)
 		}
 		if seen[h] {
@@ -287,9 +287,9 @@ func TestAllHarnessesExcludesDisabled(t *testing.T) {
 		}
 		seen[h] = true
 	}
-	if want := len(msg.AllHarnesses) - len(sessions.DisabledHarnesses); len(sessions.AllHarnesses) != want {
+	if want := len(msg.AllHarnesses) - len(harnesscatalog.DisabledHarnesses); len(harnesscatalog.AllHarnesses) != want {
 		t.Errorf("allHarnesses has %d entries, want %d (canonical %d minus %d disabled)",
-			len(sessions.AllHarnesses), want, len(msg.AllHarnesses), len(sessions.DisabledHarnesses))
+			len(harnesscatalog.AllHarnesses), want, len(msg.AllHarnesses), len(harnesscatalog.DisabledHarnesses))
 	}
 	// This assertion pins that copilot_cli is OFF, for the reason recorded in
 	// DisabledHarnesses: a stale binary on PATH. It says nothing about
@@ -297,10 +297,10 @@ func TestAllHarnessesExcludesDisabled(t *testing.T) {
 	// TestEnablingAHarnessKeepsItsPermissionGate covers the other half —
 	// enabling it also needs a case in InjectHookSettings, or its sessions
 	// spawn with no permission hook. Deleting this one does not excuse that.
-	if sessions.IsValidHarness(msg.HarnessCopilotCLI) {
+	if harnesscatalog.IsValidHarness(msg.HarnessCopilotCLI) {
 		t.Error("isValidHarness accepts copilot_cli; session create would spawn the stale llm-bridge-copilotcli binary on PATH")
 	}
-	if !sessions.IsValidHarness(msg.HarnessClaudeCode) {
+	if !harnesscatalog.IsValidHarness(msg.HarnessClaudeCode) {
 		t.Error("isValidHarness rejects claude_code; the derivation dropped an enabled harness")
 	}
 }

@@ -5,6 +5,8 @@ import (
 	"io/fs"
 	"sync"
 
+	"github.com/kayushkin/llm-bridge-server/internal/harnesscatalog"
+
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/permissiongate"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/grantcheck"
@@ -39,7 +41,7 @@ type Dependencies struct {
 	BridgePrefs          *BridgePrefsStore
 	BriefService         *briefs.Service
 	BundleStore          func() BundleStore
-	CfState              *ConformanceState
+	CfState              *harnesscatalog.ConformanceState
 	Cfg                  *config.Config
 	ChatLinkService      *chatlinks.Service
 	GrantChecker         *grantcheck.Checker

@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/harnesscatalog"
+
 	"github.com/kayushkin/llm-bridge-server/internal/sessions"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/login"
@@ -198,7 +200,7 @@ type Server struct {
 	// until EnableRepositories, which refuses deploy actions.
 	repoRegistryForDeploys repoRegistry
 	bridgePrefs            *sessions.BridgePrefsStore
-	cfState                *sessions.ConformanceState
+	cfState                *harnesscatalog.ConformanceState
 	sessionHub             *sessions.SessionHub
 	parkedAsks             *parkedasks.Asks
 	responseCache          *sessions.ResponseCache
@@ -261,6 +263,7 @@ type Server struct {
 	peers            *peers.Service
 	login            *login.Service
 	sessions         *sessions.Service
+	harnessCatalog   *harnesscatalog.Service
 	sessionFiles     *sessionfiles.Service
 }
 
@@ -287,7 +290,7 @@ func New(st *store.Store, as *agents.Store, ms *memories.Store, hs *machines.Sto
 		peerSockets:          peers.NewPeerSocketRegistry(),
 		peerRequestsInFlight: peers.NewPeerRequestsInFlight(),
 		bridgePrefs:          sessions.NewBridgePrefsStore(cfg.BridgePrefsPath),
-		cfState:              sessions.NewConformanceState(cfg.ConformancePath),
+		cfState:              harnesscatalog.NewConformanceState(cfg.ConformancePath),
 		sessionHub:           hub,
 		parkedAsks:           parkedasks.New(),
 		responseCache:        respCache,
@@ -380,8 +383,8 @@ func (s *Server) syncHarnessTypes() {
 	if s.harnessStore == nil {
 		return
 	}
-	for _, h := range sessions.AllHarnesses {
-		meta := sessions.HarnessMetadata[h]
+	for _, h := range harnesscatalog.AllHarnesses {
+		meta := harnesscatalog.HarnessMetadata[h]
 		if err := s.harnessStore.UpsertHarnessType(&machines.HarnessType{
 			Name:  h,
 			Label: meta.Label,
@@ -394,6 +397,7 @@ func (s *Server) syncHarnessTypes() {
 }
 
 func (s *Server) routes() {
+	s.harnessCatalog.Mount(s.mux)
 	s.sessions.Mount(s.mux, s.touchingKeepAwake)
 	s.registerLoginAndStoreProxyRoutes()
 	s.registerPredictionStoreRoutes()

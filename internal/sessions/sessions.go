@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/harnesscatalog"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access/login"
 
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/messagesender"
@@ -363,11 +365,11 @@ func (s *Service) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h := msg.Harness(req.Harness)
-	if !IsValidHarness(h) {
+	if !harnesscatalog.IsValidHarness(h) {
 		http.Error(w, "invalid harness", http.StatusBadRequest)
 		return
 	}
-	if reason, oneShotOnly := OneShotOnlyHarnesses[h]; oneShotOnly {
+	if reason, oneShotOnly := harnesscatalog.OneShotOnlyHarnesses[h]; oneShotOnly {
 		httpjson.WriteJSONError(w, http.StatusBadRequest, "harness_has_no_sessions", reason)
 		return
 	}
@@ -413,7 +415,7 @@ func (s *Service) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 	case msg.SessionModeEvents:
 		// always allowed
 	case msg.SessionModePTY:
-		if !HarnessSupportsPTY[h] {
+		if !harnesscatalog.HarnessSupportsPTY[h] {
 			http.Error(w, `{"error":{"code":"pty_unsupported","message":"harness does not support pty mode"}}`, http.StatusBadRequest)
 			return
 		}
