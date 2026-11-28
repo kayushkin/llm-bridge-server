@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/harnesscatalog"
+	"github.com/kayushkin/llm-bridge-server/internal/serviceinventory/inventoryroutes"
+	"github.com/kayushkin/llm-bridge-server/internal/userinterface"
 
 	"github.com/kayushkin/llm-bridge-server/internal/sessions"
 
@@ -251,20 +253,22 @@ type Server struct {
 	chatLinkService *chatlinks.Service
 	// grantChecker answers what a principal's grants allow; it reads
 	// grantStore and principalLookupCache as they are when it is asked.
-	grantChecker     *grantcheck.Checker
-	briefService     *briefs.Service
-	operationRoutes  *operationroutes.Service
-	machineRoutes    *machineroutes.Service
-	messageSenders   *messagesender.Senders
-	modelCredentials *modelcredentials.Service
-	oneShot          *oneshot.Service
-	sessionActions   *sessionactions.Service
-	signals          *signals.Service
-	peers            *peers.Service
-	login            *login.Service
-	sessions         *sessions.Service
-	harnessCatalog   *harnesscatalog.Service
-	sessionFiles     *sessionfiles.Service
+	grantChecker           *grantcheck.Checker
+	briefService           *briefs.Service
+	operationRoutes        *operationroutes.Service
+	machineRoutes          *machineroutes.Service
+	messageSenders         *messagesender.Senders
+	modelCredentials       *modelcredentials.Service
+	oneShot                *oneshot.Service
+	sessionActions         *sessionactions.Service
+	signals                *signals.Service
+	peers                  *peers.Service
+	login                  *login.Service
+	sessions               *sessions.Service
+	harnessCatalog         *harnesscatalog.Service
+	userInterface          *userinterface.Service
+	serviceInventoryRoutes *inventoryroutes.Service
+	sessionFiles           *sessionfiles.Service
 }
 
 func New(st *store.Store, as *agents.Store, ms *memories.Store, hs *machines.Store, hks *hooks.Store, mds *models.Store, ss *snapshots.Store, cfg *config.Config) *Server {
@@ -398,6 +402,8 @@ func (s *Server) syncHarnessTypes() {
 
 func (s *Server) routes() {
 	s.harnessCatalog.Mount(s.mux)
+	s.userInterface.Mount(s.mux)
+	s.serviceInventoryRoutes.Mount(s.mux)
 	s.sessions.Mount(s.mux, s.touchingKeepAwake)
 	s.registerLoginAndStoreProxyRoutes()
 	s.registerPredictionStoreRoutes()

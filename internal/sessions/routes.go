@@ -14,8 +14,6 @@ func (s *Service) Mount(mux httproutes.Mux, touchingKeepAwake func(http.HandlerF
 	s.PermissionGate.Mount(mux)
 	// log-store's own routes.
 	mux.HandleFunc("/session-log/", s.serveLogStoreMount)
-	mux.HandleFunc("GET /ui/", s.HandleUserInterface)
-	mux.HandleFunc("GET /{$}", s.HandleRootRedirectsToUserInterface)
 	mux.HandleFunc("GET /sessions", s.HandleListSessions)
 	mux.HandleFunc("GET /session-events", s.HandleSessionListEvents)
 	mux.HandleFunc("GET /sessions/summary", s.HandleSessionsSummary)
@@ -54,9 +52,6 @@ func (s *Service) Mount(mux httproutes.Mux, touchingKeepAwake func(http.HandlerF
 	mux.HandleFunc("GET /sessions/{id}/git", s.HandleSessionGit)
 	mux.HandleFunc("GET /sessions/{id}/effective-config", s.HandleSessionEffectiveConfig)
 	mux.HandleFunc("GET /effective-config", s.HandleDryRunEffectiveConfig)
-	mux.HandleFunc("GET /services", s.HandleListServices)
-	mux.HandleFunc("GET /services/databases/schema", s.HandleDatabaseSchema)
-	mux.HandleFunc("GET /services/databases/rows", s.HandleDatabaseRows)
 	mux.HandleFunc("GET /folders", s.HandleListFolders)
 	mux.HandleFunc("POST /folders", s.HandleCreateFolder)
 	mux.HandleFunc("DELETE /folders/{name}", s.HandleDeleteFolder)

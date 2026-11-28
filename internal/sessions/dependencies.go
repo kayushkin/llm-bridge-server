@@ -2,7 +2,6 @@ package sessions
 
 import (
 	"context"
-	"io/fs"
 	"sync"
 
 	"github.com/kayushkin/llm-bridge-server/internal/harnesscatalog"
@@ -24,7 +23,6 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/machines"
 	"github.com/kayushkin/llm-bridge-server/internal/machines/machineroutes"
 	"github.com/kayushkin/llm-bridge-server/internal/peers"
-	"github.com/kayushkin/llm-bridge-server/internal/serviceinventory"
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/briefs"
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/messagesender"
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/parkedasks"
@@ -68,7 +66,6 @@ type Dependencies struct {
 	SnapshotStore        func() *snapshots.Store
 	Store                *store.Store
 	ToolRegistry         func() ToolRegistry
-	UserInterfaceBuild   func() fs.FS
 }
 
 // BundleStore is what this package calls on the server's bundleStore.
@@ -94,6 +91,4 @@ type Service struct {
 	HarnessStartLockBySessionID sync.Map
 	RenamesInFlight             sync.Map
 	RestartDrain                RestartDrainState
-	ServiceInventory            *serviceinventory.Inventory
-	ServiceInventoryMu          sync.Mutex
 }

@@ -7,7 +7,9 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/harnesscatalog"
 	"github.com/kayushkin/llm-bridge-server/internal/keepawake"
+	"github.com/kayushkin/llm-bridge-server/internal/serviceinventory/inventoryroutes"
 	"github.com/kayushkin/llm-bridge-server/internal/sessions"
+	"github.com/kayushkin/llm-bridge-server/internal/userinterface"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/grantcheck"
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
@@ -44,6 +46,8 @@ func (s *Server) composeServices() {
 	// The session core is reached by most of the others and reaches most of
 	// them, so it is made first and given its dependencies last.
 	s.sessions = &sessions.Service{}
+	s.userInterface = &userinterface.Service{Dependencies: userinterface.Dependencies{UserInterfaceBuild: func() fs.FS { return s.userInterfaceBuild }}}
+	s.serviceInventoryRoutes = &inventoryroutes.Service{Dependencies: inventoryroutes.Dependencies{Cfg: s.cfg}}
 	s.harnessCatalog = &harnesscatalog.Service{Dependencies: harnesscatalog.Dependencies{
 		AgentStore: func() *agents.Store { return s.agentStore },
 		CfState:    s.cfState,
@@ -219,16 +223,15 @@ func (s *Server) composeServices() {
 			}
 			return s.principalLookupCache
 		},
-		PrincipalStore:     func() sessions.PrincipalStore { return s.principalStore },
-		ResponseCache:      s.responseCache,
-		SessionHub:         s.sessionHub,
-		SessionLog:         s.sessionLog.Load,
-		Settings:           s.settings,
-		Signals:            s.signals,
-		SnapshotStore:      func() *snapshots.Store { return s.snapshotStore },
-		Store:              s.store,
-		ToolRegistry:       func() sessions.ToolRegistry { return s.toolRegistry },
-		UserInterfaceBuild: func() fs.FS { return s.userInterfaceBuild },
+		PrincipalStore: func() sessions.PrincipalStore { return s.principalStore },
+		ResponseCache:  s.responseCache,
+		SessionHub:     s.sessionHub,
+		SessionLog:     s.sessionLog.Load,
+		Settings:       s.settings,
+		Signals:        s.signals,
+		SnapshotStore:  func() *snapshots.Store { return s.snapshotStore },
+		Store:          s.store,
+		ToolRegistry:   func() sessions.ToolRegistry { return s.toolRegistry },
 	}
 }
 
