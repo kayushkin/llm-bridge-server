@@ -1,6 +1,10 @@
 package server
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/kayushkin/llm-bridge-server/internal/sessions"
+)
 
 // TestCarriesHarnessConfigSeesAnEmptyDisabledToolsList pins the nil/length
 // distinction on the budget-only fast path.
@@ -15,44 +19,44 @@ func TestCarriesHarnessConfigSeesAnEmptyDisabledToolsList(t *testing.T) {
 
 	cases := []struct {
 		name string
-		req  ConfigSessionRequest
+		req  sessions.ConfigSessionRequest
 		want bool
 	}{
 		{
 			name: "empty list re-enables every tool, so the harness must hear it",
-			req:  ConfigSessionRequest{MaxBudget: &budget, DisabledTools: []string{}},
+			req:  sessions.ConfigSessionRequest{MaxBudget: &budget, DisabledTools: []string{}},
 			want: true,
 		},
 		{
 			name: "a named tool set reaches the harness",
-			req:  ConfigSessionRequest{MaxBudget: &budget, DisabledTools: []string{"shell_commands"}},
+			req:  sessions.ConfigSessionRequest{MaxBudget: &budget, DisabledTools: []string{"shell_commands"}},
 			want: true,
 		},
 		{
 			name: "budget only, saying nothing about tools, stays here",
-			req:  ConfigSessionRequest{MaxBudget: &budget},
+			req:  sessions.ConfigSessionRequest{MaxBudget: &budget},
 			want: false,
 		},
 		{
 			name: "budget plus an explicit null tool set still says nothing about tools",
-			req:  ConfigSessionRequest{MaxBudget: &budget, DisabledTools: nil},
+			req:  sessions.ConfigSessionRequest{MaxBudget: &budget, DisabledTools: nil},
 			want: false,
 		},
 		{
 			name: "a model change reaches the harness",
-			req:  ConfigSessionRequest{MaxBudget: &budget, Model: "sonnet"},
+			req:  sessions.ConfigSessionRequest{MaxBudget: &budget, Model: "sonnet"},
 			want: true,
 		},
 		{
 			name: "an effort change reaches the harness",
-			req:  ConfigSessionRequest{MaxBudget: &budget, Effort: "high"},
+			req:  sessions.ConfigSessionRequest{MaxBudget: &budget, Effort: "high"},
 			want: true,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := carriesHarnessConfig(tc.req); got != tc.want {
+			if got := sessions.CarriesHarnessConfig(tc.req); got != tc.want {
 				t.Fatalf("carriesHarnessConfig(%#v) = %v, want %v", tc.req, got, tc.want)
 			}
 		})

@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions"
+
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 )
 
@@ -13,7 +15,7 @@ import (
 func TestATurnKilledBeforeItRanAnythingIsReplayedVerbatim(t *testing.T) {
 	const instruction = "deploy the gateway"
 
-	text, replayed := resumeMessage(store.InterruptedTurn{
+	text, replayed := sessions.ResumeMessage(store.InterruptedTurn{
 		UserMessageText:     instruction,
 		ToolCallsAlreadyRun: 0,
 	})
@@ -34,7 +36,7 @@ func TestATurnKilledBeforeItRanAnythingIsReplayedVerbatim(t *testing.T) {
 func TestATurnKilledMidWorkIsNotHandedBackAsAFreshInstruction(t *testing.T) {
 	const instruction = "Yeah lets go ahead a merge/fix those branches and get it deployed"
 
-	text, replayed := resumeMessage(store.InterruptedTurn{
+	text, replayed := sessions.ResumeMessage(store.InterruptedTurn{
 		UserMessageText:     instruction,
 		ToolCallsAlreadyRun: 23,
 	})
@@ -59,7 +61,7 @@ func TestATurnKilledMidWorkIsNotHandedBackAsAFreshInstruction(t *testing.T) {
 // "did anything at all happen", not "did enough happen to worry about" —
 // nothing here can tell whether that one call was a read or a deploy.
 func TestASingleToolCallIsEnoughToSuppressTheReplay(t *testing.T) {
-	_, replayed := resumeMessage(store.InterruptedTurn{
+	_, replayed := sessions.ResumeMessage(store.InterruptedTurn{
 		UserMessageText:     "do the thing",
 		ToolCallsAlreadyRun: 1,
 	})

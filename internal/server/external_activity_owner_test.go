@@ -35,7 +35,7 @@ func TestExternalDiscoveryRetainsConfiguredOwnerAndRejectsDisabledOwner(t *testi
 			srv.cfg.DiscoveryPrincipalID = owner.ID
 			srv.principalStore = testPrincipalDirectoryAt(directory.URL)
 			now := time.Now().UTC()
-			srv.recordExternalSession(context.Background(), msg.StoredSession{Harness: msg.HarnessCodex, HarnessSessionID: "external-owner-fixture", Source: msg.PurposeChat, CreatedAt: now, UpdatedAt: now}, "")
+			srv.sessions.RecordExternalSession(context.Background(), msg.StoredSession{Harness: msg.HarnessCodex, HarnessSessionID: "external-owner-fixture", Source: msg.PurposeChat, CreatedAt: now, UpdatedAt: now}, "")
 			row, err := st.GetSessionByHarnessSessionID("external-owner-fixture")
 			if disabled {
 				if err == nil && row != nil {

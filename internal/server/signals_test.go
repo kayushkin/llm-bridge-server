@@ -47,7 +47,7 @@ func TestSignalSurfaceForSession(t *testing.T) {
 		want msg.SignalSurface
 	}{
 		{"interactive", &store.Session{Type: msg.SessionTypeInteractive}, msg.SignalSurfaceChat},
-		// Herald is grouped with autonomous by isUnattendedSession but NOT
+		// Herald is grouped with autonomous by IsUnattendedSession but NOT
 		// here: the relay reaches the user's chat, and no herald session has
 		// a kanban card.
 		{"herald", &store.Session{Type: msg.SessionTypeHerald}, msg.SignalSurfaceChat},

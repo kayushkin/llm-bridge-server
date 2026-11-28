@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions"
+
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -112,12 +114,12 @@ func TestAutoRenameRunsAfterTheFirstTurnForTitledPurposesOnly(t *testing.T) {
 				t.Errorf("named at turn %d, want 1: the echoed user_message row must not count as a second turn", namedAtTurn)
 			}
 
-			// The next title waits renameEvery turns, counted as turns.
-			for turn := 2; turn <= renameEvery; turn++ {
+			// The next title waits RenameEvery turns, counted as turns.
+			for turn := 2; turn <= sessions.RenameEvery; turn++ {
 				storeTurn(t, srv, created.SessionID, fmt.Sprintf("turn_%d", turn), "more", "ok")
 				waitForCalls(1)
 			}
-			storeTurn(t, srv, created.SessionID, fmt.Sprintf("turn_%d", renameEvery+1), "more", "ok")
+			storeTurn(t, srv, created.SessionID, fmt.Sprintf("turn_%d", sessions.RenameEvery+1), "more", "ok")
 			waitForCalls(2)
 		})
 	}

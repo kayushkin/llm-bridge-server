@@ -4,6 +4,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions"
+
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -63,7 +65,7 @@ func TestHandleSessionsSummary_ETagAnd304(t *testing.T) {
 	if etag == "" {
 		t.Fatalf("missing ETag header")
 	}
-	body := decodeJSON[SummaryResponse](t, resp)
+	body := decodeJSON[sessions.SummaryResponse](t, resp)
 	if len(body.Sessions) != 2 {
 		t.Fatalf("expected 2 sessions, got %d", len(body.Sessions))
 	}
@@ -94,9 +96,9 @@ func TestHandleSessionsSummary_RevisionMovesOnMutation(t *testing.T) {
 	srv, st := testServer(t)
 	seedSession(t, st, "a")
 
-	r1 := decodeJSON[SummaryResponse](t, doJSON(t, srv, "GET", "/sessions/summary", nil))
+	r1 := decodeJSON[sessions.SummaryResponse](t, doJSON(t, srv, "GET", "/sessions/summary", nil))
 	seedSession(t, st, "b")
-	r2 := decodeJSON[SummaryResponse](t, doJSON(t, srv, "GET", "/sessions/summary", nil))
+	r2 := decodeJSON[sessions.SummaryResponse](t, doJSON(t, srv, "GET", "/sessions/summary", nil))
 
 	if r1.Revision == r2.Revision {
 		t.Errorf("revision should advance after inserting a session")
@@ -109,13 +111,13 @@ func TestHandleSessionsSummary_RevisionMovesOnMutation(t *testing.T) {
 // The response cache serves identical bytes for a repeated request and clears on
 // notify.
 func TestResponseCache_InvalidateOnNotify(t *testing.T) {
-	c := newResponseCache()
-	c.put("k", []byte("v"))
-	if b, ok := c.get("k"); !ok || string(b) != "v" {
+	c := sessions.NewResponseCache()
+	c.Put("k", []byte("v"))
+	if b, ok := c.Get("k"); !ok || string(b) != "v" {
 		t.Fatalf("get after put failed")
 	}
 	c.OnSessionChanged("any")
-	if _, ok := c.get("k"); ok {
+	if _, ok := c.Get("k"); ok {
 		t.Errorf("cache should be empty after OnSessionChanged")
 	}
 }
@@ -125,7 +127,7 @@ func TestNotifierFanout_ForwardsToAll(t *testing.T) {
 	var a, b []string
 	fa := notifierRecorder{onChange: func(id string) { a = append(a, id) }}
 	fb := notifierRecorder{onChange: func(id string) { b = append(b, id) }}
-	f := newNotifierFanout(&fa, &fb)
+	f := sessions.NewNotifierFanout(&fa, &fb)
 	f.OnSessionChanged("x")
 	if len(a) != 1 || len(b) != 1 || a[0] != "x" || b[0] != "x" {
 		t.Errorf("fanout did not reach both targets: a=%v b=%v", a, b)
@@ -173,7 +175,7 @@ func TestHandleSessionsSummary_SessionIDLookup(t *testing.T) {
 		if resp.StatusCode != 200 {
 			t.Fatalf("%s: status = %d", query, resp.StatusCode)
 		}
-		body := decodeJSON[SummaryResponse](t, resp)
+		body := decodeJSON[sessions.SummaryResponse](t, resp)
 		if len(body.Sessions) != 2 {
 			t.Fatalf("%s: got %d sessions, want the 2 named", query, len(body.Sessions))
 		}
@@ -192,7 +194,7 @@ func TestHandleSessionsSummary_SessionIDLookup(t *testing.T) {
 	// Present but empty is refused, NOT treated as an unfiltered listing.
 	resp := doJSON(t, srv, "GET", "/sessions/summary?session_id=", nil)
 	if resp.StatusCode != 400 {
-		body := decodeJSON[SummaryResponse](t, resp)
+		body := decodeJSON[sessions.SummaryResponse](t, resp)
 		t.Fatalf("empty session_id: status = %d with %d sessions, want 400",
 			resp.StatusCode, len(body.Sessions))
 	}
@@ -202,7 +204,7 @@ func TestHandleSessionsSummary_SessionIDLookup(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Fatalf("unfiltered: status = %d", resp.StatusCode)
 	}
-	if got := len(decodeJSON[SummaryResponse](t, resp).Sessions); got != 3 {
+	if got := len(decodeJSON[sessions.SummaryResponse](t, resp).Sessions); got != 3 {
 		t.Errorf("unfiltered listing returned %d sessions, want 3", got)
 	}
 }
@@ -234,7 +236,7 @@ func TestHandleSessionsSummary_ManagerSessionIDLookup(t *testing.T) {
 		if resp.StatusCode != 200 {
 			t.Fatalf("%s: status = %d", query, resp.StatusCode)
 		}
-		body := decodeJSON[SummaryResponse](t, resp)
+		body := decodeJSON[sessions.SummaryResponse](t, resp)
 		if len(body.Sessions) != 3 {
 			t.Fatalf("%s: got %d sessions, want the 3 children", query, len(body.Sessions))
 		}
@@ -252,7 +254,7 @@ func TestHandleSessionsSummary_ManagerSessionIDLookup(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Fatalf("unfiltered: status = %d", resp.StatusCode)
 	}
-	body := decodeJSON[SummaryResponse](t, resp)
+	body := decodeJSON[sessions.SummaryResponse](t, resp)
 	seen := map[string]string{}
 	for _, s := range body.Sessions {
 		seen[s.SessionID] = s.ManagerSessionID
@@ -290,22 +292,22 @@ func TestHandleSessionsSummaryLookup_PostBody(t *testing.T) {
 
 	// The session_ids lookup answers over POST.
 	resp := doJSON(t, srv, "POST", "/sessions/summary",
-		SummaryLookupRequest{SessionIDs: &[]string{"a"}})
+		sessions.SummaryLookupRequest{SessionIDs: &[]string{"a"}})
 	if resp.StatusCode != 200 {
 		t.Fatalf("session_ids lookup: status = %d", resp.StatusCode)
 	}
-	body := decodeJSON[SummaryResponse](t, resp)
+	body := decodeJSON[sessions.SummaryResponse](t, resp)
 	if len(body.Sessions) != 1 || body.Sessions[0].SessionID != "a" {
 		t.Fatalf("session_ids lookup: got %+v, want just session a", body.Sessions)
 	}
 
 	// The manager_session_ids lookup answers over POST, several parents at once.
 	resp = doJSON(t, srv, "POST", "/sessions/summary",
-		SummaryLookupRequest{ManagerSessionIDs: &[]string{"a", "b"}})
+		sessions.SummaryLookupRequest{ManagerSessionIDs: &[]string{"a", "b"}})
 	if resp.StatusCode != 200 {
 		t.Fatalf("manager_session_ids lookup: status = %d", resp.StatusCode)
 	}
-	body = decodeJSON[SummaryResponse](t, resp)
+	body = decodeJSON[sessions.SummaryResponse](t, resp)
 	if len(body.Sessions) != 2 {
 		t.Fatalf("manager_session_ids lookup: got %d sessions, want the 2 children", len(body.Sessions))
 	}
@@ -317,7 +319,7 @@ func TestHandleSessionsSummaryLookup_PostBody(t *testing.T) {
 
 	// Present but empty is a 400 over POST too — the pointer fields exist to
 	// keep that distinction through JSON.
-	for _, req := range []SummaryLookupRequest{
+	for _, req := range []sessions.SummaryLookupRequest{
 		{SessionIDs: &[]string{}},
 		{ManagerSessionIDs: &[]string{}},
 		{SessionIDs: &[]string{"", "  "}},
@@ -337,11 +339,11 @@ func TestHandleSessionsSummaryLookup_PostBody(t *testing.T) {
 	}
 
 	// An empty body is the unfiltered listing, same as a bare GET.
-	resp = doJSON(t, srv, "POST", "/sessions/summary", SummaryLookupRequest{})
+	resp = doJSON(t, srv, "POST", "/sessions/summary", sessions.SummaryLookupRequest{})
 	if resp.StatusCode != 200 {
 		t.Fatalf("unfiltered POST: status = %d", resp.StatusCode)
 	}
-	if got := len(decodeJSON[SummaryResponse](t, resp).Sessions); got != 4 {
+	if got := len(decodeJSON[sessions.SummaryResponse](t, resp).Sessions); got != 4 {
 		t.Errorf("unfiltered POST returned %d sessions, want 4", got)
 	}
 }
@@ -357,27 +359,27 @@ func TestHandleSessionsValidatorsLookup_PostBody(t *testing.T) {
 	// The ids reach log-store intact, comma-joined onto the one localhost hop
 	// that keeps its GET encoding.
 	resp := doJSON(t, srv, "POST", "/sessions/validators",
-		ValidatorsLookupRequest{IDs: []string{"br_a", "br_b"}})
+		sessions.ValidatorsLookupRequest{IDs: []string{"br_a", "br_b"}})
 	if resp.StatusCode != 200 {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
 	if got := logStore.upstreamQuery(t).Get("ids"); got != "br_a,br_b" {
 		t.Errorf("log-store received ids %q, want br_a,br_b", got)
 	}
-	body := decodeJSON[map[string]Validator](t, resp)
+	body := decodeJSON[map[string]sessions.Validator](t, resp)
 	if _, ok := body["br_a"]; !ok {
 		t.Errorf("log-store's answer did not pass through: %v", body)
 	}
 
 	// Absent and empty both answer an empty map without touching log-store —
 	// the same answer the GET has always given a blank ids parameter.
-	for _, req := range []any{ValidatorsLookupRequest{}, ValidatorsLookupRequest{IDs: []string{}}} {
+	for _, req := range []any{sessions.ValidatorsLookupRequest{}, sessions.ValidatorsLookupRequest{IDs: []string{}}} {
 		before := len(logStore.requests)
 		resp = doJSON(t, srv, "POST", "/sessions/validators", req)
 		if resp.StatusCode != 200 {
 			t.Fatalf("empty ids %+v: status = %d", req, resp.StatusCode)
 		}
-		if got := len(decodeJSON[map[string]Validator](t, resp)); got != 0 {
+		if got := len(decodeJSON[map[string]sessions.Validator](t, resp)); got != 0 {
 			t.Errorf("empty ids %+v: got %d validators, want none", req, got)
 		}
 		if len(logStore.requests) != before {

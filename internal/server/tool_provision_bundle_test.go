@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions"
+
 	"github.com/kayushkin/llm-bridge-server/internal/agents/bundles"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -29,7 +31,7 @@ func fakeBundleStore(t *testing.T, bundleID string, toolIDs []int64, skillIDs []
 	return resolver, &resolver.resolveCalls
 }
 
-func newServerWithBundles(tools toolRegistry, bundles bundleResolver, grantStoreURL string) *Server {
+func newServerWithBundles(tools sessions.ToolRegistry, bundles bundleResolver, grantStoreURL string) *Server {
 	s := (&Server{cfg: &config.Config{}, toolRegistry: tools, bundleStore: bundles}).withServicesComposed()
 	if grantStoreURL != "" {
 		s.grantStore = testGrantReaderAt(grantStoreURL)
@@ -46,7 +48,7 @@ func TestInjectMCPConfigProvisionsTheBundlesTools(t *testing.T) {
 	s := newServerWithBundles(tools, bundles, "")
 	sess := &store.Session{Harness: msg.HarnessClaudeCode, SessionID: "br_test", InstanceID: "inst-1", BundleID: "6"}
 
-	if err := s.injectMCPConfig(sess); err != nil {
+	if err := s.sessions.InjectMCPConfig(sess); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if len(*resolved) != 1 {
@@ -75,7 +77,7 @@ func TestInjectMCPConfigBundleNarrowedByGrants(t *testing.T) {
 	s := newServerWithBundles(tools, bundles, grants.URL)
 	sess := &store.Session{Harness: msg.HarnessClaudeCode, SessionID: "br_test", InstanceID: "inst-1", BundleID: "6", PrincipalID: "principal_000001"}
 
-	if err := s.injectMCPConfig(sess); err != nil {
+	if err := s.sessions.InjectMCPConfig(sess); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	ids, _ := (*asked)[0]["tool_ids"].([]any)
@@ -95,7 +97,7 @@ func TestInjectMCPConfigBundleWithUngrantedPrincipalIsUnchanged(t *testing.T) {
 	s := newServerWithBundles(tools, bundles, grants.URL)
 	sess := &store.Session{Harness: msg.HarnessClaudeCode, SessionID: "br_test", InstanceID: "inst-1", BundleID: "6", PrincipalID: "principal_000002"}
 
-	if err := s.injectMCPConfig(sess); err != nil {
+	if err := s.sessions.InjectMCPConfig(sess); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	ids, _ := (*asked)[0]["tool_ids"].([]any)
@@ -114,7 +116,7 @@ func TestInjectMCPConfigEmptyBundleDoesNotFallThroughToTheInstance(t *testing.T)
 	s := newServerWithBundles(tools, bundles, "")
 	sess := &store.Session{Harness: msg.HarnessClaudeCode, SessionID: "br_test", InstanceID: "inst-1", BundleID: "6", HarnessConfig: json.RawMessage(`{"settings":"{}"}`)}
 
-	if err := s.injectMCPConfig(sess); err != nil {
+	if err := s.sessions.InjectMCPConfig(sess); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if len(*asked) != 0 {
@@ -134,7 +136,7 @@ func TestInjectMCPConfigBundleUnresolvableAbortsTheSpawn(t *testing.T) {
 	for name, bundles := range map[string]bundleResolver{"down": down} {
 		s := newServerWithBundles(tools, bundles, "")
 		sess := &store.Session{Harness: msg.HarnessClaudeCode, SessionID: "br_test", InstanceID: "inst-1", BundleID: "6"}
-		err := s.injectMCPConfig(sess)
+		err := s.sessions.InjectMCPConfig(sess)
 		if err == nil || !strings.Contains(err.Error(), "bundle 6") {
 			t.Fatalf("%s: want an error naming bundle 6, got %v", name, err)
 		}
@@ -142,7 +144,7 @@ func TestInjectMCPConfigBundleUnresolvableAbortsTheSpawn(t *testing.T) {
 	bundles, _ := fakeBundleStore(t, "6", []int64{13}, nil)
 	s := newServerWithBundles(tools, bundles, "")
 	sess := &store.Session{Harness: msg.HarnessClaudeCode, SessionID: "br_test", InstanceID: "inst-1", BundleID: "7"}
-	err := s.injectMCPConfig(sess)
+	err := s.sessions.InjectMCPConfig(sess)
 	if err == nil || !strings.Contains(err.Error(), "bundle 7") {
 		t.Fatalf("missing: want an error naming bundle 7, got %v", err)
 	}
@@ -158,7 +160,7 @@ func TestInjectMCPConfigNamedToolsBeatTheBundle(t *testing.T) {
 	srv := fakeToolStore(t, `{"mcpServers":{"x":{"command":"x"}}}`)
 	s := newServerWithBundles(srv, bundles, "")
 	sess := &store.Session{Harness: msg.HarnessClaudeCode, SessionID: "br_test", BundleID: "6", HarnessConfig: json.RawMessage(`{"tool_store_tools":["brave-search"]}`)}
-	if err := s.injectMCPConfig(sess); err != nil {
+	if err := s.sessions.InjectMCPConfig(sess); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if len(*resolved) != 0 {

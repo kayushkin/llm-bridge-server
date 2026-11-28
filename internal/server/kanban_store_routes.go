@@ -23,6 +23,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access/login"
 
 	"github.com/kayushkin/llm-bridge-server/internal/httproutes"
@@ -329,7 +331,7 @@ type kanbanBundles struct {
 
 func (owner kanbanBundles) CheckBundleExists(id string) error {
 	if owner.server.bundleStore == nil {
-		return errors.New(bundleStoreOffMessage)
+		return errors.New(sessions.BundleStoreOffMessage)
 	}
 	err := owner.server.bundleStore.CheckSessionBundleExists(context.Background(), id)
 	if errors.Is(err, bundles.ErrSessionBundleNotFound) {

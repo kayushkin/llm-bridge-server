@@ -122,7 +122,7 @@ func TestDeniedReadPathsOnACodexSessionAreRefused(t *testing.T) {
 func TestDeniedReadPathsBecomeClaudeCodeReadDenyRules(t *testing.T) {
 	srv, st, instanceID := serverWithBundleAndToolStore(t, bundleStoreDenying(t, []int64{102}, []string{"~/.config/**", "/proc/**"}))
 	sess := createSessionForDefaults(t, srv, st, msg.CreateSessionRequest{InstanceID: instanceID, BundleID: "6"})
-	raw, err := srv.buildClaudeCodeSettings(sess)
+	raw, err := srv.sessions.BuildClaudeCodeSettings(sess)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestACallersOwnSettingsCannotDropTheDenyRules(t *testing.T) {
 	srv, _ := testServer(t)
 	sess := &store.Session{SessionID: "br_own_settings", Harness: msg.HarnessClaudeCode,
 		HarnessConfig: json.RawMessage(`{"settings":"{}","denied_read_paths":["~/.ssh/**"]}`)}
-	if err := srv.injectHookSettings(sess); err == nil {
+	if err := srv.sessions.InjectHookSettings(sess); err == nil {
 		t.Fatal("injectHookSettings accepted a caller's settings on a session with denied read paths")
 	}
 }
@@ -180,7 +180,7 @@ func TestABundlesIncludedHarnessToolIsNotProvisioned(t *testing.T) {
 	tools, provisioned := fakeToolStoreWithOptIns(t, nil)
 	s := newServerWithBundles(tools, bundles, "")
 	sess := &store.Session{Harness: msg.HarnessClaudeCode, SessionID: "br_test", InstanceID: "inst-1", BundleID: "6"}
-	if err := s.injectMCPConfig(sess); err != nil {
+	if err := s.sessions.InjectMCPConfig(sess); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if len(*provisioned) != 1 {

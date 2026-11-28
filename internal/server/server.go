@@ -7,9 +7,10 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/kayushkin/llm-bridge-server/internal/sessions"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/login"
 
@@ -51,7 +52,6 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/machines"
 	"github.com/kayushkin/llm-bridge-server/internal/mail"
 	"github.com/kayushkin/llm-bridge-server/internal/references"
-	"github.com/kayushkin/llm-bridge-server/internal/serviceinventory"
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/briefs"
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/messagesender"
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/snapshots"
@@ -67,7 +67,7 @@ import (
 )
 
 type Server struct {
-	discoveryMu sync.Mutex
+
 	// PeerProxyCalls shares identical reads through the connection proxy and
 	// limits how often each connected server is called (peer_proxy_calls.go).
 	mux           *httproutes.RecordingMux
@@ -82,7 +82,7 @@ type Server struct {
 	// open (prediction_store_routes.go); nil answers those routes 503.
 	predictionStore atomic.Pointer[predictions.Handlers]
 	// sessionLog is log-store in this process; see EnableSessionLog.
-	sessionLog atomic.Pointer[sessionLogModule]
+	sessionLog atomic.Pointer[sessions.SessionLogModule]
 	// notes answers /notes/ once its Postgres module is open
 	// (notes_routes.go); nil answers those routes 503.
 	notes atomic.Pointer[itemsapi.API]
@@ -95,10 +95,8 @@ type Server struct {
 	// userInterfaceBuild is the built front end served at /ui/ (user_interface.go).
 	userInterfaceBuild fs.FS
 	harness            *harness.Manager
-	// harnessStartLockBySessionID holds a *sync.Mutex per session id, so
-	// StartOnInstance spawns at most one harness process per session.
-	harnessStartLockBySessionID sync.Map
-	authClient                  *authstoreclient.Client
+
+	authClient *authstoreclient.Client
 	// permissionEngine, grantStore and principalStore are the access stores in
 	// this process (access_routes.go): permission-store's verdict on a tool
 	// call, a session principal's effective grants at spawn, and the
@@ -123,16 +121,14 @@ type Server struct {
 	// keepAwake holds this machine awake while sessions run, once
 	// StartKeepAwake has run; nil before that and in tests.
 	keepAwake *keepawake.Controller
-	// restartDrain holds new turns while a deploy waits to restart this
-	// server (restart_drain.go).
-	restartDrain restartDrainState
+
 	// bundleStore checks a bundle_id at creation and resolves it at spawn;
 	// nil while the bundle-store module is off (bundle_store_routes.go).
 	bundleStore bundleResolver
-	// toolRegistry answers the tool offer, the harness tool denials and the
+	// ToolRegistry answers the tool offer, the harness tool denials and the
 	// harness tool reports; nil while the tool-store module is off
 	// (tool_store_routes.go, tool_registry.go).
-	toolRegistry toolRegistry
+	toolRegistry sessions.ToolRegistry
 	// The agents stores moved into this process answer their routes once
 	// their Postgres modules are open; nil answers those routes 503.
 	toolStoreHandlers  atomic.Pointer[tools.Handlers]
@@ -201,11 +197,11 @@ type Server struct {
 	// repoRegistryForDeploys is repo-store as a deploy action reads it; nil
 	// until EnableRepositories, which refuses deploy actions.
 	repoRegistryForDeploys repoRegistry
-	bridgePrefs            *bridgePrefsStore
-	cfState                *conformanceState
-	sessionHub             *sessionHub
+	bridgePrefs            *sessions.BridgePrefsStore
+	cfState                *sessions.ConformanceState
+	sessionHub             *sessions.SessionHub
 	parkedAsks             *parkedasks.Asks
-	responseCache          *responseCache
+	responseCache          *sessions.ResponseCache
 	// SignalClassifier is the derived signal producer: a cheap-model pass
 	// over each turn-end. Nil only in tests that never exercise it.
 	signalClassifier *signals.SignalClassifier
@@ -217,11 +213,7 @@ type Server struct {
 	// until EnableMail, and every draft is then minted with an empty To.
 	mailMessages signals.MailMessageReader
 	cfg          *config.Config
-	// serviceInventory is the last reading of the host's services and their
-	// databases, held for serviceInventoryMaxAge so a page load that asks for
-	// the list and then a schema does not walk /proc twice. See services.go.
-	serviceInventoryMu sync.Mutex
-	serviceInventory   *serviceinventory.Inventory
+
 	// HarnessChildTokenSigner signs and verifies the session agent tokens
 	// and session posting tokens. Always present: New refuses to build a
 	// server without a signing key. See session_agent_token.go.
@@ -252,10 +244,7 @@ type Server struct {
 	// role in, the first of its models that answers out. See
 	// oneshot_routing.go.
 	oneShotRouter *modelrouting.Router
-	// renamesInFlight holds the renamer slot ids of the title calls this
-	// process is making, so a slot left by a call a restart killed reads as
-	// free. See renamer.go.
-	renamesInFlight sync.Map
+
 	// ChatLinks is nil when chat links are off (chat_links.go).
 	chatLinkService *chatlinks.Service
 	// grantChecker answers what a principal's grants allow; it reads
@@ -271,17 +260,18 @@ type Server struct {
 	signals          *signals.Service
 	peers            *peers.Service
 	login            *login.Service
+	sessions         *sessions.Service
 	sessionFiles     *sessionfiles.Service
 }
 
 func New(st *store.Store, as *agents.Store, ms *memories.Store, hs *machines.Store, hks *hooks.Store, mds *models.Store, ss *snapshots.Store, cfg *config.Config) *Server {
 	authClient := authstoreclient.New("", "", "llm-bridge-server")
-	hub := newSessionHub(st)
+	hub := sessions.NewSessionHub(st)
 	// The chat-page response cache and the SSE hub both need session-row mutation
 	// signals; the store takes a single Notifier, so fan out to both. The cache
 	// invalidates on any change/delete; the hub publishes list deltas as before.
-	respCache := newResponseCache()
-	st.SetNotifier(newNotifierFanout(hub, respCache))
+	respCache := sessions.NewResponseCache()
+	st.SetNotifier(sessions.NewNotifierFanout(hub, respCache))
 	srv := &Server{
 		mux:                  httproutes.NewRecordingMux(),
 		userInterfaceBuild:   ui.Build(),
@@ -296,8 +286,8 @@ func New(st *store.Store, as *agents.Store, ms *memories.Store, hs *machines.Sto
 		authClient:           authClient,
 		peerSockets:          peers.NewPeerSocketRegistry(),
 		peerRequestsInFlight: peers.NewPeerRequestsInFlight(),
-		bridgePrefs:          newBridgePrefsStore(cfg.BridgePrefsPath),
-		cfState:              newConformanceState(cfg.ConformancePath),
+		bridgePrefs:          sessions.NewBridgePrefsStore(cfg.BridgePrefsPath),
+		cfState:              sessions.NewConformanceState(cfg.ConformancePath),
 		sessionHub:           hub,
 		parkedAsks:           parkedasks.New(),
 		responseCache:        respCache,
@@ -311,17 +301,17 @@ func New(st *store.Store, as *agents.Store, ms *memories.Store, hs *machines.Sto
 		cfg:      cfg,
 		settings: attachServiceSettings(cfg, st),
 	}
+	srv.composeServices()
 	// The manager promotes harness subagents to sessions below the HTTP layer,
 	// so it needs the same purpose→folder mapping the HTTP layer files
-	// sessions with. Wired here because folderForPurpose reads both the config
+	// sessions with. Wired here because FolderForPurpose reads both the config
 	// defaults and the source_folders overrides the manager has no access to.
-	srv.harness.SetFolderResolver(srv.folderForPurpose)
+	srv.harness.SetFolderResolver(srv.sessions.FolderForPurpose)
 	// The renamer and the classifier react to turn-ends, so they hang off the
 	// manager's observer rather than reaching into the derivation state
 	// machine.
-	srv.harness.SetTurnEndObserver(srv.onTurnEnd)
+	srv.harness.SetTurnEndObserver(srv.sessions.OnTurnEnd)
 	srv.harness.SetUnpromptedTurnStartObserver(srv.signals.OnUnpromptedTurnStart)
-	srv.composeServices()
 	if cfg.ChatLinksNATSURL != "" && cfg.MultichatURL != "" {
 		srv.chatLinkService.ChatLinks = &chatlinks.ChatLinks{
 			MultichatURL: cfg.MultichatURL,
@@ -341,7 +331,7 @@ func New(st *store.Store, as *agents.Store, ms *memories.Store, hs *machines.Sto
 	} else {
 		log.Printf("[chat-links] off: %v", chatlinks.ErrOff)
 	}
-	srv.harness.SetSessionInfoObserver(srv.onSessionInfo)
+	srv.harness.SetSessionInfoObserver(srv.sessions.OnSessionInfo)
 	// The classifier runs its call through the server's one-shot router, so
 	// it is wired here, after the server that owns the router exists.
 	srv.oneShotRouter = srv.oneShot.NewOneShotRouter()
@@ -378,10 +368,10 @@ func New(st *store.Store, as *agents.Store, ms *memories.Store, hs *machines.Sto
 	srv.wireServiceSettings()
 	srv.routes()
 	srv.syncHarnessTypes()
-	srv.syncPromptHarnessDeliveries()
+	srv.sessions.SyncPromptHarnessDeliveries()
 	srv.sessionActions.SettleSessionActionsLeftRunning()
-	srv.syncSourceFolderRegistry()
-	srv.startSnapshotGC()
+	srv.sessions.SyncSourceFolderRegistry()
+	srv.sessions.StartSnapshotGC()
 	return srv
 }
 
@@ -390,8 +380,8 @@ func (s *Server) syncHarnessTypes() {
 	if s.harnessStore == nil {
 		return
 	}
-	for _, h := range allHarnesses {
-		meta := harnessMetadata[h]
+	for _, h := range sessions.AllHarnesses {
+		meta := sessions.HarnessMetadata[h]
 		if err := s.harnessStore.UpsertHarnessType(&machines.HarnessType{
 			Name:  h,
 			Label: meta.Label,
@@ -404,10 +394,9 @@ func (s *Server) syncHarnessTypes() {
 }
 
 func (s *Server) routes() {
-	s.mux.HandleFunc("GET /health", s.handleHealth)
+	s.sessions.Mount(s.mux, s.touchingKeepAwake)
 	s.registerLoginAndStoreProxyRoutes()
 	s.registerPredictionStoreRoutes()
-	s.registerSessionLogRoutes()
 	s.registerToolStoreRoutes()
 	s.registerSkillStoreRoutes()
 	s.registerAgentsRegistryRoutes()
@@ -428,9 +417,6 @@ func (s *Server) routes() {
 	serviceSettingsHandler := servicesettings.Handler(s.settings, "/settings")
 	s.mux.Handle("GET /settings", serviceSettingsHandler)
 	s.mux.Handle("PUT /settings/{key}", serviceSettingsHandler)
-	s.mux.HandleFunc("GET /harnesses", s.handleHarnesses)
-	s.mux.HandleFunc("GET /harnesses/{name}/capabilities", s.handleHarnessCapabilities)
-	s.mux.HandleFunc("GET /harnesses/{name}/agents", s.handleHarnessAgents)
 
 	// Static harness images
 	s.mux.Handle("/images/", http.StripPrefix("/images/", http.FileServer(http.Dir(s.cfg.ImagesDir))))
@@ -438,78 +424,36 @@ func (s *Server) routes() {
 	// The front end, compiled into this binary. The pattern is written out,
 	// not built from userInterfacePathPrefix, because the route classification
 	// test reads patterns from this file's string literals.
-	s.mux.HandleFunc("GET /ui/", s.handleUserInterface)
-	s.mux.HandleFunc("GET /{$}", s.handleRootRedirectsToUserInterface)
 
 	// Session routes
-	s.mux.HandleFunc("GET /sessions", s.handleListSessions)
-	s.mux.HandleFunc("GET /session-events", s.handleSessionListEvents)
 	// chat-page endpoints — projected sidebar list, recent-bundle warmer,
 	// and the cheap validators staleness check. See dash docs/chat-architecture.md §5.
-	s.mux.HandleFunc("GET /sessions/summary", s.handleSessionsSummary)
-	s.mux.HandleFunc("GET /sessions/principals", s.handleSessionPrincipals)
 	// Same query, POST body: the id lookups (session_ids, manager_session_ids)
 	// outgrow a URL — a long-enough query string kills the whole HTTP/2
-	// connection at nginx, not just the request. See handleSessionsSummaryLookup.
-	s.mux.HandleFunc("POST /sessions/summary", s.handleSessionsSummaryLookup)
-	s.mux.HandleFunc("GET /sessions/recent-bundle", s.handleRecentBundle)
-	s.mux.HandleFunc("GET /sessions/validators", s.handleSessionsValidators)
+	// connection at nginx, not just the request. See HandleSessionsSummaryLookup.
 	// Same check, POST body — the id list grows with the client's cache and a
 	// growing query string walks toward nginx's HTTP/2 connection-kill cliff.
-	s.mux.HandleFunc("POST /sessions/validators", s.handleSessionsValidatorsLookup)
-	s.mux.HandleFunc("GET /sessions/search", s.handleSearchSessions)
-	s.mux.HandleFunc("GET /sessions/discover", s.handleDiscoverSessions)
-	s.mux.HandleFunc("POST /sessions", s.touchingKeepAwake(s.handleCreateSession))
-	s.mux.HandleFunc("GET /sessions/{id}", s.handleGetSession)
-	s.mux.HandleFunc("POST /sessions/{id}/send", s.touchingKeepAwake(s.handleSendMessage))
 	s.sessionFiles.Mount(s.mux)
-	s.mux.HandleFunc("GET /sessions/{id}/files-named-by-tools", s.handleFilesNamedByTools)
-	s.mux.HandleFunc("GET /sessions/{id}/files-named-by-tools/content", s.handleFileNamedByToolsContent)
-	s.mux.HandleFunc("GET /sessions/{id}/files-named-by-tools/image", s.handleImageNamedByTools)
 	s.chatLinkService.Mount(s.mux)
 	s.sessionActions.Mount(s.mux)
-	s.mux.HandleFunc("GET /sessions/{id}/events", s.handleSessionEvents)
 	// Pty-mode session attach. Bidirectional WebSocket bound to the
 	// session's pseudoterminal fd; rejected for sessions started in
 	// events mode. Single-writer in v1 (child 2); resize / multi-reader
 	// land in child 3.
-	s.mux.HandleFunc("GET /sessions/{id}/attach", s.handleAttachSession)
-	s.mux.HandleFunc("GET /sessions/{id}/attach-token", s.handleGetAttachToken)
-	s.mux.HandleFunc("GET /sessions/aggregates", s.handleSessionAggregates)
-	s.mux.HandleFunc("GET /sessions/{id}/messages", s.handleSessionMessages)
 	// The unprojected page, for the Raw pane and for audit. `/messages` is projected
 	// by log-store — no `raw` payloads, no duplicate entries — because the Turns view
 	// renders about a tenth of what was being sent (9.91 MB against 0.95 MB, measured
 	// on one real session). This route is how a caller asks for the rest, and it is a
 	// route rather than a query param so nobody requests ten times the bytes by
 	// accident. Proxied unchanged, like every other log-store path.
-	s.mux.HandleFunc("GET /sessions/{id}/messages/raw", s.handleSessionMessages)
 	// One entry of the reading page with its tool input and output in full. A page's
 	// entries carry tool payloads shortened to 2 KB (`payload=preview`, log-store
 	// stored_turns.go); a card that is opened fetches the whole entry here.
-	s.mux.HandleFunc("GET /sessions/{id}/entries/{eventId}", s.proxyToLogStore)
-	s.mux.HandleFunc("GET /sessions/{id}/entries/{eventId}/images/{index}", s.proxyToLogStore)
-	s.mux.HandleFunc("POST /sessions/{id}/interrupt", s.handleInterruptSession)
-	s.mux.HandleFunc("POST /sessions/{id}/resume", s.handleResumeSession)
-	s.mux.HandleFunc("POST /sessions/{id}/stop", s.handleStopSession)
-	s.mux.HandleFunc("POST /sessions/{id}/mode", s.handleSwitchMode)
-	s.mux.HandleFunc("POST /sessions/{id}/compact", s.handleCompactSession)
-	s.mux.HandleFunc("POST /sessions/{id}/fork", s.handleForkSession)
-	s.mux.HandleFunc("POST /sessions/{id}/rename", s.handleRenameSession)
-	s.mux.HandleFunc("POST /sessions/{id}/config", s.handleConfigSession)
-	s.mux.HandleFunc("PUT /sessions/{id}/folder", s.handleSetSessionFolder)
-	s.mux.HandleFunc("POST /sessions/{id}/mark-done", s.handleMarkSessionDone)
-	s.mux.HandleFunc("GET /sessions/{id}/git/repos", s.handleSessionGitRepos)
-	s.mux.HandleFunc("GET /sessions/{id}/git", s.handleSessionGit)
-	s.mux.HandleFunc("GET /sessions/{id}/effective-config", s.handleSessionEffectiveConfig)
-	s.mux.HandleFunc("GET /effective-config", s.handleDryRunEffectiveConfig)
 
 	// Hook resolution — surface awaiting_resolution HookEvents and accept
 	// a decision back. Used by bridge-ui to render permission prompts and
 	// human-resolved hooks. Pending list lets a freshly-connected client
 	// recover banner state without replaying the full event stream.
-	s.mux.HandleFunc("GET /sessions/{id}/hooks/pending", s.handleListPendingHooks)
-	s.mux.HandleFunc("POST /sessions/{id}/hooks/{request_id}/resolve", s.handleResolveHook)
 
 	// Session signals — the canonical record of anything a session surfaces
 	// to a human (docs/SESSION-SIGNALS.md). Rows are written by the tool path
@@ -536,29 +480,23 @@ func (s *Server) routes() {
 	// The Services page: healthcheck's services joined to the SQLite files
 	// their processes hold open, and read-only reads of those files. See
 	// services.go for what a path must be before it can be read.
-	s.mux.HandleFunc("GET /services", s.handleListServices)
-	s.mux.HandleFunc("GET /services/databases/schema", s.handleDatabaseSchema)
-	s.mux.HandleFunc("GET /services/databases/rows", s.handleDatabaseRows)
 
 	// PreToolUse permission gate for Claude Code. Wired into every CC
-	// session via buildClaudeCodeSettings's --settings injection so CC
+	// session via BuildClaudeCodeSettings's --settings injection so CC
 	// posts here on every tool call. Sole permission gate now that the
 	// embedded bridge_perm MCP is gone.
-	s.mux.HandleFunc("POST /permission/cc-prehook/{bridge_id}", s.handleCCPermissionPrehook)
 
 	// PreToolUse permission gate for codex. Wired in via
-	// buildCodexHookConfig — codex's hook config carries a curl command
+	// BuildCodexHookConfig — codex's hook config carries a curl command
 	// pointing here on every Bash/apply_patch/MCP tool call. Codex's
 	// PreToolUse payload + hookSpecificOutput.PermissionDecision shapes
 	// are byte-identical to CC's, so the same handler serves both URLs.
-	s.mux.HandleFunc("POST /permission/codex-prehook/{bridge_id}", s.handleCCPermissionPrehook)
 
 	// PreToolUse permission gate for devin. llm-bridge-devin writes
 	// devin_hooks (injectDevinHookSettings) into the config devin starts
 	// with; devin's PreToolUse payload and its reading of
 	// hookSpecificOutput.PermissionDecision match CC's, so the same handler
 	// serves it. The wrapper also posts here for a session/request_permission.
-	s.mux.HandleFunc("POST /permission/devin-prehook/{bridge_id}", s.handleCCPermissionPrehook)
 
 	// Sidecar event ingest for PTY-mode sessions. llm-bridge-claudecode's
 	// -otel-sidecar process POSTs translated OTel events here so they flow
@@ -566,38 +504,24 @@ func (s *Server) routes() {
 	// have no in-process receiver because the harness exec's directly
 	// into claude. See internal/harness/process.go's StartProcessPTY for
 	// how the sidecar is spawned and the env wiring on the PTY child.
-	s.mux.HandleFunc("POST /sidecar/event/{bridge_id}", s.handleSidecarEvent)
 
 	// Global permission mode — persisted in bridge-prefs. Used as the
 	// snapshot source when new sessions are created and as the fallback
 	// for legacy sessions that pre-date the per-session snapshot. One of
 	// "ask" / "auto" / "bypass".
-	s.mux.HandleFunc("POST /bridge/permission-mode", s.handleSetGlobalPermissionMode)
 	// Per-session permission mode override — persisted in
 	// session.harness_config and read live by the PreToolUse prehook;
 	// also forwarded to the harness as a start param on next spawn/resume.
 	// Wins over the global.
-	s.mux.HandleFunc("PUT /sessions/{id}/permission-mode", s.handleSetSessionPermissionMode)
 	// Legacy boolean aliases — older bridge-ui builds keep working until
 	// they're rebuilt against the new endpoint. true → bypass, false → ask.
-	s.mux.HandleFunc("POST /bridge/bypass-permissions", s.handleSetBypassPermissions)
-	s.mux.HandleFunc("PUT /sessions/{id}/bypass-permissions", s.handleSetSessionBypass)
 
 	// Folder registry — sidebar organization for sessions
-	s.mux.HandleFunc("GET /folders", s.handleListFolders)
-	s.mux.HandleFunc("POST /folders", s.handleCreateFolder)
-	s.mux.HandleFunc("DELETE /folders/{name}", s.handleDeleteFolder)
-	s.mux.HandleFunc("PUT /folders/{name}", s.handleRenameFolder)
 
 	// Source-folder mapping — runtime overrides for env-var defaults
-	s.mux.HandleFunc("GET /source-folders", s.handleListSourceFolders)
 
 	// Session classification vocabulary, and the sessions that disagree with
 	// it. Read by session-taxonomy-guard; see internal/server/taxonomy.go.
-	s.mux.HandleFunc("GET /session-taxonomy", s.handleSessionTaxonomy)
-	s.mux.HandleFunc("GET /session-taxonomy/report", s.handleSessionTaxonomyReport)
-	s.mux.HandleFunc("PUT /source-folders/{source}", s.handlePutSourceFolder)
-	s.mux.HandleFunc("DELETE /source-folders/{source}", s.handleDeleteSourceFolder)
 
 	// Agent-store routes (mounted from agent-store library). The hook
 	// callbacks let agent-store nudge connected runners to reconcile when
@@ -618,42 +542,21 @@ func (s *Server) routes() {
 	// Hook registry routes (mounted only when hook-store is loaded).
 	// /hooks/exec/{id} is always registered because the hook-store is
 	// where registered hooks are resolved; without the store, exec 404s.
-	if s.hookStore != nil {
-		s.mux.HandleFunc("POST /hooks", s.handleCreateHook)
-		s.mux.HandleFunc("GET /hooks", s.handleListHooks)
-		s.mux.HandleFunc("GET /hook-options", s.handleHookOptions)
-		s.mux.HandleFunc("GET /hooks/{id}", s.handleGetHook)
-		s.mux.HandleFunc("PATCH /hooks/{id}", s.handleUpdateHook)
-		s.mux.HandleFunc("DELETE /hooks/{id}", s.handleDeleteHook)
-		s.mux.HandleFunc("POST /hooks/exec/{id}", s.handleExecHook)
-	}
 
 	// Credential routes (auth-store)
 	s.modelCredentials.Mount(s.mux)
 
 	// Snapshot routes (snapshot-store). Metadata + blob retrieval for
 	// Edit/Write tool-call before/after diffs rendered by the UI.
-	if s.snapshotStore != nil {
-		s.mux.HandleFunc("GET /sessions/{id}/tools/{tool_use_id}/snapshots", s.handleGetSnapshots)
-		s.mux.HandleFunc("GET /snapshots/blob/{sha}", s.handleGetSnapshotBlob)
-	}
 
 	// Conformance
-	s.mux.HandleFunc("GET /conformance", s.handleConformanceGet)
-	s.mux.HandleFunc("POST /conformance/run", s.handleConformanceRun)
 
 	// Bridge prefs
-	s.mux.HandleFunc("GET /bridge-prefs", s.handleBridgePrefs)
-	s.mux.HandleFunc("PUT /bridge-prefs", s.handleBridgePrefs)
 
 	// Admin housekeeping (called by scheduler cron)
-	s.mux.HandleFunc("POST /admin/file-inactive", s.handleFileInactive)
-	s.mux.HandleFunc("POST /admin/archive-old", s.handleArchiveOld)
 
 	// Machine routes — host-level configuration. Instances bind to a
 	// machine; the machine carries transport/SSH/runner details.
-	if s.harnessStore != nil {
-	}
 
 	// Runner WebSocket — long-lived connection from llm-bridge-runner
 	// daemons on remote machines. Auth is per-machine bearer token in
@@ -798,3 +701,7 @@ func (s *Server) OneShot() *oneshot.Service { return s.oneShot }
 // Peers is the connected servers: their connections, sockets, messages and
 // the calls made through them.
 func (s *Server) Peers() *peers.Service { return s.peers }
+
+// Sessions is the session core: creating, sending to, streaming and ending
+// sessions, their spawn, discovery and restart handling.
+func (s *Server) Sessions() *sessions.Service { return s.sessions }

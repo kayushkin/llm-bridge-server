@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions"
+
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -16,15 +18,15 @@ import (
 // copilot_cli is on this list because llm-bridge-copilotcli is an
 // un-retargeted clone of llm-bridge-claudecode: its config.go resolves
 // CLAUDE_PATH and spawns `claude`, and its handler appends --settings from the
-// start params. It is currently held off by disabledHarnesses, so nothing
-// reaches injectHookSettings for it today.
+// start params. It is currently held off by DisabledHarnesses, so nothing
+// reaches InjectHookSettings for it today.
 //
 // ⚠️ This list is deliberately NOT "every harness that ought to be gated".
 // llm-bridge-jig also spawns `claude`, but it accepts no settings param at all,
 // so wiring a case here would inject a blob it cannot carry — a gap that lives
 // in the harness, not in this switch. That is noteboard todo 49a697df's scope
 // (the UI is told every harness is gated by the prehook when only claude_code
-// and codex are — injectHookSettings' switch has no default arm). Adding jig
+// and codex are — InjectHookSettings' switch has no default arm). Adding jig
 // here would claim this file can fix it.
 var claudeCodeShapedHarnesses = []msg.Harness{
 	msg.HarnessCopilotCLI,
@@ -33,22 +35,22 @@ var claudeCodeShapedHarnesses = []msg.Harness{
 // TestEnablingAHarnessKeepsItsPermissionGate pins a precondition that was
 // previously carried only in prose, and only in a noteboard card.
 //
-// injectHookSettings switches on the harness and has cases for claude_code and
+// InjectHookSettings switches on the harness and has cases for claude_code and
 // codex alone. copilot_cli is kept unreachable somewhere else entirely — the
-// disabledHarnesses entry in health.go, whose stated reason is a stale binary
+// DisabledHarnesses entry in health.go, whose stated reason is a stale binary
 // on PATH and says nothing about permissions. So the two facts that jointly
 // keep the gate honest sat in different files with no link between them:
-// whoever deletes the disabledHarnesses entry to enable the harness would ship
+// whoever deletes the DisabledHarnesses entry to enable the harness would ship
 // a harness with no permission-gate wiring, in the same commit, and every test
 // here would stay green.
 //
 // This test is that link. While the harness is disabled it asserts the
 // situation is exactly as described. The moment it is enabled, it demands the
-// case in injectHookSettings — so enabling without wiring breaks the build
+// case in InjectHookSettings — so enabling without wiring breaks the build
 // rather than quietly opening the gate.
 func TestEnablingAHarnessKeepsItsPermissionGate(t *testing.T) {
 	for _, h := range claudeCodeShapedHarnesses {
-		_, disabled := disabledHarnesses[h]
+		_, disabled := sessions.DisabledHarnesses[h]
 		wired := injectsClaudeCodeSettings(t, h)
 
 		switch {
@@ -66,7 +68,7 @@ func TestEnablingAHarnessKeepsItsPermissionGate(t *testing.T) {
 }
 
 // TestClaudeCodeShapedHarnessesAreCanonical stops this file's list outliving
-// the harnesses it names — the same failure disabledHarnesses has its own
+// the harnesses it names — the same failure DisabledHarnesses has its own
 // canonicality test for.
 func TestClaudeCodeShapedHarnessesAreCanonical(t *testing.T) {
 	canonical := make(map[msg.Harness]bool, len(msg.AllHarnesses))
@@ -80,7 +82,7 @@ func TestClaudeCodeShapedHarnessesAreCanonical(t *testing.T) {
 	}
 }
 
-// injectsClaudeCodeSettings reports whether injectHookSettings writes a
+// injectsClaudeCodeSettings reports whether InjectHookSettings writes a
 // claude-code "settings" blob for this harness. It asks by calling the real
 // function rather than reading the switch, so a case that exists but does
 // nothing counts as absent — which is what matters to the caller.
@@ -89,7 +91,7 @@ func injectsClaudeCodeSettings(t *testing.T, h msg.Harness) bool {
 	srv, _ := testServerWithHookStore(t)
 
 	sess := &store.Session{SessionID: "gate-precondition", Harness: h}
-	if err := srv.injectHookSettings(sess); err != nil {
+	if err := srv.sessions.InjectHookSettings(sess); err != nil {
 		t.Fatal(err)
 	}
 

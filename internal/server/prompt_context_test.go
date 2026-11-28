@@ -96,7 +96,7 @@ func TestInjectedContextFollowsTheCardTagsAndTheDelivery(t *testing.T) {
 	ctx := context.Background()
 
 	claudeCode := &store.Session{SessionID: "br_cc", Harness: msg.HarnessClaudeCode, CardID: "card-billing"}
-	srv.injectPromptContext(ctx, claudeCode, &msg.Instance{})
+	srv.sessions.InjectPromptContext(ctx, claudeCode, &msg.Instance{})
 	if _, ok := harnessConfigString(t, claudeCode, "system_prompt"); ok {
 		t.Fatal("Claude Code was given a system_prompt, which replaces its default prompt")
 	}
@@ -109,19 +109,19 @@ func TestInjectedContextFollowsTheCardTagsAndTheDelivery(t *testing.T) {
 	}
 
 	codex := &store.Session{SessionID: "br_codex", Harness: msg.HarnessCodex, CardID: "card-billing"}
-	srv.injectPromptContext(ctx, codex, &msg.Instance{})
+	srv.sessions.InjectPromptContext(ctx, codex, &msg.Instance{})
 	if prompt, _ := harnessConfigString(t, codex, "system_prompt"); !strings.Contains(prompt, "Refunds go through the ledger.") {
 		t.Fatalf("codex system_prompt = %q, want the billing section", prompt)
 	}
 
 	otherCard := &store.Session{SessionID: "br_other", Harness: msg.HarnessClaudeCode, CardID: "card-other"}
-	srv.injectPromptContext(ctx, otherCard, &msg.Instance{})
+	srv.sessions.InjectPromptContext(ctx, otherCard, &msg.Instance{})
 	if len(otherCard.HarnessConfig) != 0 {
 		t.Fatalf("a card without the billing tag was given %s", otherCard.HarnessConfig)
 	}
 
 	chosen := &store.Session{SessionID: "br_chosen", Harness: msg.HarnessClaudeCode, CardID: "card-billing", HarnessConfig: json.RawMessage(`{"system_prompt":"classify this"}`)}
-	srv.injectPromptContext(ctx, chosen, &msg.Instance{})
+	srv.sessions.InjectPromptContext(ctx, chosen, &msg.Instance{})
 	if _, ok := harnessConfigString(t, chosen, "append_system_prompt"); ok {
 		t.Fatal("text was appended to a prompt the caller chose whole")
 	}
@@ -138,7 +138,7 @@ func TestInjectedContextUsesTheSpawnsWorkingDirectory(t *testing.T) {
 		"session directory":  {&store.Session{SessionID: "br_a", Harness: msg.HarnessCodex, CardID: "card-billing", WorkingDir: "/work/northwind/cmd"}, &msg.Instance{}},
 		"instance directory": {&store.Session{SessionID: "br_b", Harness: msg.HarnessCodex, CardID: "card-billing"}, &msg.Instance{WorkingDir: "/work/northwind"}},
 	} {
-		srv.injectPromptContext(context.Background(), run.sess, run.inst)
+		srv.sessions.InjectPromptContext(context.Background(), run.sess, run.inst)
 		if prompt, _ := harnessConfigString(t, run.sess, "system_prompt"); !strings.Contains(prompt, "Northwind bills monthly.") {
 			t.Errorf("%s: system_prompt = %q, want the northwind section", name, prompt)
 		}

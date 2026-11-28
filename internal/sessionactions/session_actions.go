@@ -512,7 +512,7 @@ func (s *Service) deployableRepo(ctx context.Context, repoID int64) (repoStoreRe
 // does not have is the caller's mistake (422: the offer names a record that
 // does not exist); any other failure is the scheduler's (502).
 func (s *Service) SchedulerJob(_ context.Context, jobID int64) (*schedulerdb.Job, *sessionActionRefusal) {
-	jobs := s.Sessions.SchedulerJobsInProcess()
+	jobs := s.ServerReads.SchedulerJobsInProcess()
 	if jobs == nil {
 		return nil, &sessionActionRefusal{http.StatusBadGateway, "store_refused", "the scheduler is not open on this server, so job " + strconv.FormatInt(jobID, 10) + " cannot be read"}
 	}
@@ -547,7 +547,7 @@ func (s *Service) runDeployAction(session *store.Session, action store.SessionAc
 // is off the scheduler refuses, and the action fails with that refusal. The
 // output is the run, as that route answers it.
 func (s *Service) RunSchedulerJobAction(jobID int64) SessionActionOutcome {
-	jobs := s.Sessions.SchedulerJobsInProcess()
+	jobs := s.ServerReads.SchedulerJobsInProcess()
 	if jobs == nil {
 		return SessionActionOutcome{Err: fmt.Errorf("the scheduler is not open on this server, so job %d cannot run", jobID)}
 	}

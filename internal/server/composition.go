@@ -1,8 +1,12 @@
 package server
 
 import (
+	"io/fs"
 	"net/http"
 	"time"
+
+	"github.com/kayushkin/llm-bridge-server/internal/keepawake"
+	"github.com/kayushkin/llm-bridge-server/internal/sessions"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/grantcheck"
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
@@ -25,8 +29,10 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/sessionlog"
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/briefs"
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/messagesender"
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/permissiongate"
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/sessionfiles"
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/signals"
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/snapshots"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads"
 )
 
@@ -34,6 +40,9 @@ import (
 // fields, each with only what it reads. New calls it once its own fields are
 // set; a test that builds a Server by hand calls it the same way.
 func (s *Server) composeServices() {
+	// The session core is reached by most of the others and reaches most of
+	// them, so it is made first and given its dependencies last.
+	s.sessions = &sessions.Service{}
 	s.grantChecker = &grantcheck.Checker{Dependencies: grantcheck.Dependencies{
 		GrantStore:               func() grantcheck.GrantReader { return s.grantStore },
 		GrantsPrincipalDirectory: func() grants.PrincipalDirectory { return s.grantsPrincipalDirectory },
@@ -90,7 +99,8 @@ func (s *Server) composeServices() {
 		SessionActionModels:    func() sessionactions.SessionActionModels { return s.sessionActionModels },
 		Settings:               s.settings,
 		Store:                  s.store,
-		Sessions:               s,
+		Sessions:               s.sessions,
+		ServerReads:            s,
 		PostingEnvironments:    s.login,
 	}}
 	s.signals = &signals.Service{Dependencies: signals.Dependencies{
@@ -103,7 +113,7 @@ func (s *Server) composeServices() {
 		QuestionTriage:   func() *signals.QuestionTriage { return s.questionTriage },
 		SignalClassifier: func() *signals.SignalClassifier { return s.signalClassifier },
 		Store:            s.store,
-		Sessions:         s,
+		Sessions:         s.sessions,
 	}}
 	s.peers = &peers.Service{Dependencies: peers.Dependencies{
 		AuthClient:               func() *authstoreclient.Client { return s.authClient },
@@ -157,14 +167,63 @@ func (s *Server) composeServices() {
 		Harness:        s.harness,
 		Store:          s.store,
 		TurnClassifier: s.turnClassifierForBriefs,
-		Sessions:       s,
+		Sessions:       s.sessions,
 	}}
 	s.chatLinkService = &chatlinks.Service{Dependencies: chatlinks.Dependencies{
 		Store:             s.store,
 		Settings:          s.settings,
 		ReferenceResolver: s.referenceResolver.Load,
-		Sessions:          s,
+		Sessions:          s.sessions,
 	}}
+	permissionGate := &permissiongate.Service{Dependencies: permissiongate.Dependencies{
+		BridgePrefs:      s.bridgePrefs,
+		Harness:          s.harness,
+		HookStore:        s.hookStore,
+		ParkedAsks:       s.parkedAsks,
+		PermissionEngine: func() permissiongate.PermissionEngine { return s.permissionEngine },
+		Signals:          s.signals,
+		Store:            s.store,
+		Sessions:         s.sessions,
+	}}
+	s.sessions.Dependencies = sessions.Dependencies{
+		PermissionGate:  permissionGate,
+		AgentStore:      func() *agents.Store { return s.agentStore },
+		BridgePrefs:     s.bridgePrefs,
+		BriefService:    s.briefService,
+		BundleStore:     func() sessions.BundleStore { return s.bundleStore },
+		CfState:         s.cfState,
+		Cfg:             s.cfg,
+		ChatLinkService: s.chatLinkService,
+		GrantChecker:    s.grantChecker,
+		Harness:         s.harness,
+		HarnessStore:    func() *machines.Store { return s.harnessStore },
+		HookStore:       s.hookStore,
+		IssueReads:      func() *issuereads.Reader { return s.issueReads },
+		KeepAwake:       func() *keepawake.Controller { return s.keepAwake },
+		Login:           s.login,
+		MachineRoutes:   s.machineRoutes,
+		MessageSenders:  s.messageSenders,
+		ModelStore:      func() *models.Store { return s.modelStore },
+		OneShotRouter:   func() *modelrouting.Router { return s.oneShotRouter },
+		ParkedAsks:      s.parkedAsks,
+		Peers:           s.peers,
+		PrincipalLookupCache: func() sessions.PrincipalLookupCache {
+			if s.principalLookupCache == nil {
+				return nil
+			}
+			return s.principalLookupCache
+		},
+		PrincipalStore:     func() sessions.PrincipalStore { return s.principalStore },
+		ResponseCache:      s.responseCache,
+		SessionHub:         s.sessionHub,
+		SessionLog:         s.sessionLog.Load,
+		Settings:           s.settings,
+		Signals:            s.signals,
+		SnapshotStore:      func() *snapshots.Store { return s.snapshotStore },
+		Store:              s.store,
+		ToolRegistry:       func() sessions.ToolRegistry { return s.toolRegistry },
+		UserInterfaceBuild: func() fs.FS { return s.userInterfaceBuild },
+	}
 }
 
 // EnableOperations attaches the coordinator the operation routes use. Until
@@ -205,7 +264,7 @@ func (models sessionActionModelsInThisServer) ModelListPrice(model string) (inpu
 // starts or resumes. In the server both are the log-store module's server;
 // a test may give a fake log-store's handler and the HTTP client over it.
 func (s *Server) EnableSessionLog(handler http.Handler, events harness.SessionEventLog) {
-	s.sessionLog.Store(&sessionLogModule{handler: handler, client: inprocesshttp.Client(handler)})
+	s.sessionLog.Store(&sessions.SessionLogModule{Handler: handler, Client: inprocesshttp.Client(handler)})
 	s.harness.SetSessionEventLog(events)
 }
 

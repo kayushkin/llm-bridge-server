@@ -126,7 +126,7 @@ type SignalClassifierTuning struct {
 
 func NewSignalClassifier(modelRole string, timeout time.Duration, maxChars int, optOut map[msg.Harness]bool, runOneShot func(context.Context, msg.OneShotRequest) ([]byte, error)) *SignalClassifier {
 	return &SignalClassifier{
-		Tuning:     SignalClassifierTuning{ModelRole: modelRole, Timeout: timeout, MaxChars: maxChars, OptOut: optOut},
+		Tuning:        SignalClassifierTuning{ModelRole: modelRole, Timeout: timeout, MaxChars: maxChars, OptOut: optOut},
 		OneShotRunner: runOneShot,
 	}
 }

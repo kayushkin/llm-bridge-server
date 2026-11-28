@@ -7,18 +7,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions"
+
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-func readRestartReadiness(t *testing.T, srv *Server) restartReadiness {
+func readRestartReadiness(t *testing.T, srv *Server) sessions.RestartReadiness {
 	t.Helper()
 	recorder := httptest.NewRecorder()
-	srv.handleRestartReadiness(recorder, httptest.NewRequest("GET", "/restart-readiness", nil))
+	srv.sessions.HandleRestartReadiness(recorder, httptest.NewRequest("GET", "/restart-readiness", nil))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("GET /restart-readiness = %d: %s", recorder.Code, recorder.Body.String())
 	}
-	var answer restartReadiness
+	var answer sessions.RestartReadiness
 	if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -52,11 +54,11 @@ func TestSessionsARestartWouldCutOffAreBusyAndHaveARunningProcess(t *testing.T) 
 	storeTestEvent(t, st, "br_background_agents", data)
 	withProcess := map[string]bool{"br_running_a_tool": true, "br_background_agents": true, "br_idle_with_a_process": true}
 
-	busy, err := srv.sessionsARestartWouldCutOff(func(sessionID string) bool { return withProcess[sessionID] })
+	busy, err := srv.sessions.SessionsARestartWouldCutOff(func(sessionID string) bool { return withProcess[sessionID] })
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := map[string]sessionARestartWouldCutOff{}
+	got := map[string]sessions.SessionARestartWouldCutOff{}
 	for _, entry := range busy {
 		got[entry.SessionID] = entry
 	}

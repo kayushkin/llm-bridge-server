@@ -30,7 +30,7 @@ func (s *Server) agentStoreHandlerHooks() agents.HandlerHooks {
 		OnScanCompleted: func(_ *agents.ScanResult) {
 			s.broadcastSeedSnapshot(runnerprotocol.SeedSourceAgentStore, "scan")
 		},
-		OnPromptDriftsDetected: s.onPromptDriftsDetected,
+		OnPromptDriftsDetected: s.sessions.OnPromptDriftsDetected,
 	}
 }
 

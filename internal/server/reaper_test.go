@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions"
+
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -285,7 +287,7 @@ func TestReapDecision(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, reap := reapDecision(now, tt.mode, tt.state, tt.lastAct, tt.updatedAt, tt.wakeupDueAt, tt.idleTO, tt.ptyTO)
+			_, reap := sessions.ReapDecision(now, tt.mode, tt.state, tt.lastAct, tt.updatedAt, tt.wakeupDueAt, tt.idleTO, tt.ptyTO)
 			if reap != tt.wantReap {
 				t.Errorf("reapDecision() = %v, want %v", reap, tt.wantReap)
 			}

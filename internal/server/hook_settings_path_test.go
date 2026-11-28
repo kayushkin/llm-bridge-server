@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions"
+
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -130,7 +132,7 @@ func TestCCPermissionHookCommandRunsExactlyOneCurl(t *testing.T) {
 				marker = ""
 			}
 			srv, _ := testServerWithHookStore(t)
-			got, err := srv.buildClaudeCodeSettings(&store.Session{SessionID: id, Harness: msg.HarnessClaudeCode})
+			got, err := srv.sessions.BuildClaudeCodeSettings(&store.Session{SessionID: id, Harness: msg.HarnessClaudeCode})
 			if err != nil {
 				t.Fatalf("build: %v", err)
 			}
@@ -252,7 +254,7 @@ func TestCodexPermissionHookCommandRunsExactlyOneCurl(t *testing.T) {
 
 			srv, _ := testServerWithHookStore(t)
 			sess := &store.Session{SessionID: id, Harness: msg.HarnessCodex}
-			byEvent, err := srv.buildCodexHookConfig(sess)
+			byEvent, err := srv.sessions.BuildCodexHookConfig(sess)
 			if err != nil {
 				t.Fatalf("build: %v", err)
 			}
@@ -260,7 +262,7 @@ func TestCodexPermissionHookCommandRunsExactlyOneCurl(t *testing.T) {
 			if strings.Contains(cmd, "codex-prehook") {
 				t.Fatalf("the gate command names the gate itself, so it differs between sessions: %q", cmd)
 			}
-			assertOneCurlRunWithEnvironment(t, probe.name, cmd, srv.permissionGateEnvironment(sess), marker, id, "permission", "codex-prehook", "")
+			assertOneCurlRunWithEnvironment(t, probe.name, cmd, srv.sessions.PermissionGateEnvironment(sess), marker, id, "permission", "codex-prehook", "")
 		})
 	}
 }
@@ -284,7 +286,7 @@ func codexPermissionCommand(t *testing.T, byEvent map[string][]any) string {
 	}
 	for _, e := range entries {
 		for _, h := range e.Hooks {
-			if h.Command == permissionGateCommandPostingToTheURLInTheEnvironment() {
+			if h.Command == sessions.PermissionGateCommandPostingToTheURLInTheEnvironment() {
 				return h.Command
 			}
 		}
@@ -294,7 +296,7 @@ func codexPermissionCommand(t *testing.T, byEvent map[string][]any) string {
 }
 
 // The two user-hook sites carry hook-store's id rather than the caller's.
-// ids.NewHookID mints "hook_" + a Crockford-base32 ULID and handleCreateHook
+// ids.NewHookID mints "hook_" + a Crockford-base32 ULID and HandleCreateHook
 // overwrites whatever the caller sent, so there is nothing in that alphabet to
 // escape -- see the scope-fence arm in the scorer, which un-escapes it and
 // records that the pin stays green. What these two DO pin is the shell shape,
@@ -303,7 +305,7 @@ func codexPermissionCommand(t *testing.T, byEvent map[string][]any) string {
 func TestCCUserHookCommandRunsExactlyOneCurl(t *testing.T) {
 	srv, hks := testServerWithHookStore(t)
 	seedHook(t, hks, "hook_01J0GLOBAL", "PreToolUse", "*", msg.HookScopeGlobal, "")
-	got, err := srv.buildClaudeCodeSettings(&store.Session{SessionID: "b1", Harness: msg.HarnessClaudeCode})
+	got, err := srv.sessions.BuildClaudeCodeSettings(&store.Session{SessionID: "b1", Harness: msg.HarnessClaudeCode})
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -334,7 +336,7 @@ func TestCodexUserHookCommandRunsExactlyOneCurl(t *testing.T) {
 	if err := hks.CreateHook(h); err != nil {
 		t.Fatalf("create codex hook: %v", err)
 	}
-	byEvent, err := srv.buildCodexHookConfig(&store.Session{SessionID: "b1", Harness: msg.HarnessCodex})
+	byEvent, err := srv.sessions.BuildCodexHookConfig(&store.Session{SessionID: "b1", Harness: msg.HarnessCodex})
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}

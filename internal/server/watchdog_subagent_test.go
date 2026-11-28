@@ -29,7 +29,7 @@ func TestWatchdogLeavesARunningSubagentAloneAndEndsAnOrphanedOne(t *testing.T) {
 		t.Fatalf("create subagent: %v", err)
 	}
 
-	srv.watchdogTick()
+	srv.sessions.WatchdogTick()
 	if row, _ := st.GetSession(subagentID); row.State != string(msg.SessionToolRunning) {
 		t.Fatalf("with the parent's process running, the watchdog moved the subagent to %s (status %+v)", row.State, row.Status)
 	}
@@ -44,7 +44,7 @@ func TestWatchdogLeavesARunningSubagentAloneAndEndsAnOrphanedOne(t *testing.T) {
 	if _, err := srv.harness.ForceSessionState(parent.SessionID, msg.SessionAborted, msg.ReasonKilled); err != nil {
 		t.Fatal(err)
 	}
-	srv.watchdogTick()
+	srv.sessions.WatchdogTick()
 	row, _ := st.GetSession(subagentID)
 	if row.State != string(msg.SessionError) || row.Status == nil || row.Status.Reason != msg.ReasonParentProcessExited {
 		t.Fatalf("with the parent's process gone: state %s status %+v; want error, parent_process_exited", row.State, row.Status)

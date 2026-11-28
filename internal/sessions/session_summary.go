@@ -1,0 +1,478 @@
+package sessions
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
+	"github.com/kayushkin/llm-bridge-server/internal/store"
+)
+
+// HandleSessionsSummary serves the projected sidebar list, newest-first and
+// cursor-paginated:
+// GET /sessions/summary?limit=100&before=<cursor>&type=interactive&type=herald.
+//
+// The seven filter axes (`harness`, `status`, `type`, `purpose`, `mode`,
+// `machine`, `principal`) are the sidebar's own, spelled the same way, and each is REPEATED
+// rather than comma-separated: a purpose on this box can read
+// "browser verification + A/B perf", and nothing stops one containing a
+// comma, so splitting on one would silently cut a value in half. Omitting an
+// axis filters nothing on it, which keeps every existing caller unchanged.
+//
+// The response carries a `revision` (max updated_at across the table) that is
+// also emitted as the ETag header; an If-None-Match that equals the current
+// revision short-circuits to 304. The revision is table-wide, so it is unaffected
+// by the filter — conservative, never wrong. The serialized body is
+// response-cached (L3), invalidated by the store Notifier.
+func (s *Service) HandleSessionsSummary(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	limit := 100
+	if l := query.Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	before := query.Get("before")
+	filter := store.SessionSummaryFilter{
+		Harnesses:   query["harness"],
+		States:      query["status"],
+		Types:       query["type"],
+		Purposes:    query["purpose"],
+		Modes:       query["mode"],
+		InstanceIDs: query["machine"],
+		// `principal=` (empty) asks for the sessions started as no principal.
+		PrincipalIDs: query["principal"],
+	}
+	sessionIDs, err := summaryIDLookupFromQuery(query, "session_id")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	filter.SessionIDs = sessionIDs
+
+	managerSessionIDs, err := summaryIDLookupFromQuery(query, "manager_session_id")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	filter.ManagerSessionIDs = managerSessionIDs
+	filter.OwnedByPrincipalID, filter.OwnedThroughPeerPrincipalID = requestcaller.SessionScopeFilterOfRequest(r)
+
+	s.serveSessionsSummary(w, r, limit, before, filter)
+}
+
+// HandleSessionsSummaryLookup is the SAME query as HandleSessionsSummary in a
+// POST body, and it exists because the id lookups do not fit in a URL. A
+// sidebar's worth of `manager_session_id` parameters reached 93 KB of query
+// string on this host, and a URL that long does not fail as a request — nginx
+// answers it by destroying the whole HTTP/2 connection (GOAWAY, measured at
+// ~11.5 KB), killing every OTHER stream in flight with it: the new session's
+// /send, its /events stream, and whichever /signals read was up at that
+// moment. The visible bug was "Couldn't load this session's questions: Failed
+// to fetch" on every new chat, with the typed message still in the composer.
+//
+// POST /sessions/summary — same path, same response shape, same semantics,
+// body instead of query string. The GET stays for listing and paging, where
+// the request is small and conditional GET (ETag/If-None-Match) rides the
+// browser cache for free; a POST gets no such ride, which is the one thing a
+// caller gives up by coming in this way.
+//
+// The two id fields are pointers so that PRESENT BUT EMPTY IS STILL A 400 —
+// the same trap summaryIDLookupFromQuery refuses on the query string. A
+// caller that assembled an empty id list meant to name sessions and named
+// none; answering with the newest hundred sessions on the box would hand an
+// empty signals inbox every session as "waiting on a human".
+func (s *Service) HandleSessionsSummaryLookup(w http.ResponseWriter, r *http.Request) {
+	var req SummaryLookupRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+	limit := 100
+	if req.Limit > 0 {
+		limit = req.Limit
+	}
+	filter := store.SessionSummaryFilter{
+		Harnesses:    req.Harnesses,
+		States:       req.States,
+		Types:        req.Types,
+		Purposes:     req.Purposes,
+		Modes:        req.Modes,
+		InstanceIDs:  req.Machines,
+		PrincipalIDs: req.Principals,
+	}
+	sessionIDs, err := summaryIDLookupFromBody(req.SessionIDs, "session_ids")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	filter.SessionIDs = sessionIDs
+
+	managerSessionIDs, err := summaryIDLookupFromBody(req.ManagerSessionIDs, "manager_session_ids")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	filter.ManagerSessionIDs = managerSessionIDs
+	filter.OwnedByPrincipalID, filter.OwnedThroughPeerPrincipalID = requestcaller.SessionScopeFilterOfRequest(r)
+
+	s.serveSessionsSummary(w, r, limit, req.Before, filter)
+}
+
+// serveSessionsSummary is the shared serving path behind the GET and POST
+// encodings of the summary query: revision/ETag, response cache, store read,
+// cursor. Everything above it is parameter parsing; nothing below it knows
+// which encoding the request arrived in.
+func (s *Service) serveSessionsSummary(w http.ResponseWriter, r *http.Request, limit int, before string, filter store.SessionSummaryFilter) {
+	revision, err := s.Store.MaxSessionUpdatedAt()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	etag := etagFor(revision)
+
+	// Conditional GET: a client whose ETag matches the current revision needs
+	// nothing. Note the revision is table-wide, so any mutation anywhere busts
+	// every page's ETag — correct, if conservative.
+	if inm := r.Header.Get("If-None-Match"); inm != "" && inm == etag {
+		w.Header().Set("ETag", etag)
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+
+	// The filter is part of the key, not decoration beside it. Two requests that
+	// differ only by filter share a revision, a limit and a cursor, so without
+	// this the first one to land would have its page served to the other — a
+	// wrong answer indistinguishable from a right one.
+	cacheKey := fmt.Sprintf("summary|rev=%s|limit=%d|before=%s|filter=%s",
+		revision, limit, before, filter.CacheKey())
+	if body, ok := s.ResponseCache.Get(cacheKey); ok {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("ETag", etag)
+		w.Write(body)
+		return
+	}
+
+	rows, err := s.Store.ListSessionSummaries(limit, before, filter)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	sessions := make([]SessionSummary, 0, len(rows))
+	for _, row := range rows {
+		sessions = append(sessions, summaryFromRow(row))
+	}
+	var next *string
+	// A full page implies there may be more; carry the last row's opaque cursor.
+	if len(rows) == limit && limit > 0 {
+		c := rows[len(rows)-1].Cursor
+		next = &c
+	}
+	resp := SummaryResponse{Sessions: sessions, Next: next, Revision: revision}
+	body, err := json.Marshal(resp)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.ResponseCache.Put(cacheKey, body)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("ETag", etag)
+	w.Write(body)
+}
+
+// HandleSessionsValidators serves the cheap staleness check:
+// GET /sessions/validators?ids=a,b,c → { [id]: Validator }.
+//
+// Event row ids live in log-store (they are what Entry.eventId references), so
+// the validators are sourced there — the single source of truth. bridge-server
+// forwards the id set and passes log-store's already-correct { [id]: Validator }
+// body straight through (layers are transparent).
+func (s *Service) HandleSessionsValidators(w http.ResponseWriter, r *http.Request) {
+	s.serveSessionsValidators(w, r, r.URL.Query().Get("ids"))
+}
+
+// HandleSessionsValidatorsLookup is the POST encoding of the same check:
+// {"ids": ["a","b"]} in a body, because the id list is one entry per cached
+// session and a query string that grows with the cache walks toward the same
+// cliff POST /sessions/summary was added for — past ~11.5 KB of URL, nginx
+// destroys the whole HTTP/2 connection rather than refusing the request.
+// ~1.2 KB on this host today; the encoding is fixed before the cliff, not
+// after it.
+func (s *Service) HandleSessionsValidatorsLookup(w http.ResponseWriter, r *http.Request) {
+	var req ValidatorsLookupRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+	s.serveSessionsValidators(w, r, strings.Join(req.IDs, ","))
+}
+
+// serveSessionsValidators is the shared path behind both encodings. Absent or
+// blank ids answer an empty map rather than a 400 — unlike the summary's id
+// lookups, an empty validator check has an obviously correct answer ("nothing
+// is stale") and both encodings have always given it.
+//
+// The forward to log-store stays a GET on purpose: it is one localhost hop
+// with no nginx in it, and Go's own header ceiling (~1 MB) is two orders of
+// magnitude above any real id set. The cliff this endpoint's POST encoding
+// exists for is at the public edge, not here.
+//
+// A principal restricted to itself is answered only about its own
+// sessions: every other id is dropped before log-store is asked, exactly as if
+// it named no session.
+func (s *Service) serveSessionsValidators(w http.ResponseWriter, r *http.Request, ids string) {
+	if scope, restricted := requestcaller.SessionScopeRestrictingRequest(r); restricted && strings.TrimSpace(ids) != "" {
+		owned, err := s.Store.SessionIDsOwnedByPrincipal(scope.PrincipalID, scope.ThroughPeerPrincipalID, strings.Split(ids, ","))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		ids = strings.Join(owned, ",")
+	}
+	if strings.TrimSpace(ids) == "" {
+		httpjson.WriteJSON(w, map[string]Validator{})
+		return
+	}
+	// url.Values, not concatenation: `ids` is whatever the caller sent, and an
+	// `&` in it would add parameters to a request this server makes on the
+	// caller's behalf, against a log-store the caller may not be able to reach.
+	// log-store reads this back with r.URL.Query().Get("ids") and splits on ",",
+	// so an escaped comma round-trips.
+	target := logStoreBaseURL + "/api/v1/sessions/validators?" + url.Values{"ids": {ids}}.Encode()
+	resp, err := s.getFromLogStore(target)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("log-store unreachable: %v", err), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
+}
+
+// HandleRecentBundle warms the N most-recent sessions in one round trip:
+// GET /sessions/recent-bundle?n=20&turns=30 → { [id]: { summary, model } }.
+//
+// bridge-server owns the summaries (bridge.db); the materialized turn models
+// come from log-store. The two are assembled here into one response and
+// response-cached (keyed by the max updated_at across the N), invalidated by the
+// store Notifier. The upstream bundle is DECODED STREAMING (json.Decoder over
+// the response body) rather than buffered whole then re-marshalled.
+func (s *Service) HandleRecentBundle(w http.ResponseWriter, r *http.Request) {
+	n := 20
+	if v := r.URL.Query().Get("n"); v != "" {
+		if x, err := strconv.Atoi(v); err == nil && x > 0 {
+			n = x
+		}
+	}
+	turns := 30
+	if v := r.URL.Query().Get("turns"); v != "" {
+		if x, err := strconv.Atoi(v); err == nil && x > 0 {
+			turns = x
+		}
+	}
+
+	// Unfiltered on purpose: the recent-bundle warms whatever the user is most
+	// likely to open next, and narrowing it to the sidebar's current chips would
+	// leave a session cold the moment they cleared a filter.
+	//
+	// Except by owner: a principal restricted to itself is warmed only its
+	// own sessions, and the cache key carries the principal so one principal's
+	// bundle is never served to another.
+	ownedByPrincipalID, ownedThroughPeerPrincipalID := requestcaller.SessionScopeFilterOfRequest(r)
+	rows, err := s.Store.ListSessionSummaries(n, "", store.SessionSummaryFilter{OwnedByPrincipalID: ownedByPrincipalID, OwnedThroughPeerPrincipalID: ownedThroughPeerPrincipalID})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Cache key = the scope's newest row's cursor (rows are sorted desc) + shape.
+	// The cursor is updated_at plus that row's session id, so it moves whenever
+	// the newest row's timestamp OR identity changes — strictly finer-grained
+	// than the timestamp alone, and never coarser.
+	scopeRev := ""
+	if len(rows) > 0 {
+		scopeRev = rows[0].Cursor
+	}
+	cacheKey := fmt.Sprintf("bundle|rev=%s|n=%d|turns=%d|count=%d|owned_by_principal_id=%s", scopeRev, n, turns, len(rows), ownedByPrincipalID)
+	if body, ok := s.ResponseCache.Get(cacheKey); ok {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(body)
+		return
+	}
+
+	if len(rows) == 0 {
+		body := []byte("{}")
+		s.ResponseCache.Put(cacheKey, body)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(body)
+		return
+	}
+
+	ids := make([]string, 0, len(rows))
+	summaries := make(map[string]SessionSummary, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.SessionID)
+		summaries[row.SessionID] = summaryFromRow(row)
+	}
+
+	// Stream resume points, read BEFORE the flush below and before the models are
+	// fetched. The ordering is the same one `HandleSessionMessages` documents at length
+	// and it is what makes the pair safe: flushing first and reading the head second
+	// leaves an event that landed in between at or below the head while never reaching
+	// log-store, so it appears on neither the bundled model nor the resumed stream.
+	//
+	// Staleness here is harmless in the one direction that matters. This response is
+	// cached, so a client can receive an old head — and an old head resumes EARLIER,
+	// replaying events it already has rather than skipping ones it does not. The model
+	// in that cache entry is equally old, so the two stay consistent.
+	heads, err := s.Harness.SessionEvents().MaxEventRowIDs(ids)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("stream heads unavailable: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Fetch materialized tails from log-store, decoding the response streaming.
+	models, err := s.fetchBundleModels(ids, turns)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("log-store bundle: %v", err), http.StatusBadGateway)
+		return
+	}
+
+	out := make(map[string]bundleEntry, len(rows))
+	for _, id := range ids {
+		out[id] = bundleEntry{
+			Summary: summaries[id],
+			Model:   models[id],
+			Stream:  StreamResumePoint{Head: heads[id]},
+		}
+	}
+	body, err := json.Marshal(out)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.ResponseCache.Put(cacheKey, body)
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(body)
+}
+
+// fetchBundleModels calls log-store's bundle endpoint and returns each session's
+// raw TurnModel JSON, decoded streaming from the response body (no full-body
+// buffer + re-marshal). A missing id maps to a null model.
+func (s *Service) fetchBundleModels(ids []string, turns int) (map[string]json.RawMessage, error) {
+	// The ids here come off the store, not off the inbound request — but that
+	// is not a reason to concatenate them. HandleCreateSession honors a
+	// caller-minted `session_id` without constraining its characters, so an id
+	// carrying `&` is STORED and then rides every later recent-bundle call,
+	// including bundles covering sessions the caller has nothing to do with.
+	q := url.Values{
+		"ids":   {strings.Join(ids, ",")},
+		"turns": {strconv.Itoa(turns)},
+		// The bundle is chat-core's cold-boot page, read exactly like /messages is:
+		// tool payloads as 2 KB previews, a full entry one request away. Without it
+		// the 20-session bundle carried every tool output whole — 4.1 MB measured
+		// 2026-09-16 — while the same sessions' /messages pages did not.
+		"payload": {"preview"},
+	}
+	target := logStoreBaseURL + "/api/v1/sessions/bundle?" + q.Encode()
+	resp, err := s.getFromLogStore(target)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("log-store returned %d", resp.StatusCode)
+	}
+	var models map[string]json.RawMessage
+	if err := json.NewDecoder(resp.Body).Decode(&models); err != nil {
+		return nil, err
+	}
+	return models, nil
+}
+
+// etagFor builds a weak-free strong ETag value from the revision string.
+func etagFor(revision string) string {
+	return `"` + revision + `"`
+}
+
+// summaryIDLookupFromQuery reads one repeated id parameter off a summary
+// request. Repeatable (?session_id=a&session_id=b) and comma-separated
+// (?session_id=a,b) both work, because a caller assembling a list of ids from
+// somewhere else should not have to care which shape this endpoint prefers.
+//
+// Both callers are LOOKUPS, not filter chips — see SessionSummaryFilter, which
+// keeps them off axes() for that reason:
+//
+//   - `session_id` answers "what are these sessions called?" for a caller that
+//     already holds the ids. the chat page's signals inbox is the first — it lists open
+//     signals across every session, and on this host 11 of the 17 sessions
+//     holding one are nowhere near the sidebar's first page, so their cards
+//     would otherwise be headed by a raw br_1786635575897138112.
+//   - `manager_session_id` answers "what did these sessions spawn?". A parent's
+//     children are ordered by their own recency rather than the parent's, so
+//     they are unreachable by paging toward the parent.
+//
+// PRESENT BUT EMPTY IS A 400, not "don't narrow". `?session_id=` with nothing
+// after it comes from a caller that meant to name sessions and assembled an
+// empty list — most likely from an inbox holding no signals. Treating that as
+// an unfiltered request would answer it with the newest hundred sessions on the
+// box, and the caller would render every one of them as something waiting on a
+// human. The signals endpoint refuses `linked_todo_id=` for exactly this reason;
+// this is the same trap on the same shape of parameter.
+//
+// Blank entries WITHIN a list are dropped rather than refused (`a,,b` is a and
+// b): a trailing comma is a formatting slip, not a caller asking for everything,
+// and it cannot widen the result — an empty id matches no row.
+func summaryIDLookupFromQuery(query url.Values, parameter string) ([]string, error) {
+	raw, ok := query[parameter]
+	if !ok {
+		return nil, nil
+	}
+	out := make([]string, 0, len(raw))
+	for _, value := range raw {
+		for _, part := range strings.Split(value, ",") {
+			if id := strings.TrimSpace(part); id != "" {
+				out = append(out, id)
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%s was given but named no session; omit it to list every session", parameter)
+	}
+	return out, nil
+}
+
+// summaryIDLookupFromBody is summaryIDLookupFromQuery for the POST encoding:
+// same refusal of present-but-empty, same dropping of blank entries. The
+// pointer is what carries the present/absent distinction JSON otherwise
+// loses — a nil pointer is the field omitted, a pointer to an empty slice is
+// a caller who assembled an empty id list and meant to name sessions.
+func summaryIDLookupFromBody(ids *[]string, field string) ([]string, error) {
+	if ids == nil {
+		return nil, nil
+	}
+	out := make([]string, 0, len(*ids))
+	for _, value := range *ids {
+		if id := strings.TrimSpace(value); id != "" {
+			out = append(out, id)
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%s was given but named no session; omit it to list every session", field)
+	}
+	return out, nil
+}

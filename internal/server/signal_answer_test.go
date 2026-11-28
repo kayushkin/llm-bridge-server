@@ -152,7 +152,7 @@ func TestAnswerTextRendersOneQuestionVerbatimAndManyLabeled(t *testing.T) {
 // handler.
 //
 // A turn ending is not a sixth, and naming it as one is what used to leave the
-// answer verb off this list: onTurnEnd closes questions by calling
+// answer verb off this list: OnTurnEnd closes questions by calling
 // SupersedeStaleQuestions, which is the same call site an answer supersedes
 // through.
 func TestEverySignalWriteAnnouncesItself(t *testing.T) {

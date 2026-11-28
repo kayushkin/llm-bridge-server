@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions"
+
 	"github.com/kayushkin/llm-bridge-server/internal/agents/tools"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -80,7 +82,7 @@ func allowListPinnedOn(t *testing.T, sess *store.Session) pinnedAllowList {
 	return pinned
 }
 
-func restrictedServer(t *testing.T, tools toolRegistry, deniedToolIDs []int64, deniedReadPaths []string) (*Server, *store.Store, string) {
+func restrictedServer(t *testing.T, tools sessions.ToolRegistry, deniedToolIDs []int64, deniedReadPaths []string) (*Server, *store.Store, string) {
 	t.Helper()
 	srv, st, instanceID := serverWithHarnessDefaults(t, msg.HarnessDefaults{})
 	srv.toolRegistry = tools
@@ -107,7 +109,7 @@ func TestANewlyObservedToolIsNotOfferedInItsFirstRestrictedSession(t *testing.T)
 		t.Errorf("allow list pinned for bundle %q; want 6", pinned.PinnedFor)
 	}
 
-	srv.onSessionInfo(sess.SessionID, &msg.SessionInfo{Tools: []msg.ToolInfo{{Name: "Read"}, {Name: "NewWriteTool"}}})
+	srv.sessions.OnSessionInfo(sess.SessionID, &msg.SessionInfo{Tools: []msg.ToolInfo{{Name: "Read"}, {Name: "NewWriteTool"}}})
 
 	stored, err := st.GetSession(sess.SessionID)
 	if err != nil {
@@ -134,7 +136,7 @@ func TestAReviewedReadToolIsOfferedAndTheSessionGoesOn(t *testing.T) {
 	srv, st, instanceID := restrictedServer(t, toolStore, []int64{102}, []string{"~/.config/**"})
 	sess := createSessionForDefaults(t, srv, st, msg.CreateSessionRequest{InstanceID: instanceID, BundleID: "6"})
 
-	srv.onSessionInfo(sess.SessionID, &msg.SessionInfo{Tools: []msg.ToolInfo{{Name: "Read"}, {Name: "mcp__ticketing__get_ticket"}}})
+	srv.sessions.OnSessionInfo(sess.SessionID, &msg.SessionInfo{Tools: []msg.ToolInfo{{Name: "Read"}, {Name: "mcp__ticketing__get_ticket"}}})
 
 	stored, err := st.GetSession(sess.SessionID)
 	if err != nil {
@@ -170,7 +172,7 @@ func TestAnUnrestrictedSessionGetsNoAllowList(t *testing.T) {
 		if pinned := allowListPinnedOn(t, sess); pinned.Tools != nil || pinned.PinnedFor != "" {
 			t.Errorf("bundle %q: harness_config = %s; want no allow list", bundleID, sess.HarnessConfig)
 		}
-		srv.onSessionInfo(sess.SessionID, &msg.SessionInfo{Tools: []msg.ToolInfo{{Name: "Read"}, {Name: "NewWriteTool"}}})
+		srv.sessions.OnSessionInfo(sess.SessionID, &msg.SessionInfo{Tools: []msg.ToolInfo{{Name: "Read"}, {Name: "NewWriteTool"}}})
 		if stored, _ := st.GetSession(sess.SessionID); stored.State == string(msg.SessionAborted) {
 			t.Errorf("bundle %q: an unrestricted session was stopped for a new tool", bundleID)
 		}

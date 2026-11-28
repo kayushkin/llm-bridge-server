@@ -45,7 +45,7 @@ func TestEffectiveConfigReportsBundleToolsNarrowedByGrants(t *testing.T) {
 		HarnessConfig: json.RawMessage(`{"model":"claude-opus-5","model_selection":{"model":"claude-opus-5","selected_by":"session"}}`),
 	}
 
-	cfg := s.effectiveConfigFor(context.Background(), sess, msg.EffectiveConfigSubject{SessionID: "br_test", Harness: msg.HarnessClaudeCode}, nil)
+	cfg := s.sessions.EffectiveConfigFor(context.Background(), sess, msg.EffectiveConfigSubject{SessionID: "br_test", Harness: msg.HarnessClaudeCode}, nil)
 
 	toolsSetting := settingByKey(t, cfg, msg.EffectiveSettingTools)
 	if toolsSetting.Layer != msg.EffectiveLayerGrant {
@@ -78,7 +78,7 @@ func TestEffectiveConfigAttributesAPinnedModel(t *testing.T) {
 		Harness: msg.HarnessClaudeCode, SessionID: "br_test",
 		HarnessConfig: json.RawMessage(`{"model":"claude-opus-5","model_selection":{"model":"claude-opus-5","selected_by":"prefs"},"effort":"high","permission_mode":"auto"}`),
 	}
-	cfg := s.effectiveConfigFor(context.Background(), sess, msg.EffectiveConfigSubject{SessionID: "br_test", Harness: msg.HarnessClaudeCode}, nil)
+	cfg := s.sessions.EffectiveConfigFor(context.Background(), sess, msg.EffectiveConfigSubject{SessionID: "br_test", Harness: msg.HarnessClaudeCode}, nil)
 
 	model := settingByKey(t, cfg, msg.EffectiveSettingModel)
 	if model.Layer != msg.EffectiveLayerHarnessDefault || model.Value != "claude-opus-5" || model.Record != "bridge-prefs.defaults.claude_code.model" {
@@ -119,7 +119,7 @@ func TestDryRunEffectiveConfigTakesTheBoardsDefaults(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/effective-config?harness=claude_code&board_id=board-1&tag=urgent", nil)
 	w := httptest.NewRecorder()
-	srv.handleDryRunEffectiveConfig(w, req)
+	srv.sessions.HandleDryRunEffectiveConfig(w, req)
 	if w.Code != 200 {
 		t.Fatalf("status %d: %s", w.Code, w.Body.String())
 	}

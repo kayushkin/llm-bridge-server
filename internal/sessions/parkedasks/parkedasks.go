@@ -39,8 +39,8 @@ type Decision struct {
 // that's where the parked HTTP handler (POST /permission/cc-prehook) and
 // the resolve handler (POST /sessions/:id/hooks/:rid/resolve) both run.
 type Asks struct {
-	mutex sync.Mutex
-	asksBySession  map[string]map[string]chan Decision
+	mutex         sync.Mutex
+	asksBySession map[string]map[string]chan Decision
 }
 
 func New() *Asks {

@@ -73,7 +73,7 @@ func (reads schedulerReadsThisServer) FirstModelOfRole(role string) (sessionmode
 }
 
 func (reads schedulerReadsThisServer) ProvidersOfHarness(harness msg.Harness) ([]string, error) {
-	for _, described := range reads.server.discoverHarnesses() {
+	for _, described := range reads.server.sessions.DiscoverHarnesses() {
 		if described.Name == string(harness) {
 			return described.SupportedProviders, nil
 		}

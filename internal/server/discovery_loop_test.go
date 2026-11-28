@@ -6,6 +6,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/kayushkin/llm-bridge-server/internal/sessions"
 )
 
 func TestDiscoveryLoopRescansAfterFailureAndStops(t *testing.T) {
@@ -15,7 +17,7 @@ func TestDiscoveryLoopRescansAfterFailureAndStops(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runDiscoveryLoop(ctx, time.Millisecond, func(context.Context) error {
+		sessions.RunDiscoveryLoop(ctx, time.Millisecond, func(context.Context) error {
 			switch passes.Add(1) {
 			case 1:
 				return errors.New("fixture scan failure")
@@ -42,7 +44,7 @@ func TestDiscoveryLoopDoesNotOverlapSlowPasses(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runDiscoveryLoop(ctx, time.Millisecond, func(context.Context) error {
+		sessions.RunDiscoveryLoop(ctx, time.Millisecond, func(context.Context) error {
 			entered <- struct{}{}
 			select {
 			case <-release:

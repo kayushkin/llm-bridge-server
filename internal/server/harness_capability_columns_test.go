@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions"
+
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -16,7 +18,7 @@ import (
 // is the one way these tests stop meaning anything.
 //
 // What they can and cannot catch is worth being honest about: they fail when
-// someone edits harnessCapabilities without re-measuring, which is how the
+// someone edits HarnessCapabilities without re-measuring, which is how the
 // table drifted in the first place. They cannot notice a harness changing in
 // its own repo. Deriving the table from the harnesses is noteboard todo
 // f8035505; until that lands this is a written-down measurement with its
@@ -130,7 +132,7 @@ var auditedColumns = []capabilityColumn{
 }
 
 func harnessHasCapability(h msg.Harness, capability string) bool {
-	for _, c := range harnessCapabilities[h] {
+	for _, c := range sessions.HarnessCapabilities[h] {
 		if c == capability {
 			return true
 		}
@@ -184,7 +186,7 @@ func TestCapabilityNamesAreConsumed(t *testing.T) {
 		"budget":        true,
 		"system_prompt": true,
 	}
-	for h, caps := range harnessCapabilities {
+	for h, caps := range sessions.HarnessCapabilities {
 		for _, c := range caps {
 			if !consumed[c] {
 				t.Errorf("harness %q is granted capability %q, which no UI reads and no handler acts on; "+
@@ -200,10 +202,10 @@ func TestCapabilityNamesAreConsumed(t *testing.T) {
 // fails OPEN: an absent field shows every control. A harness that supports
 // nothing must therefore serialize as "capabilities":[] and never omit the
 // field, so msg.HarnessInfo.Capabilities must not gain an omitempty and
-// discoverHarnesses must keep normalizing nil to an empty slice.
+// DiscoverHarnesses must keep normalizing nil to an empty slice.
 //
 // The empty list it marshals is built here rather than hunted for in
-// harnessCapabilities. It used to search the shipped table and t.Skip when no
+// HarnessCapabilities. It used to search the shipped table and t.Skip when no
 // harness had an empty list, which made the test's coverage a property of the
 // data: 10 of 19 harnesses ship {} today, so it runs, but each of those is a
 // bridge someone is still building out and the day the last one gains a
@@ -214,10 +216,10 @@ func TestEmptyCapabilitiesSerializeAsAnEmptyList(t *testing.T) {
 	assertCapabilitiesSerializeAsAnEmptyList(t, "a-harness-that-supports-nothing", []string{})
 
 	// The shipped table gets the same assertion wherever it carries an empty
-	// list, normalized the way discoverHarnesses normalizes it. This half can
+	// list, normalized the way DiscoverHarnesses normalizes it. This half can
 	// legitimately find nothing to check; it is no longer the only path to the
 	// assertion above, so finding nothing is no longer silence.
-	for h, caps := range harnessCapabilities {
+	for h, caps := range sessions.HarnessCapabilities {
 		if len(caps) != 0 {
 			continue
 		}
@@ -253,10 +255,10 @@ func assertCapabilitiesSerializeAsAnEmptyList(t *testing.T, name string, capabil
 
 // TestNilCapabilitiesAreNormalized covers the same hazard one layer up: the
 // map lookup for a harness with no entry at all returns nil, and it is
-// discoverHarnesses that turns that into an empty slice before it reaches a
+// DiscoverHarnesses that turns that into an empty slice before it reaches a
 // client.
 func TestNilCapabilitiesAreNormalized(t *testing.T) {
-	var caps []string = harnessCapabilities["not-a-harness"]
+	var caps []string = sessions.HarnessCapabilities["not-a-harness"]
 	if caps != nil {
 		t.Fatalf("expected a nil lookup for an unknown harness, got %v", caps)
 	}
@@ -278,38 +280,38 @@ func TestNilCapabilitiesAreNormalized(t *testing.T) {
 
 // TestDiscoverHarnessesNormalizesANilCapabilityList pins the normalization in
 // the function that actually performs it. TestNilCapabilitiesAreNormalized
-// above names discoverHarnesses as the code under test in its own comment and
+// above names DiscoverHarnesses as the code under test in its own comment and
 // then never calls it — it re-implements the two lines inline and marshals the
 // result, so it asserts only itself. Deleting the `if caps == nil` branch from
-// discoverHarnesses left the whole package green.
+// DiscoverHarnesses left the whole package green.
 //
-// The nil has to be manufactured. All 19 entries in allHarnesses currently
+// The nil has to be manufactured. All 19 entries in AllHarnesses currently
 // have a capabilities entry, so the nil branch is unreachable from the live
-// map: a test that merely ranged over discoverHarnesses() output would also
+// map: a test that merely ranged over DiscoverHarnesses() output would also
 // have passed with the normalization deleted. Dropping one entry reproduces
 // the real condition — a harness added to msg.AllHarnesses and not to
-// harnessCapabilities — which is how the field would go nil in production.
+// HarnessCapabilities — which is how the field would go nil in production.
 //
 // What rides on it is named in TestEmptyCapabilitiesSerializeAsAnEmptyList:
 // dash reads `has = cap => !capabilities || capabilities.has(cap)`, which
 // fails OPEN. A null here shows every chat control for a harness that
 // supports none of them.
 func TestDiscoverHarnessesNormalizesANilCapabilityList(t *testing.T) {
-	victim := allHarnesses[0]
-	saved, had := harnessCapabilities[victim]
-	delete(harnessCapabilities, victim)
+	victim := sessions.AllHarnesses[0]
+	saved, had := sessions.HarnessCapabilities[victim]
+	delete(sessions.HarnessCapabilities, victim)
 	t.Cleanup(func() {
 		if had {
-			harnessCapabilities[victim] = saved
+			sessions.HarnessCapabilities[victim] = saved
 		} else {
-			delete(harnessCapabilities, victim)
+			delete(sessions.HarnessCapabilities, victim)
 		}
 	})
 
 	srv := (&Server{cfg: &config.Config{ImagesDir: t.TempDir()}}).withServicesComposed()
 
-	statuses := srv.discoverHarnesses()
-	var found *HarnessStatus
+	statuses := srv.sessions.DiscoverHarnesses()
+	var found *sessions.HarnessStatus
 	for i := range statuses {
 		if statuses[i].Name == string(victim) {
 			found = &statuses[i]

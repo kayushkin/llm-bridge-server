@@ -3,11 +3,13 @@ package server
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/kayushkin/llm-bridge-server/internal/sessions"
 )
 
 // The page and the stream resume point are served together so they are consistent with
 // each other. These cases pin the wire shape and the ordering invariant that makes the
-// pairing safe; `handleSessionMessages`'s doc comment states it at length.
+// pairing safe; `HandleSessionMessages`'s doc comment states it at length.
 
 func TestSessionMessagesResponse_CarriesTheModelUnchanged(t *testing.T) {
 	// The model rides as raw bytes precisely so this layer cannot alter it. A decode and
@@ -15,17 +17,17 @@ func TestSessionMessagesResponse_CarriesTheModelUnchanged(t *testing.T) {
 	// a full parse of a megabyte page to achieve nothing.
 	model := json.RawMessage(`{"sessionId":"br_1","turns":[],"entries":{},"more":false}`)
 
-	encoded, err := json.Marshal(SessionMessagesResponse{
+	encoded, err := json.Marshal(sessions.SessionMessagesResponse{
 		Model:  model,
-		Stream: StreamResumePoint{Head: 4242},
+		Stream: sessions.StreamResumePoint{Head: 4242},
 	})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
 
 	var round struct {
-		Model  json.RawMessage   `json:"model"`
-		Stream StreamResumePoint `json:"stream"`
+		Model  json.RawMessage            `json:"model"`
+		Stream sessions.StreamResumePoint `json:"stream"`
 	}
 	if err := json.Unmarshal(encoded, &round); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -43,9 +45,9 @@ func TestStreamResumePoint_ZeroMeansConnectWithoutOne(t *testing.T) {
 	// as 0 rather than being omitted — a client that cannot tell "no events yet" from
 	// "field missing" would guess, and guessing here means either replaying everything
 	// or skipping everything.
-	encoded, err := json.Marshal(SessionMessagesResponse{
+	encoded, err := json.Marshal(sessions.SessionMessagesResponse{
 		Model:  json.RawMessage(`{}`),
-		Stream: StreamResumePoint{Head: 0},
+		Stream: sessions.StreamResumePoint{Head: 0},
 	})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -68,11 +70,11 @@ func TestStreamResumePoint_ZeroMeansConnectWithoutOne(t *testing.T) {
 // The field lives under its own name in its own struct so the mistake needs effort.
 func TestStreamResumePoint_IsNotTheLogStoreIDSpace(t *testing.T) {
 	page := json.RawMessage(`{"entries":{"e_2094222":{"eventId":2094222}}}`)
-	encoded, _ := json.Marshal(SessionMessagesResponse{
+	encoded, _ := json.Marshal(sessions.SessionMessagesResponse{
 		Model:  page,
-		Stream: StreamResumePoint{Head: 17},
+		Stream: sessions.StreamResumePoint{Head: 17},
 	})
-	var round SessionMessagesResponse
+	var round sessions.SessionMessagesResponse
 	if err := json.Unmarshal(encoded, &round); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}

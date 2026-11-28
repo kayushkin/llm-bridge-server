@@ -21,7 +21,7 @@ func TestASessionsReportedToolsReachToolStoreWithoutItsMCPTools(t *testing.T) {
 	srv.toolRegistry = toolStore
 	sess := createSessionForDefaults(t, srv, st, msg.CreateSessionRequest{InstanceID: instanceID})
 
-	srv.onSessionInfo(sess.SessionID, &msg.SessionInfo{Tools: []msg.ToolInfo{{Name: "Read"}, {Name: "mcp__multichat__send"}, {Name: "NewTool"}}})
+	srv.sessions.OnSessionInfo(sess.SessionID, &msg.SessionInfo{Tools: []msg.ToolInfo{{Name: "Read"}, {Name: "mcp__multichat__send"}, {Name: "NewTool"}}})
 
 	if len(toolStore.observed) != 1 {
 		t.Fatalf("tool-store was told %d times, want once", len(toolStore.observed))
@@ -41,7 +41,7 @@ func TestAToolStoreThatRefusesTheReportIsAnError(t *testing.T) {
 	toolStore := newFakeToolRegistry(t)
 	toolStore.recordObservedError = fmt.Errorf("%w: tool name %q contains whitespace", tools.ErrInvalidObservedHarnessTools, "Bad Name")
 	srv.toolRegistry = toolStore
-	_, err := srv.reportObservedHarnessTools(t.Context(), msg.HarnessClaudeCode, []string{"Bad Name"})
+	_, err := srv.sessions.ReportObservedHarnessTools(t.Context(), msg.HarnessClaudeCode, []string{"Bad Name"})
 	if err == nil || !errors.Is(err, tools.ErrInvalidObservedHarnessTools) {
 		t.Errorf("err = %v; want the store's refusal", err)
 	}

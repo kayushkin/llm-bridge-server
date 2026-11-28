@@ -66,7 +66,7 @@ func postPrehookFull(t *testing.T, srv *Server, bridgeID, body string) (decision
 	req := httptest.NewRequest("POST", "/permission/cc-prehook/"+bridgeID, strings.NewReader(body))
 	req.SetPathValue("bridge_id", bridgeID)
 	rec := httptest.NewRecorder()
-	srv.handleCCPermissionPrehook(rec, req)
+	srv.sessions.PermissionGate.HandleCCPermissionPrehook(rec, req)
 	var got struct {
 		HookSpecificOutput struct {
 			PermissionDecision       string         `json:"permissionDecision"`

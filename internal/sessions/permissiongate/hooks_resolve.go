@@ -1,0 +1,394 @@
+package permissiongate
+
+import (
+	"encoding/json"
+	"log"
+	"net/http"
+	"time"
+
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/parkedasks"
+
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
+	"github.com/kayushkin/llm-bridge/msg"
+)
+
+// hookResolveRequest is the body of POST /sessions/{id}/hooks/{request_id}/resolve.
+type hookResolveRequest struct {
+	Behavior     string          `json:"behavior"` // "allow" | "deny"
+	UpdatedInput json.RawMessage `json:"updated_input,omitempty"`
+	Message      string          `json:"message,omitempty"`
+	ResolvedBy   string          `json:"resolved_by,omitempty"` // "user" / "auto" / "allow_always" / ...
+}
+
+// HandleListPendingHooks returns the awaiting_resolution HookEvents
+// currently outstanding for a session, so bridge-ui can hydrate the
+// pending-hook banner on a fresh connection without replaying the full
+// SSE stream.
+func (s *Service) HandleListPendingHooks(w http.ResponseWriter, r *http.Request) {
+	bridgeID := r.PathValue("id")
+	if _, err := s.Store.GetSession(bridgeID); err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	pending := s.Harness.PendingHooks(bridgeID)
+	if pending == nil {
+		pending = []msg.Event{}
+	}
+	httpjson.WriteJSON(w, pending)
+}
+
+// HandleResolveHook delivers a decision for an awaiting_resolution hook to
+// the parked PreToolUse handler. The prehook handler that's blocked on the
+// channel emits the matching phase=completed HookEvent and returns the
+// hookSpecificOutput response to Claude Code.
+//
+// If no parked entry exists (stale resolve after harness restart, the parked
+// request was already canceled, or a duplicate click), we still emit a
+// completed HookEvent so the UI banner clears — the underlying tool call is
+// dead but the user's decision is recorded for audit.
+func (s *Service) HandleResolveHook(w http.ResponseWriter, r *http.Request) {
+	bridgeID := r.PathValue("id")
+	requestID := r.PathValue("request_id")
+	if _, err := s.Store.GetSession(bridgeID); err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	if requestID == "" {
+		http.Error(w, "request_id is required", http.StatusBadRequest)
+		return
+	}
+
+	var req hookResolveRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.Behavior != "allow" && req.Behavior != "deny" {
+		http.Error(w, "behavior must be \"allow\" or \"deny\"", http.StatusBadRequest)
+		return
+	}
+
+	decision := parkedasks.Decision{
+		Behavior:     req.Behavior,
+		UpdatedInput: req.UpdatedInput,
+		Message:      req.Message,
+		ResolvedBy:   req.ResolvedBy,
+	}
+	delivered := s.ParkedAsks.Deliver(bridgeID, requestID, decision)
+	if !delivered {
+		// Stale: emit a completed event ourselves so bridge-ui's banner clears.
+		// The prehook handler that originally parked this request is gone, so
+		// no one else will broadcast.
+		stale := decision
+		stale.Message = "stale request — no parked prehook (harness restart or duplicate resolve). Decision recorded for audit; tool call is dead."
+		s.broadcastStaleResolution(bridgeID, requestID, stale)
+	}
+
+	httpjson.WriteJSON(w, map[string]any{
+		"status":          "resolved",
+		"parked_delivery": delivered,
+	})
+}
+
+// broadcastStaleResolution emits phase=completed for a resolve that found
+// no parked entry. Mirrors broadcastPrehookResolved but stamps the message
+// to explain the no-op so the audit log is self-describing. The original
+// Source is unrecoverable at this point (parked entry already gone), so
+// stale completions are stamped as permission_prompt — UI consumers only
+// pair on request_id, not source, so the mislabel is audit-only.
+//
+// Signal rows are closed out here too: the parked entry is gone but the
+// signals it minted survive the harness restart that killed it, and leaving
+// them open would keep a dead question in the inbox forever.
+func (s *Service) broadcastStaleResolution(bridgeID, requestID string, d parkedasks.Decision) {
+	s.Signals.ResolveSignalsForRequest(bridgeID, requestID, d)
+
+	resolution := &msg.HookResolution{
+		Behavior:     d.Behavior,
+		UpdatedInput: d.UpdatedInput,
+		Message:      d.Message,
+		ResolvedBy:   d.ResolvedBy,
+	}
+	if _, err := s.Harness.BroadcastEvent(&msg.Event{
+		Type:            msg.EventHook,
+		Timestamp:       time.Now(),
+		BridgeSessionID: bridgeID,
+		Hook: &msg.HookEvent{
+			Source:     "permission_prompt",
+			Event:      "PreToolUse",
+			Phase:      "completed",
+			RequestID:  requestID,
+			Decision:   d.Behavior,
+			Resolution: resolution,
+		},
+	}); err != nil {
+		log.Printf("[resolve] broadcast stale completed for %s/%s: %v", bridgeID, requestID, err)
+	}
+}
+
+// permissionModeRequest is the body of POST /bridge/permission-mode and
+// PUT /sessions/{id}/permission-mode. The prehook reads the persisted
+// value on every request, so the new mode takes effect immediately for
+// every session — no harness broadcast needed.
+//
+// DisableNetwork is an orthogonal side-axis that lives alongside the mode
+// for atomicity (one HTTP roundtrip changes both). nil means "leave the
+// existing value alone"; pointer-bool lets the caller omit the field
+// without it defaulting to false.
+//
+// PermissionModeCustom carries the raw harness-specific knobs the user
+// picked in Custom mode (codex: approval + sandbox; other harnesses
+// surface their own subset). Only honored when Mode == "custom"; the
+// bridge writes the struct to HarnessConfig.permission_mode_custom and
+// the harness reads it on next spawn. nil leaves any existing value
+// alone; an empty struct clears it.
+type permissionModeRequest struct {
+	Mode                 string                      `json:"mode"`
+	DisableNetwork       *bool                       `json:"disable_network,omitempty"`
+	PermissionModeCustom *permissionModeCustomConfig `json:"permission_mode_custom,omitempty"`
+}
+
+// permissionModeCustomConfig is the raw-knob payload Custom mode carries
+// through to the harness. Codex consumes Approval + Sandbox; other
+// harnesses get to define their own subset later.
+type permissionModeCustomConfig struct {
+	Approval string `json:"approval,omitempty"`
+	Sandbox  string `json:"sandbox,omitempty"`
+}
+
+// bypassPermissionsRequest is the legacy body of POST /bridge/bypass-permissions
+// and PUT /sessions/{id}/bypass-permissions. Retained as a thin alias that
+// translates the boolean into the new mode enum so older bridge-ui builds
+// keep working during the transition.
+type bypassPermissionsRequest struct {
+	Enabled bool `json:"enabled"`
+}
+
+func validPermissionMode(m string) bool {
+	switch m {
+	case msg.PermissionModeBlockAll,
+		msg.PermissionModePlan,
+		msg.PermissionModeRead,
+		msg.PermissionModeAskAll,
+		msg.PermissionModeAsk,
+		msg.PermissionModeAuto,
+		msg.PermissionModeBypass,
+		msg.PermissionModeCustom:
+		return true
+	}
+	return false
+}
+
+// permissionModeAllowedValues is the human-readable enum for 400 responses.
+// Kept in lockstep with validPermissionMode so the error message stays
+// honest about what's accepted.
+const permissionModeAllowedValues = "block_all|plan|read|ask_all|ask|auto|bypass|custom"
+
+// HandleSetGlobalPermissionMode persists the global permission_mode in
+// bridge-prefs. The prehook reads bridge-prefs on every call so the
+// change takes effect immediately — no harness broadcast needed.
+func (s *Service) HandleSetGlobalPermissionMode(w http.ResponseWriter, r *http.Request) {
+	var req permissionModeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if !validPermissionMode(req.Mode) {
+		http.Error(w, "mode must be one of "+permissionModeAllowedValues, http.StatusBadRequest)
+		return
+	}
+
+	s.BridgePrefs.SetPermissionMode(req.Mode)
+
+	httpjson.WriteJSON(w, map[string]any{
+		"status": "ok",
+		"mode":   req.Mode,
+	})
+}
+
+// HandleSetSessionPermissionMode persists the per-session permission_mode
+// into harness_config. Survives harness restart and beats the global.
+// The prehook reads this live, so the override takes effect on the next
+// tool call without restarting the harness; the harness picks up the
+// change on its next spawn/resume.
+func (s *Service) HandleSetSessionPermissionMode(w http.ResponseWriter, r *http.Request) {
+	bridgeID := r.PathValue("id")
+	sess, err := s.Store.GetSession(bridgeID)
+	if err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+
+	var req permissionModeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if !validPermissionMode(req.Mode) {
+		http.Error(w, "mode must be one of "+permissionModeAllowedValues, http.StatusBadRequest)
+		return
+	}
+
+	cfg := make(map[string]json.RawMessage)
+	if len(sess.HarnessConfig) > 0 {
+		if err := json.Unmarshal(sess.HarnessConfig, &cfg); err != nil {
+			http.Error(w, "harness_config unparseable: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	cfg["permission_mode"] = json.RawMessage(`"` + req.Mode + `"`)
+	delete(cfg, "bypass_permissions")
+	if req.DisableNetwork != nil {
+		if *req.DisableNetwork {
+			cfg["disable_network"] = json.RawMessage(`true`)
+		} else {
+			// Explicit false → delete the key so harness defaults apply.
+			// Distinguish from "omitted" (nil) where we leave it alone.
+			delete(cfg, "disable_network")
+		}
+	}
+	if req.PermissionModeCustom != nil {
+		if req.PermissionModeCustom.Approval == "" && req.PermissionModeCustom.Sandbox == "" {
+			// Empty struct → clear stored value.
+			delete(cfg, "permission_mode_custom")
+		} else {
+			raw, err := json.Marshal(req.PermissionModeCustom)
+			if err != nil {
+				http.Error(w, "marshal permission_mode_custom: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			cfg["permission_mode_custom"] = raw
+		}
+	}
+	merged, err := json.Marshal(cfg)
+	if err != nil {
+		http.Error(w, "marshal harness_config: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := s.Store.UpdateSessionHarnessConfig(bridgeID, merged); err != nil {
+		http.Error(w, "persist harness_config: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Switching to Allow All (bypass) settles any ask already parked on the
+	// banner — the live prehook only governs the NEXT tool call, so without
+	// this the in-flight request would hang until manually resolved.
+	resolved := 0
+	if req.Mode == msg.PermissionModeBypass && s.Harness != nil {
+		resolved = s.AutoAllowParkedPermissionAsks(bridgeID, s.Harness.PendingHooks(bridgeID))
+		if resolved > 0 {
+			log.Printf("[permission_mode] auto-allowed %d parked ask(s) for %s on Allow All switch", resolved, bridgeID)
+		}
+	}
+
+	resp := map[string]any{
+		"status":          "ok",
+		"bridge_id":       bridgeID,
+		"permission_mode": req.Mode,
+	}
+	if resolved > 0 {
+		resp["auto_allowed_pending"] = resolved
+	}
+	if req.DisableNetwork != nil {
+		resp["disable_network"] = *req.DisableNetwork
+	}
+	httpjson.WriteJSON(w, resp)
+}
+
+// AutoAllowParkedPermissionAsks delivers an "allow" verdict to every
+// permission-prompt ask currently parked for the session, settling requests
+// that are already blocked on the banner. Called when a session switches to
+// Allow All (bypass) mode: the prehook reads the new mode live, but only on
+// the NEXT tool call, so an in-flight ask would otherwise hang on its
+// channel until the user clicked Allow/Deny by hand. Returns the number of
+// asks resolved.
+//
+// HookSourceUserInput asks (AskUserQuestion) are deliberately skipped.
+// Bypass auto-allows tool *calls*, but an AskUserQuestion still needs the
+// human's answer payload — an empty allow would strip it. This mirrors the
+// prehook, which never bypasses user-input solicitations (see
+// msg.PermissionModeBypass).
+//
+// `pending` is the caller's snapshot of awaiting_resolution events (from
+// harness.PendingHooks); taking it as a parameter keeps this unit-testable
+// without a live harness manager.
+func (s *Service) AutoAllowParkedPermissionAsks(bridgeID string, pending []msg.Event) int {
+	resolved := 0
+	for _, ev := range pending {
+		if ev.Hook == nil || ev.Hook.RequestID == "" {
+			continue
+		}
+		if ev.Hook.Source == msg.HookSourceUserInput {
+			continue
+		}
+		decision := parkedasks.Decision{
+			Behavior:   "allow",
+			Message:    "auto-allowed: session switched to Allow All (bypass) mode",
+			ResolvedBy: "auto:bypass-mode",
+		}
+		if s.ParkedAsks.Deliver(bridgeID, ev.Hook.RequestID, decision) {
+			resolved++
+		}
+	}
+	return resolved
+}
+
+// HandleSetBypassPermissions is the legacy alias for the global
+// permission-mode endpoint. Translates the boolean (true → bypass, false →
+// ask) and delegates. Retained so older bridge-ui builds keep working
+// until they're rebuilt against the new endpoint.
+func (s *Service) HandleSetBypassPermissions(w http.ResponseWriter, r *http.Request) {
+	var req bypassPermissionsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	s.BridgePrefs.SetPermissionMode(bypassBoolToMode(req.Enabled))
+	httpjson.WriteJSON(w, map[string]any{
+		"status":  "ok",
+		"enabled": req.Enabled,
+	})
+}
+
+// HandleSetSessionBypass is the legacy alias for the per-session
+// permission-mode endpoint.
+func (s *Service) HandleSetSessionBypass(w http.ResponseWriter, r *http.Request) {
+	bridgeID := r.PathValue("id")
+	sess, err := s.Store.GetSession(bridgeID)
+	if err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+
+	var req bypassPermissionsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	cfg := make(map[string]json.RawMessage)
+	if len(sess.HarnessConfig) > 0 {
+		if err := json.Unmarshal(sess.HarnessConfig, &cfg); err != nil {
+			http.Error(w, "harness_config unparseable: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	cfg["permission_mode"] = json.RawMessage(`"` + bypassBoolToMode(req.Enabled) + `"`)
+	delete(cfg, "bypass_permissions")
+	merged, err := json.Marshal(cfg)
+	if err != nil {
+		http.Error(w, "marshal harness_config: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := s.Store.UpdateSessionHarnessConfig(bridgeID, merged); err != nil {
+		http.Error(w, "persist harness_config: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	httpjson.WriteJSON(w, map[string]any{
+		"status":             "ok",
+		"bridge_id":          bridgeID,
+		"bypass_permissions": req.Enabled,
+	})
+}

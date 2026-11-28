@@ -31,14 +31,13 @@ type Dependencies struct {
 	Settings               *servicesettings.Registry
 	Store                  *store.Store
 	Sessions               Host
+	ServerReads            ServerReads
 	PostingEnvironments    PostingEnvironments
 }
 
 // Host is the sessions, callers and scheduler jobs a session action reaches.
 type Host interface {
 	SendMessageFromThisServer(ctx context.Context, sessionID string, req msg.SendMessageRequest, senderPrincipalID string) sendanswer.Answer
-	CallerForPrincipalID(ctx context.Context, principalID string, subjectDescription string) (requestcaller.Caller, *requestcaller.CredentialError)
-	SchedulerJobsInProcess() SchedulerJobs
 	StopSession(bridgeID string) error
 }
 
@@ -55,4 +54,10 @@ type Service struct {
 // PostingEnvironments is the environment a session's current spawn gives its agent to post into the session.
 type PostingEnvironments interface {
 	SessionPostingEnvironmentOfCurrentSpawn(session *store.Session) []string
+}
+
+// ServerReads is who a principal is and the scheduler's jobs, as this server reads them.
+type ServerReads interface {
+	CallerForPrincipalID(ctx context.Context, principalID string, subjectDescription string) (requestcaller.Caller, *requestcaller.CredentialError)
+	SchedulerJobsInProcess() SchedulerJobs
 }

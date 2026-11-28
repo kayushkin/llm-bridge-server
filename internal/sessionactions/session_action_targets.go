@@ -87,14 +87,14 @@ func (s *Service) sessionPrincipalMayReachTarget(ctx context.Context, session, t
 	if session.PrincipalID == "" {
 		return false, nil
 	}
-	owner, credentialError := s.Sessions.CallerForPrincipalID(ctx, session.PrincipalID, "session "+session.SessionID+" belongs to")
+	owner, credentialError := s.ServerReads.CallerForPrincipalID(ctx, session.PrincipalID, "session "+session.SessionID+" belongs to")
 	if credentialError != nil {
 		return false, &sessionActionRefusal{credentialError.Status, credentialError.Code, credentialError.Message}
 	}
 	if !throughPeer {
 		return owner.IsAdministrator, nil
 	}
-	peer, credentialError := s.Sessions.CallerForPrincipalID(ctx, origin.PeerPrincipalID, "session "+session.SessionID+" was started through")
+	peer, credentialError := s.ServerReads.CallerForPrincipalID(ctx, origin.PeerPrincipalID, "session "+session.SessionID+" was started through")
 	if credentialError != nil {
 		return false, &sessionActionRefusal{credentialError.Status, credentialError.Code, credentialError.Message}
 	}

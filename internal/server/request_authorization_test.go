@@ -18,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
 
 	"github.com/kayushkin/llm-bridge-server/internal/machines/machinestest"
@@ -264,7 +266,7 @@ func TestTwoPrincipalsEachSeeAndReachOnlyTheirOwnSessions(t *testing.T) {
 			t.Errorf("%s lists %v, want only %s", check.own.PrincipalID, got, check.own.SessionID)
 		}
 		summary := gated.requestAs(t, check.cookie, "GET", "/sessions/summary", nil)
-		var summaryBody SummaryResponse
+		var summaryBody sessions.SummaryResponse
 		if err := json.Unmarshal(summary.Body.Bytes(), &summaryBody); err != nil || len(summaryBody.Sessions) != 1 || summaryBody.Sessions[0].SessionID != check.own.SessionID {
 			t.Errorf("%s summary = %s, want only its own session", check.own.PrincipalID, summary.Body.String())
 		}
@@ -407,7 +409,7 @@ func TestAnAdministratorListsEverySessionWhoeverOwnsIt(t *testing.T) {
 
 	summaryIDs := func(response *httptest.ResponseRecorder) []string {
 		t.Helper()
-		var body SummaryResponse
+		var body sessions.SummaryResponse
 		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 			t.Fatalf("decode summary %s: %v", response.Body.String(), err)
 		}

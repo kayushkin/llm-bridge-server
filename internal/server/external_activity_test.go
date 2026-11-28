@@ -18,7 +18,7 @@ func TestExternalActivityStartingMark(t *testing.T) {
 	if err := st.CreateSession(&store.Session{SessionID: "br_none", Harness: "claude_code", State: "idle"}); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := srv.externalActivityStartingMark("br_none", watcherStarted); err != nil || !got.Equal(watcherStarted) {
+	if got, err := srv.sessions.ExternalActivityStartingMark("br_none", watcherStarted); err != nil || !got.Equal(watcherStarted) {
 		t.Fatalf("no mark and no events: got %s (%v), want when the watcher started", got, err)
 	}
 
@@ -30,7 +30,7 @@ func TestExternalActivityStartingMark(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, err := srv.externalActivityStartingMark("br_events", watcherStarted); err != nil || !got.Equal(last.Add(time.Second)) {
+	if got, err := srv.sessions.ExternalActivityStartingMark("br_events", watcherStarted); err != nil || !got.Equal(last.Add(time.Second)) {
 		t.Fatalf("events but no mark: got %s (%v), want the last event's second rounded up, %s", got, err, last.Add(time.Second))
 	}
 
@@ -38,7 +38,7 @@ func TestExternalActivityStartingMark(t *testing.T) {
 	if err := st.AdvanceExternalActivityMark("br_events", mark); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := srv.externalActivityStartingMark("br_events", watcherStarted); err != nil || !got.Equal(mark) {
+	if got, err := srv.sessions.ExternalActivityStartingMark("br_events", watcherStarted); err != nil || !got.Equal(mark) {
 		t.Fatalf("with a mark: got %s (%v), want the mark %s", got, err, mark)
 	}
 }

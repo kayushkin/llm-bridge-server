@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions"
+
 	"github.com/kayushkin/llm-bridge-server/internal/agents/bundles"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -27,9 +29,9 @@ func bundleStoreNaming(t *testing.T, model, effort string) *fakeBundleResolver {
 func serverWithHarnessDefaults(t *testing.T, defaults msg.HarnessDefaults) (*Server, *store.Store, string) {
 	t.Helper()
 	srv, st, instanceID := testServerWithInstance(t, msg.HarnessClaudeCode)
-	srv.bridgePrefs.mu.Lock()
-	srv.bridgePrefs.data.Defaults = map[string]msg.HarnessDefaults{string(msg.HarnessClaudeCode): defaults}
-	srv.bridgePrefs.mu.Unlock()
+	srv.bridgePrefs.Mu.Lock()
+	srv.bridgePrefs.Data.Defaults = map[string]msg.HarnessDefaults{string(msg.HarnessClaudeCode): defaults}
+	srv.bridgePrefs.Mu.Unlock()
 	return srv, st, instanceID
 }
 
@@ -50,11 +52,11 @@ func createSessionForDefaults(t *testing.T, srv *Server, st *store.Store, reques
 }
 
 type pinnedSessionSettings struct {
-	Model         string              `json:"model"`
-	Selection     msg.ModelSelection  `json:"model_selection"`
-	Effort        string              `json:"effort"`
-	DisabledTools []string            `json:"disabled_tools"`
-	Layers        pinnedSettingLayers `json:"setting_layers"`
+	Model         string                       `json:"model"`
+	Selection     msg.ModelSelection           `json:"model_selection"`
+	Effort        string                       `json:"effort"`
+	DisabledTools []string                     `json:"disabled_tools"`
+	Layers        sessions.PinnedSettingLayers `json:"setting_layers"`
 }
 
 func pinnedOn(t *testing.T, sess *store.Session) pinnedSessionSettings {
@@ -158,9 +160,9 @@ func TestAPinnedSettingDoesNotMoveWhenTheDefaultChangesAndBecomesTheSessionsOwnW
 	srv, st, instanceID := serverWithHarnessDefaults(t, dispatcherDefaults)
 	sess := createSessionForDefaults(t, srv, st, msg.CreateSessionRequest{InstanceID: instanceID})
 
-	srv.bridgePrefs.mu.Lock()
-	srv.bridgePrefs.data.Defaults = map[string]msg.HarnessDefaults{string(msg.HarnessClaudeCode): {Model: "mock-model-alt", Effort: "low", MaxBudget: float64Ptr(99)}}
-	srv.bridgePrefs.mu.Unlock()
+	srv.bridgePrefs.Mu.Lock()
+	srv.bridgePrefs.Data.Defaults = map[string]msg.HarnessDefaults{string(msg.HarnessClaudeCode): {Model: "mock-model-alt", Effort: "low", MaxBudget: float64Ptr(99)}}
+	srv.bridgePrefs.Mu.Unlock()
 	if effort := effectiveSettingOf(t, srv, sess.SessionID, msg.EffectiveSettingEffort); effort.Value != "high" || effort.Layer != msg.EffectiveLayerHarnessDefault {
 		t.Errorf("effort after the default changed = %v by %q; want the pinned high", effort.Value, effort.Layer)
 	}

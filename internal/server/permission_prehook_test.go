@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/permissiongate"
+
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/parkedasks"
 
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/prehookanswers"
@@ -36,7 +38,7 @@ func TestIsUnattendedSession(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := isUnattendedSession(tc.sess); got != tc.want {
+			if got := permissiongate.IsUnattendedSession(tc.sess); got != tc.want {
 				t.Errorf("isUnattendedSession(%+v) = %v, want %v", tc.sess, got, tc.want)
 			}
 		})
@@ -148,7 +150,7 @@ func TestAutoAllowParkedPermissionAsks(t *testing.T) {
 		{Hook: &msg.HookEvent{Source: msg.HookSourceUserInput, RequestID: "req-ask", Phase: "awaiting_resolution"}},
 	}
 
-	n := srv.autoAllowParkedPermissionAsks(bridgeID, pending)
+	n := srv.sessions.PermissionGate.AutoAllowParkedPermissionAsks(bridgeID, pending)
 	if n != 1 {
 		t.Fatalf("resolved = %d, want 1 (permission ask only)", n)
 	}
@@ -206,7 +208,7 @@ func postPrehookToRoute(t *testing.T, srv *Server, route, bridgeID, body string)
 	req := httptest.NewRequest("POST", "/permission/"+route+"/"+bridgeID, strings.NewReader(body))
 	req.SetPathValue("bridge_id", bridgeID)
 	rec := httptest.NewRecorder()
-	srv.handleCCPermissionPrehook(rec, req)
+	srv.sessions.PermissionGate.HandleCCPermissionPrehook(rec, req)
 
 	var got struct {
 		HookSpecificOutput struct {

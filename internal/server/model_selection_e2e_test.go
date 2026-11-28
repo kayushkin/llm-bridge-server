@@ -66,9 +66,9 @@ func TestPrefsDefaultReachesTheSpawn(t *testing.T) {
 	srv, st, instID := testServerWithInstance(t, msg.HarnessMock)
 	// The production shape: dash /settings writes bridge-prefs defaults[harness].model.
 	// This is the tier that ends the client race — the create itself answers.
-	srv.bridgePrefs.mu.Lock()
-	srv.bridgePrefs.data.Defaults = map[string]msg.HarnessDefaults{string(msg.HarnessMock): {Model: "mock-model-alt"}}
-	srv.bridgePrefs.mu.Unlock()
+	srv.bridgePrefs.Mu.Lock()
+	srv.bridgePrefs.Data.Defaults = map[string]msg.HarnessDefaults{string(msg.HarnessMock): {Model: "mock-model-alt"}}
+	srv.bridgePrefs.Mu.Unlock()
 	got := postCreateSession(t, srv, autoStartWithConfig(instID, ``))
 	t.Cleanup(func() { srv.harness.Kill(got.SessionID) })
 	if m := waitForReportedModel(t, st, got.SessionID, 5*time.Second); m != "mock-model-alt" {
