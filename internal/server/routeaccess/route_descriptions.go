@@ -341,6 +341,8 @@ var routeDescriptions = map[string]routeDescription{
 	"POST /prompt-collections":                  {routeGroupAgentStorePrompt, "Create one"},
 	"GET /prompt-collections/{id}":              {routeGroupAgentStorePrompt, "One collection and its sections"},
 	"POST /prompt-collections/{id}/sections":    {routeGroupAgentStorePrompt, "Add a section"},
+	"PUT /prompt-collections/{id}/root":         {routeGroupAgentStorePrompt, "Point a project collection at its repo's new directory"},
+	"POST /prompt-collections/{id}/retire":      {routeGroupAgentStorePrompt, "Take a collection out of use (note required)"},
 	"POST /prompt-collections/{id}/render":      {routeGroupAgentStorePrompt, "Write the collection's files to disk"},
 	"POST /prompt-collections/{id}/outputs":     {routeGroupAgentStorePrompt, "Add a file the collection renders to"},
 	"GET /prompt-collections/{id}/revisions":    {routeGroupAgentStorePrompt, "Its history"},

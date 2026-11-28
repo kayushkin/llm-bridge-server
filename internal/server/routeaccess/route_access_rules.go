@@ -532,6 +532,8 @@ var RouteAccessRules = map[string]RouteAccessRule{
 	"POST /prompt-collections/{id}/outputs":        operatorRoute("agent-store write"),
 	"GET /prompt-collections/{id}/revisions":       operatorRoute("agent-store prompt source"),
 	"POST /prompt-collections/import-untracked":    operatorRoute("agent-store write"),
+	"PUT /prompt-collections/{id}/root":            operatorRoute("agent-store write: points a project collection at a renamed repo's directory"),
+	"POST /prompt-collections/{id}/retire":         operatorRoute("agent-store write: takes a collection out of use"),
 	"POST /prompt-outputs/{id}/enable":             operatorRoute("agent-store write"),
 	"POST /prompt-outputs/{id}/disable":            operatorRoute("agent-store write"),
 	"PUT /prompt-sections/{id}":                    operatorRoute("agent-store write"),

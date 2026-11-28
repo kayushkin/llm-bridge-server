@@ -932,10 +932,7 @@ func TestEveryPatternTheMuxRecordedIsClassified(t *testing.T) {
 // to everyone but the service token. Each is listed so the tests above can
 // tell them from a route someone forgot; give one a rule, and take it out of
 // here, in the change that decides who may call it.
-var registeredRoutesLeftUnclassified = map[string]string{
-	"PUT /prompt-collections/{id}/root":    "agent-store's prompt collection root; nobody has decided who may call it",
-	"POST /prompt-collections/{id}/retire": "agent-store's prompt collection retirement; nobody has decided who may call it",
-}
+var registeredRoutesLeftUnclassified = map[string]string{}
 
 // TestEveryAccessRuleNamesARegisteredRoute fails for a rule whose pattern the
 // mux does not have, so a typo in the table cannot leave the real route

@@ -528,7 +528,9 @@ go test ./internal/server/routeaccess -run TestReadmeRouteTable -update-readme-r
 | `GET` | `/prompt-collections/{id}` | One collection and its sections | operator |
 | `POST` | `/prompt-collections/{id}/outputs` | Add a file the collection renders to | operator |
 | `POST` | `/prompt-collections/{id}/render` | Write the collection's files to disk | operator |
+| `POST` | `/prompt-collections/{id}/retire` | Take a collection out of use (note required) | operator |
 | `GET` | `/prompt-collections/{id}/revisions` | Its history | operator |
+| `PUT` | `/prompt-collections/{id}/root` | Point a project collection at its repo's new directory | operator |
 | `POST` | `/prompt-collections/{id}/sections` | Add a section | operator |
 | `GET` | `/prompt-delivery-options` | The ways a harness can get it | operator |
 | `GET` | `/prompt-drifts` | Edits found in rendered files | operator |
