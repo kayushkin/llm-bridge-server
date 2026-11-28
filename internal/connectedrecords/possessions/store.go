@@ -83,7 +83,7 @@ type PoolOpener func(ctx context.Context, settings map[string]string) (*sql.DB, 
 // read. The Store New answers chooses no scope and reaches nothing; Narrowed
 // answers one that does.
 type Store struct {
-	DB    *database
+	DB    *Database
 	scope ownership.Scope
 	pools *scopedPools
 
@@ -103,8 +103,8 @@ type Store struct {
 type scopedPools struct {
 	open       PoolOpener
 	mutex      sync.Mutex
-	byOwner    map[string]*database
-	everyOwner *database
+	byOwner    map[string]*Database
+	everyOwner *Database
 	closed     bool
 }
 
@@ -120,7 +120,7 @@ func New(open PoolOpener, references ReferenceChecker, originals OriginalFiles) 
 	if originals == nil {
 		return nil, errors.New("possession-store: nowhere to keep originals given")
 	}
-	return &Store{pools: &scopedPools{open: open, byOwner: map[string]*database{}},
+	return &Store{pools: &scopedPools{open: open, byOwner: map[string]*Database{}},
 		references: references, originals: originals, WriteMutex: &sync.Mutex{}, now: time.Now}, nil
 }
 
@@ -171,7 +171,7 @@ func (s *Store) CheckOutside(ctx context.Context, kind ReferenceKind, id string)
 	return s.references.Check(ctx, owner, kind, id)
 }
 
-func (pools *scopedPools) of(ctx context.Context, scope ownership.Scope) (*database, error) {
+func (pools *scopedPools) of(ctx context.Context, scope ownership.Scope) (*Database, error) {
 	pools.mutex.Lock()
 	defer pools.mutex.Unlock()
 	if pools.closed {
@@ -201,10 +201,10 @@ func (pools *scopedPools) of(ctx context.Context, scope ownership.Scope) (*datab
 
 // configuredPool keeps few idle connections per pool, since there is one pool
 // per owner, and lets an idle one go after a while.
-func configuredPool(pool *sql.DB) *database {
+func configuredPool(pool *sql.DB) *Database {
 	pool.SetMaxIdleConns(2)
 	pool.SetConnMaxIdleTime(5 * time.Minute)
-	return &database{pool: pool}
+	return &Database{pool: pool}
 }
 
 // Close closes every pool the store opened, for every scope.

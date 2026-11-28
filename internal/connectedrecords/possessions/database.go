@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// database is one of the store's Postgres pools, the one a Store's scope
+// Database is one of the store's Postgres pools, the one a Store's scope
 // reads and writes through (store.go). It changes two things on the way in,
 // and nothing on the way out:
 //
@@ -25,7 +25,7 @@ import (
 //
 // The method set is the one the store uses; a statement can reach Postgres
 // only through one of them.
-type database struct {
+type Database struct {
 	pool *sql.DB
 }
 
@@ -34,7 +34,7 @@ type DatabaseTransaction struct {
 	tx *sql.Tx
 }
 
-func (d *database) checkOpen() {
+func (d *Database) checkOpen() {
 	if d == nil || d.pool == nil {
 		// A Store reaches records only after Narrowed chose whose; a query
 		// before that is a bug in this package, never a request to answer.
@@ -42,38 +42,38 @@ func (d *database) checkOpen() {
 	}
 }
 
-func (d *database) Query(query string, arguments ...any) (*sql.Rows, error) {
+func (d *Database) Query(query string, arguments ...any) (*sql.Rows, error) {
 	return d.QueryContext(context.Background(), query, arguments...)
 }
 
-func (d *database) QueryContext(ctx context.Context, query string, arguments ...any) (*sql.Rows, error) {
+func (d *Database) QueryContext(ctx context.Context, query string, arguments ...any) (*sql.Rows, error) {
 	d.checkOpen()
 	return d.pool.QueryContext(ctx, numberPlaceholders(query), postgresArguments(arguments)...)
 }
 
-func (d *database) QueryRow(query string, arguments ...any) *sql.Row {
+func (d *Database) QueryRow(query string, arguments ...any) *sql.Row {
 	return d.QueryRowContext(context.Background(), query, arguments...)
 }
 
-func (d *database) QueryRowContext(ctx context.Context, query string, arguments ...any) *sql.Row {
+func (d *Database) QueryRowContext(ctx context.Context, query string, arguments ...any) *sql.Row {
 	d.checkOpen()
 	return d.pool.QueryRowContext(ctx, numberPlaceholders(query), postgresArguments(arguments)...)
 }
 
-func (d *database) Exec(query string, arguments ...any) (sql.Result, error) {
+func (d *Database) Exec(query string, arguments ...any) (sql.Result, error) {
 	return d.ExecContext(context.Background(), query, arguments...)
 }
 
-func (d *database) ExecContext(ctx context.Context, query string, arguments ...any) (sql.Result, error) {
+func (d *Database) ExecContext(ctx context.Context, query string, arguments ...any) (sql.Result, error) {
 	d.checkOpen()
 	return d.pool.ExecContext(ctx, numberPlaceholders(query), postgresArguments(arguments)...)
 }
 
-func (d *database) Begin() (*DatabaseTransaction, error) {
+func (d *Database) Begin() (*DatabaseTransaction, error) {
 	return d.BeginTx(context.Background(), nil)
 }
 
-func (d *database) BeginTx(ctx context.Context, options *sql.TxOptions) (*DatabaseTransaction, error) {
+func (d *Database) BeginTx(ctx context.Context, options *sql.TxOptions) (*DatabaseTransaction, error) {
 	d.checkOpen()
 	tx, err := d.pool.BeginTx(ctx, options)
 	if err != nil {
