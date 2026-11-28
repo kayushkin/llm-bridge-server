@@ -135,13 +135,13 @@ func (s *Server) endRestartDrain(why string) {
 	go s.deliverHeldMessages()
 }
 
-// holdMessageIfRestartDraining holds a message instead of sending it when the
+// HoldMessageIfRestartDraining holds a message instead of sending it when the
 // server is draining, and reports whether it did. It records the message and
 // puts a message_held_for_restart event in the session's conversation. The
 // check and the record happen under the drain's lock, so a message is either
 // held before the drain ends, and sent by the delivery that follows, or not
 // held at all.
-func (s *Server) holdMessageIfRestartDraining(sessionID string, request msg.SendMessageRequest, senderPrincipalID, source string) (heldMessageID string, held bool, err error) {
+func (s *Server) HoldMessageIfRestartDraining(sessionID string, request msg.SendMessageRequest, senderPrincipalID, source string) (heldMessageID string, held bool, err error) {
 	drain := &s.restartDrain
 	drain.mu.Lock()
 	if !drain.draining {

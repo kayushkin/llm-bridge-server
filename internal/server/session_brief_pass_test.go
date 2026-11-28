@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/signals"
+
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/briefs"
 
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -28,7 +30,7 @@ func stubSessionBrief(t *testing.T, srv *Server, verdict map[string]any) *[]msg.
 		}
 		return json.Marshal(msg.OneShotResponse{Parsed: parsed})
 	}
-	srv.signalClassifier = newSignalClassifier("turn-end-signal", 5*time.Second, 6000, nil, runner)
+	srv.signalClassifier = signals.NewSignalClassifier("turn-end-signal", 5*time.Second, 6000, nil, runner)
 	return &calls
 }
 

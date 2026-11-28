@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/signals"
+
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/parkedasks"
 
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/prehookanswers"
@@ -101,8 +103,8 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 	// own instead of blocking.
 	if payload.ToolName == "AskUserQuestion" {
 		if unattended {
-			if sessionSurfacesQuestions(sess) {
-				s.surfaceUnattendedQuestion(w, bridgeID, sess, payload)
+			if signals.SessionSurfacesQuestions(sess) {
+				s.signals.SurfaceUnattendedQuestion(w, bridgeID, sess, payload)
 				return
 			}
 			prehookanswers.WriteDeny(w, "No human is attached to this autonomous session to answer AskUserQuestion; proceed without human input or stop.")
@@ -390,7 +392,7 @@ func (s *Server) parkPrehook(w http.ResponseWriter, r *http.Request, bridgeID st
 	// failure path above, where the park is canceled and no human ever sees
 	// the question.
 	if source == msg.HookSourceUserInput {
-		s.recordAskUserQuestionSignals(bridgeID, sess, requestID, payload.ToolInput)
+		s.signals.RecordAskUserQuestionSignals(bridgeID, sess, requestID, payload.ToolInput)
 	}
 
 	var decision parkedasks.Decision
@@ -430,7 +432,7 @@ func (s *Server) parkPrehook(w http.ResponseWriter, r *http.Request, bridgeID st
 // signal rows the request minted. Source must match the value used at park
 // time so consumers can pair the events.
 func (s *Server) broadcastPrehookResolved(bridgeID, requestID, source string, d parkedasks.Decision) {
-	s.resolveSignalsForRequest(bridgeID, requestID, d)
+	s.signals.ResolveSignalsForRequest(bridgeID, requestID, d)
 
 	resolution := &msg.HookResolution{
 		Behavior:     d.Behavior,

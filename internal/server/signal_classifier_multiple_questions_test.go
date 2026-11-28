@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/signals"
+
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -52,7 +54,7 @@ func TestTurnAskingTwoQuestionsRecordsOneGroupOfTwo(t *testing.T) {
 	sess := newSessionForSignals(t, st, "br_two", msg.SessionTypeInteractive)
 	stubClassifier(t, srv, twoQuestionVerdict())
 
-	srv.classifyTurnEnd(sess.SessionID, turnEndEvent("…Which do you want for PRs and for next steps?"), msg.SessionIdle)
+	srv.signals.ClassifyTurnEnd(sess.SessionID, turnEndEvent("…Which do you want for PRs and for next steps?"), msg.SessionIdle)
 
 	got := openSignals(t, st, sess.SessionID)
 	if len(got) != 2 {
@@ -103,7 +105,7 @@ func TestADerivedGroupIsAnsweredWholeAndReachesTheSessionAsOneLabeledMessage(t *
 	srv, st := testServer(t)
 	sess := newSessionForSignals(t, st, "br_two", msg.SessionTypeInteractive)
 	stubClassifier(t, srv, twoQuestionVerdict())
-	srv.classifyTurnEnd(sess.SessionID, turnEndEvent("…Which do you want for PRs and for next steps?"), msg.SessionIdle)
+	srv.signals.ClassifyTurnEnd(sess.SessionID, turnEndEvent("…Which do you want for PRs and for next steps?"), msg.SessionIdle)
 	group := openSignals(t, st, sess.SessionID)
 	if len(group) != 2 {
 		t.Fatalf("open signals = %d, want 2", len(group))
@@ -111,7 +113,7 @@ func TestADerivedGroupIsAnsweredWholeAndReachesTheSessionAsOneLabeledMessage(t *
 
 	// One answer of two is refused, and refused without closing anything:
 	// sending it would leave the other question unanswerable in its context.
-	rec := answerRequest(t, srv, group[0].ID, signalAnswerRequest{Answers: map[string]string{group[0].ID: "Add pull requests to repo-store"}})
+	rec := answerRequest(t, srv, group[0].ID, signals.SignalAnswerRequest{Answers: map[string]string{group[0].ID: "Add pull requests to repo-store"}})
 	if rec.Code != http.StatusBadRequest || !bytes.Contains(rec.Body.Bytes(), []byte("incomplete_answer")) {
 		t.Fatalf("partial answer: status = %d body %s, want 400 incomplete_answer", rec.Code, rec.Body.String())
 	}
@@ -121,7 +123,7 @@ func TestADerivedGroupIsAnsweredWholeAndReachesTheSessionAsOneLabeledMessage(t *
 
 	// Both answers become one message with each answer under its question.
 	answers := map[string]string{group[0].ID: "first answer", group[1].ID: "second answer"}
-	text := answerTextForMessage(group, answers)
+	text := signals.AnswerTextForMessage(group, answers)
 	for _, sig := range group {
 		if !strings.Contains(text, sig.Title+"\n"+answers[sig.ID]) {
 			t.Errorf("message does not carry %q under its question:\n%s", answers[sig.ID], text)
@@ -142,7 +144,7 @@ func TestQuestionsWithNoTextAreDroppedAndAVerdictOfNoneRecordsNothing(t *testing
 		},
 	})
 
-	srv.classifyTurnEnd(sess.SessionID, turnEndEvent("Which branch should I ship from?"), msg.SessionIdle)
+	srv.signals.ClassifyTurnEnd(sess.SessionID, turnEndEvent("Which branch should I ship from?"), msg.SessionIdle)
 
 	got := openSignals(t, st, sess.SessionID)
 	if len(got) != 1 {
@@ -156,7 +158,7 @@ func TestQuestionsWithNoTextAreDroppedAndAVerdictOfNoneRecordsNothing(t *testing
 	}
 
 	stubClassifier(t, srv, map[string]any{"kind": "question", "questions": []any{map[string]any{"question": ""}}})
-	srv.classifyTurnEnd(sess.SessionID, turnEndEvent("Hmm, which one?"), msg.SessionIdle)
+	srv.signals.ClassifyTurnEnd(sess.SessionID, turnEndEvent("Hmm, which one?"), msg.SessionIdle)
 	if got := openSignals(t, st, sess.SessionID); len(got) != 0 {
 		t.Errorf("open signals = %d, want 0 for a question verdict with no question text", len(got))
 	}
@@ -167,7 +169,7 @@ func TestClassifierIsAskedForAListOfQuestions(t *testing.T) {
 	sess := newSessionForSignals(t, st, "br_schema", msg.SessionTypeInteractive)
 	captured := stubClassifier(t, srv, map[string]any{"kind": "neither"})
 
-	srv.classifyTurnEnd(sess.SessionID, turnEndEvent("Which do you want for PRs and for next steps?"), msg.SessionIdle)
+	srv.signals.ClassifyTurnEnd(sess.SessionID, turnEndEvent("Which do you want for PRs and for next steps?"), msg.SessionIdle)
 
 	var request msg.OneShotRequest
 	if err := json.Unmarshal([]byte(*captured), &request); err != nil {
@@ -217,7 +219,7 @@ func stubTriageByQuestion(t *testing.T, srv *Server, verdictByQuestionText map[s
 		t.Fatalf("triage asked about a question the stub does not know:\n%s", req.Prompt)
 		return nil, nil
 	}
-	srv.questionTriage = newQuestionTriage("claude-haiku-4-5", 5*time.Second, runner)
+	srv.questionTriage = signals.NewQuestionTriage("claude-haiku-4-5", 5*time.Second, runner)
 }
 
 func TestWorkerTurnWithOneRealQuestionAndOneSignoffSurfacesBothAsOneGroup(t *testing.T) {
@@ -229,7 +231,7 @@ func TestWorkerTurnWithOneRealQuestionAndOneSignoffSurfacesBothAsOneGroup(t *tes
 		"goals and next": {"disposition": "signoff", "reason": "the worker said what it would do"},
 	})
 
-	srv.classifyTurnEnd(sess.SessionID, turnEndEvent("…Which do you want for PRs and for next steps?"), msg.SessionIdle)
+	srv.signals.ClassifyTurnEnd(sess.SessionID, turnEndEvent("…Which do you want for PRs and for next steps?"), msg.SessionIdle)
 
 	got := openSignals(t, st, sess.SessionID)
 	if len(got) != 2 {
@@ -262,7 +264,7 @@ func TestWorkerSignoffsThatCannotBeSentAreSurfacedWithNoAnsweredRowsBesideThem(t
 		"goals and next": {"disposition": "signoff", "reason": "permission"},
 	})
 
-	srv.classifyTurnEnd(sess.SessionID, turnEndEvent("…Which do you want for PRs and for next steps?"), msg.SessionIdle)
+	srv.signals.ClassifyTurnEnd(sess.SessionID, turnEndEvent("…Which do you want for PRs and for next steps?"), msg.SessionIdle)
 
 	open := openSignals(t, st, sess.SessionID)
 	if len(open) != 2 {

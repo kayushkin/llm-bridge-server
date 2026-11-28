@@ -1,4 +1,4 @@
-package server
+package signals
 
 import (
 	"context"
@@ -32,7 +32,7 @@ var mailFromACustomer = backend.Message{Meta: backend.MessageMeta{
 
 func TestReadMailMessageHeadersReadsMeta(t *testing.T) {
 	reader := &recordingMailMessageReader{message: mailFromACustomer}
-	h, err := readMailMessageHeaders(context.Background(), reader, "demo-work", "lmf8c5178e02571eae")
+	h, err := ReadMailMessageHeaders(context.Background(), reader, "demo-work", "lmf8c5178e02571eae")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,25 +51,25 @@ func TestReadMailMessageHeadersRefusesAMessageWithNoSender(t *testing.T) {
 	// A message with every header empty must be an error, not a reply drafted
 	// to nobody.
 	reader := &recordingMailMessageReader{message: backend.Message{Meta: backend.MessageMeta{ID: "x", Subject: "s"}}}
-	if _, err := readMailMessageHeaders(context.Background(), reader, "demo-work", "x"); err == nil {
+	if _, err := ReadMailMessageHeaders(context.Background(), reader, "demo-work", "x"); err == nil {
 		t.Fatal("no error for a message with no sender address")
 	}
 }
 
 func TestReadMailMessageHeadersPassesMailstacksErrorOn(t *testing.T) {
 	refused := errors.New("account demo-work is google")
-	_, err := readMailMessageHeaders(context.Background(), &recordingMailMessageReader{err: refused}, "demo-work", "x")
+	_, err := ReadMailMessageHeaders(context.Background(), &recordingMailMessageReader{err: refused}, "demo-work", "x")
 	if !errors.Is(err, refused) {
 		t.Fatalf("err = %v, want mailstack's", err)
 	}
 }
 
 func TestParseEmailLocator(t *testing.T) {
-	acct, id, err := parseEmailLocator("demo-work:lmf8c5178e02571eae")
+	acct, id, err := ParseEmailLocator("demo-work:lmf8c5178e02571eae")
 	if err != nil || acct != "demo-work" || id != "lmf8c5178e02571eae" {
 		t.Errorf("got %q %q %v", acct, id, err)
 	}
-	if _, _, err := parseEmailLocator("no-colon"); err == nil {
+	if _, _, err := ParseEmailLocator("no-colon"); err == nil {
 		t.Error("a ref with no colon parsed")
 	}
 }

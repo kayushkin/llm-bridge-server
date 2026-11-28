@@ -354,7 +354,7 @@ func TestAnUnpromptedTurnRetiresTheQuestionItMovedPast(t *testing.T) {
 		Source: msg.SignalSourceDerived, Surface: msg.SignalSurfaceChat, Title: "Ready for dialog-wording check", State: msg.SignalStateOpen}); err != nil {
 		t.Fatal(err)
 	}
-	srv.onUnpromptedTurnStart("br_q", &msg.Event{Type: msg.EventUserMessage})
+	srv.signals.OnUnpromptedTurnStart("br_q", &msg.Event{Type: msg.EventUserMessage})
 	if open := openSignals(t, st, "br_q"); len(open) != 0 {
 		t.Errorf("open after an unprompted turn started: %+v", open)
 	}

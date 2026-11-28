@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/signals"
+
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/parkedasks"
 
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads/issuereadstest"
@@ -94,7 +96,7 @@ func TestToolSignalsCarryTheLinkedTodo(t *testing.T) {
 	sess := newSessionForSignals(t, st, "br_1", msg.SessionTypeAutonomous)
 	withHarnessSessionID(t, st, sess)
 
-	srv.recordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
+	srv.signals.RecordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
 
 	signals, err := st.ListSignals(store.SignalFilter{SessionID: "br_1"})
 	if err != nil {
@@ -116,7 +118,7 @@ func TestSignalsAreUnlinkedWhenTheSessionHasNoTodo(t *testing.T) {
 	srv, st := testServerWithKanban(t, newSessionCardsStub(nil))
 	sess := newSessionForSignals(t, st, "br_1", msg.SessionTypeInteractive)
 
-	srv.recordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
+	srv.signals.RecordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
 
 	signals, _ := st.ListSignals(store.SignalFilter{SessionID: "br_1"})
 	if len(signals) == 0 {
@@ -137,7 +139,7 @@ func TestDerivedSignalsCarryTheLinkedTodo(t *testing.T) {
 	sess := newSessionForSignals(t, st, "br_1", msg.SessionTypeAutonomous)
 	withHarnessSessionID(t, st, sess)
 
-	srv.recordDerivedQuestions(sess, []classifiedQuestion{{Question: "Which branch should I ship from?"}}, nil, cardContext{})
+	srv.signals.RecordDerivedQuestions(sess, []signals.ClassifiedQuestion{{Question: "Which branch should I ship from?"}}, nil, signals.CardContext{})
 
 	signals, err := st.ListSignals(store.SignalFilter{SessionID: "br_1"})
 	if err != nil {
@@ -169,7 +171,7 @@ func TestSignalIsStillRecordedWhenTheLookupFails(t *testing.T) {
 			srv, st := testServerWithKanban(t, handler)
 			sess := newSessionForSignals(t, st, "br_1", msg.SessionTypeAutonomous)
 
-			srv.recordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
+			srv.signals.RecordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
 
 			signals, _ := st.ListSignals(store.SignalFilter{SessionID: "br_1"})
 			if len(signals) != 2 {
@@ -192,7 +194,7 @@ func TestNoKanbanStoreConfiguredMeansNoLookup(t *testing.T) {
 		t.Fatal("expected no kanban client on a server that never enabled kanban-store")
 	}
 	sess := newSessionForSignals(t, st, "br_1", msg.SessionTypeAutonomous)
-	srv.recordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
+	srv.signals.RecordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
 
 	signals, _ := st.ListSignals(store.SignalFilter{SessionID: "br_1"})
 	if len(signals) != 2 {
@@ -214,7 +216,7 @@ func TestTheLinkLookupAsksAboutTheBridgeSessionID(t *testing.T) {
 	sess := newSessionForSignals(t, st, "br_1", msg.SessionTypeAutonomous)
 	withHarnessSessionID(t, st, sess)
 
-	srv.recordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
+	srv.signals.RecordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
 
 	asked := stub.Calls()
 	if len(asked) != 1 {
@@ -243,7 +245,7 @@ func TestAnUnknownSessionRefIsAnEmptyListNotAFailure(t *testing.T) {
 	srv, st := testServerWithKanban(t, stub)
 	sess := newSessionForSignals(t, st, "br_1", msg.SessionTypeAutonomous)
 
-	srv.recordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
+	srv.signals.RecordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
 
 	signals, _ := st.ListSignals(store.SignalFilter{SessionID: "br_1"})
 	if len(signals) != 2 {
@@ -266,9 +268,9 @@ func TestHandleListSignalsFiltersByLinkedTodo(t *testing.T) {
 	}))
 	first := newSessionForSignals(t, st, "br_1", msg.SessionTypeAutonomous)
 	second := newSessionForSignals(t, st, "br_2", msg.SessionTypeAutonomous)
-	srv.recordAskUserQuestionSignals("br_1", first, "hreq_1", json.RawMessage(askUserQuestionToolInput))
-	srv.recordAskUserQuestionSignals("br_2", second, "hreq_2", json.RawMessage(askUserQuestionToolInput))
-	srv.resolveSignalsForRequest("br_2", "hreq_2", parkedasks.Decision{Behavior: "deny"})
+	srv.signals.RecordAskUserQuestionSignals("br_1", first, "hreq_1", json.RawMessage(askUserQuestionToolInput))
+	srv.signals.RecordAskUserQuestionSignals("br_2", second, "hreq_2", json.RawMessage(askUserQuestionToolInput))
+	srv.signals.ResolveSignalsForRequest("br_2", "hreq_2", parkedasks.Decision{Behavior: "deny"})
 
 	for _, tc := range []struct {
 		query string
@@ -303,7 +305,7 @@ func TestHandleListSignalsFiltersByLinkedTodo(t *testing.T) {
 func TestHandleListSignalsRejectsAnEmptyLinkedTodo(t *testing.T) {
 	srv, st := testServerWithKanban(t, cardsForSession("br_1", "todo-42"))
 	sess := newSessionForSignals(t, st, "br_1", msg.SessionTypeAutonomous)
-	srv.recordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
+	srv.signals.RecordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
 
 	for _, query := range []string{"/signals?linked_todo_id=", "/signals?linked_todo_id=%20"} {
 		t.Run(query, func(t *testing.T) {

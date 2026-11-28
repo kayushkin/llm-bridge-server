@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/signals"
+
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/parkedasks"
 
 	"github.com/kayushkin/llm-bridge-server/internal/sessionactions"
@@ -107,7 +109,7 @@ type Server struct {
 	userInterfaceBuild fs.FS
 	harness            *harness.Manager
 	// harnessStartLockBySessionID holds a *sync.Mutex per session id, so
-	// startOnInstance spawns at most one harness process per session.
+	// StartOnInstance spawns at most one harness process per session.
 	harnessStartLockBySessionID sync.Map
 	authClient                  *authstoreclient.Client
 	// permissionEngine, grantStore and principalStore are the access stores in
@@ -219,16 +221,16 @@ type Server struct {
 	sessionHub             *sessionHub
 	parkedAsks             *parkedasks.Asks
 	responseCache          *responseCache
-	// signalClassifier is the derived signal producer: a cheap-model pass
+	// SignalClassifier is the derived signal producer: a cheap-model pass
 	// over each turn-end. Nil only in tests that never exercise it.
-	signalClassifier *signalClassifier
-	// questionTriage stands between a surfacing worker's question and the
+	signalClassifier *signals.SignalClassifier
+	// QuestionTriage stands between a surfacing worker's question and the
 	// person on its card. See signal_question_triage.go.
-	questionTriage *questionTriage
+	questionTriage *signals.QuestionTriage
 	// mailMessages resolves the sender of a card's mail so a drafted
 	// customer reply has a recipient, from mailstack in this process. Nil
 	// until EnableMail, and every draft is then minted with an empty To.
-	mailMessages mailMessageReader
+	mailMessages signals.MailMessageReader
 	cfg          *config.Config
 	// serviceInventory is the last reading of the host's services and their
 	// databases, held for serviceInventoryMaxAge so a page load that asks for
@@ -281,6 +283,7 @@ type Server struct {
 	modelCredentials *modelcredentials.Service
 	oneShot          *oneshot.Service
 	sessionActions   *sessionactions.Service
+	signals          *signals.Service
 	sessionFiles     *sessionfiles.Service
 }
 
@@ -311,7 +314,7 @@ func New(st *store.Store, as *agents.Store, ms *memories.Store, hs *machines.Sto
 		sessionHub:           hub,
 		parkedAsks:           parkedasks.New(),
 		responseCache:        respCache,
-		signalClassifier: newSignalClassifier(
+		signalClassifier: signals.NewSignalClassifier(
 			cfg.SignalClassifierModelRole,
 			cfg.SignalClassifierTimeout,
 			cfg.SignalClassifierMaxChars,
@@ -330,7 +333,7 @@ func New(st *store.Store, as *agents.Store, ms *memories.Store, hs *machines.Sto
 	// manager's observer rather than reaching into the derivation state
 	// machine.
 	srv.harness.SetTurnEndObserver(srv.onTurnEnd)
-	srv.harness.SetUnpromptedTurnStartObserver(srv.onUnpromptedTurnStart)
+	srv.harness.SetUnpromptedTurnStartObserver(srv.signals.OnUnpromptedTurnStart)
 	srv.composeServices()
 	if cfg.ChatLinksNATSURL != "" && cfg.MultichatURL != "" {
 		srv.chatLinkService.ChatLinks = &chatlinks.ChatLinks{
@@ -356,12 +359,12 @@ func New(st *store.Store, as *agents.Store, ms *memories.Store, hs *machines.Sto
 	// it is wired here, after the server that owns the router exists.
 	srv.oneShotRouter = srv.oneShot.NewOneShotRouter()
 	if srv.signalClassifier != nil {
-		srv.signalClassifier.runOneShot = srv.oneShot.RoutedOneShotJSON
+		srv.signalClassifier.OneShotRunner = srv.oneShot.RoutedOneShotJSON
 	}
 	// Triage shares the classifier's timeout and router, and has its own
 	// role (question_triage.model_role), so either can move to another model
 	// without the other.
-	srv.questionTriage = newQuestionTriage(cfg.QuestionTriageModelRole, cfg.SignalClassifierTimeout, srv.oneShot.RoutedOneShotJSON)
+	srv.questionTriage = signals.NewQuestionTriage(cfg.QuestionTriageModelRole, cfg.SignalClassifierTimeout, srv.oneShot.RoutedOneShotJSON)
 	// Every request this server answers is authorized first, and it cannot
 	// identify a caller without these. main refuses to start on the same
 	// check plus the store addresses; reaching this means a caller skipped it,
@@ -530,16 +533,12 @@ func (s *Server) routes() {
 	// notification acknowledgement and a dismissal.
 	// POST /sessions/{id}/signals is the structured notification producer:
 	// a session raising a notification about itself, deliberately, mid-turn.
-	s.mux.HandleFunc("GET /sessions/{id}/signals", s.handleListSessionSignals)
-	s.mux.HandleFunc("POST /sessions/{id}/signals", s.handleCreateSessionSignal)
-	s.mux.HandleFunc("GET /signals", s.handleListSignals)
-	s.mux.HandleFunc("POST /signals/{id}/resolve", s.handleResolveSignal)
+	s.signals.Mount(s.mux)
 	// The ONE way to answer a question, whichever producer raised it and
 	// whether or not its session is still running. The server picks the
 	// delivery — a live parked hook, or the session's next message — because
 	// a request_id only says a park EXISTED, and only the server knows if it
 	// is still live. See signal_answer.go.
-	s.mux.HandleFunc("POST /signals/{id}/answer", s.handleAnswerSignal)
 
 	s.briefService.Mount(s.mux)
 
@@ -921,7 +920,7 @@ func (s *Server) watchdogTick() {
 				continue
 			}
 			log.Printf("[watchdog] %s: state=%s but no harness process; resuming", sess.SessionID, st)
-			// Drop back to idle so autoResume's startOnInstance path takes a
+			// Drop back to idle so autoResume's StartOnInstance path takes a
 			// clean state transition. Skip the auto-resume on failure to flip
 			// state — leaving it active would just refire next tick.
 			if _, err := s.harness.ForceSessionState(sess.SessionID, msg.SessionIdle, msg.ReasonWatchdogNoProcess); err != nil {
@@ -1110,7 +1109,7 @@ func (s *Server) autoResume(sess store.Session) {
 		return
 	}
 	credID := s.harnessStore.FirstEnabledCredentialID(inst.ID)
-	if _, err := s.startOnInstance(context.Background(), &sess, inst, credID); err != nil {
+	if _, err := s.StartOnInstance(context.Background(), &sess, inst, credID); err != nil {
 		log.Printf("[auto-resume] %s: start failed: %v", sess.SessionID, err)
 		return
 	}

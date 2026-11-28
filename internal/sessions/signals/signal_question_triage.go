@@ -1,4 +1,4 @@
-package server
+package signals
 
 import (
 	"context"
@@ -39,22 +39,22 @@ const (
 	// can carry a drafted email — so the headroom is larger too.
 	triageMaxTokens = 6000
 
-	// autoSignoffAnswer is what the worker is told when triage judges its
+	// AutoSignoffAnswer is what the worker is told when triage judges its
 	// question a sign-off. It is deliberately more than "yes": the worker
 	// should know nobody read the question, so it does not lean on the answer
 	// as if a person had weighed it.
-	autoSignoffAnswer = "Proceed. This sign-off was answered automatically because nobody needs to weigh it; if you actually need a decision from a person, ask a specific question that states the choice."
+	AutoSignoffAnswer = "Proceed. This sign-off was answered automatically because nobody needs to weigh it; if you actually need a decision from a person, ask a specific question that states the choice."
 
 	// autoSignoffResolvedBy is the resolved_by stamped on a signal triage
 	// closed itself, so the record says a machine answered.
 	autoSignoffResolvedBy = "auto:signoff-triage"
 
-	// maxAutoContinuesPerSession caps how many derived sign-offs are answered
+	// MaxAutoContinuesPerSession caps how many derived sign-offs are answered
 	// automatically on one session. A worker that keeps ending its turn on
 	// "shall I continue?" is looping, and answering it forever would spend
 	// the budget on a conversation with itself. Past the cap the question
 	// surfaces to the card like any other.
-	maxAutoContinuesPerSession = 3
+	MaxAutoContinuesPerSession = 3
 )
 
 // questionDisposition is triage's first verdict: does anyone need to see this?
@@ -92,9 +92,9 @@ type triageQuestion struct {
 	Options  []string
 }
 
-// cardContext is what triage knows about the card the worker is on: its text,
+// CardContext is what triage knows about the card the worker is on: its text,
 // and the mail it was filed from when that can be resolved.
-type cardContext struct {
+type CardContext struct {
 	Card *issuereads.LinkedCard
 	// Customer is the sender of the card's oldest linked mail — the person
 	// who asked for the work. Nil when the card has no mail link or mailstack
@@ -102,10 +102,10 @@ type cardContext struct {
 	Customer *mailMessageHeaders
 }
 
-// questionTriage runs the triage call. Zero value is unusable; build it with
-// newQuestionTriage. runOneShot is injected like the classifier's, so the
+// QuestionTriage runs the triage call. Zero value is unusable; build it with
+// NewQuestionTriage. runOneShot is injected like the classifier's, so the
 // type knows nothing about the server that owns it.
-type questionTriage struct {
+type QuestionTriage struct {
 	runOneShot func(context.Context, msg.OneShotRequest) ([]byte, error)
 
 	// modelRole and timeout follow the signal_classifier.* settings, which
@@ -116,21 +116,21 @@ type questionTriage struct {
 	timeout     time.Duration
 }
 
-func (q *questionTriage) current() (modelRole string, timeout time.Duration) {
+func (q *QuestionTriage) Current() (modelRole string, timeout time.Duration) {
 	q.tuningMutex.RLock()
 	defer q.tuningMutex.RUnlock()
 	return q.modelRole, q.timeout
 }
 
-// retune puts a new model role and timeout in force for the next triage.
-func (q *questionTriage) retune(modelRole string, timeout time.Duration) {
+// Retune puts a new model role and timeout in force for the next triage.
+func (q *QuestionTriage) Retune(modelRole string, timeout time.Duration) {
 	q.tuningMutex.Lock()
 	defer q.tuningMutex.Unlock()
 	q.modelRole, q.timeout = modelRole, timeout
 }
 
-func newQuestionTriage(modelRole string, timeout time.Duration, runOneShot func(context.Context, msg.OneShotRequest) ([]byte, error)) *questionTriage {
-	return &questionTriage{modelRole: modelRole, timeout: timeout, runOneShot: runOneShot}
+func NewQuestionTriage(modelRole string, timeout time.Duration, runOneShot func(context.Context, msg.OneShotRequest) ([]byte, error)) *QuestionTriage {
+	return &QuestionTriage{modelRole: modelRole, timeout: timeout, runOneShot: runOneShot}
 }
 
 // enabled reports whether triage can run at all. Off when there is no role:
@@ -138,11 +138,11 @@ func newQuestionTriage(modelRole string, timeout time.Duration, runOneShot func(
 // with it off a surfacing worker's question reaches the card untriaged rather
 // than being denied — surfacing is the purpose's decision, triage only
 // filters.
-func (q *questionTriage) enabled() bool {
+func (q *QuestionTriage) enabled() bool {
 	if q == nil || q.runOneShot == nil {
 		return false
 	}
-	modelRole, _ := q.current()
+	modelRole, _ := q.Current()
 	return modelRole != ""
 }
 
@@ -195,7 +195,7 @@ func triageToolSchema() map[string]any {
 
 // triage asks the model about one question and returns its verdict. A nil
 // verdict with a nil error is impossible.
-func (q *questionTriage) triage(ctx context.Context, question triageQuestion, card cardContext) (*questionTriageVerdict, error) {
+func (q *QuestionTriage) triage(ctx context.Context, question triageQuestion, card CardContext) (*questionTriageVerdict, error) {
 	if !q.enabled() {
 		return nil, fmt.Errorf("triage: not enabled")
 	}
@@ -203,7 +203,7 @@ func (q *questionTriage) triage(ctx context.Context, question triageQuestion, ca
 	if err != nil {
 		return nil, fmt.Errorf("marshal triage schema: %w", err)
 	}
-	triageModelRole, _ := q.current()
+	triageModelRole, _ := q.Current()
 	raw, err := q.runOneShot(ctx, msg.OneShotRequest{
 		Prompt:       triagePrompt(question, card),
 		SystemPrompt: triageSystemPrompt,
@@ -246,7 +246,7 @@ func (q *questionTriage) triage(ctx context.Context, question triageQuestion, ca
 }
 
 // triagePrompt renders the question and what is known about the card.
-func triagePrompt(question triageQuestion, card cardContext) string {
+func triagePrompt(question triageQuestion, card CardContext) string {
 	var b strings.Builder
 	b.WriteString("THE QUESTION THE AGENT ASKED\n\n")
 	b.WriteString(strings.TrimSpace(question.Question))
@@ -297,12 +297,12 @@ func triagePrompt(question triageQuestion, card cardContext) string {
 // and a mailstack that cannot be asked leaves the requester unresolved. The
 // prompt says which of these happened, so the model drafts accordingly rather
 // than inventing a name.
-func (s *Server) cardContextForSession(ctx context.Context, sessionID string) cardContext {
-	var out cardContext
-	if s.issueReads == nil {
+func (s *Service) cardContextForSession(ctx context.Context, sessionID string) CardContext {
+	var out CardContext
+	if s.IssueReads() == nil {
 		return out
 	}
-	card, err := s.issueReads.LinkedCardForSession(ctx, sessionID)
+	card, err := s.IssueReads().LinkedCardForSession(ctx, sessionID)
 	if err != nil {
 		log.Printf("[triage] %s: resolve linked card: %v", sessionID, err)
 		return out
@@ -311,10 +311,10 @@ func (s *Server) cardContextForSession(ctx context.Context, sessionID string) ca
 		return out
 	}
 	out.Card = card
-	if s.mailMessages == nil {
+	if s.MailMessages() == nil {
 		return out
 	}
-	links, err := s.issueReads.CardLinks(ctx, card.ID)
+	links, err := s.IssueReads().CardLinks(ctx, card.ID)
 	if err != nil {
 		log.Printf("[triage] %s: read card %s links: %v", sessionID, card.ID, err)
 		return out
@@ -323,12 +323,12 @@ func (s *Server) cardContextForSession(ctx context.Context, sessionID string) ca
 		if link.EntityType != "email" {
 			continue
 		}
-		accountID, providerID, err := parseEmailLocator(link.EntityRef)
+		accountID, providerID, err := ParseEmailLocator(link.EntityRef)
 		if err != nil {
 			log.Printf("[triage] %s: card %s: %v", sessionID, card.ID, err)
 			continue
 		}
-		headers, err := readMailMessageHeaders(ctx, s.mailMessages, accountID, providerID)
+		headers, err := ReadMailMessageHeaders(ctx, s.MailMessages(), accountID, providerID)
 		if err != nil {
 			log.Printf("[triage] %s: card %s: read mail %s: %v", sessionID, card.ID, link.EntityRef, err)
 			continue
@@ -341,7 +341,7 @@ func (s *Server) cardContextForSession(ctx context.Context, sessionID string) ca
 
 // customerReplyDraftFor turns a needs_input/customer verdict into the draft
 // stored on the signal. To comes from the resolved mail, never from the model.
-func customerReplyDraftFor(verdict *questionTriageVerdict, card cardContext) *msg.SignalCustomerReplyDraft {
+func customerReplyDraftFor(verdict *questionTriageVerdict, card CardContext) *msg.SignalCustomerReplyDraft {
 	if verdict == nil || verdict.Audience != msg.SignalAudienceCustomer || verdict.CustomerReply == nil {
 		return nil
 	}
@@ -355,25 +355,25 @@ func customerReplyDraftFor(verdict *questionTriageVerdict, card cardContext) *ms
 	return draft
 }
 
-// sessionSurfacesQuestions reports whether this session is one whose questions
+// SessionSurfacesQuestions reports whether this session is one whose questions
 // go to a person instead of being denied: unattended, and of a purpose the
 // registry says has somewhere for a question to land.
-func sessionSurfacesQuestions(sess *store.Session) bool {
+func SessionSurfacesQuestions(sess *store.Session) bool {
 	return sess != nil && sess.Type == msg.SessionTypeAutonomous && msg.PurposeSurfacesQuestions(sess.Purpose)
 }
 
 // triageWithTimeout runs triage under the configured timeout. Errors are
 // returned, not swallowed: the caller decides what an untriaged question
 // means for its producer.
-func (s *Server) triageWithTimeout(question triageQuestion, sessionID string) (*questionTriageVerdict, cardContext, error) {
-	if !s.questionTriage.enabled() {
-		return nil, cardContext{}, fmt.Errorf("triage is not enabled")
+func (s *Service) triageWithTimeout(question triageQuestion, sessionID string) (*questionTriageVerdict, CardContext, error) {
+	if !s.QuestionTriage().enabled() {
+		return nil, CardContext{}, fmt.Errorf("triage is not enabled")
 	}
-	_, triageTimeout := s.questionTriage.current()
+	_, triageTimeout := s.QuestionTriage().Current()
 	ctx, cancel := context.WithTimeout(context.Background(), triageTimeout)
 	defer cancel()
 	card := s.cardContextForSession(ctx, sessionID)
-	verdict, err := s.questionTriage.triage(ctx, question, card)
+	verdict, err := s.QuestionTriage().triage(ctx, question, card)
 	return verdict, card, err
 }
 
@@ -381,12 +381,12 @@ func (s *Server) triageWithTimeout(question triageQuestion, sessionID string) (*
 // landed on, so the card's budget clock pauses while the ball is with the
 // person answering. Best-effort: the timeline is a view of the work, and a
 // store that cannot be reached must not cost the question itself.
-func (s *Server) recordCardWaiting(cardID, sessionID, summary string) {
-	if s.issueReads == nil || cardID == "" {
+func (s *Service) recordCardWaiting(cardID, sessionID, summary string) {
+	if s.IssueReads() == nil || cardID == "" {
 		return
 	}
 	detail, _ := json.Marshal(map[string]string{"entity_type": "session", "entity_ref": sessionID})
-	err := s.issueReads.PostCardEvent(context.Background(), cardID, issuereads.CardEvent{
+	err := s.IssueReads().PostCardEvent(context.Background(), cardID, issuereads.CardEvent{
 		Kind:    "waiting_started",
 		Actor:   "service:llm-bridge-server",
 		Summary: summary,
@@ -399,12 +399,12 @@ func (s *Server) recordCardWaiting(cardID, sessionID, summary string) {
 
 // recordCardWaitingEnded is the other half: the answer arrived, the worker
 // has the ball again.
-func (s *Server) recordCardWaitingEnded(cardID, sessionID, summary string) {
-	if s.issueReads == nil || cardID == "" {
+func (s *Service) recordCardWaitingEnded(cardID, sessionID, summary string) {
+	if s.IssueReads() == nil || cardID == "" {
 		return
 	}
 	detail, _ := json.Marshal(map[string]string{"entity_type": "session", "entity_ref": sessionID})
-	err := s.issueReads.PostCardEvent(context.Background(), cardID, issuereads.CardEvent{
+	err := s.IssueReads().PostCardEvent(context.Background(), cardID, issuereads.CardEvent{
 		Kind:    "waiting_ended",
 		Actor:   "service:llm-bridge-server",
 		Summary: summary,

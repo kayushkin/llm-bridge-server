@@ -299,7 +299,7 @@ func TestStartOnInstance_RefusesAnOverBudgetSession(t *testing.T) {
 		t.Fatalf("get instance: %v", err)
 	}
 
-	_, startErr := srv.startOnInstance(context.Background(), sess, inst, "")
+	_, startErr := srv.StartOnInstance(context.Background(), sess, inst, "")
 	if startErr == nil {
 		t.Fatal("startOnInstance spawned a process for a session that had spent its ceiling")
 	}

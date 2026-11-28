@@ -1,4 +1,4 @@
-package server
+package signals
 
 import (
 	"encoding/json"
@@ -19,7 +19,7 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// signalSurfaceForSession reports where a signal raised by this session
+// SignalSurfaceForSession reports where a signal raised by this session
 // renders. Attended sessions (interactive, herald, system) route to chat —
 // somebody is reading it. Autonomous workers route to their kanban card,
 // because nothing routes to a chat nobody has open.
@@ -31,7 +31,7 @@ import (
 // "where does the human eventually read this?" (the chat inbox, for a
 // herald relay). Collapsing them would send herald signals to a kanban card
 // no herald session has.
-func signalSurfaceForSession(sess *store.Session) msg.SignalSurface {
+func SignalSurfaceForSession(sess *store.Session) msg.SignalSurface {
 	if sess != nil && sess.Type == msg.SessionTypeAutonomous {
 		return msg.SignalSurfaceKanban
 	}
@@ -65,7 +65,7 @@ type askUserQuestionResolution struct {
 	Answers map[string]string `json:"answers"`
 }
 
-// recordAskUserQuestionSignals writes one signal row per question in a
+// RecordAskUserQuestionSignals writes one signal row per question in a
 // parked AskUserQuestion request. One tool call carries an array of
 // questions, and the record holds a single title and option set, so the
 // honest mapping is one signal per question rather than a flattened
@@ -74,7 +74,7 @@ type askUserQuestionResolution struct {
 //
 // Recording is observational — a failure here must not block the park, so
 // errors are logged and swallowed.
-func (s *Server) recordAskUserQuestionSignals(bridgeID string, sess *store.Session, requestID string, toolInput json.RawMessage) {
+func (s *Service) RecordAskUserQuestionSignals(bridgeID string, sess *store.Session, requestID string, toolInput json.RawMessage) {
 	var input askUserQuestionInput
 	if err := json.Unmarshal(toolInput, &input); err != nil {
 		log.Printf("[signals] %s/%s: AskUserQuestion input unparseable, no signal recorded: %v", bridgeID, requestID, err)
@@ -89,7 +89,7 @@ func (s *Server) recordAskUserQuestionSignals(bridgeID string, sess *store.Sessi
 	if sess != nil {
 		sessionType = sess.Type
 	}
-	surface := signalSurfaceForSession(sess)
+	surface := SignalSurfaceForSession(sess)
 	// One lookup for the whole request: every question in it belongs to the
 	// same session, so they all propagate to the same todo.
 	linkedTodoID := s.linkedTodoForSession(bridgeID)
@@ -126,13 +126,13 @@ func (s *Server) recordAskUserQuestionSignals(bridgeID string, sess *store.Sessi
 			State:                msg.SignalStateOpen,
 			LinkedTodoID:         linkedTodoID,
 		}
-		if err := s.store.CreateSignal(signal); err != nil {
+		if err := s.Store.CreateSignal(signal); err != nil {
 			log.Printf("[signals] %s/%s: persist signal: %v", bridgeID, requestID, err)
 		}
 	}
 }
 
-// resolveSignalsForRequest closes the signals minted from a parked hook
+// ResolveSignalsForRequest closes the signals minted from a parked hook
 // request once that request is decided. An allow carries the human's
 // answers in updated_input, keyed by question text, which is exactly the
 // title each signal was minted with; a deny (or a canceled park) resolves
@@ -141,11 +141,11 @@ func (s *Server) recordAskUserQuestionSignals(bridgeID string, sess *store.Sessi
 // No-op when the request minted no signals, which covers every
 // permission-prompt request and any pre-existing parked ask from before
 // this table existed.
-func (s *Server) resolveSignalsForRequest(bridgeID, requestID string, decision parkedasks.Decision) {
+func (s *Service) ResolveSignalsForRequest(bridgeID, requestID string, decision parkedasks.Decision) {
 	if requestID == "" {
 		return
 	}
-	signals, err := s.store.ListSignalsByRequestID(bridgeID, requestID)
+	signals, err := s.Store.ListSignalsByRequestID(bridgeID, requestID)
 	if err != nil {
 		log.Printf("[signals] %s/%s: look up signals to resolve: %v", bridgeID, requestID, err)
 		return
@@ -194,18 +194,18 @@ func (s *Server) resolveSignalsForRequest(bridgeID, requestID string, decision p
 				answer = &msg.SignalAnswer{Text: text}
 			}
 		}
-		if err := s.store.ResolveSignal(signal.ID, state, answer); err != nil {
+		if err := s.Store.ResolveSignal(signal.ID, state, answer); err != nil {
 			log.Printf("[signals] %s/%s: resolve signal %s: %v", bridgeID, requestID, signal.ID, err)
 		}
 	}
 }
 
-// handleListSessionSignals serves GET /sessions/{id}/signals — every signal
+// HandleListSessionSignals serves GET /sessions/{id}/signals — every signal
 // this session has raised, newest first. Optional filters: state, kind,
 // surface, limit.
-func (s *Server) handleListSessionSignals(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleListSessionSignals(w http.ResponseWriter, r *http.Request) {
 	bridgeID := r.PathValue("id")
-	if _, err := s.store.GetSession(bridgeID); err != nil {
+	if _, err := s.Store.GetSession(bridgeID); err != nil {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
@@ -215,16 +215,16 @@ func (s *Server) handleListSessionSignals(w http.ResponseWriter, r *http.Request
 		return
 	}
 	filter.SessionID = bridgeID
-	signals, err := s.store.ListSignals(filter)
+	signals, err := s.Store.ListSignals(filter)
 	writeSignals(w, signals, err)
 }
 
-// handleListSignals serves GET /signals — the cross-session inbox query.
+// HandleListSignals serves GET /signals — the cross-session inbox query.
 // Same optional filters as the per-session route; `?state=open` is the one
 // the "Needs you" inbox uses, and `?session_type=interactive` (repeatable)
 // keeps the person's own chats apart from background agents. Each signal
 // carries session_type.
-func (s *Server) handleListSignals(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleListSignals(w http.ResponseWriter, r *http.Request) {
 	filter, err := signalFilterFromQuery(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -232,7 +232,7 @@ func (s *Server) handleListSignals(w http.ResponseWriter, r *http.Request) {
 	}
 	filter.SessionID = r.URL.Query().Get("session_id")
 	filter.OwnedByPrincipalID, filter.OwnedThroughPeerPrincipalID = requestcaller.SessionScopeFilterOfRequest(r)
-	signals, err := s.store.ListSignals(filter)
+	signals, err := s.Store.ListSignals(filter)
 	writeSignals(w, signals, err)
 }
 
@@ -241,7 +241,7 @@ type signalResolveRequest struct {
 	State msg.SignalState `json:"state"`
 }
 
-// resolutionUnparksSession reports whether closing this signal this way also
+// ResolutionUnparksSession reports whether closing this signal this way also
 // has to walk the raising session back to idle.
 //
 // Only one row type parks its own session: a derived question, which sets
@@ -261,14 +261,14 @@ type signalResolveRequest struct {
 //
 // A pure function so the cross-product is testable without a live harness:
 // the state write itself is bounded and covered in the derivation package.
-func resolutionUnparksSession(signal *store.Signal, state msg.SignalState) bool {
+func ResolutionUnparksSession(signal *store.Signal, state msg.SignalState) bool {
 	return signal.State == msg.SignalStateOpen &&
 		state == msg.SignalStateDismissed &&
 		signal.Source == msg.SignalSourceDerived &&
 		signal.Kind == msg.SignalKindQuestion
 }
 
-// handleResolveSignal serves POST /signals/{id}/resolve — the signal-level
+// HandleResolveSignal serves POST /signals/{id}/resolve — the signal-level
 // close verb, and the one thing that lets a surface offer an acknowledge
 // button. Until it existed the only way out of `open` was the hook-resolve
 // path (tool questions) or a `/send` (derived questions), so a notification
@@ -288,9 +288,9 @@ func resolutionUnparksSession(signal *store.Signal, state msg.SignalState) bool 
 // paths that carry one already close their own rows: the parked hook resolve
 // for a tool question, `POST /sessions/{id}/send` for a derived one. Minting
 // an `answered` row here would record an answer the session never received.
-func (s *Server) handleResolveSignal(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleResolveSignal(w http.ResponseWriter, r *http.Request) {
 	signalID := r.PathValue("id")
-	signal, err := s.store.GetSignal(signalID)
+	signal, err := s.Store.GetSignal(signalID)
 	if err != nil {
 		http.Error(w, "signal not found", http.StatusNotFound)
 		return
@@ -315,7 +315,7 @@ func (s *Server) handleResolveSignal(w http.ResponseWriter, r *http.Request) {
 			http.StatusBadRequest)
 		return
 	default:
-		http.Error(w, errBadEnum("state", string(req.State), "acknowledged|dismissed").Error(), http.StatusBadRequest)
+		http.Error(w, ErrBadEnum("state", string(req.State), "acknowledged|dismissed").Error(), http.StatusBadRequest)
 		return
 	}
 	if req.State == msg.SignalStateAcknowledged && signal.Kind == msg.SignalKindQuestion {
@@ -334,15 +334,15 @@ func (s *Server) handleResolveSignal(w http.ResponseWriter, r *http.Request) {
 	// request_id says a park EXISTED, not that it is still live. Every surface
 	// then had to render two buttons, Decline and Dismiss, and pick between
 	// them on that same bad evidence. One verb, and the server picks: the deny
-	// closes these rows on its way through resolveSignalsForRequest.
+	// closes these rows on its way through ResolveSignalsForRequest.
 	if req.State == msg.SignalStateDismissed && signal.RequestID != "" &&
-		s.parkedAsks.IsParked(signal.SessionID, signal.RequestID) {
+		s.ParkedAsks.IsParked(signal.SessionID, signal.RequestID) {
 		decision := parkedasks.Decision{
 			Behavior:   "deny",
 			Message:    "declined by the user",
 			ResolvedBy: "user",
 		}
-		if s.parkedAsks.Deliver(signal.SessionID, signal.RequestID, decision) {
+		if s.ParkedAsks.Deliver(signal.SessionID, signal.RequestID, decision) {
 			httpjson.WriteJSON(w, map[string]any{
 				"status":        string(msg.SignalStateDismissed),
 				"delivered_via": "parked_hook",
@@ -359,15 +359,15 @@ func (s *Server) handleResolveSignal(w http.ResponseWriter, r *http.Request) {
 	// the one that happened, updating only while the row is still open. This
 	// handler does not repeat that rule; it re-reads the row below and
 	// reports what is actually stored.
-	if err := s.store.ResolveSignal(signal.ID, req.State, nil); err != nil {
+	if err := s.Store.ResolveSignal(signal.ID, req.State, nil); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	if resolutionUnparksSession(signal, req.State) {
+	if ResolutionUnparksSession(signal, req.State) {
 		// Bounded to the state the dismissal was formed about, so a session
 		// that has started another turn is left alone.
-		s.harness.ApplyDerivedSessionState(signal.SessionID, msg.SessionIdle,
+		s.Harness.ApplyDerivedSessionState(signal.SessionID, msg.SessionIdle,
 			msg.ReasonSignalDismissed, msg.SessionAwaitingUser)
 	}
 	if req.State == msg.SignalStateDismissed {
@@ -376,7 +376,7 @@ func (s *Server) handleResolveSignal(w http.ResponseWriter, r *http.Request) {
 		s.recordCardWaitingEndedForSignal(signal, "Question dismissed without an answer")
 	}
 
-	resolved, err := s.store.GetSignal(signal.ID)
+	resolved, err := s.Store.GetSignal(signal.ID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -407,7 +407,7 @@ func signalFilterFromQuery(r *http.Request) (store.SignalFilter, error) {
 		case msg.SignalStateOpen, msg.SignalStateAnswered, msg.SignalStateAcknowledged, msg.SignalStateDismissed:
 			filter.State = msg.SignalState(v)
 		default:
-			return filter, errBadEnum("state", v, "open|answered|acknowledged|dismissed")
+			return filter, ErrBadEnum("state", v, "open|answered|acknowledged|dismissed")
 		}
 	}
 	if v := q.Get("kind"); v != "" {
@@ -415,7 +415,7 @@ func signalFilterFromQuery(r *http.Request) (store.SignalFilter, error) {
 		case msg.SignalKindQuestion, msg.SignalKindNotification:
 			filter.Kind = msg.SignalKind(v)
 		default:
-			return filter, errBadEnum("kind", v, "question|notification")
+			return filter, ErrBadEnum("kind", v, "question|notification")
 		}
 	}
 	if v := q.Get("surface"); v != "" {
@@ -423,7 +423,7 @@ func signalFilterFromQuery(r *http.Request) (store.SignalFilter, error) {
 		case msg.SignalSurfaceChat, msg.SignalSurfaceKanban:
 			filter.Surface = msg.SignalSurface(v)
 		default:
-			return filter, errBadEnum("surface", v, "chat|kanban")
+			return filter, ErrBadEnum("surface", v, "chat|kanban")
 		}
 	}
 	// A todo surface asks "are any signals open against this todo?". Present
@@ -433,14 +433,14 @@ func signalFilterFromQuery(r *http.Request) (store.SignalFilter, error) {
 	if q.Has("linked_todo_id") {
 		v := strings.TrimSpace(q.Get("linked_todo_id"))
 		if v == "" {
-			return filter, errBadEnum("linked_todo_id", q.Get("linked_todo_id"), "a noteboard todo id")
+			return filter, ErrBadEnum("linked_todo_id", q.Get("linked_todo_id"), "a noteboard todo id")
 		}
 		filter.LinkedTodoID = v
 	}
 	if v := q.Get("limit"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 0 {
-			return filter, errBadEnum("limit", v, "a non-negative integer")
+			return filter, ErrBadEnum("limit", v, "a non-negative integer")
 		}
 		filter.Limit = n
 	}
@@ -452,13 +452,13 @@ func signalFilterFromQuery(r *http.Request) (store.SignalFilter, error) {
 			for _, t := range msg.SessionTypes() {
 				allowed = append(allowed, string(t))
 			}
-			return filter, errBadEnum("session_type", v, strings.Join(allowed, "|"))
+			return filter, ErrBadEnum("session_type", v, strings.Join(allowed, "|"))
 		}
 		filter.SessionTypes = append(filter.SessionTypes, sessionType)
 	}
 	return filter, nil
 }
 
-func errBadEnum(param, got, allowed string) error {
+func ErrBadEnum(param, got, allowed string) error {
 	return fmt.Errorf("%s=%s is not valid; expected %s", param, got, allowed)
 }

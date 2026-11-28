@@ -1,4 +1,4 @@
-package server
+package signals
 
 // Reading one message's headers out of mailstack, for question triage to
 // address a drafted reply to the person who sent the mail a card was filed
@@ -18,11 +18,11 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/mail/backend"
 )
 
-// mailMessageReader is mailstack as question triage reads it: *mail.Server's
+// MailMessageReader is mailstack as question triage reads it: *mail.Server's
 // ReadMessage, which reads as the internal service. mailstack reaches a mail
 // provider only when the server's provider connections are on; otherwise a
 // message on a Gmail, Outlook or IMAP account is an error.
-type mailMessageReader interface {
+type MailMessageReader interface {
 	ReadMessage(ctx context.Context, accountID, folderID, id string) (backend.Message, error)
 }
 
@@ -48,9 +48,9 @@ type mailMessageHeaders struct {
 	MessageID string      `json:"message_id,omitempty"`
 }
 
-// parseEmailLocator splits a kanban "email" link ref — "<account_id>:<provider
+// ParseEmailLocator splits a kanban "email" link ref — "<account_id>:<provider
 // message id>", the only pair mailstack can resolve — into its two parts.
-func parseEmailLocator(ref string) (accountID, providerID string, err error) {
+func ParseEmailLocator(ref string) (accountID, providerID string, err error) {
 	accountID, providerID, ok := strings.Cut(ref, ":")
 	if !ok || accountID == "" || providerID == "" {
 		return "", "", fmt.Errorf("email ref %q is not <account_id>:<message id>", ref)
@@ -58,8 +58,8 @@ func parseEmailLocator(ref string) (accountID, providerID string, err error) {
 	return accountID, providerID, nil
 }
 
-// readMailMessageHeaders fetches one message's headers by its locator.
-func readMailMessageHeaders(ctx context.Context, mail mailMessageReader, accountID, providerID string) (*mailMessageHeaders, error) {
+// ReadMailMessageHeaders fetches one message's headers by its locator.
+func ReadMailMessageHeaders(ctx context.Context, mail MailMessageReader, accountID, providerID string) (*mailMessageHeaders, error) {
 	if accountID == "" || providerID == "" {
 		return nil, fmt.Errorf("account id and message id are required")
 	}

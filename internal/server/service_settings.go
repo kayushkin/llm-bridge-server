@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/signals"
+
 	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/operationroutes"
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
@@ -115,17 +117,17 @@ func (s *Server) retuneFromServiceSettings() {
 	for _, harnessName := range s.settings.StringList(config.SettingSignalClassifierOptOutHarnesses) {
 		optOut[msg.Harness(harnessName)] = true
 	}
-	tuning := signalClassifierTuning{
-		modelRole: s.settings.ModelRole(config.SettingSignalClassifierModelRole),
-		timeout:   s.settings.Duration(config.SettingSignalClassifierTimeout),
-		maxChars:  s.settings.Integer(config.SettingSignalClassifierMaximumCharacters),
-		optOut:    optOut,
+	tuning := signals.SignalClassifierTuning{
+		ModelRole: s.settings.ModelRole(config.SettingSignalClassifierModelRole),
+		Timeout:   s.settings.Duration(config.SettingSignalClassifierTimeout),
+		MaxChars:  s.settings.Integer(config.SettingSignalClassifierMaximumCharacters),
+		OptOut:    optOut,
 	}
 	if s.signalClassifier != nil {
-		s.signalClassifier.retune(tuning)
+		s.signalClassifier.Retune(tuning)
 	}
 	if s.questionTriage != nil {
-		s.questionTriage.retune(s.settings.ModelRole(config.SettingQuestionTriageModelRole), tuning.timeout)
+		s.questionTriage.Retune(s.settings.ModelRole(config.SettingQuestionTriageModelRole), tuning.Timeout)
 	}
 }
 

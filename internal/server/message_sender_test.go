@@ -23,7 +23,7 @@ func TestAHeldMessageIsSentInItsSendersName(t *testing.T) {
 		},
 	}
 	srv.startRestartDrain(time.Hour, "test deploy")
-	heldMessageID, held, err := srv.holdMessageIfRestartDraining(session.SessionID, msg.SendMessageRequest{Message: "from priya"}, "principal_000002", "send")
+	heldMessageID, held, err := srv.HoldMessageIfRestartDraining(session.SessionID, msg.SendMessageRequest{Message: "from priya"}, "principal_000002", "send")
 	if err != nil || !held {
 		t.Fatalf("hold = %q %v %v", heldMessageID, held, err)
 	}

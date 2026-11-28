@@ -670,7 +670,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 
 	if req.AutoStart {
 		credID := s.harnessStore.FirstEnabledCredentialID(inst.ID)
-		if _, startErr := s.startOnInstance(r.Context(), sess, inst, credID); startErr != nil {
+		if _, startErr := s.StartOnInstance(r.Context(), sess, inst, credID); startErr != nil {
 			// The cause goes on the session's status and in the log. Until
 			// 2026-10-19 it went nowhere: br_1791866142589272438 errored in
 			// its creation second, the create answered 201, and only a retry
@@ -871,7 +871,7 @@ func (s *Server) sendMessageToSession(ctx context.Context, bridgeID string, req 
 
 	// While the server drains before a restart, a new turn waits: the
 	// message is kept and sent once the drain ends (restart_drain.go).
-	if heldMessageID, held, err := s.holdMessageIfRestartDraining(bridgeID, req, senderPrincipalID, "send"); err != nil {
+	if heldMessageID, held, err := s.HoldMessageIfRestartDraining(bridgeID, req, senderPrincipalID, "send"); err != nil {
 		return sendanswer.JSONError(http.StatusInternalServerError, "hold_failed", err.Error())
 	} else if held {
 		return sendanswer.JSON(http.StatusAccepted, msg.SendMessageResponse{Status: msg.SendStatusHeld, HeldMessageID: heldMessageID})
@@ -886,7 +886,7 @@ func (s *Server) sendMessageToSession(ctx context.Context, bridgeID string, req 
 			return sendanswer.PlainText(http.StatusInternalServerError, fmt.Sprintf("instance not found: %v", err))
 		}
 		credID := s.harnessStore.FirstEnabledCredentialID(inst.ID)
-		if _, startErr := s.startOnInstance(ctx, sess, inst, credID); startErr != nil {
+		if _, startErr := s.StartOnInstance(ctx, sess, inst, credID); startErr != nil {
 			return sendanswer.PlainText(http.StatusInternalServerError, fmt.Sprintf("failed to start harness: %v", startErr))
 		}
 	}
@@ -942,7 +942,7 @@ func (s *Server) sendMessageToSession(ctx context.Context, bridgeID string, req 
 	// orchestrator closes the same way as one answered from the card. A
 	// question whose park is still live is skipped — it resolves through its
 	// channel, not through the next message.
-	s.closeQuestionsAnsweredByMessage(bridgeID, req.Message)
+	s.signals.CloseQuestionsAnsweredByMessage(bridgeID, req.Message)
 
 	return sendanswer.JSON(http.StatusOK, msg.SendMessageResponse{Status: msg.SendStatusSent, MessageID: userEvent.MessageID})
 }
@@ -1220,7 +1220,7 @@ func (s *Server) handleResumeSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	credID := s.harnessStore.FirstEnabledCredentialID(inst.ID)
-	if _, err := s.startOnInstance(r.Context(), sess, inst, credID); err != nil {
+	if _, err := s.StartOnInstance(r.Context(), sess, inst, credID); err != nil {
 		http.Error(w, fmt.Sprintf("failed to resume: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -1351,7 +1351,7 @@ func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	credID := s.harnessStore.FirstEnabledCredentialID(inst.ID)
-	if _, err := s.startOnInstance(context.Background(), forked, inst, credID); err != nil {
+	if _, err := s.StartOnInstance(context.Background(), forked, inst, credID); err != nil {
 		s.recordSpawnFailure(forked, err)
 	} else {
 		forked.State = string(msg.SessionStarting)

@@ -1,4 +1,4 @@
-package server
+package signals
 
 import (
 	"context"
@@ -61,7 +61,7 @@ type turnSignalKind string
 const (
 	turnSignalQuestion     turnSignalKind = "question"
 	turnSignalNotification turnSignalKind = "notification"
-	turnSignalNeither      turnSignalKind = "neither"
+	TurnSignalNeither      turnSignalKind = "neither"
 )
 
 // turnClassification is the verdict for one turn-end. A question verdict
@@ -71,17 +71,17 @@ type turnClassification struct {
 	Kind      turnSignalKind       `json:"kind"`
 	Title     string               `json:"title"`
 	Body      string               `json:"body"`
-	Questions []classifiedQuestion `json:"questions"`
+	Questions []ClassifiedQuestion `json:"questions"`
 	Severity  string               `json:"severity"`
 }
 
-// classifiedQuestion is one decision a turn asked the human to make. A turn
+// ClassifiedQuestion is one decision a turn asked the human to make. A turn
 // may ask several, and each is its own entry: on 2026-10-20 a turn asking how
 // to handle pull requests (a, b or c) and how to handle next steps (a, b or c)
 // came back as ONE question whose options were "PRs: choose a, b, or c" and
 // "Next steps: choose a, b, or c" (sig_01M5D1003TG9GXK3DZPEWYPG57), and with
 // one list of options a person could answer only one of the two anyway.
-type classifiedQuestion struct {
+type ClassifiedQuestion struct {
 	Question string             `json:"question"`
 	Context  string             `json:"context"`
 	Options  []classifiedOption `json:"options"`
@@ -93,86 +93,86 @@ type classifiedOption struct {
 	Description string `json:"description"`
 }
 
-// signalClassifier calls a cheap model to classify a turn-end. Zero value is
-// unusable; build it with newSignalClassifier.
-type signalClassifier struct {
-	// runOneShot executes one schema-forced call through the server's one-shot
+// SignalClassifier calls a cheap model to classify a turn-end. Zero value is
+// unusable; build it with NewSignalClassifier.
+type SignalClassifier struct {
+	// OneShotRunner executes one schema-forced call through the server's one-shot
 	// router. Injected rather than reached for, so this type still knows
 	// nothing about the server that owns it.
-	runOneShot func(context.Context, msg.OneShotRequest) ([]byte, error)
+	OneShotRunner func(context.Context, msg.OneShotRequest) ([]byte, error)
 
 	// tuning is what the operator may change while the server runs (the
-	// signal_classifier.* settings). Read it through currentTuning, once per
+	// signal_classifier.* settings). Read it through CurrentTuning, once per
 	// use, so one classification never mixes two settings.
 	tuningMutex sync.RWMutex
-	tuning      signalClassifierTuning
+	Tuning      SignalClassifierTuning
 
-	// baseURL overrides the Anthropic endpoint. Empty means "take it from
+	// BaseURL overrides the Anthropic endpoint. Empty means "take it from
 	// the resolved credential, falling back to the public API" — the
 	// override exists so tests can point the classifier at a local stub
 	// without a credential or a network.
-	baseURL string
+	BaseURL string
 }
 
-// signalClassifierTuning is the classifier's changeable part: the model-store
+// SignalClassifierTuning is the classifier's changeable part: the model-store
 // role it asks (empty switches it off everywhere), how long one call may take,
 // how much of a turn's final text it sends, and the harnesses it skips.
-type signalClassifierTuning struct {
-	modelRole string
-	timeout   time.Duration
-	maxChars  int
-	optOut    map[msg.Harness]bool
+type SignalClassifierTuning struct {
+	ModelRole string
+	Timeout   time.Duration
+	MaxChars  int
+	OptOut    map[msg.Harness]bool
 }
 
-func newSignalClassifier(modelRole string, timeout time.Duration, maxChars int, optOut map[msg.Harness]bool, runOneShot func(context.Context, msg.OneShotRequest) ([]byte, error)) *signalClassifier {
-	return &signalClassifier{
-		tuning:     signalClassifierTuning{modelRole: modelRole, timeout: timeout, maxChars: maxChars, optOut: optOut},
-		runOneShot: runOneShot,
+func NewSignalClassifier(modelRole string, timeout time.Duration, maxChars int, optOut map[msg.Harness]bool, runOneShot func(context.Context, msg.OneShotRequest) ([]byte, error)) *SignalClassifier {
+	return &SignalClassifier{
+		Tuning:     SignalClassifierTuning{ModelRole: modelRole, Timeout: timeout, MaxChars: maxChars, OptOut: optOut},
+		OneShotRunner: runOneShot,
 	}
 }
 
-func (c *signalClassifier) currentTuning() signalClassifierTuning {
+func (c *SignalClassifier) CurrentTuning() SignalClassifierTuning {
 	c.tuningMutex.RLock()
 	defer c.tuningMutex.RUnlock()
-	return c.tuning
+	return c.Tuning
 }
 
 // CurrentModelRole is the model role the classifier calls now; the session
 // brief pass calls the same role.
-func (c *signalClassifier) CurrentModelRole() string { return c.currentTuning().modelRole }
+func (c *SignalClassifier) CurrentModelRole() string { return c.CurrentTuning().ModelRole }
 
 // CurrentTimeout is how long one classification may take now; the session
 // brief pass takes the same.
-func (c *signalClassifier) CurrentTimeout() time.Duration { return c.currentTuning().timeout }
+func (c *SignalClassifier) CurrentTimeout() time.Duration { return c.CurrentTuning().Timeout }
 
 // RunOneShot makes one schema-forced call through the classifier's runner,
 // which the session brief pass shares.
-func (c *signalClassifier) RunOneShot(ctx context.Context, request msg.OneShotRequest) ([]byte, error) {
-	if c.runOneShot == nil {
+func (c *SignalClassifier) RunOneShot(ctx context.Context, request msg.OneShotRequest) ([]byte, error) {
+	if c.OneShotRunner == nil {
 		return nil, fmt.Errorf("no oneshot runner wired")
 	}
-	return c.runOneShot(ctx, request)
+	return c.OneShotRunner(ctx, request)
 }
 
-// retune puts new settings in force for the next classification.
-func (c *signalClassifier) retune(tuning signalClassifierTuning) {
+// Retune puts new settings in force for the next classification.
+func (c *SignalClassifier) Retune(tuning SignalClassifierTuning) {
 	c.tuningMutex.Lock()
 	defer c.tuningMutex.Unlock()
-	c.tuning = tuning
+	c.Tuning = tuning
 }
 
 // EnabledFor reports whether the classifier runs for this harness. An empty
 // model role disables it everywhere; the opt-out set is the per-harness escape
 // hatch the on-by-default decision was taken with.
-func (c *signalClassifier) EnabledFor(harness msg.Harness) bool {
+func (c *SignalClassifier) EnabledFor(harness msg.Harness) bool {
 	if c == nil {
 		return false
 	}
-	tuning := c.currentTuning()
-	if tuning.modelRole == "" {
+	tuning := c.CurrentTuning()
+	if tuning.ModelRole == "" {
 		return false
 	}
-	return !tuning.optOut[harness]
+	return !tuning.OptOut[harness]
 }
 
 // classifierSystemPrompt tells the model what the three verdicts mean. The
@@ -269,7 +269,7 @@ func classifierToolSchema() map[string]any {
 	}
 }
 
-// classify sends one turn's final text and returns the verdict. A nil
+// Classify sends one turn's final text and returns the verdict. A nil
 // verdict with a nil error is impossible — every path either yields a
 // classification or explains why it could not.
 // classify asks the model what a finished turn was.
@@ -280,8 +280,8 @@ func classifierToolSchema() map[string]any {
 // classifiers had moved off it. The harness runs on the Claude Code
 // subscription login, so no credential passes through here at all — the
 // endpoint/auth-header logic this replaced is gone with it.
-func (c *signalClassifier) classify(ctx context.Context, text string) (*turnClassification, error) {
-	if c.runOneShot == nil {
+func (c *SignalClassifier) Classify(ctx context.Context, text string) (*turnClassification, error) {
+	if c.OneShotRunner == nil {
 		return nil, fmt.Errorf("classify: no oneshot runner wired")
 	}
 	schema, err := json.Marshal(classifierOutputSchema())
@@ -289,10 +289,10 @@ func (c *signalClassifier) classify(ctx context.Context, text string) (*turnClas
 		return nil, fmt.Errorf("marshal classify schema: %w", err)
 	}
 
-	raw, err := c.runOneShot(ctx, msg.OneShotRequest{
-		Prompt:       "Final message of the finished turn:\n\n" + c.trim(text),
+	raw, err := c.OneShotRunner(ctx, msg.OneShotRequest{
+		Prompt:       "Final message of the finished turn:\n\n" + c.Trim(text),
 		SystemPrompt: classifierSystemPrompt,
-		ModelRole:    c.currentTuning().modelRole,
+		ModelRole:    c.CurrentTuning().ModelRole,
 		Caller:       oneshot.OneShotCallerSignalClassifier,
 		Schema:       schema,
 		MaxTokens:    classifierMaxTokens,
@@ -317,7 +317,7 @@ func (c *signalClassifier) classify(ctx context.Context, text string) (*turnClas
 		return nil, fmt.Errorf("decode classification: %w", err)
 	}
 	switch out.Kind {
-	case turnSignalQuestion, turnSignalNotification, turnSignalNeither:
+	case turnSignalQuestion, turnSignalNotification, TurnSignalNeither:
 		return &out, nil
 	default:
 		// Refused rather than treated as "neither". A kind outside the
@@ -327,11 +327,11 @@ func (c *signalClassifier) classify(ctx context.Context, text string) (*turnClas
 	}
 }
 
-// trim caps the text sent to the model, keeping the TAIL. A turn that ends
+// Trim caps the text sent to the model, keeping the TAIL. A turn that ends
 // with a question preceded by a long file dump would otherwise be classified
 // from the dump; the question the human has to answer is always at the end.
-func (c *signalClassifier) trim(text string) string {
-	limit := c.currentTuning().maxChars
+func (c *SignalClassifier) Trim(text string) string {
+	limit := c.CurrentTuning().MaxChars
 	if limit <= 0 {
 		return text
 	}
@@ -342,25 +342,25 @@ func (c *signalClassifier) trim(text string) string {
 	return "…" + string(runes[len(runes)-limit:])
 }
 
-// classifyTurnEnd classifies the finished turn, records a derived signal for a question or a notification, and
+// ClassifyTurnEnd classifies the finished turn, records a derived signal for a question or a notification, and
 // reconciles the session state the heuristic set provisionally.
 //
 // Everything here is best-effort: a classifier that errors, times out or is
 // switched off leaves the session exactly as the heuristic left it. A signal
 // is an extra surface on top of a turn that already completed, and no
 // failure to produce one may change how the turn itself resolved.
-func (s *Server) classifyTurnEnd(bridgeID string, ev *msg.Event, state msg.SessionState) {
-	if s.signalClassifier == nil || ev == nil || ev.Result == nil {
+func (s *Service) ClassifyTurnEnd(bridgeID string, ev *msg.Event, state msg.SessionState) {
+	if s.SignalClassifier() == nil || ev == nil || ev.Result == nil {
 		return
 	}
-	sess, err := s.store.GetSession(bridgeID)
+	sess, err := s.Store.GetSession(bridgeID)
 	if err != nil {
 		return
 	}
-	if !s.signalClassifier.EnabledFor(sess.Harness) {
+	if !s.SignalClassifier().EnabledFor(sess.Harness) {
 		return
 	}
-	if skip := skipClassifyReason(sess, ev.Result.Text, state); skip != "" {
+	if skip := SkipClassifyReason(sess, ev.Result.Text, state); skip != "" {
 		return
 	}
 
@@ -369,21 +369,21 @@ func (s *Server) classifyTurnEnd(bridgeID string, ev *msg.Event, state msg.Sessi
 	// ask from a previous turn is either answered or moot. Without this a
 	// derived row would sit open forever — nothing else resolves one until
 	// P4 adds the signal-level resolve verb.
-	s.supersedeStaleQuestions(bridgeID)
+	s.SupersedeStaleQuestions(bridgeID)
 
 	// The session already has a parked tool question open. That is a
 	// structured ask with a real resolve verb behind it; a derived row
 	// alongside it would be a second, weaker copy of the same demand on the
 	// user's attention. A tool NOTIFICATION does not count — it makes no
 	// demand, and letting it count would end classification for the session.
-	if s.hasOpenToolQuestion(bridgeID) {
+	if s.HasOpenToolQuestion(bridgeID) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), s.signalClassifier.currentTuning().timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), s.SignalClassifier().CurrentTuning().Timeout)
 	defer cancel()
 
-	verdict, err := s.signalClassifier.classify(ctx, ev.Result.Text)
+	verdict, err := s.SignalClassifier().Classify(ctx, ev.Result.Text)
 	if err != nil {
 		log.Printf("[signals] %s: classify turn-end: %v", bridgeID, err)
 		return
@@ -396,37 +396,37 @@ func (s *Server) classifyTurnEnd(bridgeID string, ev *msg.Event, state msg.Sessi
 			log.Printf("[signals] %s: classifier returned question with no question text, no signal recorded", bridgeID)
 			return
 		}
-		if sessionSurfacesQuestions(sess) {
+		if SessionSurfacesQuestions(sess) {
 			s.surfaceDerivedWorkerQuestions(sess, questions)
 			return
 		}
-		s.recordDerivedQuestions(sess, questions, nil, cardContext{})
+		s.RecordDerivedQuestions(sess, questions, nil, CardContext{})
 		// Promote: the classifier saw a question the heuristic's string
 		// match did not. Bounded to the states this verdict was formed
 		// about, so a turn that has already started again is left alone.
-		s.harness.ApplyDerivedSessionState(bridgeID, msg.SessionAwaitingUser,
+		s.Harness.ApplyDerivedSessionState(bridgeID, msg.SessionAwaitingUser,
 			msg.ReasonTurnCompleteSignalQuestion, msg.SessionIdle, msg.SessionAwaitingUser)
 	case turnSignalNotification:
 		s.recordDerivedNotification(sess, verdict)
 		// A notification does not block, so a session the heuristic parked
 		// at awaiting_user goes back to idle: nobody is being asked
 		// anything.
-		s.harness.ApplyDerivedSessionState(bridgeID, msg.SessionIdle,
+		s.Harness.ApplyDerivedSessionState(bridgeID, msg.SessionIdle,
 			msg.ReasonTurnCompleteSignalNotification, msg.SessionAwaitingUser)
-	case turnSignalNeither:
+	case TurnSignalNeither:
 		// Demote a heuristic false positive. This is the only path that
 		// makes an existing behavior stricter, and it is why the
 		// classifier is worth its cost: today a turn ending in "does that
 		// make sense?" parks the session with nothing to answer.
-		s.harness.ApplyDerivedSessionState(bridgeID, msg.SessionIdle,
+		s.Harness.ApplyDerivedSessionState(bridgeID, msg.SessionIdle,
 			msg.ReasonTurnCompleteSignalNeither, msg.SessionAwaitingUser)
 	}
 }
 
-// skipClassifyReason returns why this turn should not be classified, or ""
+// SkipClassifyReason returns why this turn should not be classified, or ""
 // when it should be. Split out so the skip rules are testable without a
 // model, a store or a network.
-func skipClassifyReason(sess *store.Session, text string, state msg.SessionState) string {
+func SkipClassifyReason(sess *store.Session, text string, state msg.SessionState) string {
 	// A signal exists to put something in front of a PERSON: a question they
 	// have to answer, a notification worth their attention. An autonomous
 	// session has nobody watching it, so a signal raised on one is a row
@@ -439,7 +439,7 @@ func skipClassifyReason(sess *store.Session, text string, state msg.SessionState
 	// The exception is an autonomous session whose purpose surfaces
 	// questions: a worker on a kanban card has a reader — the person on the
 	// card — and a question it ends its turn on goes there through triage.
-	if sess != nil && sess.Type != "" && sess.Type != msg.SessionTypeInteractive && !sessionSurfacesQuestions(sess) {
+	if sess != nil && sess.Type != "" && sess.Type != msg.SessionTypeInteractive && !SessionSurfacesQuestions(sess) {
 		return "not an interactive session: " + string(sess.Type)
 	}
 	if sess != nil && sess.Purpose == store.RenamerSessionPurpose {
@@ -469,7 +469,7 @@ func skipClassifyReason(sess *store.Session, text string, state msg.SessionState
 	}
 }
 
-// hasOpenToolQuestion reports whether a structured tool ask is already open on
+// HasOpenToolQuestion reports whether a structured tool ask is already open on
 // this session.
 //
 // Kind matters, and narrowing to it is what keeps the notification producer
@@ -482,8 +482,8 @@ func skipClassifyReason(sess *store.Session, text string, state msg.SessionState
 // kanban card may be never. Counting it here would mean one notification
 // silently ends classification for the rest of that session's life, so the
 // genuine blocker it raised three turns later would never be surfaced at all.
-func (s *Server) hasOpenToolQuestion(bridgeID string) bool {
-	open, err := s.store.ListSignals(store.SignalFilter{SessionID: bridgeID, State: msg.SignalStateOpen})
+func (s *Service) HasOpenToolQuestion(bridgeID string) bool {
+	open, err := s.Store.ListSignals(store.SignalFilter{SessionID: bridgeID, State: msg.SignalStateOpen})
 	if err != nil {
 		log.Printf("[signals] %s: look up open signals: %v", bridgeID, err)
 		// Fail closed: an unreadable store must not become a license to
@@ -503,11 +503,11 @@ func (s *Server) hasOpenToolQuestion(bridgeID string) bool {
 //
 // A request_id is not enough to answer this: it says a park EXISTED. The park
 // may have drained, or died with its process. Only the live registry knows.
-func (s *Server) answerableInPlace(sig store.Signal) bool {
-	return sig.RequestID != "" && s.parkedAsks.IsParked(sig.SessionID, sig.RequestID)
+func (s *Service) answerableInPlace(sig store.Signal) bool {
+	return sig.RequestID != "" && s.ParkedAsks.IsParked(sig.SessionID, sig.RequestID)
 }
 
-// supersedeStaleQuestions closes every open question the thread has moved past.
+// SupersedeStaleQuestions closes every open question the thread has moved past.
 // Called at the top of a turn-end.
 //
 // A session is a THREAD, and that is the whole reason this exists. Two
@@ -531,8 +531,8 @@ func (s *Server) answerableInPlace(sig store.Signal) bool {
 // Notifications keep the narrower rule. They are read, not answered, so the
 // thread argument does not reach them and this is deliberately not the commit
 // that changes when an FYI disappears.
-func (s *Server) supersedeStaleQuestions(bridgeID string) {
-	open, err := s.store.ListSignals(store.SignalFilter{SessionID: bridgeID, State: msg.SignalStateOpen})
+func (s *Service) SupersedeStaleQuestions(bridgeID string) {
+	open, err := s.Store.ListSignals(store.SignalFilter{SessionID: bridgeID, State: msg.SignalStateOpen})
 	if err != nil {
 		log.Printf("[signals] %s: look up signals to supersede: %v", bridgeID, err)
 		return
@@ -545,13 +545,13 @@ func (s *Server) supersedeStaleQuestions(bridgeID string) {
 		if !stale {
 			continue
 		}
-		if err := s.store.ResolveSignal(sig.ID, msg.SignalStateDismissed, nil); err != nil {
+		if err := s.Store.ResolveSignal(sig.ID, msg.SignalStateDismissed, nil); err != nil {
 			log.Printf("[signals] %s: supersede signal %s: %v", bridgeID, sig.ID, err)
 		}
 	}
 }
 
-// onUnpromptedTurnStart retires the questions a turn the harness opened by
+// OnUnpromptedTurnStart retires the questions a turn the harness opened by
 // itself has moved past.
 //
 // Measured on br_1790362479778008348 (2026-09-25): a turn settled with a
@@ -561,12 +561,12 @@ func (s *Server) supersedeStaleQuestions(bridgeID string) {
 // <task-notification>. Nothing closed the question until that turn ENDED, so
 // for the whole of a long turn the user was asked about a state the session
 // had already left. An answer sent now would land after the new turn's output,
-// which is the thread argument supersedeStaleQuestions makes for a turn-end.
-func (s *Server) onUnpromptedTurnStart(bridgeID string, _ *msg.Event) {
-	s.supersedeStaleQuestions(bridgeID)
+// which is the thread argument SupersedeStaleQuestions makes for a turn-end.
+func (s *Service) OnUnpromptedTurnStart(bridgeID string, _ *msg.Event) {
+	s.SupersedeStaleQuestions(bridgeID)
 }
 
-// closeQuestionsAnsweredByMessage closes the session's open questions with the
+// CloseQuestionsAnsweredByMessage closes the session's open questions with the
 // message the user just sent.
 //
 // Any message is an answer here, whether or not the sender meant it as one:
@@ -577,12 +577,12 @@ func (s *Server) onUnpromptedTurnStart(bridgeID string, _ *msg.Event) {
 // Skips a question whose park is still live — that one has a channel waiting
 // and resolves through it, not through the next message. A notification is
 // left alone: it is acknowledged, not answered.
-func (s *Server) closeQuestionsAnsweredByMessage(bridgeID, text string) {
+func (s *Service) CloseQuestionsAnsweredByMessage(bridgeID, text string) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return
 	}
-	open, err := s.store.ListSignals(store.SignalFilter{SessionID: bridgeID, State: msg.SignalStateOpen})
+	open, err := s.Store.ListSignals(store.SignalFilter{SessionID: bridgeID, State: msg.SignalStateOpen})
 	if err != nil {
 		log.Printf("[signals] %s: look up questions to answer: %v", bridgeID, err)
 		return
@@ -591,7 +591,7 @@ func (s *Server) closeQuestionsAnsweredByMessage(bridgeID, text string) {
 		if sig.Kind != msg.SignalKindQuestion || s.answerableInPlace(sig) {
 			continue
 		}
-		if err := s.store.ResolveSignal(sig.ID, msg.SignalStateAnswered, &msg.SignalAnswer{Text: text}); err != nil {
+		if err := s.Store.ResolveSignal(sig.ID, msg.SignalStateAnswered, &msg.SignalAnswer{Text: text}); err != nil {
 			log.Printf("[signals] %s: answer signal %s: %v", bridgeID, sig.ID, err)
 		}
 	}
@@ -600,14 +600,14 @@ func (s *Server) closeQuestionsAnsweredByMessage(bridgeID, text string) {
 // usableQuestions keeps the questions that have question text, trimmed, and
 // drops options with no label. A question with no text cannot be shown, and
 // an option with no label cannot be clicked.
-func usableQuestions(questions []classifiedQuestion) []classifiedQuestion {
-	usable := make([]classifiedQuestion, 0, len(questions))
+func usableQuestions(questions []ClassifiedQuestion) []ClassifiedQuestion {
+	usable := make([]ClassifiedQuestion, 0, len(questions))
 	for _, question := range questions {
 		text := strings.TrimSpace(question.Question)
 		if text == "" {
 			continue
 		}
-		cleaned := classifiedQuestion{Question: text, Context: strings.TrimSpace(question.Context)}
+		cleaned := ClassifiedQuestion{Question: text, Context: strings.TrimSpace(question.Context)}
 		for _, option := range question.Options {
 			label := strings.TrimSpace(option.Label)
 			if label == "" {
@@ -623,7 +623,7 @@ func usableQuestions(questions []classifiedQuestion) []classifiedQuestion {
 // derivedQuestionSignal builds the open row for one question the classifier
 // found. requestID ties it to the other questions of the same turn, and is
 // empty when the turn asked only one.
-func (s *Server) derivedQuestionSignal(sess *store.Session, question classifiedQuestion, requestID string) *msg.Signal {
+func (s *Service) derivedQuestionSignal(sess *store.Session, question ClassifiedQuestion, requestID string) *msg.Signal {
 	signal := &msg.Signal{
 		ID:           ids.NewSignalID(),
 		SessionID:    sess.SessionID,
@@ -631,7 +631,7 @@ func (s *Server) derivedQuestionSignal(sess *store.Session, question classifiedQ
 		Kind:         msg.SignalKindQuestion,
 		Source:       msg.SignalSourceDerived,
 		RequestID:    requestID,
-		Surface:      signalSurfaceForSession(sess),
+		Surface:      SignalSurfaceForSession(sess),
 		Title:        question.Question,
 		Body:         question.Context,
 		State:        msg.SignalStateOpen,
@@ -653,11 +653,11 @@ func (s *Server) derivedQuestionSignal(sess *store.Session, question classifiedQ
 	return signal
 }
 
-// recordDerivedQuestions writes one open question row per question the turn
+// RecordDerivedQuestions writes one open question row per question the turn
 // asked. Several questions share one request id, which is what makes them one
 // group: the chat draws them together, POST /signals/{id}/answer refuses an
 // answer that leaves one of them blank, and the answers reach the session as
-// one message with each answer under its question (answerTextForMessage). A
+// one message with each answer under its question (AnswerTextForMessage). A
 // lone question carries no request id, as derived rows always did.
 //
 // A derived request id never names a parked hook, so the answer path, which
@@ -667,7 +667,7 @@ func (s *Server) derivedQuestionSignal(sess *store.Session, question classifiedQ
 // triageByQuestion holds the question triage's verdict for each question, in
 // order, for a surfacing worker; nil for every other session. card is what
 // triage knew about the card. Returns the rows it wrote.
-func (s *Server) recordDerivedQuestions(sess *store.Session, questions []classifiedQuestion, triageByQuestion []*questionTriageVerdict, card cardContext) []*msg.Signal {
+func (s *Service) RecordDerivedQuestions(sess *store.Session, questions []ClassifiedQuestion, triageByQuestion []*questionTriageVerdict, card CardContext) []*msg.Signal {
 	requestID := ""
 	if len(questions) > 1 {
 		requestID = ids.NewDerivedQuestionGroupID()
@@ -679,7 +679,7 @@ func (s *Server) recordDerivedQuestions(sess *store.Session, questions []classif
 			signal.Audience = triageByQuestion[i].Audience
 			signal.CustomerReplyDraft = customerReplyDraftFor(triageByQuestion[i], card)
 		}
-		if err := s.store.CreateSignal(signal); err != nil {
+		if err := s.Store.CreateSignal(signal); err != nil {
 			log.Printf("[signals] %s: persist derived question: %v", sess.SessionID, err)
 			continue
 		}
@@ -691,7 +691,7 @@ func (s *Server) recordDerivedQuestions(sess *store.Session, questions []classif
 
 // recordDerivedNotification persists a notification verdict as a signal row.
 // Returns the row it wrote, or nil when it wrote none.
-func (s *Server) recordDerivedNotification(sess *store.Session, verdict *turnClassification) *msg.Signal {
+func (s *Service) recordDerivedNotification(sess *store.Session, verdict *turnClassification) *msg.Signal {
 	title := strings.TrimSpace(verdict.Title)
 	if title == "" {
 		log.Printf("[signals] %s: classifier returned notification with no title, no signal recorded", sess.SessionID)
@@ -703,7 +703,7 @@ func (s *Server) recordDerivedNotification(sess *store.Session, verdict *turnCla
 		SessionType:  sess.Type,
 		Kind:         msg.SignalKindNotification,
 		Source:       msg.SignalSourceDerived,
-		Surface:      signalSurfaceForSession(sess),
+		Surface:      SignalSurfaceForSession(sess),
 		Title:        title,
 		Body:         strings.TrimSpace(verdict.Body),
 		State:        msg.SignalStateOpen,
@@ -713,7 +713,7 @@ func (s *Server) recordDerivedNotification(sess *store.Session, verdict *turnCla
 	if verdict.Severity == string(msg.SignalSeverityWarn) {
 		signal.Severity = msg.SignalSeverityWarn
 	}
-	if err := s.store.CreateSignal(signal); err != nil {
+	if err := s.Store.CreateSignal(signal); err != nil {
 		log.Printf("[signals] %s: persist derived notification: %v", sess.SessionID, err)
 		return nil
 	}

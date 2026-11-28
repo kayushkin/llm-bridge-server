@@ -48,6 +48,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/signals"
+
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
 	"github.com/kayushkin/llm-bridge-server/internal/childprocessenv"
@@ -793,19 +795,19 @@ func peerMessageFilterFromQuery(r *http.Request) (store.PeerMessageFilter, error
 	filter := store.PeerMessageFilter{ConnectionID: query.Get("connection_id"), Limit: 200}
 	if direction := query.Get("direction"); direction != "" {
 		if direction != string(msg.PeerMessageDirectionIncoming) && direction != string(msg.PeerMessageDirectionOutgoing) {
-			return filter, errBadEnum("direction", direction, string(msg.PeerMessageDirectionIncoming)+", "+string(msg.PeerMessageDirectionOutgoing))
+			return filter, signals.ErrBadEnum("direction", direction, string(msg.PeerMessageDirectionIncoming)+", "+string(msg.PeerMessageDirectionOutgoing))
 		}
 		filter.Direction = msg.PeerMessageDirection(direction)
 	}
 	if state := query.Get("state"); state != "" {
 		if !slices.Contains(msg.PeerMessageStates, msg.PeerMessageState(state)) {
-			return filter, errBadEnum("state", state, fmt.Sprint(msg.PeerMessageStates))
+			return filter, signals.ErrBadEnum("state", state, fmt.Sprint(msg.PeerMessageStates))
 		}
 		filter.State = msg.PeerMessageState(state)
 	}
 	if kind := query.Get("kind"); kind != "" {
 		if !slices.Contains(msg.PeerMessageKinds, msg.PeerMessageKind(kind)) {
-			return filter, errBadEnum("kind", kind, fmt.Sprint(msg.PeerMessageKinds))
+			return filter, signals.ErrBadEnum("kind", kind, fmt.Sprint(msg.PeerMessageKinds))
 		}
 		filter.Kind = msg.PeerMessageKind(kind)
 	}
@@ -832,7 +834,7 @@ func (s *Server) handleListPeerMessages(w http.ResponseWriter, r *http.Request) 
 	case "", "false":
 		messages, err = s.store.ListPeerMessages(filter)
 	default:
-		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_filter", errBadEnum("open", open, "true, false").Error())
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_filter", signals.ErrBadEnum("open", open, "true, false").Error())
 		return
 	}
 	if err != nil {

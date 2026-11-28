@@ -1,4 +1,4 @@
-package server
+package signals
 
 import (
 	"context"
@@ -23,11 +23,11 @@ import (
 //
 // Failure is not fatal. A signal is a surface on top of work that already
 // happened, and losing the todo pointer must never cost the signal itself.
-func (s *Server) linkedTodoForSession(sessionID string) string {
-	if s.issueReads == nil || sessionID == "" {
+func (s *Service) linkedTodoForSession(sessionID string) string {
+	if s.IssueReads() == nil || sessionID == "" {
 		return ""
 	}
-	todoID, err := s.issueReads.LinkedTodoForSession(context.Background(), sessionID)
+	todoID, err := s.IssueReads().LinkedTodoForSession(context.Background(), sessionID)
 	if err != nil {
 		log.Printf("[signals] %s: resolve linked todo: %v", sessionID, err)
 		return ""

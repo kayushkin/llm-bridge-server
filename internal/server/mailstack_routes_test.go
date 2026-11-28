@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/signals"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
 	"github.com/kayushkin/llm-bridge-server/internal/filestorage/files"
 	"github.com/kayushkin/llm-bridge-server/internal/mail"
@@ -200,7 +202,7 @@ func TestMailstackTakesAPushedDeliveryWithAnIngressCredentialAndNoLogin(t *testi
 // Triage's sender lookup reads mailstack in this process.
 func TestTriageReadsAMessagesSenderFromMailstackInProcess(t *testing.T) {
 	test := newMailstackTestServer(t)
-	headers, err := readMailMessageHeaders(context.Background(), test.server.mailMessages, "desk", test.linkedMessageID)
+	headers, err := signals.ReadMailMessageHeaders(context.Background(), test.server.mailMessages, "desk", test.linkedMessageID)
 	if err != nil {
 		t.Fatal(err)
 	}

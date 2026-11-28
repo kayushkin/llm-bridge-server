@@ -1,4 +1,4 @@
-package server
+package signals
 
 import (
 	"encoding/json"
@@ -17,17 +17,17 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// signalAnswerRequest carries the answers for one question group.
+// SignalAnswerRequest carries the answers for one question group.
 //
 // Keyed by SIGNAL ID, which is what a form holds. The title-keyed payload the
 // parked hook pairs on is derived server-side, so no caller has to know that
 // the tool path matches answers by question text.
-type signalAnswerRequest struct {
+type SignalAnswerRequest struct {
 	Answers    map[string]string `json:"answers"`
 	ResolvedBy string            `json:"resolved_by,omitempty"`
 }
 
-// handleAnswerSignal serves POST /signals/{id}/answer — the ONE way to answer
+// HandleAnswerSignal serves POST /signals/{id}/answer — the ONE way to answer
 // a question, whichever producer raised it and whether or not its session is
 // still running.
 //
@@ -51,9 +51,9 @@ type signalAnswerRequest struct {
 //
 // Both close the same rows the same way. A caller cannot tell the two apart
 // except by the informational delivered_via in the response, and must not try.
-func (s *Server) handleAnswerSignal(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleAnswerSignal(w http.ResponseWriter, r *http.Request) {
 	signalID := r.PathValue("id")
-	signal, err := s.store.GetSignal(signalID)
+	signal, err := s.Store.GetSignal(signalID)
 	if err != nil {
 		http.Error(w, "signal not found", http.StatusNotFound)
 		return
@@ -69,13 +69,13 @@ func (s *Server) handleAnswerSignal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess, err := s.store.GetSession(signal.SessionID)
+	sess, err := s.Store.GetSession(signal.SessionID)
 	if err != nil {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
 
-	var req signalAnswerRequest
+	var req SignalAnswerRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
@@ -103,7 +103,7 @@ func (s *Server) handleAnswerSignal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if signal.RequestID != "" && s.parkedAsks.IsParked(signal.SessionID, signal.RequestID) {
+	if signal.RequestID != "" && s.ParkedAsks.IsParked(signal.SessionID, signal.RequestID) {
 		if s.answerThroughParkedHook(signal, group, req) {
 			s.recordCardWaitingEndedForSignal(signal, "Question answered; the worker has the ball again")
 			httpjson.WriteJSON(w, map[string]any{"status": "answered", "delivered_via": "parked_hook"})
@@ -126,7 +126,7 @@ func (s *Server) handleAnswerSignal(w http.ResponseWriter, r *http.Request) {
 // recordCardWaitingEndedForSignal closes the card's waiting period for a
 // question that was surfaced to it. Only a kanban-surface question opened
 // one, so only that kind closes one — a chat question never touched the card.
-func (s *Server) recordCardWaitingEndedForSignal(signal *store.Signal, summary string) {
+func (s *Service) recordCardWaitingEndedForSignal(signal *store.Signal, summary string) {
 	if signal == nil || signal.Surface != msg.SignalSurfaceKanban || signal.Kind != msg.SignalKindQuestion || signal.LinkedTodoID == "" {
 		return
 	}
@@ -135,11 +135,11 @@ func (s *Server) recordCardWaitingEndedForSignal(signal *store.Signal, summary s
 
 // openQuestionGroup returns every open question that resolves together with
 // this one: the whole parked request, or the single row a derived question is.
-func (s *Server) openQuestionGroup(signal *store.Signal) ([]store.Signal, error) {
+func (s *Service) openQuestionGroup(signal *store.Signal) ([]store.Signal, error) {
 	if signal.RequestID == "" {
 		return []store.Signal{*signal}, nil
 	}
-	siblings, err := s.store.ListSignalsByRequestID(signal.SessionID, signal.RequestID)
+	siblings, err := s.Store.ListSignalsByRequestID(signal.SessionID, signal.RequestID)
 	if err != nil {
 		return nil, err
 	}
@@ -160,7 +160,7 @@ func (s *Server) openQuestionGroup(signal *store.Signal) ([]store.Signal, error)
 // signal rows would drop whatever the record does not carry (multiSelect,
 // option previews). The client used to do this fetch itself; it is server-side
 // now, which also removes the window where a client held a stale copy.
-func (s *Server) answerThroughParkedHook(signal *store.Signal, group []store.Signal, req signalAnswerRequest) bool {
+func (s *Service) answerThroughParkedHook(signal *store.Signal, group []store.Signal, req SignalAnswerRequest) bool {
 	// The hook pairs answers by question TEXT, which is what the row's title
 	// was minted from. That mapping is this function's business alone.
 	answersByTitle := make(map[string]string, len(group))
@@ -174,12 +174,12 @@ func (s *Server) answerThroughParkedHook(signal *store.Signal, group []store.Sig
 		UpdatedInput: updated,
 		ResolvedBy:   resolvedByOrUser(req.ResolvedBy),
 	}
-	if !s.parkedAsks.Deliver(signal.SessionID, signal.RequestID, decision) {
+	if !s.ParkedAsks.Deliver(signal.SessionID, signal.RequestID, decision) {
 		return false
 	}
 	// The prehook handler that was blocked on the channel now wakes and
 	// broadcasts the resolution, which closes the rows through
-	// resolveSignalsForRequest. Closing them here as well would race it.
+	// ResolveSignalsForRequest. Closing them here as well would race it.
 	return true
 }
 
@@ -187,9 +187,9 @@ func (s *Server) answerThroughParkedHook(signal *store.Signal, group []store.Sig
 // Falls back to an answers-only payload when the pending hook cannot be found,
 // which is the shape the hook accepts anyway — a caller has still answered,
 // and refusing over a missing preview would fail a question that works.
-func (s *Server) parkedToolInputWithAnswers(bridgeID, requestID string, answersByTitle map[string]string) json.RawMessage {
+func (s *Service) parkedToolInputWithAnswers(bridgeID, requestID string, answersByTitle map[string]string) json.RawMessage {
 	merged := map[string]any{}
-	for _, ev := range s.harness.PendingHooks(bridgeID) {
+	for _, ev := range s.Harness.PendingHooks(bridgeID) {
 		if ev.Hook == nil || ev.Hook.RequestID != requestID || len(ev.Hook.Input) == 0 {
 			continue
 		}
@@ -217,13 +217,13 @@ func (s *Server) parkedToolInputWithAnswers(bridgeID, requestID string, answersB
 // outlives its session, so answering one is exactly the moment to bring that
 // session back — the person answering is continuing the conversation and
 // wants to see what happens next.
-func (s *Server) answerAsNextMessage(r *http.Request, sess *store.Session, group []store.Signal, req signalAnswerRequest) error {
-	text := answerTextForMessage(group, req.Answers)
+func (s *Service) answerAsNextMessage(r *http.Request, sess *store.Session, group []store.Signal, req SignalAnswerRequest) error {
+	text := AnswerTextForMessage(group, req.Answers)
 
 	// While the server drains before a restart, the answer waits to be sent
 	// like any other message (restart_drain.go); the questions are answered
 	// now either way.
-	_, held, err := s.holdMessageIfRestartDraining(sess.SessionID, msg.SendMessageRequest{Message: text}, messagesender.SenderPrincipalIDOfRequest(r), "signal_answer")
+	_, held, err := s.Sessions.HoldMessageIfRestartDraining(sess.SessionID, msg.SendMessageRequest{Message: text}, messagesender.SenderPrincipalIDOfRequest(r), "signal_answer")
 	if err != nil {
 		return err
 	}
@@ -237,14 +237,14 @@ func (s *Server) answerAsNextMessage(r *http.Request, sess *store.Session, group
 	// to one does: you are continuing it, and you are about to want to see the
 	// result. State stays with the derivation pipeline; only the folder moves.
 	if sess.FolderName == store.ArchiveFolder {
-		if err := s.store.SetSessionFolder(sess.SessionID, ""); err != nil {
+		if err := s.Store.SetSessionFolder(sess.SessionID, ""); err != nil {
 			log.Printf("[signals] failed to reopen archived session %s on answer: %v", sess.SessionID, err)
 		}
 	}
 
 	for _, q := range group {
 		answer := &msg.SignalAnswer{Text: req.Answers[q.ID]}
-		if err := s.store.ResolveSignal(q.ID, msg.SignalStateAnswered, answer); err != nil {
+		if err := s.Store.ResolveSignal(q.ID, msg.SignalStateAnswered, answer); err != nil {
 			log.Printf("[signals] %s: resolve on answer: %v", q.ID, err)
 		}
 	}
@@ -262,14 +262,14 @@ func (s *Server) answerAsNextMessage(r *http.Request, sess *store.Session, group
 	// each is its own group. Answering one of them without this leaves two
 	// behind, permanently — that session is completed and archived, so no
 	// turn-end will ever come to supersede them.
-	s.supersedeStaleQuestions(sess.SessionID)
+	s.SupersedeStaleQuestions(sess.SessionID)
 	return nil
 }
 
 // sendAnswerNow starts the session if its process is gone, records the answer
 // as the user's message, and sends it.
-func (s *Server) sendAnswerNow(r *http.Request, sess *store.Session, text string) error {
-	if s.harness.Get(sess.SessionID) == nil {
+func (s *Service) sendAnswerNow(r *http.Request, sess *store.Session, text string) error {
+	if s.Harness.Get(sess.SessionID) == nil {
 		if err := s.restartForAnswer(r, sess); err != nil {
 			return err
 		}
@@ -280,36 +280,36 @@ func (s *Server) sendAnswerNow(r *http.Request, sess *store.Session, text string
 		Timestamp:       time.Now(),
 		Result:          &msg.ResultEvent{Text: text},
 	}
-	if err := s.messageSenders.Stamp(r, &userEvent); err != nil {
+	if err := s.MessageSenders.Stamp(r, &userEvent); err != nil {
 		return err
 	}
-	if _, err := s.harness.BroadcastEvent(&userEvent); err != nil {
+	if _, err := s.Harness.BroadcastEvent(&userEvent); err != nil {
 		return fmt.Errorf("persist user_message: %w", err)
 	}
-	return s.harness.Send(sess.SessionID, text, nil)
+	return s.Harness.Send(sess.SessionID, text, nil)
 }
 
 // restartForAnswer brings back the process a reaped session lost.
-func (s *Server) restartForAnswer(r *http.Request, sess *store.Session) error {
-	if sess.InstanceID == "" || s.harnessStore == nil {
+func (s *Service) restartForAnswer(r *http.Request, sess *store.Session) error {
+	if sess.InstanceID == "" || s.HarnessStore() == nil {
 		return fmt.Errorf("session has no instance bound, so its answer cannot be delivered")
 	}
-	inst, err := s.harnessStore.GetInstance(sess.InstanceID)
+	inst, err := s.HarnessStore().GetInstance(sess.InstanceID)
 	if err != nil {
 		return fmt.Errorf("instance not found: %w", err)
 	}
-	credID := s.harnessStore.FirstEnabledCredentialID(inst.ID)
-	if _, err := s.startOnInstance(r.Context(), sess, inst, credID); err != nil {
+	credID := s.HarnessStore().FirstEnabledCredentialID(inst.ID)
+	if _, err := s.Sessions.StartOnInstance(r.Context(), sess, inst, credID); err != nil {
 		return fmt.Errorf("failed to start harness: %w", err)
 	}
 	return nil
 }
 
-// answerTextForMessage renders a group as the one message that carries it.
+// AnswerTextForMessage renders a group as the one message that carries it.
 // A single question sends its answer verbatim — anything else would put words
 // in the user's mouth. Several questions are labeled, because the assistant
 // asked them separately and an unlabeled concatenation is unreadable.
-func answerTextForMessage(group []store.Signal, answers map[string]string) string {
+func AnswerTextForMessage(group []store.Signal, answers map[string]string) string {
 	if len(group) == 1 {
 		return answers[group[0].ID]
 	}

@@ -18,7 +18,7 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// startOnInstance is the single chokepoint for spawning a Claude Code
+// StartOnInstance is the single chokepoint for spawning a Claude Code
 // harness process — it synthesizes the registered hooks into the session's
 // settings, populates the instance's Machine for transport routing, and
 // delegates to the harness manager. Every spawn path (create, resume,
@@ -34,7 +34,7 @@ import (
 // started it sends exactly such a message, seconds after the restart. So the
 // spawn holds a lock per session, and a caller that finds a process already
 // running is handed that process instead of a second one.
-func (s *Server) startOnInstance(ctx context.Context, sess *store.Session, inst *msg.Instance, credID string) (harness.HarnessProcess, error) {
+func (s *Server) StartOnInstance(ctx context.Context, sess *store.Session, inst *msg.Instance, credID string) (harness.HarnessProcess, error) {
 	harnessStartLock, _ := s.harnessStartLockBySessionID.LoadOrStore(sess.SessionID, &sync.Mutex{})
 	harnessStartLock.(*sync.Mutex).Lock()
 	defer harnessStartLock.(*sync.Mutex).Unlock()

@@ -101,7 +101,7 @@ func (s *Server) handleSwitchMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Persist the new mode BEFORE spawning so startOnInstance (which
+	// Persist the new mode BEFORE spawning so StartOnInstance (which
 	// reads sess.Mode) routes through the right spawn path.
 	if err := s.store.UpdateSessionMode(bridgeID, req.Mode); err != nil {
 		http.Error(w, fmt.Sprintf("update mode: %v", err), http.StatusInternalServerError)
@@ -123,7 +123,7 @@ func (s *Server) handleSwitchMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	credID := s.harnessStore.FirstEnabledCredentialID(inst.ID)
-	if _, startErr := s.startOnInstance(r.Context(), sess, inst, credID); startErr != nil {
+	if _, startErr := s.StartOnInstance(r.Context(), sess, inst, credID); startErr != nil {
 		s.recordSpawnFailure(sess, startErr)
 		http.Error(w, fmt.Sprintf("spawn in %s mode: %v", req.Mode, startErr), http.StatusInternalServerError)
 		return

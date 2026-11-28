@@ -17,6 +17,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/briefs"
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/messagesender"
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/sessionfiles"
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/signals"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads"
 )
 
@@ -64,6 +65,18 @@ func (s *Server) composeServices() {
 		Settings:               s.settings,
 		Store:                  s.store,
 		Sessions:               s,
+	}}
+	s.signals = &signals.Service{Dependencies: signals.Dependencies{
+		Harness:          s.harness,
+		HarnessStore:     func() *machines.Store { return s.harnessStore },
+		IssueReads:       func() *issuereads.Reader { return s.issueReads },
+		MailMessages:     func() signals.MailMessageReader { return s.mailMessages },
+		MessageSenders:   s.messageSenders,
+		ParkedAsks:       s.parkedAsks,
+		QuestionTriage:   func() *signals.QuestionTriage { return s.questionTriage },
+		SignalClassifier: func() *signals.SignalClassifier { return s.signalClassifier },
+		Store:            s.store,
+		Sessions:         s,
 	}}
 	s.operationRoutes = &operationroutes.Service{Dependencies: operationroutes.Dependencies{
 		GrantChecker:   s.grantChecker,

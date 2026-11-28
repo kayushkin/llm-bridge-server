@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/signals"
+
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -36,7 +38,7 @@ func stubClassifier(t *testing.T, srv *Server, verdict map[string]any) *string {
 		return json.Marshal(msg.OneShotResponse{Parsed: parsed, StopReason: "tool_use"})
 	}
 
-	srv.signalClassifier = newSignalClassifier("claude-haiku-4-5", 5*time.Second, 6000, nil, runner)
+	srv.signalClassifier = signals.NewSignalClassifier("claude-haiku-4-5", 5*time.Second, 6000, nil, runner)
 	return &captured
 }
 
@@ -68,7 +70,7 @@ func TestClassifierEnabledFor(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			c := newSignalClassifier(tc.model, time.Second, 100, tc.optOut, nil)
+			c := signals.NewSignalClassifier(tc.model, time.Second, 100, tc.optOut, nil)
 			if got := c.EnabledFor(tc.harness); got != tc.want {
 				t.Errorf("enabledFor(%q) = %v, want %v", tc.harness, got, tc.want)
 			}
@@ -106,7 +108,7 @@ func TestSkipClassifyReason(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := skipClassifyReason(tc.sess, tc.text, tc.state)
+			got := signals.SkipClassifyReason(tc.sess, tc.text, tc.state)
 			if (got != "") != tc.wantSkip {
 				t.Errorf("skipClassifyReason = %q, wantSkip=%v", got, tc.wantSkip)
 			}
@@ -129,7 +131,7 @@ func TestOnTurnEndRecordsDerivedQuestion(t *testing.T) {
 		}},
 	})
 
-	srv.classifyTurnEnd(sess.SessionID, turnEndEvent("…so: should I drop the legacy column?"), msg.SessionIdle)
+	srv.signals.ClassifyTurnEnd(sess.SessionID, turnEndEvent("…so: should I drop the legacy column?"), msg.SessionIdle)
 
 	got := openSignals(t, st, sess.SessionID)
 	if len(got) != 1 {
@@ -173,7 +175,7 @@ func TestOnTurnEndRecordsNotificationWithSeverity(t *testing.T) {
 		"severity": "warn",
 	})
 
-	srv.classifyTurnEnd(sess.SessionID, turnEndEvent("The nightly migration failed and I rolled it back."), msg.SessionIdle)
+	srv.signals.ClassifyTurnEnd(sess.SessionID, turnEndEvent("The nightly migration failed and I rolled it back."), msg.SessionIdle)
 
 	got := openSignals(t, st, sess.SessionID)
 	if len(got) != 1 {
@@ -199,7 +201,7 @@ func TestOnTurnEndNeitherRecordsNothing(t *testing.T) {
 	sess := newSessionForSignals(t, st, "br_none", msg.SessionTypeInteractive)
 	stubClassifier(t, srv, map[string]any{"kind": "neither"})
 
-	srv.classifyTurnEnd(sess.SessionID, turnEndEvent("Done — the tests pass and I pushed the branch."), msg.SessionIdle)
+	srv.signals.ClassifyTurnEnd(sess.SessionID, turnEndEvent("Done — the tests pass and I pushed the branch."), msg.SessionIdle)
 
 	if got := openSignals(t, st, sess.SessionID); len(got) != 0 {
 		t.Fatalf("open signals = %d, want 0 — an ordinary completion is not a signal", len(got))
@@ -211,13 +213,13 @@ func TestOnTurnEndSupersedesTheEarlierDerivedSignal(t *testing.T) {
 	sess := newSessionForSignals(t, st, "br_super", msg.SessionTypeInteractive)
 	stubClassifier(t, srv, derivedQuestionVerdict("Which one?"))
 
-	srv.classifyTurnEnd(sess.SessionID, turnEndEvent("There are two candidates — which one?"), msg.SessionIdle)
+	srv.signals.ClassifyTurnEnd(sess.SessionID, turnEndEvent("There are two candidates — which one?"), msg.SessionIdle)
 	first := openSignals(t, st, sess.SessionID)
 	if len(first) != 1 {
 		t.Fatalf("after first turn: open signals = %d, want 1", len(first))
 	}
 
-	srv.classifyTurnEnd(sess.SessionID, turnEndEvent("Actually there are three now — which one?"), msg.SessionIdle)
+	srv.signals.ClassifyTurnEnd(sess.SessionID, turnEndEvent("Actually there are three now — which one?"), msg.SessionIdle)
 
 	// Exactly one derived row stays open: the newest. Nothing else resolves a
 	// derived signal until P4 adds the signal-level verb, so without
@@ -247,11 +249,11 @@ func TestOnTurnEndYieldsToAnOpenToolQuestion(t *testing.T) {
 	// not that anything is still waiting on it, and the fixture has to carry
 	// the difference or it is testing a case production never produces.
 	srv.parkedAsks.Park(sess.SessionID, "hreq_1")
-	srv.recordAskUserQuestionSignals(sess.SessionID, sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
+	srv.signals.RecordAskUserQuestionSignals(sess.SessionID, sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
 	before := len(openSignals(t, st, sess.SessionID))
 
 	stubClassifier(t, srv, derivedQuestionVerdict("Also, which branch?"))
-	srv.classifyTurnEnd(sess.SessionID, turnEndEvent("Also, which branch should I use?"), msg.SessionAwaitingUser)
+	srv.signals.ClassifyTurnEnd(sess.SessionID, turnEndEvent("Also, which branch should I use?"), msg.SessionAwaitingUser)
 
 	// A parked tool ask is a structured question with a real resolve verb.
 	// A derived row alongside it is a second, weaker copy of the same demand.
@@ -268,10 +270,10 @@ func TestOnTurnEndSkipsDisabledClassifierWithoutCallingIt(t *testing.T) {
 		called = true
 	}))
 	t.Cleanup(ts.Close)
-	srv.signalClassifier = newSignalClassifier("", time.Second, 6000, nil, nil)
-	srv.signalClassifier.baseURL = ts.URL
+	srv.signalClassifier = signals.NewSignalClassifier("", time.Second, 6000, nil, nil)
+	srv.signalClassifier.BaseURL = ts.URL
 
-	srv.classifyTurnEnd(sess.SessionID, turnEndEvent("Should I proceed with the migration?"), msg.SessionIdle)
+	srv.signals.ClassifyTurnEnd(sess.SessionID, turnEndEvent("Should I proceed with the migration?"), msg.SessionIdle)
 
 	if called {
 		t.Error("classifier called with an empty model; the off switch does not switch it off")
@@ -285,10 +287,10 @@ func TestOnTurnEndSendsTheTailOfALongTurn(t *testing.T) {
 	srv, st := testServer(t)
 	sess := newSessionForSignals(t, st, "br_long", msg.SessionTypeInteractive)
 	captured := stubClassifier(t, srv, map[string]any{"kind": "neither"})
-	srv.signalClassifier.tuning.maxChars = 80
+	srv.signalClassifier.Tuning.MaxChars = 80
 
 	question := "So which of the two should I use?"
-	srv.classifyTurnEnd(sess.SessionID, turnEndEvent(strings.Repeat("filler line\n", 200)+question), msg.SessionIdle)
+	srv.signals.ClassifyTurnEnd(sess.SessionID, turnEndEvent(strings.Repeat("filler line\n", 200)+question), msg.SessionIdle)
 
 	// The question a human has to answer is at the end of a turn, so a
 	// truncation that kept the head would classify the file dump instead.
@@ -302,7 +304,7 @@ func TestAnswerDerivedQuestionsClosesTheQuestionButNotTheNotification(t *testing
 	sess := newSessionForSignals(t, st, "br_send", msg.SessionTypeInteractive)
 
 	stubClassifier(t, srv, derivedQuestionVerdict("Which branch?"))
-	srv.classifyTurnEnd(sess.SessionID, turnEndEvent("Two branches look right — which branch?"), msg.SessionIdle)
+	srv.signals.ClassifyTurnEnd(sess.SessionID, turnEndEvent("Two branches look right — which branch?"), msg.SessionIdle)
 	question := openSignals(t, st, sess.SessionID)[0]
 
 	note := &msg.Signal{
@@ -313,7 +315,7 @@ func TestAnswerDerivedQuestionsClosesTheQuestionButNotTheNotification(t *testing
 		t.Fatalf("create notification: %v", err)
 	}
 
-	srv.closeQuestionsAnsweredByMessage(sess.SessionID, "  use main  ")
+	srv.signals.CloseQuestionsAnsweredByMessage(sess.SessionID, "  use main  ")
 
 	answered, err := st.GetSignal(question.ID)
 	if err != nil {
@@ -341,9 +343,9 @@ func TestAnswerDerivedQuestionsLeavesToolParksToTheHookVerb(t *testing.T) {
 	srv, st := testServer(t)
 	sess := newSessionForSignals(t, st, "br_park", msg.SessionTypeInteractive)
 	srv.parkedAsks.Park(sess.SessionID, "hreq_1")
-	srv.recordAskUserQuestionSignals(sess.SessionID, sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
+	srv.signals.RecordAskUserQuestionSignals(sess.SessionID, sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
 
-	srv.closeQuestionsAnsweredByMessage(sess.SessionID, "whatever")
+	srv.signals.CloseQuestionsAnsweredByMessage(sess.SessionID, "whatever")
 
 	// A tool-sourced signal is resolved by resolving its parked hook. Closing
 	// it on a bare /send would leave the hook parked with its record already
@@ -359,11 +361,11 @@ func TestAnswerDerivedQuestionsLeavesToolParksToTheHookVerb(t *testing.T) {
 }
 
 func TestClassifierTrimKeepsTail(t *testing.T) {
-	c := newSignalClassifier("m", time.Second, 10, nil, nil)
-	if got := c.trim("short"); got != "short" {
+	c := signals.NewSignalClassifier("m", time.Second, 10, nil, nil)
+	if got := c.Trim("short"); got != "short" {
 		t.Errorf("trim under the cap changed the text: %q", got)
 	}
-	got := c.trim("0123456789abcdefghij")
+	got := c.Trim("0123456789abcdefghij")
 	if !strings.HasSuffix(got, "abcdefghij") {
 		t.Errorf("trim = %q, want it to end with the last 10 runes", got)
 	}
@@ -387,9 +389,9 @@ func TestAStaleToolQuestionIsRetiredLikeAnyOther(t *testing.T) {
 		srv, st := testServer(t)
 		sess := newSessionForSignals(t, st, "br_dead", msg.SessionTypeInteractive)
 		// No park: the process that asked is gone.
-		srv.recordAskUserQuestionSignals(sess.SessionID, sess, "hreq_dead", json.RawMessage(askUserQuestionToolInput))
+		srv.signals.RecordAskUserQuestionSignals(sess.SessionID, sess, "hreq_dead", json.RawMessage(askUserQuestionToolInput))
 
-		srv.closeQuestionsAnsweredByMessage(sess.SessionID, "use main")
+		srv.signals.CloseQuestionsAnsweredByMessage(sess.SessionID, "use main")
 
 		if got := len(openSignals(t, st, sess.SessionID)); got != 0 {
 			t.Errorf("open questions = %d, want 0 — a dead park cannot be answered later", got)
@@ -399,9 +401,9 @@ func TestAStaleToolQuestionIsRetiredLikeAnyOther(t *testing.T) {
 	t.Run("a turn-end supersedes it", func(t *testing.T) {
 		srv, st := testServer(t)
 		sess := newSessionForSignals(t, st, "br_dead2", msg.SessionTypeInteractive)
-		srv.recordAskUserQuestionSignals(sess.SessionID, sess, "hreq_dead", json.RawMessage(askUserQuestionToolInput))
+		srv.signals.RecordAskUserQuestionSignals(sess.SessionID, sess, "hreq_dead", json.RawMessage(askUserQuestionToolInput))
 
-		srv.supersedeStaleQuestions(sess.SessionID)
+		srv.signals.SupersedeStaleQuestions(sess.SessionID)
 
 		if got := len(openSignals(t, st, sess.SessionID)); got != 0 {
 			t.Errorf("open questions = %d, want 0 — the thread moved past them", got)
@@ -412,10 +414,10 @@ func TestAStaleToolQuestionIsRetiredLikeAnyOther(t *testing.T) {
 		srv, st := testServer(t)
 		sess := newSessionForSignals(t, st, "br_live", msg.SessionTypeInteractive)
 		srv.parkedAsks.Park(sess.SessionID, "hreq_live")
-		srv.recordAskUserQuestionSignals(sess.SessionID, sess, "hreq_live", json.RawMessage(askUserQuestionToolInput))
+		srv.signals.RecordAskUserQuestionSignals(sess.SessionID, sess, "hreq_live", json.RawMessage(askUserQuestionToolInput))
 
-		srv.supersedeStaleQuestions(sess.SessionID)
-		srv.closeQuestionsAnsweredByMessage(sess.SessionID, "unrelated")
+		srv.signals.SupersedeStaleQuestions(sess.SessionID)
+		srv.signals.CloseQuestionsAnsweredByMessage(sess.SessionID, "unrelated")
 
 		// Something is still blocked on this one. Closing it would destroy a
 		// real pending tool call.

@@ -102,7 +102,7 @@ func (s *Server) handleResolveHook(w http.ResponseWriter, r *http.Request) {
 // signals it minted survive the harness restart that killed it, and leaving
 // them open would keep a dead question in the inbox forever.
 func (s *Server) broadcastStaleResolution(bridgeID, requestID string, d parkedasks.Decision) {
-	s.resolveSignalsForRequest(bridgeID, requestID, d)
+	s.signals.ResolveSignalsForRequest(bridgeID, requestID, d)
 
 	resolution := &msg.HookResolution{
 		Behavior:     d.Behavior,

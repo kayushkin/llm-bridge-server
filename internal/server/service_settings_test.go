@@ -143,8 +143,8 @@ func TestAChangedClassifierSettingIsInForceWithoutARestart(t *testing.T) {
 			t.Fatalf("PUT %s = %d %s", key, got.Code, got.Body.String())
 		}
 	}
-	tuning := srv.signalClassifier.currentTuning()
-	if tuning.modelRole != "efficient" || tuning.timeout != 45*time.Second || tuning.maxChars != 900 {
+	tuning := srv.signalClassifier.CurrentTuning()
+	if tuning.ModelRole != "efficient" || tuning.Timeout != 45*time.Second || tuning.MaxChars != 900 {
 		t.Errorf("classifier tuning = %+v", tuning)
 	}
 	if !srv.signalClassifier.EnabledFor(msg.HarnessClaudeCode) || srv.signalClassifier.EnabledFor(msg.HarnessCodex) {
@@ -152,7 +152,7 @@ func TestAChangedClassifierSettingIsInForceWithoutARestart(t *testing.T) {
 	}
 	// Triage follows the classifier's timeout but not its role: the two
 	// roles are separate settings so each can move without the other.
-	if modelRole, timeout := srv.questionTriage.current(); modelRole != "" || timeout != 45*time.Second {
+	if modelRole, timeout := srv.questionTriage.Current(); modelRole != "" || timeout != 45*time.Second {
 		t.Errorf("triage = %q %v, want its own (empty) role and the classifier's timeout", modelRole, timeout)
 	}
 	if err := srv.modelStore.SetRole(models.RoleBalanced, "mock-model"); err != nil {
@@ -162,11 +162,11 @@ func TestAChangedClassifierSettingIsInForceWithoutARestart(t *testing.T) {
 	if got := serve(srv, serviceSettingsRequest("PUT", "/settings/"+config.SettingQuestionTriageModelRole, string(body), true)); got.Code != http.StatusOK {
 		t.Fatalf("PUT %s = %d %s", config.SettingQuestionTriageModelRole, got.Code, got.Body.String())
 	}
-	if modelRole, _ := srv.questionTriage.current(); modelRole != models.RoleBalanced {
+	if modelRole, _ := srv.questionTriage.Current(); modelRole != models.RoleBalanced {
 		t.Errorf("triage role = %q, want balanced", modelRole)
 	}
-	if tuning := srv.signalClassifier.currentTuning(); tuning.modelRole != "efficient" {
-		t.Errorf("changing triage's role moved the classifier's to %q", tuning.modelRole)
+	if tuning := srv.signalClassifier.CurrentTuning(); tuning.ModelRole != "efficient" {
+		t.Errorf("changing triage's role moved the classifier's to %q", tuning.ModelRole)
 	}
 	if got := serve(srv, serviceSettingsRequest("PUT", "/settings/"+config.SettingSignalClassifierTimeout, `{"value":"soon"}`, true)); got.Code != http.StatusBadRequest {
 		t.Errorf("a malformed duration = %d, want 400", got.Code)

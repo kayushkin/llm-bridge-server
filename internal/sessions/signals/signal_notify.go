@@ -1,4 +1,4 @@
-package server
+package signals
 
 import (
 	"encoding/json"
@@ -35,13 +35,13 @@ import (
 // something the model reads and retries, while a silent trim puts half a
 // message on the user's board and calls it delivered.
 const (
-	notifyMaxTitleRunes = 200
-	notifyMaxBodyRunes  = 4000
+	NotifyMaxTitleRunes = 200
+	NotifyMaxBodyRunes  = 4000
 )
 
 // notifyRequest is the body of POST /sessions/{id}/signals.
 //
-// Kind is accepted but constrained — see handleCreateSessionSignal. Source,
+// Kind is accepted but constrained — see HandleCreateSessionSignal. Source,
 // surface, state and linked_todo_id are all stamped by the server; a caller
 // that could set them could claim to be the parked-hook producer, or route
 // its own notification to a surface nobody watches.
@@ -52,7 +52,7 @@ type notifyRequest struct {
 	Kind     msg.SignalKind     `json:"kind"`
 }
 
-// handleCreateSessionSignal serves POST /sessions/{id}/signals — a session
+// HandleCreateSessionSignal serves POST /sessions/{id}/signals — a session
 // raising a notification about itself.
 //
 // It mints one `source:"tool"`, `kind:"notification"` row and returns it. The
@@ -70,9 +70,9 @@ type notifyRequest struct {
 //   - It does not deduplicate. A session that notifies in a loop writes a row
 //     each time, and that is visible in the inbox rather than hidden by a
 //     silent cap.
-func (s *Server) handleCreateSessionSignal(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleCreateSessionSignal(w http.ResponseWriter, r *http.Request) {
 	bridgeID := r.PathValue("id")
-	sess, err := s.store.GetSession(bridgeID)
+	sess, err := s.Store.GetSession(bridgeID)
 	if err != nil {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
@@ -89,7 +89,7 @@ func (s *Server) handleCreateSessionSignal(w http.ResponseWriter, r *http.Reques
 	// `source:"tool"` question minted here would be answerable by nothing:
 	// the hook-resolve verb is keyed on a request_id this row has none of,
 	// `POST /sessions/{id}/send` closes derived questions only
-	// (closeQuestionsAnsweredByMessage), and the signal-level resolve verb refuses to
+	// (CloseQuestionsAnsweredByMessage), and the signal-level resolve verb refuses to
 	// acknowledge a question on purpose. It would sit open until a human
 	// dismissed it unanswered. AskUserQuestion is the verb that asks, and it
 	// parks a real call to hang the answer on.
@@ -102,7 +102,7 @@ func (s *Server) handleCreateSessionSignal(w http.ResponseWriter, r *http.Reques
 			http.StatusBadRequest)
 		return
 	default:
-		http.Error(w, errBadEnum("kind", string(req.Kind), "notification").Error(), http.StatusBadRequest)
+		http.Error(w, ErrBadEnum("kind", string(req.Kind), "notification").Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -115,7 +115,7 @@ func (s *Server) handleCreateSessionSignal(w http.ResponseWriter, r *http.Reques
 	case msg.SignalSeverityWarn:
 		severity = msg.SignalSeverityWarn
 	default:
-		http.Error(w, errBadEnum("severity", string(req.Severity), "info|warn").Error(), http.StatusBadRequest)
+		http.Error(w, ErrBadEnum("severity", string(req.Severity), "info|warn").Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -126,13 +126,13 @@ func (s *Server) handleCreateSessionSignal(w http.ResponseWriter, r *http.Reques
 			http.StatusBadRequest)
 		return
 	}
-	if n := len([]rune(title)); n > notifyMaxTitleRunes {
-		http.Error(w, fmt.Sprintf("title is %d characters and the limit is %d; put the detail in body", n, notifyMaxTitleRunes),
+	if n := len([]rune(title)); n > NotifyMaxTitleRunes {
+		http.Error(w, fmt.Sprintf("title is %d characters and the limit is %d; put the detail in body", n, NotifyMaxTitleRunes),
 			http.StatusBadRequest)
 		return
 	}
-	if n := len([]rune(body)); n > notifyMaxBodyRunes {
-		http.Error(w, fmt.Sprintf("body is %d characters and the limit is %d", n, notifyMaxBodyRunes),
+	if n := len([]rune(body)); n > NotifyMaxBodyRunes {
+		http.Error(w, fmt.Sprintf("body is %d characters and the limit is %d", n, NotifyMaxBodyRunes),
 			http.StatusBadRequest)
 		return
 	}
@@ -146,7 +146,7 @@ func (s *Server) handleCreateSessionSignal(w http.ResponseWriter, r *http.Reques
 		// Surface comes from the session, never from the caller: an
 		// autonomous worker's notification belongs on its kanban card whether
 		// or not the worker knows it has one.
-		Surface:      signalSurfaceForSession(sess),
+		Surface:      SignalSurfaceForSession(sess),
 		Title:        title,
 		Body:         body,
 		Severity:     severity,
@@ -154,11 +154,11 @@ func (s *Server) handleCreateSessionSignal(w http.ResponseWriter, r *http.Reques
 		LinkedTodoID: s.linkedTodoForSession(bridgeID),
 	}
 
-	// Unlike recordAskUserQuestionSignals, a failure here is reported. That
+	// Unlike RecordAskUserQuestionSignals, a failure here is reported. That
 	// one is observational — it rides along beside a park that must happen
 	// whatever the signal table does — while this call IS the request, and a
 	// caller told 200 would believe a notification reached the human.
-	if err := s.store.CreateSignal(signal); err != nil {
+	if err := s.Store.CreateSignal(signal); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -166,7 +166,7 @@ func (s *Server) handleCreateSessionSignal(w http.ResponseWriter, r *http.Reques
 	// Re-read rather than echo, for the same reason the resolve verb does:
 	// the response is what a later GET will return, including the fields the
 	// store filled in, not a hopeful copy of what was sent.
-	stored, err := s.store.GetSignal(signal.ID)
+	stored, err := s.Store.GetSignal(signal.ID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
