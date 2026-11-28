@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/parkedasks"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
 
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
@@ -139,7 +141,7 @@ func (s *Server) recordAskUserQuestionSignals(bridgeID string, sess *store.Sessi
 // No-op when the request minted no signals, which covers every
 // permission-prompt request and any pre-existing parked ask from before
 // this table existed.
-func (s *Server) resolveSignalsForRequest(bridgeID, requestID string, decision permissionDecision) {
+func (s *Server) resolveSignalsForRequest(bridgeID, requestID string, decision parkedasks.Decision) {
 	if requestID == "" {
 		return
 	}
@@ -334,13 +336,13 @@ func (s *Server) handleResolveSignal(w http.ResponseWriter, r *http.Request) {
 	// them on that same bad evidence. One verb, and the server picks: the deny
 	// closes these rows on its way through resolveSignalsForRequest.
 	if req.State == msg.SignalStateDismissed && signal.RequestID != "" &&
-		s.parkedAsks.isParked(signal.SessionID, signal.RequestID) {
-		decision := permissionDecision{
+		s.parkedAsks.IsParked(signal.SessionID, signal.RequestID) {
+		decision := parkedasks.Decision{
 			Behavior:   "deny",
 			Message:    "declined by the user",
 			ResolvedBy: "user",
 		}
-		if s.parkedAsks.deliver(signal.SessionID, signal.RequestID, decision) {
+		if s.parkedAsks.Deliver(signal.SessionID, signal.RequestID, decision) {
 			httpjson.WriteJSON(w, map[string]any{
 				"status":        string(msg.SignalStateDismissed),
 				"delivered_via": "parked_hook",

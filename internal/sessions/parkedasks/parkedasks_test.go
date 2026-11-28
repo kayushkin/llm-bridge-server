@@ -1,4 +1,4 @@
-package server
+package parkedasks
 
 import (
 	"sync"
@@ -7,10 +7,10 @@ import (
 )
 
 func TestParkedAsks_DeliverHit(t *testing.T) {
-	p := newParkedAsks()
-	ch := p.park("br1", "rid1")
+	p := New()
+	ch := p.Park("br1", "rid1")
 
-	ok := p.deliver("br1", "rid1", permissionDecision{Behavior: "allow", Message: "ok"})
+	ok := p.Deliver("br1", "rid1", Decision{Behavior: "allow", Message: "ok"})
 	if !ok {
 		t.Fatalf("deliver returned false on a parked entry")
 	}
@@ -26,22 +26,22 @@ func TestParkedAsks_DeliverHit(t *testing.T) {
 }
 
 func TestParkedAsks_DeliverMiss(t *testing.T) {
-	p := newParkedAsks()
-	if p.deliver("br1", "missing", permissionDecision{Behavior: "allow"}) {
+	p := New()
+	if p.Deliver("br1", "missing", Decision{Behavior: "allow"}) {
 		t.Fatalf("deliver returned true for an unknown request_id")
 	}
-	if p.deliver("missing-bridge", "rid1", permissionDecision{Behavior: "deny"}) {
+	if p.Deliver("missing-bridge", "rid1", Decision{Behavior: "deny"}) {
 		t.Fatalf("deliver returned true for an unknown bridge_id")
 	}
 }
 
 func TestParkedAsks_DoubleResolve(t *testing.T) {
-	p := newParkedAsks()
-	ch := p.park("br1", "rid1")
-	if !p.deliver("br1", "rid1", permissionDecision{Behavior: "allow"}) {
+	p := New()
+	ch := p.Park("br1", "rid1")
+	if !p.Deliver("br1", "rid1", Decision{Behavior: "allow"}) {
 		t.Fatalf("first deliver should succeed")
 	}
-	if p.deliver("br1", "rid1", permissionDecision{Behavior: "deny"}) {
+	if p.Deliver("br1", "rid1", Decision{Behavior: "deny"}) {
 		t.Fatalf("second deliver should miss — entry is consumed")
 	}
 	select {
@@ -55,27 +55,27 @@ func TestParkedAsks_DoubleResolve(t *testing.T) {
 }
 
 func TestParkedAsks_Cancel(t *testing.T) {
-	p := newParkedAsks()
-	p.park("br1", "rid1")
-	p.cancel("br1", "rid1")
-	if p.deliver("br1", "rid1", permissionDecision{Behavior: "allow"}) {
+	p := New()
+	p.Park("br1", "rid1")
+	p.Cancel("br1", "rid1")
+	if p.Deliver("br1", "rid1", Decision{Behavior: "allow"}) {
 		t.Fatalf("deliver after cancel should miss")
 	}
 }
 
 func TestParkedAsks_DropSession(t *testing.T) {
-	p := newParkedAsks()
-	p.park("br1", "rid1")
-	p.park("br1", "rid2")
-	p.park("br2", "rid3")
-	p.dropSession("br1")
-	if p.deliver("br1", "rid1", permissionDecision{Behavior: "allow"}) {
+	p := New()
+	p.Park("br1", "rid1")
+	p.Park("br1", "rid2")
+	p.Park("br2", "rid3")
+	p.DropSession("br1")
+	if p.Deliver("br1", "rid1", Decision{Behavior: "allow"}) {
 		t.Fatalf("br1/rid1 should have been dropped")
 	}
-	if p.deliver("br1", "rid2", permissionDecision{Behavior: "allow"}) {
+	if p.Deliver("br1", "rid2", Decision{Behavior: "allow"}) {
 		t.Fatalf("br1/rid2 should have been dropped")
 	}
-	if !p.deliver("br2", "rid3", permissionDecision{Behavior: "allow"}) {
+	if !p.Deliver("br2", "rid3", Decision{Behavior: "allow"}) {
 		t.Fatalf("br2/rid3 should still be parked")
 	}
 }
@@ -84,7 +84,7 @@ func TestParkedAsks_DropSession(t *testing.T) {
 // removal under contention — deliver and a slow reader must not race
 // in a way that loses the decision. Run with -race to surface data races.
 func TestParkedAsks_ConcurrentDeliver(t *testing.T) {
-	p := newParkedAsks()
+	p := New()
 	const N = 64
 	var wg sync.WaitGroup
 	for i := 0; i < N; i++ {
@@ -93,8 +93,8 @@ func TestParkedAsks_ConcurrentDeliver(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			rid := "rid" + string(rune('A'+i%26)) + string(rune('A'+i/26))
-			ch := p.park("br1", rid)
-			go p.deliver("br1", rid, permissionDecision{Behavior: "allow", Message: rid})
+			ch := p.Park("br1", rid)
+			go p.Deliver("br1", rid, Decision{Behavior: "allow", Message: rid})
 			select {
 			case d := <-ch:
 				if d.Message != rid {
@@ -112,24 +112,24 @@ func TestParkedAsks_ConcurrentDeliver(t *testing.T) {
 // removed from the outer map when its last entry resolves — prevents
 // per-session memory leaks across long-running servers.
 func TestParkedAsks_SessionEmptyOnLastDeliver(t *testing.T) {
-	p := newParkedAsks()
-	p.park("br1", "rid1")
-	p.park("br1", "rid2")
-	p.deliver("br1", "rid1", permissionDecision{Behavior: "allow"})
+	p := New()
+	p.Park("br1", "rid1")
+	p.Park("br1", "rid2")
+	p.Deliver("br1", "rid1", Decision{Behavior: "allow"})
 
-	p.mu.Lock()
-	if _, ok := p.m["br1"]; !ok {
-		p.mu.Unlock()
+	p.mutex.Lock()
+	if _, ok := p.asksBySession["br1"]; !ok {
+		p.mutex.Unlock()
 		t.Fatalf("bucket dropped early — rid2 still parked")
 	}
-	p.mu.Unlock()
+	p.mutex.Unlock()
 
-	p.deliver("br1", "rid2", permissionDecision{Behavior: "deny"})
+	p.Deliver("br1", "rid2", Decision{Behavior: "deny"})
 
-	p.mu.Lock()
-	if _, ok := p.m["br1"]; ok {
-		p.mu.Unlock()
+	p.mutex.Lock()
+	if _, ok := p.asksBySession["br1"]; ok {
+		p.mutex.Unlock()
 		t.Fatalf("empty bucket not removed from outer map")
 	}
-	p.mu.Unlock()
+	p.mutex.Unlock()
 }

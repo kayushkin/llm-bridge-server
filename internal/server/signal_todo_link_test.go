@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/parkedasks"
+
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads/issuereadstest"
 
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads"
@@ -266,7 +268,7 @@ func TestHandleListSignalsFiltersByLinkedTodo(t *testing.T) {
 	second := newSessionForSignals(t, st, "br_2", msg.SessionTypeAutonomous)
 	srv.recordAskUserQuestionSignals("br_1", first, "hreq_1", json.RawMessage(askUserQuestionToolInput))
 	srv.recordAskUserQuestionSignals("br_2", second, "hreq_2", json.RawMessage(askUserQuestionToolInput))
-	srv.resolveSignalsForRequest("br_2", "hreq_2", permissionDecision{Behavior: "deny"})
+	srv.resolveSignalsForRequest("br_2", "hreq_2", parkedasks.Decision{Behavior: "deny"})
 
 	for _, tc := range []struct {
 		query string

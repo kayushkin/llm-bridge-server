@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/parkedasks"
+
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
 	"github.com/kayushkin/llm-bridge/msg"
@@ -67,13 +69,13 @@ func (s *Server) handleResolveHook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	decision := permissionDecision{
+	decision := parkedasks.Decision{
 		Behavior:     req.Behavior,
 		UpdatedInput: req.UpdatedInput,
 		Message:      req.Message,
 		ResolvedBy:   req.ResolvedBy,
 	}
-	delivered := s.parkedAsks.deliver(bridgeID, requestID, decision)
+	delivered := s.parkedAsks.Deliver(bridgeID, requestID, decision)
 	if !delivered {
 		// Stale: emit a completed event ourselves so bridge-ui's banner clears.
 		// The prehook handler that originally parked this request is gone, so
@@ -99,7 +101,7 @@ func (s *Server) handleResolveHook(w http.ResponseWriter, r *http.Request) {
 // Signal rows are closed out here too: the parked entry is gone but the
 // signals it minted survive the harness restart that killed it, and leaving
 // them open would keep a dead question in the inbox forever.
-func (s *Server) broadcastStaleResolution(bridgeID, requestID string, d permissionDecision) {
+func (s *Server) broadcastStaleResolution(bridgeID, requestID string, d parkedasks.Decision) {
 	s.resolveSignalsForRequest(bridgeID, requestID, d)
 
 	resolution := &msg.HookResolution{
@@ -320,12 +322,12 @@ func (s *Server) autoAllowParkedPermissionAsks(bridgeID string, pending []msg.Ev
 		if ev.Hook.Source == msg.HookSourceUserInput {
 			continue
 		}
-		decision := permissionDecision{
+		decision := parkedasks.Decision{
 			Behavior:   "allow",
 			Message:    "auto-allowed: session switched to Allow All (bypass) mode",
 			ResolvedBy: "auto:bypass-mode",
 		}
-		if s.parkedAsks.deliver(bridgeID, ev.Hook.RequestID, decision) {
+		if s.parkedAsks.Deliver(bridgeID, ev.Hook.RequestID, decision) {
 			resolved++
 		}
 	}

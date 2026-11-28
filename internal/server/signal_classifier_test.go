@@ -246,7 +246,7 @@ func TestOnTurnEndYieldsToAnOpenToolQuestion(t *testing.T) {
 	// LIVE parked hook owns the ask — a request_id alone says a park existed,
 	// not that anything is still waiting on it, and the fixture has to carry
 	// the difference or it is testing a case production never produces.
-	srv.parkedAsks.park(sess.SessionID, "hreq_1")
+	srv.parkedAsks.Park(sess.SessionID, "hreq_1")
 	srv.recordAskUserQuestionSignals(sess.SessionID, sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
 	before := len(openSignals(t, st, sess.SessionID))
 
@@ -340,7 +340,7 @@ func TestAnswerDerivedQuestionsClosesTheQuestionButNotTheNotification(t *testing
 func TestAnswerDerivedQuestionsLeavesToolParksToTheHookVerb(t *testing.T) {
 	srv, st := testServer(t)
 	sess := newSessionForSignals(t, st, "br_park", msg.SessionTypeInteractive)
-	srv.parkedAsks.park(sess.SessionID, "hreq_1")
+	srv.parkedAsks.Park(sess.SessionID, "hreq_1")
 	srv.recordAskUserQuestionSignals(sess.SessionID, sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
 
 	srv.closeQuestionsAnsweredByMessage(sess.SessionID, "whatever")
@@ -411,7 +411,7 @@ func TestAStaleToolQuestionIsRetiredLikeAnyOther(t *testing.T) {
 	t.Run("a live park is never retired", func(t *testing.T) {
 		srv, st := testServer(t)
 		sess := newSessionForSignals(t, st, "br_live", msg.SessionTypeInteractive)
-		srv.parkedAsks.park(sess.SessionID, "hreq_live")
+		srv.parkedAsks.Park(sess.SessionID, "hreq_live")
 		srv.recordAskUserQuestionSignals(sess.SessionID, sess, "hreq_live", json.RawMessage(askUserQuestionToolInput))
 
 		srv.supersedeStaleQuestions(sess.SessionID)

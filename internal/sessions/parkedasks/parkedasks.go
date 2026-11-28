@@ -1,14 +1,14 @@
-package server
+package parkedasks
 
 import (
 	"encoding/json"
 	"sync"
 )
 
-// permissionDecision is the verdict delivered to a parked permission ask.
+// Decision is the verdict delivered to a parked permission ask.
 // Behavior is "allow" or "deny"; UpdatedInput and Message ride through to
 // the hook response forwarded to Claude Code.
-type permissionDecision struct {
+type Decision struct {
 	Behavior     string
 	UpdatedInput json.RawMessage
 	Message      string
@@ -30,7 +30,7 @@ type permissionDecision struct {
 	SessionWentAway bool
 }
 
-// parkedAsks tracks PreToolUse permission hooks whose verdict is "ask",
+// Asks tracks PreToolUse permission hooks whose verdict is "ask",
 // blocked on bridge-ui's banner click. Keyed by bridge_session_id →
 // request_id; the value is the channel the prehook handler is selecting on.
 //
@@ -38,60 +38,60 @@ type permissionDecision struct {
 // llm-bridge-claudecode's PermissionMCP. Lives in bridge-server because
 // that's where the parked HTTP handler (POST /permission/cc-prehook) and
 // the resolve handler (POST /sessions/:id/hooks/:rid/resolve) both run.
-type parkedAsks struct {
-	mu sync.Mutex
-	m  map[string]map[string]chan permissionDecision
+type Asks struct {
+	mutex sync.Mutex
+	asksBySession  map[string]map[string]chan Decision
 }
 
-func newParkedAsks() *parkedAsks {
-	return &parkedAsks{m: make(map[string]map[string]chan permissionDecision)}
+func New() *Asks {
+	return &Asks{asksBySession: make(map[string]map[string]chan Decision)}
 }
 
-// park registers a new parked ask and returns the channel to block on.
+// Park registers a new parked ask and returns the channel to block on.
 // The buffered channel capacity is 1 so deliver() never blocks even if the
 // reader is racing on its own context cancellation.
-func (p *parkedAsks) park(bridgeID, requestID string) chan permissionDecision {
-	ch := make(chan permissionDecision, 1)
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	bucket := p.m[bridgeID]
+func (p *Asks) Park(bridgeID, requestID string) chan Decision {
+	ch := make(chan Decision, 1)
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	bucket := p.asksBySession[bridgeID]
 	if bucket == nil {
-		bucket = make(map[string]chan permissionDecision)
-		p.m[bridgeID] = bucket
+		bucket = make(map[string]chan Decision)
+		p.asksBySession[bridgeID] = bucket
 	}
 	bucket[requestID] = ch
 	return ch
 }
 
-// deliver hands the decision to a parked ask. Returns true if a parked
+// Deliver hands the decision to a parked ask. Returns true if a parked
 // request was found and the decision was delivered; false if no matching
 // entry exists (stale resolve, harness restart, never-parked request).
 //
 // The entry is removed on first delivery; a second resolve for the same
 // (bridgeID, requestID) lands in the false branch — the caller can emit a
 // stale phase=completed event for UI cleanup.
-func (p *parkedAsks) deliver(bridgeID, requestID string, d permissionDecision) bool {
-	p.mu.Lock()
-	bucket, ok := p.m[bridgeID]
+func (p *Asks) Deliver(bridgeID, requestID string, d Decision) bool {
+	p.mutex.Lock()
+	bucket, ok := p.asksBySession[bridgeID]
 	if !ok {
-		p.mu.Unlock()
+		p.mutex.Unlock()
 		return false
 	}
 	ch, ok := bucket[requestID]
 	if !ok {
-		p.mu.Unlock()
+		p.mutex.Unlock()
 		return false
 	}
 	delete(bucket, requestID)
 	if len(bucket) == 0 {
-		delete(p.m, bridgeID)
+		delete(p.asksBySession, bridgeID)
 	}
-	p.mu.Unlock()
+	p.mutex.Unlock()
 	ch <- d
 	return true
 }
 
-// isParked reports whether a request is still blocked waiting for a verdict.
+// IsParked reports whether a request is still blocked waiting for a verdict.
 // Read-only: it neither delivers nor removes the entry.
 //
 // The signal-level resolve verb asks this before closing a tool-sourced
@@ -99,10 +99,10 @@ func (p *parkedAsks) deliver(bridgeID, requestID string, d permissionDecision) b
 // source of truth for a tool question — closing the surface while the
 // harness still sits on the channel would leave the session blocked with
 // nothing on screen to unblock it.
-func (p *parkedAsks) isParked(bridgeID, requestID string) bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	bucket, ok := p.m[bridgeID]
+func (p *Asks) IsParked(bridgeID, requestID string) bool {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	bucket, ok := p.asksBySession[bridgeID]
 	if !ok {
 		return false
 	}
@@ -110,27 +110,27 @@ func (p *parkedAsks) isParked(bridgeID, requestID string) bool {
 	return ok
 }
 
-// cancel removes a parked entry without delivering. Called by the prehook
+// Cancel removes a parked entry without delivering. Called by the prehook
 // handler when its request context is canceled (CC died, network drop) so
 // a later resolve doesn't try to deliver to a dead channel.
-func (p *parkedAsks) cancel(bridgeID, requestID string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	bucket, ok := p.m[bridgeID]
+func (p *Asks) Cancel(bridgeID, requestID string) {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	bucket, ok := p.asksBySession[bridgeID]
 	if !ok {
 		return
 	}
 	delete(bucket, requestID)
 	if len(bucket) == 0 {
-		delete(p.m, bridgeID)
+		delete(p.asksBySession, bridgeID)
 	}
 }
 
-// dropSession drops every parked entry for a session. Caller is responsible
+// DropSession drops every parked entry for a session. Caller is responsible
 // for emitting completed-with-stale events; this method does not deliver.
 // Used when the harness process exits so a respawn doesn't see ghosts.
-func (p *parkedAsks) dropSession(bridgeID string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	delete(p.m, bridgeID)
+func (p *Asks) DropSession(bridgeID string) {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	delete(p.asksBySession, bridgeID)
 }

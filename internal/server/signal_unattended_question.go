@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/prehookanswers"
+
 	"github.com/kayushkin/llm-bridge-server/internal/ids"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -36,14 +38,14 @@ import (
 // any question needing input → the whole request is surfaced, each question
 // as its own signal row under one request id, the sign-offs among them
 // included so the person sees what the worker asked in full.
-func (s *Server) surfaceUnattendedQuestion(w http.ResponseWriter, bridgeID string, sess *store.Session, payload ccPrehookPayload) {
+func (s *Server) surfaceUnattendedQuestion(w http.ResponseWriter, bridgeID string, sess *store.Session, payload prehookanswers.Payload) {
 	var input askUserQuestionInput
 	if err := json.Unmarshal(payload.ToolInput, &input); err != nil {
-		writeHookDeny(w, "AskUserQuestion input could not be read: "+err.Error()+". Ask again with a well-formed question, or stop.")
+		prehookanswers.WriteDeny(w, "AskUserQuestion input could not be read: "+err.Error()+". Ask again with a well-formed question, or stop.")
 		return
 	}
 	if len(input.Questions) == 0 {
-		writeHookDeny(w, "AskUserQuestion carried no questions. Ask a specific question, or stop.")
+		prehookanswers.WriteDeny(w, "AskUserQuestion carried no questions. Ask a specific question, or stop.")
 		return
 	}
 
@@ -90,11 +92,11 @@ func (s *Server) surfaceUnattendedQuestion(w http.ResponseWriter, bridgeID strin
 		merged["answers"] = answers
 		updated, err := json.Marshal(merged)
 		if err != nil {
-			writeHookDeny(w, "could not encode the sign-off answer: "+err.Error())
+			prehookanswers.WriteDeny(w, "could not encode the sign-off answer: "+err.Error())
 			return
 		}
 		log.Printf("[triage] %s: %d sign-off question(s) answered automatically (%s)", bridgeID, len(input.Questions), verdicts[0].Reason)
-		writeHookAllowWithInput(w, "sign-off answered by triage; no person was asked", updated)
+		prehookanswers.WriteAllowWithInput(w, "sign-off answered by triage; no person was asked", updated)
 		return
 	}
 
@@ -117,7 +119,7 @@ func (s *Server) surfaceUnattendedQuestion(w http.ResponseWriter, bridgeID strin
 	s.recordCardWaiting(linkedTodoID, bridgeID, "Worker asked: "+strings.TrimSpace(input.Questions[0].Question))
 	log.Printf("[triage] %s: %d question(s) surfaced to card %q under request %s", bridgeID, len(input.Questions), linkedTodoID, requestID)
 
-	writeHookDeny(w, "Your question has been recorded on the ticket for the person working it. "+
+	prehookanswers.WriteDeny(w, "Your question has been recorded on the ticket for the person working it. "+
 		"Stop here and end your turn without guessing an answer; the answer will arrive as your next message.")
 }
 

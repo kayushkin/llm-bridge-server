@@ -8,7 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/parkedasks"
+
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/prehookanswers"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/permissions"
 	"github.com/kayushkin/llm-bridge-server/internal/ids"
@@ -36,20 +38,6 @@ import (
 // the second is silent. Prefer the loud one.
 func isUnattendedSession(sess *store.Session) bool {
 	return sess != nil && (sess.Type == msg.SessionTypeAutonomous || sess.Type == msg.SessionTypeHerald)
-}
-
-// ccPrehookPayload is the stdin JSON Claude Code sends to PreToolUse hook
-// commands. We unmarshal only what we need to evaluate; ToolUseID is kept
-// for the audit log but not used for correlation (we mint our own hook
-// request id so resolve flow stays uniform with the legacy MCP path).
-type ccPrehookPayload struct {
-	SessionID      string          `json:"session_id"`
-	TranscriptPath string          `json:"transcript_path"`
-	CWD            string          `json:"cwd"`
-	HookEventName  string          `json:"hook_event_name"`
-	ToolName       string          `json:"tool_name"`
-	ToolInput      json.RawMessage `json:"tool_input"`
-	ToolUseID      string          `json:"tool_use_id"`
 }
 
 // handleCCPermissionPrehook implements the PreToolUse permission gate for
@@ -85,7 +73,7 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	var payload ccPrehookPayload
+	var payload prehookanswers.Payload
 	if err := json.Unmarshal(body, &payload); err != nil {
 		s.writeHookNoVerdict(w, r, unattended, "decode prehook payload: "+err.Error())
 		return
@@ -117,7 +105,7 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 				s.surfaceUnattendedQuestion(w, bridgeID, sess, payload)
 				return
 			}
-			writeHookDeny(w, "No human is attached to this autonomous session to answer AskUserQuestion; proceed without human input or stop.")
+			prehookanswers.WriteDeny(w, "No human is attached to this autonomous session to answer AskUserQuestion; proceed without human input or stop.")
 			return
 		}
 		s.parkPrehook(w, r, bridgeID, sess, payload, msg.HookSourceUserInput, unattended)
@@ -134,21 +122,21 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 	case msg.PermissionModeBlockAll:
 		// Soft pause — agent sees the deny in its tool result and can
 		// reason about it, ask the human, or stop. No rule consult.
-		writeHookDeny(w, "Tool blocked by user (Block All mode). Ask the user before retrying.")
+		prehookanswers.WriteDeny(w, "Tool blocked by user (Block All mode). Ask the user before retrying.")
 		return
 	case msg.PermissionModePlan:
 		if isPlanModeTool(payload.ToolName) {
-			writeHookAllow(w, "permission-mode=plan:"+payload.ToolName)
+			prehookanswers.WriteAllow(w, "permission-mode=plan:"+payload.ToolName)
 			return
 		}
-		writeHookDeny(w, "Plan mode: only planning tools (Read/Glob/Grep/TodoWrite) are permitted.")
+		prehookanswers.WriteDeny(w, "Plan mode: only planning tools (Read/Glob/Grep/TodoWrite) are permitted.")
 		return
 	case msg.PermissionModeRead:
 		if isReadOnlyTool(payload.ToolName) {
-			writeHookAllow(w, "permission-mode=read:"+payload.ToolName)
+			prehookanswers.WriteAllow(w, "permission-mode=read:"+payload.ToolName)
 			return
 		}
-		writeHookDeny(w, "Read-only mode: writes and shell execution are blocked.")
+		prehookanswers.WriteDeny(w, "Read-only mode: writes and shell execution are blocked.")
 		return
 	case msg.PermissionModeAskAll:
 		// Skip permission-store entirely. Every tool call parks for the
@@ -156,11 +144,11 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 		s.parkPrehook(w, r, bridgeID, sess, payload, msg.HookSourcePermission, unattended)
 		return
 	case msg.PermissionModeBypass:
-		writeHookAllow(w, "permission-mode=bypass")
+		prehookanswers.WriteAllow(w, "permission-mode=bypass")
 		return
 	case msg.PermissionModeAuto:
 		if isAutoModeSafeTool(payload.ToolName) {
-			writeHookAllow(w, "permission-mode=auto:"+payload.ToolName)
+			prehookanswers.WriteAllow(w, "permission-mode=auto:"+payload.ToolName)
 			return
 		}
 		// Fall through to the normal gating flow for non-safe tools.
@@ -198,10 +186,10 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 
 	switch res.Outcome {
 	case "allow":
-		writeHookAllow(w, res.Message)
+		prehookanswers.WriteAllow(w, res.Message)
 		return
 	case "deny":
-		writeHookDeny(w, res.Message)
+		prehookanswers.WriteDeny(w, res.Message)
 		return
 	case "ask":
 		// An unattended session has no human to resolve a parked ask, so it
@@ -211,7 +199,7 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 		// above (case "deny"), so guardrails like rm -rf / curl-external still
 		// apply. Interactive sessions park for the human as before.
 		if unattended {
-			writeHookAllow(w, "auto-allow: unattended autonomous session, no permission rule matched")
+			prehookanswers.WriteAllow(w, "auto-allow: unattended autonomous session, no permission rule matched")
 			return
 		}
 		s.parkPrehook(w, r, bridgeID, sess, payload, msg.HookSourcePermission, unattended)
@@ -245,23 +233,23 @@ func (s *Server) handleCCPermissionPrehook(w http.ResponseWriter, r *http.Reques
 // the tool or stop rather than hang.
 //
 // Codex has no "ask" answer: measured on codex 0.172 on 2026-11-25, a
-// PreToolUse hook that answers permissionDecision "ask" is a failed hook
-// ("unsupported permissionDecision:ask"), and codex runs the tool. So on
+// PreToolUse hook that answers PermissionDecision "ask" is a failed hook
+// ("unsupported PermissionDecision:ask"), and codex runs the tool. So on
 // codex's gate the no-verdict answer is a deny there too.
 func (s *Server) writeHookNoVerdict(w http.ResponseWriter, r *http.Request, unattended bool, reason string) {
 	if unattended {
-		writeHookDeny(w, reason+" — no human is attached to this autonomous session to resolve it, and no permission rule was evaluated, so the call is denied. Proceed without this tool or stop.")
+		prehookanswers.WriteDeny(w, reason+" — no human is attached to this autonomous session to resolve it, and no permission rule was evaluated, so the call is denied. Proceed without this tool or stop.")
 		return
 	}
 	if !prehookHarnessCanBeAnsweredAsk(r) {
-		writeHookDeny(w, reason+" — no permission rule was evaluated, and this harness cannot hand the call to a person, so it is denied. Try again later.")
+		prehookanswers.WriteDeny(w, reason+" — no permission rule was evaluated, and this harness cannot hand the call to a person, so it is denied. Try again later.")
 		return
 	}
-	writeHookAsk(w, reason)
+	prehookanswers.WriteAsk(w, reason)
 }
 
 // prehookHarnessCanBeAnsweredAsk reports whether the harness posting to this
-// gate route acts on a permissionDecision of "ask". Codex does not (see
+// gate route acts on a PermissionDecision of "ask". Codex does not (see
 // writeHookNoVerdict).
 func prehookHarnessCanBeAnsweredAsk(r *http.Request) bool {
 	return !strings.HasPrefix(r.URL.Path, "/permission/"+permissionGateRouteByHarness[msg.HarnessCodex]+"/")
@@ -357,7 +345,7 @@ func isReadOnlyTool(name string) bool {
 }
 
 // parkPrehook implements the shared "mint request id, emit
-// awaiting_resolution, block on parkedAsks, emit completed, write response"
+// awaiting_resolution, block on ParkedAsks, emit completed, write response"
 // flow used by both the permission-prompt and user-input branches of the
 // prehook. Source picks which HookEvent.Source value identifies the parked
 // request to bridge-ui (so the banner picks the right card flavor).
@@ -370,10 +358,10 @@ func isReadOnlyTool(name string) bool {
 // unattended is the caller's answer to isUnattendedSession, threaded through
 // so the no-verdict path below answers a watcherless session the same way the
 // rest of the prehook does rather than parking it a second time.
-func (s *Server) parkPrehook(w http.ResponseWriter, r *http.Request, bridgeID string, sess *store.Session, payload ccPrehookPayload, source string, unattended bool) {
+func (s *Server) parkPrehook(w http.ResponseWriter, r *http.Request, bridgeID string, sess *store.Session, payload prehookanswers.Payload, source string, unattended bool) {
 	resolveCtx := r.Context()
 	requestID := ids.NewHookRequestID()
-	ch := s.parkedAsks.park(bridgeID, requestID)
+	ch := s.parkedAsks.Park(bridgeID, requestID)
 
 	// Emit awaiting_resolution so bridge-ui's banner picks it up via SSE.
 	// BroadcastEvent records the pending hook for late-joining clients.
@@ -392,7 +380,7 @@ func (s *Server) parkPrehook(w http.ResponseWriter, r *http.Request, bridgeID st
 	}); err != nil {
 		// Broadcast failure leaves the parked entry unreferenced — drop
 		// it so a stale resolve doesn't deliver to a never-read channel.
-		s.parkedAsks.cancel(bridgeID, requestID)
+		s.parkedAsks.Cancel(bridgeID, requestID)
 		s.writeHookNoVerdict(w, r, unattended, "broadcast awaiting_resolution: "+err.Error())
 		return
 	}
@@ -405,7 +393,7 @@ func (s *Server) parkPrehook(w http.ResponseWriter, r *http.Request, bridgeID st
 		s.recordAskUserQuestionSignals(bridgeID, sess, requestID, payload.ToolInput)
 	}
 
-	var decision permissionDecision
+	var decision parkedasks.Decision
 	select {
 	case decision = <-ch:
 	case <-resolveCtx.Done():
@@ -413,8 +401,8 @@ func (s *Server) parkPrehook(w http.ResponseWriter, r *http.Request, bridgeID st
 		// Drop the parked entry so a later resolve doesn't deliver to a
 		// dead channel; emit a synthetic completed-with-deny so the UI
 		// banner clears.
-		s.parkedAsks.cancel(bridgeID, requestID)
-		decision = permissionDecision{
+		s.parkedAsks.Cancel(bridgeID, requestID)
+		decision = parkedasks.Decision{
 			Behavior:        "deny",
 			Message:         "request canceled before resolution: " + resolveCtx.Err().Error(),
 			ResolvedBy:      "auto:context-canceled",
@@ -423,7 +411,7 @@ func (s *Server) parkPrehook(w http.ResponseWriter, r *http.Request, bridgeID st
 		s.broadcastPrehookResolved(bridgeID, requestID, source, decision)
 		// CC has already disconnected; writing a body here is harmless
 		// but won't be observed.
-		writeHookDeny(w, decision.Message)
+		prehookanswers.WriteDeny(w, decision.Message)
 		return
 	}
 
@@ -431,9 +419,9 @@ func (s *Server) parkPrehook(w http.ResponseWriter, r *http.Request, bridgeID st
 
 	switch decision.Behavior {
 	case "allow":
-		writeHookAllowWithInput(w, decision.Message, decision.UpdatedInput)
+		prehookanswers.WriteAllowWithInput(w, decision.Message, decision.UpdatedInput)
 	default:
-		writeHookDeny(w, decision.Message)
+		prehookanswers.WriteDeny(w, decision.Message)
 	}
 }
 
@@ -441,7 +429,7 @@ func (s *Server) parkPrehook(w http.ResponseWriter, r *http.Request, bridgeID st
 // closes a previously-emitted awaiting_resolution event, and closes out any
 // signal rows the request minted. Source must match the value used at park
 // time so consumers can pair the events.
-func (s *Server) broadcastPrehookResolved(bridgeID, requestID, source string, d permissionDecision) {
+func (s *Server) broadcastPrehookResolved(bridgeID, requestID, source string, d parkedasks.Decision) {
 	s.resolveSignalsForRequest(bridgeID, requestID, d)
 
 	resolution := &msg.HookResolution{
@@ -465,55 +453,4 @@ func (s *Server) broadcastPrehookResolved(bridgeID, requestID, source string, d 
 	}); err != nil {
 		log.Printf("[prehook] broadcast completed for %s/%s: %v", bridgeID, requestID, err)
 	}
-}
-
-// writeHookAllow / writeHookDeny / writeHookAsk shape the response body to
-// match CC's PreToolUse hookSpecificOutput contract. CC reads
-// permissionDecision and acts accordingly; permissionDecisionReason is
-// surfaced to the model on deny and shown in CC's output on allow.
-func writeHookAllow(w http.ResponseWriter, reason string) {
-	writeHookDecision(w, "allow", reason, nil)
-}
-
-// writeHookAllowWithInput is the variant the parked-ask resolve path uses
-// when the human selected updatedInput along with an allow verdict. CC's
-// PreToolUse hookSpecificOutput contract accepts an `updatedInput` field
-// alongside `permissionDecision: "allow"`; the tool's input is replaced
-// with the merged value before its call() executes. AskUserQuestion uses
-// this to receive prefilled answers without ever prompting the CLI user.
-func writeHookAllowWithInput(w http.ResponseWriter, reason string, updatedInput json.RawMessage) {
-	writeHookDecision(w, "allow", reason, updatedInput)
-}
-
-// writeHookDeny always gives a reason. Codex treats a deny with an empty
-// permissionDecisionReason as a failed hook and runs the tool: measured on
-// codex 0.172 on 2026-11-25, and on the PC test instance a person's decline,
-// resolved with no message, let the command run (br_1795640613496687676).
-func writeHookDeny(w http.ResponseWriter, reason string) {
-	if strings.TrimSpace(reason) == "" {
-		reason = permissionGateDeniedWithoutAReasonMessage
-	}
-	writeHookDecision(w, "deny", reason, nil)
-}
-
-// permissionGateDeniedWithoutAReasonMessage is the reason a deny carries when
-// whoever denied it gave none.
-const permissionGateDeniedWithoutAReasonMessage = "The bridge permission check denied this tool call."
-
-func writeHookAsk(w http.ResponseWriter, reason string) {
-	writeHookDecision(w, "ask", reason, nil)
-}
-
-func writeHookDecision(w http.ResponseWriter, decision, reason string, updatedInput json.RawMessage) {
-	hookOut := map[string]any{
-		"hookEventName":            "PreToolUse",
-		"permissionDecision":       decision,
-		"permissionDecisionReason": reason,
-	}
-	if len(updatedInput) > 0 {
-		hookOut["updatedInput"] = updatedInput
-	}
-	httpjson.WriteJSON(w, map[string]any{
-		"hookSpecificOutput": hookOut,
-	})
 }

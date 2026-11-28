@@ -203,7 +203,7 @@ func TestSurfacingWorkerRealQuestionLandsOnTheCardWithADraftForTheCustomer(t *te
 	if sig.RequestID == "" {
 		t.Error("request_id empty; the questions of one ask must resolve together")
 	}
-	if srv.parkedAsks.isParked(sig.SessionID, sig.RequestID) {
+	if srv.parkedAsks.IsParked(sig.SessionID, sig.RequestID) {
 		t.Error("the ask is parked; a surfaced question must not hold the worker's process open")
 	}
 	if sig.Audience != msg.SignalAudienceCustomer {

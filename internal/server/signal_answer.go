@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/parkedasks"
+
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/messagesender"
 
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
@@ -101,13 +103,13 @@ func (s *Server) handleAnswerSignal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if signal.RequestID != "" && s.parkedAsks.isParked(signal.SessionID, signal.RequestID) {
+	if signal.RequestID != "" && s.parkedAsks.IsParked(signal.SessionID, signal.RequestID) {
 		if s.answerThroughParkedHook(signal, group, req) {
 			s.recordCardWaitingEndedForSignal(signal, "Question answered; the worker has the ball again")
 			httpjson.WriteJSON(w, map[string]any{"status": "answered", "delivered_via": "parked_hook"})
 			return
 		}
-		// The park drained between isParked and deliver. Not an error — it is
+		// The park drained between IsParked and deliver. Not an error — it is
 		// the ordinary race, and the message path is the correct fallback
 		// rather than a failure to report.
 		log.Printf("[signals] %s/%s: park vanished mid-answer; delivering as a message instead", signal.SessionID, signal.RequestID)
@@ -167,12 +169,12 @@ func (s *Server) answerThroughParkedHook(signal *store.Signal, group []store.Sig
 	}
 
 	updated := s.parkedToolInputWithAnswers(signal.SessionID, signal.RequestID, answersByTitle)
-	decision := permissionDecision{
+	decision := parkedasks.Decision{
 		Behavior:     "allow",
 		UpdatedInput: updated,
 		ResolvedBy:   resolvedByOrUser(req.ResolvedBy),
 	}
-	if !s.parkedAsks.deliver(signal.SessionID, signal.RequestID, decision) {
+	if !s.parkedAsks.Deliver(signal.SessionID, signal.RequestID, decision) {
 		return false
 	}
 	// The prehook handler that was blocked on the channel now wakes and

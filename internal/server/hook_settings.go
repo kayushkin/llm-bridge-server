@@ -229,7 +229,7 @@ func (s *Server) injectCodexHookSettings(sess *store.Session) error {
 // HarnessConfig.devin_hooks, and the permission gate's URL into
 // devin_permission_url. llm-bridge-devin puts the tree into the config file it
 // starts `devin acp` with; devin's hooks.v1 file has the same shape as codex's
-// hooks tree, and devin honors the hookSpecificOutput.permissionDecision
+// hooks tree, and devin honors the hookSpecificOutput.PermissionDecision
 // answer the prehook gives, so the codex builder serves both with the route
 // swapped. llm-bridge-devin refuses to start without devin_hooks, so a session
 // can never run ungated. An explicit devin_hooks in harness_config is left

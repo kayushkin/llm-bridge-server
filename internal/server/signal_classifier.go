@@ -504,7 +504,7 @@ func (s *Server) hasOpenToolQuestion(bridgeID string) bool {
 // A request_id is not enough to answer this: it says a park EXISTED. The park
 // may have drained, or died with its process. Only the live registry knows.
 func (s *Server) answerableInPlace(sig store.Signal) bool {
-	return sig.RequestID != "" && s.parkedAsks.isParked(sig.SessionID, sig.RequestID)
+	return sig.RequestID != "" && s.parkedAsks.IsParked(sig.SessionID, sig.RequestID)
 }
 
 // supersedeStaleQuestions closes every open question the thread has moved past.
@@ -661,7 +661,7 @@ func (s *Server) derivedQuestionSignal(sess *store.Session, question classifiedQ
 // lone question carries no request id, as derived rows always did.
 //
 // A derived request id never names a parked hook, so the answer path, which
-// asks parkedAsks before it treats a request id as a park, delivers the
+// asks ParkedAsks before it treats a request id as a park, delivers the
 // answers as a message.
 //
 // triageByQuestion holds the question triage's verdict for each question, in

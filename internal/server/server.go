@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/parkedasks"
+
 	"github.com/kayushkin/llm-bridge-server/internal/sessionactions"
 
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/sessionfiles"
@@ -215,7 +217,7 @@ type Server struct {
 	bridgePrefs            *bridgePrefsStore
 	cfState                *conformanceState
 	sessionHub             *sessionHub
-	parkedAsks             *parkedAsks
+	parkedAsks             *parkedasks.Asks
 	responseCache          *responseCache
 	// signalClassifier is the derived signal producer: a cheap-model pass
 	// over each turn-end. Nil only in tests that never exercise it.
@@ -307,7 +309,7 @@ func New(st *store.Store, as *agents.Store, ms *memories.Store, hs *machines.Sto
 		bridgePrefs:          newBridgePrefsStore(cfg.BridgePrefsPath),
 		cfState:              newConformanceState(cfg.ConformancePath),
 		sessionHub:           hub,
-		parkedAsks:           newParkedAsks(),
+		parkedAsks:           parkedasks.New(),
 		responseCache:        respCache,
 		signalClassifier: newSignalClassifier(
 			cfg.SignalClassifierModelRole,
@@ -561,14 +563,14 @@ func (s *Server) routes() {
 	// PreToolUse permission gate for codex. Wired in via
 	// buildCodexHookConfig — codex's hook config carries a curl command
 	// pointing here on every Bash/apply_patch/MCP tool call. Codex's
-	// PreToolUse payload + hookSpecificOutput.permissionDecision shapes
+	// PreToolUse payload + hookSpecificOutput.PermissionDecision shapes
 	// are byte-identical to CC's, so the same handler serves both URLs.
 	s.mux.HandleFunc("POST /permission/codex-prehook/{bridge_id}", s.handleCCPermissionPrehook)
 
 	// PreToolUse permission gate for devin. llm-bridge-devin writes
 	// devin_hooks (injectDevinHookSettings) into the config devin starts
 	// with; devin's PreToolUse payload and its reading of
-	// hookSpecificOutput.permissionDecision match CC's, so the same handler
+	// hookSpecificOutput.PermissionDecision match CC's, so the same handler
 	// serves it. The wrapper also posts here for a session/request_permission.
 	s.mux.HandleFunc("POST /permission/devin-prehook/{bridge_id}", s.handleCCPermissionPrehook)
 
