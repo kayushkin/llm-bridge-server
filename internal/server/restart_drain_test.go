@@ -25,7 +25,7 @@ func drainTestServer(t *testing.T) (*Server, *store.Store, *store.Session) {
 
 func sendThroughRoute(t *testing.T, srv *Server, sessionID, message string) (int, msg.SendMessageResponse) {
 	t.Helper()
-	status, body := srv.serveInternally(http.MethodPost, "/sessions/"+sessionID+"/send", msg.SendMessageRequest{Message: message})
+	status, body := srv.sessionActions.ServeInternally(http.MethodPost, "/sessions/"+sessionID+"/send", msg.SendMessageRequest{Message: message})
 	var answer msg.SendMessageResponse
 	if status < 300 {
 		if err := json.Unmarshal(body, &answer); err != nil {

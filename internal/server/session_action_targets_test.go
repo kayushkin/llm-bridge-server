@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
+	"github.com/kayushkin/llm-bridge-server/internal/sessionactions"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -175,10 +176,10 @@ func TestATargetThatWentAwayAfterTheOfferIsNotActedOn(t *testing.T) {
 func TestTypedValuesTakeThePlacesTheMessageNamesThem(t *testing.T) {
 	message := "a=$BRIDGE_INPUT_A b=${BRIDGE_INPUT_A_B}c and again $BRIDGE_INPUT_A."
 	inputs := []msg.SessionActionInput{{Name: "A", Label: "a"}, {Name: "A_B", Label: "ab"}}
-	if problem := sessionActionMessageInputsProblem(message, inputs); problem != "" {
+	if problem := sessionactions.SessionActionMessageInputsProblem(message, inputs); problem != "" {
 		t.Fatalf("problem = %q", problem)
 	}
-	got := fillSessionActionMessageInputs(message, map[string]string{"A": "one", "A_B": "two"})
+	got := sessionactions.FillSessionActionMessageInputs(message, map[string]string{"A": "one", "A_B": "two"})
 	if want := "a=one b=twoc and again one."; got != want {
 		t.Errorf("filled = %q, want %q", got, want)
 	}

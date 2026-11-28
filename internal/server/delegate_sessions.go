@@ -75,7 +75,7 @@ func (s *Server) serveDelegatingAgent(w http.ResponseWriter, r *http.Request, pa
 
 	caller := requestcaller.Caller{}
 	if agentSession.PrincipalID != "" {
-		principalCaller, credentialError := s.callerForPrincipalID(r.Context(), agentSession.PrincipalID, "the session the posting token names runs as")
+		principalCaller, credentialError := s.CallerForPrincipalID(r.Context(), agentSession.PrincipalID, "the session the posting token names runs as")
 		if credentialError != nil {
 			credentialError.Write(w)
 			return
@@ -187,7 +187,7 @@ func (s *Server) serveSessionReadingAgent(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if throughPeer {
-		peer, credentialError := s.callerForPrincipalID(r.Context(), origin.PeerPrincipalID, "the peer session "+agentSession.SessionID+" was started through is")
+		peer, credentialError := s.CallerForPrincipalID(r.Context(), origin.PeerPrincipalID, "the peer session "+agentSession.SessionID+" was started through is")
 		if credentialError != nil {
 			credentialError.Write(w)
 			return
@@ -216,7 +216,7 @@ func (s *Server) administratorOnlyIfSessionPeerIsOne(ctx context.Context, caller
 		return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusInternalServerError, "session_peer_origin_unreadable", err.Error())
 	}
 	if throughPeer {
-		peer, credentialError := s.callerForPrincipalID(ctx, origin.PeerPrincipalID, "the peer session "+agentSessionID+" was started through is")
+		peer, credentialError := s.CallerForPrincipalID(ctx, origin.PeerPrincipalID, "the peer session "+agentSessionID+" was started through is")
 		if credentialError != nil {
 			return requestcaller.Caller{}, credentialError
 		}

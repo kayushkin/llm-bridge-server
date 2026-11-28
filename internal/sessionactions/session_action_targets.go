@@ -1,4 +1,4 @@
-package server
+package sessionactions
 
 // The session actions that act on another session: send_to_session sends it a
 // message and stop_session stops it. They exist for an agent that manages
@@ -34,12 +34,12 @@ func sessionActionTypeActsOnAnotherSession(actionType msg.SessionActionType) boo
 
 // targetSessionOfAction reads the session an offer names and holds it to the
 // rules above.
-func (s *Server) targetSessionOfAction(ctx context.Context, session *store.Session, offer msg.SessionActionOffer) (*store.Session, *sessionActionRefusal) {
+func (s *Service) targetSessionOfAction(ctx context.Context, session *store.Session, offer msg.SessionActionOffer) (*store.Session, *sessionActionRefusal) {
 	if offer.TargetSessionID == session.SessionID {
 		return nil, &sessionActionRefusal{http.StatusBadRequest, "target_is_this_session", fmt.Sprintf(
 			"target_session_id %s is the session the button is in; a %s button acts on another session", offer.TargetSessionID, offer.Type)}
 	}
-	target, err := s.store.GetSession(offer.TargetSessionID)
+	target, err := s.Store.GetSession(offer.TargetSessionID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, &sessionActionRefusal{http.StatusNotFound, "unknown_target_session", fmt.Sprintf("there is no session %s", offer.TargetSessionID)}
 	}
@@ -73,28 +73,28 @@ func (s *Server) targetSessionOfAction(ctx context.Context, session *store.Sessi
 // sessions in that user's scope — its principal's, started through the same
 // peer (peer_users.go) — unless both its principal and the peer are
 // administrators, as the request gate rules.
-func (s *Server) sessionPrincipalMayReachTarget(ctx context.Context, session, target *store.Session) (bool, *sessionActionRefusal) {
-	origin, throughPeer, err := s.store.SessionPeerOriginOfLineage(session.SessionID)
+func (s *Service) sessionPrincipalMayReachTarget(ctx context.Context, session, target *store.Session) (bool, *sessionActionRefusal) {
+	origin, throughPeer, err := s.Store.SessionPeerOriginOfLineage(session.SessionID)
 	if err != nil {
 		return false, &sessionActionRefusal{http.StatusInternalServerError, "session_peer_origin_lookup_failed", err.Error()}
 	}
 	if !throughPeer && target.PrincipalID == session.PrincipalID {
 		return true, nil
 	}
-	if throughPeer && s.sessionIsInScope(target, requestcaller.SessionScope{PrincipalID: session.PrincipalID, ThroughPeerPrincipalID: origin.PeerPrincipalID}) {
+	if throughPeer && s.Sessions.SessionIsInScope(target, requestcaller.SessionScope{PrincipalID: session.PrincipalID, ThroughPeerPrincipalID: origin.PeerPrincipalID}) {
 		return true, nil
 	}
 	if session.PrincipalID == "" {
 		return false, nil
 	}
-	owner, credentialError := s.callerForPrincipalID(ctx, session.PrincipalID, "session "+session.SessionID+" belongs to")
+	owner, credentialError := s.Sessions.CallerForPrincipalID(ctx, session.PrincipalID, "session "+session.SessionID+" belongs to")
 	if credentialError != nil {
 		return false, &sessionActionRefusal{credentialError.Status, credentialError.Code, credentialError.Message}
 	}
 	if !throughPeer {
 		return owner.IsAdministrator, nil
 	}
-	peer, credentialError := s.callerForPrincipalID(ctx, origin.PeerPrincipalID, "session "+session.SessionID+" was started through")
+	peer, credentialError := s.Sessions.CallerForPrincipalID(ctx, origin.PeerPrincipalID, "session "+session.SessionID+" was started through")
 	if credentialError != nil {
 		return false, &sessionActionRefusal{credentialError.Status, credentialError.Code, credentialError.Message}
 	}
@@ -103,7 +103,7 @@ func (s *Server) sessionPrincipalMayReachTarget(ctx context.Context, session, ta
 
 // describeTargetSessionAction writes Command for a send_to_session or
 // stop_session: the target's id and name, and the message.
-func (s *Server) describeTargetSessionAction(ctx context.Context, session *store.Session, offer msg.SessionActionOffer) (string, *sessionActionRefusal) {
+func (s *Service) describeTargetSessionAction(ctx context.Context, session *store.Session, offer msg.SessionActionOffer) (string, *sessionActionRefusal) {
 	target, refusal := s.targetSessionOfAction(ctx, session, offer)
 	if refusal != nil {
 		return "", refusal
@@ -118,27 +118,27 @@ func (s *Server) describeTargetSessionAction(ctx context.Context, session *store
 // sendToSessionAction sends the message, with the typed values in place,
 // through POST /sessions/{id}/send, so it reaches the target as a person's
 // message would: over-budget refusal, harness start, archive reopening and all.
-func (s *Server) sendToSessionAction(offer msg.SessionActionOffer, inputValues map[string]string) sessionActionOutcome {
-	message := fillSessionActionMessageInputs(offer.Message, inputValues)
-	output, err := s.sendMessageInternally(offer.TargetSessionID, message)
+func (s *Service) sendToSessionAction(offer msg.SessionActionOffer, inputValues map[string]string) SessionActionOutcome {
+	message := FillSessionActionMessageInputs(offer.Message, inputValues)
+	output, err := s.SendMessageInternally(offer.TargetSessionID, message)
 	if err != nil {
-		return sessionActionOutcome{output: output, resultSessionID: offer.TargetSessionID, err: err}
+		return SessionActionOutcome{Output: output, ResultSessionID: offer.TargetSessionID, Err: err}
 	}
-	return sessionActionOutcome{output: s.describeTargetSessionStateAfter("Sent the message to", offer.TargetSessionID), resultSessionID: offer.TargetSessionID}
+	return SessionActionOutcome{Output: s.describeTargetSessionStateAfter("Sent the message to", offer.TargetSessionID), ResultSessionID: offer.TargetSessionID}
 }
 
 // stopSessionAction stops the target the way POST /sessions/{id}/stop does.
-func (s *Server) stopSessionAction(offer msg.SessionActionOffer) sessionActionOutcome {
-	if err := s.stopSession(offer.TargetSessionID); err != nil {
-		return sessionActionOutcome{resultSessionID: offer.TargetSessionID, err: fmt.Errorf("stop of %s failed: %w", offer.TargetSessionID, err)}
+func (s *Service) stopSessionAction(offer msg.SessionActionOffer) SessionActionOutcome {
+	if err := s.Sessions.StopSession(offer.TargetSessionID); err != nil {
+		return SessionActionOutcome{ResultSessionID: offer.TargetSessionID, Err: fmt.Errorf("stop of %s failed: %w", offer.TargetSessionID, err)}
 	}
-	return sessionActionOutcome{output: s.describeTargetSessionStateAfter("Stopped", offer.TargetSessionID), resultSessionID: offer.TargetSessionID}
+	return SessionActionOutcome{Output: s.describeTargetSessionStateAfter("Stopped", offer.TargetSessionID), ResultSessionID: offer.TargetSessionID}
 }
 
 // describeTargetSessionStateAfter is the output of a run that worked: what it
 // did and the state the target is in now, read back from the store.
-func (s *Server) describeTargetSessionStateAfter(what, targetSessionID string) string {
-	target, err := s.store.GetSession(targetSessionID)
+func (s *Service) describeTargetSessionStateAfter(what, targetSessionID string) string {
+	target, err := s.Store.GetSession(targetSessionID)
 	if err != nil {
 		return fmt.Sprintf("%s session %s, whose state could not be read back: %v", what, targetSessionID, err)
 	}

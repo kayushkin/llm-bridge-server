@@ -1,4 +1,4 @@
-package server
+package sessionactions
 
 // The session actions that do work of their own rather than calling another
 // store: run_command (a shell command, reviewed by a model when offered),
@@ -50,22 +50,22 @@ const (
 	sessionActionReviewTimeout = 3 * time.Minute
 )
 
-// sessionActionModels is what model_call and the command reviewer need from
+// SessionActionModels is what model_call and the command reviewer need from
 // the model side: resolve a role or model to a route, call it, and price it. The server is
 // its own; a test hands in a fake.
-type sessionActionModels interface {
+type SessionActionModels interface {
 	executors.OneShotCaller
 	ModelListPrice(model string) (inputPerMillion, outputPerMillion float64, known bool)
 }
 
 // sessionActionWorkingDirectory is where a run_command runs: the offer's
 // directory, or the session's own working directory as its spawn resolves it.
-func (s *Server) sessionActionWorkingDirectory(session *store.Session, offer msg.SessionActionOffer) (string, *sessionActionRefusal) {
+func (s *Service) sessionActionWorkingDirectory(session *store.Session, offer msg.SessionActionOffer) (string, *sessionActionRefusal) {
 	directory := offer.WorkingDirectory
 	if directory == "" {
 		var instance *msg.Instance
-		if session.InstanceID != "" && s.harnessStore != nil {
-			found, err := s.harnessStore.GetInstance(session.InstanceID)
+		if session.InstanceID != "" && s.HarnessStore() != nil {
+			found, err := s.HarnessStore().GetInstance(session.InstanceID)
 			if err != nil {
 				return "", &sessionActionRefusal{http.StatusBadGateway, "instance_unreadable", fmt.Sprintf("instance %s: %v", session.InstanceID, err)}
 			}
@@ -85,10 +85,10 @@ func (s *Server) sessionActionWorkingDirectory(session *store.Session, offer msg
 }
 
 // runCommandAction runs a run_command's shell command in its directory.
-func (s *Server) runCommandAction(session *store.Session, action store.SessionAction, inputValues map[string]string) sessionActionOutcome {
+func (s *Service) runCommandAction(session *store.Session, action store.SessionAction, inputValues map[string]string) SessionActionOutcome {
 	directory, refusal := s.sessionActionWorkingDirectory(session, action.Offer)
 	if refusal != nil {
-		return sessionActionOutcome{err: errors.New(refusal.message)}
+		return SessionActionOutcome{Err: errors.New(refusal.message)}
 	}
 	return s.runShellForSessionAction(session, action, directory, action.Offer.ShellCommand, sessionActionInputEnvironment(inputValues))
 }
@@ -102,7 +102,7 @@ func (s *Server) runCommandAction(session *store.Session, action store.SessionAc
 // as they do in the agent's shell, AI_AGENT, which deploy-gate writes into the
 // deploy ledger as who deployed, and inputEnvironment: what the person typed
 // into the button's boxes.
-func (s *Server) runShellForSessionAction(session *store.Session, action store.SessionAction, directory, script string, inputEnvironment []string) sessionActionOutcome {
+func (s *Service) runShellForSessionAction(session *store.Session, action store.SessionAction, directory, script string, inputEnvironment []string) SessionActionOutcome {
 	ctx, cancel := context.WithTimeout(context.Background(), sessionActionCommandTimeout)
 	defer cancel()
 	command := exec.CommandContext(ctx, "bash", "-l", "-c", script)
@@ -111,16 +111,16 @@ func (s *Server) runShellForSessionAction(session *store.Session, action store.S
 		"LLM_BRIDGE_SESSION_ID="+session.SessionID,
 		fmt.Sprintf("AI_AGENT=chat button %s confirmed by %s", action.ActionID, describePrincipalForLog(action.RunByPrincipalID)),
 	)
-	command.Env = append(command.Env, s.sessionPostingEnvironmentOfCurrentSpawn(session)...)
+	command.Env = append(command.Env, s.Sessions.SessionPostingEnvironmentOfCurrentSpawn(session)...)
 	command.Env = append(command.Env, inputEnvironment...)
 	output, err := command.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
-		return sessionActionOutcome{output: string(output), err: fmt.Errorf("it ran longer than %s and was killed", sessionActionCommandTimeout)}
+		return SessionActionOutcome{Output: string(output), Err: fmt.Errorf("it ran longer than %s and was killed", sessionActionCommandTimeout)}
 	}
 	if err != nil {
-		return sessionActionOutcome{output: string(output), err: fmt.Errorf("it failed in %s: %w", directory, err)}
+		return SessionActionOutcome{Output: string(output), Err: fmt.Errorf("it failed in %s: %w", directory, err)}
 	}
-	return sessionActionOutcome{output: string(output)}
+	return SessionActionOutcome{Output: string(output)}
 }
 
 // sessionActionModelCallPlan is a model_call resolved: the models it may
@@ -137,8 +137,8 @@ type sessionActionModelCallPlan struct {
 // price and the limit is what the cap buys on the dearest of them. The
 // prompt's input is counted at one token per three bytes, which overcounts
 // English, so the cap holds.
-func (s *Server) sessionActionModelCall(offer msg.SessionActionOffer) (sessionActionModelCallPlan, *sessionActionRefusal) {
-	route, err := s.sessionActionModels.OneShotRoute(offer.Model)
+func (s *Service) sessionActionModelCall(offer msg.SessionActionOffer) (sessionActionModelCallPlan, *sessionActionRefusal) {
+	route, err := s.SessionActionModels().OneShotRoute(offer.Model)
 	if err != nil {
 		var targetError *executors.TargetError
 		if errors.As(err, &targetError) {
@@ -149,7 +149,7 @@ func (s *Server) sessionActionModelCall(offer msg.SessionActionOffer) (sessionAc
 	plan := sessionActionModelCallPlan{route: route, listPricesByModel: map[string][2]float64{}, maximumOutputTokens: sessionActionModelCallMaximumOutputTokens}
 	estimatedInputTokens := float64(len(offer.Message))/3 + 1
 	for _, candidate := range route.Candidates {
-		inputPrice, outputPrice, known := s.sessionActionModels.ModelListPrice(candidate.ModelID)
+		inputPrice, outputPrice, known := s.SessionActionModels().ModelListPrice(candidate.ModelID)
 		if !known || outputPrice <= 0 {
 			return sessionActionModelCallPlan{}, &sessionActionRefusal{http.StatusUnprocessableEntity, "model_has_no_price",
 				fmt.Sprintf("model-store has no list price for %s, so a spending limit on it cannot be kept", candidate.ModelID)}
@@ -178,26 +178,26 @@ func (plan sessionActionModelCallPlan) listPriceOf(modelID string, usage msg.Tok
 	return float64(inputTokens)*prices[0]/1e6 + float64(usage.OutputTokens)*prices[1]/1e6, nil
 }
 
-func (s *Server) modelCallAction(offer msg.SessionActionOffer) sessionActionOutcome {
+func (s *Service) modelCallAction(offer msg.SessionActionOffer) SessionActionOutcome {
 	plan, refusal := s.sessionActionModelCall(offer)
 	if refusal != nil {
-		return sessionActionOutcome{err: errors.New(refusal.message)}
+		return SessionActionOutcome{Err: errors.New(refusal.message)}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
-	response, err := s.sessionActionModels.RunOneShotRoute(ctx, plan.route, msg.OneShotRequest{
+	response, err := s.SessionActionModels().RunOneShotRoute(ctx, plan.route, msg.OneShotRequest{
 		Prompt:    offer.Message,
 		MaxTokens: plan.maximumOutputTokens,
 		Caller:    oneshot.OneShotCallerSessionActionModel,
 	}, nil)
 	if err != nil {
-		return sessionActionOutcome{err: err}
+		return SessionActionOutcome{Err: err}
 	}
 	costUSD, err := plan.listPriceOf(response.Model, response.Usage)
 	if err != nil {
-		return sessionActionOutcome{output: response.Text, err: err}
+		return SessionActionOutcome{Output: response.Text, Err: err}
 	}
-	return sessionActionOutcome{output: response.Text, costUSD: costUSD}
+	return SessionActionOutcome{Output: response.Text, costUSD: costUSD}
 }
 
 // sessionActionReviewSchema forces the reviewer's answer into a verdict and
@@ -227,20 +227,20 @@ Reasons: two or three plain sentences a busy person reads in ten seconds.`
 // reviewSessionActionCommand asks the reviewer model what it makes of a
 // run_command. A reviewer that cannot be reached refuses the offer: a command
 // shown with no review would look reviewed.
-func (s *Server) reviewSessionActionCommand(ctx context.Context, session *store.Session, offer msg.SessionActionOffer, directory string) (*msg.SessionActionReview, *sessionActionRefusal) {
-	modelRole := s.settings.ModelRole(config.SettingSessionActionsReviewModelRole)
+func (s *Service) reviewSessionActionCommand(ctx context.Context, session *store.Session, offer msg.SessionActionOffer, directory string) (*msg.SessionActionReview, *sessionActionRefusal) {
+	modelRole := s.Settings.ModelRole(config.SettingSessionActionsReviewModelRole)
 	if modelRole == "" {
 		return nil, &sessionActionRefusal{http.StatusServiceUnavailable, "no_review_model",
 			"session_actions.review_model_role is empty, so no command can be reviewed, and an unreviewed command is not offered"}
 	}
-	route, err := s.sessionActionModels.OneShotRoute(modelRole)
+	route, err := s.SessionActionModels().OneShotRoute(modelRole)
 	if err != nil {
 		return nil, &sessionActionRefusal{http.StatusServiceUnavailable, "review_model_unresolvable", err.Error()}
 	}
 	ctx, cancel := context.WithTimeout(ctx, sessionActionReviewTimeout)
 	defer cancel()
 	prompt := fmt.Sprintf("Label: %s\nDirectory: %s\nSession: %s\nCommand:\n%s%s", offer.Label, directory, session.SessionID, offer.ShellCommand, describeSessionActionInputs(offer.Inputs))
-	response, err := s.sessionActionModels.RunOneShotRoute(ctx, route, msg.OneShotRequest{
+	response, err := s.SessionActionModels().RunOneShotRoute(ctx, route, msg.OneShotRequest{
 		Prompt:       prompt,
 		SystemPrompt: sessionActionReviewInstructions,
 		Schema:       sessionActionReviewSchema,
@@ -265,61 +265,61 @@ func (s *Server) reviewSessionActionCommand(ctx context.Context, session *store.
 }
 
 // backgroundAgentAction starts a session as a new chat starts
-// (newChatLikeSessionRequest) with the offer's spend ceiling and, when it names one, its model; sends it the
+// (NewChatLikeSessionRequest) with the offer's spend ceiling and, when it names one, its model; sends it the
 // task; and waits for its final reply, which becomes the action's output.
 // The session's id is recorded as soon as it exists, so the chat can show it
 // while it works.
-func (s *Server) backgroundAgentAction(session *store.Session, action store.SessionAction) sessionActionOutcome {
+func (s *Service) backgroundAgentAction(session *store.Session, action store.SessionAction) SessionActionOutcome {
 	offer := action.Offer
-	harnessConfig, err := harnessConfigWithModel(nil, offer.Model)
+	harnessConfig, err := HarnessConfigWithModel(nil, offer.Model)
 	if err != nil {
-		return sessionActionOutcome{err: err}
+		return SessionActionOutcome{Err: err}
 	}
 	ceiling := offer.MaximumCostUSD
-	request := newChatLikeSessionRequest(session, offer.Label)
+	request := NewChatLikeSessionRequest(session, offer.Label)
 	request.Type = msg.SessionTypeAutonomous
 	request.Purpose = msg.PurposeSessionAction
 	request.Origin = "llm-bridge-server"
 	request.HarnessConfig = harnessConfig
 	request.MaxBudget = &ceiling
-	status, body := s.serveInternally(http.MethodPost, "/sessions", request)
+	status, body := s.ServeInternally(http.MethodPost, "/sessions", request)
 	if status != http.StatusCreated && status != http.StatusOK {
-		return sessionActionOutcome{output: string(body), err: fmt.Errorf("the background session was refused with %d", status)}
+		return SessionActionOutcome{Output: string(body), Err: fmt.Errorf("the background session was refused with %d", status)}
 	}
 	var created store.Session
 	if err := json.Unmarshal(body, &created); err != nil || created.SessionID == "" {
-		return sessionActionOutcome{output: string(body), err: fmt.Errorf("the created session's record does not name it: %v", err)}
+		return SessionActionOutcome{Output: string(body), Err: fmt.Errorf("the created session's record does not name it: %v", err)}
 	}
 	// Before the task is sent, so the session never runs without the limits
 	// of the connected server its offering session was started through.
-	if _, err := s.store.CopySessionPeerOrigin(session.SessionID, created.SessionID); err != nil {
-		return sessionActionOutcome{resultSessionID: created.SessionID, err: fmt.Errorf("session %s was created but its peer origin was not copied, so the task was not sent: %w", created.SessionID, err)}
+	if _, err := s.Store.CopySessionPeerOrigin(session.SessionID, created.SessionID); err != nil {
+		return SessionActionOutcome{ResultSessionID: created.SessionID, Err: fmt.Errorf("session %s was created but its peer origin was not copied, so the task was not sent: %w", created.SessionID, err)}
 	}
 
 	// Subscribed before the task is sent, so its reply cannot slip past.
-	events := s.harness.Subscribe(created.SessionID)
-	defer s.harness.Unsubscribe(created.SessionID, events)
+	events := s.Harness.Subscribe(created.SessionID)
+	defer s.Harness.Unsubscribe(created.SessionID, events)
 
-	if recorded, err := s.store.SetSessionActionResultSession(session.SessionID, action.ActionID, created.SessionID); err != nil {
+	if recorded, err := s.Store.SetSessionActionResultSession(session.SessionID, action.ActionID, created.SessionID); err != nil {
 		log.Printf("[session-actions] ERROR %s: %v", action.ActionID, err)
 	} else if err := s.broadcastSessionAction(recorded); err != nil {
 		log.Printf("[session-actions] ERROR %s: started-session event not written: %v", action.ActionID, err)
 	}
-	if output, err := s.sendMessageInternally(created.SessionID, offer.Message); err != nil {
-		return sessionActionOutcome{output: output, resultSessionID: created.SessionID, err: fmt.Errorf("session %s was created but the task was not sent: %w", created.SessionID, err)}
+	if output, err := s.SendMessageInternally(created.SessionID, offer.Message); err != nil {
+		return SessionActionOutcome{Output: output, ResultSessionID: created.SessionID, Err: fmt.Errorf("session %s was created but the task was not sent: %w", created.SessionID, err)}
 	}
-	return s.waitForFinalReply(created.SessionID, events)
+	return s.WaitForFinalReply(created.SessionID, events)
 }
 
-// waitForFinalReply reads a session's events until its turn ends. The reading
+// WaitForFinalReply reads a session's events until its turn ends. The reading
 // is fast on purpose: the subscription drops events a slow reader misses.
-func (s *Server) waitForFinalReply(sessionID string, events chan harness.StoredEvent) sessionActionOutcome {
+func (s *Service) WaitForFinalReply(sessionID string, events chan harness.StoredEvent) SessionActionOutcome {
 	deadline := time.After(sessionActionBackgroundAgentTimeout)
 	for {
 		select {
 		case event, open := <-events:
 			if !open {
-				return sessionActionOutcome{resultSessionID: sessionID, err: errors.New("the session's event stream closed before its final reply")}
+				return SessionActionOutcome{ResultSessionID: sessionID, Err: errors.New("the session's event stream closed before its final reply")}
 			}
 			switch event.Type {
 			case msg.EventResult:
@@ -327,28 +327,28 @@ func (s *Server) waitForFinalReply(sessionID string, events chan harness.StoredE
 					continue
 				}
 				if event.Result.IsError {
-					return sessionActionOutcome{output: event.Result.Text, resultSessionID: sessionID, err: errors.New("the session's turn ended in an error")}
+					return SessionActionOutcome{Output: event.Result.Text, ResultSessionID: sessionID, Err: errors.New("the session's turn ended in an error")}
 				}
-				return sessionActionOutcome{output: event.Result.Text, resultSessionID: sessionID}
+				return SessionActionOutcome{Output: event.Result.Text, ResultSessionID: sessionID}
 			case msg.EventError:
 				if event.Error != nil && !event.Error.Retryable {
-					return sessionActionOutcome{output: event.Error.Message, resultSessionID: sessionID, err: fmt.Errorf("the session failed: %s", event.Error.Code)}
+					return SessionActionOutcome{Output: event.Error.Message, ResultSessionID: sessionID, Err: fmt.Errorf("the session failed: %s", event.Error.Code)}
 				}
 			case msg.EventTurnComplete:
-				return sessionActionOutcome{resultSessionID: sessionID,
-					err: errors.New("the session's turn ended without a final reply this server saw; open the session to read it")}
+				return SessionActionOutcome{ResultSessionID: sessionID,
+					Err: errors.New("the session's turn ended without a final reply this server saw; open the session to read it")}
 			}
 		case <-deadline:
-			return sessionActionOutcome{resultSessionID: sessionID,
-				err: fmt.Errorf("no final reply within %s; the session is still open", sessionActionBackgroundAgentTimeout)}
+			return SessionActionOutcome{ResultSessionID: sessionID,
+				Err: fmt.Errorf("no final reply within %s; the session is still open", sessionActionBackgroundAgentTimeout)}
 		}
 	}
 }
 
-// harnessConfigWithModel is config with its model replaced by model, and the
+// HarnessConfigWithModel is config with its model replaced by model, and the
 // pinned selection dropped so the create resolves the new one. An empty model
 // keeps config as it is.
-func harnessConfigWithModel(config json.RawMessage, model string) (json.RawMessage, error) {
+func HarnessConfigWithModel(config json.RawMessage, model string) (json.RawMessage, error) {
 	if model == "" {
 		return config, nil
 	}

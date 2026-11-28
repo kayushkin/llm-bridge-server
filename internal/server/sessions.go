@@ -554,7 +554,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 				"could not read manager_session_id %s, so the session was not created: %v", req.ManagerSessionID, err))
 			return
 		}
-		if scope, restricted := requestcaller.SessionScopeRestrictingRequest(r); restricted && !s.sessionIsInScope(parent, scope) {
+		if scope, restricted := requestcaller.SessionScopeRestrictingRequest(r); restricted && !s.SessionIsInScope(parent, scope) {
 			caller, _ := requestcaller.FromRequest(r)
 			drives, err := s.callerStartedSessionAndMayDriveIt(r.Context(), caller, parent)
 			if err != nil {
@@ -780,7 +780,7 @@ func (s *Server) handleStopSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
-	if err := s.stopSession(bridgeID); err != nil {
+	if err := s.StopSession(bridgeID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -804,9 +804,9 @@ func (s *Server) recordSpawnFailure(sess *store.Session, spawnErr error) {
 	}
 }
 
-// stopSession kills a session's harness process and marks it aborted. It is
+// StopSession kills a session's harness process and marks it aborted. It is
 // what POST /sessions/{id}/stop does, and what a stop_session action runs.
-func (s *Server) stopSession(bridgeID string) error {
+func (s *Server) StopSession(bridgeID string) error {
 	if err := s.harness.Kill(bridgeID); err != nil {
 		// Process might not be running, just update state
 	}

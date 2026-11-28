@@ -94,7 +94,7 @@ func (s *Server) holdRestrictedSessionToItsAllowList(sess *store.Session, report
 }
 
 func (s *Server) stopSessionOffItsAllowList(sessionID string) {
-	if err := s.stopSession(sessionID); err != nil {
+	if err := s.StopSession(sessionID); err != nil {
 		log.Printf("[harness-tools] ERROR session %s: stopping it failed: %v", sessionID, err)
 	}
 }

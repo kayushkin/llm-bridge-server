@@ -13,6 +13,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/chatlinks"
 	"github.com/kayushkin/llm-bridge-server/internal/machines"
 	"github.com/kayushkin/llm-bridge-server/internal/machines/machineroutes"
+	"github.com/kayushkin/llm-bridge-server/internal/sessionactions"
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/briefs"
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/messagesender"
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/sessionfiles"
@@ -51,6 +52,18 @@ func (s *Server) composeServices() {
 	s.modelCredentials = &modelcredentials.Service{Dependencies: modelcredentials.Dependencies{
 		AuthClient: func() *authstoreclient.Client { return s.authClient },
 		ModelStore: func() *models.Store { return s.modelStore },
+	}}
+	s.sessionActions = &sessionactions.Service{Dependencies: sessionactions.Dependencies{
+		Harness:                s.harness,
+		HarnessStore:           func() *machines.Store { return s.harnessStore },
+		ModelStore:             func() *models.Store { return s.modelStore },
+		Mux:                    s.mux,
+		SchedulerMountPrefix:   schedulerMountPrefix,
+		RepoRegistryForDeploys: func() sessionactions.RepoRegistryForDeploys { return s.repoRegistryForDeploys },
+		SessionActionModels:    func() sessionactions.SessionActionModels { return s.sessionActionModels },
+		Settings:               s.settings,
+		Store:                  s.store,
+		Sessions:               s,
 	}}
 	s.operationRoutes = &operationroutes.Service{Dependencies: operationroutes.Dependencies{
 		GrantChecker:   s.grantChecker,

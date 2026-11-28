@@ -1,4 +1,4 @@
-package server
+package sessionactions
 
 // Text boxes on a run_command or send_to_session button (msg.SessionActionInput).
 //
@@ -129,18 +129,18 @@ func sessionActionInputEnvironment(values map[string]string) []string {
 	return environment
 }
 
-// blankSecretSessionActionInputs replaces every secret value in an outcome's
+// BlankSecretSessionActionInputs replaces every secret value in an outcome's
 // output and error with a marker, so a command that printed one does not put
 // it in the record, the event or the chat.
-func blankSecretSessionActionInputs(outcome sessionActionOutcome, inputs []msg.SessionActionInput, values map[string]string) sessionActionOutcome {
+func BlankSecretSessionActionInputs(outcome SessionActionOutcome, inputs []msg.SessionActionInput, values map[string]string) SessionActionOutcome {
 	for _, input := range inputs {
 		value := values[input.Name]
 		if !input.Secret || len([]rune(value)) < minimumBlankedSecretCharacters {
 			continue
 		}
-		outcome.output = strings.ReplaceAll(outcome.output, value, hiddenSessionActionInput)
-		if outcome.err != nil && strings.Contains(outcome.err.Error(), value) {
-			outcome.err = errors.New(strings.ReplaceAll(outcome.err.Error(), value, hiddenSessionActionInput))
+		outcome.Output = strings.ReplaceAll(outcome.Output, value, hiddenSessionActionInput)
+		if outcome.Err != nil && strings.Contains(outcome.Err.Error(), value) {
+			outcome.Err = errors.New(strings.ReplaceAll(outcome.Err.Error(), value, hiddenSessionActionInput))
 		}
 	}
 	return outcome
@@ -158,10 +158,10 @@ func sessionActionMessageInputReferenceName(submatches []string) string {
 	return submatches[2]
 }
 
-// sessionActionMessageInputsProblem says what is wrong with a send_to_session
+// SessionActionMessageInputsProblem says what is wrong with a send_to_session
 // message and its boxes, or "": no box may be secret, every box must be named
 // in the message, and the message may name no box the button does not have.
-func sessionActionMessageInputsProblem(message string, inputs []msg.SessionActionInput) string {
+func SessionActionMessageInputsProblem(message string, inputs []msg.SessionActionInput) string {
 	declared := map[string]bool{}
 	for _, input := range inputs {
 		if input.Secret {
@@ -185,10 +185,10 @@ func sessionActionMessageInputsProblem(message string, inputs []msg.SessionActio
 	return ""
 }
 
-// fillSessionActionMessageInputs puts each typed value in the place the
+// FillSessionActionMessageInputs puts each typed value in the place the
 // message names it. The offer was checked to name only its own boxes, and the
 // confirm to fill every one.
-func fillSessionActionMessageInputs(message string, values map[string]string) string {
+func FillSessionActionMessageInputs(message string, values map[string]string) string {
 	return sessionActionMessageInputReferencePattern.ReplaceAllStringFunc(message, func(reference string) string {
 		return values[sessionActionMessageInputReferenceName(sessionActionMessageInputReferencePattern.FindStringSubmatch(reference))]
 	})

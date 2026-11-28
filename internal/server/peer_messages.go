@@ -1178,7 +1178,7 @@ func (s *Server) startPeerMessageSessionOnInstance(message store.PeerMessage, co
 		Purpose:     msg.PurposeChat,
 		Origin:      peerMessageOrigin,
 	}
-	status, body := s.serveInternally(http.MethodPost, "/sessions", create)
+	status, body := s.sessionActions.ServeInternally(http.MethodPost, "/sessions", create)
 	if status != http.StatusCreated && status != http.StatusOK {
 		return "", http.StatusBadGateway, "session_not_created", fmt.Sprintf("POST /sessions answered %d: %s", status, strings.TrimSpace(string(body)))
 	}
@@ -1191,7 +1191,7 @@ func (s *Server) startPeerMessageSessionOnInstance(message store.PeerMessage, co
 	if err := s.store.SetPeerMessageSession(message.ID, created.SessionID); err != nil {
 		return "", http.StatusInternalServerError, "store_failed", err.Error()
 	}
-	if output, err := s.sendMessageInternally(created.SessionID, prompt); err != nil {
+	if output, err := s.sessionActions.SendMessageInternally(created.SessionID, prompt); err != nil {
 		return "", http.StatusBadGateway, "session_not_sent", fmt.Sprintf("session %s was created but the request was not sent: %v (%s)", created.SessionID, err, output)
 	}
 	return created.SessionID, 0, "", ""

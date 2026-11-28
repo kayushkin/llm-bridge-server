@@ -658,7 +658,7 @@ func (s *Server) peerLevelEffectOf(ctx context.Context, request msg.PeerGrantReq
 		case group.Kind != principals.KindGroup:
 			return peerLevelEffect{}, requestcaller.NewCredentialError(http.StatusBadRequest, "principal_not_a_group", fmt.Sprintf("%s is a %q, not a group", group.ID, group.Kind))
 		case group.DisabledAt != 0:
-			return peerLevelEffect{}, requestcaller.NewCredentialError(http.StatusBadRequest, "principal_disabled", group.ID + " is disabled")
+			return peerLevelEffect{}, requestcaller.NewCredentialError(http.StatusBadRequest, "principal_disabled", group.ID+" is disabled")
 		}
 		return peerLevelEffect{groupPrincipalID: group.ID}, nil
 	}
@@ -861,7 +861,7 @@ func (s *Server) revokeLivePeerGrant(ctx context.Context, connection store.PeerC
 func (s *Server) revokeLivePeerGrantTelling(ctx context.Context, connection store.PeerConnection, administratorID, reason string, tell bool) (store.PeerGrant, string, *requestcaller.CredentialError) {
 	live, err := s.store.LivePeerGrantOfConnection(connection.ID)
 	if errors.Is(err, store.ErrPeerGrantNotFound) {
-		return store.PeerGrant{}, "", requestcaller.NewCredentialError(http.StatusNotFound, "peer_grant_not_found", connection.ID + " gives the other server no access")
+		return store.PeerGrant{}, "", requestcaller.NewCredentialError(http.StatusNotFound, "peer_grant_not_found", connection.ID+" gives the other server no access")
 	}
 	if err != nil {
 		return store.PeerGrant{}, "", requestcaller.NewCredentialError(http.StatusInternalServerError, "store_failed", err.Error())
@@ -894,7 +894,7 @@ func (s *Server) connectionOfConnectionCall(r *http.Request) (store.PeerConnecti
 			return store.PeerConnection{}, requestcaller.NewCredentialError(http.StatusInternalServerError, "store_failed", err.Error())
 		}
 		if connection.RemovedAt != nil {
-			return store.PeerConnection{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "peer_connection_removed", connection.ID + " was removed")
+			return store.PeerConnection{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "peer_connection_removed", connection.ID+" was removed")
 		}
 		return connection, nil
 	}
@@ -907,7 +907,7 @@ func (s *Server) connectionOfConnectionCall(r *http.Request) (store.PeerConnecti
 		return store.PeerConnection{}, credentialError
 	}
 	if connection.Transport != msg.PeerTransportDirect {
-		return store.PeerConnection{}, requestcaller.NewCredentialError(http.StatusConflict, "peer_connection_uses_its_socket", connection.ID + " is dial_out, so its connection calls travel over its socket")
+		return store.PeerConnection{}, requestcaller.NewCredentialError(http.StatusConflict, "peer_connection_uses_its_socket", connection.ID+" is dial_out, so its connection calls travel over its socket")
 	}
 	return connection, nil
 }
@@ -917,17 +917,17 @@ func (s *Server) connectionOfConnectionCall(r *http.Request) (store.PeerConnecti
 func (s *Server) connectionPresentingCredential(r *http.Request) (store.PeerConnection, *requestcaller.CredentialError) {
 	presented := r.Header.Values(peerConnectionCredentialHeader)
 	if len(presented) != 1 || strings.TrimSpace(presented[0]) == "" {
-		return store.PeerConnection{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "peer_connection_credential_missing", "send one " + peerConnectionCredentialHeader)
+		return store.PeerConnection{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "peer_connection_credential_missing", "send one "+peerConnectionCredentialHeader)
 	}
 	connection, err := s.store.GetPeerConnectionByInboundCredentialHash(hashPeerSecret(presented[0]))
 	if errors.Is(err, store.ErrPeerConnectionNotFound) {
-		return store.PeerConnection{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "peer_connection_credential_unknown", peerConnectionCredentialHeader + " names no connection here")
+		return store.PeerConnection{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "peer_connection_credential_unknown", peerConnectionCredentialHeader+" names no connection here")
 	}
 	if err != nil {
 		return store.PeerConnection{}, requestcaller.NewCredentialError(http.StatusInternalServerError, "store_failed", err.Error())
 	}
 	if connection.RemovedAt != nil {
-		return store.PeerConnection{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "peer_connection_removed", connection.ID + " was removed")
+		return store.PeerConnection{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "peer_connection_removed", connection.ID+" was removed")
 	}
 	s.noteOtherServerIdentity(connection.ID, r.Header)
 	return connection, nil

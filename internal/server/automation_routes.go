@@ -5,6 +5,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessionactions"
+
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
 	schedulerapi "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/api"
@@ -22,7 +24,7 @@ import (
 // modules; until then their routes answer 503.
 type automationStores struct {
 	scheduler atomic.Pointer[http.Handler]
-	jobs      atomic.Pointer[schedulerJobs]
+	jobs      atomic.Pointer[sessionactions.SchedulerJobs]
 	ruleStore atomic.Pointer[http.Handler]
 }
 
@@ -37,14 +39,14 @@ func (s *Server) EnableScheduler(scheduler *schedulerapi.Server) {
 	s.enableSchedulerParts(scheduler.Routes(), scheduler)
 }
 
-func (s *Server) enableSchedulerParts(routes http.Handler, jobs schedulerJobs) {
+func (s *Server) enableSchedulerParts(routes http.Handler, jobs sessionactions.SchedulerJobs) {
 	s.automationStores.jobs.Store(&jobs)
 	s.automationStores.scheduler.Store(&routes)
 }
 
-// schedulerJobsInProcess is the scheduler's jobs, or nil while its module is
+// SchedulerJobsInProcess is the scheduler's jobs, or nil while its module is
 // not open.
-func (s *Server) schedulerJobsInProcess() schedulerJobs {
+func (s *Server) SchedulerJobsInProcess() sessionactions.SchedulerJobs {
 	jobs := s.automationStores.jobs.Load()
 	if jobs == nil {
 		return nil

@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessionactions"
+
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/sessionfiles"
 
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads"
@@ -253,9 +255,9 @@ type Server struct {
 	// the routes answer 503 until then. See operations.go.
 	operations *operations.Coordinator
 
-	// sessionActionModels resolves, calls and prices the models session
+	// SessionActionModels resolves, calls and prices the models session
 	// actions use. The server itself, except in tests.
-	sessionActionModels sessionActionModels
+	sessionActionModels sessionactions.SessionActionModels
 
 	// oneShotRouter is where every background model call goes: a model-store
 	// role in, the first of its models that answers out. See
@@ -276,6 +278,7 @@ type Server struct {
 	messageSenders   *messagesender.Senders
 	modelCredentials *modelcredentials.Service
 	oneShot          *oneshot.Service
+	sessionActions   *sessionactions.Service
 	sessionFiles     *sessionfiles.Service
 }
 
@@ -384,7 +387,7 @@ func New(st *store.Store, as *agents.Store, ms *memories.Store, hs *machines.Sto
 	srv.routes()
 	srv.syncHarnessTypes()
 	srv.syncPromptHarnessDeliveries()
-	srv.settleSessionActionsLeftRunning()
+	srv.sessionActions.SettleSessionActionsLeftRunning()
 	srv.syncSourceFolderRegistry()
 	srv.startSnapshotGC()
 	return srv
@@ -472,9 +475,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /sessions/{id}/files-named-by-tools/content", s.handleFileNamedByToolsContent)
 	s.mux.HandleFunc("GET /sessions/{id}/files-named-by-tools/image", s.handleImageNamedByTools)
 	s.chatLinkService.Mount(s.mux)
-	s.mux.HandleFunc("POST /sessions/{id}/actions", s.handleOfferSessionAction)
-	s.mux.HandleFunc("GET /sessions/{id}/actions", s.handleListSessionActions)
-	s.mux.HandleFunc("POST /sessions/{id}/actions/{action_id}/run", s.handleRunSessionAction)
+	s.sessionActions.Mount(s.mux)
 	s.mux.HandleFunc("GET /sessions/{id}/events", s.handleSessionEvents)
 	// Pty-mode session attach. Bidirectional WebSocket bound to the
 	// session's pseudoterminal fd; rejected for sessions started in

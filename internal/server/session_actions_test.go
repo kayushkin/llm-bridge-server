@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessionactions"
+
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/executors"
 	schedulerapi "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/api"
@@ -343,7 +345,7 @@ func TestActionsLeftRunningByAStoppedServerAreSettledAsOutcomeUnknown(t *testing
 	if _, err := st.StartSessionAction("br_buttons", action.ActionID, "principal_000001", time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	srv.settleSessionActionsLeftRunning()
+	srv.sessionActions.SettleSessionActionsLeftRunning()
 	settled, err := st.GetSessionAction("br_buttons", action.ActionID)
 	if err != nil {
 		t.Fatal(err)
@@ -604,18 +606,18 @@ func TestABackgroundAgentsFinalReplyIsItsResult(t *testing.T) {
 	events := make(chan harness.StoredEvent, 8)
 	events <- harness.StoredEvent{Event: msg.Event{Type: msg.EventStream}}
 	events <- harness.StoredEvent{Event: msg.Event{Type: msg.EventResult, Result: &msg.ResultEvent{Text: "Found 3 events"}}}
-	outcome := srv.waitForFinalReply("br_background", events)
-	if outcome.err != nil || outcome.output != "Found 3 events" || outcome.resultSessionID != "br_background" {
+	outcome := srv.sessionActions.WaitForFinalReply("br_background", events)
+	if outcome.Err != nil || outcome.Output != "Found 3 events" || outcome.ResultSessionID != "br_background" {
 		t.Errorf("outcome = %+v", outcome)
 	}
 
 	events = make(chan harness.StoredEvent, 8)
 	events <- harness.StoredEvent{Event: msg.Event{Type: msg.EventTurnComplete}}
-	if outcome := srv.waitForFinalReply("br_background", events); outcome.err == nil {
+	if outcome := srv.sessionActions.WaitForFinalReply("br_background", events); outcome.Err == nil {
 		t.Error("a turn that ended with no reply seen counted as a success")
 	}
 
-	config, err := harnessConfigWithModel(json.RawMessage(`{"permission_mode":"bypassPermissions","model":"old","model_selection":{"model":"old"}}`), "efficient")
+	config, err := sessionactions.HarnessConfigWithModel(json.RawMessage(`{"permission_mode":"bypassPermissions","model":"old","model_selection":{"model":"old"}}`), "efficient")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -641,7 +643,7 @@ func TestANewSessionButtonStartsTheSessionAsANewChatDoes(t *testing.T) {
 		HarnessConfig: json.RawMessage(`{"model":"orchestrator-model","effort":"low","permission_mode":"bypass"}`),
 		MaxBudgetUSD:  4,
 	}
-	request := newChatLikeSessionRequest(offering, "Start: fix the thing")
+	request := sessionactions.NewChatLikeSessionRequest(offering, "Start: fix the thing")
 	if request.WorkingDir != "" || len(request.HarnessConfig) != 0 || request.AgentID != "" || request.BundleID != "" || request.MaxBudget != nil {
 		t.Errorf("the new session took the offering session's working directory, harness config, agent, bundle or ceiling: %+v", request)
 	}

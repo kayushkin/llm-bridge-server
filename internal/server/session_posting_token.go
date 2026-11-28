@@ -174,13 +174,13 @@ func (s *Server) sessionPostingEnvironment(session *store.Session) []string {
 	return s.sessionPostingEnvironmentForSpawn(session, gatewayURL, spawnKey)
 }
 
-// sessionPostingEnvironmentOfCurrentSpawn returns the same variables for the
+// SessionPostingEnvironmentOfCurrentSpawn returns the same variables for the
 // spawn the session already has, without drawing a new one: a button's shell
 // command gets them, so bridge-peer, bridge-button and bridge-share-file work
 // there as they do in the agent's own shell, and the agent's token stays
 // valid. Nothing, with the reason logged, when the session has never been
 // spawned or this server's address is unknown.
-func (s *Server) sessionPostingEnvironmentOfCurrentSpawn(session *store.Session) []string {
+func (s *Server) SessionPostingEnvironmentOfCurrentSpawn(session *store.Session) []string {
 	gatewayURL := s.gatewayURLForSessionAgents()
 	if gatewayURL == "" {
 		log.Printf("[session-posting] %s: neither LLMBRIDGE_PUBLIC_URL nor LLMBRIDGE_LISTEN_ADDR gives this server's address; a button's command cannot post into the session", session.SessionID)

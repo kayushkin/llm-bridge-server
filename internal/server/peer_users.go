@@ -48,8 +48,8 @@ const observeSessionsRelation = "can_observe_sessions_on"
 // and calling the connected server through it.
 const callThroughRelation = "can_call_through"
 
-// sessionIsInScope reports whether a session is one the scope reaches.
-func (s *Server) sessionIsInScope(session *store.Session, scope requestcaller.SessionScope) bool {
+// SessionIsInScope reports whether a session is one the scope reaches.
+func (s *Server) SessionIsInScope(session *store.Session, scope requestcaller.SessionScope) bool {
 	if session == nil || scope.PrincipalID == "" || session.PrincipalID != scope.PrincipalID {
 		return false
 	}
@@ -60,10 +60,10 @@ func (s *Server) sessionIsInScope(session *store.Session, scope requestcaller.Se
 	return err == nil && found && origin.PeerPrincipalID == scope.ThroughPeerPrincipalID
 }
 
-// sessionIDIsInScope is sessionIsInScope for a session id.
+// sessionIDIsInScope is SessionIsInScope for a session id.
 func (s *Server) sessionIDIsInScope(sessionID string, scope requestcaller.SessionScope) bool {
 	session, err := s.store.GetSession(sessionID)
-	return err == nil && s.sessionIsInScope(session, scope)
+	return err == nil && s.SessionIsInScope(session, scope)
 }
 
 // routesNeverObserved are read-only by method and still not observation: the

@@ -103,7 +103,7 @@ func (cache *principalLookupCache) LookUp(ctx context.Context, principalID strin
 // authenticated — a login cookie or a session agent token — into the caller
 // the route rules are applied to.
 func (s *Server) callerActingAsPrincipal(ctx context.Context, principalID string) (requestcaller.Caller, *requestcaller.CredentialError) {
-	return s.callerForPrincipalID(ctx, principalID, "the login names")
+	return s.CallerForPrincipalID(ctx, principalID, "the login names")
 }
 
 // callerAssertedByInternalService turns the principal id a caller presenting
@@ -116,13 +116,13 @@ func (s *Server) callerAssertedByInternalService(ctx context.Context, principalI
 		return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusBadRequest, "invalid_principal_id", fmt.Sprintf(
 			"%s: %q is not a principal-store id (principal_000001); a name or an email is not accepted, because neither is unique", principalIdentityHeader, principalID))
 	}
-	return s.callerForPrincipalID(ctx, principalID, principalIdentityHeader+" names")
+	return s.CallerForPrincipalID(ctx, principalID, principalIdentityHeader+" names")
 }
 
-// callerForPrincipalID reads principalID from principal-store and turns the
+// CallerForPrincipalID reads principalID from principal-store and turns the
 // answer into a caller or the refusal it earns. subjectDescription says where
 // the id came from, so a refusal names the credential that carried it.
-func (s *Server) callerForPrincipalID(ctx context.Context, principalID, subjectDescription string) (requestcaller.Caller, *requestcaller.CredentialError) {
+func (s *Server) CallerForPrincipalID(ctx context.Context, principalID, subjectDescription string) (requestcaller.Caller, *requestcaller.CredentialError) {
 	// New always builds the cache, right beside the cookie codec, so there is
 	// no server that gates a request and cannot read the caller's principal.
 	principal, err := s.principalLookupCache.LookUp(ctx, principalID)
@@ -160,7 +160,7 @@ func (s *Server) callerForPrincipalID(ctx context.Context, principalID, subjectD
 func (s *Server) callerOfPeerToken(ctx context.Context, presentedToken, socketConnectionID string, arrivedOverPeerSocket bool) (requestcaller.Caller, *requestcaller.CredentialError) {
 	grant, err := s.store.GetPeerGrantByTokenHash(hashPeerSecret(presentedToken))
 	if errors.Is(err, store.ErrPeerGrantNotFound) {
-		return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "peer_token_unknown", peerTokenHeader + " is not a peer token this server issued")
+		return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "peer_token_unknown", peerTokenHeader+" is not a peer token this server issued")
 	}
 	if err != nil {
 		return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusInternalServerError, "peer_token_lookup_failed", fmt.Sprintf("could not look up the peer token: %v", err))
@@ -173,7 +173,7 @@ func (s *Server) callerOfPeerToken(ctx context.Context, presentedToken, socketCo
 		return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "peer_token_on_another_connection", fmt.Sprintf(
 			"peer grant %s is on %s, and this request came over %s's socket", grant.ID, grant.ConnectionID, socketConnectionID))
 	}
-	caller, credentialError := s.callerForPrincipalID(ctx, grant.PeerPrincipalID, "peer grant "+grant.ID+" acts as")
+	caller, credentialError := s.CallerForPrincipalID(ctx, grant.PeerPrincipalID, "peer grant "+grant.ID+" acts as")
 	if credentialError != nil {
 		return requestcaller.Caller{}, credentialError
 	}
@@ -204,7 +204,7 @@ func (s *Server) callerForPeerUser(ctx context.Context, peer requestcaller.Calle
 	if err != nil {
 		return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusInternalServerError, "peer_user_mapping_lookup_failed", err.Error())
 	}
-	local, credentialError := s.callerForPrincipalID(ctx, mapping.LocalPrincipalID, "peer user mapping "+mapping.ID+" maps to")
+	local, credentialError := s.CallerForPrincipalID(ctx, mapping.LocalPrincipalID, "peer user mapping "+mapping.ID+" maps to")
 	if credentialError != nil {
 		return requestcaller.Caller{}, credentialError
 	}

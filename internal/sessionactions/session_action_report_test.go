@@ -1,4 +1,4 @@
-package server
+package sessionactions
 
 import (
 	"strings"
@@ -9,7 +9,7 @@ import (
 )
 
 func TestTheReportTellsTheAgentHowItsButtonEnded(t *testing.T) {
-	report := sessionActionReport(store.SessionAction{
+	report := SessionActionReport(store.SessionAction{
 		ActionID: "session_action_000039",
 		Offer:    msg.SessionActionOffer{Label: "Save the Mac password", Type: msg.SessionActionRunCommand},
 		State:    msg.SessionActionSucceeded,
@@ -21,7 +21,7 @@ func TestTheReportTellsTheAgentHowItsButtonEnded(t *testing.T) {
 		}
 	}
 
-	failed := sessionActionReport(store.SessionAction{
+	failed := SessionActionReport(store.SessionAction{
 		ActionID: "session_action_000040", Offer: msg.SessionActionOffer{Label: "Research", Type: msg.SessionActionBackgroundAgent},
 		State: msg.SessionActionFailed, Error: "it ran longer than 1h", ResultSessionID: "br_child",
 	})
@@ -38,7 +38,7 @@ func TestTheReportTellsTheAgentHowItsButtonEnded(t *testing.T) {
 func TestADeployIsNotReportedTwice(t *testing.T) {
 	for _, state := range []msg.SessionActionState{msg.SessionActionSucceeded, msg.SessionActionFailed} {
 		deploy := store.SessionAction{Offer: msg.SessionActionOffer{Type: msg.SessionActionDeploy}, State: state}
-		if sessionActionReportsToItsSession(deploy) {
+		if SessionActionReportsToItsSession(deploy) {
 			t.Errorf("a %s deploy is reported; deploy-gate already reports it", state)
 		}
 	}
@@ -59,14 +59,14 @@ func TestAPressIsReportedWhenItFailsOrTheOfferAskedForItsSuccess(t *testing.T) {
 		{"success of an action offered before the choice existed", nil, msg.SessionActionSucceeded, true},
 	} {
 		action := store.SessionAction{Offer: msg.SessionActionOffer{Type: msg.SessionActionModelCall, ReportSuccess: c.reportSuccess}, State: c.state}
-		if got := sessionActionReportsToItsSession(action); got != c.want {
+		if got := SessionActionReportsToItsSession(action); got != c.want {
 			t.Errorf("%s: reported %v, want %v", c.name, got, c.want)
 		}
 	}
 }
 
 func TestTheReportIsMarkedAsABridgeReport(t *testing.T) {
-	report := sessionActionReport(store.SessionAction{ActionID: "session_action_000042", Offer: msg.SessionActionOffer{Label: "x"}, State: msg.SessionActionFailed})
+	report := SessionActionReport(store.SessionAction{ActionID: "session_action_000042", Offer: msg.SessionActionOffer{Label: "x"}, State: msg.SessionActionFailed})
 	if !strings.HasPrefix(report, `<bridge-report kind="session-action">`) || !strings.HasSuffix(report, "</bridge-report>") {
 		t.Errorf("the report is not one bridge-report block:\n%s", report)
 	}
@@ -75,9 +75,9 @@ func TestTheReportIsMarkedAsABridgeReport(t *testing.T) {
 func TestASecretTypedIntoAButtonNeverReachesTheReport(t *testing.T) {
 	const secret = "correct horse battery staple"
 	inputs := []msg.SessionActionInput{{Name: "PASSWORD", Label: "p", Secret: true}}
-	outcome := blankSecretSessionActionInputs(sessionActionOutcome{output: "echoed " + secret}, inputs, map[string]string{"PASSWORD": secret})
-	report := sessionActionReport(store.SessionAction{ActionID: "session_action_000041", Offer: msg.SessionActionOffer{Label: "x", Inputs: inputs},
-		State: msg.SessionActionSucceeded, Output: outcome.output})
+	outcome := BlankSecretSessionActionInputs(SessionActionOutcome{Output: "echoed " + secret}, inputs, map[string]string{"PASSWORD": secret})
+	report := SessionActionReport(store.SessionAction{ActionID: "session_action_000041", Offer: msg.SessionActionOffer{Label: "x", Inputs: inputs},
+		State: msg.SessionActionSucceeded, Output: outcome.Output})
 	if strings.Contains(report, secret) {
 		t.Errorf("the report carries the secret:\n%s", report)
 	}

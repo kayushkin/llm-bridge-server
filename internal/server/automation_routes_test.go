@@ -84,14 +84,14 @@ func TestTheSchedulerClientReachesTheSchedulerInProcess(t *testing.T) {
 	if created := gated.requestAsServiceWithJSON(t, "POST", "/scheduler/api/jobs", map[string]any{"name": "nightly digest", "schedule": "0 6 * * *", "command": "true"}); created.Code != http.StatusCreated {
 		t.Fatalf("POST a job = %d %s", created.Code, created.Body)
 	}
-	job, refusal := gated.server.schedulerJob(context.Background(), 1)
+	job, refusal := gated.server.sessionActions.SchedulerJob(context.Background(), 1)
 	if refusal != nil || job.Name != "nightly digest" {
 		t.Fatalf("schedulerJob = %+v, %+v", job, refusal)
 	}
-	if _, refusal := gated.server.schedulerJob(context.Background(), 2); refusal == nil || refusal.code != "unknown_record" {
+	if _, refusal := gated.server.sessionActions.SchedulerJob(context.Background(), 2); refusal == nil || refusal.Code != "unknown_record" {
 		t.Errorf("a job the scheduler does not have = %+v, want unknown_record", refusal)
 	}
-	if outcome := gated.server.runSchedulerJobAction(1); outcome.err == nil || !strings.Contains(outcome.output, "runs no scheduler jobs") {
+	if outcome := gated.server.sessionActions.RunSchedulerJobAction(1); outcome.Err == nil || !strings.Contains(outcome.Output, "runs no scheduler jobs") {
 		t.Errorf("a scheduler job action while runs are off = %+v, want the scheduler's 503", outcome)
 	}
 }
