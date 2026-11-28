@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httproutes"
+
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/harnessconfig"
 
 	"github.com/kayushkin/llm-bridge-server/internal/agents/hooks"
@@ -287,7 +289,7 @@ func (s *Server) injectDevinHookSettings(sess *store.Session) error {
 // shell command and returns its stdout. From CC's perspective the exec
 // response is indistinguishable from a local shell hook.
 func (s *Server) buildClaudeCodeSettings(sess *store.Session) (string, error) {
-	base := publicBaseURL(s.cfg.ListenAddr)
+	base := httproutes.PublicBaseURL(s.cfg.ListenAddr)
 	byEvent := make(map[string][]any, 4)
 
 	// Permission gate: a PreToolUse command hook that posts the tool call to
@@ -435,7 +437,7 @@ func (s *Server) buildCodexHookConfig(sess *store.Session) (map[string][]any, er
 // trusts before the session's first turn. An empty or missing variable makes
 // curl fail, and the command then blocks the call like any other failed post.
 func (s *Server) buildPrehookCommandHookTree(sess *store.Session, harness msg.Harness) (map[string][]any, error) {
-	base := publicBaseURL(s.cfg.ListenAddr)
+	base := httproutes.PublicBaseURL(s.cfg.ListenAddr)
 	byEvent := make(map[string][]any, 4)
 
 	// Permission gate. matcher ".*" → fires on every Bash / apply_patch /
@@ -499,7 +501,7 @@ var permissionGateRouteByHarness = map[msg.Harness]string{
 
 // permissionGateURL is the full address of sess's permission gate at route.
 func (s *Server) permissionGateURL(sess *store.Session, route string) string {
-	return fmt.Sprintf("%s/permission/%s/%s", publicBaseURL(s.cfg.ListenAddr), route, escapePathSegment(sess.SessionID))
+	return fmt.Sprintf("%s/permission/%s/%s", httproutes.PublicBaseURL(s.cfg.ListenAddr), route, escapePathSegment(sess.SessionID))
 }
 
 // permissionGateEnvironment returns the variable that tells sess's gate hook
@@ -514,20 +516,6 @@ func (s *Server) permissionGateEnvironment(sess *store.Session) []string {
 		return nil
 	}
 	return []string{permissionGateURLEnvironmentVariable + "=" + s.permissionGateURL(sess, route)}
-}
-
-// publicBaseURL converts a listen address (":8160", "0.0.0.0:8160", or a
-// full URL) into an origin the harness can reach. For bare ports we resolve
-// to localhost since the harness subprocess runs on the same host.
-func publicBaseURL(listenAddr string) string {
-	if strings.HasPrefix(listenAddr, "http://") || strings.HasPrefix(listenAddr, "https://") {
-		return strings.TrimRight(listenAddr, "/")
-	}
-	host := listenAddr
-	if strings.HasPrefix(host, ":") {
-		host = "localhost" + host
-	}
-	return "http://" + host
 }
 
 // escapePathSegment percent-encodes a value so it occupies exactly one path

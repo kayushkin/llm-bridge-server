@@ -34,6 +34,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httproutes"
+
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -197,5 +199,5 @@ func (s *Server) gatewayURLForSessionAgents() string {
 	if s.cfg.ListenAddr == "" {
 		return ""
 	}
-	return publicBaseURL(s.cfg.ListenAddr)
+	return httproutes.PublicBaseURL(s.cfg.ListenAddr)
 }

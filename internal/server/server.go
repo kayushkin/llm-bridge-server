@@ -305,7 +305,7 @@ func New(st *store.Store, as *agents.Store, ms *memories.Store, hs *machines.Sto
 		hookStore:            hks,
 		modelStore:           mds,
 		snapshotStore:        ss,
-		harness:              harness.NewManager(st, cfg.PublicURL, publicBaseURL(cfg.ListenAddr), cfg.PTYRingBufferBytes, authClient),
+		harness:              harness.NewManager(st, cfg.PublicURL, httproutes.PublicBaseURL(cfg.ListenAddr), cfg.PTYRingBufferBytes, authClient),
 		authClient:           authClient,
 		peerSockets:          peers.NewPeerSocketRegistry(),
 		peerRequestsInFlight: peers.NewPeerRequestsInFlight(),

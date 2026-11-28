@@ -964,7 +964,7 @@ func TestHarnessCallbacksAreNotAnsweredThroughThePublicProxy(t *testing.T) {
 		{"POST", "/permission/cc-prehook/br_x"}, {"POST", "/permission/codex-prehook/br_x"},
 		{"POST", "/sidecar/event/br_x"}, {"GET", "/api/harness-proxy/inber/health"},
 	}
-	for _, proxyHeader := range publicProxyHeaders {
+	for _, proxyHeader := range requestcaller.PublicProxyHeaders {
 		for _, route := range callbacks {
 			request := httptest.NewRequest(route.method, route.path, strings.NewReader("{}"))
 			request.Header.Set(proxyHeader, "203.0.113.7")

@@ -107,7 +107,7 @@ func (s *Server) serveDelegatingAgent(w http.ResponseWriter, r *http.Request, pa
 		}
 	case sessionAgentReadsCatalog:
 	case sessionAgentUsesPeerMessaging:
-		if requestCameThroughPublicProxy(r) {
+		if requestcaller.RequestCameThroughPublicProxy(r) {
 			httpjson.WriteJSONError(w, http.StatusForbidden, "session_posting_token_not_public", fmt.Sprintf(
 				"%s takes a session posting token only from this server's own harness children, never through the public proxy", pattern))
 			return
@@ -172,7 +172,7 @@ func delegateRequestRefusal(req *CreateSessionRequest, agentSessionID, agentPrin
 // request that came through the public reverse proxy is refused before
 // anything is read.
 func (s *Server) serveSessionReadingAgent(w http.ResponseWriter, r *http.Request, pattern string, rule routeAccessRule, agentSession *store.Session, caller requestcaller.Caller) {
-	if requestCameThroughPublicProxy(r) {
+	if requestcaller.RequestCameThroughPublicProxy(r) {
 		httpjson.WriteJSONError(w, http.StatusForbidden, "session_posting_token_not_public", fmt.Sprintf(
 			"%s takes a session posting token only from this server's own harness children, never through the public proxy", pattern))
 		return

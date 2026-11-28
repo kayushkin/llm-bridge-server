@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -82,7 +84,7 @@ func TestAnAgentReadsNoSessionThroughThePublicProxy(t *testing.T) {
 	srv, st, _ := testServerWithInstance(t, msg.HarnessMock)
 	newSessionForSignals(t, st, "br_agent", msg.SessionTypeInteractive)
 	token := currentPostingTokenFor(t, srv, "br_agent")
-	for _, header := range publicProxyHeaders {
+	for _, header := range requestcaller.PublicProxyHeaders {
 		request := httptest.NewRequest(http.MethodGet, "/sessions", nil)
 		request.Header.Set("Authorization", "Bearer "+token)
 		request.Header.Set(header, "203.0.113.7")

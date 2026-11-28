@@ -912,7 +912,7 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 	// public reverse proxy carries the headers it sets, and is refused here
 	// whatever else it presents, so a mistake in the proxy's rules cannot open
 	// them. The runner's own routes are exempt (answersThroughPublicProxy).
-	if rule.class == routeHarnessCallback && !rule.answersThroughPublicProxy && requestCameThroughPublicProxy(r) {
+	if rule.class == routeHarnessCallback && !rule.answersThroughPublicProxy && requestcaller.RequestCameThroughPublicProxy(r) {
 		httpjson.WriteJSONError(w, http.StatusForbidden, "harness_callback_not_public", fmt.Sprintf(
 			"%s is called by this host's own processes and is not answered through the public proxy", pattern))
 		return
@@ -1051,7 +1051,7 @@ func (s *Server) administratorOfSessionAgentToken(r *http.Request, pattern strin
 			"a session agent token is accepted on %s only for a principal principal-store marks is_administrator, and %s is not one; anyone's is accepted on %s/, %s/, %s/ and %s/",
 			pattern, caller.PrincipalID, issuesMountPrefix, grantsMountPrefix, mailMountPrefix, referencesMountPrefix))
 	}
-	if requestCameThroughPublicProxy(r) {
+	if requestcaller.RequestCameThroughPublicProxy(r) {
 		return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusForbidden, "session_agent_token_not_public", fmt.Sprintf(
 			"an administrator's session agent token reaches %s only from this host, never through the public proxy", pattern))
 	}
@@ -1066,22 +1066,6 @@ func bearerTokenOf(r *http.Request) string {
 		return ""
 	}
 	return strings.TrimSpace(token)
-}
-
-// publicProxyHeaders are set by the reverse proxy in front of this server on
-// every request it forwards. A harness child, a sidecar or a runner reaching
-// 127.0.0.1 directly or through an SSH tunnel sends none of them.
-var publicProxyHeaders = []string{"X-Forwarded-For", "X-Forwarded-Proto", "X-Real-Ip", "Forwarded"}
-
-// requestCameThroughPublicProxy reports whether any header the public reverse
-// proxy sets is present.
-func requestCameThroughPublicProxy(r *http.Request) bool {
-	for _, name := range publicProxyHeaders {
-		if _, present := r.Header[http.CanonicalHeaderKey(name)]; present {
-			return true
-		}
-	}
-	return false
 }
 
 // refuseUnclassifiedRoute answers a route nobody has written a rule for.

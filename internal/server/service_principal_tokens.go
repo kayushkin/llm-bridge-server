@@ -74,7 +74,7 @@ func mintServicePrincipalToken() (string, error) {
 // principalOfServicePrincipalToken verifies a presented token and returns the
 // principal it acts as.
 func (s *Server) principalOfServicePrincipalToken(ctx context.Context, r *http.Request, token string) (string, *requestcaller.CredentialError) {
-	if requestCameThroughPublicProxy(r) {
+	if requestcaller.RequestCameThroughPublicProxy(r) {
 		return "", requestcaller.NewCredentialError(http.StatusForbidden, "service_principal_token_not_public",
 			"a service principal token is accepted only from this host, never through the public proxy")
 	}

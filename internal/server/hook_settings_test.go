@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httproutes"
+
 	"github.com/kayushkin/llm-bridge-server/internal/agents/hooks"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -334,7 +336,7 @@ func TestPublicBaseURL(t *testing.T) {
 		"https://bridge.local/": "https://bridge.local",
 	}
 	for in, want := range cases {
-		if got := publicBaseURL(in); got != want {
+		if got := httproutes.PublicBaseURL(in); got != want {
 			t.Errorf("publicBaseURL(%q) = %q, want %q", in, got, want)
 		}
 	}
