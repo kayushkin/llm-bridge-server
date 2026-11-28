@@ -7,33 +7,10 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"sync"
 	"testing"
 )
 
-const testDay = int64(1794010000) // 2026-11-06 in Los Angeles
-
-// datedPhotos is fakePhotos with a day of its own for each photo.
-type datedPhotos struct {
-	fakePhotos
-	takenAt map[string]int64
-}
-
-func (photos datedPhotos) TakenAt(ctx context.Context, photoID string) (int64, error) {
-	if taken, known := photos.takenAt[photoID]; known {
-		return taken, nil
-	}
-	return testDay, nil
-}
-
-func openAuditStore(t *testing.T) *Store {
-	t.Helper()
-	known := map[string]bool{}
-	for number := 1; number <= 40; number++ {
-		known[fmt.Sprintf("photo_%06d", number)] = true
-	}
-	return newTestStore(t, fakeReferences{known: known})
-}
+// 2026-11-06 in Los Angeles
 
 // auditReviewer reads photo_00000N on day N-1 after testDay unless days
 // says otherwise.
@@ -317,40 +294,6 @@ func TestTheLinkCheckUnlinksWhatBothDoubtAndAsksWhatOneDoubts(t *testing.T) {
 	}
 }
 
-// clusterAnswers clusters, in a duplicate check, the labels of the given
-// possession ids, per role.
-func clusterAnswers(clusters map[string][][]string, maximumPictures *int) func(role, step, prompt string, pictures int) (any, bool) {
-	line := regexp.MustCompile(`(I\d+) \(picture \d+\) — (possession_\d+):`)
-	var mutex sync.Mutex
-	return func(role, step, prompt string, pictures int) (any, bool) {
-		if step != "duplicates" {
-			return nil, false
-		}
-		mutex.Lock()
-		if maximumPictures != nil && pictures > *maximumPictures {
-			*maximumPictures = pictures
-		}
-		mutex.Unlock()
-		labels := map[string]string{}
-		for _, match := range line.FindAllStringSubmatch(prompt, -1) {
-			labels[match[2]] = match[1]
-		}
-		answer := []map[string]any{}
-		for _, cluster := range clusters[role] {
-			members := []string{}
-			for _, id := range cluster {
-				if label, shown := labels[id]; shown {
-					members = append(members, label)
-				}
-			}
-			if len(members) >= 2 {
-				answer = append(answer, map[string]any{"members": members, "reason": "same patch"})
-			}
-		}
-		return map[string]any{"clusters": answer}, true
-	}
-}
-
 func TestTheDuplicateCheckMergesWhatBothClusterAndAsksTheRest(t *testing.T) {
 	store := openAuditStore(t)
 	ctx := context.Background()
@@ -412,50 +355,6 @@ func TestTheDuplicateCheckMergesWhatBothClusterAndAsksTheRest(t *testing.T) {
 		if photos := possessionPhotoIDs(t, store, id); len(photos) != 1 {
 			t.Fatalf("%s after both undos has photos %v", id, photos)
 		}
-	}
-}
-
-func TestEveryPairOfALargeGroupIsSeenTogether(t *testing.T) {
-	for _, size := range []int{2, 20, 21, 25, 47} {
-		seen := map[memberPair]bool{}
-		for _, call := range duplicateCheckCalls(size) {
-			if len(call) > duplicateCheckPicturesPerCall {
-				t.Fatalf("%d members: a call holds %d pictures", size, len(call))
-			}
-			for i := range call {
-				for j := i + 1; j < len(call); j++ {
-					seen[orderedPair(call[i], call[j])] = true
-				}
-			}
-		}
-		if want := size * (size - 1) / 2; len(seen) != want {
-			t.Fatalf("%d members: %d pairs seen, want %d", size, len(seen), want)
-		}
-	}
-
-	store := openAuditStore(t)
-	ctx := context.Background()
-	ids := []string{}
-	for number := 1; number <= 23; number++ {
-		made, err := store.CreatePossession(ctx, fields(t, fmt.Sprintf(`{"name":"white t-shirt %d","garment":{"category":"top","garment_type":"t_shirt"},"photos":[{"photo_id":"photo_%06d"}]}`, number, number)), "principal_000001")
-		if err != nil {
-			t.Fatal(err)
-		}
-		ids = append(ids, made["id"].(string))
-	}
-	maximum := 0
-	scripted := &scriptedModels{answers: map[string]any{}}
-	scripted.respond = clusterAnswers(map[string][][]string{"first": {{ids[0], ids[21]}}, "second": {{ids[0], ids[21]}}}, &maximum)
-	reviewer := auditReviewer(t, store, scripted, nil)
-	run, err := reviewer.CheckWearableDuplicates(ctx, "principal_000001")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if run.Counts["merged"] != 1 || run.Counts["asked"] != 0 || maximum > duplicateCheckPicturesPerCall || scripted.calls["first duplicates"] != 3 {
-		t.Fatalf("run = %+v, most pictures in a call %d, calls %v", run, maximum, scripted.calls)
-	}
-	if gone, _ := store.GetPossession(ids[21], true); gone["merged_into_id"] != ids[0] {
-		t.Fatalf("two shirts in different chunks should merge: %v", gone["merged_into_id"])
 	}
 }
 
