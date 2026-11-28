@@ -73,35 +73,35 @@ func TestNoDefaultMeansUncapped(t *testing.T) {
 
 // The fire path's announcement of the cap, through run(). The branch that wrote
 // the boundary-value rows declared this line unreachable because it sat inside
-// main()'s tick loop; main has since become run(cfg, modelRoleFor, publish), so it is not.
+// main()'s tick loop; main has since become run(cfg, modelRoleFor, start), so it is not.
 //
 // With no fleet default and no queue card, the session goes out uncapped, and a
 // `> 0` drifted to `>= 0` would announce it as "capped at $0.00" — a cap of zero
 // is what the harness reads as NO cap, so that line would tell the operator the
-// opposite of what happened. The capped run is the comparison: it must publish a
+// opposite of what happened. The capped run is the comparison: it must start a
 // real cap, so a fixture that never reached the fire path cannot pass here.
 func TestTheFirePathAnnouncesAnUncappedSessionAsUncapped(t *testing.T) {
-	fire := func(fleetDefaultUSD float64) (string, *recordingPublisher) {
+	fire := func(fleetDefaultUSD float64) (string, *recordingStarter) {
 		usage := newStubUsage(t, firingLimits())
 		cfg := tickConfig(t, usage.URL(), newStubKanban(t).URL(), newStubSpend(t).URL())
 		cfg.defaultMaxBudgetUSD = fleetDefaultUSD
-		publisher := &recordingPublisher{}
-		out := captureLog(t, func() { run(cfg, defaultLaneModelRole, publisher.publish) })
+		publisher := &recordingStarter{}
+		out := captureLog(t, func() { run(cfg, defaultLaneModelRole, publisher.start) })
 		return out, publisher
 	}
 
 	cappedLog, capped := fire(2.50)
 	if len(capped.budgets) != 1 || capped.budgets[0] != 2.50 {
-		t.Fatalf("the capped run published budgets %v, want [2.50]; the fixture did not "+
+		t.Fatalf("the capped run started budgets %v, want [2.50]; the fixture did not "+
 			"reach the fire path, so the uncapped run below proves nothing:\n%s",
 			capped.budgets, cappedLog)
 	}
 
 	uncappedLog, uncapped := fire(0)
 	if len(uncapped.budgets) != 1 || uncapped.budgets[0] != 0 {
-		t.Fatalf("the uncapped run published budgets %v, want [0]:\n%s", uncapped.budgets, uncappedLog)
+		t.Fatalf("the uncapped run started budgets %v, want [0]:\n%s", uncapped.budgets, uncappedLog)
 	}
 	if !strings.Contains(uncappedLog, "session is UNCAPPED") {
-		t.Errorf("a session published with no cap was not announced as UNCAPPED:\n%s", uncappedLog)
+		t.Errorf("a session started with no cap was not announced as UNCAPPED:\n%s", uncappedLog)
 	}
 }

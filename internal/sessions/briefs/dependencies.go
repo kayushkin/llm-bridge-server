@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
-	"github.com/kayushkin/llm-bridge-server/internal/sessions/sendanswer"
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/sessionanswer"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -31,7 +31,7 @@ type TurnClassifier interface {
 
 // SessionMessenger sends into a session as this server does.
 type SessionMessenger interface {
-	SendMessageFromThisServer(ctx context.Context, sessionID string, req msg.SendMessageRequest, senderPrincipalID string) sendanswer.Answer
+	SendMessageFromThisServer(ctx context.Context, sessionID string, req msg.SendMessageRequest, senderPrincipalID string) sessionanswer.Answer
 }
 
 // Service runs the brief pass and answers the brief routes.

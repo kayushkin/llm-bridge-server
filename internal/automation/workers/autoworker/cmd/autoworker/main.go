@@ -16,10 +16,12 @@
 //     stored settings (autoworker_anthropic_model_role,
 //     autoworker_codex_model_role) and check that the lane's harness can run
 //     the model the role resolves to; a lane that cannot dispatches nothing.
-//  4. Publish a BridgeInbound message on NATS
-//     bridge.inbound targeting the configured llm-bridge instance_id, so the
-//     fresh session shows up in the dash chat UI alongside the user's manual
-//     sessions for that harness instance.
+//  4. Create the session on the configured llm-bridge instance_id and send it
+//     the prompt through the bridge's session API (POST /sessions, POST
+//     /sessions/{id}/send), as the principal
+//     LLM_BRIDGE_START_SESSIONS_AS_PRINCIPAL_ID names, so the fresh session
+//     shows up in the dash chat UI alongside the user's manual sessions for
+//     that harness instance and its agent holds that principal's token.
 //
 // Cooldown state lives in ~/.config/autoworker/state.json (one map of provider
 // → last_fire_unix). Everything else is stateless.
@@ -39,8 +41,6 @@ import (
 	"strings"
 	"time"
 
-	natsbus "github.com/kayushkin/bus"
-	"github.com/kayushkin/bus/messages"
 	schedulerconfig "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/config"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/sessionmodelrole"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/boardvocabulary"
@@ -50,6 +50,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/schedulerjobs"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/schedulersettings"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/sessionstarts"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/workersettings"
 	"github.com/kayushkin/llm-bridge/msg"
 	"github.com/kayushkin/llm-bridge/servicesettings"
@@ -89,22 +90,18 @@ type limitsResponse map[string]*providerLimits
 // providerSpec wires a usage-store provider to the llm-bridge instance that
 // should host each fired session, plus the time window to gate against.
 //
-// All fires publish to messages.BridgeInboundSubject ("bridge.inbound"); the
-// llm-bridge-adapter passes BusSessionID through as the bridge session_id —
-// post session-consolidation (2026-05-09) the two are the same canonical id.
-// The resulting session is visible in the dash chat UI under the chosen
-// instance.
+// Every fire creates its session under an id autoworker mints, so the id it
+// links is the bridge's session id. The resulting session is visible in the
+// dash chat UI under the chosen instance.
 type providerSpec struct {
-	Name         string        // "anthropic" / "codex" — key in limitsResponse
-	Harness      msg.Harness   // llm-bridge harness kind (e.g. "claude_code")
-	InstanceID   string        // llm-bridge instance_id (row in harness-store)
-	Channel      string        // BridgeInbound.Channel metadata (unused for routing)
-	Orchestrator string        // BridgeInbound.Orchestrator metadata
-	WindowKey    string        // "seven_day" or "weekly" in ProviderLimits.Windows
-	SafeStart    int           // minutes past local midnight, inclusive
-	SafeEnd      int           // minutes past local midnight, exclusive
-	WeekdayOnly  bool          // if true, safe window only applies Mon–Fri
-	Cooldown     time.Duration // minimum time between fires
+	Name        string        // "anthropic" / "codex" — key in limitsResponse
+	Harness     msg.Harness   // llm-bridge harness kind (e.g. "claude_code")
+	InstanceID  string        // llm-bridge instance_id (row in harness-store)
+	WindowKey   string        // "seven_day" or "weekly" in ProviderLimits.Windows
+	SafeStart   int           // minutes past local midnight, inclusive
+	SafeEnd     int           // minutes past local midnight, exclusive
+	WeekdayOnly bool          // if true, safe window only applies Mon–Fri
+	Cooldown    time.Duration // minimum time between fires
 	// ModelRoleSetting is the scheduler setting holding the model-store role
 	// this lane's sessions run on. One per lane, because a lane's harness runs
 	// one provider's models: a role whose first model is an OpenAI model cannot
@@ -114,28 +111,24 @@ type providerSpec struct {
 
 var providers = []providerSpec{
 	{
-		Name:         "anthropic",
-		Harness:      msg.HarnessClaudeCode,
-		InstanceID:   "inst-cc-local", // "Clawd" — same instance the user chats in
-		Channel:      "autoworker",
-		Orchestrator: "claude-code",
-		WindowKey:    "seven_day",
-		SafeStart:    0,       // 00:00 PT
-		SafeEnd:      24 * 60, // 24:00 PT — whole day (catch-up before reset)
-		Cooldown:     15 * time.Minute,
+		Name:       "anthropic",
+		Harness:    msg.HarnessClaudeCode,
+		InstanceID: "inst-cc-local", // "Clawd" — same instance the user chats in
+		WindowKey:  "seven_day",
+		SafeStart:  0,       // 00:00 PT
+		SafeEnd:    24 * 60, // 24:00 PT — whole day (catch-up before reset)
+		Cooldown:   15 * time.Minute,
 
 		ModelRoleSetting: schedulerconfig.SettingAutoworkerAnthropicModelRole,
 	},
 	{
-		Name:         "codex",
-		Harness:      msg.HarnessCodex,
-		InstanceID:   "inst-codex-local", // "Jipitee"
-		Channel:      "autoworker",
-		Orchestrator: "codex",
-		WindowKey:    "weekly",
-		SafeStart:    0,      // 00:00 PT
-		SafeEnd:      6 * 60, // 06:00 PT
-		Cooldown:     2 * time.Hour,
+		Name:       "codex",
+		Harness:    msg.HarnessCodex,
+		InstanceID: "inst-codex-local", // "Jipitee"
+		WindowKey:  "weekly",
+		SafeStart:  0,      // 00:00 PT
+		SafeEnd:    6 * 60, // 06:00 PT
+		Cooldown:   2 * time.Hour,
 
 		ModelRoleSetting: schedulerconfig.SettingAutoworkerCodexModelRole,
 	},
@@ -208,7 +201,6 @@ type config struct {
 	// The wiring: service endpoints and the two home-relative paths.
 	// issuesURL holds both the boards and cards and every issue's item, which
 	// is where the spend tree is read.
-	natsURL      string
 	llmBridgeURL string
 	issuesURL    string
 	usageURL     string
@@ -220,6 +212,9 @@ type config struct {
 	// bridgeServicePrincipalToken is what this binary presents to the bridge
 	// as its own principal; the bridge gates every route.
 	bridgeServicePrincipalToken string
+	// sessionPrincipalID is the principal every worker session runs as. A run
+	// that may start one refuses to begin without it.
+	sessionPrincipalID string
 }
 
 // parseFlags builds the flag set and parses args into a config.
@@ -230,7 +225,7 @@ type config struct {
 // been read by anything. That matters more here than in most of these mains:
 // this one decides how much money a dispatched session may spend, and two of
 // its defaults fail silently rather than loudly. -dry-run defaulting on would
-// evaluate every provider, log what it would dispatch, publish nothing and exit
+// evaluate every provider, log what it would dispatch, start nothing and exit
 // 0, which is indistinguishable from a week where no gate opened. A
 // -default-max-budget-usd that drifted off 0 would cap sessions the user never
 // asked to cap, and one that arrived negative is rejected below.
@@ -259,7 +254,7 @@ func parseFlags(args []string, environment servicesettings.Environment, homeDire
 	fs := flag.NewFlagSet("autoworker", flag.ContinueOnError)
 	var c config
 	fs.BoolVar(&c.registerJob, "register", false, "Register (upsert) this binary as a scheduler cron job and exit.")
-	fs.BoolVar(&c.dryRun, "dry-run", false, "Report decisions; do not publish or update state.")
+	fs.BoolVar(&c.dryRun, "dry-run", false, "Report decisions; do not start sessions or update state.")
 	fs.Float64Var(&c.slackPercentPoints, "slack", 15, "Percent points below target before firing.")
 	bridgeURL := settings.String(workersettings.SettingBridgeURL)
 	fs.StringVar(&c.prompt, "prompt", defaultPrompt(bridgestores.IssuesURL(bridgeURL)), "Prompt text sent to the worker agent.")
@@ -270,13 +265,13 @@ func parseFlags(args []string, environment servicesettings.Environment, homeDire
 		return config{}, err
 	}
 
-	c.natsURL = settings.String(workersettings.SettingNATSURL)
 	c.llmBridgeURL = bridgeURL
 	c.issuesURL = bridgestores.IssuesURL(bridgeURL)
 	c.usageURL = bridgestores.UsageURL(bridgeURL)
 	c.schedulerURL = bridgestores.SchedulerURL(bridgeURL)
 	c.modelsURL = bridgestores.ModelsURL(bridgeURL)
 	c.bridgeServicePrincipalToken = settings.String(workersettings.SettingBridgeServicePrincipalToken)
+	c.sessionPrincipalID = settings.String(workersettings.SettingStartSessionsAsPrincipalID)
 	c.statePath = filepath.Join(homeDirectory, ".config", "autoworker", "state.json")
 	c.binaryPath = filepath.Join(homeDirectory, "bin", "autoworker")
 	return c, nil
@@ -293,23 +288,27 @@ func (c config) validate() error {
 	if c.defaultMaxBudgetUSD < 0 {
 		return fmt.Errorf("-default-max-budget-usd must not be negative (got %v)", c.defaultMaxBudgetUSD)
 	}
+	// A dry run and a registration start no session.
+	if !c.dryRun && !c.registerJob {
+		return workersettings.CheckStartSessionsAsPrincipalID(c.sessionPrincipalID)
+	}
 	return nil
 }
 
-// workerPublisher publishes one dispatch and returns the session id it minted.
+// workerStarter starts one dispatch's session and returns the session id it
+// minted.
 //
-// It is a function value rather than a *natsbus.Client because the bus is the
-// one service in a tick that a test cannot stand up. Every other service this
-// binary talks to is reached through a URL in config, so a test points those at
-// httptest and drives the real code. NATS is not one of those, and a test that
-// connected to the real bus to reach the write path would dispatch a real agent
-// session and spend real money. So the bus crosses this seam and nothing else
-// needs to.
-type workerPublisher func(p providerSpec, modelRole, prompt string, maxBudgetUSD float64, workingDir, agentSlug, cardID string) (string, error)
+// It is a function value because starting a session is the one call in a tick
+// a test must never make for real: every other call this binary makes is to a
+// URL in config, so a test points those at httptest and drives the real code,
+// but a test that reached the bridge's session API would dispatch a real agent
+// session and spend real money. So the start crosses this seam and nothing
+// else needs to.
+type workerStarter func(p providerSpec, modelRole, prompt string, maxBudgetUSD float64, workingDir, agentSlug, cardID string) (string, error)
 
 // laneModelRoleReader returns the model-store role a lane's next session runs
 // on, already checked against what the lane's harness can run. It is a seam
-// for the same reason workerPublisher is: a tick test drives the dispatch
+// for the same reason workerStarter is: a tick test drives the dispatch
 // path without standing up the scheduler, model-store and the bridge's
 // harness table as well.
 type laneModelRoleReader func(p providerSpec) (string, error)
@@ -371,31 +370,21 @@ func main() {
 		return
 	}
 
-	// On a dry run nothing is published, and the loop never reaches this: it
+	// On a dry run nothing is started, and the loop never reaches this: it
 	// continues past the dispatch on cfg.dryRun. The stub is here so that a
-	// publisher is never nil, because a nil one would turn a missed guard into a
+	// starter is never nil, because a nil one would turn a missed guard into a
 	// panic rather than into the error the caller already handles.
-	publish := workerPublisher(func(providerSpec, string, string, float64, string, string, string) (string, error) {
-		return "", errors.New("dry run: nothing is published")
+	start := workerStarter(func(providerSpec, string, string, float64, string, string, string) (string, error) {
+		return "", errors.New("dry run: nothing is started")
 	})
-	closeBus := func() {}
 	if !cfg.dryRun {
-		nc, err := natsbus.Connect(natsbus.Options{URL: cfg.natsURL, Name: "autoworker"})
-		if err != nil {
-			log.Fatalf("nats connect: %v", err)
-		}
-		closeBus = nc.Close
-		publish = func(p providerSpec, modelRole, prompt string, maxBudgetUSD float64, workingDir, agentSlug, cardID string) (string, error) {
-			return publishWorker(nc, p, modelRole, prompt, maxBudgetUSD, workingDir, agentSlug, cardID)
+		start = func(p providerSpec, modelRole, prompt string, maxBudgetUSD float64, workingDir, agentSlug, cardID string) (string, error) {
+			return startWorker(func(turn sessionstarts.Turn) error { return sessionstarts.Start(cfg.llmBridgeURL, turn) },
+				p, cfg.sessionPrincipalID, modelRole, prompt, maxBudgetUSD, workingDir, agentSlug, cardID)
 		}
 	}
 
-	// The bus is closed before the exit rather than deferred, because os.Exit
-	// does not run deferred functions and a silently unclosed connection is the
-	// kind of thing that looks fine until the bus runs out of them.
-	code := run(cfg, readLaneModelRole(cfg.schedulerURL, sessionmodelrole.New(cfg.modelsURL, cfg.llmBridgeURL)), publish)
-	closeBus()
-	os.Exit(code)
+	os.Exit(run(cfg, readLaneModelRole(cfg.schedulerURL, sessionmodelrole.New(cfg.modelsURL, cfg.llmBridgeURL)), start))
 }
 
 // run is one tick, and returns the process exit status.
@@ -410,7 +399,7 @@ func main() {
 // no work at all — no timezone, no limits, no state — and exiting 1 already
 // makes those visible. Everything after them is partial, which is what
 // degradations exists for.
-func run(cfg config, modelRoleFor laneModelRoleReader, publish workerPublisher) int {
+func run(cfg config, modelRoleFor laneModelRoleReader, start workerStarter) int {
 	degraded := degradations.New("autoworker")
 
 	loc, err := time.LoadLocation(cfg.timezone)
@@ -498,17 +487,17 @@ func run(cfg config, modelRoleFor laneModelRoleReader, publish workerPublisher) 
 		if queueCard != nil {
 			workingDir, agentSlug, cardID = queueCard.workingDir, queueCard.agentSlug, queueCard.cardID
 		}
-		sessionID, err := publish(p, modelRole, workerPrompt, maxBudgetUSD, workingDir, agentSlug, cardID)
+		sessionID, err := start(p, modelRole, workerPrompt, maxBudgetUSD, workingDir, agentSlug, cardID)
 		if err != nil {
 			// Every gate opened and no worker exists. This is the one shortfall
 			// here that loses the whole point of the tick.
-			log.Printf("[%s] publish failed: %v", d.provider, err)
-			degraded.Record("%s passed every gate and no worker was dispatched: the publish failed (%v)", d.provider, err)
+			log.Printf("[%s] session start failed: %v", d.provider, err)
+			degraded.Record("%s passed every gate and no worker was dispatched: the session start failed (%v)", d.provider, err)
 			continue
 		}
 		st.LastFire[p.Name] = now.Unix()
-		log.Printf("[%s] FIRED worker → bridge.inbound (harness=%s instance=%s role=%s target=%.0f%% actual=%.0f%% queue_card=%s)",
-			d.provider, p.Harness, p.InstanceID, modelRole, d.target, d.actual, queueCardLogID(queueCard))
+		log.Printf("[%s] FIRED worker → session %s (harness=%s instance=%s role=%s target=%.0f%% actual=%.0f%% queue_card=%s)",
+			d.provider, sessionID, p.Harness, p.InstanceID, modelRole, d.target, d.actual, queueCardLogID(queueCard))
 
 		if queueCard != nil && queueClient != nil {
 			if err := markQueueCardDispatched(queueClient, queueCard, p, sessionID, now); err != nil {
@@ -674,7 +663,7 @@ func queueCardLogID(c *queueCandidate) string {
 	return c.cardID
 }
 
-// markQueueCardDispatched performs the post-publish side-effects: attach a
+// markQueueCardDispatched performs the post-dispatch side-effects: attach a
 // session card link, move the card to In Progress, and append a short dispatch
 // note to the noteboard body so the card carries its own audit trail.
 func markQueueCardDispatched(qc *issuesclient.Client, cand *queueCandidate, p providerSpec, sessionID string, now time.Time) error {
@@ -720,7 +709,7 @@ func buildQueuePrompt(issuesURL string, c *queueCandidate) string {
 
 ## Instructions
 1. Do the work described above.
-2. When done, PATCH %s/items/%s with {"status":"done"} and a body update describing what you did. Kanban cards mirror noteboard items, so closing the noteboard item also closes the card.
+2. When done, PATCH %s/items/%s with {"status":"done"} and a body update describing what you did. Send your session's token with it: -H "Authorization: Bearer $LLM_BRIDGE_PRINCIPAL_TOKEN". Kanban cards mirror noteboard items, so closing the noteboard item also closes the card.
 3. If the task is ambiguous in intent or needs user input, leave a body update explaining why and exit; the card stays In Progress and a human will intervene.
 4. If the task is clear in intent but too large to finish in one session, split it into smaller queue cards rather than skipping it — preserve the parent's tags so children stay queued.
 
@@ -999,61 +988,48 @@ func applySessionSpendCeiling(create *msg.CreateSessionRequest, maxBudgetUSD flo
 	return nil
 }
 
-// busPublisher is the whole of what publishWorker needs from the NATS client.
+// startWorker dispatches a worker session through startSession and returns
+// the session id it minted.
 //
-// It is an interface so a test can read the message autoworker actually put on
-// the bus. The session id, the session type and the spend ceiling are WIRE
-// values — nothing downstream re-derives them, and a session id that differs by
-// one character from the one returned leaves the kanban link pointing at a
-// session that does not exist. A test that cannot see the wire pins none of it.
-type busPublisher interface {
-	Publish(subject string, data any) error
-}
-
-// *natsbus.Client is the only production implementation.
-var _ busPublisher = (*natsbus.Client)(nil)
-
-// publishWorker dispatches a worker session.
+// startSession is a function so a test can read the turn autoworker actually
+// hands the bridge. The session id, the session type, the principal and the
+// spend ceiling are WIRE values — nothing downstream re-derives them, and a
+// session id that differs by one character from the one returned leaves the
+// kanban link pointing at a session that does not exist. A test that cannot
+// see the wire pins none of it.
 //
-// modelRole is the model-store role the session runs on. maxBudgetUSD, when
-// > 0, becomes the session's per-session cost cap on both the server-side and
-// the harness-native enforcer — see applySessionSpendCeiling.
-func publishWorker(nc busPublisher, p providerSpec, modelRole, prompt string, maxBudgetUSD float64, workingDir, agentSlug, cardID string) (string, error) {
+// principalID is the principal the session runs as. modelRole is the
+// model-store role the session runs on. maxBudgetUSD, when > 0, becomes the
+// session's per-session cost cap on both the server-side and the
+// harness-native enforcer — see applySessionSpendCeiling.
+func startWorker(startSession func(sessionstarts.Turn) error, p providerSpec, principalID, modelRole, prompt string, maxBudgetUSD float64, workingDir, agentSlug, cardID string) (string, error) {
 	now := time.Now().UTC()
-	// Mint the canonical session_id here. Adapter passes BusSessionID through
-	// as bridge-server session_id (see llm-bridge-adapter@73c7cb5), so this
-	// value is also the bridge session_id referenced by kanban session links.
+	// The session id is minted here and the session created under it, so this
+	// value is the bridge session_id referenced by kanban session links.
 	sessionID := fmt.Sprintf("autoworker-%s-%d", p.Name, now.UnixNano())
 
-	create, err := newWorkerSessionRequest(p, now, modelRole, maxBudgetUSD, workingDir, agentSlug, cardID)
+	create, err := newWorkerSessionRequest(p, now, principalID, modelRole, maxBudgetUSD, workingDir, agentSlug, cardID)
 	if err != nil {
 		return "", err
 	}
-
-	in := messages.BridgeInbound{
-		BusSessionID: sessionID,
-		Agent:        "todo-worker",
-		Orchestrator: p.Orchestrator,
-		Channel:      p.Channel,
-		Timestamp:    now,
-		Create:       create,
-		Send: &msg.SendMessageRequest{
-			Message: prompt,
-		},
-	}
-	if err := nc.Publish(messages.BridgeInboundSubject, in); err != nil {
+	if err := startSession(sessionstarts.Turn{SessionID: sessionID, Create: create, Send: msg.SendMessageRequest{Message: prompt}}); err != nil {
 		return "", err
 	}
 	return sessionID, nil
 }
 
-// newWorkerSessionRequest builds the create request for one worker session.
-// cardID is the queue card the session works, or empty when the queue was
+// newWorkerSessionRequest builds the create request for one worker session,
+// run as principalID. cardID is the queue card the session works, or empty
+// when the queue was
 // empty and the worker runs on the default prompt. modelRole goes into
 // harness_config.model, where llm-bridge-server takes it as the session's own
 // choice, so the bridge's per-harness default never decides the model.
-func newWorkerSessionRequest(p providerSpec, now time.Time, modelRole string, maxBudgetUSD float64, workingDir, agentSlug, cardID string) (*msg.CreateSessionRequest, error) {
+func newWorkerSessionRequest(p providerSpec, now time.Time, principalID, modelRole string, maxBudgetUSD float64, workingDir, agentSlug, cardID string) (*msg.CreateSessionRequest, error) {
+	if principalID == "" {
+		return nil, workersettings.CheckStartSessionsAsPrincipalID(principalID)
+	}
 	create := &msg.CreateSessionRequest{
+		PrincipalID: principalID,
 		Harness:     p.Harness,
 		InstanceID:  p.InstanceID,
 		DisplayName: fmt.Sprintf("autoworker %s %s", p.Name, now.Format("Jan 2 15:04")),
@@ -1165,6 +1141,8 @@ func defaultPrompt(issuesURL string) string {
 
 // defaultPromptFormat is defaultPrompt with the issues address as %[1]s.
 const defaultPromptFormat = `You are the nightly todo-worker. The user is asleep; their subscription budget is under-utilised for this week and I am dispatching you to make useful progress on open todos without disturbing them.
+
+Every call to %[1]s needs your session's token: send -H "Authorization: Bearer $LLM_BRIDGE_PRINCIPAL_TOKEN" with each one.
 
 Steps:
 1. GET %[1]s/items?type=todo&status=open&exclude_tag=autoworker&exclude_tag=personal&sort=priority&limit=200 to read the noteboard todo list. (exclude_tag=autoworker drops machine-generated autoworker dispatch cards, which otherwise saturate the window and hide real todos. exclude_tag=personal drops the user's personal/life todos — those are theirs to do, never yours. sort=priority is what makes step 2 answerable: noteboard's default order is newest-created-first, so a limit applied to it drops the oldest todos whatever their priority, and the long-standing backlog is exactly the oldest part of the list. Keep the limit above the number of open todos; if the response ever comes back full, raise it rather than working from the truncated list.)

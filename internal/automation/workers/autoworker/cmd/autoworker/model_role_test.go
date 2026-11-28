@@ -23,12 +23,12 @@ func TestALaneWhoseModelRoleCannotRunDispatchesNothing(t *testing.T) {
 	refuse := func(p providerSpec) (string, error) {
 		return "", errors.New(`role "balanced" starts a session on gpt-test, and harness claude_code runs only anthropic models`)
 	}
-	pub := &recordingPublisher{}
+	pub := &recordingStarter{}
 	var code int
-	out := captureLog(t, func() { code = run(cfg, refuse, pub.publish) })
+	out := captureLog(t, func() { code = run(cfg, refuse, pub.start) })
 
 	if pub.calls != 0 {
-		t.Errorf("published %d workers on a model the harness cannot run", pub.calls)
+		t.Errorf("started %d workers on a model the harness cannot run", pub.calls)
 	}
 	if code != 1 {
 		t.Errorf("exit %d, want 1", code)

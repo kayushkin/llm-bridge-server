@@ -6,8 +6,13 @@
 > the server authorizes each request, so `SCHEDULER_TOKEN` is gone. It runs no
 > job unless the server's `scheduler.runs.enabled` is on; off, the jobs, holds,
 > runs and stored model roles are read and written and run now answers 503.
-> `scheduler.nats_url` gives agent jobs, event triggers and the bus commands
-> their NATS, and `scheduler.notes_url` the address agent prompts name.
+> `scheduler.nats_url` gives event triggers and the bus commands their NATS,
+> and `scheduler.notes_url` the address agent prompts name. An agent job starts
+> its session through the server's session core in Go (the functions
+> `POST /sessions` and `/send` call), not on NATS, as the principal
+> `scheduler.agent_job_principal_id` names, so its agent gets
+> `LLM_BRIDGE_PRINCIPAL_TOKEN` and `LLM_BRIDGE_GATEWAY_URL`; a job with a
+> workspace fails its run while that setting is empty.
 > `GET /scheduler/settings` describes only the stored model roles.
 > `llm-bridge-server import-scheduler -sqlite <copy> [-newest-runs-per-job N]`
 > copies a standalone scheduler in, keeping every job id, hold and run. The
@@ -17,7 +22,11 @@
 > each is in `internal/automation/workers/<name>/cmd/<name>`, with the packages
 > only it uses beside it and the shared ones in `internal/automation/workers/shared`.
 > They reach every store as a path under llm-bridge-server (`LLM_BRIDGE_URL`)
-> with a service principal token (`LLM_BRIDGE_SERVICE_PRINCIPAL_TOKEN`); see
+> with a service principal token (`LLM_BRIDGE_SERVICE_PRINCIPAL_TOKEN`), and the
+> ones that start sessions (`ask`, `autoworker`, `kanban-dispatcher`) call
+> `POST /sessions` and `/send` as the principal
+> `LLM_BRIDGE_START_SESSIONS_AS_PRINCIPAL_ID` names, which their own principal
+> must hold `can_start_sessions_as` on unless it is an administrator; see
 > `workers/shared/workersettings` and `workers/shared/bridgestores`. Everything
 > below about SQLite, the port, the unit and the binaries' old store addresses
 > describes the standalone service.
@@ -151,7 +160,8 @@ list. A binary owns only the names that are its alone — `AUTOWORKER_`,
 `DEMO_MAIL_`, `EMAIL_CLASSIFIER_` and `EMAIL_BOARD_ID`, `KANBAN_CLASSIFIER_`,
 `KANBAN_SCOPER_`, `REMINDER_` — and a set variable under one of them that it
 does not declare stops it with exit 1. The bridge address, its token and
-`NATS_URL` are declared and owned by nobody. A binary reads its model role from
+`LLM_BRIDGE_START_SESSIONS_AS_PRINCIPAL_ID` are declared and owned by nobody;
+no binary reads `NATS_URL` any more. A binary reads its model role from
 `<bridge>/scheduler/settings`.
 
 

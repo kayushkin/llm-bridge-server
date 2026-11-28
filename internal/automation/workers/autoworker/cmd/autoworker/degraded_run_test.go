@@ -37,7 +37,7 @@ func TestAWindowMissingFromAFreshSnapshotIsAShortfall(t *testing.T) {
 	cfg := tickConfig(t, usage.URL(), kanban.URL(), spend.URL())
 
 	var code int
-	out := captureLog(t, func() { code = run(cfg, defaultLaneModelRole, (&recordingPublisher{}).publish) })
+	out := captureLog(t, func() { code = run(cfg, defaultLaneModelRole, (&recordingStarter{}).start) })
 
 	if code != 1 {
 		t.Errorf("a provider that was never evaluated exited %d, want 1", code)
@@ -69,7 +69,7 @@ func TestAWindowWithNoResetsAtIsAShortfall(t *testing.T) {
 	cfg := tickConfig(t, usage.URL(), newStubKanban(t).URL(), newStubSpend(t).URL())
 
 	var code int
-	out := captureLog(t, func() { code = run(cfg, defaultLaneModelRole, (&recordingPublisher{}).publish) })
+	out := captureLog(t, func() { code = run(cfg, defaultLaneModelRole, (&recordingStarter{}).start) })
 
 	if code != 1 {
 		t.Errorf("a window with no resets_at exited %d, want 1", code)
@@ -79,14 +79,14 @@ func TestAWindowWithNoResetsAtIsAShortfall(t *testing.T) {
 	}
 }
 
-// TestAFailedPublishIsAShortfall — every gate opened and no worker exists. This
+// TestAFailedSessionStartIsAShortfall — every gate opened and no worker exists. This
 // is the one shortfall that loses the entire point of the tick.
-func TestAFailedPublishIsAShortfall(t *testing.T) {
+func TestAFailedSessionStartIsAShortfall(t *testing.T) {
 	usage := newStubUsage(t, firingLimits())
 	cfg := tickConfig(t, usage.URL(), newStubKanban(t).URL(), newStubSpend(t).URL())
 
 	failing := func(providerSpec, string, string, float64, string, string, string) (string, error) {
-		return "", errors.New("bus refused the publish")
+		return "", errors.New("bridge refused the start")
 	}
 	var code int
 	out := captureLog(t, func() { code = run(cfg, defaultLaneModelRole, failing) })
@@ -95,7 +95,7 @@ func TestAFailedPublishIsAShortfall(t *testing.T) {
 		t.Errorf("a tick that fired nothing exited %d, want 1", code)
 	}
 	line := shortfallLine(t, out)
-	if !strings.Contains(line, "anthropic") || !strings.Contains(line, "bus refused the publish") {
+	if !strings.Contains(line, "anthropic") || !strings.Contains(line, "bridge refused the start") {
 		t.Errorf("the report does not name the provider and the cause: %s", line)
 	}
 }
@@ -110,9 +110,9 @@ func TestADispatchedCardLeftInQueuedIsAShortfall(t *testing.T) {
 	kanban.failMove = 503
 	cfg := tickConfig(t, usage.URL(), kanban.URL(), newStubSpend(t).URL())
 
-	pub := &recordingPublisher{}
+	pub := &recordingStarter{}
 	var code int
-	out := captureLog(t, func() { code = run(cfg, defaultLaneModelRole, pub.publish) })
+	out := captureLog(t, func() { code = run(cfg, defaultLaneModelRole, pub.start) })
 
 	if pub.calls != 1 {
 		t.Fatalf("the worker was dispatched %d times, want 1 — the fixture is not exercising the write path", pub.calls)
@@ -138,9 +138,9 @@ func TestASessionWithNoTelemetryCardIsAShortfall(t *testing.T) {
 	kanban.failCreateCard = 500
 	cfg := tickConfig(t, usage.URL(), kanban.URL(), newStubSpend(t).URL())
 
-	pub := &recordingPublisher{}
+	pub := &recordingStarter{}
 	var code int
-	out := captureLog(t, func() { code = run(cfg, defaultLaneModelRole, pub.publish) })
+	out := captureLog(t, func() { code = run(cfg, defaultLaneModelRole, pub.start) })
 
 	if pub.calls != 1 {
 		t.Fatalf("the worker was dispatched %d times, want 1", pub.calls)
@@ -164,9 +164,9 @@ func TestAnUnreadableQueueIsAShortfall(t *testing.T) {
 	kanban.failQueueBoards = 503
 	cfg := tickConfig(t, usage.URL(), kanban.URL(), newStubSpend(t).URL())
 
-	pub := &recordingPublisher{}
+	pub := &recordingStarter{}
 	var code int
-	out := captureLog(t, func() { code = run(cfg, defaultLaneModelRole, pub.publish) })
+	out := captureLog(t, func() { code = run(cfg, defaultLaneModelRole, pub.start) })
 
 	if pub.calls != 1 {
 		t.Fatalf("the worker was dispatched %d times, want 1", pub.calls)
@@ -200,7 +200,7 @@ func TestAnUnparkedOverCeilingCardIsAShortfall(t *testing.T) {
 	cfg := tickConfig(t, usage.URL(), kanban.URL(), spend.URL())
 
 	var code int
-	out := captureLog(t, func() { code = run(cfg, defaultLaneModelRole, (&recordingPublisher{}).publish) })
+	out := captureLog(t, func() { code = run(cfg, defaultLaneModelRole, (&recordingStarter{}).start) })
 
 	if !strings.Contains(out, "hold FAILED") {
 		t.Fatalf("fixture did not reach the ceiling branch; log was:\n%s", out)
@@ -224,9 +224,9 @@ func TestAQueueThatCannotBeReadIsAShortfall(t *testing.T) {
 	kanban.failBoardView = 503
 	cfg := tickConfig(t, usage.URL(), kanban.URL(), newStubSpend(t).URL())
 
-	pub := &recordingPublisher{}
+	pub := &recordingStarter{}
 	var code int
-	out := captureLog(t, func() { code = run(cfg, defaultLaneModelRole, pub.publish) })
+	out := captureLog(t, func() { code = run(cfg, defaultLaneModelRole, pub.start) })
 
 	if pub.calls != 1 {
 		t.Fatalf("the worker was dispatched %d times, want 1", pub.calls)
@@ -260,9 +260,9 @@ func TestAnUnsavedCooldownIsAShortfall(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
 
-	pub := &recordingPublisher{}
+	pub := &recordingStarter{}
 	var code int
-	out := captureLog(t, func() { code = run(cfg, defaultLaneModelRole, pub.publish) })
+	out := captureLog(t, func() { code = run(cfg, defaultLaneModelRole, pub.start) })
 
 	if pub.calls != 1 {
 		t.Fatalf("the worker was dispatched %d times, want 1 — the fixture never reached the save", pub.calls)
@@ -295,9 +295,9 @@ func TestAProviderWithinSlackOfTargetIsNotAShortfall(t *testing.T) {
 	usage := newStubUsage(t, limits)
 	cfg := tickConfig(t, usage.URL(), newStubKanban(t).URL(), newStubSpend(t).URL())
 
-	pub := &recordingPublisher{}
+	pub := &recordingStarter{}
 	var code int
-	out := captureLog(t, func() { code = run(cfg, defaultLaneModelRole, pub.publish) })
+	out := captureLog(t, func() { code = run(cfg, defaultLaneModelRole, pub.start) })
 
 	if pub.calls != 0 {
 		t.Errorf("a provider already at target dispatched %d workers", pub.calls)
@@ -326,7 +326,7 @@ func TestAStaleSnapshotIsNotAShortfall(t *testing.T) {
 	cfg := tickConfig(t, usage.URL(), newStubKanban(t).URL(), newStubSpend(t).URL())
 
 	var code int
-	out := captureLog(t, func() { code = run(cfg, defaultLaneModelRole, (&recordingPublisher{}).publish) })
+	out := captureLog(t, func() { code = run(cfg, defaultLaneModelRole, (&recordingStarter{}).start) })
 
 	if code != 0 {
 		t.Errorf("a stale snapshot exited %d, want 0 — it is the documented expected state", code)
@@ -352,7 +352,7 @@ func TestAStaleSnapshotSaysHowStaleItIs(t *testing.T) {
 	usage := newStubUsage(t, limits)
 	cfg := tickConfig(t, usage.URL(), newStubKanban(t).URL(), newStubSpend(t).URL())
 
-	out := captureLog(t, func() { run(cfg, defaultLaneModelRole, (&recordingPublisher{}).publish) })
+	out := captureLog(t, func() { run(cfg, defaultLaneModelRole, (&recordingStarter{}).start) })
 
 	if !strings.Contains(out, "50h0m0s old") {
 		t.Errorf("the stale line does not say how old the snapshot is:\n%s", out)
@@ -370,9 +370,9 @@ func TestAHeldCardIsNotAShortfall(t *testing.T) {
 	})
 	cfg := tickConfig(t, usage.URL(), kanban.URL(), newStubSpend(t).URL())
 
-	pub := &recordingPublisher{}
+	pub := &recordingStarter{}
 	var code int
-	out := captureLog(t, func() { code = run(cfg, defaultLaneModelRole, pub.publish) })
+	out := captureLog(t, func() { code = run(cfg, defaultLaneModelRole, pub.start) })
 
 	if !strings.Contains(out, "HELD") {
 		t.Fatalf("the fixture did not reach the hold gate:\n%s", out)
@@ -390,9 +390,9 @@ func TestAnEmptyQueueIsNotAShortfall(t *testing.T) {
 	usage := newStubUsage(t, firingLimits())
 	cfg := tickConfig(t, usage.URL(), newStubKanban(t).URL(), newStubSpend(t).URL())
 
-	pub := &recordingPublisher{}
+	pub := &recordingStarter{}
 	var code int
-	out := captureLog(t, func() { code = run(cfg, defaultLaneModelRole, pub.publish) })
+	out := captureLog(t, func() { code = run(cfg, defaultLaneModelRole, pub.start) })
 
 	if pub.calls != 1 {
 		t.Errorf("an empty queue dispatched %d workers, want 1 (the default prompt)", pub.calls)
@@ -404,7 +404,7 @@ func TestAnEmptyQueueIsNotAShortfall(t *testing.T) {
 }
 
 // TestAFullyHealthyDispatchIsNotAShortfall — the whole job done end to end:
-// queued card selected, worker published, card moved out of Queued, telemetry
+// queued card selected, worker started, card moved out of Queued, telemetry
 // card created. Without this the two tests above are satisfied by a recorder
 // that never records, because neither of them reaches the write path at all.
 func TestAFullyHealthyDispatchIsNotAShortfall(t *testing.T) {
@@ -412,9 +412,9 @@ func TestAFullyHealthyDispatchIsNotAShortfall(t *testing.T) {
 	kanban := newStubKanban(t, stubQueueCard{cardID: "card-1", title: "do the thing", body: "the details"})
 	cfg := tickConfig(t, usage.URL(), kanban.URL(), newStubSpend(t).URL())
 
-	pub := &recordingPublisher{}
+	pub := &recordingStarter{}
 	var code int
-	out := captureLog(t, func() { code = run(cfg, defaultLaneModelRole, pub.publish) })
+	out := captureLog(t, func() { code = run(cfg, defaultLaneModelRole, pub.start) })
 
 	if pub.calls != 1 {
 		t.Fatalf("dispatched %d workers, want 1", pub.calls)
@@ -434,7 +434,7 @@ func TestAFullyHealthyDispatchIsNotAShortfall(t *testing.T) {
 	requireNoShortfall(t, out)
 }
 
-// TestADryRunIsNotAShortfall — a dry run evaluates every provider, publishes
+// TestADryRunIsNotAShortfall — a dry run evaluates every provider, starts
 // nothing and must stay green, or -dry-run becomes unusable for the thing it is
 // for.
 func TestADryRunIsNotAShortfall(t *testing.T) {
@@ -442,12 +442,12 @@ func TestADryRunIsNotAShortfall(t *testing.T) {
 	cfg := tickConfig(t, usage.URL(), newStubKanban(t).URL(), newStubSpend(t).URL())
 	cfg.dryRun = true
 
-	pub := &recordingPublisher{}
+	pub := &recordingStarter{}
 	var code int
-	out := captureLog(t, func() { code = run(cfg, defaultLaneModelRole, pub.publish) })
+	out := captureLog(t, func() { code = run(cfg, defaultLaneModelRole, pub.start) })
 
 	if pub.calls != 0 {
-		t.Errorf("a dry run published %d workers", pub.calls)
+		t.Errorf("a dry run started %d workers", pub.calls)
 	}
 	if code != 0 {
 		t.Errorf("a dry run exited %d, want 0", code)

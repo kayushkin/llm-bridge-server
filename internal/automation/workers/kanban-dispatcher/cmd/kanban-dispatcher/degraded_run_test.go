@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/bus/messages"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgeauth"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgestores"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/sessionstarts"
 )
 
 // These tests drive whole ticks through run. Each failure the tick cannot do
@@ -53,23 +53,23 @@ func scopedBoard(t *testing.T, columns map[string][]issuesclient.CardView) *fake
 	}
 }
 
-// tick runs one tick against kanban and a bridge holding sessions, publishing
-// into a slice instead of the bus.
-func tick(t *testing.T, kanban *fakeKanban, sessions map[string]string) (error, []messages.BridgeInbound) {
+// tick runs one tick against kanban and a bridge holding sessions, recording
+// the sessions it starts in a slice instead of starting them.
+func tick(t *testing.T, kanban *fakeKanban, sessions map[string]string) (error, []sessionstarts.Turn) {
 	t.Helper()
 	kanbanServer := httptest.NewServer(kanban)
 	defer kanbanServer.Close()
 	bridgeServer := fakeBridge(t, sessions)
 	defer bridgeServer.Close()
-	var published []messages.BridgeInbound
-	err := run(runOptions{ModelRole: "default", ModelRoles: stubModelRoles{},
+	var started []sessionstarts.Turn
+	err := run(runOptions{SessionPrincipalID: testSessionPrincipalID, ModelRole: "default", ModelRoles: stubModelRoles{},
 		BoardID: testBoardID, BridgeURL: bridgeWithIssues(t, kanbanServer, bridgeServer), MaxDispatch: 10,
-		Publish: func(in messages.BridgeInbound) error {
-			published = append(published, in)
+		StartSession: func(in sessionstarts.Turn) error {
+			started = append(started, in)
 			return nil
 		},
 	})
-	return err, published
+	return err, started
 }
 
 func wantShortfall(t *testing.T, err error, phrases ...string) {
@@ -105,10 +105,10 @@ func TestAGoalWhoseScopedTagCannotBeReadFailsTheRun(t *testing.T) {
 func TestAGoalWhoseChildrenCannotBeListedFailsTheRun(t *testing.T) {
 	kanban := scopedBoard(t, map[string][]issuesclient.CardView{columnBacklog: {testCard("card-next", "group:a")}})
 	kanban.failures["children"] = http.StatusServiceUnavailable
-	err, published := tick(t, kanban, nil)
+	err, started := tick(t, kanban, nil)
 	wantShortfall(t, err, "whole Backlog was invisible", "closure pass", "not rolled up")
-	if len(published) != 0 {
-		t.Errorf("nothing can be dispatched under a goal whose children are unknown, published %d", len(published))
+	if len(started) != 0 {
+		t.Errorf("nothing can be dispatched under a goal whose children are unknown, started %d", len(started))
 	}
 }
 
@@ -131,17 +131,17 @@ func TestASiblingThatCannotBeReadForReuseFailsTheRun(t *testing.T) {
 	t.Run("links unreadable", func(t *testing.T) {
 		kanban := board()
 		kanban.failures["links"] = http.StatusServiceUnavailable
-		err, published := tick(t, kanban, nil)
+		err, started := tick(t, kanban, nil)
 		wantShortfall(t, err, "sibling card card-finished could not be read")
-		if len(published) != 1 || published[0].Create == nil {
-			t.Errorf("the card must still be dispatched on a fresh session, published %+v", published)
+		if len(started) != 1 || started[0].Create == nil {
+			t.Errorf("the card must still be dispatched on a fresh session, started %+v", started)
 		}
 	})
 	t.Run("session state unreadable", func(t *testing.T) {
-		err, published := tick(t, board(), map[string]string{"sess-sibling": sessionUnreadable})
+		err, started := tick(t, board(), map[string]string{"sess-sibling": sessionUnreadable})
 		wantShortfall(t, err, "state of sibling session sess-sibling could not be read")
-		if len(published) != 1 || published[0].Create == nil {
-			t.Errorf("the card must still be dispatched on a fresh session, published %+v", published)
+		if len(started) != 1 || started[0].Create == nil {
+			t.Errorf("the card must still be dispatched on a fresh session, started %+v", started)
 		}
 	})
 	t.Run("siblings unlistable", func(t *testing.T) {
@@ -150,37 +150,37 @@ func TestASiblingThatCannotBeReadForReuseFailsTheRun(t *testing.T) {
 		kanban := board()
 		kanban.failures["children"] = http.StatusServiceUnavailable
 		kanban.failAfter = map[string]int{"children": 1}
-		err, published := tick(t, kanban, nil)
+		err, started := tick(t, kanban, nil)
 		wantShortfall(t, err, `group "a": its sibling cards could not be listed`)
-		if len(published) != 1 || published[0].Create == nil {
-			t.Errorf("the card must still be dispatched on a fresh session, published %+v", published)
+		if len(started) != 1 || started[0].Create == nil {
+			t.Errorf("the card must still be dispatched on a fresh session, started %+v", started)
 		}
 	})
 	t.Run("session gone", func(t *testing.T) {
-		err, published := tick(t, board(), nil)
+		err, started := tick(t, board(), nil)
 		if err != nil {
 			t.Errorf("a sibling session the bridge no longer has leaves nothing to revive, so minting fresh is right, got %v", err)
 		}
-		if len(published) != 1 || published[0].Create == nil {
-			t.Errorf("the card must be dispatched on a fresh session, published %+v", published)
+		if len(started) != 1 || started[0].Create == nil {
+			t.Errorf("the card must be dispatched on a fresh session, started %+v", started)
 		}
 	})
 }
 
-func TestARefusedPublishFailsTheRun(t *testing.T) {
+func TestARefusedSessionStartFailsTheRun(t *testing.T) {
 	kanban := scopedBoard(t, map[string][]issuesclient.CardView{columnBacklog: {testCard("card-next", "group:a", "cat:product")}})
 	kanban.effective["card-next"] = productCardDefaults()
 	kanbanServer := httptest.NewServer(kanban)
 	defer kanbanServer.Close()
 	bridgeServer := fakeBridge(t, nil)
 	defer bridgeServer.Close()
-	err := run(runOptions{ModelRole: "default", ModelRoles: stubModelRoles{},
+	err := run(runOptions{SessionPrincipalID: testSessionPrincipalID, ModelRole: "default", ModelRoles: stubModelRoles{},
 		BoardID: testBoardID, BridgeURL: bridgeWithIssues(t, kanbanServer, bridgeServer), MaxDispatch: 10,
-		Publish: func(messages.BridgeInbound) error { return errors.New("bus down") },
+		StartSession: func(sessionstarts.Turn) error { return errors.New("bridge down") },
 	})
-	wantShortfall(t, err, "card-next", "nats publish: bus down")
+	wantShortfall(t, err, "card-next", "start session: bridge down")
 	if len(kanban.linked) != 0 || len(kanban.moved) != 0 {
-		t.Errorf("a card whose publish was refused must not be linked or moved: linked=%v moved=%v", kanban.linked, kanban.moved)
+		t.Errorf("a card whose session start was refused must not be linked or moved: linked=%v moved=%v", kanban.linked, kanban.moved)
 	}
 }
 
@@ -339,12 +339,12 @@ func TestABusyOrStaleSiblingSessionIsNotAShortfall(t *testing.T) {
 			kanban.links = map[string][]issuesclient.CardLink{
 				"card-finished": {{CardID: "card-finished", EntityType: linkTypeSession, EntityRef: "sess-sibling"}},
 			}
-			err, published := tick(t, kanban, map[string]string{"sess-sibling": body})
+			err, started := tick(t, kanban, map[string]string{"sess-sibling": body})
 			if err != nil {
 				t.Errorf("a %s sibling session is not a shortfall, got %v", name, err)
 			}
-			if len(published) != 1 || published[0].Create == nil {
-				t.Errorf("the card must be dispatched on a fresh session, published %+v", published)
+			if len(started) != 1 || started[0].Create == nil {
+				t.Errorf("the card must be dispatched on a fresh session, started %+v", started)
 			}
 		})
 	}
@@ -361,19 +361,19 @@ func TestThePerTickCapIsNotAShortfall(t *testing.T) {
 	defer kanbanServer.Close()
 	bridgeServer := fakeBridge(t, nil)
 	defer bridgeServer.Close()
-	var published []messages.BridgeInbound
-	err := run(runOptions{ModelRole: "default", ModelRoles: stubModelRoles{},
+	var started []sessionstarts.Turn
+	err := run(runOptions{SessionPrincipalID: testSessionPrincipalID, ModelRole: "default", ModelRoles: stubModelRoles{},
 		BoardID: testBoardID, BridgeURL: bridgeWithIssues(t, kanbanServer, bridgeServer), MaxDispatch: 1,
-		Publish: func(in messages.BridgeInbound) error {
-			published = append(published, in)
+		StartSession: func(in sessionstarts.Turn) error {
+			started = append(started, in)
 			return nil
 		},
 	})
 	if err != nil {
 		t.Errorf("a card deferred by the per-tick cap is not a shortfall, got %v", err)
 	}
-	if len(published) != 1 {
-		t.Errorf("published %d, want 1 under a cap of 1", len(published))
+	if len(started) != 1 {
+		t.Errorf("started %d, want 1 under a cap of 1", len(started))
 	}
 }
 

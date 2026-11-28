@@ -640,10 +640,10 @@ func (s *Service) SendMessageInternally(sessionID, message string) (string, erro
 // request authorization — the person who confirmed the action was authorized
 // for its session already — so an action forks and creates exactly as those
 // routes do when a person calls them. Only POST /sessions and
-// POST /sessions/{id}/fork go this way: their handlers decide from the
-// request's caller throughout (delegates, peers, starters, scopes), and
-// splitting them into a function of their own is a change to session
-// creation, not to how it is called. A send calls SendMessageFromThisServer.
+// POST /sessions/{id}/fork go this way. A send calls
+// SendMessageFromThisServer; a create could call CreateSessionFromThisServer,
+// the session core's create for a caller acting as nobody, which is what this
+// request is.
 func (s *Service) ServeInternally(method, path string, body any) (int, []byte) {
 	return s.serveInternallyWithContext(context.Background(), method, path, body)
 }

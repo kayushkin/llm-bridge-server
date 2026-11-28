@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kayushkin/bus/messages"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/sessionmodelrole"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/sessionstarts"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -33,20 +33,20 @@ func (stubModelRoles) Check(role string, harness msg.Harness) (sessionmodelrole.
 // A fresh session carries the role as its own model choice, so the bridge's
 // per-harness default never decides what it runs on.
 func TestAFreshSessionNamesTheModelRole(t *testing.T) {
-	in, err := buildBridgeInbound("tcl-sess", "x", "do it", true, cardSessionSpec{Harness: msg.HarnessClaudeCode, InstanceID: "inst-cc-local"}, "default")
+	in, err := buildSessionTurn("tcl-sess", "x", "do it", true, cardSessionSpec{Harness: msg.HarnessClaudeCode, InstanceID: "inst-cc-local"}, "default", testSessionPrincipalID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(in.Create.HarnessConfig) != `{"model":"default"}` {
 		t.Errorf("harness_config = %s, want the role", in.Create.HarnessConfig)
 	}
-	if _, err := buildBridgeInbound("tcl-sess", "x", "do it", true, cardSessionSpec{}, ""); err == nil {
+	if _, err := buildSessionTurn("tcl-sess", "x", "do it", true, cardSessionSpec{}, "", testSessionPrincipalID); err == nil {
 		t.Error("a fresh session was built with no role")
 	}
 }
 
 // A card whose harness cannot run the role's first model is not dispatched:
-// nothing is published, linked or moved, and the tick names the cause.
+// nothing is started, linked or moved, and the tick names the cause.
 func TestACardWhoseHarnessCannotRunTheRoleIsNotDispatched(t *testing.T) {
 	kanban := scopedBoard(t, map[string][]issuesclient.CardView{
 		columnBacklog: {testCard("card-a", "group:a")},
@@ -57,17 +57,17 @@ func TestACardWhoseHarnessCannotRunTheRoleIsNotDispatched(t *testing.T) {
 	bridgeServer := fakeBridge(t, nil)
 	defer bridgeServer.Close()
 
-	var published []messages.BridgeInbound
-	err := run(runOptions{ModelRole: "openai-only", ModelRoles: stubModelRoles{},
+	var started []sessionstarts.Turn
+	err := run(runOptions{SessionPrincipalID: testSessionPrincipalID, ModelRole: "openai-only", ModelRoles: stubModelRoles{},
 		BoardID: testBoardID, BridgeURL: bridgeWithIssues(t, kanbanServer, bridgeServer), MaxDispatch: 10,
-		Publish: func(in messages.BridgeInbound) error {
-			published = append(published, in)
+		StartSession: func(in sessionstarts.Turn) error {
+			started = append(started, in)
 			return nil
 		},
 	})
 	wantShortfall(t, err, "card-a", "kanban_dispatcher_model_role", "runs only anthropic")
-	if len(published) != 0 || len(kanban.linked) != 0 || len(kanban.moved) != 0 {
-		t.Errorf("published %d, linked %v, moved %v for a card that must not start", len(published), kanban.linked, kanban.moved)
+	if len(started) != 0 || len(kanban.linked) != 0 || len(kanban.moved) != 0 {
+		t.Errorf("started %d, linked %v, moved %v for a card that must not start", len(started), kanban.linked, kanban.moved)
 	}
 }
 

@@ -26,7 +26,7 @@ func instanceOnly() issuesclient.EffectiveDefaults {
 
 // ============================ a tick that cannot start ============================
 
-func TestATickThatCannotReadItsBoardFailsAndPublishesNothing(t *testing.T) {
+func TestATickThatCannotReadItsBoardFailsAndStartsNothing(t *testing.T) {
 	cases := map[string]struct {
 		route  string
 		status int
@@ -41,12 +41,12 @@ func TestATickThatCannotReadItsBoardFailsAndPublishesNothing(t *testing.T) {
 			kanban := scopedBoard(t, map[string][]issuesclient.CardView{columnBacklog: {testCard("card-a", "group:a")}})
 			kanban.effective["card-a"] = instanceOnly()
 			kanban.failures[tc.route] = tc.status
-			err, published := tick(t, kanban, nil)
+			err, started := tick(t, kanban, nil)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("the tick must fail saying %q, got %v", tc.want, err)
 			}
-			if len(published) != 0 {
-				t.Errorf("a tick that could not read its board published %d", len(published))
+			if len(started) != 0 {
+				t.Errorf("a tick that could not read its board started %d", len(started))
 			}
 		})
 	}
@@ -68,23 +68,23 @@ func TestAGoalWithoutTheScopedTagHasNothingDispatched(t *testing.T) {
 	kanban := scopedBoard(t, map[string][]issuesclient.CardView{columnBacklog: {testCard("card-a", "group:a")}})
 	kanban.effective["card-a"] = instanceOnly()
 	kanban.scoped = map[string]bool{}
-	err, published := tick(t, kanban, nil)
+	err, started := tick(t, kanban, nil)
 	if err != nil {
 		t.Errorf("an unscoped goal is not a shortfall, got %v", err)
 	}
-	if len(published) != 0 || len(kanban.moved) != 0 {
-		t.Errorf("an unscoped goal's card was dispatched: published=%d moved=%v", len(published), kanban.moved)
+	if len(started) != 0 || len(kanban.moved) != 0 {
+		t.Errorf("an unscoped goal's card was dispatched: started=%d moved=%v", len(started), kanban.moved)
 	}
 }
 
 func TestADispatchedCardIsLinkedToItsSessionAndMovedToInProgress(t *testing.T) {
 	kanban := scopedBoard(t, map[string][]issuesclient.CardView{columnBacklog: {testCard("card-a", "group:a")}})
 	kanban.effective["card-a"] = instanceOnly()
-	err, published := tick(t, kanban, nil)
-	if err != nil || len(published) != 1 {
-		t.Fatalf("err=%v published=%d, want one dispatch", err, len(published))
+	err, started := tick(t, kanban, nil)
+	if err != nil || len(started) != 1 {
+		t.Fatalf("err=%v started=%d, want one dispatch", err, len(started))
 	}
-	sessionID := published[0].BusSessionID
+	sessionID := started[0].SessionID
 	// scopedBoard's goal is "parent": six bytes, so it is minted whole.
 	if !regexp.MustCompile(`^tcl-parent-a-\d+$`).MatchString(sessionID) {
 		t.Errorf("session id %q must name the parent goal and the group", sessionID)
@@ -135,12 +135,12 @@ func TestASiblingSessionOfUnknownAgeIsNotRevived(t *testing.T) {
 			kanban.links = map[string][]issuesclient.CardLink{
 				"card-finished": {{CardID: "card-finished", EntityType: "session", EntityRef: "sess-sibling"}},
 			}
-			err, published := tick(t, kanban, map[string]string{"sess-sibling": body})
+			err, started := tick(t, kanban, map[string]string{"sess-sibling": body})
 			if err != nil {
 				t.Errorf("a sibling of unknown age is not a shortfall, got %v", err)
 			}
-			if len(published) != 1 || published[0].Create == nil || published[0].BusSessionID == "sess-sibling" {
-				t.Errorf("the card must get a fresh session, published %+v", published)
+			if len(started) != 1 || started[0].Create == nil || started[0].SessionID == "sess-sibling" {
+				t.Errorf("the card must get a fresh session, started %+v", started)
 			}
 		})
 	}
@@ -244,9 +244,9 @@ func TestAFreshIdleSiblingIsStillRevived(t *testing.T) {
 		"card-finished": {{CardID: "card-finished", EntityType: "session", EntityRef: "sess-sibling"}},
 	}
 	body := `{"state":"idle","updated_at":"` + time.Now().Add(-time.Minute).UTC().Format(time.RFC3339) + `","instance_id":"inst-codex-local","agent_id":"northwind-builder","bundle_id":"6"}`
-	err, published := tick(t, kanban, map[string]string{"sess-sibling": body})
-	if err != nil || len(published) != 1 || published[0].BusSessionID != "sess-sibling" || published[0].Create != nil {
-		t.Errorf("an idle sibling updated a minute ago must be revived: err=%v published=%+v", err, published)
+	err, started := tick(t, kanban, map[string]string{"sess-sibling": body})
+	if err != nil || len(started) != 1 || started[0].SessionID != "sess-sibling" || started[0].Create != nil {
+		t.Errorf("an idle sibling updated a minute ago must be revived: err=%v started=%+v", err, started)
 	}
 }
 

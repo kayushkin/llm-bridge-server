@@ -4,7 +4,6 @@ import (
 	"regexp"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -12,7 +11,8 @@ import (
 
 // Ported from 18ecd596, 652acbfd and f119a711 (test/the-mint-site-truncates-a-
 // long-parent-id) onto main's buildBridgeInbound, which takes a cardSessionSpec
-// in place of the old compiled-in harness and instance.
+// in place of the old compiled-in harness and instance, and since 2026-11-27
+// builds a session turn for the bridge's session API, not a NATS message.
 //
 // Every value below is read by another program, so each is written as a
 // literal: a test that compared against the code's own constant would follow
@@ -20,23 +20,23 @@ import (
 
 func TestAFreshSessionIsCreatedWithTheValuesTheBridgeFilesItUnder(t *testing.T) {
 	spec := cardSessionSpec{Harness: msg.HarnessCodex, InstanceID: "inst-codex-local", AgentSlug: "northwind-builder", BundleID: "6", CardID: "card-a"}
-	in, err := buildBridgeInbound("tcl-sess", "tcl a · Sep 25 22:00", "do the thing", true, spec, "default")
+	in, err := buildSessionTurn("tcl-sess", "tcl a · Sep 25 22:00", "do the thing", true, spec, "default", testSessionPrincipalID)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if in.BusSessionID != "tcl-sess" || in.Send == nil || in.Send.Message != "do the thing" {
-		t.Errorf("the message must carry the session id and the prompt, got session %q send %+v", in.BusSessionID, in.Send)
-	}
-	if in.Agent != "tcl-worker" || in.Orchestrator != "task-completion-loop" || in.Channel != "task-completion-loop" {
-		t.Errorf("envelope labels = agent %q orchestrator %q channel %q", in.Agent, in.Orchestrator, in.Channel)
-	}
-	if in.Timestamp.Location() != time.UTC {
-		t.Errorf("the envelope must be stamped in UTC, got %v", in.Timestamp.Location())
+	if in.SessionID != "tcl-sess" || in.Send.Message != "do the thing" {
+		t.Errorf("the turn must carry the session id and the prompt, got session %q send %+v", in.SessionID, in.Send)
 	}
 	c := in.Create
 	if c == nil {
 		t.Fatal("a fresh session must carry a Create")
+	}
+	if c.PrincipalID != "principal_000001" {
+		t.Errorf("principal_id = %q, want the principal the sessions are started as", c.PrincipalID)
+	}
+	if c.Harness != msg.HarnessCodex || c.InstanceID != "inst-codex-local" || c.AgentID != "northwind-builder" || c.BundleID != "6" || c.CardID != "card-a" {
+		t.Errorf("create = %+v, want the card's harness, instance, agent, bundle and card", c)
 	}
 	if c.Purpose != "dispatcher" {
 		t.Errorf("purpose = %q, want dispatcher (llm-bridge's purpose registry)", c.Purpose)
@@ -56,14 +56,14 @@ func TestAFreshSessionIsCreatedWithTheValuesTheBridgeFilesItUnder(t *testing.T) 
 }
 
 func TestARevivedSessionIsSentToAndNotCreatedAgain(t *testing.T) {
-	in, err := buildBridgeInbound("sess-sibling", "x", "next task", false, cardSessionSpec{InstanceID: "inst-cc-local"}, "default")
+	in, err := buildSessionTurn("sess-sibling", "x", "next task", false, cardSessionSpec{InstanceID: "inst-cc-local"}, "default", testSessionPrincipalID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if in.Create != nil {
 		t.Errorf("a revived session exists already; asking the bridge to create it again is wrong, got %+v", in.Create)
 	}
-	if in.Send == nil || in.Send.Message != "next task" {
+	if in.Send.Message != "next task" {
 		t.Errorf("a revived session must still be sent the prompt, got %+v", in.Send)
 	}
 }
@@ -213,3 +213,28 @@ func TestTheGroupTagPrefixIsGroupColon(t *testing.T) {
 		t.Errorf("contextGroupKey = %q, want tag:api", key)
 	}
 }
+
+// A fresh session needs a principal to start as: without one its agent would
+// hold no token for the issue its prompt tells it to close.
+func TestAFreshSessionWithNoPrincipalIsRefused(t *testing.T) {
+	if _, err := buildSessionTurn("tcl-sess", "x", "do it", true, cardSessionSpec{Harness: msg.HarnessClaudeCode, InstanceID: "inst-cc-local"}, "default", ""); err == nil {
+		t.Error("a fresh session was built to run as no principal")
+	}
+	// A revived one already has its principal.
+	if _, err := buildSessionTurn("sess-sibling", "x", "do it", false, cardSessionSpec{}, "default", ""); err != nil {
+		t.Errorf("a revived session needs no principal: %v", err)
+	}
+}
+
+// The worker is told to send its token when it closes its card: the issue
+// is an operator route.
+func TestThePromptTellsTheWorkerToSendItsToken(t *testing.T) {
+	child := testCard("child-7")
+	prompt := buildPrompt(scopedParent{cardID: "goal-1"}, child, groupOf("goal-1", child), "", testIssuesURL)
+	if !strings.Contains(prompt, `-H "Authorization: Bearer $LLM_BRIDGE_PRINCIPAL_TOKEN"`) {
+		t.Errorf("the prompt does not tell the worker to send its token:\n%s", prompt)
+	}
+}
+
+// testSessionPrincipalID is the principal the tests start sessions as.
+const testSessionPrincipalID = "principal_000001"

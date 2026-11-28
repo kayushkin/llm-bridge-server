@@ -14,7 +14,7 @@ import (
 //
 // -register is how this binary gets onto the cron schedule at all, and until
 // this file nothing had ever run it. The suite drives selectQueuedCard,
-// evaluate and publishWorker — every one of them downstream of the tick.
+// evaluate and startWorker — every one of them downstream of the tick.
 // registerSchedulerJob is reached only from main, no test runs main, and the
 // scorer's denominator never mentioned it, so all three of the standing
 // instruments reported the gap as an absence of risk.
