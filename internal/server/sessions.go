@@ -554,7 +554,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 				"could not read manager_session_id %s, so the session was not created: %v", req.ManagerSessionID, err))
 			return
 		}
-		if scope, restricted := requestcaller.SessionScopeRestrictingRequest(r); restricted && !s.SessionIsInScope(parent, scope) {
+		if scope, restricted := requestcaller.SessionScopeRestrictingRequest(r); restricted && !scope.Reaches(s.store, parent) {
 			caller, _ := requestcaller.FromRequest(r)
 			drives, err := s.callerStartedSessionAndMayDriveIt(r.Context(), caller, parent)
 			if err != nil {

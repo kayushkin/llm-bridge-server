@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/peers"
+
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -106,11 +108,11 @@ func TestARequestWaitsForApprovalStartsAFramedSessionAndReportsBack(t *testing.T
 		t.Fatalf("approved = %+v, want approved by the administrator with its session", approved)
 	}
 	session, err := accepting.server.store.GetSession(approved.SessionID)
-	if err != nil || session.Origin != peerMessageOrigin {
-		t.Fatalf("session %s = %+v, %v, want one started with origin %s", approved.SessionID, session, err, peerMessageOrigin)
+	if err != nil || session.Origin != peers.PeerMessageOrigin {
+		t.Fatalf("session %s = %+v, %v, want one started with origin %s", approved.SessionID, session, err, peers.PeerMessageOrigin)
 	}
 	stopHeldPeerRequestSessionAtCleanup(t, accepting, approved.SessionID)
-	frame := framedPeerRequestPrompt(approved, mustPeerConnection(t, accepting, acceptingID), approved.Body)
+	frame := peers.FramedPeerRequestPrompt(approved, mustPeerConnection(t, accepting, acceptingID), approved.Body)
 	for _, want := range []string{"not the operator's own instructions", "**Approved by:** " + administratorTestPrincipalID, incoming[0].ID, request.Prompt} {
 		if !strings.Contains(frame, want) {
 			t.Fatalf("framed prompt lacks %q:\n%s", want, frame)
@@ -124,7 +126,7 @@ func TestARequestWaitsForApprovalStartsAFramedSessionAndReportsBack(t *testing.T
 		t.Fatalf("approving twice = %d %s, want 409", answer.Code, answer.Body)
 	}
 
-	accepting.server.reportPeerRequestTurnEnd(approved.SessionID, &msg.Event{Result: &msg.ResultEvent{Text: "Fixed in llm-bridge-codex@50b8e69."}}, msg.SessionIdle)
+	accepting.server.peers.ReportPeerRequestTurnEnd(approved.SessionID, &msg.Event{Result: &msg.ResultEvent{Text: "Fixed in llm-bridge-codex@50b8e69."}}, msg.SessionIdle)
 	status := waitForPeerMessage(t, initiating, "direction=incoming&kind=status", func(m msg.PeerMessage) bool { return m.InReplyTo == sent.ID })
 	if status.Body.Result != msg.PeerMessageStatusSucceeded || status.Body.Detail != "Fixed in llm-bridge-codex@50b8e69." || status.State != msg.PeerMessageStateDone {
 		t.Fatalf("status on the sender = %+v, want succeeded with the session's reply, threaded to %s", status, sent.ID)
@@ -223,17 +225,17 @@ func TestAnApprovedNoticeRunsTheUpdateAndReportsTheVersions(t *testing.T) {
 func TestAMessageQueuedWhileTheSocketIsClosedGoesWhenItOpens(t *testing.T) {
 	accepting, initiating, acceptingID, initiatingID := connectedPairByDialingOut(t)
 	grantPeerLevel(t, accepting, acceptingID, "messages")
-	initiating.server.peerSockets.stop(initiatingID)
+	initiating.server.peerSockets.Stop(initiatingID)
 	deadline := time.Now().Add(5 * time.Second)
-	for initiating.server.peerSockets.socketOf(initiatingID) != nil && time.Now().Before(deadline) {
+	for initiating.server.peerSockets.SocketOf(initiatingID) != nil && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	queued := sendPeerMessageAsAdministrator(t, initiating, initiatingID, msg.PeerMessageKindRequest, msg.PeerMessageBody{Title: "later", Prompt: "when you wake"}, "")
 	if queued.State != msg.PeerMessageStateQueued || queued.NextAttemptAt == nil || !queued.NextAttemptAt.After(time.Now()) {
 		t.Fatalf("a message with no socket = %+v, want queued with a later attempt", queued)
 	}
-	initiating.server.startPeerDialer(mustPeerConnection(t, initiating, initiatingID))
-	t.Cleanup(func() { initiating.server.peerSockets.stop(initiatingID) })
+	initiating.server.peers.StartPeerDialer(mustPeerConnection(t, initiating, initiatingID))
+	t.Cleanup(func() { initiating.server.peerSockets.Stop(initiatingID) })
 	delivered := waitForPeerMessage(t, initiating, "direction=outgoing", func(m msg.PeerMessage) bool {
 		return m.ID == queued.ID && m.State == msg.PeerMessageStateDelivered
 	})
@@ -290,7 +292,7 @@ func TestAPeerMessageBodyCarriesOnlyItsKindsFields(t *testing.T) {
 		{msg.PeerMessageKindStatus, msg.PeerMessageBody{Result: msg.PeerMessageStatusFailed, Prompt: "p"}, "not prompt"},
 		{"poem", msg.PeerMessageBody{}, "kind is one of"},
 	} {
-		err := validatePeerMessageBody(test.kind, test.body)
+		err := peers.ValidatePeerMessageBody(test.kind, test.body)
 		if test.wrong == "" && err != nil {
 			t.Errorf("%s %+v refused: %v", test.kind, test.body, err)
 		}
@@ -388,8 +390,8 @@ func TestOnAServerWithAnOrchestratorItPlacesWhatAnAdministratorApproved(t *testi
 		t.Fatalf("placed = %+v, want its session, placed by the orchestrator's session with the reason", placed)
 	}
 	session, err := accepting.server.store.GetSession(placed.SessionID)
-	if err != nil || session.InstanceID != "inst_test" || session.Origin != peerMessageOrigin || session.Type != msg.SessionTypeInteractive {
-		t.Fatalf("session %s = %+v, %v, want its own chat on inst_test with origin %s", placed.SessionID, session, err, peerMessageOrigin)
+	if err != nil || session.InstanceID != "inst_test" || session.Origin != peers.PeerMessageOrigin || session.Type != msg.SessionTypeInteractive {
+		t.Fatalf("session %s = %+v, %v, want its own chat on inst_test with origin %s", placed.SessionID, session, err, peers.PeerMessageOrigin)
 	}
 	if answer := accepting.requestAsAdministrator(t, "POST", "/peer-messages/"+id+"/place", place); answer.Code != http.StatusConflict {
 		t.Fatalf("placing twice = %d %s, want 409", answer.Code, answer.Body)
@@ -421,14 +423,14 @@ func TestAPatchStartsOnlyOnThisServersOwnMachine(t *testing.T) {
 		t.Fatal(err)
 	}
 	patch := store.PeerMessage{ID: "peer_message_000001", Kind: msg.PeerMessageKindPatch}
-	if _, code, detail := accepting.server.checkPeerMessageMayStartOn(patch, "inst_media_server"); code != "patch_needs_this_server" {
+	if _, code, detail := accepting.server.peers.CheckPeerMessageMayStartOn(patch, "inst_media_server"); code != "patch_needs_this_server" {
 		t.Fatalf("a patch on a runner's instance = %q (%s), want patch_needs_this_server", code, detail)
 	}
-	if _, code, detail := accepting.server.checkPeerMessageMayStartOn(patch, "inst_test"); code != "" {
+	if _, code, detail := accepting.server.peers.CheckPeerMessageMayStartOn(patch, "inst_test"); code != "" {
 		t.Fatalf("a patch on this server's own instance = %q (%s), want it allowed", code, detail)
 	}
 	request := store.PeerMessage{ID: "peer_message_000002", Kind: msg.PeerMessageKindRequest}
-	if _, code, detail := accepting.server.checkPeerMessageMayStartOn(request, "inst_media_server"); code != "" {
+	if _, code, detail := accepting.server.peers.CheckPeerMessageMayStartOn(request, "inst_media_server"); code != "" {
 		t.Fatalf("a request on a runner's instance = %q (%s), want it allowed", code, detail)
 	}
 }

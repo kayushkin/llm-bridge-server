@@ -1,4 +1,4 @@
-package server
+package peers
 
 import (
 	"context"
@@ -8,14 +8,14 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
 )
 
-// peerRequestsInFlight holds a cancel for every request a peer token is being
+// PeerRequestsInFlight holds a cancel for every request a peer token is being
 // served under right now, by https or over a peer socket. Access is checked
 // once, when a request starts, so without this an event stream opened before
 // a grant was revoked, a connection removed or a user mapping taken away kept
 // flowing after it (found 2026-11-07). Ending access cancels the requests it
 // covered; the other server may reopen a stream, and that request is checked
 // against access as it is now.
-type peerRequestsInFlight struct {
+type PeerRequestsInFlight struct {
 	mutex    sync.Mutex
 	nextID   uint64
 	requests map[uint64]peerRequestInFlight
@@ -32,13 +32,13 @@ type peerRequestInFlight struct {
 	cancel    context.CancelFunc
 }
 
-func newPeerRequestsInFlight() *peerRequestsInFlight {
-	return &peerRequestsInFlight{requests: map[uint64]peerRequestInFlight{}}
+func NewPeerRequestsInFlight() *PeerRequestsInFlight {
+	return &PeerRequestsInFlight{requests: map[uint64]peerRequestInFlight{}}
 }
 
-// track returns r with a context that ending the caller's access cancels,
+// Track returns r with a context that ending the caller's access cancels,
 // and the function that forgets it once the request is served.
-func (inFlight *peerRequestsInFlight) track(r *http.Request, peer *requestcaller.Peer) (*http.Request, func()) {
+func (inFlight *PeerRequestsInFlight) Track(r *http.Request, peer *requestcaller.Peer) (*http.Request, func()) {
 	ctx, cancel := context.WithCancel(r.Context())
 	inFlight.mutex.Lock()
 	inFlight.nextID++
@@ -53,18 +53,18 @@ func (inFlight *peerRequestsInFlight) track(r *http.Request, peer *requestcaller
 	}
 }
 
-// cancelGrant ends every request served under the grant's token and answers
+// CancelGrant ends every request served under the grant's token and answers
 // how many it ended.
-func (inFlight *peerRequestsInFlight) cancelGrant(grantID string) int {
+func (inFlight *PeerRequestsInFlight) CancelGrant(grantID string) int {
 	return inFlight.cancelWhere(func(request peerRequestInFlight) bool { return request.grantID == grantID })
 }
 
-// cancelMapping ends every request acting through one user mapping.
-func (inFlight *peerRequestsInFlight) cancelMapping(mappingID string) int {
+// CancelMapping ends every request acting through one user mapping.
+func (inFlight *PeerRequestsInFlight) CancelMapping(mappingID string) int {
 	return inFlight.cancelWhere(func(request peerRequestInFlight) bool { return request.mappingID == mappingID })
 }
 
-func (inFlight *peerRequestsInFlight) cancelWhere(matches func(peerRequestInFlight) bool) int {
+func (inFlight *PeerRequestsInFlight) cancelWhere(matches func(peerRequestInFlight) bool) int {
 	inFlight.mutex.Lock()
 	defer inFlight.mutex.Unlock()
 	cancelled := 0

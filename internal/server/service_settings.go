@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/peers"
+
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/signals"
 
 	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/operationroutes"
@@ -69,7 +71,7 @@ func (s *Server) wireServiceSettings() {
 		s.settings.SetValidator(key, s.oneShot.CheckSettingNamesAnAssignedModelRole)
 	}
 	s.settings.SetValidator(config.SettingOperationsGrantEnforcement, operationroutes.CheckOperationGrantEnforcementValue)
-	s.settings.SetValidator(config.SettingServerName, checkServerNameValue)
+	s.settings.SetValidator(config.SettingServerName, peers.CheckServerNameValue)
 	s.settings.SetValidator(config.SettingKeepAwakeGraceMinutes, checkKeepAwakeGraceMinutesValue)
 	s.settings.SetValidator(config.SettingSessionHostHoldMinutes, checkSessionHostHoldMinutesValue)
 	// Read when a runner connects, so a change reaches each runner at its
@@ -81,7 +83,7 @@ func (s *Server) wireServiceSettings() {
 	s.settings.OnChange(func(key string) {
 		switch key {
 		case config.SettingServerName:
-			go s.tellConnectedServersThisServersName()
+			go s.peers.TellConnectedServersThisServersName()
 		case config.SettingKeepAwakeEnabled, config.SettingKeepAwakeGraceMinutes:
 			if s.keepAwake != nil {
 				go s.keepAwake.Check()

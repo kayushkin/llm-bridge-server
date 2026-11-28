@@ -64,9 +64,9 @@ func TestASupersedingRequestDeclinesTheWaitingOneOnBothSides(t *testing.T) {
 func TestAMessageStillQueuedIsNeverSentOnceReplaced(t *testing.T) {
 	accepting, initiating, acceptingID, initiatingID := connectedPairByDialingOut(t)
 	grantPeerLevel(t, accepting, acceptingID, "messages")
-	initiating.server.peerSockets.stop(initiatingID)
+	initiating.server.peerSockets.Stop(initiatingID)
 	deadline := time.Now().Add(5 * time.Second)
-	for initiating.server.peerSockets.socketOf(initiatingID) != nil && time.Now().Before(deadline) {
+	for initiating.server.peerSockets.SocketOf(initiatingID) != nil && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	queued := sendSupersedingRequest(t, initiating, initiatingID, "old")
@@ -75,8 +75,8 @@ func TestAMessageStillQueuedIsNeverSentOnceReplaced(t *testing.T) {
 	if cancelled.State != msg.PeerMessageStateFailed || cancelled.SupersededBy != replacement.ID || cancelled.RemoteMessageID != "" {
 		t.Fatalf("the queued one = %+v, want failed, superseded by %s and never sent", cancelled, replacement.ID)
 	}
-	initiating.server.startPeerDialer(mustPeerConnection(t, initiating, initiatingID))
-	t.Cleanup(func() { initiating.server.peerSockets.stop(initiatingID) })
+	initiating.server.peers.StartPeerDialer(mustPeerConnection(t, initiating, initiatingID))
+	t.Cleanup(func() { initiating.server.peerSockets.Stop(initiatingID) })
 	delivered := waitForPeerMessage(t, initiating, "direction=outgoing", func(m msg.PeerMessage) bool {
 		return m.ID == replacement.ID && m.State == msg.PeerMessageStateDelivered
 	})

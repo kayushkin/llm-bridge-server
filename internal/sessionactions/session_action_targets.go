@@ -81,7 +81,7 @@ func (s *Service) sessionPrincipalMayReachTarget(ctx context.Context, session, t
 	if !throughPeer && target.PrincipalID == session.PrincipalID {
 		return true, nil
 	}
-	if throughPeer && s.Sessions.SessionIsInScope(target, requestcaller.SessionScope{PrincipalID: session.PrincipalID, ThroughPeerPrincipalID: origin.PeerPrincipalID}) {
+	if throughPeer && (requestcaller.SessionScope{PrincipalID: session.PrincipalID, ThroughPeerPrincipalID: origin.PeerPrincipalID}).Reaches(s.Store, target) {
 		return true, nil
 	}
 	if session.PrincipalID == "" {

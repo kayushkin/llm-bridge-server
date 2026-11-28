@@ -1,4 +1,4 @@
-package server
+package peers
 
 // Each connected server knows the other by the id the other made for itself,
 // and shows it by the name the other gives itself (server.name). Both travel,
@@ -25,17 +25,17 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// stampThisServersIdentity puts this server's id and name on an outgoing
+// StampThisServersIdentity puts this server's id and name on an outgoing
 // request or answer. An empty name says this server has none.
-func (s *Server) stampThisServersIdentity(header http.Header) {
-	header.Set(msg.ServerIDHeader, s.store.ThisServerID())
-	header.Set(msg.ServerNameHeader, s.thisServerName())
+func (s *Service) StampThisServersIdentity(header http.Header) {
+	header.Set(msg.ServerIDHeader, s.Store.ThisServerID())
+	header.Set(msg.ServerNameHeader, s.Server.ThisServerName())
 }
 
-// noteOtherServerIdentity records the id and name the other server put on a
+// NoteOtherServerIdentity records the id and name the other server put on a
 // request or answer of a connection. A header that is absent comes from a
 // server too old to say, and changes nothing.
-func (s *Server) noteOtherServerIdentity(connectionID string, header http.Header) {
+func (s *Service) NoteOtherServerIdentity(connectionID string, header http.Header) {
 	s.noteOtherServerID(connectionID, header)
 	s.noteOtherServerName(connectionID, header)
 }
@@ -45,7 +45,7 @@ func (s *Server) noteOtherServerIdentity(connectionID string, header http.Header
 // error: the server behind it lost its database, or is not the one that
 // connected. The newer id is recorded either way, because it is what the
 // server behind the connection now answers as.
-func (s *Server) noteOtherServerID(connectionID string, header http.Header) {
+func (s *Service) noteOtherServerID(connectionID string, header http.Header) {
 	values, present := header[http.CanonicalHeaderKey(msg.ServerIDHeader)]
 	if !present || len(values) == 0 {
 		return
@@ -55,7 +55,7 @@ func (s *Server) noteOtherServerID(connectionID string, header http.Header) {
 		log.Printf("[peers] ERROR: %s: the other server reported %q as its id, which is not a server id; keeping the one recorded", connectionID, values[0])
 		return
 	}
-	replaced, written, err := s.store.RecordPeerConnectionOtherServerID(connectionID, serverID)
+	replaced, written, err := s.Store.RecordPeerConnectionOtherServerID(connectionID, serverID)
 	if errors.Is(err, store.ErrPeerConnectionNotFound) {
 		return
 	}
@@ -72,17 +72,17 @@ func (s *Server) noteOtherServerID(connectionID string, header http.Header) {
 }
 
 // noteOtherServerName records the name the other server reported.
-func (s *Server) noteOtherServerName(connectionID string, header http.Header) {
+func (s *Service) noteOtherServerName(connectionID string, header http.Header) {
 	values, present := header[http.CanonicalHeaderKey(msg.ServerNameHeader)]
 	if !present || len(values) == 0 {
 		return
 	}
 	name := strings.TrimSpace(values[0])
-	if err := checkServerNameValue(name); err != nil {
+	if err := CheckServerNameValue(name); err != nil {
 		log.Printf("[peers] %s: the other server reported a name that cannot be shown (%q): %v", connectionID, values[0], err)
 		return
 	}
-	changed, err := s.store.RecordPeerConnectionOtherServerName(connectionID, name, time.Now())
+	changed, err := s.Store.RecordPeerConnectionOtherServerName(connectionID, name, time.Now())
 	if errors.Is(err, store.ErrPeerConnectionNotFound) {
 		return
 	}
@@ -105,22 +105,22 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-// handlePeerServerIdentity: GET /peer/server-name, a connection call. Answers
+// HandlePeerServerIdentity: GET /peer/server-name, a connection call. Answers
 // this server's id and name; the call's own headers carry the caller's. The
 // path keeps the name it had before ids, so older servers still call it.
-func (s *Server) handlePeerServerIdentity(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandlePeerServerIdentity(w http.ResponseWriter, r *http.Request) {
 	if _, credentialError := s.connectionOfConnectionCall(r); credentialError != nil {
 		credentialError.Write(w)
 		return
 	}
-	s.stampThisServersIdentity(w.Header())
-	httpjson.WriteJSON(w, msg.PeerServerIdentity{ID: s.store.ThisServerID(), Name: s.thisServerName()})
+	s.StampThisServersIdentity(w.Header())
+	httpjson.WriteJSON(w, msg.PeerServerIdentity{ID: s.Store.ThisServerID(), Name: s.Server.ThisServerName()})
 }
 
 // exchangeServerIdentities tells the other server this one's id and name, and
 // records its answer.
-func (s *Server) exchangeServerIdentities(ctx context.Context, connection store.PeerConnection) error {
-	response, err := s.sendOverPeerConnection(ctx, peerHTTPClient, connection, http.MethodGet, peerServerNamePath, nil, nil, 0, true)
+func (s *Service) exchangeServerIdentities(ctx context.Context, connection store.PeerConnection) error {
+	response, err := s.sendOverPeerConnection(ctx, PeerHTTPClient, connection, http.MethodGet, peerServerNamePath, nil, nil, 0, true)
 	if err != nil {
 		return err
 	}
@@ -140,15 +140,15 @@ func (s *Server) exchangeServerIdentities(ctx context.Context, connection store.
 	if answer.ID != "" {
 		answerHeader.Set(msg.ServerIDHeader, answer.ID)
 	}
-	s.noteOtherServerIdentity(connection.ID, answerHeader)
+	s.NoteOtherServerIdentity(connection.ID, answerHeader)
 	return nil
 }
 
-// tellConnectedServersThisServersName sends a changed name to every live
+// TellConnectedServersThisServersName sends a changed name to every live
 // connection. A direct one that cannot be reached now learns it from the next
 // request; a dial-out one whose socket is closed learns it when it reopens.
-func (s *Server) tellConnectedServersThisServersName() {
-	connections, err := s.store.ListPeerConnections()
+func (s *Service) TellConnectedServersThisServersName() {
+	connections, err := s.Store.ListPeerConnections()
 	if err != nil {
 		log.Printf("[peers] ERROR: list connections to tell this server's new name: %v", err)
 		return
@@ -169,9 +169,9 @@ func (s *Server) tellConnectedServersThisServersName() {
 // as a folder heading.
 const longestServerName = 80
 
-// checkServerNameValue refuses a name that cannot travel in a header or be
+// CheckServerNameValue refuses a name that cannot travel in a header or be
 // drawn on one line.
-func checkServerNameValue(value string) error {
+func CheckServerNameValue(value string) error {
 	trimmed := strings.TrimSpace(value)
 	if trimmed != value {
 		return errors.New("a server name has no spaces at either end")

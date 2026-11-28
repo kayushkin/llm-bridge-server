@@ -1,4 +1,4 @@
-package server
+package peers
 
 // The dial-out transport between two connected servers (design note
 // d107154a-49ac-471b-a1b7-fc7975de37f3, "Decided on 2026-10-27").
@@ -47,29 +47,29 @@ import (
 const (
 	peerSocketFrameRequest      = "request"
 	peerSocketFrameResponseHead = "response_head"
-	peerSocketFrameBody         = "body"
-	peerSocketFrameEnd          = "end"
-	peerSocketFrameCancel       = "cancel"
+	PeerSocketFrameBody         = "body"
+	PeerSocketFrameEnd          = "end"
+	PeerSocketFrameCancel       = "cancel"
 
 	// peerSocketLargestRequestBody caps one request body carried over a
 	// socket, which is sent in one frame.
 	peerSocketLargestRequestBody = 64 << 20
-	// peerSocketLargestAnswerChunk caps the body one answer frame carries; a
+	// PeerSocketLargestAnswerChunk caps the body one answer frame carries; a
 	// handler's larger write is sent as several frames.
-	peerSocketLargestAnswerChunk = 1 << 20
+	PeerSocketLargestAnswerChunk = 1 << 20
 	// peerSocketLargestFrame is the most this side reads as one WebSocket
 	// message. The largest frame the other side may send is a request carrying
 	// a body of peerSocketLargestRequestBody, which JSON carries as base64
 	// (4 bytes for every 3), plus its path and headers; 96 MiB holds that
 	// (64 MiB × 4/3 ≈ 85.4 MiB) with room for the rest. Anything larger ends
-	// the socket instead of being buffered. peerSocketReadLimit holds it, so a
+	// the socket instead of being buffered. PeerSocketReadLimit holds it, so a
 	// test can lower it.
 	peerSocketLargestFrame = 96 << 20
-	// peerSocketMostRequestsServedAtOnce caps the requests from the other
+	// PeerSocketMostRequestsServedAtOnce caps the requests from the other
 	// server this side runs at the same time on one socket. Each holds a
 	// goroutine and possibly an event stream that never ends, so beyond this
 	// a request is answered 503 at once rather than started.
-	peerSocketMostRequestsServedAtOnce = 64
+	PeerSocketMostRequestsServedAtOnce = 64
 	// peerSocketPingInterval and peerSocketReadDeadline keep a socket whose
 	// other end vanished from looking connected.
 	peerSocketPingInterval = 30 * time.Second
@@ -82,8 +82,8 @@ const (
 	peerSocketLongestBackoff = time.Minute
 )
 
-// peerSocketReadLimit is the read limit every socket sets: peerSocketLargestFrame.
-var peerSocketReadLimit int64 = peerSocketLargestFrame
+// PeerSocketReadLimit is the read limit every socket sets: peerSocketLargestFrame.
+var PeerSocketReadLimit int64 = peerSocketLargestFrame
 
 // headersCrossingPeerSockets is every request header a request carried over
 // a socket keeps: what the body is, what answer is wanted, where an SSE stream
@@ -91,8 +91,8 @@ var peerSocketReadLimit int64 = peerSocketLargestFrame
 // is dropped before the handler sees it.
 var headersCrossingPeerSockets = []string{"Content-Type", "Accept", "Last-Event-ID", requestcaller.PeerTokenHeader, requestcaller.PeerUserHeader}
 
-// peerSocketFrame is one message on a peer socket.
-type peerSocketFrame struct {
+// PeerSocketFrame is one message on a peer socket.
+type PeerSocketFrame struct {
 	Type   string      `json:"type"`
 	Stream uint64      `json:"stream"`
 	Method string      `json:"method,omitempty"`
@@ -103,14 +103,14 @@ type peerSocketFrame struct {
 	Error  string      `json:"error,omitempty"`
 }
 
-// peerSocketConnectionContextKey marks a request that arrived over a peer
+// PeerSocketConnectionContextKey marks a request that arrived over a peer
 // socket with the connection the socket belongs to.
-type peerSocketConnectionContextKey struct{}
+type PeerSocketConnectionContextKey struct{}
 
-// peerSocketConnectionOfRequest returns the connection a request arrived over,
+// PeerSocketConnectionOfRequest returns the connection a request arrived over,
 // when it arrived over a peer socket.
-func peerSocketConnectionOfRequest(r *http.Request) (string, bool) {
-	connectionID, ok := r.Context().Value(peerSocketConnectionContextKey{}).(string)
+func PeerSocketConnectionOfRequest(r *http.Request) (string, bool) {
+	connectionID, ok := r.Context().Value(PeerSocketConnectionContextKey{}).(string)
 	return connectionID, ok && connectionID != ""
 }
 
@@ -126,12 +126,12 @@ var errPeerNotConnected = errors.New("the other server is not connected: its soc
 // treated as not answering until it answers again. Vars so tests can shorten
 // them.
 var (
-	peerSocketProbeInterval                  = 60 * time.Second
-	peerSocketProbeIntervalWhileNotAnswering = 15 * time.Second
-	peerSocketProbeTimeout                   = 15 * time.Second
-	// peerSocketProbePath is a cheap connection call every version with
+	PeerSocketProbeInterval                  = 60 * time.Second
+	PeerSocketProbeIntervalWhileNotAnswering = 15 * time.Second
+	PeerSocketProbeTimeout                   = 15 * time.Second
+	// PeerSocketProbePath is a cheap connection call every version with
 	// sockets serves.
-	peerSocketProbePath = peerServerNamePath
+	PeerSocketProbePath = peerServerNamePath
 )
 
 // errPeerNotAnswering is a call over a socket whose other end stopped
@@ -151,9 +151,9 @@ func (err *errPeerNotAnswering) Error() string {
 		err.since.UTC().Format(time.RFC3339), err.failure)
 }
 
-// peerSocket is one open socket and the streams on it.
-type peerSocket struct {
-	server       *Server
+// PeerSocket is one open socket and the streams on it.
+type PeerSocket struct {
+	server       *Service
 	connectionID string
 	connection   *websocket.Conn
 	writeMutex   sync.Mutex
@@ -161,7 +161,7 @@ type peerSocket struct {
 	streamsMutex sync.Mutex
 	calls        map[uint64]*peerSocketCall
 	serving      map[uint64]context.CancelFunc
-	closed       chan struct{}
+	Closed       chan struct{}
 	closeOnce    sync.Once
 
 	// Whether the other server's bridge answers, from the probes and from
@@ -181,19 +181,19 @@ type peerSocket struct {
 
 // peerSocketCall is a request this side sent, waiting for its answer.
 type peerSocketCall struct {
-	head   chan peerSocketFrame
-	frames chan peerSocketFrame
+	head   chan PeerSocketFrame
+	frames chan PeerSocketFrame
 }
 
-// newPeerSocket wraps an open WebSocket. dialing says which side this is, so
+// NewPeerSocket wraps an open WebSocket. dialing says which side this is, so
 // the two sides number their streams apart: the dialing side odd, the
 // accepting side even.
-func newPeerSocket(server *Server, connectionID string, connection *websocket.Conn, dialing bool) *peerSocket {
-	socket := &peerSocket{server: server, connectionID: connectionID, connection: connection,
-		calls: map[uint64]*peerSocketCall{}, serving: map[uint64]context.CancelFunc{}, closed: make(chan struct{}),
+func NewPeerSocket(server *Service, connectionID string, connection *websocket.Conn, dialing bool) *PeerSocket {
+	socket := &PeerSocket{server: server, connectionID: connectionID, connection: connection,
+		calls: map[uint64]*peerSocketCall{}, serving: map[uint64]context.CancelFunc{}, Closed: make(chan struct{}),
 		answering: true, lastAnsweredAt: time.Now(),
-		probeInterval: peerSocketProbeInterval, probeIntervalWhileNotAnswering: peerSocketProbeIntervalWhileNotAnswering,
-		probeTimeout: peerSocketProbeTimeout, probePath: peerSocketProbePath}
+		probeInterval: PeerSocketProbeInterval, probeIntervalWhileNotAnswering: PeerSocketProbeIntervalWhileNotAnswering,
+		probeTimeout: PeerSocketProbeTimeout, probePath: PeerSocketProbePath}
 	if dialing {
 		socket.nextStream.Store(1)
 	} else {
@@ -202,7 +202,7 @@ func newPeerSocket(server *Server, connectionID string, connection *websocket.Co
 	return socket
 }
 
-func (socket *peerSocket) send(frame peerSocketFrame) error {
+func (socket *PeerSocket) Send(frame PeerSocketFrame) error {
 	data, err := json.Marshal(frame)
 	if err != nil {
 		return err
@@ -213,9 +213,9 @@ func (socket *peerSocket) send(frame peerSocketFrame) error {
 	return socket.connection.WriteMessage(websocket.TextMessage, data)
 }
 
-func (socket *peerSocket) close() {
+func (socket *PeerSocket) close() {
 	socket.closeOnce.Do(func() {
-		close(socket.closed)
+		close(socket.Closed)
 		socket.connection.Close()
 		socket.streamsMutex.Lock()
 		for stream, call := range socket.calls {
@@ -232,8 +232,8 @@ func (socket *peerSocket) close() {
 
 // run reads frames until the socket fails or closes, and pings the other end
 // meanwhile. It returns when the socket is done.
-func (socket *peerSocket) run() error {
-	socket.connection.SetReadLimit(peerSocketReadLimit)
+func (socket *PeerSocket) run() error {
+	socket.connection.SetReadLimit(PeerSocketReadLimit)
 	socket.connection.SetReadDeadline(time.Now().Add(peerSocketReadDeadline))
 	socket.connection.SetPongHandler(func(string) error {
 		return socket.connection.SetReadDeadline(time.Now().Add(peerSocketReadDeadline))
@@ -243,7 +243,7 @@ func (socket *peerSocket) run() error {
 		defer ticker.Stop()
 		for {
 			select {
-			case <-socket.closed:
+			case <-socket.Closed:
 				return
 			case <-ticker.C:
 				socket.writeMutex.Lock()
@@ -264,26 +264,26 @@ func (socket *peerSocket) run() error {
 			return err
 		}
 		socket.connection.SetReadDeadline(time.Now().Add(peerSocketReadDeadline))
-		var frame peerSocketFrame
+		var frame PeerSocketFrame
 		if err := json.Unmarshal(data, &frame); err != nil {
 			return fmt.Errorf("a frame that is not JSON: %w", err)
 		}
 		switch frame.Type {
 		case peerSocketFrameRequest:
 			socket.serveRequest(frame)
-		case peerSocketFrameCancel:
+		case PeerSocketFrameCancel:
 			socket.streamsMutex.Lock()
 			if cancel, serving := socket.serving[frame.Stream]; serving {
 				cancel()
 			}
 			socket.streamsMutex.Unlock()
-		case peerSocketFrameResponseHead, peerSocketFrameBody, peerSocketFrameEnd:
+		case peerSocketFrameResponseHead, PeerSocketFrameBody, PeerSocketFrameEnd:
 			// An honest sender writes an answer in chunks of at most
-			// peerSocketLargestAnswerChunk. A larger one is the other server
+			// PeerSocketLargestAnswerChunk. A larger one is the other server
 			// trying to make a call hold far more than its buffer was sized
 			// for, so the socket ends rather than keep it.
-			if len(frame.Body) > peerSocketLargestAnswerChunk {
-				return fmt.Errorf("an answer frame for stream %d carries %d bytes, over the %d an answer chunk may carry", frame.Stream, len(frame.Body), peerSocketLargestAnswerChunk)
+			if len(frame.Body) > PeerSocketLargestAnswerChunk {
+				return fmt.Errorf("an answer frame for stream %d carries %d bytes, over the %d an answer chunk may carry", frame.Stream, len(frame.Body), PeerSocketLargestAnswerChunk)
 			}
 			socket.deliverToCall(frame)
 		default:
@@ -293,7 +293,7 @@ func (socket *peerSocket) run() error {
 }
 
 // deliverToCall hands an answer frame to the call waiting for it.
-func (socket *peerSocket) deliverToCall(frame peerSocketFrame) {
+func (socket *PeerSocket) deliverToCall(frame PeerSocketFrame) {
 	socket.streamsMutex.Lock()
 	call, waiting := socket.calls[frame.Stream]
 	socket.streamsMutex.Unlock()
@@ -312,14 +312,14 @@ func (socket *peerSocket) deliverToCall(frame peerSocketFrame) {
 	default:
 		log.Printf("[peer-socket] %s: stream %d's reader is too slow; ending it", socket.connectionID, frame.Stream)
 		socket.endCall(frame.Stream)
-		socket.send(peerSocketFrame{Type: peerSocketFrameCancel, Stream: frame.Stream})
+		socket.Send(PeerSocketFrame{Type: PeerSocketFrameCancel, Stream: frame.Stream})
 	}
-	if frame.Type == peerSocketFrameEnd {
+	if frame.Type == PeerSocketFrameEnd {
 		socket.endCall(frame.Stream)
 	}
 }
 
-func (socket *peerSocket) endCall(stream uint64) {
+func (socket *PeerSocket) endCall(stream uint64) {
 	socket.streamsMutex.Lock()
 	defer socket.streamsMutex.Unlock()
 	if call, waiting := socket.calls[stream]; waiting {
@@ -331,7 +331,7 @@ func (socket *peerSocket) endCall(stream uint64) {
 // roundTrip sends one request to the other server and returns its answer as
 // soon as the head arrives; the body streams after. Closing the body before
 // the end tells the other side to stop.
-func (socket *peerSocket) roundTrip(ctx context.Context, method, path string, header http.Header, body io.Reader) (*http.Response, error) {
+func (socket *PeerSocket) roundTrip(ctx context.Context, method, path string, header http.Header, body io.Reader) (*http.Response, error) {
 	var bodyBytes []byte
 	if body != nil {
 		read, err := io.ReadAll(io.LimitReader(body, peerSocketLargestRequestBody+1))
@@ -344,17 +344,17 @@ func (socket *peerSocket) roundTrip(ctx context.Context, method, path string, he
 		bodyBytes = read
 	}
 	stream := socket.nextStream.Add(2) - 2
-	call := &peerSocketCall{head: make(chan peerSocketFrame, 1), frames: make(chan peerSocketFrame, peerSocketStreamBuffer)}
+	call := &peerSocketCall{head: make(chan PeerSocketFrame, 1), frames: make(chan PeerSocketFrame, peerSocketStreamBuffer)}
 	socket.streamsMutex.Lock()
 	select {
-	case <-socket.closed:
+	case <-socket.Closed:
 		socket.streamsMutex.Unlock()
 		return nil, errPeerNotConnected
 	default:
 	}
 	socket.calls[stream] = call
 	socket.streamsMutex.Unlock()
-	if err := socket.send(peerSocketFrame{Type: peerSocketFrameRequest, Stream: stream, Method: method, Path: path, Header: header, Body: bodyBytes}); err != nil {
+	if err := socket.Send(PeerSocketFrame{Type: peerSocketFrameRequest, Stream: stream, Method: method, Path: path, Header: header, Body: bodyBytes}); err != nil {
 		socket.endCall(stream)
 		return nil, fmt.Errorf("send the request over the socket: %w", err)
 	}
@@ -363,28 +363,28 @@ func (socket *peerSocket) roundTrip(ctx context.Context, method, path string, he
 		if head.Header.Get(peerSocketBusyHeader) == "" {
 			socket.noteAnswered()
 		}
-		reader := &peerSocketBodyReader{socket: socket, stream: stream, frames: call.frames, ctx: ctx}
+		reader := &PeerSocketBodyReader{Socket: socket, Stream: stream, Frames: call.frames, Ctx: ctx}
 		return &http.Response{StatusCode: head.Status, Status: fmt.Sprintf("%d %s", head.Status, http.StatusText(head.Status)), Header: head.Header, Body: reader}, nil
 	case <-ctx.Done():
 		socket.endCall(stream)
-		socket.send(peerSocketFrame{Type: peerSocketFrameCancel, Stream: stream})
+		socket.Send(PeerSocketFrame{Type: PeerSocketFrameCancel, Stream: stream})
 		return nil, ctx.Err()
-	case <-socket.closed:
+	case <-socket.Closed:
 		return nil, errPeerNotConnected
 	}
 }
 
 // probeUntilClosed sends one probe at a time until the socket closes: every
-// peerSocketProbeInterval while the other server answers, and more often
+// PeerSocketProbeInterval while the other server answers, and more often
 // while it does not, so its recovery is noticed soon.
-func (socket *peerSocket) probeUntilClosed() {
+func (socket *PeerSocket) probeUntilClosed() {
 	for {
 		wait := socket.probeInterval
 		if socket.notAnswering() != nil {
 			wait = socket.probeIntervalWhileNotAnswering
 		}
 		select {
-		case <-socket.closed:
+		case <-socket.Closed:
 			return
 		case <-time.After(wait):
 		}
@@ -392,14 +392,14 @@ func (socket *peerSocket) probeUntilClosed() {
 	}
 }
 
-// probe sends GET peerSocketProbePath over the socket. Any answer, whatever
+// probe sends GET PeerSocketProbePath over the socket. Any answer, whatever
 // its status, shows the bridge behind the socket serves requests, except the
 // refusal of a server already running all it will of this socket's requests.
-func (socket *peerSocket) probe() {
+func (socket *PeerSocket) probe() {
 	ctx, cancel := context.WithTimeout(context.Background(), socket.probeTimeout)
 	defer cancel()
 	header := http.Header{}
-	socket.server.stampThisServersIdentity(header)
+	socket.server.StampThisServersIdentity(header)
 	response, err := socket.roundTrip(ctx, http.MethodGet, socket.probePath, header, nil)
 	if err != nil {
 		if errors.Is(err, errPeerNotConnected) {
@@ -410,12 +410,12 @@ func (socket *peerSocket) probe() {
 	}
 	response.Body.Close()
 	if response.Header.Get(peerSocketBusyHeader) != "" {
-		socket.noteNotAnswering(fmt.Errorf("it refuses new requests: it already runs %d of this socket's", peerSocketMostRequestsServedAtOnce))
+		socket.noteNotAnswering(fmt.Errorf("it refuses new requests: it already runs %d of this socket's", PeerSocketMostRequestsServedAtOnce))
 	}
 }
 
 // noteAnswered records that an answer arrived over the socket.
-func (socket *peerSocket) noteAnswered() {
+func (socket *PeerSocket) noteAnswered() {
 	socket.healthMutex.Lock()
 	defer socket.healthMutex.Unlock()
 	if !socket.answering {
@@ -428,7 +428,7 @@ func (socket *peerSocket) noteAnswered() {
 }
 
 // noteNotAnswering records a failed probe.
-func (socket *peerSocket) noteNotAnswering(err error) {
+func (socket *PeerSocket) noteNotAnswering(err error) {
 	socket.healthMutex.Lock()
 	defer socket.healthMutex.Unlock()
 	if socket.answering {
@@ -441,7 +441,7 @@ func (socket *peerSocket) noteNotAnswering(err error) {
 
 // notAnswering is the error a call gets while the other server is not
 // answering, nil while it is.
-func (socket *peerSocket) notAnswering() error {
+func (socket *PeerSocket) notAnswering() error {
 	socket.healthMutex.Lock()
 	defer socket.healthMutex.Unlock()
 	if socket.answering {
@@ -451,18 +451,18 @@ func (socket *peerSocket) notAnswering() error {
 }
 
 // health is the socket's answering state for a connection's view.
-func (socket *peerSocket) health() (answering bool, lastAnsweredAt, notAnsweringSince time.Time, lastProbeFailure string) {
+func (socket *PeerSocket) health() (answering bool, lastAnsweredAt, notAnsweringSince time.Time, lastProbeFailure string) {
 	socket.healthMutex.Lock()
 	defer socket.healthMutex.Unlock()
 	return socket.answering, socket.lastAnsweredAt, socket.notAnsweringSince, socket.lastProbeFailure
 }
 
-// peerSocketBodyReader reads one answer's body frames.
-type peerSocketBodyReader struct {
-	socket  *peerSocket
-	stream  uint64
-	frames  chan peerSocketFrame
-	ctx     context.Context
+// PeerSocketBodyReader reads one answer's body frames.
+type PeerSocketBodyReader struct {
+	Socket  *PeerSocket
+	Stream  uint64
+	Frames  chan PeerSocketFrame
+	Ctx     context.Context
 	pending []byte
 	done    bool
 	// ended says the other server finished the answer: an end frame came, or
@@ -472,7 +472,7 @@ type peerSocketBodyReader struct {
 	failure error
 }
 
-func (reader *peerSocketBodyReader) Read(buffer []byte) (int, error) {
+func (reader *PeerSocketBodyReader) Read(buffer []byte) (int, error) {
 	for len(reader.pending) == 0 {
 		if reader.done {
 			if reader.failure != nil {
@@ -481,7 +481,7 @@ func (reader *peerSocketBodyReader) Read(buffer []byte) (int, error) {
 			return 0, io.EOF
 		}
 		select {
-		case frame, open := <-reader.frames:
+		case frame, open := <-reader.Frames:
 			if !open {
 				reader.done = true
 				reader.ended = true
@@ -490,7 +490,7 @@ func (reader *peerSocketBodyReader) Read(buffer []byte) (int, error) {
 				}
 				continue
 			}
-			if frame.Type == peerSocketFrameEnd {
+			if frame.Type == PeerSocketFrameEnd {
 				reader.done = true
 				reader.ended = true
 				if frame.Error != "" {
@@ -501,9 +501,9 @@ func (reader *peerSocketBodyReader) Read(buffer []byte) (int, error) {
 				continue
 			}
 			reader.pending = frame.Body
-		case <-reader.ctx.Done():
+		case <-reader.Ctx.Done():
 			reader.done = true
-			reader.failure = reader.ctx.Err()
+			reader.failure = reader.Ctx.Err()
 		}
 	}
 	read := copy(buffer, reader.pending)
@@ -516,28 +516,28 @@ func (reader *peerSocketBodyReader) Read(buffer []byte) (int, error) {
 // It used to test done, which a read stopped by this side's context also sets.
 // So a stream whose reader went away — a chat closing a session's event stream
 // through the proxy — sent no cancel, and the other server kept serving it,
-// holding one of its peerSocketMostRequestsServedAtOnce slots, until all 64
+// holding one of its PeerSocketMostRequestsServedAtOnce slots, until all 64
 // were held and it answered every request 503 peer_socket_busy (2026-10-29).
-func (reader *peerSocketBodyReader) Close() error {
+func (reader *PeerSocketBodyReader) Close() error {
 	reader.done = true
 	if !reader.ended {
 		reader.ended = true
-		reader.socket.endCall(reader.stream)
-		reader.socket.send(peerSocketFrame{Type: peerSocketFrameCancel, Stream: reader.stream})
+		reader.Socket.endCall(reader.Stream)
+		reader.Socket.Send(PeerSocketFrame{Type: PeerSocketFrameCancel, Stream: reader.Stream})
 	}
 	return nil
 }
 
 // serveRequest runs a request the other server sent through this server's
 // own ServeHTTP, streaming the answer back as frames.
-func (socket *peerSocket) serveRequest(frame peerSocketFrame) {
-	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), peerSocketConnectionContextKey{}, socket.connectionID))
+func (socket *PeerSocket) serveRequest(frame PeerSocketFrame) {
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), PeerSocketConnectionContextKey{}, socket.connectionID))
 	socket.streamsMutex.Lock()
 	refusal := ""
 	if _, alreadyServing := socket.serving[frame.Stream]; alreadyServing {
 		refusal = fmt.Sprintf("stream %d is already serving a request", frame.Stream)
-	} else if len(socket.serving) >= peerSocketMostRequestsServedAtOnce {
-		refusal = fmt.Sprintf("this server already runs %d requests from you on this socket, the most it runs at once", peerSocketMostRequestsServedAtOnce)
+	} else if len(socket.serving) >= PeerSocketMostRequestsServedAtOnce {
+		refusal = fmt.Sprintf("this server already runs %d requests from you on this socket, the most it runs at once", PeerSocketMostRequestsServedAtOnce)
 	} else {
 		socket.serving[frame.Stream] = cancel
 	}
@@ -557,14 +557,14 @@ func (socket *peerSocket) serveRequest(frame peerSocketFrame) {
 			delete(socket.serving, frame.Stream)
 			socket.streamsMutex.Unlock()
 		}()
-		socket.server.noteOtherServerIdentity(socket.connectionID, frame.Header)
+		socket.server.NoteOtherServerIdentity(socket.connectionID, frame.Header)
 		writer := &peerSocketResponseWriter{socket: socket, stream: frame.Stream, header: http.Header{}}
-		socket.server.stampThisServersIdentity(writer.header)
+		socket.server.StampThisServersIdentity(writer.header)
 		request, err := requestCarriedOverPeerSocket(ctx, frame)
 		if err != nil {
 			httpjson.WriteJSONError(writer, http.StatusBadRequest, "invalid_peer_socket_request", err.Error())
 		} else {
-			socket.server.ServeHTTP(writer, request)
+			socket.server.Server.ServeHTTP(writer, request)
 		}
 		writer.finish()
 	}()
@@ -572,7 +572,7 @@ func (socket *peerSocket) serveRequest(frame peerSocketFrame) {
 
 // requestCarriedOverPeerSocket builds the request a frame describes, keeping
 // only the headers that may cross.
-func requestCarriedOverPeerSocket(ctx context.Context, frame peerSocketFrame) (*http.Request, error) {
+func requestCarriedOverPeerSocket(ctx context.Context, frame PeerSocketFrame) (*http.Request, error) {
 	if !strings.HasPrefix(frame.Path, "/") {
 		return nil, fmt.Errorf("path %q must start with /", frame.Path)
 	}
@@ -597,7 +597,7 @@ func requestCarriedOverPeerSocket(ctx context.Context, frame peerSocketFrame) (*
 
 // peerSocketResponseWriter sends a handler's answer back as frames.
 type peerSocketResponseWriter struct {
-	socket      *peerSocket
+	socket      *PeerSocket
 	stream      uint64
 	header      http.Header
 	wroteHead   bool
@@ -613,7 +613,7 @@ func (writer *peerSocketResponseWriter) WriteHeader(status int) {
 	writer.wroteHead = true
 	header := writer.header.Clone()
 	header.Del("Set-Cookie")
-	writer.sendFailure = writer.socket.send(peerSocketFrame{Type: peerSocketFrameResponseHead, Stream: writer.stream, Status: status, Header: header})
+	writer.sendFailure = writer.socket.Send(PeerSocketFrame{Type: peerSocketFrameResponseHead, Stream: writer.stream, Status: status, Header: header})
 }
 
 func (writer *peerSocketResponseWriter) Write(data []byte) (int, error) {
@@ -625,8 +625,8 @@ func (writer *peerSocketResponseWriter) Write(data []byte) (int, error) {
 	}
 	written := 0
 	for written < len(data) {
-		chunk := data[written:min(len(data), written+peerSocketLargestAnswerChunk)]
-		if err := writer.socket.send(peerSocketFrame{Type: peerSocketFrameBody, Stream: writer.stream, Body: append([]byte(nil), chunk...)}); err != nil {
+		chunk := data[written:min(len(data), written+PeerSocketLargestAnswerChunk)]
+		if err := writer.socket.Send(PeerSocketFrame{Type: PeerSocketFrameBody, Stream: writer.stream, Body: append([]byte(nil), chunk...)}); err != nil {
 			writer.sendFailure = err
 			return written, err
 		}
@@ -642,22 +642,22 @@ func (writer *peerSocketResponseWriter) finish() {
 	if !writer.wroteHead {
 		writer.WriteHeader(http.StatusOK)
 	}
-	writer.socket.send(peerSocketFrame{Type: peerSocketFrameEnd, Stream: writer.stream})
+	writer.socket.Send(PeerSocketFrame{Type: PeerSocketFrameEnd, Stream: writer.stream})
 }
 
-// peerSocketRegistry is every open socket and every dialer this server runs.
-type peerSocketRegistry struct {
+// PeerSocketRegistry is every open socket and every dialer this server runs.
+type PeerSocketRegistry struct {
 	mutex   sync.Mutex
-	sockets map[string]*peerSocket
+	sockets map[string]*PeerSocket
 	dialers map[string]context.CancelFunc
 }
 
-func newPeerSocketRegistry() *peerSocketRegistry {
-	return &peerSocketRegistry{sockets: map[string]*peerSocket{}, dialers: map[string]context.CancelFunc{}}
+func NewPeerSocketRegistry() *PeerSocketRegistry {
+	return &PeerSocketRegistry{sockets: map[string]*PeerSocket{}, dialers: map[string]context.CancelFunc{}}
 }
 
 // open records a socket for its connection, closing any older one.
-func (registry *peerSocketRegistry) open(socket *peerSocket) {
+func (registry *PeerSocketRegistry) open(socket *PeerSocket) {
 	registry.mutex.Lock()
 	previous := registry.sockets[socket.connectionID]
 	registry.sockets[socket.connectionID] = socket
@@ -668,7 +668,7 @@ func (registry *peerSocketRegistry) open(socket *peerSocket) {
 }
 
 // closed forgets a socket that ended, unless a newer one replaced it.
-func (registry *peerSocketRegistry) closed(socket *peerSocket) {
+func (registry *PeerSocketRegistry) closed(socket *PeerSocket) {
 	registry.mutex.Lock()
 	defer registry.mutex.Unlock()
 	if registry.sockets[socket.connectionID] == socket {
@@ -676,14 +676,14 @@ func (registry *peerSocketRegistry) closed(socket *peerSocket) {
 	}
 }
 
-func (registry *peerSocketRegistry) socketOf(connectionID string) *peerSocket {
+func (registry *PeerSocketRegistry) SocketOf(connectionID string) *PeerSocket {
 	registry.mutex.Lock()
 	defer registry.mutex.Unlock()
 	return registry.sockets[connectionID]
 }
 
-// stop ends a connection's dialer and closes its socket.
-func (registry *peerSocketRegistry) stop(connectionID string) {
+// Stop ends a connection's dialer and closes its socket.
+func (registry *PeerSocketRegistry) Stop(connectionID string) {
 	registry.mutex.Lock()
 	cancel := registry.dialers[connectionID]
 	delete(registry.dialers, connectionID)
@@ -698,22 +698,22 @@ func (registry *peerSocketRegistry) stop(connectionID string) {
 	}
 }
 
-// peerSocketDialer dials other servers' sockets. It verifies certificates
+// PeerSocketDialer dials other servers' sockets. It verifies certificates
 // with the system's roots, which is gorilla's default and is never switched
 // off here; tests swap it for one that trusts their own certificate.
-var peerSocketDialer = &websocket.Dialer{HandshakeTimeout: 20 * time.Second}
+var PeerSocketDialer = &websocket.Dialer{HandshakeTimeout: 20 * time.Second}
 
 // StartPeerDialers starts a dialer for every live dial-out connection this
 // server initiated, so a restart reconnects them. Called once from main.
-func (s *Server) StartPeerDialers() {
-	connections, err := s.store.ListPeerConnections()
+func (s *Service) StartPeerDialers() {
+	connections, err := s.Store.ListPeerConnections()
 	if err != nil {
 		log.Printf("[peer-socket] ERROR: list peer connections to dial: %v", err)
 		return
 	}
 	for _, connection := range connections {
 		if connection.RemovedAt == nil && thisServerDials(connection) {
-			s.startPeerDialer(connection)
+			s.StartPeerDialer(connection)
 		}
 	}
 }
@@ -723,16 +723,16 @@ func thisServerDials(connection store.PeerConnection) bool {
 	return connection.Transport == msg.PeerTransportDialOut && connection.Role == msg.PeerConnectionRoleInitiating
 }
 
-// startPeerDialer keeps a socket open to the other server until the
+// StartPeerDialer keeps a socket open to the other server until the
 // connection is removed, backing off between failed attempts.
-func (s *Server) startPeerDialer(connection store.PeerConnection) {
+func (s *Service) StartPeerDialer(connection store.PeerConnection) {
 	ctx, cancel := context.WithCancel(context.Background())
-	s.peerSockets.mutex.Lock()
-	if previous := s.peerSockets.dialers[connection.ID]; previous != nil {
+	s.PeerSockets.mutex.Lock()
+	if previous := s.PeerSockets.dialers[connection.ID]; previous != nil {
 		previous()
 	}
-	s.peerSockets.dialers[connection.ID] = cancel
-	s.peerSockets.mutex.Unlock()
+	s.PeerSockets.dialers[connection.ID] = cancel
+	s.PeerSockets.mutex.Unlock()
 	go func() {
 		backoff := time.Second
 		for ctx.Err() == nil {
@@ -756,7 +756,7 @@ func (s *Server) startPeerDialer(connection store.PeerConnection) {
 }
 
 // dialPeerSocketOnce opens one socket and serves it until it ends.
-func (s *Server) dialPeerSocketOnce(ctx context.Context, connection store.PeerConnection) error {
+func (s *Service) dialPeerSocketOnce(ctx context.Context, connection store.PeerConnection) error {
 	credential, err := s.outboundConnectionCredential(ctx, connection)
 	if err != nil {
 		return err
@@ -768,8 +768,8 @@ func (s *Server) dialPeerSocketOnce(ctx context.Context, connection store.PeerCo
 	socketURL.Scheme = "wss"
 	header := http.Header{}
 	header.Set(requestcaller.PeerConnectionCredentialHeader, credential)
-	s.stampThisServersIdentity(header)
-	conn, response, err := peerSocketDialer.DialContext(ctx, socketURL.String(), header)
+	s.StampThisServersIdentity(header)
+	conn, response, err := PeerSocketDialer.DialContext(ctx, socketURL.String(), header)
 	if err != nil {
 		if response != nil {
 			answer, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
@@ -778,17 +778,17 @@ func (s *Server) dialPeerSocketOnce(ctx context.Context, connection store.PeerCo
 		}
 		return fmt.Errorf("dial %s: %w", socketURL, err)
 	}
-	s.noteOtherServerIdentity(connection.ID, response.Header)
-	socket := newPeerSocket(s, connection.ID, conn, true)
-	s.peerSockets.open(socket)
-	defer s.peerSockets.closed(socket)
+	s.NoteOtherServerIdentity(connection.ID, response.Header)
+	socket := NewPeerSocket(s, connection.ID, conn, true)
+	s.PeerSockets.open(socket)
+	defer s.PeerSockets.closed(socket)
 	go s.flushPeerMessageOutbox(connection.ID)
 	log.Printf("[peer-socket] %s (%s): connected to %s", connection.ID, connection.DisplayName, socketURL)
 	go func() {
 		select {
 		case <-ctx.Done():
 			socket.close()
-		case <-socket.closed:
+		case <-socket.Closed:
 		}
 	}()
 	return socket.run()
@@ -800,9 +800,9 @@ var peerSocketUpgrader = websocket.Upgrader{
 	CheckOrigin: func(*http.Request) bool { return true },
 }
 
-// handlePeerSocket: GET /peer/socket. The server without an address opens
+// HandlePeerSocket: GET /peer/socket. The server without an address opens
 // its connection's socket here, presenting the connection's credential.
-func (s *Server) handlePeerSocket(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandlePeerSocket(w http.ResponseWriter, r *http.Request) {
 	if s.refuseWhileDemoLoginIsOn(w, "a peer socket") {
 		return
 	}
@@ -817,15 +817,15 @@ func (s *Server) handlePeerSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	answerHeader := http.Header{}
-	s.stampThisServersIdentity(answerHeader)
+	s.StampThisServersIdentity(answerHeader)
 	conn, err := peerSocketUpgrader.Upgrade(w, r, answerHeader)
 	if err != nil {
 		log.Printf("[peer-socket] %s: upgrade: %v", connection.ID, err)
 		return
 	}
-	socket := newPeerSocket(s, connection.ID, conn, false)
-	s.peerSockets.open(socket)
-	defer s.peerSockets.closed(socket)
+	socket := NewPeerSocket(s, connection.ID, conn, false)
+	s.PeerSockets.open(socket)
+	defer s.PeerSockets.closed(socket)
 	go s.flushPeerMessageOutbox(connection.ID)
 	log.Printf("[peer-socket] %s (%s): connected", connection.ID, connection.DisplayName)
 	err = socket.run()

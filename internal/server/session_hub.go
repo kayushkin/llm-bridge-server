@@ -349,7 +349,7 @@ func (s *Server) handleSessionListEvents(w http.ResponseWriter, r *http.Request)
 		if frame.ownerPrincipalID != scope.PrincipalID {
 			return true
 		}
-		return scope.ThroughPeerPrincipalID != "" && !s.sessionIDIsInScope(frame.sessionID, scope)
+		return scope.ThroughPeerPrincipalID != "" && !scope.ReachesSessionID(s.store, frame.sessionID)
 	}
 	for _, frame := range backlog {
 		if frameIsOutOfScope(frame) {

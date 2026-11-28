@@ -13,6 +13,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/chatlinks"
 	"github.com/kayushkin/llm-bridge-server/internal/machines"
 	"github.com/kayushkin/llm-bridge-server/internal/machines/machineroutes"
+	"github.com/kayushkin/llm-bridge-server/internal/peers"
 	"github.com/kayushkin/llm-bridge-server/internal/sessionactions"
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/briefs"
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/messagesender"
@@ -77,6 +78,28 @@ func (s *Server) composeServices() {
 		SignalClassifier: func() *signals.SignalClassifier { return s.signalClassifier },
 		Store:            s.store,
 		Sessions:         s,
+	}}
+	s.peers = &peers.Service{Dependencies: peers.Dependencies{
+		AuthClient:               func() *authstoreclient.Client { return s.authClient },
+		Cfg:                      s.cfg,
+		GrantChecker:             s.grantChecker,
+		GrantStore:               func() grantcheck.GrantReader { return s.grantStore },
+		GrantsPrincipalDirectory: func() grants.PrincipalDirectory { return s.grantsPrincipalDirectory },
+		GrantsResourceChecker:    func() grants.ResourceChecker { return s.grantsResourceChecker },
+		HarnessStore:             func() *machines.Store { return s.harnessStore },
+		PeerRequestsInFlight:     s.peerRequestsInFlight,
+		PeerSockets:              s.peerSockets,
+		PrincipalLookupCache: func() peers.PrincipalLookupCache {
+			if s.principalLookupCache == nil {
+				return nil
+			}
+			return s.principalLookupCache
+		},
+		PrincipalStore: func() peers.PrincipalStore { return s.principalStore },
+		SessionActions: s.sessionActions,
+		Settings:       s.settings,
+		Store:          s.store,
+		Server:         s,
 	}}
 	s.operationRoutes = &operationroutes.Service{Dependencies: operationroutes.Dependencies{
 		GrantChecker:   s.grantChecker,

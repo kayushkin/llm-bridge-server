@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/peers"
+
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/signals"
 
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/parkedasks"
@@ -80,17 +82,16 @@ const watchdogInterval = 60 * time.Second
 
 type Server struct {
 	discoveryMu sync.Mutex
-	// peerProxyCalls shares identical reads through the connection proxy and
+	// PeerProxyCalls shares identical reads through the connection proxy and
 	// limits how often each connected server is called (peer_proxy_calls.go).
-	peerProxyCalls peerProxyCalls
-	mux            *httproutes.RecordingMux
-	store          *store.Store
-	agentStore     *agents.Store
-	memoryStore    *memories.Store
-	harnessStore   *machines.Store
-	hookStore      *hooks.Store
-	modelStore     *models.Store
-	snapshotStore  *snapshots.Store
+	mux           *httproutes.RecordingMux
+	store         *store.Store
+	agentStore    *agents.Store
+	memoryStore   *memories.Store
+	harnessStore  *machines.Store
+	hookStore     *hooks.Store
+	modelStore    *models.Store
+	snapshotStore *snapshots.Store
 	// predictionStore answers /predictions/ once the Postgres module is
 	// open (prediction_store_routes.go); nil answers those routes 503.
 	predictionStore atomic.Pointer[predictions.Handlers]
@@ -129,12 +130,10 @@ type Server struct {
 	// /permissions/ once EnableAccess has run; nil answers them 503.
 	access atomic.Pointer[accessRouteHandlers]
 	// peerSockets holds every open peer socket and every dialer (peer_socket.go).
-	peerSockets *peerSocketRegistry
-	// peerRequestsInFlight lets ending a peer's access end the requests it
+	peerSockets *peers.PeerSocketRegistry
+	// PeerRequestsInFlight lets ending a peer's access end the requests it
 	// is being served right now (peer_requests_in_flight.go).
-	peerRequestsInFlight *peerRequestsInFlight
-	// peerSelfUpdates serializes finishing an approved notice's update.
-	peerSelfUpdates sync.Mutex
+	peerRequestsInFlight *peers.PeerRequestsInFlight
 	// keepAwake holds this machine awake while sessions run, once
 	// StartKeepAwake has run; nil before that and in tests.
 	keepAwake *keepawake.Controller
@@ -284,6 +283,7 @@ type Server struct {
 	oneShot          *oneshot.Service
 	sessionActions   *sessionactions.Service
 	signals          *signals.Service
+	peers            *peers.Service
 	sessionFiles     *sessionfiles.Service
 }
 
@@ -307,8 +307,8 @@ func New(st *store.Store, as *agents.Store, ms *memories.Store, hs *machines.Sto
 		snapshotStore:        ss,
 		harness:              harness.NewManager(st, cfg.PublicURL, publicBaseURL(cfg.ListenAddr), cfg.PTYRingBufferBytes, authClient),
 		authClient:           authClient,
-		peerSockets:          newPeerSocketRegistry(),
-		peerRequestsInFlight: newPeerRequestsInFlight(),
+		peerSockets:          peers.NewPeerSocketRegistry(),
+		peerRequestsInFlight: peers.NewPeerRequestsInFlight(),
 		bridgePrefs:          newBridgePrefsStore(cfg.BridgePrefsPath),
 		cfState:              newConformanceState(cfg.ConformancePath),
 		sessionHub:           hub,
@@ -1469,3 +1469,7 @@ func (s *Server) Machines() *machineroutes.Service { return s.machineRoutes }
 // OneShot is the one-shot and image generation path: the routed model calls
 // every background feature makes, and the executors operations run with.
 func (s *Server) OneShot() *oneshot.Service { return s.oneShot }
+
+// Peers is the connected servers: their connections, sockets, messages and
+// the calls made through them.
+func (s *Server) Peers() *peers.Service { return s.peers }

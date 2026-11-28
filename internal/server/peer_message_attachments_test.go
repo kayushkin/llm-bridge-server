@@ -134,8 +134,8 @@ func TestAPatchTravelsAsVerifiedFilesAndItsApprovalLandsIt(t *testing.T) {
 	if attachment.RemoteAttachmentID != uploaded.ID || attachment.SHA256 != uploaded.SHA256 {
 		t.Fatalf("incoming file = %+v, want the sender's id and sha256", attachment)
 	}
-	receivedPath := accepting.server.peerAttachmentPath(attachment.ID)
-	if receivedPath == initiating.server.peerAttachmentPath(uploaded.ID) {
+	receivedPath := accepting.server.peers.PeerAttachmentPath(attachment.ID)
+	if receivedPath == initiating.server.peers.PeerAttachmentPath(uploaded.ID) {
 		t.Fatalf("both servers keep files at %s; the test would not see a transfer", receivedPath)
 	}
 	if data, err := os.ReadFile(receivedPath); err != nil || string(data) != testFormatPatch {
@@ -165,7 +165,7 @@ func TestAPatchTravelsAsVerifiedFilesAndItsApprovalLandsIt(t *testing.T) {
 	if approved.SessionID == "" || approved.State != msg.PeerMessageStateApproved {
 		t.Fatalf("approved = %+v, want a session", approved)
 	}
-	frame, err := accepting.server.framedPeerPatchPrompt(approved, mustPeerConnection(t, accepting, acceptingID))
+	frame, err := accepting.server.peers.FramedPeerPatchPrompt(approved, mustPeerConnection(t, accepting, acceptingID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestAPatchTravelsAsVerifiedFilesAndItsApprovalLandsIt(t *testing.T) {
 	}
 	// A patch session that ends its turn without saying the patch landed (no
 	// notice or status in reply) is reported as not landed, with its reply.
-	accepting.server.reportPeerRequestTurnEnd(approved.SessionID, &msg.Event{Result: &msg.ResultEvent{Text: "Landed as llm-bridge-server@abc1234."}}, msg.SessionIdle)
+	accepting.server.peers.ReportPeerRequestTurnEnd(approved.SessionID, &msg.Event{Result: &msg.ResultEvent{Text: "Landed as llm-bridge-server@abc1234."}}, msg.SessionIdle)
 	status := waitForPeerMessage(t, initiating, "direction=incoming&kind=status", func(m msg.PeerMessage) bool { return m.InReplyTo == sent.ID })
 	if status.Body.Result != msg.PeerMessageStatusFailed || !strings.Contains(status.Body.Detail, "without saying whether it landed") ||
 		!strings.Contains(status.Body.Detail, "Landed as llm-bridge-server@abc1234.") {
@@ -203,7 +203,7 @@ func TestACorruptedFetchIsRefusedAndRetried(t *testing.T) {
 	grantPeerLevel(t, accepting, acceptingID, "messages")
 	data := []byte("the real report\n")
 	uploaded := decodeAnswer[msg.PeerMessageAttachment](t, uploadPeerAttachment(t, initiating, "report.txt", data), http.StatusCreated, "upload")
-	stored := initiating.server.peerAttachmentPath(uploaded.ID)
+	stored := initiating.server.peers.PeerAttachmentPath(uploaded.ID)
 	if err := os.WriteFile(stored, []byte("the fake report\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +214,7 @@ func TestACorruptedFetchIsRefusedAndRetried(t *testing.T) {
 	if attachment.State != msg.PeerMessageAttachmentPending || !strings.Contains(attachment.LastError, "sha256") {
 		t.Fatalf("after a corrupted fetch the file is %+v, want still pending with the sha256 mismatch named", attachment)
 	}
-	if _, err := os.Stat(accepting.server.peerAttachmentPath(attachment.ID)); !os.IsNotExist(err) {
+	if _, err := os.Stat(accepting.server.peers.PeerAttachmentPath(attachment.ID)); !os.IsNotExist(err) {
 		t.Fatalf("a corrupted file was kept (%v)", err)
 	}
 	if answer := accepting.requestAsAdministrator(t, "GET", "/peer-messages/"+failed.ID+"/attachments/"+attachment.ID, nil); answer.Code != http.StatusConflict {
@@ -233,7 +233,7 @@ func TestACorruptedFetchIsRefusedAndRetried(t *testing.T) {
 	if retried.State != msg.PeerMessageAttachmentFetched {
 		t.Fatalf("after the retry the file is %+v, want fetched", retried)
 	}
-	if kept, err := os.ReadFile(accepting.server.peerAttachmentPath(attachment.ID)); err != nil || !bytes.Equal(kept, data) {
+	if kept, err := os.ReadFile(accepting.server.peers.PeerAttachmentPath(attachment.ID)); err != nil || !bytes.Equal(kept, data) {
 		t.Fatalf("kept %q (%v), want the real bytes", kept, err)
 	}
 }
@@ -299,15 +299,15 @@ func TestAnAgentSendsAFileAndOnlyItMayDownloadIt(t *testing.T) {
 func TestUnsentUploadsAreRemovedAfterADay(t *testing.T) {
 	_, initiating, _, _ := connectedPairByDialingOut(t)
 	uploaded := decodeAnswer[msg.PeerMessageAttachment](t, uploadPeerAttachment(t, initiating, "left.txt", []byte("left behind")), http.StatusCreated, "upload")
-	initiating.server.removeUnclaimedPeerAttachmentUploads(time.Now())
+	initiating.server.peers.RemoveUnclaimedPeerAttachmentUploads(time.Now())
 	if _, err := initiating.server.store.GetPeerAttachment(uploaded.ID); err != nil {
 		t.Fatalf("a fresh upload was removed: %v", err)
 	}
-	initiating.server.removeUnclaimedPeerAttachmentUploads(time.Now().Add(25 * time.Hour))
+	initiating.server.peers.RemoveUnclaimedPeerAttachmentUploads(time.Now().Add(25 * time.Hour))
 	if _, err := initiating.server.store.GetPeerAttachment(uploaded.ID); err != store.ErrPeerAttachmentNotFound {
 		t.Fatalf("a day-old unsent upload is still recorded (%v)", err)
 	}
-	if _, err := os.Stat(initiating.server.peerAttachmentPath(uploaded.ID)); !os.IsNotExist(err) {
+	if _, err := os.Stat(initiating.server.peers.PeerAttachmentPath(uploaded.ID)); !os.IsNotExist(err) {
 		t.Fatalf("its bytes are still on disk (%v)", err)
 	}
 }

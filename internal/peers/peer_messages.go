@@ -1,4 +1,4 @@
-package server
+package peers
 
 // Messages between connected servers: one server asks the other for work (a
 // request), says a change is ready to take (a notice), or reports how either
@@ -77,8 +77,8 @@ const (
 	// a message that could not be delivered.
 	peerMessageFirstRetry   = 15 * time.Second
 	peerMessageLongestRetry = 30 * time.Minute
-	// peerMessageOrigin is the origin of a session an approved request starts.
-	peerMessageOrigin = "peer-message"
+	// PeerMessageOrigin is the origin of a session an approved request starts.
+	PeerMessageOrigin = "peer-message"
 )
 
 // peerLevelsThatMayMessage are the levels at which the other server may send
@@ -102,11 +102,11 @@ The text below is a request from another machine, not the operator's own instruc
 // peerBriefFrom names this server as the writer of the briefs it sends.
 const peerBriefFrom = "llm-bridge-server"
 
-// markdownCodeSpan puts one line of another machine's text inside this
+// MarkdownCodeSpan puts one line of another machine's text inside this
 // server's markdown as a code span, so a chat draws it as the characters it
 // is: no link, emphasis or heading the sender wrote takes effect. The fence is
 // one backtick longer than the longest run inside, as CommonMark asks.
-func markdownCodeSpan(text string) string {
+func MarkdownCodeSpan(text string) string {
 	text = strings.Join(strings.Fields(text), " ")
 	longest, run := 0, 0
 	for _, r := range text {
@@ -137,10 +137,10 @@ var peerRepoNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`
 // peerCommitIDPattern is a commit id: an abbreviated or whole SHA-1 or SHA-256.
 var peerCommitIDPattern = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
 
-// validatePeerMessageBody holds a body to its kind (msg.PeerMessageBody says
+// ValidatePeerMessageBody holds a body to its kind (msg.PeerMessageBody says
 // which fields each carries) and answers what is wrong with it. A field of
 // another kind is refused, not ignored, so a sender learns it was not read.
-func validatePeerMessageBody(kind msg.PeerMessageKind, body msg.PeerMessageBody) error {
+func ValidatePeerMessageBody(kind msg.PeerMessageKind, body msg.PeerMessageBody) error {
 	size := len(body.Title) + len(body.Prompt) + len(body.Summary) + len(body.Detail) + len(body.Repo) + len(body.BaseCommit)
 	for _, commit := range append(append([]msg.PeerRepoCommit{}, body.Commits...), body.Versions...) {
 		size += len(commit.Repo) + len(commit.Commit)
@@ -220,10 +220,10 @@ func validatePeerMessageBody(kind msg.PeerMessageKind, body msg.PeerMessageBody)
 	return nil
 }
 
-// handleCreatePeerMessage: POST /peer-connections/{id}/messages. An
+// HandleCreatePeerMessage: POST /peer-connections/{id}/messages. An
 // administrator, or a session's agent by its posting token, sends a message
 // to the other server.
-func (s *Server) handleCreatePeerMessage(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleCreatePeerMessage(w http.ResponseWriter, r *http.Request) {
 	createdBy, ok := peerMessageSenderOf(w, r)
 	if !ok {
 		return
@@ -239,7 +239,7 @@ func (s *Server) handleCreatePeerMessage(w http.ResponseWriter, r *http.Request)
 		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_request", "send {kind, body, in_reply_to?, attachment_ids?, supersedes?}: "+err.Error())
 		return
 	}
-	if err := validatePeerMessageBody(request.Kind, request.Body); err != nil {
+	if err := ValidatePeerMessageBody(request.Kind, request.Body); err != nil {
 		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_peer_message", err.Error())
 		return
 	}
@@ -247,7 +247,7 @@ func (s *Server) handleCreatePeerMessage(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if request.InReplyTo != "" {
-		answered, err := s.store.GetPeerMessage(request.InReplyTo)
+		answered, err := s.Store.GetPeerMessage(request.InReplyTo)
 		if err != nil || answered.ConnectionID != connection.ID {
 			httpjson.WriteJSONError(w, http.StatusBadRequest, "unknown_reply_target", fmt.Sprintf(
 				"in_reply_to %q names no message on %s here; it is the id, on this server, of the message this one answers", request.InReplyTo, connection.ID))
@@ -283,7 +283,7 @@ func (s *Server) handleCreatePeerMessage(w http.ResponseWriter, r *http.Request)
 // or patch on the same connection, not already replaced, and only a request,
 // notice or patch may replace anything. It returns the ids once each, in the
 // order given, or why they are refused.
-func (s *Server) outgoingMessagesASendMaySupersede(connection store.PeerConnection, kind msg.PeerMessageKind, named []string) ([]string, string) {
+func (s *Service) outgoingMessagesASendMaySupersede(connection store.PeerConnection, kind msg.PeerMessageKind, named []string) ([]string, string) {
 	if len(named) == 0 {
 		return nil, ""
 	}
@@ -295,7 +295,7 @@ func (s *Server) outgoingMessagesASendMaySupersede(connection store.PeerConnecti
 		if slices.Contains(supersedes, id) {
 			continue
 		}
-		earlier, err := s.store.GetPeerMessage(id)
+		earlier, err := s.Store.GetPeerMessage(id)
 		if err != nil || earlier.ConnectionID != connection.ID || earlier.Direction != msg.PeerMessageDirectionOutgoing {
 			return nil, fmt.Sprintf("%q names no message this server sent on %s; supersedes takes this server's own ids (GET /peer-messages?open=true&connection_id=%s lists the open ones)", id, connection.ID, connection.ID)
 		}
@@ -314,18 +314,18 @@ func (s *Server) outgoingMessagesASendMaySupersede(connection store.PeerConnecti
 // sends in reply to an approved incoming request or patch its answer: the
 // session that did the work said how it went, so the server sends no status of
 // its own when that session's turn ends.
-func (s *Server) finishApprovedPeerMessageAnsweredBy(answeredID string, answer store.PeerMessage) error {
+func (s *Service) finishApprovedPeerMessageAnsweredBy(answeredID string, answer store.PeerMessage) error {
 	if answer.Kind != msg.PeerMessageKindStatus && answer.Kind != msg.PeerMessageKindNotice {
 		return nil
 	}
-	answered, err := s.store.GetPeerMessage(answeredID)
+	answered, err := s.Store.GetPeerMessage(answeredID)
 	if err != nil {
 		return err
 	}
 	if answered.Direction != msg.PeerMessageDirectionIncoming || (answered.Kind != msg.PeerMessageKindRequest && answered.Kind != msg.PeerMessageKindPatch) {
 		return nil
 	}
-	finished, err := s.store.FinishApprovedPeerMessage(answered.ID, answer.ID)
+	finished, err := s.Store.FinishApprovedPeerMessage(answered.ID, answer.ID)
 	if err != nil {
 		return err
 	}
@@ -339,16 +339,16 @@ func (s *Server) finishApprovedPeerMessageAnsweredBy(answeredID string, answer s
 // marks the earlier messages it replaces (one still queued is never sent),
 // and tries to deliver it now, returning the record as it stands after the
 // try.
-func (s *Server) queuePeerMessage(ctx context.Context, connection store.PeerConnection, kind msg.PeerMessageKind, body msg.PeerMessageBody, inReplyTo, createdBy string, supersedes []string, attachmentIDs ...string) (store.PeerMessage, error) {
+func (s *Service) queuePeerMessage(ctx context.Context, connection store.PeerConnection, kind msg.PeerMessageKind, body msg.PeerMessageBody, inReplyTo, createdBy string, supersedes []string, attachmentIDs ...string) (store.PeerMessage, error) {
 	message := store.PeerMessage{ConnectionID: connection.ID, Direction: msg.PeerMessageDirectionOutgoing, Kind: kind, Body: body,
 		InReplyTo: inReplyTo, State: msg.PeerMessageStateQueued, CreatedBy: createdBy, Supersedes: supersedes}
-	if err := s.store.InsertPeerMessage(&message); err != nil {
+	if err := s.Store.InsertPeerMessage(&message); err != nil {
 		return store.PeerMessage{}, err
 	}
 	for _, earlierID := range supersedes {
-		cancelled, err := s.store.CancelQueuedPeerMessageSuperseded(earlierID, message.ID)
+		cancelled, err := s.Store.CancelQueuedPeerMessageSuperseded(earlierID, message.ID)
 		if err == nil && !cancelled {
-			err = s.store.MarkPeerMessageSuperseded(earlierID, message.ID)
+			err = s.Store.MarkPeerMessageSuperseded(earlierID, message.ID)
 		}
 		if err != nil {
 			return store.PeerMessage{}, fmt.Errorf("record that %s replaces %s: %w", message.ID, earlierID, err)
@@ -360,8 +360,8 @@ func (s *Server) queuePeerMessage(ctx context.Context, connection store.PeerConn
 		}
 	}
 	if len(attachmentIDs) > 0 {
-		if err := s.store.ClaimStagedPeerAttachments(attachmentIDs, message.ID, createdBy); err != nil {
-			if markErr := s.store.MarkPeerMessageFailed(message.ID, "its attachments could not be claimed: "+err.Error()); markErr != nil {
+		if err := s.Store.ClaimStagedPeerAttachments(attachmentIDs, message.ID, createdBy); err != nil {
+			if markErr := s.Store.MarkPeerMessageFailed(message.ID, "its attachments could not be claimed: "+err.Error()); markErr != nil {
 				log.Printf("[peer-messages] ERROR: mark %s failed: %v", message.ID, markErr)
 			}
 			return store.PeerMessage{}, fmt.Errorf("claim the attachments of %s: %w", message.ID, err)
@@ -370,7 +370,7 @@ func (s *Server) queuePeerMessage(ctx context.Context, connection store.PeerConn
 	attemptContext, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	s.deliverPeerMessage(attemptContext, message)
-	current, err := s.store.GetPeerMessage(message.ID)
+	current, err := s.Store.GetPeerMessage(message.ID)
 	if err != nil {
 		return store.PeerMessage{}, err
 	}
@@ -384,10 +384,10 @@ type peerMessageRefusal struct{ reason string }
 func (refusal peerMessageRefusal) Error() string { return refusal.reason }
 
 // deliverPeerMessage makes one delivery attempt and records how it went.
-func (s *Server) deliverPeerMessage(ctx context.Context, message store.PeerMessage) {
+func (s *Service) deliverPeerMessage(ctx context.Context, message store.PeerMessage) {
 	remoteID, err := s.sendPeerMessage(ctx, message)
 	if err == nil {
-		if recordErr := s.store.RecordPeerMessageDelivered(message.ID, remoteID, time.Now()); recordErr != nil {
+		if recordErr := s.Store.RecordPeerMessageDelivered(message.ID, remoteID, time.Now()); recordErr != nil {
 			log.Printf("[peer-messages] ERROR: %s was delivered as %s but could not be recorded: %v", message.ID, remoteID, recordErr)
 		}
 		log.Printf("[peer-messages] %s (%s) delivered on %s as the other server's %s", message.ID, message.Kind, message.ConnectionID, remoteID)
@@ -395,7 +395,7 @@ func (s *Server) deliverPeerMessage(ctx context.Context, message store.PeerMessa
 	}
 	var refusal peerMessageRefusal
 	if errors.As(err, &refusal) {
-		if recordErr := s.store.MarkPeerMessageFailed(message.ID, refusal.reason); recordErr != nil {
+		if recordErr := s.Store.MarkPeerMessageFailed(message.ID, refusal.reason); recordErr != nil {
 			log.Printf("[peer-messages] ERROR: record that %s was refused: %v", message.ID, recordErr)
 		}
 		log.Printf("[peer-messages] %s (%s) refused on %s: %s", message.ID, message.Kind, message.ConnectionID, refusal.reason)
@@ -405,7 +405,7 @@ func (s *Server) deliverPeerMessage(ctx context.Context, message store.PeerMessa
 	if wait > peerMessageLongestRetry || wait <= 0 {
 		wait = peerMessageLongestRetry
 	}
-	if recordErr := s.store.RecordPeerMessageAttemptFailed(message.ID, err.Error(), time.Now().Add(wait)); recordErr != nil {
+	if recordErr := s.Store.RecordPeerMessageAttemptFailed(message.ID, err.Error(), time.Now().Add(wait)); recordErr != nil {
 		log.Printf("[peer-messages] ERROR: record a failed attempt of %s: %v", message.ID, recordErr)
 	}
 	log.Printf("[peer-messages] %s (%s) on %s not delivered (try %d), again in %s: %v", message.ID, message.Kind, message.ConnectionID, message.Attempts+1, wait, err)
@@ -414,8 +414,8 @@ func (s *Server) deliverPeerMessage(ctx context.Context, message store.PeerMessa
 // sendPeerMessage hands one message to the other server and returns its id
 // for it. A refusal is a peerMessageRefusal; anything else may pass on a
 // later try.
-func (s *Server) sendPeerMessage(ctx context.Context, message store.PeerMessage) (string, error) {
-	connection, err := s.store.GetPeerConnection(message.ConnectionID)
+func (s *Service) sendPeerMessage(ctx context.Context, message store.PeerMessage) (string, error) {
+	connection, err := s.Store.GetPeerConnection(message.ConnectionID)
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", message.ConnectionID, err)
 	}
@@ -428,7 +428,7 @@ func (s *Server) sendPeerMessage(ctx context.Context, message store.PeerMessage)
 	}
 	delivery := msg.PeerMessageDelivery{ID: message.ID, Kind: message.Kind, Body: message.Body, CreatedAt: message.CreatedAt, Attachments: descriptions}
 	if message.InReplyTo != "" {
-		answered, err := s.store.GetPeerMessage(message.InReplyTo)
+		answered, err := s.Store.GetPeerMessage(message.InReplyTo)
 		if err != nil {
 			return "", peerMessageRefusal{reason: fmt.Sprintf("the message it answers, %s, cannot be read: %v", message.InReplyTo, err)}
 		}
@@ -437,7 +437,7 @@ func (s *Server) sendPeerMessage(ctx context.Context, message store.PeerMessage)
 	// The other server is told only of replaced messages it holds: one that
 	// was still queued here was never sent.
 	for _, earlierID := range message.Supersedes {
-		earlier, err := s.store.GetPeerMessage(earlierID)
+		earlier, err := s.Store.GetPeerMessage(earlierID)
 		if err != nil {
 			return "", peerMessageRefusal{reason: fmt.Sprintf("the message it replaces, %s, cannot be read: %v", earlierID, err)}
 		}
@@ -450,7 +450,7 @@ func (s *Server) sendPeerMessage(ctx context.Context, message store.PeerMessage)
 		return "", peerMessageRefusal{reason: err.Error()}
 	}
 	header := http.Header{"Content-Type": {"application/json"}}
-	response, err := s.sendOverPeerConnection(ctx, peerHTTPClient, connection, http.MethodPost, peerMessagesPath, header, bytes.NewReader(data), int64(len(data)), true)
+	response, err := s.sendOverPeerConnection(ctx, PeerHTTPClient, connection, http.MethodPost, peerMessagesPath, header, bytes.NewReader(data), int64(len(data)), true)
 	if err != nil {
 		return "", err
 	}
@@ -476,8 +476,8 @@ func (s *Server) sendPeerMessage(ctx context.Context, message store.PeerMessage)
 // flushPeerMessageOutbox sends every message queued on a connection now,
 // whatever its backoff: a socket has just opened, so a machine that was
 // asleep gets what waited for it without waiting out the retry.
-func (s *Server) flushPeerMessageOutbox(connectionID string) {
-	queued, err := s.store.QueuedPeerMessages(connectionID)
+func (s *Service) flushPeerMessageOutbox(connectionID string) {
+	queued, err := s.Store.QueuedPeerMessages(connectionID)
 	if err != nil {
 		log.Printf("[peer-messages] ERROR: read %s's outbox: %v", connectionID, err)
 		return
@@ -493,7 +493,7 @@ func (s *Server) flushPeerMessageOutbox(connectionID string) {
 // peerMessageOutboxInterval; a socket that opens flushes its connection's
 // at once (flushPeerMessageOutbox). Each pass also finishes
 // approved notices whose update wrote its result.
-func (s *Server) RunPeerMessageOutbox(ctx context.Context) {
+func (s *Service) RunPeerMessageOutbox(ctx context.Context) {
 	s.finishSelfUpdatesThatReported()
 	ticker := time.NewTicker(peerMessageOutboxInterval)
 	defer ticker.Stop()
@@ -505,14 +505,14 @@ func (s *Server) RunPeerMessageOutbox(ctx context.Context) {
 		}
 		s.deliverDuePeerMessages(ctx)
 		s.fetchDuePeerAttachments()
-		s.removeUnclaimedPeerAttachmentUploads(time.Now())
+		s.RemoveUnclaimedPeerAttachmentUploads(time.Now())
 		s.finishSelfUpdatesThatReported()
 	}
 }
 
 // deliverDuePeerMessages tries every queued message that is due.
-func (s *Server) deliverDuePeerMessages(ctx context.Context) {
-	due, err := s.store.QueuedPeerMessagesDue("", time.Now())
+func (s *Service) deliverDuePeerMessages(ctx context.Context) {
+	due, err := s.Store.QueuedPeerMessagesDue("", time.Now())
 	if err != nil {
 		log.Printf("[peer-messages] ERROR: read the outbox: %v", err)
 		return
@@ -526,14 +526,14 @@ func (s *Server) deliverDuePeerMessages(ctx context.Context) {
 
 // peerGrantMayMessage says whether the grant this server gave a connection's
 // other server lets it send requests and notices here.
-func (s *Server) peerGrantMayMessage(grant store.PeerGrant) (bool, error) {
+func (s *Service) peerGrantMayMessage(grant store.PeerGrant) (bool, error) {
 	if slices.Contains(peerLevelsThatMayMessage, grant.Level) {
 		return true, nil
 	}
 	if grant.Level != msg.PeerAccessLevelGroup || grant.GroupPrincipalID == "" {
 		return false, nil
 	}
-	messagesGroup, err := s.store.PeerAccessLevelGroup(peerMessagesLevelKey)
+	messagesGroup, err := s.Store.PeerAccessLevelGroup(peerMessagesLevelKey)
 	if errors.Is(err, store.ErrPeerAccessLevelNotProvisioned) {
 		return false, nil
 	}
@@ -543,9 +543,9 @@ func (s *Server) peerGrantMayMessage(grant store.PeerGrant) (bool, error) {
 	return grant.GroupPrincipalID == messagesGroup, nil
 }
 
-// handleReceivePeerMessage: POST /peer/messages, a connection call. The other
+// HandleReceivePeerMessage: POST /peer/messages, a connection call. The other
 // server delivers a message; the answer is this server's id for it.
-func (s *Server) handleReceivePeerMessage(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleReceivePeerMessage(w http.ResponseWriter, r *http.Request) {
 	connection, credentialError := s.connectionOfConnectionCall(r)
 	if credentialError != nil {
 		credentialError.Write(w)
@@ -558,7 +558,7 @@ func (s *Server) handleReceivePeerMessage(w http.ResponseWriter, r *http.Request
 		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_request", "send {id, kind, body, in_reply_to?, created_at, attachments?, supersedes?}")
 		return
 	}
-	if err := validatePeerMessageBody(delivery.Kind, delivery.Body); err != nil {
+	if err := ValidatePeerMessageBody(delivery.Kind, delivery.Body); err != nil {
 		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_peer_message", err.Error())
 		return
 	}
@@ -568,7 +568,7 @@ func (s *Server) handleReceivePeerMessage(w http.ResponseWriter, r *http.Request
 	}
 	// The same message delivered again, because the acknowledgement was lost,
 	// is recorded once.
-	if existing, err := s.store.IncomingPeerMessageBySenderID(connection.ID, delivery.ID); err == nil {
+	if existing, err := s.Store.IncomingPeerMessageBySenderID(connection.ID, delivery.ID); err == nil {
 		writeJSONStatus(w, http.StatusCreated, msg.PeerMessageAcknowledgement{ID: existing.ID})
 		return
 	} else if !errors.Is(err, store.ErrPeerMessageNotFound) {
@@ -577,7 +577,7 @@ func (s *Server) handleReceivePeerMessage(w http.ResponseWriter, r *http.Request
 	}
 	var answered *store.PeerMessage
 	if delivery.InReplyTo != "" {
-		found, err := s.store.GetPeerMessage(delivery.InReplyTo)
+		found, err := s.Store.GetPeerMessage(delivery.InReplyTo)
 		if err != nil || found.ConnectionID != connection.ID {
 			httpjson.WriteJSONError(w, http.StatusBadRequest, "unknown_reply_target", fmt.Sprintf(
 				"in_reply_to %q names no message of %s on this server", delivery.InReplyTo, connection.ID))
@@ -592,7 +592,7 @@ func (s *Server) handleReceivePeerMessage(w http.ResponseWriter, r *http.Request
 	}
 	answersOwnMessage := answered != nil && answered.Direction == msg.PeerMessageDirectionOutgoing
 	if delivery.Kind != msg.PeerMessageKindStatus || !answersOwnMessage {
-		grant, err := s.store.LivePeerGrantOfConnection(connection.ID)
+		grant, err := s.Store.LivePeerGrantOfConnection(connection.ID)
 		if errors.Is(err, store.ErrPeerGrantNotFound) {
 			httpjson.WriteJSONError(w, http.StatusForbidden, "peer_messages_not_granted", fmt.Sprintf(
 				"this server gave %s no access, so it takes no requests or notices from it; an administrator here grants the %q level (or administrator) to allow them", connection.ID, peerMessagesLevelKey))
@@ -622,7 +622,7 @@ func (s *Server) handleReceivePeerMessage(w http.ResponseWriter, r *http.Request
 	for _, earlier := range replaced {
 		message.Supersedes = append(message.Supersedes, earlier.ID)
 	}
-	if err := s.store.InsertPeerMessage(&message); err != nil {
+	if err := s.Store.InsertPeerMessage(&message); err != nil {
 		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
@@ -637,7 +637,7 @@ func (s *Server) handleReceivePeerMessage(w http.ResponseWriter, r *http.Request
 	log.Printf("[peer-messages] %s (%s, %d files) received on %s from %s as its %s", message.ID, message.Kind, len(delivery.Attachments), connection.ID, otherServerLabel(connection), delivery.ID)
 	if signalID, err := s.raisePeerMessageSignal(message, connection); err != nil {
 		log.Printf("[peer-messages] ERROR: raise the signal for %s: %v", message.ID, err)
-	} else if err := s.store.SetPeerMessageSignal(message.ID, signalID); err != nil {
+	} else if err := s.Store.SetPeerMessageSignal(message.ID, signalID); err != nil {
 		log.Printf("[peer-messages] ERROR: record signal %s on %s: %v", signalID, message.ID, err)
 	}
 	writeJSONStatus(w, http.StatusCreated, msg.PeerMessageAcknowledgement{ID: message.ID})
@@ -646,7 +646,7 @@ func (s *Server) handleReceivePeerMessage(w http.ResponseWriter, r *http.Request
 // incomingMessagesADeliveryMaySupersede reads the messages a delivery says it
 // replaces: each must be a request, notice or patch this server received on
 // the same connection.
-func (s *Server) incomingMessagesADeliveryMaySupersede(connection store.PeerConnection, delivery msg.PeerMessageDelivery) ([]store.PeerMessage, string) {
+func (s *Service) incomingMessagesADeliveryMaySupersede(connection store.PeerConnection, delivery msg.PeerMessageDelivery) ([]store.PeerMessage, string) {
 	if len(delivery.Supersedes) == 0 {
 		return nil, ""
 	}
@@ -655,7 +655,7 @@ func (s *Server) incomingMessagesADeliveryMaySupersede(connection store.PeerConn
 	}
 	var replaced []store.PeerMessage
 	for _, id := range delivery.Supersedes {
-		earlier, err := s.store.GetPeerMessage(id)
+		earlier, err := s.Store.GetPeerMessage(id)
 		if err != nil || earlier.ConnectionID != connection.ID || earlier.Direction != msg.PeerMessageDirectionIncoming || earlier.Kind == msg.PeerMessageKindStatus {
 			return nil, fmt.Sprintf("supersedes %q names no request, notice or patch this server received from %s", id, connection.ID)
 		}
@@ -668,9 +668,9 @@ func (s *Server) incomingMessagesADeliveryMaySupersede(connection store.PeerConn
 // earlier ones. One still pending is declined by this server at once, its
 // signal dismissed and the other server sent a declined status, so nobody
 // approves both; one already decided is only marked, since its work started.
-func (s *Server) closeIncomingMessagesReplacedBy(message store.PeerMessage, replaced []store.PeerMessage, connection store.PeerConnection) error {
+func (s *Service) closeIncomingMessagesReplacedBy(message store.PeerMessage, replaced []store.PeerMessage, connection store.PeerConnection) error {
 	for _, earlier := range replaced {
-		if err := s.store.MarkPeerMessageSuperseded(earlier.ID, message.ID); err != nil {
+		if err := s.Store.MarkPeerMessageSuperseded(earlier.ID, message.ID); err != nil {
 			return fmt.Errorf("record that %s replaces %s: %w", message.ID, earlier.ID, err)
 		}
 		if earlier.State != msg.PeerMessageStatePending {
@@ -678,7 +678,7 @@ func (s *Server) closeIncomingMessagesReplacedBy(message store.PeerMessage, repl
 			continue
 		}
 		reason := fmt.Sprintf("superseded by %s, which %s sent to replace it", message.ID, otherServerLabel(connection))
-		decided, err := s.store.DecidePeerMessage(earlier.ID, msg.PeerMessageStateDeclined, "server", reason, time.Now())
+		decided, err := s.Store.DecidePeerMessage(earlier.ID, msg.PeerMessageStateDeclined, "server", reason, time.Now())
 		if errors.Is(err, store.ErrPeerMessageNotPending) {
 			continue
 		}
@@ -695,7 +695,7 @@ func (s *Server) closeIncomingMessagesReplacedBy(message store.PeerMessage, repl
 			statusID, err := s.sendPeerStatus(ctx, connection, decided, msg.PeerMessageBody{Result: msg.PeerMessageStatusDeclined, Detail: reason})
 			if err != nil {
 				log.Printf("[peer-messages] ERROR: tell %s that %s was declined as replaced: %v", connection.ID, decided.ID, err)
-			} else if err := s.store.SetPeerMessageStatusMessage(decided.ID, statusID); err != nil {
+			} else if err := s.Store.SetPeerMessageStatusMessage(decided.ID, statusID); err != nil {
 				log.Printf("[peer-messages] ERROR: record status %s on %s: %v", statusID, decided.ID, err)
 			}
 		}(decided)
@@ -726,7 +726,7 @@ func oneLine(text string, limit int) string {
 
 // raisePeerMessageSignal puts an incoming message in front of an
 // administrator: a request or notice to decide, a status to read.
-func (s *Server) raisePeerMessageSignal(message store.PeerMessage, connection store.PeerConnection) (string, error) {
+func (s *Service) raisePeerMessageSignal(message store.PeerMessage, connection store.PeerConnection) (string, error) {
 	server := otherServerLabel(connection)
 	var title, body string
 	switch message.Kind {
@@ -772,7 +772,7 @@ func (s *Server) raisePeerMessageSignal(message store.PeerMessage, connection st
 		Body:      body,
 		State:     msg.SignalStateOpen,
 	}
-	if err := s.store.CreateSignal(signal); err != nil {
+	if err := s.Store.CreateSignal(signal); err != nil {
 		return "", err
 	}
 	return signal.ID, nil
@@ -780,11 +780,11 @@ func (s *Server) raisePeerMessageSignal(message store.PeerMessage, connection st
 
 // settlePeerMessageSignal closes an incoming message's signal once it is
 // decided.
-func (s *Server) settlePeerMessageSignal(message store.PeerMessage, state msg.SignalState) {
+func (s *Service) settlePeerMessageSignal(message store.PeerMessage, state msg.SignalState) {
 	if message.SignalID == "" {
 		return
 	}
-	if err := s.store.ResolveSignal(message.SignalID, state, nil); err != nil {
+	if err := s.Store.ResolveSignal(message.SignalID, state, nil); err != nil {
 		log.Printf("[peer-messages] ERROR: resolve signal %s of %s: %v", message.SignalID, message.ID, err)
 	}
 }
@@ -814,10 +814,10 @@ func peerMessageFilterFromQuery(r *http.Request) (store.PeerMessageFilter, error
 	return filter, nil
 }
 
-// handleListPeerMessages: GET /peer-messages, newest first. With open=true
+// HandleListPeerMessages: GET /peer-messages, newest first. With open=true
 // it answers instead this server's outgoing requests, notices and patches
 // still waiting for the other server, oldest first.
-func (s *Server) handleListPeerMessages(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleListPeerMessages(w http.ResponseWriter, r *http.Request) {
 	filter, err := peerMessageFilterFromQuery(r)
 	if err != nil {
 		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_filter", err.Error())
@@ -830,9 +830,9 @@ func (s *Server) handleListPeerMessages(w http.ResponseWriter, r *http.Request) 
 			httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_filter", "open=true lists outgoing messages still waiting, and takes only connection_id beside it")
 			return
 		}
-		messages, err = s.store.OpenOutgoingPeerMessages(filter.ConnectionID)
+		messages, err = s.Store.OpenOutgoingPeerMessages(filter.ConnectionID)
 	case "", "false":
-		messages, err = s.store.ListPeerMessages(filter)
+		messages, err = s.Store.ListPeerMessages(filter)
 	default:
 		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_filter", signals.ErrBadEnum("open", open, "true, false").Error())
 		return
@@ -850,8 +850,8 @@ func (s *Server) handleListPeerMessages(w http.ResponseWriter, r *http.Request) 
 	httpjson.WriteJSON(w, messages)
 }
 
-// handleGetPeerMessage: GET /peer-messages/{id}.
-func (s *Server) handleGetPeerMessage(w http.ResponseWriter, r *http.Request) {
+// HandleGetPeerMessage: GET /peer-messages/{id}.
+func (s *Service) HandleGetPeerMessage(w http.ResponseWriter, r *http.Request) {
 	message, ok := s.peerMessageOf(w, r)
 	if !ok {
 		return
@@ -864,8 +864,8 @@ func (s *Server) handleGetPeerMessage(w http.ResponseWriter, r *http.Request) {
 	httpjson.WriteJSON(w, decorated)
 }
 
-func (s *Server) peerMessageOf(w http.ResponseWriter, r *http.Request) (store.PeerMessage, bool) {
-	message, err := s.store.GetPeerMessage(r.PathValue("id"))
+func (s *Service) peerMessageOf(w http.ResponseWriter, r *http.Request) (store.PeerMessage, bool) {
+	message, err := s.Store.GetPeerMessage(r.PathValue("id"))
 	if errors.Is(err, store.ErrPeerMessageNotFound) {
 		httpjson.WriteJSONError(w, http.StatusNotFound, "peer_message_not_found", r.PathValue("id")+" names no message here")
 		return store.PeerMessage{}, false
@@ -879,7 +879,7 @@ func (s *Server) peerMessageOf(w http.ResponseWriter, r *http.Request) (store.Pe
 
 // pendingIncomingPeerMessageOf reads the message a decision is about and
 // refuses one that is not an incoming request or notice waiting for it.
-func (s *Server) pendingIncomingPeerMessageOf(w http.ResponseWriter, r *http.Request) (store.PeerMessage, store.PeerConnection, bool) {
+func (s *Service) pendingIncomingPeerMessageOf(w http.ResponseWriter, r *http.Request) (store.PeerMessage, store.PeerConnection, bool) {
 	message, ok := s.peerMessageOf(w, r)
 	if !ok {
 		return store.PeerMessage{}, store.PeerConnection{}, false
@@ -893,7 +893,7 @@ func (s *Server) pendingIncomingPeerMessageOf(w http.ResponseWriter, r *http.Req
 		httpjson.WriteJSONError(w, http.StatusConflict, "peer_message_not_pending", fmt.Sprintf("%s is %s, not pending", message.ID, message.State))
 		return store.PeerMessage{}, store.PeerConnection{}, false
 	}
-	connection, err := s.store.GetPeerConnection(message.ConnectionID)
+	connection, err := s.Store.GetPeerConnection(message.ConnectionID)
 	if err != nil {
 		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return store.PeerMessage{}, store.PeerConnection{}, false
@@ -906,8 +906,8 @@ func (s *Server) pendingIncomingPeerMessageOf(w http.ResponseWriter, r *http.Req
 }
 
 // decidePeerMessage records a decision once, or answers why it cannot.
-func (s *Server) decidePeerMessage(w http.ResponseWriter, message store.PeerMessage, to msg.PeerMessageState, administratorID, reason string) (store.PeerMessage, bool) {
-	decided, err := s.store.DecidePeerMessage(message.ID, to, administratorID, reason, time.Now())
+func (s *Service) decidePeerMessage(w http.ResponseWriter, message store.PeerMessage, to msg.PeerMessageState, administratorID, reason string) (store.PeerMessage, bool) {
+	decided, err := s.Store.DecidePeerMessage(message.ID, to, administratorID, reason, time.Now())
 	if errors.Is(err, store.ErrPeerMessageNotPending) {
 		httpjson.WriteJSONError(w, http.StatusConflict, "peer_message_not_pending", message.ID+" was decided already")
 		return store.PeerMessage{}, false
@@ -921,8 +921,8 @@ func (s *Server) decidePeerMessage(w http.ResponseWriter, message store.PeerMess
 
 // undoApproval puts a message back to pending after its action could not be
 // taken, and answers the refusal.
-func (s *Server) undoApproval(w http.ResponseWriter, message store.PeerMessage, status int, code, detail string) {
-	if err := s.store.ReturnPeerMessageToPending(message.ID); err != nil {
+func (s *Service) undoApproval(w http.ResponseWriter, message store.PeerMessage, status int, code, detail string) {
+	if err := s.Store.ReturnPeerMessageToPending(message.ID); err != nil {
 		log.Printf("[peer-messages] ERROR: return %s to pending after %s: %v", message.ID, code, err)
 	}
 	httpjson.WriteJSONError(w, status, code, detail)
@@ -930,16 +930,16 @@ func (s *Server) undoApproval(w http.ResponseWriter, message store.PeerMessage, 
 
 // orchestratorBaseURL is the orchestrator approved requests and patches are
 // handed to, or empty on a server that has none.
-func (s *Server) orchestratorBaseURL() string {
-	return strings.TrimRight(strings.TrimSpace(s.settings.String(config.SettingOrchestratorURL)), "/")
+func (s *Service) orchestratorBaseURL() string {
+	return strings.TrimRight(strings.TrimSpace(s.Settings.String(config.SettingOrchestratorURL)), "/")
 }
 
-// handleApprovePeerMessage: POST /peer-messages/{id}/approve. An
+// HandleApprovePeerMessage: POST /peer-messages/{id}/approve. An
 // administrator approves an incoming request or patch, or a notice (running
 // the update). On a server with an orchestrator, a request or patch is handed
 // to it and it chooses the instance (POST /peer-messages/{id}/place); on one
 // with none, the administrator names the instance.
-func (s *Server) handleApprovePeerMessage(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleApprovePeerMessage(w http.ResponseWriter, r *http.Request) {
 	administratorID, ok := administratorMakingPeerChange(w, r)
 	if !ok {
 		return
@@ -955,7 +955,7 @@ func (s *Server) handleApprovePeerMessage(w http.ResponseWriter, r *http.Request
 		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_request", "send {} (or {instance_id} on a server with no orchestrator) for a request or patch, {} for a notice: "+err.Error())
 		return
 	}
-	attachments, err := s.store.PeerAttachmentsOfMessage(message.ID)
+	attachments, err := s.Store.PeerAttachmentsOfMessage(message.ID)
 	if err != nil {
 		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
@@ -979,7 +979,7 @@ func (s *Server) handleApprovePeerMessage(w http.ResponseWriter, r *http.Request
 			return
 		}
 		if approval.InstanceID != "" {
-			if status, code, detail := s.checkPeerMessageMayStartOn(message, approval.InstanceID); code != "" {
+			if status, code, detail := s.CheckPeerMessageMayStartOn(message, approval.InstanceID); code != "" {
 				httpjson.WriteJSONError(w, status, code, detail)
 				return
 			}
@@ -989,7 +989,7 @@ func (s *Server) handleApprovePeerMessage(w http.ResponseWriter, r *http.Request
 			httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_request", "approving a notice takes no instance_id")
 			return
 		}
-		if strings.TrimSpace(s.settings.String(config.SettingSelfUpdateCommand)) == "" {
+		if strings.TrimSpace(s.Settings.String(config.SettingSelfUpdateCommand)) == "" {
 			httpjson.WriteJSONError(w, http.StatusConflict, "self_update_not_configured", config.SettingSelfUpdateCommand+" is empty, so this server has no update to run; set it on /settings")
 			return
 		}
@@ -1006,7 +1006,7 @@ func (s *Server) handleApprovePeerMessage(w http.ResponseWriter, r *http.Request
 				s.undoApproval(w, message, status, code, detail)
 				return
 			}
-			if err := s.store.SetPeerMessagePlacementSession(message.ID, placementSessionID); err != nil {
+			if err := s.Store.SetPeerMessagePlacementSession(message.ID, placementSessionID); err != nil {
 				httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", fmt.Sprintf("the orchestrator's session %s was asked to place %s but that could not be recorded: %v", placementSessionID, message.ID, err))
 				return
 			}
@@ -1018,7 +1018,7 @@ func (s *Server) handleApprovePeerMessage(w http.ResponseWriter, r *http.Request
 			s.undoApproval(w, message, status, code, detail)
 			return
 		}
-		if err := s.store.SetPeerMessageSession(message.ID, sessionID); err != nil {
+		if err := s.Store.SetPeerMessageSession(message.ID, sessionID); err != nil {
 			httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", fmt.Sprintf("session %s was started for %s but could not be recorded: %v", sessionID, message.ID, err))
 			return
 		}
@@ -1035,8 +1035,8 @@ func (s *Server) handleApprovePeerMessage(w http.ResponseWriter, r *http.Request
 }
 
 // writePeerMessage answers a message as it is stored now, with its files.
-func (s *Server) writePeerMessage(w http.ResponseWriter, id string) {
-	current, err := s.store.GetPeerMessage(id)
+func (s *Service) writePeerMessage(w http.ResponseWriter, id string) {
+	current, err := s.Store.GetPeerMessage(id)
 	if err == nil {
 		current, err = s.withPeerAttachments(current)
 	}
@@ -1047,11 +1047,11 @@ func (s *Server) writePeerMessage(w http.ResponseWriter, id string) {
 	httpjson.WriteJSON(w, current)
 }
 
-// handlePlacePeerMessage: POST /peer-messages/{id}/place {instance_id,
+// HandlePlacePeerMessage: POST /peer-messages/{id}/place {instance_id,
 // reason}. The orchestrator session an approved request or patch was handed
 // to (by its posting token), or an administrator, names the instance its
 // session starts on. A message is placed once.
-func (s *Server) handlePlacePeerMessage(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandlePlacePeerMessage(w http.ResponseWriter, r *http.Request) {
 	placedBy, ok := peerMessageSenderOf(w, r)
 	if !ok {
 		return
@@ -1063,7 +1063,7 @@ func (s *Server) handlePlacePeerMessage(w http.ResponseWriter, r *http.Request) 
 		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_request", "send {instance_id, reason}: the instance the session starts on, and why that one")
 		return
 	}
-	message, err := s.store.GetPeerMessage(r.PathValue("id"))
+	message, err := s.Store.GetPeerMessage(r.PathValue("id"))
 	if errors.Is(err, store.ErrPeerMessageNotFound) {
 		httpjson.WriteJSONError(w, http.StatusNotFound, "peer_message_not_found", "no message "+r.PathValue("id"))
 		return
@@ -1077,16 +1077,16 @@ func (s *Server) handlePlacePeerMessage(w http.ResponseWriter, r *http.Request) 
 			"%s was handed to session %q to place; only that session's agent or an administrator may place it", message.ID, message.PlacementSessionID))
 		return
 	}
-	if status, code, detail := s.checkPeerMessageMayStartOn(message, placement.InstanceID); code != "" {
+	if status, code, detail := s.CheckPeerMessageMayStartOn(message, placement.InstanceID); code != "" {
 		httpjson.WriteJSONError(w, status, code, detail)
 		return
 	}
-	connection, err := s.store.GetPeerConnection(message.ConnectionID)
+	connection, err := s.Store.GetPeerConnection(message.ConnectionID)
 	if err != nil {
 		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", fmt.Sprintf("read %s's connection %s: %v", message.ID, message.ConnectionID, err))
 		return
 	}
-	claimed, err := s.store.ClaimPeerMessagePlacement(message.ID, placedBy, strings.TrimSpace(placement.Reason), time.Now())
+	claimed, err := s.Store.ClaimPeerMessagePlacement(message.ID, placedBy, strings.TrimSpace(placement.Reason), time.Now())
 	if errors.Is(err, store.ErrPeerMessageNotAwaitingPlacement) {
 		httpjson.WriteJSONError(w, http.StatusConflict, "peer_message_not_awaiting_placement", fmt.Sprintf(
 			"%s is %s, kind %s, handed to %q, session %q: only an approved request or patch handed to the orchestrator and not yet placed can be placed",
@@ -1099,13 +1099,13 @@ func (s *Server) handlePlacePeerMessage(w http.ResponseWriter, r *http.Request) 
 	}
 	sessionID, status, code, detail := s.startPeerMessageSessionOnInstance(claimed, connection, placement.InstanceID)
 	if code != "" {
-		if err := s.store.ReleasePeerMessagePlacement(message.ID); err != nil {
+		if err := s.Store.ReleasePeerMessagePlacement(message.ID); err != nil {
 			log.Printf("[peer-messages] ERROR: release the placement of %s after %s: %v", message.ID, code, err)
 		}
 		httpjson.WriteJSONError(w, status, code, detail)
 		return
 	}
-	if err := s.store.SetPeerMessageSession(message.ID, sessionID); err != nil {
+	if err := s.Store.SetPeerMessageSession(message.ID, sessionID); err != nil {
 		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", fmt.Sprintf("session %s was started for %s but could not be recorded: %v", sessionID, message.ID, err))
 		return
 	}
@@ -1113,13 +1113,13 @@ func (s *Server) handlePlacePeerMessage(w http.ResponseWriter, r *http.Request) 
 	s.writePeerMessage(w, message.ID)
 }
 
-// checkPeerMessageMayStartOn refuses an instance a message's session cannot
+// CheckPeerMessageMayStartOn refuses an instance a message's session cannot
 // run on: one this server does not know, and, for a patch, one on a machine
 // that is not this server, since the patch's files, the repo it lands in and
 // the deploy are all here. It returns an HTTP status, code and detail, or an
 // empty code.
-func (s *Server) checkPeerMessageMayStartOn(message store.PeerMessage, instanceID string) (int, string, string) {
-	instance, err := s.harnessStore.GetInstanceWithMachine(instanceID)
+func (s *Service) CheckPeerMessageMayStartOn(message store.PeerMessage, instanceID string) (int, string, string) {
+	instance, err := s.HarnessStore().GetInstanceWithMachine(instanceID)
 	if err != nil || instance == nil {
 		return http.StatusBadRequest, "unknown_instance", fmt.Sprintf("instance %q: %v", instanceID, err)
 	}
@@ -1135,18 +1135,18 @@ func (s *Server) checkPeerMessageMayStartOn(message store.PeerMessage, instanceI
 	return 0, "", ""
 }
 
-// framedPeerRequestPrompt is the first message of an approved request's
+// FramedPeerRequestPrompt is the first message of an approved request's
 // session: a bridge brief that quotes the request.
-func framedPeerRequestPrompt(message store.PeerMessage, connection store.PeerConnection, request msg.PeerMessageBody) string {
+func FramedPeerRequestPrompt(message store.PeerMessage, connection store.PeerConnection, request msg.PeerMessageBody) string {
 	approvedAt := time.Now().UTC()
 	if message.DecidedAt != nil {
 		approvedAt = message.DecidedAt.UTC()
 	}
 	fence := peerTextFenceTag()
 	server := otherServerLabel(connection)
-	frame := fmt.Sprintf(peerRequestFrame, markdownCodeSpan(server), connection.ID, message.ID, message.RemoteMessageID,
+	frame := fmt.Sprintf(peerRequestFrame, MarkdownCodeSpan(server), connection.ID, message.ID, message.RemoteMessageID,
 		message.CreatedAt.UTC().Format(time.RFC3339), message.DecidedBy, approvedAt.Format(time.RFC3339),
-		markdownCodeSpan(server), connection.ID, message.ID, msg.BridgeBriefQuoteEnd("request", fence))
+		MarkdownCodeSpan(server), connection.ID, message.ID, msg.BridgeBriefQuoteEnd("request", fence))
 	body := frame + "\n\n" +
 		msg.BridgeBriefQuoteStart("request", fence, ": "+oneLine(request.Title, 200)) + "\n" +
 		request.Prompt + "\n" +
@@ -1163,24 +1163,24 @@ func framedPeerRequestPrompt(message store.PeerMessage, connection store.PeerCon
 // startPeerMessageSessionOnInstance starts an approved request's or patch's
 // session on an instance, as its own chat, and returns its id, or an HTTP
 // status, code and detail saying why it could not.
-func (s *Server) startPeerMessageSessionOnInstance(message store.PeerMessage, connection store.PeerConnection, instanceID string) (string, int, string, string) {
+func (s *Service) startPeerMessageSessionOnInstance(message store.PeerMessage, connection store.PeerConnection, instanceID string) (string, int, string, string) {
 	prompt, title, err := s.framedPeerMessagePrompt(message, connection)
 	if err != nil {
 		return "", http.StatusInternalServerError, "patch_unreadable", err.Error()
 	}
-	instance, err := s.harnessStore.GetInstance(instanceID)
+	instance, err := s.HarnessStore().GetInstance(instanceID)
 	if err != nil || instance == nil {
 		return "", http.StatusBadRequest, "unknown_instance", fmt.Sprintf("instance %q: %v", instanceID, err)
 	}
-	create := CreateSessionRequest{
+	create := msg.CreateSessionRequest{
 		Harness:     instance.HarnessType,
 		InstanceID:  instance.ID,
 		DisplayName: oneLine(title, 80),
 		Type:        msg.SessionTypeInteractive,
 		Purpose:     msg.PurposeChat,
-		Origin:      peerMessageOrigin,
+		Origin:      PeerMessageOrigin,
 	}
-	status, body := s.sessionActions.ServeInternally(http.MethodPost, "/sessions", create)
+	status, body := s.SessionActions.ServeInternally(http.MethodPost, "/sessions", create)
 	if status != http.StatusCreated && status != http.StatusOK {
 		return "", http.StatusBadGateway, "session_not_created", fmt.Sprintf("POST /sessions answered %d: %s", status, strings.TrimSpace(string(body)))
 	}
@@ -1190,10 +1190,10 @@ func (s *Server) startPeerMessageSessionOnInstance(message store.PeerMessage, co
 	}
 	// Recorded before the send, so a turn that ends at once still finds the
 	// message it answers.
-	if err := s.store.SetPeerMessageSession(message.ID, created.SessionID); err != nil {
+	if err := s.Store.SetPeerMessageSession(message.ID, created.SessionID); err != nil {
 		return "", http.StatusInternalServerError, "store_failed", err.Error()
 	}
-	if output, err := s.sessionActions.SendMessageInternally(created.SessionID, prompt); err != nil {
+	if output, err := s.SessionActions.SendMessageInternally(created.SessionID, prompt); err != nil {
 		return "", http.StatusBadGateway, "session_not_sent", fmt.Sprintf("session %s was created but the request was not sent: %v (%s)", created.SessionID, err, output)
 	}
 	return created.SessionID, 0, "", ""
@@ -1201,15 +1201,15 @@ func (s *Server) startPeerMessageSessionOnInstance(message store.PeerMessage, co
 
 // framedPeerMessagePrompt is the first message of an approved request's or
 // patch's session, and its title.
-func (s *Server) framedPeerMessagePrompt(message store.PeerMessage, connection store.PeerConnection) (string, string, error) {
+func (s *Service) framedPeerMessagePrompt(message store.PeerMessage, connection store.PeerConnection) (string, string, error) {
 	if message.Kind == msg.PeerMessageKindPatch {
-		framed, err := s.framedPeerPatchPrompt(message, connection)
+		framed, err := s.FramedPeerPatchPrompt(message, connection)
 		if err != nil {
 			return "", "", err
 		}
 		return framed, peerPatchSessionTitle(message.Body.Repo), nil
 	}
-	return framedPeerRequestPrompt(message, connection, message.Body), message.Body.Title, nil
+	return FramedPeerRequestPrompt(message, connection, message.Body), message.Body.Title, nil
 }
 
 // peerPlacementFrame is what the orchestrator is sent when an administrator
@@ -1228,11 +1228,11 @@ Choose the instance its session starts on, then place it:
 
 That starts the session as its own chat on that instance, with the first message quoted below, which runs to the line "%s". Only you or an administrator can place it, and only once. A patch can only run on an instance whose machine's transport is local: its files, the repo it lands in and the deploy are all on this server, and the server refuses any other. Do not do the work yourself and do not offer a button: the administrator has already approved it.`
 
-// peerPlacementPrompt is the bridge brief the orchestrator is sent to place
+// PeerPlacementPrompt is the bridge brief the orchestrator is sent to place
 // an approved request or patch, quoting the first message of its session.
-func peerPlacementPrompt(message store.PeerMessage, connection store.PeerConnection, firstMessage, firstMessageTitle string) string {
+func PeerPlacementPrompt(message store.PeerMessage, connection store.PeerConnection, firstMessage, firstMessageTitle string) string {
 	fence := peerTextFenceTag()
-	frame := fmt.Sprintf(peerPlacementFrame, message.Kind, message.ID, markdownCodeSpan(otherServerLabel(connection)), connection.ID, message.Kind,
+	frame := fmt.Sprintf(peerPlacementFrame, message.Kind, message.ID, MarkdownCodeSpan(otherServerLabel(connection)), connection.ID, message.Kind,
 		message.DecidedBy, message.ID, msg.BridgeBriefQuoteEnd("message", fence))
 	return msg.BridgeBrief{
 		Kind:  msg.BridgeBriefKindPeerPlacement,
@@ -1249,12 +1249,12 @@ func peerPlacementPrompt(message store.PeerMessage, connection store.PeerConnect
 // askOrchestratorToPlacePeerMessage sends an approved request or patch to the
 // orchestrator's home session, as the operator's own message (an
 // administrator approved it), and returns that session's id.
-func (s *Server) askOrchestratorToPlacePeerMessage(ctx context.Context, base string, message store.PeerMessage, connection store.PeerConnection) (string, int, string, string) {
+func (s *Service) askOrchestratorToPlacePeerMessage(ctx context.Context, base string, message store.PeerMessage, connection store.PeerConnection) (string, int, string, string) {
 	firstMessage, firstMessageTitle, err := s.framedPeerMessagePrompt(message, connection)
 	if err != nil {
 		return "", http.StatusInternalServerError, "patch_unreadable", err.Error()
 	}
-	prompt := peerPlacementPrompt(message, connection, firstMessage, firstMessageTitle)
+	prompt := PeerPlacementPrompt(message, connection, firstMessage, firstMessageTitle)
 	data, err := json.Marshal(map[string]string{"message": prompt, "trigger": "user"})
 	if err != nil {
 		return "", http.StatusInternalServerError, "invalid_request", err.Error()
@@ -1284,9 +1284,9 @@ func (s *Server) askOrchestratorToPlacePeerMessage(ctx context.Context, base str
 	return taken.SessionID, 0, "", ""
 }
 
-// handleDeclinePeerMessage: POST /peer-messages/{id}/decline {reason}. The
+// HandleDeclinePeerMessage: POST /peer-messages/{id}/decline {reason}. The
 // other server is told at once.
-func (s *Server) handleDeclinePeerMessage(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleDeclinePeerMessage(w http.ResponseWriter, r *http.Request) {
 	administratorID, ok := administratorMakingPeerChange(w, r)
 	if !ok {
 		return
@@ -1310,10 +1310,10 @@ func (s *Server) handleDeclinePeerMessage(w http.ResponseWriter, r *http.Request
 	statusID, err := s.sendPeerStatus(r.Context(), connection, decided, msg.PeerMessageBody{Result: msg.PeerMessageStatusDeclined, Detail: decline.Reason})
 	if err != nil {
 		log.Printf("[peer-messages] ERROR: tell %s that %s was declined: %v", connection.ID, message.ID, err)
-	} else if err := s.store.SetPeerMessageStatusMessage(message.ID, statusID); err != nil {
+	} else if err := s.Store.SetPeerMessageStatusMessage(message.ID, statusID); err != nil {
 		log.Printf("[peer-messages] ERROR: record status %s on %s: %v", statusID, message.ID, err)
 	}
-	current, err := s.store.GetPeerMessage(message.ID)
+	current, err := s.Store.GetPeerMessage(message.ID)
 	if err != nil {
 		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
@@ -1323,7 +1323,7 @@ func (s *Server) handleDeclinePeerMessage(w http.ResponseWriter, r *http.Request
 
 // sendPeerStatus answers an incoming message with a status, through the
 // outbox, and returns the status's id.
-func (s *Server) sendPeerStatus(ctx context.Context, connection store.PeerConnection, answered store.PeerMessage, status msg.PeerMessageBody) (string, error) {
+func (s *Service) sendPeerStatus(ctx context.Context, connection store.PeerConnection, answered store.PeerMessage, status msg.PeerMessageBody) (string, error) {
 	if len(status.Detail) > peerStatusDetailLimit {
 		status.Detail = status.Detail[:peerStatusDetailLimit] + "\n[cut at " + fmt.Sprint(peerStatusDetailLimit) + " bytes]"
 	}
@@ -1334,13 +1334,13 @@ func (s *Server) sendPeerStatus(ctx context.Context, connection store.PeerConnec
 	return sent.ID, nil
 }
 
-// automaticTurnEndStatus is what this server reports when a session started
+// AutomaticTurnEndStatus is what this server reports when a session started
 // by approving a request or patch ends its turn without answering it itself. A
 // request's final reply is its result. A patch is landed only when its session
 // says so with a notice, so a patch session that said nothing reports failed:
 // nothing here knows whether the change landed, and a succeeded status would
 // tell the sender it did.
-func automaticTurnEndStatus(kind msg.PeerMessageKind, ev *msg.Event, state msg.SessionState) msg.PeerMessageBody {
+func AutomaticTurnEndStatus(kind msg.PeerMessageKind, ev *msg.Event, state msg.SessionState) msg.PeerMessageBody {
 	finalReply := ""
 	turnFailed := state == msg.SessionError || state == msg.SessionAborted
 	if ev != nil && ev.Result != nil {
@@ -1361,11 +1361,11 @@ func automaticTurnEndStatus(kind msg.PeerMessageKind, ev *msg.Event, state msg.S
 	return status
 }
 
-// reportPeerRequestTurnEnd sends a status for each approved request whose
+// ReportPeerRequestTurnEnd sends a status for each approved request whose
 // session just ended a turn: the session's final reply, and whether it
 // failed.
-func (s *Server) reportPeerRequestTurnEnd(bridgeID string, ev *msg.Event, state msg.SessionState) {
-	waiting, err := s.store.ListPeerMessages(store.PeerMessageFilter{SessionID: bridgeID, Direction: msg.PeerMessageDirectionIncoming,
+func (s *Service) ReportPeerRequestTurnEnd(bridgeID string, ev *msg.Event, state msg.SessionState) {
+	waiting, err := s.Store.ListPeerMessages(store.PeerMessageFilter{SessionID: bridgeID, Direction: msg.PeerMessageDirectionIncoming,
 		State: msg.PeerMessageStateApproved})
 	if err != nil {
 		log.Printf("[peer-messages] ERROR: read the requests session %s answers: %v", bridgeID, err)
@@ -1375,8 +1375,8 @@ func (s *Server) reportPeerRequestTurnEnd(bridgeID string, ev *msg.Event, state 
 		if message.Kind != msg.PeerMessageKindRequest && message.Kind != msg.PeerMessageKindPatch {
 			continue
 		}
-		status := automaticTurnEndStatus(message.Kind, ev, state)
-		connection, err := s.store.GetPeerConnection(message.ConnectionID)
+		status := AutomaticTurnEndStatus(message.Kind, ev, state)
+		connection, err := s.Store.GetPeerConnection(message.ConnectionID)
 		if err != nil {
 			log.Printf("[peer-messages] ERROR: read %s to report %s: %v", message.ConnectionID, message.ID, err)
 			continue
@@ -1386,7 +1386,7 @@ func (s *Server) reportPeerRequestTurnEnd(bridgeID string, ev *msg.Event, state 
 			log.Printf("[peer-messages] ERROR: report %s's turn end to %s: %v", message.ID, connection.ID, err)
 			continue
 		}
-		if finished, err := s.store.FinishApprovedPeerMessage(message.ID, statusID); err != nil {
+		if finished, err := s.Store.FinishApprovedPeerMessage(message.ID, statusID); err != nil {
 			log.Printf("[peer-messages] ERROR: mark %s done after status %s: %v", message.ID, statusID, err)
 		} else if !finished {
 			log.Printf("[peer-messages] ERROR: %s was answered while its automatic status %s was being sent; the other server has both", message.ID, statusID)
@@ -1397,14 +1397,14 @@ func (s *Server) reportPeerRequestTurnEnd(bridgeID string, ev *msg.Event, state 
 
 // selfUpdateDirectory holds each update's result and log, beside this
 // server's database.
-func (s *Server) selfUpdateDirectory() string {
-	return filepath.Join(filepath.Dir(s.cfg.DBPath), "self-updates")
+func (s *Service) selfUpdateDirectory() string {
+	return filepath.Join(filepath.Dir(s.Cfg.DBPath), "self-updates")
 }
 
 // startSelfUpdate runs self_update.command for an approved notice, detached
 // in a session of its own, and records the operation.
-func (s *Server) startSelfUpdate(message store.PeerMessage) error {
-	command := strings.TrimSpace(s.settings.String(config.SettingSelfUpdateCommand))
+func (s *Service) startSelfUpdate(message store.PeerMessage) error {
+	command := strings.TrimSpace(s.Settings.String(config.SettingSelfUpdateCommand))
 	if command == "" {
 		return errors.New(config.SettingSelfUpdateCommand + " is empty")
 	}
@@ -1439,7 +1439,7 @@ func (s *Server) startSelfUpdate(message store.PeerMessage) error {
 	// restarts it — though not a systemd stop of the whole cgroup, which
 	// self_update.command must escape itself (systemd-run).
 	child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	if err := s.store.SetPeerMessageOperation(message.ID, operation); err != nil {
+	if err := s.Store.SetPeerMessageOperation(message.ID, operation); err != nil {
 		return err
 	}
 	if err := child.Start(); err != nil {
@@ -1456,8 +1456,8 @@ func (s *Server) startSelfUpdate(message store.PeerMessage) error {
 // finishSelfUpdatesThatReported finishes every approved notice whose update
 // has written its result, including one that outlived a restart of this
 // server.
-func (s *Server) finishSelfUpdatesThatReported() {
-	approved, err := s.store.ListPeerMessages(store.PeerMessageFilter{Direction: msg.PeerMessageDirectionIncoming, State: msg.PeerMessageStateApproved, Kind: msg.PeerMessageKindNotice})
+func (s *Service) finishSelfUpdatesThatReported() {
+	approved, err := s.Store.ListPeerMessages(store.PeerMessageFilter{Direction: msg.PeerMessageDirectionIncoming, State: msg.PeerMessageStateApproved, Kind: msg.PeerMessageKindNotice})
 	if err != nil {
 		log.Printf("[peer-messages] ERROR: read approved notices: %v", err)
 		return
@@ -1476,10 +1476,10 @@ func (s *Server) finishSelfUpdatesThatReported() {
 // exited says the command's process ended here; without a result file that is
 // a failure, while a result file's absence alone (after a restart) means it
 // may still be running.
-func (s *Server) finishSelfUpdate(messageID string, waitErr error, exited bool) {
-	s.peerSelfUpdates.Lock()
-	defer s.peerSelfUpdates.Unlock()
-	message, err := s.store.GetPeerMessage(messageID)
+func (s *Service) finishSelfUpdate(messageID string, waitErr error, exited bool) {
+	s.selfUpdates.Lock()
+	defer s.selfUpdates.Unlock()
+	message, err := s.Store.GetPeerMessage(messageID)
 	if err != nil || message.Operation == nil || message.Operation.FinishedAt != nil || message.State != msg.PeerMessageStateApproved {
 		return
 	}
@@ -1503,11 +1503,11 @@ func (s *Server) finishSelfUpdate(messageID string, waitErr error, exited bool) 
 	finished := time.Now().UTC()
 	operation.FinishedAt = &finished
 	operation.Result = &result
-	if err := s.store.SetPeerMessageOperation(message.ID, operation); err != nil {
+	if err := s.Store.SetPeerMessageOperation(message.ID, operation); err != nil {
 		log.Printf("[peer-messages] ERROR: record %s's update result: %v", message.ID, err)
 		return
 	}
-	connection, err := s.store.GetPeerConnection(message.ConnectionID)
+	connection, err := s.Store.GetPeerConnection(message.ConnectionID)
 	if err != nil {
 		log.Printf("[peer-messages] ERROR: read %s to report %s: %v", message.ConnectionID, message.ID, err)
 		return
@@ -1517,7 +1517,7 @@ func (s *Server) finishSelfUpdate(messageID string, waitErr error, exited bool) 
 		log.Printf("[peer-messages] ERROR: report %s's update to %s: %v", message.ID, connection.ID, err)
 		return
 	}
-	if err := s.store.FinishPeerMessage(message.ID, statusID); err != nil {
+	if err := s.Store.FinishPeerMessage(message.ID, statusID); err != nil {
 		log.Printf("[peer-messages] ERROR: mark %s done after status %s: %v", message.ID, statusID, err)
 	}
 	log.Printf("[peer-messages] %s: update %s %s; status %s sent", message.ID, operation.ID, result.Result, statusID)

@@ -38,7 +38,6 @@ type Host interface {
 	SendMessageFromThisServer(ctx context.Context, sessionID string, req msg.SendMessageRequest, senderPrincipalID string) sendanswer.Answer
 	CallerForPrincipalID(ctx context.Context, principalID string, subjectDescription string) (requestcaller.Caller, *requestcaller.CredentialError)
 	SchedulerJobsInProcess() SchedulerJobs
-	SessionIsInScope(session *store.Session, scope requestcaller.SessionScope) bool
 	SessionPostingEnvironmentOfCurrentSpawn(session *store.Session) []string
 	StopSession(bridgeID string) error
 }

@@ -440,7 +440,7 @@ func (s *Server) readSessionForReference(ctx context.Context, id string, asker r
 			return nil, err
 		}
 		if !caller.IsAdministrator {
-			reached, err := s.sessionReachedByCaller(ctx, caller, id, true)
+			reached, err := s.peers.SessionReachedByCaller(ctx, caller, id, true)
 			if err != nil {
 				return nil, fmt.Errorf("grant_store_unavailable: %w", err)
 			}

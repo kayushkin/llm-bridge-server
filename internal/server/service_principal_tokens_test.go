@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/peers"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
 
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -95,7 +97,7 @@ func TestAServicePrincipalTokenActsAsItsPrincipalHeldToItsGrants(t *testing.T) {
 	if len(sessions) != 0 {
 		t.Fatalf("a service with no grant sees only its own sessions, and has none: %+v", sessions)
 	}
-	server.grants.setEffective(testServicePrincipalID, observeSessionsRelation, "instance", "*")
+	server.grants.setEffective(testServicePrincipalID, peers.ObserveSessionsRelation, "instance", "*")
 	sessions = decodeAnswer[[]store.Session](t, requestWithServicePrincipalToken(t, server, issued.Token, "GET", "/sessions", nil), http.StatusOK, "list sessions observing every instance")
 	if len(sessions) != 1 || sessions[0].SessionID != "br_person" {
 		t.Fatalf("observing every instance lists every session: %+v", sessions)
@@ -210,7 +212,7 @@ func TestAServiceCallsThroughOnlyTheConnectionsItIsGranted(t *testing.T) {
 	expectRefusal(t, asService("GET", "/peer-connections/"+initiatingID), http.StatusNotFound, "peer_connection_not_found", "one connection with no grant")
 	expectRefusal(t, asService("GET", proxy+"/sessions"), http.StatusForbidden, "peer_connection_not_granted", "the proxy with no grant")
 
-	initiating.grants.setEffective(testServicePrincipalID, callThroughRelation, "peer_connection", initiatingID)
+	initiating.grants.setEffective(testServicePrincipalID, peers.CallThroughRelation, "peer_connection", initiatingID)
 	if listed := decodeAnswer[[]msg.PeerConnectionView](t, asService("GET", "/peer-connections"), http.StatusOK, "list with the grant"); len(listed) != 1 || listed[0].Connection.ID != initiatingID {
 		t.Fatalf("a service granted one connection lists %+v", listed)
 	}
@@ -226,8 +228,8 @@ func TestAServiceCallsThroughOnlyTheConnectionsItIsGranted(t *testing.T) {
 	decodeAnswer[msg.PeerUserMapping](t, accepting.requestAsAdministrator(t, "POST", "/peer-user-mappings", map[string]any{
 		"peer_principal_id": peerID, "remote_principal_id": testServicePrincipalID, "local_principal_id": localReader,
 	}), http.StatusCreated, "map the service on the other server")
-	accepting.grants.setEffective(peerID, observeSessionsRelation, "instance", "*")
-	accepting.grants.setEffective(localReader, observeSessionsRelation, "instance", "*")
+	accepting.grants.setEffective(peerID, peers.ObserveSessionsRelation, "instance", "*")
+	accepting.grants.setEffective(localReader, peers.ObserveSessionsRelation, "instance", "*")
 	if err := accepting.server.store.CreateSession(&store.Session{SessionID: "br_far", Harness: msg.HarnessMock, InstanceID: "inst_test", State: string(msg.SessionIdle), PrincipalID: "principal_000801"}); err != nil {
 		t.Fatal(err)
 	}

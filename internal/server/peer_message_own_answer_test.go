@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/peers"
+
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -49,7 +51,7 @@ func TestASessionsOwnFailedStatusAnswersTheRequestAndNoAutomaticOneFollows(t *te
 	if err != nil || done.State != msg.PeerMessageStateDone || done.StatusMessageID != own.ID {
 		t.Fatalf("the request after its own status = %+v, %v, want done, answered by %s", done, err, own.ID)
 	}
-	accepting.server.reportPeerRequestTurnEnd(approved.SessionID, &msg.Event{Result: &msg.ResultEvent{Text: "All done!"}}, msg.SessionIdle)
+	accepting.server.peers.ReportPeerRequestTurnEnd(approved.SessionID, &msg.Event{Result: &msg.ResultEvent{Text: "All done!"}}, msg.SessionIdle)
 
 	waitForPeerMessage(t, initiating, "direction=incoming&kind=status", func(m msg.PeerMessage) bool { return m.InReplyTo == sent.ID })
 	answers := statusesAnswering(t, initiating, sent.ID)
@@ -64,11 +66,11 @@ func TestARequestWhoseSessionSaysNothingStillReportsItsReply(t *testing.T) {
 	buildMockHarnessOnPath(t)
 	accepting, initiating, acceptingID, initiatingID := connectedPairByDialingOut(t)
 	sent, approved := approvedRequestOnAccepting(t, accepting, initiating, acceptingID, initiatingID)
-	frame := framedPeerRequestPrompt(approved, mustPeerConnection(t, accepting, acceptingID), approved.Body)
+	frame := peers.FramedPeerRequestPrompt(approved, mustPeerConnection(t, accepting, acceptingID), approved.Body)
 	if !strings.Contains(frame, "bridge-peer status "+acceptingID+" --in-reply-to "+approved.ID+" --result failed") {
 		t.Fatalf("the request frame does not say how to report a failure:\n%s", frame)
 	}
-	accepting.server.reportPeerRequestTurnEnd(approved.SessionID, &msg.Event{Result: &msg.ResultEvent{Text: "hostname is laptop"}}, msg.SessionIdle)
+	accepting.server.peers.ReportPeerRequestTurnEnd(approved.SessionID, &msg.Event{Result: &msg.ResultEvent{Text: "hostname is laptop"}}, msg.SessionIdle)
 	status := waitForPeerMessage(t, initiating, "direction=incoming&kind=status", func(m msg.PeerMessage) bool { return m.InReplyTo == sent.ID })
 	if status.Body.Result != msg.PeerMessageStatusSucceeded || status.Body.Detail != "hostname is laptop" {
 		t.Fatalf("status = %+v, want succeeded with the reply", status)
@@ -91,7 +93,7 @@ func TestAutomaticTurnEndStatus(t *testing.T) {
 		{"a patch with no reply at all", msg.PeerMessageKindPatch, nil, msg.SessionIdle, msg.PeerMessageStatusFailed},
 	}
 	for _, c := range cases {
-		if got := automaticTurnEndStatus(c.kind, c.event, c.state); got.Result != c.result {
+		if got := peers.AutomaticTurnEndStatus(c.kind, c.event, c.state); got.Result != c.result {
 			t.Errorf("%s: %s, want %s", c.name, got.Result, c.result)
 		}
 	}

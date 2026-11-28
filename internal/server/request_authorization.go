@@ -43,6 +43,8 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/kayushkin/llm-bridge-server/internal/peers"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
 
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
@@ -920,7 +922,7 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 	// its token names, or is a connection call: the routes open to everyone
 	// and the harness callbacks are for this host's own callers, never for a
 	// peer, however it arrived.
-	socketConnectionID, arrivedOverPeerSocket := peerSocketConnectionOfRequest(r)
+	socketConnectionID, arrivedOverPeerSocket := peers.PeerSocketConnectionOfRequest(r)
 	if arrivedOverPeerSocket && !peerTokenPresent && rule.class != routePeerConnectionCall {
 		httpjson.WriteJSONError(w, http.StatusForbidden, "peer_socket_requires_peer_token", fmt.Sprintf(
 			"a request over a peer socket must present %s, or be a connection call; %s is neither", requestcaller.PeerTokenHeader, pattern))
@@ -963,8 +965,8 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 		}
 		if !arrivedOverPeerSocket {
 			// Over a socket, serveRequest has already read and stamped the id and name.
-			s.noteOtherServerIdentity(caller.Peer.ConnectionID, r.Header)
-			s.stampThisServersIdentity(w.Header())
+			s.peers.NoteOtherServerIdentity(caller.Peer.ConnectionID, r.Header)
+			s.peers.StampThisServersIdentity(w.Header())
 		}
 		if peerUserPresent {
 			if len(presentedPeerUsers) != 1 || strings.TrimSpace(presentedPeerUsers[0]) == "" {
@@ -978,7 +980,7 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		trackedRequest, forget := s.peerRequestsInFlight.track(r, caller.Peer)
+		trackedRequest, forget := s.peerRequestsInFlight.Track(r, caller.Peer)
 		defer forget()
 		s.serveAsCaller(w, trackedRequest, pattern, rule, caller)
 		return
@@ -1129,7 +1131,7 @@ func (s *Server) serveAsCaller(w http.ResponseWriter, r *http.Request, pattern s
 			httpjson.WriteJSONError(w, http.StatusInternalServerError, "route_rule_invalid", err.Error())
 			return
 		}
-		reached, err := s.sessionReachedByCaller(r.Context(), caller, sessionID, requestOnlyReads(r, pattern))
+		reached, err := s.peers.SessionReachedByCaller(r.Context(), caller, sessionID, peers.RequestOnlyReads(r, pattern))
 		if err != nil {
 			httpjson.WriteJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
 			return
@@ -1149,10 +1151,10 @@ func (s *Server) serveAsCaller(w http.ResponseWriter, r *http.Request, pattern s
 			http.Error(w, "signal not found", http.StatusNotFound)
 			return
 		}
-		if !s.sessionIDIsInScope(signal.SessionID, requestcaller.SessionScopeOfCaller(caller)) {
+		if !requestcaller.SessionScopeOfCaller(caller).ReachesSessionID(s.store, signal.SessionID) {
 			observes := false
-			if requestOnlyReads(r, pattern) {
-				if observes, err = s.mayObserveSession(r.Context(), caller, signal.SessionID); err != nil {
+			if peers.RequestOnlyReads(r, pattern) {
+				if observes, err = s.peers.MayObserveSession(r.Context(), caller, signal.SessionID); err != nil {
 					httpjson.WriteJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
 					return
 				}
@@ -1173,8 +1175,8 @@ func (s *Server) serveAsCaller(w http.ResponseWriter, r *http.Request, pattern s
 			return
 		}
 	case routePrincipalSeesOwnSessionsOnly:
-		if requestOnlyReads(r, pattern) {
-			observes, err := s.mayObserveEverySession(r, caller)
+		if peers.RequestOnlyReads(r, pattern) {
+			observes, err := s.peers.MayObserveEverySession(r, caller)
 			if err != nil {
 				httpjson.WriteJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
 				return

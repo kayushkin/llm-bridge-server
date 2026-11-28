@@ -1,0 +1,40 @@
+package peers
+
+import "github.com/kayushkin/llm-bridge-server/internal/httproutes"
+
+// Mount registers the routes for connected servers on the server's mux: connections, invites, access, the peer socket, messages and attachments between servers, user mappings and the connection proxy.
+func (s *Service) Mount(mux httproutes.Mux) {
+	mux.HandleFunc("POST /peer-connection-invites", s.HandleCreatePeerConnectionInvite)
+	mux.HandleFunc("GET /peer-connection-invites", s.HandleListPeerConnectionInvites)
+	mux.HandleFunc("POST /peer-connections", s.HandleCreatePeerConnection)
+	mux.HandleFunc("GET /peer-connections", s.HandleListPeerConnections)
+	mux.HandleFunc("GET /peer-connections/{id}", s.HandleGetPeerConnection)
+	mux.HandleFunc("POST /peer-connections/{id}/remove", s.HandleRemovePeerConnection)
+	mux.HandleFunc("POST /peer-connections/{id}/grant", s.HandleGrantPeerAccess)
+	mux.HandleFunc("POST /peer-connections/{id}/revoke-grant", s.HandleRevokePeerGrant)
+	mux.HandleFunc("POST /peer-connections/{id}/check", s.HandleCheckPeerConnection)
+	mux.HandleFunc("/peer-connections/{id}/proxy/{rest...}", s.HandlePeerConnectionProxy)
+	mux.HandleFunc("GET /peer-access-levels", s.HandleListPeerAccessLevels)
+	mux.HandleFunc("POST /peer-access-levels/{key}/provision", s.HandleProvisionPeerAccessLevel)
+	mux.HandleFunc("POST /peer/connect", s.HandlePeerConnect)
+	mux.HandleFunc("GET /peer/socket", s.HandlePeerSocket)
+	mux.HandleFunc("POST /peer/access", s.HandleReceivePeerAccess)
+	mux.HandleFunc("POST /peer/access/revoked", s.HandleReceivePeerAccessRevoked)
+	mux.HandleFunc("POST /peer/connection/removed", s.HandleReceivePeerConnectionRemoved)
+	mux.HandleFunc("GET /peer-user-mappings", s.HandleListPeerUserMappings)
+	mux.HandleFunc("POST /peer-user-mappings", s.HandleCreatePeerUserMapping)
+	mux.HandleFunc("POST /peer-user-mappings/{id}/remove", s.HandleRemovePeerUserMapping)
+	mux.HandleFunc("GET /peer/self", s.HandlePeerSelf)
+	mux.HandleFunc("GET /peer/server-name", s.HandlePeerServerIdentity)
+	mux.HandleFunc("POST /peer-connections/{id}/messages", s.HandleCreatePeerMessage)
+	mux.HandleFunc("GET /peer-messages", s.HandleListPeerMessages)
+	mux.HandleFunc("GET /peer-messages/{id}", s.HandleGetPeerMessage)
+	mux.HandleFunc("POST /peer-messages/{id}/approve", s.HandleApprovePeerMessage)
+	mux.HandleFunc("POST /peer-messages/{id}/decline", s.HandleDeclinePeerMessage)
+	mux.HandleFunc("POST /peer-messages/{id}/place", s.HandlePlacePeerMessage)
+	mux.HandleFunc("POST /peer/messages", s.HandleReceivePeerMessage)
+	mux.HandleFunc("POST /peer-message-attachments", s.HandleUploadPeerAttachment)
+	mux.HandleFunc("GET /peer-messages/{id}/attachments/{attachment_id}", s.HandleDownloadPeerAttachment)
+	mux.HandleFunc("POST /peer-messages/{id}/attachments/{attachment_id}/retry", s.HandleRetryPeerAttachment)
+	mux.HandleFunc("GET /peer/messages/{message_id}/attachments/{attachment_id}", s.HandleServePeerAttachment)
+}

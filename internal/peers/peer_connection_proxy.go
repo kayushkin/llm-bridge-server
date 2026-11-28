@@ -1,4 +1,4 @@
-package server
+package peers
 
 // The peer connection proxy: this server's administrators reach a connected
 // server through it.
@@ -56,7 +56,7 @@ var requestHeadersForwardedToPeers = []string{"Content-Type", "Accept", "Last-Ev
 // server's answer that reach the browser. The answer is shown on this server's
 // own origin, signed in as this server's user, so anything that could make the
 // browser act on it is left out: a cookie, a redirect, a refresh, a policy the
-// other server chose. Content-Type passes only as passedBackContentType allows.
+// other server chose. Content-Type passes only as PassedBackContentType allows.
 var responseHeadersPassedBackFromPeers = []string{"Content-Type", "Cache-Control", "Content-Encoding"}
 
 // contentTypesPassedBackFromPeers are the media types a peer's answer may keep:
@@ -66,10 +66,10 @@ var responseHeadersPassedBackFromPeers = []string{"Content-Type", "Cache-Control
 // script. nosniff and the sandbox policy are set on every answer as well.
 var contentTypesPassedBackFromPeers = []string{"application/json", "text/event-stream", "image/png", "image/jpeg", "image/gif", "image/webp"}
 
-// passedBackContentType is the Content-Type the browser gets for a peer's
+// PassedBackContentType is the Content-Type the browser gets for a peer's
 // answer: the peer's own when its media type is one the bridge answers, else
 // application/octet-stream, which the browser only downloads.
-func passedBackContentType(peerContentType string) string {
+func PassedBackContentType(peerContentType string) string {
 	mediaType, _, err := mime.ParseMediaType(peerContentType)
 	if err == nil && slices.Contains(contentTypesPassedBackFromPeers, mediaType) {
 		return peerContentType
@@ -77,11 +77,11 @@ func passedBackContentType(peerContentType string) string {
 	return "application/octet-stream"
 }
 
-// peerProxyHTTPClient forwards proxied requests by https. Like peerHTTPClient
+// PeerProxyHTTPClient forwards proxied requests by https. Like PeerHTTPClient
 // it verifies certificates with the system's roots and follows no redirect,
 // and it has no overall timeout, so a session's stream is not cut off; the
 // caller's request context still ends it.
-var peerProxyHTTPClient = &http.Client{CheckRedirect: refusePeerRedirect}
+var PeerProxyHTTPClient = &http.Client{CheckRedirect: RefusePeerRedirect}
 
 // peerConnectionProxyMountPrefix is the path a connection is mounted at.
 func peerConnectionProxyMountPrefix(connectionID string) string {
@@ -94,9 +94,9 @@ func proxiedRequestStartsASession(method, path string) bool {
 	return method == http.MethodPost && path == "/sessions"
 }
 
-// handlePeerConnectionProxy: /peer-connections/{id}/proxy/{rest...}, any
+// HandlePeerConnectionProxy: /peer-connections/{id}/proxy/{rest...}, any
 // method.
-func (s *Server) handlePeerConnectionProxy(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandlePeerConnectionProxy(w http.ResponseWriter, r *http.Request) {
 	connection, ok := s.livePeerConnectionOf(w, r)
 	if !ok {
 		return
@@ -136,18 +136,18 @@ func (s *Server) handlePeerConnectionProxy(w http.ResponseWriter, r *http.Reques
 			"%s; grant can_call_through on peer_connection %s to call through it", callThrough.Describe(), connection.ID))
 		return
 	}
-	if proxiedRequestOnlyReads(r.Method, httproutes.EscapedPathAfterPrefix(r.URL, peerConnectionProxyMountPrefix(connection.ID)), header) {
+	if ProxiedRequestOnlyReads(r.Method, httproutes.EscapedPathAfterPrefix(r.URL, peerConnectionProxyMountPrefix(connection.ID)), header) {
 		s.serveSharedProxiedRead(w, r, connection, path, header)
 		return
 	}
 	// Anything else may change what the other server answers, so no answer
 	// kept from before it may be served after it.
-	s.peerProxyCalls.forgetAnswersOf(connection.ID)
-	if !s.peerProxyCalls.allow(connection.ID) {
+	s.proxyCalls.forgetAnswersOf(connection.ID)
+	if !s.proxyCalls.allow(connection.ID) {
 		writePeerCallError(w, errPeerCallLimit)
 		return
 	}
-	response, err := s.callWithHeldAccessThrough(r.Context(), peerProxyHTTPClient, connection, r.Method, path, header, body, r.ContentLength)
+	response, err := s.callWithHeldAccessThrough(r.Context(), PeerProxyHTTPClient, connection, r.Method, path, header, body, r.ContentLength)
 	if err != nil {
 		writePeerCallError(w, err)
 		return
@@ -168,7 +168,7 @@ func passBackPeerAnswerHeaders(destination, peerHeader http.Header) {
 			continue
 		}
 		if strings.EqualFold(key, "Content-Type") {
-			destination.Set("Content-Type", passedBackContentType(peerHeader.Get("Content-Type")))
+			destination.Set("Content-Type", PassedBackContentType(peerHeader.Get("Content-Type")))
 			continue
 		}
 		for _, value := range values {

@@ -21,6 +21,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/peers"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
@@ -158,7 +160,7 @@ func (s *Server) CallerForPrincipalID(ctx context.Context, principalID, subjectD
 // token presented over the socket of a connection it was not granted on. The
 // token's value is never logged or echoed; only its grant's id is named.
 func (s *Server) callerOfPeerToken(ctx context.Context, presentedToken, socketConnectionID string, arrivedOverPeerSocket bool) (requestcaller.Caller, *requestcaller.CredentialError) {
-	grant, err := s.store.GetPeerGrantByTokenHash(hashPeerSecret(presentedToken))
+	grant, err := s.store.GetPeerGrantByTokenHash(peers.HashPeerSecret(presentedToken))
 	if errors.Is(err, store.ErrPeerGrantNotFound) {
 		return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "peer_token_unknown", requestcaller.PeerTokenHeader+" is not a peer token this server issued")
 	}
@@ -218,10 +220,10 @@ func (s *Server) callerForPeerUser(ctx context.Context, peer requestcaller.Calle
 	}, nil
 }
 
-// forget drops the cached answer for principalID, so the next request reads
+// Forget drops the cached answer for principalID, so the next request reads
 // principal-store again. This server calls it after it changes the principal
 // itself, as granting a peer a level does, so a new level applies at once.
-func (cache *principalLookupCache) forget(principalID string) {
+func (cache *principalLookupCache) Forget(principalID string) {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
 	delete(cache.principalsByID, principalID)

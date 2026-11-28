@@ -1,4 +1,4 @@
-package server
+package peers
 
 // How often this server calls a connected server through the proxy, decided
 // here rather than by each browser tab.
@@ -14,11 +14,11 @@ package server
 //   - Identical reads share one call. A read is a GET that is not an event
 //     stream, or a POST to one of proxiedPostsThatOnlyRead. Reads the same
 //     caller sends while one is in flight wait for it, and a successful
-//     answer is served again for peerProxySharedAnswerFreshFor. Any other
+//     answer is served again for PeerProxySharedAnswerFreshFor. Any other
 //     request through the connection forgets the kept answers, so a read
 //     after a write goes to the other server.
-//   - Each connection may be called at most peerProxyCallsPerSecond times a
-//     second, with bursts of up to peerProxyCallBurst. A call past that is
+//   - Each connection may be called at most PeerProxyCallsPerSecond times a
+//     second, with bursts of up to PeerProxyCallBurst. A call past that is
 //     answered 429 here, in JSON, without reaching the other server; the
 //     chat shows it as the server's answer and does not retry it.
 //
@@ -51,9 +51,9 @@ import (
 
 // Vars so tests can change them.
 var (
-	peerProxySharedAnswerFreshFor = 5 * time.Second
-	peerProxyCallsPerSecond       = 5.0
-	peerProxyCallBurst            = 60
+	PeerProxySharedAnswerFreshFor = 5 * time.Second
+	PeerProxyCallsPerSecond       = 5.0
+	PeerProxyCallBurst            = 60
 	// peerProxyLargestSharedAnswer is the most of an answer kept in memory to
 	// share. A larger one goes to the caller that asked for it, and the callers
 	// waiting on it make their own calls.
@@ -75,9 +75,9 @@ var proxiedPostsThatOnlyRead = []string{"/sessions/validators", "/sessions/summa
 // share of calls for now.
 var errPeerCallLimit = errors.New("this server limits how often it calls a connected server")
 
-// proxiedRequestOnlyReads reports whether a proxied request, by its method,
+// ProxiedRequestOnlyReads reports whether a proxied request, by its method,
 // path on the other server and the headers it forwards, only reads.
-func proxiedRequestOnlyReads(method, path string, header http.Header) bool {
+func ProxiedRequestOnlyReads(method, path string, header http.Header) bool {
 	switch method {
 	case http.MethodGet:
 		return !strings.Contains(header.Get("Accept"), "text/event-stream")
@@ -104,9 +104,9 @@ type peerProxyRead struct {
 	err    error
 }
 
-// peerProxyCalls is the proxy's shared reads and call limits, per connection.
+// PeerProxyCalls is the proxy's shared reads and call limits, per connection.
 // The zero value is ready to use.
-type peerProxyCalls struct {
+type PeerProxyCalls struct {
 	mutex    sync.Mutex
 	inFlight map[string]*peerProxyRead
 	kept     map[string]*peerProxyAnswer
@@ -115,7 +115,7 @@ type peerProxyCalls struct {
 
 // allow takes one call from the connection's allowance, reporting false when
 // there is none left now.
-func (calls *peerProxyCalls) allow(connectionID string) bool {
+func (calls *PeerProxyCalls) allow(connectionID string) bool {
 	calls.mutex.Lock()
 	defer calls.mutex.Unlock()
 	if calls.limiters == nil {
@@ -123,14 +123,14 @@ func (calls *peerProxyCalls) allow(connectionID string) bool {
 	}
 	limiter := calls.limiters[connectionID]
 	if limiter == nil {
-		limiter = rate.NewLimiter(rate.Limit(peerProxyCallsPerSecond), peerProxyCallBurst)
+		limiter = rate.NewLimiter(rate.Limit(PeerProxyCallsPerSecond), PeerProxyCallBurst)
 		calls.limiters[connectionID] = limiter
 	}
 	return limiter.Allow()
 }
 
 // forgetAnswersOf drops every answer kept for the connection.
-func (calls *peerProxyCalls) forgetAnswersOf(connectionID string) {
+func (calls *PeerProxyCalls) forgetAnswersOf(connectionID string) {
 	prefix := connectionID + "\x00"
 	calls.mutex.Lock()
 	defer calls.mutex.Unlock()
@@ -143,11 +143,11 @@ func (calls *peerProxyCalls) forgetAnswersOf(connectionID string) {
 
 // joinOrStart returns an answer still fresh, or the read in flight to wait
 // on, or — when there is neither — a new read the caller must settle.
-func (calls *peerProxyCalls) joinOrStart(key string) (fresh *peerProxyAnswer, waitOn *peerProxyRead, started *peerProxyRead) {
+func (calls *PeerProxyCalls) joinOrStart(key string) (fresh *peerProxyAnswer, waitOn *peerProxyRead, started *peerProxyRead) {
 	calls.mutex.Lock()
 	defer calls.mutex.Unlock()
 	if answer := calls.kept[key]; answer != nil {
-		if time.Since(answer.at) < peerProxySharedAnswerFreshFor {
+		if time.Since(answer.at) < PeerProxySharedAnswerFreshFor {
 			return answer, nil, nil
 		}
 		delete(calls.kept, key)
@@ -164,7 +164,7 @@ func (calls *peerProxyCalls) joinOrStart(key string) (fresh *peerProxyAnswer, wa
 }
 
 // settle ends a read, keeping a successful answer.
-func (calls *peerProxyCalls) settle(key string, read *peerProxyRead) {
+func (calls *PeerProxyCalls) settle(key string, read *peerProxyRead) {
 	calls.mutex.Lock()
 	defer calls.mutex.Unlock()
 	delete(calls.inFlight, key)
@@ -175,7 +175,7 @@ func (calls *peerProxyCalls) settle(key string, read *peerProxyRead) {
 		// Expired answers go when a new one is kept, so the map holds at most
 		// what was read in the last few seconds.
 		for other, answer := range calls.kept {
-			if time.Since(answer.at) >= peerProxySharedAnswerFreshFor {
+			if time.Since(answer.at) >= PeerProxySharedAnswerFreshFor {
 				delete(calls.kept, other)
 			}
 		}
@@ -184,10 +184,10 @@ func (calls *peerProxyCalls) settle(key string, read *peerProxyRead) {
 	close(read.done)
 }
 
-// sharedProxiedReadKey names a read: the connection, what is asked, and
+// SharedProxiedReadKey names a read: the connection, what is asked, and
 // everything that can change the answer — the user named to the other server,
 // the headers forwarded and the body.
-func sharedProxiedReadKey(connectionID, method, pathAndQuery string, header http.Header, body []byte) string {
+func SharedProxiedReadKey(connectionID, method, pathAndQuery string, header http.Header, body []byte) string {
 	hash := sha256.New()
 	for _, name := range append([]string{requestcaller.PeerUserHeader}, requestHeadersForwardedToPeers...) {
 		fmt.Fprintf(hash, "%s=%q\n", name, header.Values(name))
@@ -207,7 +207,7 @@ func writePeerProxyAnswer(w http.ResponseWriter, answer *peerProxyAnswer) {
 
 // serveSharedProxiedRead answers a read through the proxy, sharing one call
 // to the other server among every identical read.
-func (s *Server) serveSharedProxiedRead(w http.ResponseWriter, r *http.Request, connection store.PeerConnection, pathAndQuery string, header http.Header) {
+func (s *Service) serveSharedProxiedRead(w http.ResponseWriter, r *http.Request, connection store.PeerConnection, pathAndQuery string, header http.Header) {
 	var body []byte
 	if r.Method != http.MethodGet && r.ContentLength != 0 {
 		read, err := io.ReadAll(io.LimitReader(r.Body, peerProxyLargestSharedReadBody+1))
@@ -222,8 +222,8 @@ func (s *Server) serveSharedProxiedRead(w http.ResponseWriter, r *http.Request, 
 		}
 		body = read
 	}
-	key := sharedProxiedReadKey(connection.ID, r.Method, pathAndQuery, header, body)
-	fresh, waitOn, started := s.peerProxyCalls.joinOrStart(key)
+	key := SharedProxiedReadKey(connection.ID, r.Method, pathAndQuery, header, body)
+	fresh, waitOn, started := s.proxyCalls.joinOrStart(key)
 	if fresh != nil {
 		writePeerProxyAnswer(w, fresh)
 		return
@@ -247,9 +247,9 @@ func (s *Server) serveSharedProxiedRead(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	if !s.peerProxyCalls.allow(connection.ID) {
+	if !s.proxyCalls.allow(connection.ID) {
 		started.err = errPeerCallLimit
-		s.peerProxyCalls.settle(key, started)
+		s.proxyCalls.settle(key, started)
 		writePeerCallError(w, errPeerCallLimit)
 		return
 	}
@@ -257,10 +257,10 @@ func (s *Server) serveSharedProxiedRead(w http.ResponseWriter, r *http.Request, 
 	// waiting on it are not left with that caller's cancellation.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), peerProxySharedReadTimeout)
 	defer cancel()
-	response, err := s.callWithHeldAccessThrough(ctx, peerProxyHTTPClient, connection, r.Method, pathAndQuery, header, bytes.NewReader(body), int64(len(body)))
+	response, err := s.callWithHeldAccessThrough(ctx, PeerProxyHTTPClient, connection, r.Method, pathAndQuery, header, bytes.NewReader(body), int64(len(body)))
 	if err != nil {
 		started.err = err
-		s.peerProxyCalls.settle(key, started)
+		s.proxyCalls.settle(key, started)
 		writePeerCallError(w, err)
 		return
 	}
@@ -270,7 +270,7 @@ func (s *Server) serveSharedProxiedRead(w http.ResponseWriter, r *http.Request, 
 	if mediaType, _, _ := mime.ParseMediaType(response.Header.Get("Content-Type")); mediaType == "text/event-stream" {
 		// A stream never ends, so it cannot be kept: it goes to this caller as
 		// it comes, and the callers waiting on it make their own calls.
-		s.peerProxyCalls.settle(key, started)
+		s.proxyCalls.settle(key, started)
 		for name, values := range passedBack {
 			w.Header()[name] = values
 		}
@@ -283,14 +283,14 @@ func (s *Server) serveSharedProxiedRead(w http.ResponseWriter, r *http.Request, 
 	answerBody, err := io.ReadAll(io.LimitReader(response.Body, int64(peerProxyLargestSharedAnswer)+1))
 	if err != nil {
 		started.err = fmt.Errorf("read the other server's answer: %w", err)
-		s.peerProxyCalls.settle(key, started)
+		s.proxyCalls.settle(key, started)
 		writePeerCallError(w, started.err)
 		return
 	}
 	if len(answerBody) > peerProxyLargestSharedAnswer {
 		// Too large to keep: this caller gets it as it comes, and the callers
 		// waiting on it make their own calls.
-		s.peerProxyCalls.settle(key, started)
+		s.proxyCalls.settle(key, started)
 		for name, values := range passedBack {
 			w.Header()[name] = values
 		}
@@ -304,18 +304,18 @@ func (s *Server) serveSharedProxiedRead(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	started.answer = &peerProxyAnswer{status: response.StatusCode, header: passedBack, body: answerBody, at: time.Now()}
-	s.peerProxyCalls.settle(key, started)
+	s.proxyCalls.settle(key, started)
 	writePeerProxyAnswer(w, started.answer)
 }
 
 // callPeerAndPassBack makes one call of its own for a read that could not be
 // shared, within the connection's limit.
-func (s *Server) callPeerAndPassBack(w http.ResponseWriter, r *http.Request, connection store.PeerConnection, pathAndQuery string, header http.Header, body []byte) {
-	if !s.peerProxyCalls.allow(connection.ID) {
+func (s *Service) callPeerAndPassBack(w http.ResponseWriter, r *http.Request, connection store.PeerConnection, pathAndQuery string, header http.Header, body []byte) {
+	if !s.proxyCalls.allow(connection.ID) {
 		writePeerCallError(w, errPeerCallLimit)
 		return
 	}
-	response, err := s.callWithHeldAccessThrough(r.Context(), peerProxyHTTPClient, connection, r.Method, pathAndQuery, header, bytes.NewReader(body), int64(len(body)))
+	response, err := s.callWithHeldAccessThrough(r.Context(), PeerProxyHTTPClient, connection, r.Method, pathAndQuery, header, bytes.NewReader(body), int64(len(body)))
 	if err != nil {
 		writePeerCallError(w, err)
 		return

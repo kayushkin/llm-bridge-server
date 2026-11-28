@@ -1,4 +1,4 @@
-package server
+package peers
 
 // Phase 2 of linked servers (design note d107154a): a connected server says
 // which of its users a request is for, and this server acts for that user as
@@ -39,40 +39,22 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// observeSessionsRelation is grant-store's relation for reading sessions one
+// ObserveSessionsRelation is grant-store's relation for reading sessions one
 // did not start, on an instance or a machine. Holding none allows nothing,
 // whatever principal-store says of the kind.
-const observeSessionsRelation = "can_observe_sessions_on"
+const ObserveSessionsRelation = "can_observe_sessions_on"
 
-// callThroughRelation is grant-store's relation for listing a peer connection
+// CallThroughRelation is grant-store's relation for listing a peer connection
 // and calling the connected server through it.
-const callThroughRelation = "can_call_through"
-
-// SessionIsInScope reports whether a session is one the scope reaches.
-func (s *Server) SessionIsInScope(session *store.Session, scope requestcaller.SessionScope) bool {
-	if session == nil || scope.PrincipalID == "" || session.PrincipalID != scope.PrincipalID {
-		return false
-	}
-	if scope.ThroughPeerPrincipalID == "" {
-		return true
-	}
-	origin, found, err := s.store.SessionPeerOriginOfLineage(session.SessionID)
-	return err == nil && found && origin.PeerPrincipalID == scope.ThroughPeerPrincipalID
-}
-
-// sessionIDIsInScope is SessionIsInScope for a session id.
-func (s *Server) sessionIDIsInScope(sessionID string, scope requestcaller.SessionScope) bool {
-	session, err := s.store.GetSession(sessionID)
-	return err == nil && s.SessionIsInScope(session, scope)
-}
+const CallThroughRelation = "can_call_through"
 
 // routesNeverObserved are read-only by method and still not observation: the
 // terminal attach drives the session's pty.
 var routesNeverObserved = []string{"GET /sessions/{id}/attach", "GET /sessions/{id}/attach-token"}
 
-// requestOnlyReads reports whether a request can be answered to an observer:
+// RequestOnlyReads reports whether a request can be answered to an observer:
 // GET or HEAD on a route that does not drive the session.
-func requestOnlyReads(r *http.Request, pattern string) bool {
+func RequestOnlyReads(r *http.Request, pattern string) bool {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		return false
 	}
@@ -84,44 +66,44 @@ func requestOnlyReads(r *http.Request, pattern string) bool {
 	return true
 }
 
-// sessionReachedByCaller reports whether a caller who is not an
+// SessionReachedByCaller reports whether a caller who is not an
 // administrator reaches one session on a session route: the session is in
 // its scope, it started the session as another principal and may still drive
 // it, or, on a route that only reads, its grants let it observe the session.
 // A session it does not reach answers as a missing one.
-func (s *Server) sessionReachedByCaller(ctx context.Context, caller requestcaller.Caller, sessionID string, onlyReads bool) (bool, error) {
-	if s.sessionIDIsInScope(sessionID, requestcaller.SessionScopeOfCaller(caller)) {
+func (s *Service) SessionReachedByCaller(ctx context.Context, caller requestcaller.Caller, sessionID string, onlyReads bool) (bool, error) {
+	if requestcaller.SessionScopeOfCaller(caller).ReachesSessionID(s.Store, sessionID) {
 		return true, nil
 	}
 	// A service that started this session as another principal drives it
 	// while it holds can_start_sessions_as on that one.
-	drives, err := s.callerStartedSessionIDAndMayDriveIt(ctx, caller, sessionID)
+	drives, err := s.Server.CallerStartedSessionIDAndMayDriveIt(ctx, caller, sessionID)
 	if err != nil || drives {
 		return drives, err
 	}
 	if !onlyReads {
 		return false, nil
 	}
-	return s.mayObserveSession(ctx, caller, sessionID)
+	return s.MayObserveSession(ctx, caller, sessionID)
 }
 
-// mayObserveSession reports whether the caller's grants let it read this
+// MayObserveSession reports whether the caller's grants let it read this
 // session it does not own: can_observe_sessions_on naming the session's
 // instance or its machine, for the caller's principal and, through a peer,
 // for the peer too.
-func (s *Server) mayObserveSession(ctx context.Context, caller requestcaller.Caller, sessionID string) (bool, error) {
-	session, err := s.store.GetSession(sessionID)
+func (s *Service) MayObserveSession(ctx context.Context, caller requestcaller.Caller, sessionID string) (bool, error) {
+	session, err := s.Store.GetSession(sessionID)
 	if err != nil {
 		return false, nil
 	}
 	machineID := ""
 	if session.InstanceID != "" {
-		if instance, err := s.harnessStore.GetInstanceWithMachine(session.InstanceID); err == nil {
+		if instance, err := s.HarnessStore().GetInstanceWithMachine(session.InstanceID); err == nil {
 			machineID = instance.MachineID
 		}
 	}
 	subject := grantcheck.SubjectOfCaller(caller)
-	instances, err := s.grantChecker.GrantedResourcesOf(ctx, subject, observeSessionsRelation, "instance")
+	instances, err := s.GrantChecker.GrantedResourcesOf(ctx, subject, ObserveSessionsRelation, "instance")
 	if err != nil {
 		return false, err
 	}
@@ -131,26 +113,26 @@ func (s *Server) mayObserveSession(ctx context.Context, caller requestcaller.Cal
 	if machineID == "" {
 		return false, nil
 	}
-	machines, err := s.grantChecker.GrantedResourcesOf(ctx, subject, observeSessionsRelation, "machine")
+	machines, err := s.GrantChecker.GrantedResourcesOf(ctx, subject, ObserveSessionsRelation, "machine")
 	if err != nil {
 		return false, err
 	}
 	return machines.RequiresAGrantAndNames(machineID), nil
 }
 
-// mayObserveEverySession reports whether the caller's grants name every
+// MayObserveEverySession reports whether the caller's grants name every
 // instance for observation, which is what lets a list answer every session.
-func (s *Server) mayObserveEverySession(r *http.Request, caller requestcaller.Caller) (bool, error) {
-	granted, err := s.grantChecker.GrantedResourcesOf(r.Context(), grantcheck.SubjectOfCaller(caller), observeSessionsRelation, "instance")
+func (s *Service) MayObserveEverySession(r *http.Request, caller requestcaller.Caller) (bool, error) {
+	granted, err := s.GrantChecker.GrantedResourcesOf(r.Context(), grantcheck.SubjectOfCaller(caller), ObserveSessionsRelation, "instance")
 	if err != nil {
 		return false, err
 	}
 	return granted.RequiresAGrantAndNames("*"), nil
 }
 
-// handleListPeerUserMappings: GET /peer-user-mappings[?peer_principal_id=].
-func (s *Server) handleListPeerUserMappings(w http.ResponseWriter, r *http.Request) {
-	mappings, err := s.store.ListPeerUserMappings(strings.TrimSpace(r.URL.Query().Get("peer_principal_id")))
+// HandleListPeerUserMappings: GET /peer-user-mappings[?peer_principal_id=].
+func (s *Service) HandleListPeerUserMappings(w http.ResponseWriter, r *http.Request) {
+	mappings, err := s.Store.ListPeerUserMappings(strings.TrimSpace(r.URL.Query().Get("peer_principal_id")))
 	if err != nil {
 		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
@@ -158,11 +140,11 @@ func (s *Server) handleListPeerUserMappings(w http.ResponseWriter, r *http.Reque
 	httpjson.WriteJSON(w, mappings)
 }
 
-// handleCreatePeerUserMapping: POST /peer-user-mappings. The peer principal
+// HandleCreatePeerUserMapping: POST /peer-user-mappings. The peer principal
 // must be one this server made for a connected server, and the local
 // principal one that acts as a caller here; both are checked with
 // principal-store, the remote id only stored.
-func (s *Server) handleCreatePeerUserMapping(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleCreatePeerUserMapping(w http.ResponseWriter, r *http.Request) {
 	administratorID, ok := administratorMakingPeerChange(w, r)
 	if !ok {
 		return
@@ -183,7 +165,7 @@ func (s *Server) handleCreatePeerUserMapping(w http.ResponseWriter, r *http.Requ
 			"%s is not a peer principal this server made for a connected server; GET /peer-connections names them", request.PeerPrincipalID))
 		return
 	}
-	local, err := s.principalLookupCache.LookUp(r.Context(), request.LocalPrincipalID)
+	local, err := s.PrincipalLookupCache().LookUp(r.Context(), request.LocalPrincipalID)
 	if err != nil {
 		httpjson.WriteJSONError(w, http.StatusBadRequest, "unknown_local_principal", fmt.Sprintf("principal-store does not know %s: %v", request.LocalPrincipalID, err))
 		return
@@ -195,7 +177,7 @@ func (s *Server) handleCreatePeerUserMapping(w http.ResponseWriter, r *http.Requ
 	}
 	mapping := msg.PeerUserMapping{PeerPrincipalID: request.PeerPrincipalID, RemotePrincipalID: request.RemotePrincipalID,
 		LocalPrincipalID: request.LocalPrincipalID, CreatedBy: administratorID}
-	if err := s.store.InsertPeerUserMapping(&mapping); errors.Is(err, store.ErrPeerUserMappingExists) {
+	if err := s.Store.InsertPeerUserMapping(&mapping); errors.Is(err, store.ErrPeerUserMappingExists) {
 		httpjson.WriteJSONError(w, http.StatusConflict, "peer_user_mapping_exists", fmt.Sprintf(
 			"%s's user %s is already mapped; remove that mapping first", request.PeerPrincipalID, request.RemotePrincipalID))
 		return
@@ -206,8 +188,8 @@ func (s *Server) handleCreatePeerUserMapping(w http.ResponseWriter, r *http.Requ
 	writeJSONStatus(w, http.StatusCreated, mapping)
 }
 
-// handleRemovePeerUserMapping: POST /peer-user-mappings/{id}/remove {"reason"}.
-func (s *Server) handleRemovePeerUserMapping(w http.ResponseWriter, r *http.Request) {
+// HandleRemovePeerUserMapping: POST /peer-user-mappings/{id}/remove {"reason"}.
+func (s *Service) HandleRemovePeerUserMapping(w http.ResponseWriter, r *http.Request) {
 	administratorID, ok := administratorMakingPeerChange(w, r)
 	if !ok {
 		return
@@ -220,7 +202,7 @@ func (s *Server) handleRemovePeerUserMapping(w http.ResponseWriter, r *http.Requ
 		httpjson.WriteJSONError(w, http.StatusBadRequest, "reason_required", "say why; the reason stays on the row")
 		return
 	}
-	removed, err := s.store.RemovePeerUserMapping(r.PathValue("id"), administratorID, request.Reason)
+	removed, err := s.Store.RemovePeerUserMapping(r.PathValue("id"), administratorID, request.Reason)
 	if errors.Is(err, store.ErrPeerUserMappingNotFound) {
 		httpjson.WriteJSONError(w, http.StatusNotFound, "peer_user_mapping_not_found", fmt.Sprintf("%s is not a live mapping", r.PathValue("id")))
 		return
@@ -229,7 +211,7 @@ func (s *Server) handleRemovePeerUserMapping(w http.ResponseWriter, r *http.Requ
 		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
-	if ended := s.peerRequestsInFlight.cancelMapping(removed.ID); ended > 0 {
+	if ended := s.PeerRequestsInFlight.CancelMapping(removed.ID); ended > 0 {
 		log.Printf("[peers] user mapping %s was removed; ended %d request(s) still acting through it", removed.ID, ended)
 	}
 	httpjson.WriteJSON(w, removed)
@@ -237,8 +219,8 @@ func (s *Server) handleRemovePeerUserMapping(w http.ResponseWriter, r *http.Requ
 
 // peerPrincipalIsOneOfOurs reports whether a connection here names this peer
 // principal as the one it made for the other server.
-func (s *Server) peerPrincipalIsOneOfOurs(peerPrincipalID string) bool {
-	connections, err := s.store.ListPeerConnections()
+func (s *Service) peerPrincipalIsOneOfOurs(peerPrincipalID string) bool {
+	connections, err := s.Store.ListPeerConnections()
 	if err != nil {
 		return false
 	}

@@ -7,7 +7,7 @@ import "github.com/kayushkin/llm-bridge/msg"
 // holds up the classifier, whose verdict changes the session's state.
 func (s *Server) onTurnEnd(bridgeID string, ev *msg.Event, state msg.SessionState) {
 	go s.maybeAutoRename(bridgeID)
-	go s.reportPeerRequestTurnEnd(bridgeID, ev, state)
+	go s.peers.ReportPeerRequestTurnEnd(bridgeID, ev, state)
 	go s.chatLinkService.OnTurnEnd(bridgeID, ev, state)
 	go s.briefService.UpdateSessionBriefAtTurnEnd(bridgeID, state)
 	s.signals.ClassifyTurnEnd(bridgeID, ev, state)

@@ -261,9 +261,9 @@ func (s *Server) callerStartedSessionAndMayDriveIt(ctx context.Context, caller r
 	return s.mayStartSessionsAs(ctx, grantcheck.SubjectOfCaller(caller), session.PrincipalID)
 }
 
-// callerStartedSessionIDAndMayDriveIt is callerStartedSessionAndMayDriveIt
+// CallerStartedSessionIDAndMayDriveIt is callerStartedSessionAndMayDriveIt
 // for a session id; a session this server does not have is false.
-func (s *Server) callerStartedSessionIDAndMayDriveIt(ctx context.Context, caller requestcaller.Caller, sessionID string) (bool, error) {
+func (s *Server) CallerStartedSessionIDAndMayDriveIt(ctx context.Context, caller requestcaller.Caller, sessionID string) (bool, error) {
 	session, err := s.store.GetSession(sessionID)
 	if err != nil {
 		return false, nil
