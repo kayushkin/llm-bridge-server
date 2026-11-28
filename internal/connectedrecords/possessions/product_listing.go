@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -28,7 +29,7 @@ func (reviewer *Reviewer) CreateProduct(ctx context.Context, request ProductRequ
 	if request.Actor == "" {
 		return Product{}, fmt.Errorf("%w: say who is writing (the actor)", ErrInvalid)
 	}
-	if !contains(ListingSources, request.ListingSource) {
+	if !slices.Contains(ListingSources, request.ListingSource) {
 		return Product{}, fmt.Errorf("%w: listing_source must be one of %s", ErrInvalid, strings.Join(ListingSources, ", "))
 	}
 	product := Product{Brand: request.Brand, ModelNumber: request.ModelNumber, Name: request.Name, ListingURL: request.ListingURL, ListingSource: request.ListingSource,

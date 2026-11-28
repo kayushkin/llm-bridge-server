@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -232,7 +233,7 @@ func TestLooksAreOneOutfitByTheirMainPiecesWhateverTheAccessories(t *testing.T) 
 	}
 	watches := outfitOf(first)
 	if outfitOf(otherWatch).ID != watches.ID || strings.Join(watches.WornOn, ",") != "2026-11-01,2026-11-02" || len(watches.PossessionIDs) != 4 ||
-		!contains(watches.PossessionIDs, steelWatch) || !contains(watches.PossessionIDs, goldWatch) {
+		!slices.Contains(watches.PossessionIDs, steelWatch) || !slices.Contains(watches.PossessionIDs, goldWatch) {
 		t.Fatalf("the same shirt and jeans with another watch is one outfit worn twice, holding both watches: %+v", watches)
 	}
 	jacketOutfit := outfitOf(withJacket)

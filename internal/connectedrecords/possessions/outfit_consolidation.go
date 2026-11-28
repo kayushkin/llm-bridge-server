@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -107,7 +108,7 @@ func overlap(first, second []string) float64 {
 func difference(first, second []string) []string {
 	left := []string{}
 	for _, piece := range first {
-		if !contains(second, piece) {
+		if !slices.Contains(second, piece) {
 			left = append(left, piece)
 		}
 	}
@@ -256,7 +257,7 @@ func (reviewer *Reviewer) compareOutfits(ctx context.Context, cache *pictureCach
 	}
 	shared := []string{}
 	for _, piece := range outfitA.PossessionIDs {
-		if contains(outfitB.PossessionIDs, piece) {
+		if slices.Contains(outfitB.PossessionIDs, piece) {
 			shared = append(shared, piece)
 		}
 	}
@@ -339,7 +340,7 @@ Say whether the photos of A and of B show the owner in the same outfit. Then, fo
 	maps := [2]map[string]pieceAnswer{{}, {}}
 	for side, comparison := range comparisons {
 		for _, piece := range comparison.Pieces {
-			if contains(onlyA, strings.TrimSpace(piece.Piece)) {
+			if slices.Contains(onlyA, strings.TrimSpace(piece.Piece)) {
 				piece.Piece, piece.Match = strings.TrimSpace(piece.Piece), strings.TrimSpace(piece.Match)
 				maps[side][piece.Piece] = piece
 			}
@@ -363,7 +364,7 @@ Say whether the photos of A and of B show the owner in the same outfit. Then, fo
 		case first.Match == "none":
 			differences = append(differences, fmt.Sprintf("%s (%s): both say outfit B does not have it (%s; %s)", name, pieceID, first.Reason, second.Reason))
 		case first.Match == "not_visible":
-		case !contains(onlyB, first.Match):
+		case !slices.Contains(onlyB, first.Match):
 			differences = append(differences, fmt.Sprintf("%s (%s): both name %s, which is not one of outfit B's own pieces", name, pieceID, first.Match))
 		case kinds[first.Match] != kinds[pieceID]:
 			differences = append(differences, fmt.Sprintf("%s (%s) is a %s and %s a %s", name, pieceID, kinds[pieceID], first.Match, kinds[first.Match]))

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -207,7 +208,7 @@ func (s *Store) nearestRecorded(proposal Proposal, label string, exclude []strin
 	candidates := []scored{}
 	for _, possession := range possessions {
 		status := possession["status"].(string)
-		if (status != "owned" && status != "unconfirmed" && status != "lent_out") || possession["cover_photo_id"] == nil || possessionGroup(possession) != group || contains(exclude, possession["id"].(string)) {
+		if (status != "owned" && status != "unconfirmed" && status != "lent_out") || possession["cover_photo_id"] == nil || possessionGroup(possession) != group || slices.Contains(exclude, possession["id"].(string)) {
 			continue
 		}
 		words := strings.ToLower(describeWearable(possession))
@@ -373,7 +374,7 @@ func (reviewer *Reviewer) matchPieces(ctx context.Context, reviewID string, phot
 	for index := range reading.Items {
 		item := &reading.Items[index]
 		version := store.versionFor(item)
-		if !contains(WearableKinds, version.Kind) {
+		if !slices.Contains(WearableKinds, version.Kind) {
 			continue
 		}
 		candidates, closed, err := reviewer.matchCandidatesFor(ctx, cache, version, item.Label, nil)
@@ -469,7 +470,7 @@ func (reviewer *Reviewer) RematchOutfitPieces(ctx context.Context, actor string)
 			run.Counts["settled_meanwhile"]++
 			continue
 		}
-		if !contains(WearableKinds, sighting.Proposed.Kind) || proposalGroup(sighting.Proposed) == "" {
+		if !slices.Contains(WearableKinds, sighting.Proposed.Kind) || proposalGroup(sighting.Proposed) == "" {
 			run.leave(sightingID, fmt.Sprintf("its proposal is a %q, not a wearable", sighting.Proposed.Kind))
 			continue
 		}

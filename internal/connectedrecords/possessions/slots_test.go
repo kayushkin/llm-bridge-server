@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -193,7 +194,7 @@ func TestLooksAreReadIdentifiedAndRebuiltIntoOutfits(t *testing.T) {
 		t.Fatalf("the look whose shirt changed should leave the shared outfit: %v %v", first.OutfitID, moved.OutfitID)
 	}
 	split, _ := store.GetOutfit(*moved.OutfitID, false)
-	if strings.Join(split.WornOn, ",") != "2026-11-07" || len(split.PossessionIDs) != 3 || contains(split.PossessionIDs, *shirtSlot.PossessionID) || len(split.PhotoIDs) != 1 {
+	if strings.Join(split.WornOn, ",") != "2026-11-07" || len(split.PossessionIDs) != 3 || slices.Contains(split.PossessionIDs, *shirtSlot.PossessionID) || len(split.PhotoIDs) != 1 {
 		t.Fatalf("split outfit = %+v", split)
 	}
 	if shared, _ := store.GetOutfit(*first.OutfitID, false); strings.Join(shared.WornOn, ",") != "2026-11-06" || len(shared.PhotoIDs) != 2 {

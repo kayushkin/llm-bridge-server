@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -331,7 +332,7 @@ func (s *Store) askAboutPurchaseLine(ctx context.Context, line openOrderLine, pi
 	}
 	distinct := []string{}
 	for _, pick := range picks {
-		if pick != "" && !contains(distinct, pick) {
+		if pick != "" && !slices.Contains(distinct, pick) {
 			distinct = append(distinct, pick)
 		}
 	}

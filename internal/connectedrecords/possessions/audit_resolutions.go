@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -19,7 +20,7 @@ var auditActions = []string{"keep_link", "merge_possessions", "keep_apart", "com
 // choice is an audit action or undoes a link first.
 func (question OwnerQuestion) isAudit() bool {
 	for _, choice := range question.Choices {
-		if contains(auditActions, choice.Resolution.Action) || choice.Resolution.UnlinkPossessionID != "" {
+		if slices.Contains(auditActions, choice.Resolution.Action) || choice.Resolution.UnlinkPossessionID != "" {
 			return true
 		}
 	}
@@ -135,7 +136,7 @@ func markReviewWaiting(transaction *databaseTransaction, sightingID string) erro
 // askAuditQuestion adds a decision question from the audit and marks its
 // review waiting.
 func askAuditQuestion(transaction *databaseTransaction, askedBy, sightingID, question string, choices []Choice, now int64) (string, error) {
-	if !contains(QuestionAskers, askedBy) {
+	if !slices.Contains(QuestionAskers, askedBy) {
 		return "", fmt.Errorf("%q is not one of %s", askedBy, strings.Join(QuestionAskers, ", "))
 	}
 	id, err := insertQuestionAnsweringID(transaction, sightingID, question, choices, "decision", now)

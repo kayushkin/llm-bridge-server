@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -59,7 +60,7 @@ func (s *Store) combineOutfitsInTransaction(transaction *databaseTransaction, du
 	moves.FavoriteSet = duplicate.Favorite && !kept.Favorite
 	keptTags := append([]string{}, kept.Tags...)
 	for _, tag := range duplicate.Tags {
-		if !contains(keptTags, tag) {
+		if !slices.Contains(keptTags, tag) {
 			keptTags = append(keptTags, tag)
 			moves.TagsAdded = append(moves.TagsAdded, tag)
 		}
@@ -263,7 +264,7 @@ func (s *Store) UndoOutfitMerge(ctx context.Context, mergeID, actor string) (Out
 		}
 		tags := []string{}
 		for _, tag := range kept.Tags {
-			if !contains(merge.Moved.TagsAdded, tag) {
+			if !slices.Contains(merge.Moved.TagsAdded, tag) {
 				tags = append(tags, tag)
 			}
 		}

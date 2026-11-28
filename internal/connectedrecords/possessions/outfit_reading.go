@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -54,7 +55,7 @@ func (s *Store) wearableCandidateList(excludeReviewID string) (string, error) {
 		if err := json.Unmarshal([]byte(proposed), &proposal); err != nil {
 			return "", fmt.Errorf("%s holds a proposal that is not JSON: %w", id, err)
 		}
-		if !contains(WearableKinds, proposal.Kind) {
+		if !slices.Contains(WearableKinds, proposal.Kind) {
 			continue
 		}
 		fmt.Fprintf(&list, "- %s (seen in another photo, waiting on the owner): %s | %s | brand %q | %s\n", id, label, proposal.Kind, proposal.Brand, truncateWords(proposal.Description, 30))
@@ -144,7 +145,7 @@ func (s *Store) recordOutfitReading(ctx context.Context, reviewID, model, wornOn
 	for index := range reading.Items {
 		item := &reading.Items[index]
 		version := s.versionFor(item)
-		if !contains(WearableKinds, version.Kind) {
+		if !slices.Contains(WearableKinds, version.Kind) {
 			continue // the reader was told to list wearables only
 		}
 		version.Status = "unconfirmed"

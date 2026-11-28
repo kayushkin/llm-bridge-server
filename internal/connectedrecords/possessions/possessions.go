@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -497,7 +498,7 @@ func (s *Store) ListPossessions(filter PossessionFilter) ([]map[string]any, erro
 		conditions = append(conditions, "deleted_at = 0")
 	}
 	if filter.Status != "" {
-		if !contains(PossessionStatuses, filter.Status) {
+		if !slices.Contains(PossessionStatuses, filter.Status) {
 			return nil, fmt.Errorf("%w: status %q is not one of %s", ErrInvalid, filter.Status, strings.Join(PossessionStatuses, ", "))
 		}
 		conditions = append(conditions, "status = ?")

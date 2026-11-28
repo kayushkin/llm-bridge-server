@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -297,7 +298,7 @@ func (s *Store) placeLook(transaction *databaseTransaction, lookID, actor string
 	if err != nil {
 		return err
 	}
-	if _, same := identityMatch(identity, others.identity, contains(others.days, look.WornOn)); same {
+	if _, same := identityMatch(identity, others.identity, slices.Contains(others.days, look.WornOn)); same {
 		return refreshOutfitPieces(transaction, current)
 	}
 	outfitIDs, err := stringColumn(transaction, `SELECT outfit_looks.outfit_id FROM outfit_looks JOIN outfits ON outfits.id = outfit_looks.outfit_id

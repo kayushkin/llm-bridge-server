@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -38,10 +39,10 @@ type Purchase struct {
 // CreatePurchase records an order. An order already recorded, found by its
 // marketplace and order reference, is a conflict.
 func (s *Store) CreatePurchase(ctx context.Context, purchase Purchase) (Purchase, error) {
-	if !contains(Marketplaces, purchase.Marketplace) {
+	if !slices.Contains(Marketplaces, purchase.Marketplace) {
 		return Purchase{}, fmt.Errorf("%w: marketplace must be one of %s", ErrInvalid, strings.Join(Marketplaces, ", "))
 	}
-	if !contains(PurchaseSources, purchase.Source) {
+	if !slices.Contains(PurchaseSources, purchase.Source) {
 		return Purchase{}, fmt.Errorf("%w: source must be one of %s", ErrInvalid, strings.Join(PurchaseSources, ", "))
 	}
 	if purchase.OrderedAt <= 0 {
@@ -82,7 +83,7 @@ func (s *Store) CreatePurchase(ctx context.Context, purchase Purchase) (Purchase
 		if line.Disposition == "" {
 			line.Disposition = "unreviewed"
 		}
-		if !contains(PurchaseLineDispositions, line.Disposition) {
+		if !slices.Contains(PurchaseLineDispositions, line.Disposition) {
 			return Purchase{}, fmt.Errorf("%w: line %d: disposition must be one of %s", ErrInvalid, index+1, strings.Join(PurchaseLineDispositions, ", "))
 		}
 		lineID, lineSequence, err := nextID(transaction, "purchase_lines", "purchase_line")
@@ -172,7 +173,7 @@ func (s *Store) ListPurchases(marketplace string, limit, offset int) ([]Purchase
 
 // SetPurchaseLineDisposition says what became of an order line.
 func (s *Store) SetPurchaseLineDisposition(lineID, disposition, actor string) error {
-	if !contains(PurchaseLineDispositions, disposition) {
+	if !slices.Contains(PurchaseLineDispositions, disposition) {
 		return fmt.Errorf("%w: disposition must be one of %s", ErrInvalid, strings.Join(PurchaseLineDispositions, ", "))
 	}
 	s.writeMutex.Lock()

@@ -309,3 +309,19 @@ func openProductTestStore(t *testing.T) *Store {
 	t.Helper()
 	return newTestStore(t, fakeReferences{known: map[string]bool{"photo_000001": true, "article_000007": true, "transaction_000001": true}})
 }
+
+// asymmetricPicture has a bright block in its top left corner and a ramp,
+// so every turn of it looks different.
+func asymmetricPicture(width, height int) *image.RGBA {
+	picture := image.NewRGBA(image.Rect(0, 0, width, height))
+	for x := 0; x < width; x++ {
+		for y := 0; y < height; y++ {
+			level := uint8(40 + 100*x/width)
+			if x < width/3 && y < height/4 {
+				level = 250
+			}
+			picture.Set(x, y, color.RGBA{level, level, level, 255})
+		}
+	}
+	return picture
+}

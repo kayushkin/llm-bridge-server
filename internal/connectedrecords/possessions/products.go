@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 )
 
@@ -138,7 +139,7 @@ func checkProductFields(product Product) error {
 	if strings.TrimSpace(product.Name) == "" {
 		return fmt.Errorf("%w: name is required", ErrInvalid)
 	}
-	if !contains(ListingSources, product.ListingSource) {
+	if !slices.Contains(ListingSources, product.ListingSource) {
 		return fmt.Errorf("%w: listing_source must be one of %s", ErrInvalid, strings.Join(ListingSources, ", "))
 	}
 	if parsed, err := url.Parse(product.ListingURL); err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {

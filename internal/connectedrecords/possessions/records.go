@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -303,7 +304,7 @@ func (column Column) decode(raw json.RawMessage) (any, error) {
 			return nil, fmt.Errorf("must be a string")
 		}
 		text = strings.TrimSpace(text)
-		if text != "" && len(column.Vocabulary) > 0 && !contains(column.Vocabulary, text) {
+		if text != "" && len(column.Vocabulary) > 0 && !slices.Contains(column.Vocabulary, text) {
 			return nil, fmt.Errorf("%q is not one of %s", text, strings.Join(column.Vocabulary, ", "))
 		}
 		if text == "" && column.Nullable {
@@ -339,7 +340,7 @@ func (column Column) decode(raw json.RawMessage) (any, error) {
 			if item == "" {
 				continue
 			}
-			if len(column.Vocabulary) > 0 && !contains(column.Vocabulary, item) {
+			if len(column.Vocabulary) > 0 && !slices.Contains(column.Vocabulary, item) {
 				return nil, fmt.Errorf("%q is not one of %s", item, strings.Join(column.Vocabulary, ", "))
 			}
 			cleaned = append(cleaned, item)

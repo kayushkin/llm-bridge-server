@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -120,7 +121,7 @@ func copiedTable(table string, columns []string, owner string) standalonesqlite.
 		placeholders[index] = "$" + strconv.Itoa(index+1)
 	}
 	orderBy := columns[0]
-	if contains(columns, "seq") {
+	if slices.Contains(columns, "seq") {
 		orderBy = "seq"
 	}
 	return standalonesqlite.Table{
@@ -240,7 +241,7 @@ func ImportStandaloneDatabase(ctx context.Context, root *Store, sqlitePath, orig
 		for _, table := range tables {
 			column := ""
 			switch {
-			case contains(table.Columns, "seq"):
+			case slices.Contains(table.Columns, "seq"):
 				column = "seq"
 			case table.Name == "revisions":
 				column = "id"

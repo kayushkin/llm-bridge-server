@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -183,7 +184,7 @@ func wearableGroupKeys() []string {
 		keys = append(keys, "garment:"+garmentType)
 	}
 	for _, jewelryType := range JewelryTypes {
-		if jewelryType == "necklace" || !contains(NecklaceJewelryTypes, jewelryType) {
+		if jewelryType == "necklace" || !slices.Contains(NecklaceJewelryTypes, jewelryType) {
 			keys = append(keys, "jewelry:"+jewelryType)
 		}
 	}
@@ -279,16 +280,16 @@ func slotProposal(slot readSlot) (Proposal, error) {
 	}
 	switch kind {
 	case "garment":
-		if contains(GroupedGarmentTypes, subType) {
+		if slices.Contains(GroupedGarmentTypes, subType) {
 			fields["garment_type"] = subType
-			if !contains(GarmentCategories, fields["category"]) {
+			if !slices.Contains(GarmentCategories, fields["category"]) {
 				fields["category"] = "accessory"
 			}
 		} else {
 			fields["category"] = subType
 		}
 	case "jewelry":
-		if subType != "necklace" || !contains(NecklaceJewelryTypes, fields["jewelry_type"]) {
+		if subType != "necklace" || !slices.Contains(NecklaceJewelryTypes, fields["jewelry_type"]) {
 			fields["jewelry_type"] = subType
 		}
 	case "bag_or_case":

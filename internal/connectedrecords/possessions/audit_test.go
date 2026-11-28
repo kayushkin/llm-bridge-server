@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -242,7 +243,7 @@ func TestTheLinkCheckUnlinksWhatBothDoubtAndAsksWhatOneDoubts(t *testing.T) {
 		t.Fatalf("the unlinked sighting should wait again: %+v", thirdSighting)
 	}
 	thirdOutfit, _ := store.GetOutfit(*third.OutfitID, false)
-	if contains(thirdOutfit.PossessionIDs, hoodieID) || len(thirdOutfit.PossessionIDs) != 1 {
+	if slices.Contains(thirdOutfit.PossessionIDs, hoodieID) || len(thirdOutfit.PossessionIDs) != 1 {
 		t.Fatalf("the hoodie should leave the third outfit: %v", thirdOutfit.PossessionIDs)
 	}
 	var unlinkedQuestion, linkQuestion OwnerQuestion
@@ -263,7 +264,7 @@ func TestTheLinkCheckUnlinksWhatBothDoubtAndAsksWhatOneDoubts(t *testing.T) {
 	}
 	choose(t, reviewer, unlinkedQuestion.ID, 1)
 	thirdOutfit, _ = store.GetOutfit(*third.OutfitID, false)
-	if !contains(thirdOutfit.PossessionIDs, blueID) {
+	if !slices.Contains(thirdOutfit.PossessionIDs, blueID) {
 		t.Fatalf("the blue hoodie should join the third outfit: %v", thirdOutfit.PossessionIDs)
 	}
 

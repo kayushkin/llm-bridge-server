@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -78,7 +79,7 @@ func (s *Store) checkOutfitPossessions(transaction *databaseTransaction, possess
 		if err != nil {
 			return err
 		}
-		if !contains(WearableKinds, view["kind"].(string)) {
+		if !slices.Contains(WearableKinds, view["kind"].(string)) {
 			return fmt.Errorf("%w: %s is a %q; an outfit holds only %s", ErrInvalid, possessionID, view["kind"], strings.Join(WearableKinds, ", "))
 		}
 	}
@@ -111,7 +112,7 @@ func (s *Store) CreateOutfit(ctx context.Context, input OutfitInput, actor strin
 		return Outfit{}, fmt.Errorf("%w: say who is writing (the actor)", ErrInvalid)
 	}
 	status := valueOr(input.Status, "")
-	if !contains(OutfitStatuses, status) {
+	if !slices.Contains(OutfitStatuses, status) {
 		return Outfit{}, fmt.Errorf("%w: status must be one of %s", ErrInvalid, strings.Join(OutfitStatuses, ", "))
 	}
 	s.writeMutex.Lock()
@@ -167,7 +168,7 @@ func (s *Store) PatchOutfit(ctx context.Context, id string, input OutfitInput, a
 		return Outfit{}, err
 	}
 	status := valueOr(input.Status, existing.Status)
-	if !contains(OutfitStatuses, status) {
+	if !slices.Contains(OutfitStatuses, status) {
 		return Outfit{}, fmt.Errorf("%w: status must be one of %s", ErrInvalid, strings.Join(OutfitStatuses, ", "))
 	}
 	tags := existing.Tags
@@ -303,7 +304,7 @@ func (s *Store) FindOutfits(filter OutfitFilter) ([]Outfit, error) {
 	conditions := []string{"deleted_at = 0"}
 	arguments := []any{}
 	if filter.Status != "" {
-		if !contains(OutfitStatuses, filter.Status) {
+		if !slices.Contains(OutfitStatuses, filter.Status) {
 			return nil, fmt.Errorf("%w: status must be one of %s", ErrInvalid, strings.Join(OutfitStatuses, ", "))
 		}
 		conditions = append(conditions, "status = ?")
@@ -360,7 +361,7 @@ func outfitTags(given []string) ([]string, error) {
 		if len([]rune(tidy)) > outfitTagLongest {
 			return nil, fmt.Errorf("%w: the tag %q is longer than %d characters", ErrInvalid, tidy, outfitTagLongest)
 		}
-		if !contains(tags, tidy) {
+		if !slices.Contains(tags, tidy) {
 			tags = append(tags, tidy)
 		}
 	}

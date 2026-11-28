@@ -8,22 +8,6 @@ import (
 	"testing"
 )
 
-// asymmetricPicture has a bright block in its top left corner and a ramp,
-// so every turn of it looks different.
-func asymmetricPicture(width, height int) *image.RGBA {
-	picture := image.NewRGBA(image.Rect(0, 0, width, height))
-	for x := 0; x < width; x++ {
-		for y := 0; y < height; y++ {
-			level := uint8(40 + 100*x/width)
-			if x < width/3 && y < height/4 {
-				level = 250
-			}
-			picture.Set(x, y, color.RGBA{level, level, level, 255})
-		}
-	}
-	return picture
-}
-
 func TestAnOriginalIsTurnedToStandAsItsThumbnail(t *testing.T) {
 	raw := asymmetricPicture(300, 200)
 	thumbnail := resized(Upright(raw, 6), 100) // the importer stood it upright by EXIF 6

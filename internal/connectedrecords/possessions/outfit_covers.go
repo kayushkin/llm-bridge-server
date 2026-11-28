@@ -17,6 +17,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -178,7 +179,7 @@ func chooseOutfitCover(q querier, outfit *Outfit) error {
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	if ownerPhotoID != "" && contains(outfit.PhotoIDs, ownerPhotoID) {
+	if ownerPhotoID != "" && slices.Contains(outfit.PhotoIDs, ownerPhotoID) {
 		reason := reasonFor(ownerPhotoID)
 		reason.Rule, reason.ChosenBy, reason.ChosenAt = CoverRuleOwnerChoice, chosenBy, chosenAt
 		outfit.CoverPhotoID, outfit.CoverReason = &ownerPhotoID, &reason
@@ -217,7 +218,7 @@ func (s *Store) SetOutfitCover(ctx context.Context, outfitID, photoID, actor str
 	if err != nil {
 		return Outfit{}, err
 	}
-	if photoID != "" && !contains(outfit.PhotoIDs, photoID) {
+	if photoID != "" && !slices.Contains(outfit.PhotoIDs, photoID) {
 		return Outfit{}, fmt.Errorf("%w: %s is not one of %s's photos (%s)", ErrInvalid, photoID, outfitID, strings.Join(outfit.PhotoIDs, ", "))
 	}
 	now := s.unixNow()

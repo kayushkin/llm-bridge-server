@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -42,7 +43,7 @@ type outfitIdentity map[string][]string
 func (identity outfitIdentity) add(other outfitIdentity) {
 	for group, pieces := range other {
 		for _, piece := range pieces {
-			if !contains(identity[group], piece) {
+			if !slices.Contains(identity[group], piece) {
 				identity[group] = append(identity[group], piece)
 			}
 		}
@@ -65,7 +66,7 @@ func identityMatch(look, outfit outfitIdentity, sameDay bool) (shared int, same 
 		}
 		inBoth := 0
 		for _, piece := range lookPieces {
-			if contains(outfitPieces, piece) {
+			if slices.Contains(outfitPieces, piece) {
 				inBoth++
 			}
 		}
@@ -73,7 +74,7 @@ func identityMatch(look, outfit outfitIdentity, sameDay bool) (shared int, same 
 			return 0, false
 		}
 		shared += inBoth
-		anchored = anchored || (inBoth > 0 && contains(outfitAnchorGroups, group))
+		anchored = anchored || (inBoth > 0 && slices.Contains(outfitAnchorGroups, group))
 	}
 	if anchored || shared >= leastMatchingIdentityPieces {
 		return shared, true
@@ -105,7 +106,7 @@ func looksIdentity(q querier, lookIDs ...string) (outfitIdentity, error) {
 				rows.Close()
 				return nil, err
 			}
-			if contains(outfitIdentityGroups, group) {
+			if slices.Contains(outfitIdentityGroups, group) {
 				found[group] = append(found[group], possessionID)
 			}
 		}
@@ -173,7 +174,7 @@ func whyNotAnOutfit(look Look) string {
 		return "the readers saw nothing on the owner's upper body: a body check, not an outfit"
 	}
 	for _, slot := range look.Slots {
-		if contains(upperBodyGroups, slot.Group) && (slot.PossessionID != nil || slot.DecidedBy == "" || slot.DecidedBy == "best_guess" || slot.DecidedBy == "no_pick") {
+		if slices.Contains(upperBodyGroups, slot.Group) && (slot.PossessionID != nil || slot.DecidedBy == "" || slot.DecidedBy == "best_guess" || slot.DecidedBy == "no_pick") {
 			return ""
 		}
 	}
@@ -220,7 +221,7 @@ func bestIdentityMatch(identity outfitIdentity, day string, candidates []*identi
 	var best *identityCandidate
 	bestShared := 0
 	for _, candidate := range candidates {
-		shared, same := identityMatch(identity, candidate.identity, contains(candidate.days, day))
+		shared, same := identityMatch(identity, candidate.identity, slices.Contains(candidate.days, day))
 		if !same {
 			continue
 		}
@@ -415,13 +416,13 @@ func (s *Store) RebuildOutfitsFromLooks(ctx context.Context, actor string, copie
 		}
 		joined.identity.add(identity)
 		joined.looks++
-		if day != "" && !contains(joined.days, day) {
+		if day != "" && !slices.Contains(joined.days, day) {
 			joined.days = append(joined.days, day)
 		}
 		placed := groupOf[joined]
 		placed.looks = append(placed.looks, look)
 		for _, piece := range pieces {
-			if !contains(placed.pieces, piece) {
+			if !slices.Contains(placed.pieces, piece) {
 				placed.pieces = append(placed.pieces, piece)
 			}
 		}
@@ -540,7 +541,7 @@ func (s *Store) RebuildOutfitsFromLooks(ctx context.Context, actor string, copie
 		from := []string{}
 		for _, look := range placed.looks {
 			photoIDs = append(photoIDs, look.PhotoIDs...)
-			if look.OutfitID != nil && *look.OutfitID != target && !contains(from, *look.OutfitID) {
+			if look.OutfitID != nil && *look.OutfitID != target && !slices.Contains(from, *look.OutfitID) {
 				from = append(from, *look.OutfitID)
 			}
 			if copies[look.ID] != "" {
@@ -758,11 +759,11 @@ func carryOwnerMarks(transaction *databaseTransaction, target string, from []str
 		}
 		favorite = favorite || theirs.Favorite
 		for _, tag := range theirs.Tags {
-			if !contains(tags, tag) {
+			if !slices.Contains(tags, tag) {
 				tags = append(tags, tag)
 			}
 		}
-		if pick == nil && theirs.CoverPick != nil && contains(photoIDs, theirs.CoverPick.PhotoID) {
+		if pick == nil && theirs.CoverPick != nil && slices.Contains(photoIDs, theirs.CoverPick.PhotoID) {
 			pick = theirs.CoverPick
 			if _, err := transaction.Exec(`INSERT INTO outfit_cover_choices (outfit_id, photo_id, chosen_by, chosen_at) VALUES (?, ?, ?, ?)`, target, pick.PhotoID, pick.ChosenBy, pick.ChosenAt); err != nil {
 				return err

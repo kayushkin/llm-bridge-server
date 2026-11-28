@@ -157,12 +157,3 @@ func Vocabulary() map[string][]string {
 		"listing_sources":            ListingSources,
 	}
 }
-
-func contains(values []string, value string) bool {
-	for _, candidate := range values {
-		if candidate == value {
-			return true
-		}
-	}
-	return false
-}

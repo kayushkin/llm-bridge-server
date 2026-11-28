@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -465,7 +466,7 @@ func normalizeProposal(item readerItem) Proposal {
 	proposal := Proposal{Name: strings.TrimSpace(item.Name), Brand: strings.TrimSpace(item.Brand), Model: strings.TrimSpace(item.Model),
 		Description: strings.TrimSpace(item.Description), Quantity: max(item.Quantity, 1), KindFields: map[string]json.RawMessage{}}
 	if room := strings.TrimSpace(item.Room); room != "" {
-		if contains(Rooms, room) {
+		if slices.Contains(Rooms, room) {
 			proposal.Room = room
 		} else {
 			proposal.DroppedFields = append(proposal.DroppedFields, fmt.Sprintf("room: %s (not one of %s)", room, strings.Join(Rooms, ", ")))
@@ -658,7 +659,7 @@ func (s *Store) QueuePhotoReview(ctx context.Context, photoID, queuedBy, reading
 	if photoID == "" || queuedBy == "" {
 		return PhotoReview{}, false, fmt.Errorf("%w: photo_id and queued_by are required", ErrInvalid)
 	}
-	if !contains(PhotoReviewReadings, reading) {
+	if !slices.Contains(PhotoReviewReadings, reading) {
 		return PhotoReview{}, false, fmt.Errorf("%w: reading must be one of %s", ErrInvalid, strings.Join(PhotoReviewReadings, ", "))
 	}
 	if (reading == "outfit" || reading == "look") != (wearerPersonID != "") {
@@ -768,7 +769,7 @@ func (s *Store) ListPhotoReviews(status string, limit, offset int) ([]PhotoRevie
 	conditions := "1 = 1"
 	arguments := []any{}
 	if status != "" {
-		if !contains(PhotoReviewStatuses, status) {
+		if !slices.Contains(PhotoReviewStatuses, status) {
 			return nil, fmt.Errorf("%w: status must be one of %s", ErrInvalid, strings.Join(PhotoReviewStatuses, ", "))
 		}
 		conditions = "status = ?"
@@ -1479,7 +1480,7 @@ func (s *Store) ListQuestions(includeAnswered bool, photoReviewID, purpose strin
 	conditions := []string{"1 = 1"}
 	arguments := []any{}
 	if purpose != "" {
-		if !contains(QuestionPurposes, purpose) {
+		if !slices.Contains(QuestionPurposes, purpose) {
 			return nil, fmt.Errorf("%w: purpose must be one of %s", ErrInvalid, strings.Join(QuestionPurposes, ", "))
 		}
 		conditions = append(conditions, "owner_questions.purpose = ?")
@@ -1563,7 +1564,7 @@ func (reviewer *Reviewer) AnswerQuestion(ctx context.Context, questionID string,
 	}
 	defer transaction.Rollback()
 	now := store.unixNow()
-	if contains(auditActions, resolution.Action) {
+	if slices.Contains(auditActions, resolution.Action) {
 		if err := store.applyAuditResolution(transaction, question, resolution, answer.AnsweredBy, now); err != nil {
 			return OwnerQuestion{}, err
 		}

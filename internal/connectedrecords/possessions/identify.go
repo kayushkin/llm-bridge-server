@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 
@@ -162,7 +163,7 @@ func (reviewer *Reviewer) IdentifySlots(ctx context.Context, actor string) (Audi
 		}
 		for _, possession := range wearables {
 			status := possession["status"].(string)
-			if possessionGroup(possession) != group || (!contains(ownedStatuses, status) && status != "unconfirmed") {
+			if possessionGroup(possession) != group || (!slices.Contains(ownedStatuses, status) && status != "unconfirmed") {
 				continue
 			}
 			for _, link := range possession["photos"].([]PhotoLink) {
@@ -268,7 +269,7 @@ func (reviewer *Reviewer) IdentifySlots(ctx context.Context, actor string) (Audi
 	for index := range reportGroups {
 		for _, possession := range wearables {
 			status := possession["status"].(string)
-			if possessionGroup(possession) == reportGroups[index].Group && (contains(ownedStatuses, status) || status == "unconfirmed") {
+			if possessionGroup(possession) == reportGroups[index].Group && (slices.Contains(ownedStatuses, status) || status == "unconfirmed") {
 				reportGroups[index].Identified++
 			}
 		}
@@ -447,7 +448,7 @@ func (reviewer *Reviewer) sortEveryPairOfChunks(ctx context.Context, role string
 					}
 				}
 				for _, alternative := range sorted.alternatives[position] {
-					if !containsInt(alternatives[index], shown[alternative]) {
+					if !slices.Contains(alternatives[index], shown[alternative]) {
 						alternatives[index] = append(alternatives[index], shown[alternative])
 					}
 				}
@@ -630,7 +631,7 @@ func (reviewer *Reviewer) identifyGroup(ctx context.Context, facts WearableGroup
 				keeper = item
 			}
 		}
-		if closed && !contains(ownedStatuses, views[keeper]["status"].(string)) {
+		if closed && !slices.Contains(ownedStatuses, views[keeper]["status"].(string)) {
 			continue // only unconfirmed pieces: not a member of the closed group
 		}
 		possessionOf[piece] = items[keeper].PossessionID
@@ -685,7 +686,7 @@ func (reviewer *Reviewer) identifyGroup(ctx context.Context, facts WearableGroup
 			score += 0.5 * jaccard(secondMates, pieceMembers)
 			for _, sorted := range []sorting{first, second} {
 				for _, alternative := range sorted.alternatives[item] {
-					if containsInt(pieceMembers, alternative) {
+					if slices.Contains(pieceMembers, alternative) {
 						score += 0.15
 						break
 					}
@@ -801,7 +802,7 @@ func (s *Store) groupMembersToCount(group string) ([]map[string]any, error) {
 	members := []map[string]any{}
 	for _, possession := range wearables {
 		status := possession["status"].(string)
-		if possessionGroup(possession) == group && (contains(ownedStatuses, status) || status == "unconfirmed") {
+		if possessionGroup(possession) == group && (slices.Contains(ownedStatuses, status) || status == "unconfirmed") {
 			members = append(members, possession)
 		}
 	}

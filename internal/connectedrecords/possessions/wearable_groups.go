@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -47,11 +48,11 @@ func checkGroupKey(group string) error {
 	switch {
 	case (kind == "watch" || kind == "eyewear") && !hasSubType:
 		return nil
-	case kind == "garment" && (contains(GarmentCategories, subType) || contains(GroupedGarmentTypes, subType)):
+	case kind == "garment" && (slices.Contains(GarmentCategories, subType) || slices.Contains(GroupedGarmentTypes, subType)):
 		return nil
-	case kind == "jewelry" && contains(JewelryTypes, subType) && (subType == "necklace" || !contains(NecklaceJewelryTypes, subType)):
+	case kind == "jewelry" && slices.Contains(JewelryTypes, subType) && (subType == "necklace" || !slices.Contains(NecklaceJewelryTypes, subType)):
 		return nil
-	case kind == "bag_or_case" && contains(BagTypes, subType):
+	case kind == "bag_or_case" && slices.Contains(BagTypes, subType):
 		return nil
 	}
 	return fmt.Errorf("%w: %q is not a wearable group; a group is watch, eyewear, garment:<category>, garment:<%s>, jewelry:<jewelry type> (pendants and chains are jewelry:necklace) or bag_or_case:<bag type>",
@@ -174,7 +175,7 @@ func (s *Store) ListWearableGroups() ([]WearableGroup, error) {
 		group := get(possessionGroup(possession))
 		group.Members++
 		switch status := possession["status"].(string); {
-		case contains(ownedStatuses, status):
+		case slices.Contains(ownedStatuses, status):
 			group.Owned++
 		case status == "unconfirmed":
 			group.Unconfirmed++
@@ -226,7 +227,7 @@ func (s *Store) closedGroupMembers(group string, exclude ...string) ([]map[strin
 	}
 	members := []map[string]any{}
 	for _, possession := range wearables {
-		if possessionGroup(possession) == group && contains(ownedStatuses, possession["status"].(string)) && !contains(exclude, possession["id"].(string)) {
+		if possessionGroup(possession) == group && slices.Contains(ownedStatuses, possession["status"].(string)) && !slices.Contains(exclude, possession["id"].(string)) {
 			members = append(members, possession)
 		}
 	}
@@ -244,16 +245,16 @@ func wearableGroup(kind string, fields func(name string) string) string {
 	switch kind {
 	case "garment":
 		garmentType := fields("garment_type")
-		if contains(ungroupedGarmentTypes, garmentType) {
+		if slices.Contains(ungroupedGarmentTypes, garmentType) {
 			return ""
 		}
-		if contains(GroupedGarmentTypes, garmentType) {
+		if slices.Contains(GroupedGarmentTypes, garmentType) {
 			return "garment:" + garmentType
 		}
 		return "garment:" + fields("category")
 	case "jewelry":
 		jewelryType := fields("jewelry_type")
-		if contains(NecklaceJewelryTypes, jewelryType) {
+		if slices.Contains(NecklaceJewelryTypes, jewelryType) {
 			jewelryType = "necklace"
 		}
 		return "jewelry:" + jewelryType
@@ -267,7 +268,7 @@ func wearableGroup(kind string, fields func(name string) string) string {
 
 func possessionGroup(possession map[string]any) string {
 	kind := possession["kind"].(string)
-	if !contains(WearableKinds, kind) {
+	if !slices.Contains(WearableKinds, kind) {
 		return ""
 	}
 	record := possession[kind].(map[string]any)

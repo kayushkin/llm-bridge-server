@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -392,7 +393,7 @@ func (s *Store) settleLinkCheck(ctx context.Context, possession map[string]any, 
 		}
 		for _, other := range verdict.Others {
 			other = strings.TrimSpace(other)
-			if other == possessionID || contains(suggested, other) {
+			if other == possessionID || slices.Contains(suggested, other) {
 				continue
 			}
 			view, err := possessionView(transaction, other, false)
@@ -402,7 +403,7 @@ func (s *Store) settleLinkCheck(ctx context.Context, possession map[string]any, 
 			if err != nil {
 				return AuditAction{}, err
 			}
-			if contains(WearableKinds, view["kind"].(string)) {
+			if slices.Contains(WearableKinds, view["kind"].(string)) {
 				suggested = append(suggested, other)
 			}
 		}
@@ -644,7 +645,7 @@ List each set of labels that show one and the same physical piece. Leave out eve
 				for _, cluster := range parsed.Clusters {
 					indexes := []int{}
 					for _, label := range cluster.Members {
-						if index, known := labelIndex[strings.TrimSpace(label)]; known && !containsInt(indexes, index) {
+						if index, known := labelIndex[strings.TrimSpace(label)]; known && !slices.Contains(indexes, index) {
 							indexes = append(indexes, index)
 						}
 					}
@@ -794,15 +795,6 @@ func reasonOrNo(count int, reason string) string {
 		return "different pieces"
 	}
 	return "the same piece: " + reason
-}
-
-func containsInt(values []int, value int) bool {
-	for _, candidate := range values {
-		if candidate == value {
-			return true
-		}
-	}
-	return false
 }
 
 // questionAboutPossessionPair answers a question, open or answered, already

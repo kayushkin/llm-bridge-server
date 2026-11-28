@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -510,7 +511,7 @@ func outfitMergesTouchingAfter(q querier, order int64, outfitIDs []string) ([]st
 			return nil, err
 		}
 		for _, id := range ids {
-			if !contains(found, id) {
+			if !slices.Contains(found, id) {
 				found = append(found, id)
 			}
 		}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -122,7 +123,7 @@ func TestAClosedGroupTooBigForOneCallIsShownInBatches(t *testing.T) {
 	closeGroup(t, store, "watch")
 	scripted := &scriptedModels{answers: map[string]any{}}
 	scripted.respond = pickWith(func(role string, shown []string, prompt string) string {
-		if contains(shown, members[4]) {
+		if slices.Contains(shown, members[4]) {
 			return members[4]
 		}
 		return "not_here"
@@ -198,7 +199,7 @@ func TestRematchSettlesStuckPiecesAndFoldsUnconfirmedIntoAClosedGroup(t *testing
 	}
 	review, _ := store.GetPhotoReview(stuck.ID)
 	outfit, _ := store.GetOutfit(*review.OutfitID, false)
-	if !contains(outfit.PossessionIDs, jacketID) || review.Status != "done" {
+	if !slices.Contains(outfit.PossessionIDs, jacketID) || review.Status != "done" {
 		t.Fatalf("the jacket should join its outfit (%v) and the review be done (%s)", outfit.PossessionIDs, review.Status)
 	}
 	if open := mustSighting(t, store, stillStuck.Sightings[0].ID); open.Status != "proposed" {

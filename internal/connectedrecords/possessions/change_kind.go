@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -58,7 +59,7 @@ func (s *Store) ChangeKind(ctx context.Context, possessionID, kindName string, k
 			return nil, err
 		}
 	}
-	if !contains(WearableKinds, kindName) {
+	if !slices.Contains(WearableKinds, kindName) {
 		inOutfits, err := stringColumn(transaction, `SELECT outfit_id FROM outfit_possessions WHERE possession_id = ?`, possessionID)
 		if err != nil {
 			return nil, err
