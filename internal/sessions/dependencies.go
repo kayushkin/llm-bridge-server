@@ -27,7 +27,6 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/messagesender"
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/parkedasks"
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/signals"
-	"github.com/kayushkin/llm-bridge-server/internal/sessions/snapshots"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads"
 	"github.com/kayushkin/llm-bridge/servicesettings"
@@ -63,7 +62,6 @@ type Dependencies struct {
 	SessionLog           func() *SessionLogModule
 	Settings             *servicesettings.Registry
 	Signals              *signals.Service
-	SnapshotStore        func() *snapshots.Store
 	Store                *store.Store
 	ToolRegistry         func() ToolRegistry
 }

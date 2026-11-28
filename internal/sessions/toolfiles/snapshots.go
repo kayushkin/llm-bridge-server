@@ -1,4 +1,4 @@
-package sessions
+package toolfiles
 
 import (
 	"encoding/json"

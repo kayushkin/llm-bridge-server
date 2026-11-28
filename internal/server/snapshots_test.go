@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/sessions"
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/toolfiles"
 
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/snapshots/snapshotstest"
 
@@ -81,20 +81,20 @@ func captureUnderHarnessID(t *testing.T, srv *Server, harnessID string) string {
 	return path
 }
 
-func getSnapshots(t *testing.T, srv *Server, bridgeID string) (int, []sessions.FileSnapshots) {
+func getSnapshots(t *testing.T, srv *Server, bridgeID string) (int, []toolfiles.FileSnapshots) {
 	t.Helper()
 	r := httptest.NewRequest(http.MethodGet, "/sessions/"+bridgeID+"/tools/"+snapTestToolUseID+"/snapshots", nil)
 	r.SetPathValue("id", bridgeID)
 	r.SetPathValue("tool_use_id", snapTestToolUseID)
 	w := httptest.NewRecorder()
 
-	srv.sessions.HandleGetSnapshots(w, r)
+	srv.toolFiles.HandleGetSnapshots(w, r)
 
 	if w.Code != http.StatusOK {
 		return w.Code, nil
 	}
 	var body struct {
-		Files []sessions.FileSnapshots `json:"files"`
+		Files []toolfiles.FileSnapshots `json:"files"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode response: %v (body %q)", err, w.Body.String())
@@ -178,13 +178,13 @@ func TestGetSnapshotsUnknownToolUseIDIsEmpty(t *testing.T) {
 	r.SetPathValue("tool_use_id", "toolu_absent")
 	w := httptest.NewRecorder()
 
-	srv.sessions.HandleGetSnapshots(w, r)
+	srv.toolFiles.HandleGetSnapshots(w, r)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 	var body struct {
-		Files []sessions.FileSnapshots `json:"files"`
+		Files []toolfiles.FileSnapshots `json:"files"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode: %v", err)

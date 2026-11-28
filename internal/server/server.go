@@ -21,6 +21,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/peers"
 
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/signals"
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/toolfiles"
 
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/parkedasks"
 
@@ -266,6 +267,7 @@ type Server struct {
 	login                  *login.Service
 	sessions               *sessions.Service
 	harnessCatalog         *harnesscatalog.Service
+	toolFiles              *toolfiles.Service
 	userInterface          *userinterface.Service
 	serviceInventoryRoutes *inventoryroutes.Service
 	sessionFiles           *sessionfiles.Service
@@ -378,7 +380,7 @@ func New(st *store.Store, as *agents.Store, ms *memories.Store, hs *machines.Sto
 	srv.sessions.SyncPromptHarnessDeliveries()
 	srv.sessionActions.SettleSessionActionsLeftRunning()
 	srv.sessions.SyncSourceFolderRegistry()
-	srv.sessions.StartSnapshotGC()
+	srv.toolFiles.StartSnapshotGC()
 	return srv
 }
 
@@ -402,6 +404,7 @@ func (s *Server) syncHarnessTypes() {
 
 func (s *Server) routes() {
 	s.harnessCatalog.Mount(s.mux)
+	s.toolFiles.Mount(s.mux)
 	s.userInterface.Mount(s.mux)
 	s.serviceInventoryRoutes.Mount(s.mux)
 	s.sessions.Mount(s.mux, s.touchingKeepAwake)

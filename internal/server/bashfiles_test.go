@@ -5,7 +5,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/kayushkin/llm-bridge-server/internal/sessions"
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/toolfiles"
 )
 
 func TestExtractBashFilePaths(t *testing.T) {
@@ -136,7 +136,7 @@ func TestExtractBashFilePaths(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := sessions.ExtractBashFilePaths(tc.cmd, tc.cwd)
+			got := toolfiles.ExtractBashFilePaths(tc.cmd, tc.cwd)
 			// Order isn't part of the contract — sort for stable comparison.
 			sortCopy := append([]string(nil), got...)
 			sort.Strings(sortCopy)

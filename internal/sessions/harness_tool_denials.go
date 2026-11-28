@@ -11,7 +11,6 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/agents/bundles"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/tools"
-	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -283,26 +282,4 @@ func claudeCodeReadDenyRules(paths []string) ([]string, error) {
 		}
 	}
 	return rules, nil
-}
-
-// deniedReadPathsPinnedOn reads harness_config.denied_read_paths.
-func deniedReadPathsPinnedOn(cfg map[string]json.RawMessage) ([]string, error) {
-	raw, ok := cfg[harnessconfig.KeyDeniedReadPaths]
-	if !ok {
-		return nil, nil
-	}
-	var paths []string
-	if err := json.Unmarshal(raw, &paths); err != nil {
-		return nil, fmt.Errorf("harness_config.denied_read_paths is not a string array: %w", err)
-	}
-	return paths, nil
-}
-
-// sessionDeniedReadPaths is deniedReadPathsPinnedOn for a stored session.
-func sessionDeniedReadPaths(sess *store.Session) ([]string, error) {
-	cfg, err := harnessconfig.Parse(sess)
-	if err != nil {
-		return nil, err
-	}
-	return deniedReadPathsPinnedOn(cfg)
 }

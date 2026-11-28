@@ -36,6 +36,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/sessionfiles"
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/signals"
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/snapshots"
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/toolfiles"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads"
 )
 
@@ -46,6 +47,11 @@ func (s *Server) composeServices() {
 	// The session core is reached by most of the others and reaches most of
 	// them, so it is made first and given its dependencies last.
 	s.sessions = &sessions.Service{}
+	s.toolFiles = &toolfiles.Service{Dependencies: toolfiles.Dependencies{
+		Harness:       s.harness,
+		SnapshotStore: func() *snapshots.Store { return s.snapshotStore },
+		Store:         s.store,
+	}}
 	s.userInterface = &userinterface.Service{Dependencies: userinterface.Dependencies{UserInterfaceBuild: func() fs.FS { return s.userInterfaceBuild }}}
 	s.serviceInventoryRoutes = &inventoryroutes.Service{Dependencies: inventoryroutes.Dependencies{Cfg: s.cfg}}
 	s.harnessCatalog = &harnesscatalog.Service{Dependencies: harnesscatalog.Dependencies{
@@ -194,7 +200,7 @@ func (s *Server) composeServices() {
 		PermissionEngine: func() permissiongate.PermissionEngine { return s.permissionEngine },
 		Signals:          s.signals,
 		Store:            s.store,
-		Sessions:         s.sessions,
+		Sessions:         s.toolFiles,
 	}}
 	s.sessions.Dependencies = sessions.Dependencies{
 		PermissionGate:  permissionGate,
@@ -229,7 +235,6 @@ func (s *Server) composeServices() {
 		SessionLog:     s.sessionLog.Load,
 		Settings:       s.settings,
 		Signals:        s.signals,
-		SnapshotStore:  func() *snapshots.Store { return s.snapshotStore },
 		Store:          s.store,
 		ToolRegistry:   func() sessions.ToolRegistry { return s.toolRegistry },
 	}

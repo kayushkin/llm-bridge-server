@@ -1,4 +1,4 @@
-package sessions
+package toolfiles
 
 import (
 	"database/sql"
@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/harnessconfig"
 
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
@@ -144,7 +146,7 @@ func (s *Service) filesNamedByToolsOrWriteError(w http.ResponseWriter, sessionID
 		httpjson.WriteJSONError(w, http.StatusInternalServerError, "read_session", err.Error())
 		return nil, false
 	}
-	deniedReadPaths, err := sessionDeniedReadPaths(session)
+	deniedReadPaths, err := harnessconfig.SessionDeniedReadPaths(session)
 	if err != nil {
 		httpjson.WriteJSONError(w, http.StatusInternalServerError, "read_denied_read_paths", err.Error())
 		return nil, false

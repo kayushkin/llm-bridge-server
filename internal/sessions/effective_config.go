@@ -173,7 +173,7 @@ func (s *Service) EffectiveConfigFor(ctx context.Context, sess *store.Session, s
 
 	{
 		setting := msg.EffectiveSetting{Key: msg.EffectiveSettingDeniedReadPaths, Layer: msg.EffectiveLayerNone, Detail: "no bundle denies reading a path"}
-		paths, err := deniedReadPathsPinnedOn(cfg)
+		paths, err := harnessconfig.DeniedReadPathsPinnedOn(cfg)
 		if err != nil {
 			warn("%v", err)
 		}

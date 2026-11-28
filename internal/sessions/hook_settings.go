@@ -127,7 +127,7 @@ func (s *Service) injectClaudeCodeHookSettings(sess *store.Session) error {
 		// Explicit user override — don't clobber. But the Read deny rules
 		// live in the settings this would have written, so a session whose
 		// bundle denies paths cannot take an override.
-		paths, err := deniedReadPathsPinnedOn(cfg)
+		paths, err := harnessconfig.DeniedReadPathsPinnedOn(cfg)
 		if err != nil {
 			return err
 		}
@@ -315,7 +315,7 @@ func (s *Service) BuildClaudeCodeSettings(sess *store.Session) (string, error) {
 	}
 	// Read deny rules for the paths the session's bundle denies. Claude Code
 	// enforces them under every permission mode, bypassPermissions included.
-	paths, err := sessionDeniedReadPaths(sess)
+	paths, err := harnessconfig.SessionDeniedReadPaths(sess)
 	if err != nil {
 		return "", err
 	}
