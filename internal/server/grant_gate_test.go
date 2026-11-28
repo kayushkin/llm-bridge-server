@@ -191,7 +191,7 @@ func TestGateRunsAtSpawnToo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = srv.startOnInstance(t.Context(), created, inst, "")
+	_, err = srv.sessions.StartOnInstance(t.Context(), created, inst, "")
 	if err == nil || !strings.Contains(err.Error(), "not granted") {
 		t.Fatalf("spawn after grants changed: err = %v, want refused", err)
 	}

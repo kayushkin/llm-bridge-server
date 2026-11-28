@@ -12,6 +12,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/signals"
+
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads/issuereadstest"
+
 	"github.com/kayushkin/llm-bridge-server/internal/mail/backend"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	issuesmodel "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/model"
@@ -35,7 +39,7 @@ func stubTriage(t *testing.T, srv *Server, verdict map[string]any, err error) *s
 		}
 		return json.Marshal(msg.OneShotResponse{Parsed: parsed, StopReason: "tool_use"})
 	}
-	srv.questionTriage = newQuestionTriage("claude-haiku-4-5", 5*time.Second, runner)
+	srv.questionTriage = signals.NewQuestionTriage("claude-haiku-4-5", 5*time.Second, runner)
 	return &captured
 }
 
@@ -62,7 +66,7 @@ func postPrehookFull(t *testing.T, srv *Server, bridgeID, body string) (decision
 	req := httptest.NewRequest("POST", "/permission/cc-prehook/"+bridgeID, strings.NewReader(body))
 	req.SetPathValue("bridge_id", bridgeID)
 	rec := httptest.NewRecorder()
-	srv.handleCCPermissionPrehook(rec, req)
+	srv.sessions.PermissionGate.HandleCCPermissionPrehook(rec, req)
 	var got struct {
 		HookSpecificOutput struct {
 			PermissionDecision       string         `json:"permissionDecision"`
@@ -87,8 +91,8 @@ type cardStub struct {
 	events []issuesmodel.CreateCardEventRequest
 }
 
-func (c *cardStub) kanbanStore(cardID string) *fakeIssueStore {
-	return &fakeIssueStore{
+func (c *cardStub) kanbanStore(cardID string) *issuereadstest.Store {
+	return &issuereadstest.Store{
 		EntityCardsAnswer: func(string, string) ([]issuesmodel.EntityCardView, error) {
 			return []issuesmodel.EntityCardView{{CardID: cardID, Item: map[string]any{"id": cardID, "title": "Add catalog product count to /health", "body": "Helena asks for a products count on /health."}}}, nil
 		},
@@ -142,7 +146,7 @@ func TestSurfacingWorkerSignoffIsAnsweredWithoutAPerson(t *testing.T) {
 		t.Fatalf("decision = %q (%s), want allow: a sign-off is answered on the spot", decision, reason)
 	}
 	answers, _ := updated["answers"].(map[string]any)
-	if got := answers["Shall I go ahead and open the pull request?"]; got != autoSignoffAnswer {
+	if got := answers["Shall I go ahead and open the pull request?"]; got != signals.AutoSignoffAnswer {
 		t.Errorf("answer = %v, want the automatic sign-off answer", got)
 	}
 	if _, kept := updated["questions"]; !kept {
@@ -155,7 +159,7 @@ func TestSurfacingWorkerSignoffIsAnsweredWithoutAPerson(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(answered) != 1 || answered[0].Answer == nil || answered[0].Answer.Text != autoSignoffAnswer {
+	if len(answered) != 1 || answered[0].Answer == nil || answered[0].Answer.Text != signals.AutoSignoffAnswer {
 		t.Errorf("answered rows = %+v, want one row recording the automatic answer", answered)
 	}
 }
@@ -201,7 +205,7 @@ func TestSurfacingWorkerRealQuestionLandsOnTheCardWithADraftForTheCustomer(t *te
 	if sig.RequestID == "" {
 		t.Error("request_id empty; the questions of one ask must resolve together")
 	}
-	if srv.parkedAsks.isParked(sig.SessionID, sig.RequestID) {
+	if srv.parkedAsks.IsParked(sig.SessionID, sig.RequestID) {
 		t.Error("the ask is parked; a surfaced question must not hold the worker's process open")
 	}
 	if sig.Audience != msg.SignalAudienceCustomer {
@@ -261,11 +265,11 @@ func TestNonSurfacingAutonomousSessionIsStillDenied(t *testing.T) {
 
 func TestSkipClassifyReasonLetsASurfacingWorkerThrough(t *testing.T) {
 	worker := &store.Session{Type: msg.SessionTypeAutonomous, Purpose: msg.PurposeDispatcher}
-	if got := skipClassifyReason(worker, "Should I drop the legacy column or keep it?", msg.SessionIdle); got != "" {
+	if got := signals.SkipClassifyReason(worker, "Should I drop the legacy column or keep it?", msg.SessionIdle); got != "" {
 		t.Errorf("skip = %q, want none: a card worker's turn-end has a reader", got)
 	}
 	nightly := &store.Session{Type: msg.SessionTypeAutonomous, Purpose: msg.PurposeAutoworker}
-	if got := skipClassifyReason(nightly, "Should I drop the legacy column or keep it?", msg.SessionIdle); got == "" {
+	if got := signals.SkipClassifyReason(nightly, "Should I drop the legacy column or keep it?", msg.SessionIdle); got == "" {
 		t.Error("an autoworker turn-end was classified; only surfacing purposes have a reader")
 	}
 }
@@ -283,7 +287,7 @@ func TestDerivedWorkerQuestionSurfacesWithItsAudience(t *testing.T) {
 	})
 	stubTriage(t, srv, map[string]any{"disposition": "needs_input", "reason": "a real choice", "audience": "assignee"}, nil)
 
-	srv.classifyTurnEnd(sess.SessionID, turnEndEvent("…so: should the health check count discontinued products?"), msg.SessionIdle)
+	srv.signals.ClassifyTurnEnd(sess.SessionID, turnEndEvent("…so: should the health check count discontinued products?"), msg.SessionIdle)
 
 	open := openSignals(t, st, sess.SessionID)
 	if len(open) != 1 {
@@ -302,11 +306,11 @@ func TestDerivedSignoffPastTheCapIsSurfacedNotAnswered(t *testing.T) {
 	srv, st := testServerWithKanban(t, card.kanbanStore("card-4"))
 	sess := seedWorkerSession(t, st, "demo-builder-5", msg.PurposeDispatcher)
 	now := time.Now().UTC()
-	for i := 0; i < maxAutoContinuesPerSession; i++ {
+	for i := 0; i < signals.MaxAutoContinuesPerSession; i++ {
 		if err := st.CreateSignal(&msg.Signal{
 			ID: "sig_prior_" + string(rune('a'+i)), SessionID: sess.SessionID, Kind: msg.SignalKindQuestion,
 			Source: msg.SignalSourceDerived, Surface: msg.SignalSurfaceKanban, Title: "continue?",
-			State: msg.SignalStateAnswered, Answer: &msg.SignalAnswer{Text: autoSignoffAnswer}, ResolvedAt: &now,
+			State: msg.SignalStateAnswered, Answer: &msg.SignalAnswer{Text: signals.AutoSignoffAnswer}, ResolvedAt: &now,
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -314,15 +318,15 @@ func TestDerivedSignoffPastTheCapIsSurfacedNotAnswered(t *testing.T) {
 	stubClassifier(t, srv, derivedQuestionVerdict("Shall I continue?"))
 	stubTriage(t, srv, map[string]any{"disposition": "signoff", "reason": "permission"}, nil)
 
-	srv.classifyTurnEnd(sess.SessionID, turnEndEvent("Done with that step. Shall I continue?"), msg.SessionIdle)
+	srv.signals.ClassifyTurnEnd(sess.SessionID, turnEndEvent("Done with that step. Shall I continue?"), msg.SessionIdle)
 
 	open := openSignals(t, st, sess.SessionID)
 	if len(open) != 1 {
 		t.Fatalf("open signals = %d, want 1: the fourth sign-off reaches a person, a worker that keeps asking is looping", len(open))
 	}
-	count, err := srv.autoContinueCount(sess.SessionID)
-	if err != nil || count != maxAutoContinuesPerSession {
-		t.Errorf("auto-continue count = %d (%v), want %d unchanged", count, err, maxAutoContinuesPerSession)
+	count, err := srv.signals.AutoContinueCount(sess.SessionID)
+	if err != nil || count != signals.MaxAutoContinuesPerSession {
+		t.Errorf("auto-continue count = %d (%v), want %d unchanged", count, err, signals.MaxAutoContinuesPerSession)
 	}
 }
 
@@ -342,7 +346,7 @@ func TestAnsweringASurfacedQuestionEndsTheCardsWait(t *testing.T) {
 	req := httptest.NewRequest("POST", "/signals/sig_q/resolve", body)
 	req.SetPathValue("id", "sig_q")
 	rec := httptest.NewRecorder()
-	srv.handleResolveSignal(rec, req)
+	srv.signals.HandleResolveSignal(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("resolve: %d %s", rec.Code, rec.Body.String())
 	}

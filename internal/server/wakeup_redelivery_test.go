@@ -26,7 +26,7 @@ func TestLostWakeup(t *testing.T) {
 		srv, st := testServer(t)
 		st.CreateSession(&store.Session{SessionID: "br_w", Harness: "claude_code", State: string(msg.SessionIdle)})
 		storeScheduledWakeup(t, st, "br_w", "toolu_a", time.Now().Add(10*time.Minute))
-		wakeup, err := srv.lostWakeup("br_w", oldestCallToRead)
+		wakeup, err := srv.sessions.LostWakeup("br_w", oldestCallToRead)
 		if err != nil || wakeup == nil || wakeup.ToolID != "toolu_a" || wakeup.Prompt != "check the backfill" {
 			t.Fatalf("got %+v, %v; want toolu_a", wakeup, err)
 		}
@@ -37,7 +37,7 @@ func TestLostWakeup(t *testing.T) {
 		st.CreateSession(&store.Session{SessionID: "br_w", Harness: "claude_code", State: string(msg.SessionIdle)})
 		storeScheduledWakeup(t, st, "br_w", "toolu_a", time.Now().Add(-time.Minute))
 		storeTestEvent(t, st, "br_w", []byte(`{"type":"user_message"}`))
-		wakeup, err := srv.lostWakeup("br_w", oldestCallToRead)
+		wakeup, err := srv.sessions.LostWakeup("br_w", oldestCallToRead)
 		if err != nil || wakeup != nil {
 			t.Fatalf("got %+v, %v; want none", wakeup, err)
 		}
@@ -47,7 +47,7 @@ func TestLostWakeup(t *testing.T) {
 		srv, st := testServer(t)
 		st.CreateSession(&store.Session{SessionID: "br_w", Harness: "claude_code", State: string(msg.SessionAborted)})
 		storeScheduledWakeup(t, st, "br_w", "toolu_a", time.Now().Add(10*time.Minute))
-		wakeup, err := srv.lostWakeup("br_w", oldestCallToRead)
+		wakeup, err := srv.sessions.LostWakeup("br_w", oldestCallToRead)
 		if err != nil || wakeup != nil {
 			t.Fatalf("got %+v, %v; want none", wakeup, err)
 		}
@@ -60,7 +60,7 @@ func TestLostWakeup(t *testing.T) {
 		srv, st := testServer(t)
 		st.CreateSession(&store.Session{SessionID: "br_w", Harness: "claude_code", State: string(msg.SessionCompleted)})
 		storeScheduledWakeup(t, st, "br_w", "toolu_a", time.Now().Add(-10*time.Minute))
-		wakeup, err := srv.lostWakeup("br_w", oldestCallToRead)
+		wakeup, err := srv.sessions.LostWakeup("br_w", oldestCallToRead)
 		if err != nil || wakeup != nil {
 			t.Fatalf("got %+v, %v; want none", wakeup, err)
 		}
@@ -76,7 +76,7 @@ func TestLostWakeup(t *testing.T) {
 			Status: &msg.SessionStatus{State: msg.SessionAwaitingUser, Reason: msg.ReasonIdleReaped}}); err != nil {
 			t.Fatal(err)
 		}
-		wakeup, err := srv.lostWakeup("br_w", oldestCallToRead)
+		wakeup, err := srv.sessions.LostWakeup("br_w", oldestCallToRead)
 		if err != nil || wakeup != nil {
 			t.Fatalf("got %+v, %v; want none", wakeup, err)
 		}
@@ -85,7 +85,7 @@ func TestLostWakeup(t *testing.T) {
 	t.Run("a session with no wakeup", func(t *testing.T) {
 		srv, st := testServer(t)
 		st.CreateSession(&store.Session{SessionID: "br_w", Harness: "claude_code", State: string(msg.SessionIdle)})
-		wakeup, err := srv.lostWakeup("br_w", oldestCallToRead)
+		wakeup, err := srv.sessions.LostWakeup("br_w", oldestCallToRead)
 		if err != nil || wakeup != nil {
 			t.Fatalf("got %+v, %v; want none", wakeup, err)
 		}

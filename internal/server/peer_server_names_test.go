@@ -100,7 +100,7 @@ func TestServerNamesTravelOverADialOutConnection(t *testing.T) {
 	}
 
 	acceptingID, initiatingID := connectByNamesAlone(t, accepting, initiating, acceptingOverTLS.URL, "")
-	t.Cleanup(func() { initiating.server.peerSockets.stop(initiatingID) })
+	t.Cleanup(func() { initiating.server.peerSockets.Stop(initiatingID) })
 	waitForSockets(t, map[*peerTestServer]string{accepting: acceptingID, initiating: initiatingID})
 	waitForOtherServerName(t, initiating, initiatingID, "main")
 	waitForOtherServerName(t, accepting, acceptingID, "laptop")
@@ -137,7 +137,7 @@ func TestServerNamesTravelOverADirectConnection(t *testing.T) {
 	waitForOtherServerID(t, accepting, acceptingID, initiatingServerID)
 
 	// An id that is not a server id is not recorded over the one known.
-	accepting.server.noteOtherServerIdentity(acceptingID, http.Header{http.CanonicalHeaderKey(msg.ServerIDHeader): {"server_000042"}})
+	accepting.server.peers.NoteOtherServerIdentity(acceptingID, http.Header{http.CanonicalHeaderKey(msg.ServerIDHeader): {"server_000042"}})
 	waitForOtherServerID(t, accepting, acceptingID, initiatingServerID)
 	// A renamed server keeps its id.
 	nameServer(t, accepting, "renamed main")

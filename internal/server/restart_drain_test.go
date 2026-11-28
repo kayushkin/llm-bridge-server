@@ -25,7 +25,7 @@ func drainTestServer(t *testing.T) (*Server, *store.Store, *store.Session) {
 
 func sendThroughRoute(t *testing.T, srv *Server, sessionID, message string) (int, msg.SendMessageResponse) {
 	t.Helper()
-	status, body := srv.serveInternally(http.MethodPost, "/sessions/"+sessionID+"/send", msg.SendMessageRequest{Message: message})
+	status, body := srv.sessionActions.ServeInternally(http.MethodPost, "/sessions/"+sessionID+"/send", msg.SendMessageRequest{Message: message})
 	var answer msg.SendMessageResponse
 	if status < 300 {
 		if err := json.Unmarshal(body, &answer); err != nil {
@@ -109,7 +109,7 @@ func TestASendWhileDrainingIsHeldAndSentWhenTheDrainEnds(t *testing.T) {
 	srv, st, session := drainTestServer(t)
 	stateBefore := func() string { row, _ := st.GetSession(session.SessionID); return row.State }()
 
-	srv.startRestartDrain(time.Hour, "test deploy")
+	srv.sessions.StartRestartDrain(time.Hour, "test deploy")
 	status, answer := sendThroughRoute(t, srv, session.SessionID, "please continue")
 	if status != http.StatusAccepted || answer.Status != msg.SendStatusHeld || !strings.HasPrefix(answer.HeldMessageID, "held_") {
 		t.Fatalf("send while draining = %d %+v; want 202 held with a held_ id", status, answer)
@@ -125,7 +125,7 @@ func TestASendWhileDrainingIsHeldAndSentWhenTheDrainEnds(t *testing.T) {
 		t.Fatalf("readiness while draining = %+v; want draining with one held message", readiness)
 	}
 
-	srv.endRestartDrain("test")
+	srv.sessions.EndRestartDrain("test")
 	waitForHeldMessagesToBeSent(t, st)
 	seen = waitForEvent(t, st, session.SessionID, msg.SystemSubtypeHeldMessageDelivered)
 	// The mock harness echoes each message it gets as a second user_message,
@@ -149,8 +149,8 @@ func TestMessagesHeldByThePreviousProcessAreSentOnceAtStart(t *testing.T) {
 		Request: msg.SendMessageRequest{Message: "held before the restart"}, Source: "send", HeldAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	srv.DeliverMessagesHeldBeforeRestart()
-	srv.DeliverMessagesHeldBeforeRestart()
+	srv.sessions.DeliverMessagesHeldBeforeRestart()
+	srv.sessions.DeliverMessagesHeldBeforeRestart()
 	waitForHeldMessagesToBeSent(t, st)
 	waitForEvent(t, st, session.SessionID, msg.SystemSubtypeHeldMessageDelivered)
 	time.Sleep(300 * time.Millisecond) // give a second, wrong delivery time to show up
@@ -168,13 +168,13 @@ func TestMessagesHeldByThePreviousProcessAreSentOnceAtStart(t *testing.T) {
 // A drain the deploy never calls off ends by itself, and sends what it held.
 func TestADrainEndsByItselfAndSendsWhatItHeld(t *testing.T) {
 	srv, st, session := drainTestServer(t)
-	srv.startRestartDrain(200*time.Millisecond, "test deploy that died")
+	srv.sessions.StartRestartDrain(200*time.Millisecond, "test deploy that died")
 	if status, _ := sendThroughRoute(t, srv, session.SessionID, "sent after the drain ran out"); status != http.StatusAccepted {
 		t.Fatalf("send while draining = %d; want 202", status)
 	}
 	waitForHeldMessagesToBeSent(t, st)
 	waitForEvent(t, st, session.SessionID, "user_message:sent after the drain ran out")
-	if srv.restartDrainView().Draining {
+	if srv.sessions.RestartDrainView().Draining {
 		t.Fatal("the drain is still on after its time ran out")
 	}
 }
@@ -188,12 +188,12 @@ func TestStartingADrainNeedsALimitAndAReason(t *testing.T) {
 		`{"maximum_seconds":60,"reason":"x","extra":true}`: "invalid_body",
 	} {
 		recorder := httptest.NewRecorder()
-		srv.handleStartRestartDrain(recorder, httptest.NewRequest(http.MethodPost, "/restart-drain", strings.NewReader(body)))
+		srv.sessions.HandleStartRestartDrain(recorder, httptest.NewRequest(http.MethodPost, "/restart-drain", strings.NewReader(body)))
 		if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), wantCode) {
 			t.Errorf("POST /restart-drain %s = %d %s; want 400 %s", body, recorder.Code, recorder.Body.String(), wantCode)
 		}
 	}
-	if srv.restartDrainView().Draining {
+	if srv.sessions.RestartDrainView().Draining {
 		t.Fatal("a refused request started a drain")
 	}
 }

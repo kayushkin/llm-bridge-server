@@ -23,16 +23,22 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/kayushkin/llm-bridge-server/internal/server/routeaccess"
+
+	"github.com/kayushkin/llm-bridge-server/internal/access/login"
+
+	"github.com/kayushkin/llm-bridge-server/internal/httproutes"
+
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access"
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
 	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 	"github.com/kayushkin/llm-bridge-server/internal/mail"
 	mailfilestore "github.com/kayushkin/llm-bridge-server/internal/mail/filestore"
 )
-
-// mailstackIngressDeliveryPattern is pushed delivery, answered by mailstack
-// against the ingress credential the sender presents.
-const mailstackIngressDeliveryPattern = "POST " + mailMountPrefix + "/api/ingress/deliveries"
 
 // errMailstackOff is a use of mailstack on a server that never enabled it.
 var errMailstackOff = errors.New("mailstack is off: EnableMail was never called on this server")
@@ -66,12 +72,12 @@ func (s *Server) MailstackFileStore() mailfilestore.Files {
 func (s *Server) serveMailstack(w http.ResponseWriter, r *http.Request, caller *mail.Caller) {
 	mailServer := s.mailstack.Load()
 	if mailServer == nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "mailstack_off", errMailstackOff.Error())
+		httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "mailstack_off", errMailstackOff.Error())
 		return
 	}
-	storePath, err := url.Parse(escapedPathAfterPrefix(r.URL, mailMountPrefix))
+	storePath, err := url.Parse(httproutes.EscapedPathAfterPrefix(r.URL, routeaccess.MailMountPrefix))
 	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_path", fmt.Sprintf("the path after %s/ is not one mailstack can read: %v", mailMountPrefix, err))
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_path", fmt.Sprintf("the path after %s/ is not one mailstack can read: %v", routeaccess.MailMountPrefix, err))
 		return
 	}
 	ctx := r.Context()
@@ -91,21 +97,21 @@ func (s *Server) serveMailstack(w http.ResponseWriter, r *http.Request, caller *
 			}
 		}
 	}
-	removeCookieFromRequestHeader(served.Header, loginSessionCookieName)
+	login.RemoveCookieFromRequestHeader(served.Header, login.LoginSessionCookieName)
 	mailServer.Handler().ServeHTTP(w, served)
 }
 
 // handleMailstackAsCaller answers /mail/<rest> as the verified caller.
 func (s *Server) handleMailstackAsCaller(w http.ResponseWriter, r *http.Request) {
 	var caller mail.Caller
-	if principalID, identified := principalIdentityOfRequest(r); identified {
+	if principalID, identified := requestcaller.PrincipalIdentityOfRequest(r); identified {
 		caller = mail.Caller{PrincipalID: principalID}
 	} else if s.requestIsTheInternalServiceActingAsItself(r) {
 		caller = mail.Caller{InternalService: true}
 	} else {
 		// Request authorization lets nothing else through to a store route.
-		writeJSONError(w, http.StatusUnauthorized, "mailstack_requires_a_caller",
-			mailMountPrefix+"/ answers a principal or this server's service token")
+		httpjson.WriteJSONError(w, http.StatusUnauthorized, "mailstack_requires_a_caller",
+			routeaccess.MailMountPrefix+"/ answers a principal or this server's service token")
 		return
 	}
 	s.serveMailstack(w, r, &caller)

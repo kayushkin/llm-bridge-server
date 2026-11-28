@@ -8,6 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/signals"
+
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/parkedasks"
+
 	"github.com/kayushkin/llm-bridge-server/internal/ids"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -43,7 +47,7 @@ func TestSignalSurfaceForSession(t *testing.T) {
 		want msg.SignalSurface
 	}{
 		{"interactive", &store.Session{Type: msg.SessionTypeInteractive}, msg.SignalSurfaceChat},
-		// Herald is grouped with autonomous by isUnattendedSession but NOT
+		// Herald is grouped with autonomous by IsUnattendedSession but NOT
 		// here: the relay reaches the user's chat, and no herald session has
 		// a kanban card.
 		{"herald", &store.Session{Type: msg.SessionTypeHerald}, msg.SignalSurfaceChat},
@@ -53,7 +57,7 @@ func TestSignalSurfaceForSession(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := signalSurfaceForSession(tc.sess); got != tc.want {
+			if got := signals.SignalSurfaceForSession(tc.sess); got != tc.want {
 				t.Errorf("surface = %q, want %q", got, tc.want)
 			}
 		})
@@ -64,7 +68,7 @@ func TestRecordAskUserQuestionSignalsWritesOneRowPerQuestion(t *testing.T) {
 	srv, st := testServer(t)
 	sess := newSessionForSignals(t, st, "br_1", msg.SessionTypeInteractive)
 
-	srv.recordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
+	srv.signals.RecordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
 
 	signals, err := st.ListSignalsByRequestID("br_1", "hreq_1")
 	if err != nil {
@@ -113,8 +117,8 @@ func TestRecordAskUserQuestionSignalsIgnoresUnusableInput(t *testing.T) {
 	srv, st := testServer(t)
 	sess := newSessionForSignals(t, st, "br_1", msg.SessionTypeInteractive)
 
-	srv.recordAskUserQuestionSignals("br_1", sess, "hreq_bad", json.RawMessage(`not json`))
-	srv.recordAskUserQuestionSignals("br_1", sess, "hreq_empty", json.RawMessage(`{"questions":[]}`))
+	srv.signals.RecordAskUserQuestionSignals("br_1", sess, "hreq_bad", json.RawMessage(`not json`))
+	srv.signals.RecordAskUserQuestionSignals("br_1", sess, "hreq_empty", json.RawMessage(`{"questions":[]}`))
 
 	signals, err := st.ListSignals(store.SignalFilter{SessionID: "br_1"})
 	if err != nil {
@@ -128,10 +132,10 @@ func TestRecordAskUserQuestionSignalsIgnoresUnusableInput(t *testing.T) {
 func TestResolveSignalsForRequestStampsAnswers(t *testing.T) {
 	srv, st := testServer(t)
 	sess := newSessionForSignals(t, st, "br_1", msg.SessionTypeInteractive)
-	srv.recordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
+	srv.signals.RecordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
 
 	updatedInput := json.RawMessage(`{"questions":[],"answers":{"Ship it?":"Yes","Which branch?":"main"}}`)
-	srv.resolveSignalsForRequest("br_1", "hreq_1", permissionDecision{
+	srv.signals.ResolveSignalsForRequest("br_1", "hreq_1", parkedasks.Decision{
 		Behavior:     "allow",
 		UpdatedInput: updatedInput,
 		ResolvedBy:   "user",
@@ -162,9 +166,9 @@ func TestResolveSignalsForRequestStampsAnswers(t *testing.T) {
 func TestResolveSignalsForRequestDismissesOnDeny(t *testing.T) {
 	srv, st := testServer(t)
 	sess := newSessionForSignals(t, st, "br_1", msg.SessionTypeInteractive)
-	srv.recordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
+	srv.signals.RecordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
 
-	srv.resolveSignalsForRequest("br_1", "hreq_1", permissionDecision{
+	srv.signals.ResolveSignalsForRequest("br_1", "hreq_1", parkedasks.Decision{
 		Behavior:   "deny",
 		Message:    "user declined",
 		ResolvedBy: "user",
@@ -190,8 +194,8 @@ func TestResolveSignalsForRequestWithNoSignalsIsNoOp(t *testing.T) {
 	srv, st := testServer(t)
 	newSessionForSignals(t, st, "br_1", msg.SessionTypeInteractive)
 
-	srv.resolveSignalsForRequest("br_1", "hreq_never_recorded", permissionDecision{Behavior: "allow"})
-	srv.resolveSignalsForRequest("br_1", "", permissionDecision{Behavior: "allow"})
+	srv.signals.ResolveSignalsForRequest("br_1", "hreq_never_recorded", parkedasks.Decision{Behavior: "allow"})
+	srv.signals.ResolveSignalsForRequest("br_1", "", parkedasks.Decision{Behavior: "allow"})
 
 	signals, err := st.ListSignals(store.SignalFilter{SessionID: "br_1"})
 	if err != nil {
@@ -206,7 +210,7 @@ func TestHandleListSessionSignals(t *testing.T) {
 	srv, st := testServer(t)
 	sess := newSessionForSignals(t, st, "br_1", msg.SessionTypeInteractive)
 	newSessionForSignals(t, st, "br_2", msg.SessionTypeInteractive)
-	srv.recordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
+	srv.signals.RecordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
 
 	rec := httptest.NewRecorder()
 	asInternalService(srv).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sessions/br_1/signals", nil))
@@ -240,9 +244,9 @@ func TestHandleListSignalsAcrossSessions(t *testing.T) {
 	srv, st := testServer(t)
 	first := newSessionForSignals(t, st, "br_1", msg.SessionTypeInteractive)
 	second := newSessionForSignals(t, st, "br_2", msg.SessionTypeAutonomous)
-	srv.recordAskUserQuestionSignals("br_1", first, "hreq_1", json.RawMessage(askUserQuestionToolInput))
-	srv.recordAskUserQuestionSignals("br_2", second, "hreq_2", json.RawMessage(askUserQuestionToolInput))
-	srv.resolveSignalsForRequest("br_2", "hreq_2", permissionDecision{Behavior: "deny"})
+	srv.signals.RecordAskUserQuestionSignals("br_1", first, "hreq_1", json.RawMessage(askUserQuestionToolInput))
+	srv.signals.RecordAskUserQuestionSignals("br_2", second, "hreq_2", json.RawMessage(askUserQuestionToolInput))
+	srv.signals.ResolveSignalsForRequest("br_2", "hreq_2", parkedasks.Decision{Behavior: "deny"})
 
 	cases := []struct {
 		query string
@@ -615,7 +619,7 @@ func TestDismissingALiveParkDeniesTheToolCall(t *testing.T) {
 		Surface:   msg.SignalSurfaceChat,
 		State:     msg.SignalStateOpen,
 	})
-	ch := srv.parkedAsks.park("br_1", "hreq_1")
+	ch := srv.parkedAsks.Park("br_1", "hreq_1")
 
 	// Dismissing a question whose park is live has to reach the blocked tool
 	// call, not just close the row — the harness waits on that hook forever
@@ -645,7 +649,7 @@ func TestDismissingALiveParkDeniesTheToolCall(t *testing.T) {
 	// Once the park is gone — harness restart, canceled request — the row is
 	// a leftover with nothing behind it, and dismissing it is the only way to
 	// clear it.
-	srv.parkedAsks.cancel("br_1", "hreq_1")
+	srv.parkedAsks.Cancel("br_1", "hreq_1")
 	if rec := resolveSignal(t, srv, sig.ID, `{"state":"dismissed"}`); rec.Code != http.StatusOK {
 		t.Fatalf("status after the park went away = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -678,7 +682,7 @@ func TestResolutionUnparksSession(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			sig := &store.Signal{Source: tc.source, Kind: tc.kind, State: msg.SignalStateOpen}
-			if got := resolutionUnparksSession(sig, tc.state); got != tc.want {
+			if got := signals.ResolutionUnparksSession(sig, tc.state); got != tc.want {
 				t.Errorf("resolutionUnparksSession = %v, want %v", got, tc.want)
 			}
 		})
@@ -686,23 +690,23 @@ func TestResolutionUnparksSession(t *testing.T) {
 }
 
 func TestIsParkedDoesNotConsumeTheEntry(t *testing.T) {
-	p := newParkedAsks()
-	if p.isParked("br_1", "hreq_1") {
+	p := parkedasks.New()
+	if p.IsParked("br_1", "hreq_1") {
 		t.Error("isParked is true for a request that was never parked")
 	}
-	ch := p.park("br_1", "hreq_1")
-	if !p.isParked("br_1", "hreq_1") {
+	ch := p.Park("br_1", "hreq_1")
+	if !p.IsParked("br_1", "hreq_1") {
 		t.Fatal("isParked is false for a live park")
 	}
-	// The read must leave the park deliverable — an isParked that removed
+	// The read must leave the park deliverable — an IsParked that removed
 	// the entry would turn every 409 check into a wedged session.
-	if !p.isParked("br_1", "hreq_1") {
+	if !p.IsParked("br_1", "hreq_1") {
 		t.Fatal("isParked went false on a second read; it consumed the entry")
 	}
-	if !p.deliver("br_1", "hreq_1", permissionDecision{Behavior: "deny"}) {
+	if !p.Deliver("br_1", "hreq_1", parkedasks.Decision{Behavior: "deny"}) {
 		t.Fatal("deliver found no parked entry after isParked read it")
 	}
-	if p.isParked("br_1", "hreq_1") {
+	if p.IsParked("br_1", "hreq_1") {
 		t.Error("isParked is still true after the decision was delivered")
 	}
 	<-ch
@@ -720,7 +724,7 @@ func TestAResolvedSignalUnparksNothing(t *testing.T) {
 			Kind:   msg.SignalKindQuestion,
 			State:  state,
 		}
-		if resolutionUnparksSession(sig, msg.SignalStateDismissed) {
+		if signals.ResolutionUnparksSession(sig, msg.SignalStateDismissed) {
 			t.Errorf("an already-%s signal still unparks its session", state)
 		}
 	}
@@ -742,17 +746,17 @@ func TestAResolvedSignalUnparksNothing(t *testing.T) {
 func TestSessionGoingAwayLeavesTheQuestionOpen(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
-		decision  permissionDecision
+		decision  parkedasks.Decision
 		wantState msg.SignalState
 	}{
 		{
 			name:      "a human declining is an answer and closes the question",
-			decision:  permissionDecision{Behavior: "deny", Message: "user declined", ResolvedBy: "user"},
+			decision:  parkedasks.Decision{Behavior: "deny", Message: "user declined", ResolvedBy: "user"},
 			wantState: msg.SignalStateDismissed,
 		},
 		{
 			name: "the session going away is not an answer and leaves it open",
-			decision: permissionDecision{
+			decision: parkedasks.Decision{
 				Behavior:        "deny",
 				Message:         "request canceled before resolution: context canceled",
 				ResolvedBy:      "auto:context-canceled",
@@ -764,9 +768,9 @@ func TestSessionGoingAwayLeavesTheQuestionOpen(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			srv, st := testServer(t)
 			sess := newSessionForSignals(t, st, "br_1", msg.SessionTypeInteractive)
-			srv.recordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
+			srv.signals.RecordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
 
-			srv.resolveSignalsForRequest("br_1", "hreq_1", tc.decision)
+			srv.signals.ResolveSignalsForRequest("br_1", "hreq_1", tc.decision)
 
 			signals, err := st.ListSignalsByRequestID("br_1", "hreq_1")
 			if err != nil {
@@ -809,7 +813,7 @@ func TestRecordAskUserQuestionSignalsCarriesMultiSelect(t *testing.T) {
 		{"question":"Ship it?","header":"Release","multiSelect":false,
 		 "options":[{"label":"Yes"},{"label":"No"}]}
 	]}`
-	srv.recordAskUserQuestionSignals("br_1", sess, "hreq_multi", json.RawMessage(input))
+	srv.signals.RecordAskUserQuestionSignals("br_1", sess, "hreq_multi", json.RawMessage(input))
 
 	signals, err := st.ListSignalsByRequestID("br_1", "hreq_multi")
 	if err != nil {

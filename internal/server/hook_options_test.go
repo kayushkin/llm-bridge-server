@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/hookvocabulary"
+
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -12,21 +14,21 @@ import (
 func TestHookOptionsServeTheWiredHarnessesAndOneEventList(t *testing.T) {
 	srv, _ := testServer(t)
 	w := httptest.NewRecorder()
-	srv.handleHookOptions(w, httptest.NewRequest("GET", "/hook-options", nil))
+	srv.sessions.PermissionGate.HandleHookOptions(w, httptest.NewRequest("GET", "/hook-options", nil))
 	var options msg.HookOptions
 	if err := json.Unmarshal(w.Body.Bytes(), &options); err != nil {
 		t.Fatalf("decode: %v (%s)", err, w.Body.String())
 	}
-	if len(options.Harnesses) != len(hookConfigKeyByHarness) {
-		t.Fatalf("served %d harnesses, the spawn wires %d", len(options.Harnesses), len(hookConfigKeyByHarness))
+	if len(options.Harnesses) != len(hookvocabulary.HookConfigKeyByHarness) {
+		t.Fatalf("served %d harnesses, the spawn wires %d", len(options.Harnesses), len(hookvocabulary.HookConfigKeyByHarness))
 	}
 	for _, option := range options.Harnesses {
-		if option.ConfigKey != hookConfigKeyByHarness[option.Harness] {
-			t.Errorf("%s config key = %q, want %q", option.Harness, option.ConfigKey, hookConfigKeyByHarness[option.Harness])
+		if option.ConfigKey != hookvocabulary.HookConfigKeyByHarness[option.Harness] {
+			t.Errorf("%s config key = %q, want %q", option.Harness, option.ConfigKey, hookvocabulary.HookConfigKeyByHarness[option.Harness])
 		}
 		// One list: what this route offers is what GET /harnesses serves as hook_events.
-		if len(option.KnownEvents) != len(harnessHookEvents[option.Harness]) {
-			t.Errorf("%s known events %v differ from harnessHookEvents %v", option.Harness, option.KnownEvents, harnessHookEvents[option.Harness])
+		if len(option.KnownEvents) != len(hookvocabulary.HarnessHookEvents[option.Harness]) {
+			t.Errorf("%s known events %v differ from harnessHookEvents %v", option.Harness, option.KnownEvents, hookvocabulary.HarnessHookEvents[option.Harness])
 		}
 		if option.KnownEvents == nil {
 			t.Errorf("%s known_events must be [] on the wire, never null", option.Harness)
@@ -46,13 +48,13 @@ func TestHookOptionsServeTheWiredHarnessesAndOneEventList(t *testing.T) {
 	}
 }
 
-// A harness the editor offers must be one the spawn wires: injectHookSettings
+// A harness the editor offers must be one the spawn wires: InjectHookSettings
 // writes the block under the served config key for every listed harness.
 func TestEveryHarnessInTheHookOptionsIsWired(t *testing.T) {
 	srv, _ := testServer(t)
-	for harness, configKey := range hookConfigKeyByHarness {
+	for harness, configKey := range hookvocabulary.HookConfigKeyByHarness {
 		sess := &store.Session{SessionID: "br_hook_options_test", Harness: harness}
-		if err := srv.injectHookSettings(sess); err != nil {
+		if err := srv.sessions.InjectHookSettings(sess); err != nil {
 			t.Fatal(err)
 		}
 		var cfg map[string]json.RawMessage

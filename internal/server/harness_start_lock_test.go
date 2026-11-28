@@ -44,7 +44,7 @@ func TestStartOnInstanceSpawnsOneProcessWhenCalledConcurrently(t *testing.T) {
 				errs[i] = getErr
 				return
 			}
-			processes[i], errs[i] = srv.startOnInstance(context.Background(), sess, inst, "")
+			processes[i], errs[i] = srv.sessions.StartOnInstance(context.Background(), sess, inst, "")
 		}()
 	}
 	ready.Done()

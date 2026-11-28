@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/agents/evaluations"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelrouting"
 	usagestorehttpapi "github.com/kayushkin/llm-bridge-server/internal/agents/usage/httpapi"
@@ -46,7 +48,7 @@ func (s *Server) usageStoreHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		handlers := s.usageAndEvalStores.usage.Load()
 		if handlers == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "usage_store_off", "this server's usage-store module is not open")
+			httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "usage_store_off", "this server's usage-store module is not open")
 			return
 		}
 		handlers.ServeHTTP(w, r)
@@ -57,9 +59,9 @@ func (s *Server) usageStoreHandler() http.Handler {
 // open.
 var errUsageStoreOff = errors.New("this server's usage-store module is not open")
 
-// readUsageStoreLimits is usage-store's latest limits, read in this process
+// ReadUsageStoreLimits is usage-store's latest limits, read in this process
 // from the same function its GET /api/usage/limits answers from.
-func (s *Server) readUsageStoreLimits(context.Context) (map[string]modelrouting.UsageProviderLimits, error) {
+func (s *Server) ReadUsageStoreLimits(context.Context) (map[string]modelrouting.UsageProviderLimits, error) {
 	handlers := s.usageAndEvalStores.usage.Load()
 	if handlers == nil {
 		return nil, errUsageStoreOff
@@ -137,7 +139,7 @@ func (s *Server) evalStoreRoute() http.HandlerFunc {
 		routes := s.usageAndEvalStores.eval.Load()
 		if routes == nil {
 			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				writeJSONError(w, http.StatusServiceUnavailable, "eval_store_off", "this server's eval-store module is not open")
+				httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "eval_store_off", "this server's eval-store module is not open")
 			})
 		}
 		return routes

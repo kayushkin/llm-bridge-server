@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/references"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access"
@@ -119,9 +121,9 @@ func TestImportedStandaloneKanbanStoreAnswers(t *testing.T) {
 			continue
 		}
 		request := httptest.NewRequest("GET", "/issues"+path, nil)
-		request.Header.Set(serviceTokenHeader, testServiceToken)
+		request.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
 		if principalID != "-" {
-			request.Header.Set(principalIdentityHeader, principalID)
+			request.Header.Set(requestcaller.PrincipalIdentityHeader, principalID)
 		}
 		response := serve(server, request)
 		if err := encoder.Encode(map[string]any{"principal": principalID, "path": path, "status": response.Code, "body": response.Body.String()}); err != nil {

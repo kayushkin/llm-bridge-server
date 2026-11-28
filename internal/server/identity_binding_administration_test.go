@@ -8,6 +8,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/login"
+
+	"github.com/kayushkin/llm-bridge-server/internal/access/accesstokens"
+
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 )
 
@@ -73,7 +79,7 @@ func TestLinkingSetsLinkedByFromTheCallerAndPassesTheAnswerThrough(t *testing.T)
 
 	// The service token acting as nobody cannot stamp a binding.
 	request := httptest.NewRequest("POST", "/admin/identity-bindings", strings.NewReader(`{"principal_id":"principal_000001"}`))
-	request.Header.Set(serviceTokenHeader, testServiceToken)
+	request.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
 	if refused := serve(gated.server, request); refused.Code != http.StatusForbidden || !strings.Contains(refused.Body.String(), "identity_binding_change_requires_a_principal") {
 		t.Fatalf("service token linking as nobody = %d %s", refused.Code, refused.Body.String())
 	}
@@ -120,9 +126,9 @@ func TestUnlinkingRevokesTheLoginSessionsOfThatBindingOnly(t *testing.T) {
 		}
 		return session
 	}
-	bound := insert(sha256Hex("bound-token"), "identity_binding_000001")
-	otherBinding := insert(sha256Hex("other-token"), "identity_binding_000002")
-	demo := insert(sha256Hex("demo-token"), "")
+	bound := insert(accesstokens.SHA256Hex("bound-token"), "identity_binding_000001")
+	otherBinding := insert(accesstokens.SHA256Hex("other-token"), "identity_binding_000002")
+	demo := insert(accesstokens.SHA256Hex("demo-token"), "")
 
 	forged := gated.requestAs(t, administratorCookie, "POST", "/admin/identity-bindings/identity_binding_000001/unlink", map[string]string{"reason": "left", "unlinked_by": "principal_000001"})
 	if forged.Code != http.StatusBadRequest || !strings.Contains(forged.Body.String(), "unlinked_by_not_accepted") {
@@ -167,7 +173,7 @@ func TestUnlinkingRevokesTheLoginSessionsOfThatBindingOnly(t *testing.T) {
 		}
 	}
 	whoBound := httptest.NewRequest("GET", "/auth/principal", nil)
-	whoBound.AddCookie(&http.Cookie{Name: loginSessionCookieName, Value: "bound-token"})
+	whoBound.AddCookie(&http.Cookie{Name: login.LoginSessionCookieName, Value: "bound-token"})
 	if answer := serve(gated.server, whoBound); answer.Code != http.StatusUnauthorized || !strings.Contains(answer.Body.String(), "login_session_revoked") {
 		t.Fatalf("the unlinked identity's cookie = %d %s, want 401 login_session_revoked", answer.Code, answer.Body.String())
 	}

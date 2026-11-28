@@ -12,6 +12,14 @@ import (
 	"testing"
 	"time"
 
+	loginservice "github.com/kayushkin/llm-bridge-server/internal/access/login"
+
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads/issuereadstest"
+
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads"
+
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	issuesapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/api"
 )
@@ -189,7 +197,7 @@ func newFakeKanbanStore(t *testing.T) *fakeKanbanStore {
 // handler, as EnableIssues does from the store's, and this server's own
 // kanban reads from a store that answers none of them (501).
 func (s *Server) useKanbanStoreHandlerForTests(handler http.Handler) {
-	s.issueReads = newIssueReader(&fakeIssueStore{})
+	s.issueReads = issuereads.New(&issuereadstest.Store{})
 	s.kanbanStore.Store(&kanbanStoreHandlers{handler: handler})
 }
 
@@ -233,15 +241,15 @@ func demoLogin(t *testing.T, server *Server, principalID string) *httptest.Respo
 func loginCookieFrom(t *testing.T, recorder *httptest.ResponseRecorder) *http.Cookie {
 	t.Helper()
 	for _, cookie := range recorder.Result().Cookies() {
-		if cookie.Name == loginSessionCookieName {
-			var body loggedInPrincipalResponse
+		if cookie.Name == loginservice.LoginSessionCookieName {
+			var body loginservice.LoggedInPrincipalResponse
 			if err := json.Unmarshal(recorder.Body.Bytes(), &body); err == nil && body.CSRFToken != "" {
 				csrfTokenByLoginCookieValue.Store(cookie.Value, body.CSRFToken)
 			}
 			return cookie
 		}
 	}
-	t.Fatalf("no %s cookie in response (status %d, body %s)", loginSessionCookieName, recorder.Code, recorder.Body.String())
+	t.Fatalf("no %s cookie in response (status %d, body %s)", loginservice.LoginSessionCookieName, recorder.Code, recorder.Body.String())
 	return nil
 }
 
@@ -255,7 +263,7 @@ var csrfTokenByLoginCookieValue sync.Map
 func addLoginCookie(request *http.Request, cookie *http.Cookie) {
 	request.AddCookie(cookie)
 	if token, known := csrfTokenByLoginCookieValue.Load(cookie.Value); known {
-		request.Header.Set(csrfTokenHeader, token.(string))
+		request.Header.Set(loginservice.CsrfTokenHeader, token.(string))
 	}
 }
 
@@ -270,7 +278,7 @@ func TestDemoLoginWithAHumanSetsACookieThatAuthPrincipalReads(t *testing.T) {
 	if !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode || cookie.Path != "/" {
 		t.Fatalf("cookie attributes = HttpOnly %v SameSite %v Path %q, want HttpOnly, Lax, /", cookie.HttpOnly, cookie.SameSite, cookie.Path)
 	}
-	var loginBody loggedInPrincipalResponse
+	var loginBody loginservice.LoggedInPrincipalResponse
 	if err := json.Unmarshal(login.Body.Bytes(), &loginBody); err != nil || loginBody.PrincipalID != "principal_000001" {
 		t.Fatalf("login body = %s (%v), want principal_000001", login.Body.String(), err)
 	}
@@ -281,7 +289,7 @@ func TestDemoLoginWithAHumanSetsACookieThatAuthPrincipalReads(t *testing.T) {
 	who := httptest.NewRequest("GET", "/auth/principal", nil)
 	who.AddCookie(cookie)
 	answer := serve(server, who)
-	var whoBody loggedInPrincipalResponse
+	var whoBody loginservice.LoggedInPrincipalResponse
 	if answer.Code != http.StatusOK || json.Unmarshal(answer.Body.Bytes(), &whoBody) != nil ||
 		whoBody.PrincipalID != "principal_000001" || !whoBody.ExpiresAt.Equal(loginBody.ExpiresAt) {
 		t.Fatalf("GET /auth/principal = %d %s, want 200 principal_000001 with the login's expiry", answer.Code, answer.Body.String())
@@ -303,11 +311,11 @@ func TestDemoLoginWithAHumanSetsACookieThatAuthPrincipalReads(t *testing.T) {
 func clearedLoginCookieFrom(t *testing.T, recorder *httptest.ResponseRecorder) *http.Cookie {
 	t.Helper()
 	for _, cookie := range recorder.Result().Cookies() {
-		if cookie.Name == loginSessionCookieName {
+		if cookie.Name == loginservice.LoginSessionCookieName {
 			return cookie
 		}
 	}
-	t.Fatalf("no %s cookie in response (status %d, body %s)", loginSessionCookieName, recorder.Code, recorder.Body.String())
+	t.Fatalf("no %s cookie in response (status %d, body %s)", loginservice.LoginSessionCookieName, recorder.Code, recorder.Body.String())
 	return nil
 }
 
@@ -361,7 +369,7 @@ func TestKanbanProxyWithoutALiveLoginSessionIs401AndReachesNothing(t *testing.T)
 
 	// A cookie of the shape this server signed until 2026-10-19 names no
 	// login session: its holder signs in again.
-	oldSignedCookie := &http.Cookie{Name: loginSessionCookieName, Value: "principal_000001.1999999999.c2lnbmF0dXJl"}
+	oldSignedCookie := &http.Cookie{Name: loginservice.LoginSessionCookieName, Value: "principal_000001.1999999999.c2lnbmF0dXJl"}
 
 	revokedCookie := loginCookieFrom(t, demoLogin(t, server, "principal_000001"))
 	logout := httptest.NewRequest("POST", "/auth/logout", nil)
@@ -377,7 +385,7 @@ func TestKanbanProxyWithoutALiveLoginSessionIs401AndReachesNothing(t *testing.T)
 		"no cookie":         {nil, "not_logged_in"},
 		"tampered token":    {&tampered, "login_session_unknown"},
 		"old signed cookie": {oldSignedCookie, "login_session_unknown"},
-		"malformed":         {&http.Cookie{Name: loginSessionCookieName, Value: "not-a-session"}, "login_session_unknown"},
+		"malformed":         {&http.Cookie{Name: loginservice.LoginSessionCookieName, Value: "not-a-session"}, "login_session_unknown"},
 		"logged out":        {revokedCookie, "login_session_revoked"},
 	} {
 		request := httptest.NewRequest("GET", "/issues/boards", nil)
@@ -398,7 +406,7 @@ func TestKanbanProxyWithoutALiveLoginSessionIs401AndReachesNothing(t *testing.T)
 	}
 
 	// Twelve hours on, the first login has expired.
-	server.loginClock = func() time.Time { return time.Now().Add(loginSessionLifetime + time.Second) }
+	server.loginClock = func() time.Time { return time.Now().Add(loginservice.LoginSessionLifetime + time.Second) }
 	expired := httptest.NewRequest("GET", "/issues/boards", nil)
 	expired.AddCookie(cookie)
 	if response := serve(server, expired); response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), "login_session_expired") {
@@ -439,7 +447,7 @@ func TestKanbanStoreHearsOnlyTheCookiesPrincipalAndNoServiceToken(t *testing.T) 
 			t.Fatalf("kanban-store saw a credential header %q: %v", key, seen.Header[key])
 		}
 	}
-	if cookieHeader := seen.Header.Get("Cookie"); strings.Contains(cookieHeader, loginSessionCookieName) || !strings.Contains(cookieHeader, "unrelated=kept") {
+	if cookieHeader := seen.Header.Get("Cookie"); strings.Contains(cookieHeader, loginservice.LoginSessionCookieName) || !strings.Contains(cookieHeader, "unrelated=kept") {
 		t.Fatalf("kanban-store saw Cookie %q, want the unrelated cookie and not the login cookie", cookieHeader)
 	}
 	if seen.Header.Get("Accept") != "application/json" {
@@ -507,7 +515,7 @@ func TestAClientSentPrincipalHeaderIsRefusedWithoutTheServiceToken(t *testing.T)
 	cookie := loginCookieFrom(t, demoLogin(t, server, "principal_000001"))
 
 	for name, addHeader := range map[string]func(http.Header){
-		"canonical":     func(h http.Header) { h.Set(principalIdentityHeader, "principal_000002") },
+		"canonical":     func(h http.Header) { h.Set(requestcaller.PrincipalIdentityHeader, "principal_000002") },
 		"non-canonical": func(h http.Header) { h["x-principal-id"] = []string{"principal_000002"} },
 	} {
 		for _, path := range []string{"/issues/boards", "/health", "/sessions"} {

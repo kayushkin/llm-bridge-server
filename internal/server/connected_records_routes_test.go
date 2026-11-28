@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/calendar"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/journal"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/people"
@@ -49,8 +51,8 @@ func enableConnectedRecordsOnTestDatabase(t *testing.T, gated *gatedTestServer) 
 func (gated *gatedTestServer) requestAsPrincipalWithBody(t *testing.T, principalID, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	request := httptest.NewRequest(method, path, strings.NewReader(body))
-	request.Header.Set(serviceTokenHeader, testServiceToken)
-	request.Header.Set(principalIdentityHeader, principalID)
+	request.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
+	request.Header.Set(requestcaller.PrincipalIdentityHeader, principalID)
 	return serve(gated.server, request)
 }
 

@@ -5,6 +5,10 @@ import (
 	"regexp"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/harnesscatalog"
+
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/hookvocabulary"
+
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -19,16 +23,16 @@ import (
 // breaks the build here until it is either described or explicitly disabled.
 func TestHarnessTablesCoverCanonicalSet(t *testing.T) {
 	for _, h := range msg.AllHarnesses {
-		if reason, disabled := disabledHarnesses[h]; disabled {
+		if reason, disabled := harnesscatalog.DisabledHarnesses[h]; disabled {
 			if reason == "" {
 				t.Errorf("harness %q is disabled with an empty reason; state why so the omission stays a decision", h)
 			}
 			continue
 		}
-		if _, ok := harnessMetadata[h]; !ok {
+		if _, ok := harnesscatalog.HarnessMetadata[h]; !ok {
 			t.Errorf("harness %q is enabled but missing from harnessMetadata; add an entry or list it in disabledHarnesses", h)
 		}
-		if _, ok := harnessCapabilities[h]; !ok {
+		if _, ok := harnesscatalog.HarnessCapabilities[h]; !ok {
 			t.Errorf("harness %q is enabled but missing from harnessCapabilities; add an entry or list it in disabledHarnesses", h)
 		}
 	}
@@ -66,7 +70,7 @@ func TestCompactCapabilityMatchesTheHarnesses(t *testing.T) {
 	}
 
 	has := func(h msg.Harness) bool {
-		for _, c := range harnessCapabilities[h] {
+		for _, c := range harnesscatalog.HarnessCapabilities[h] {
 			if c == "compact" {
 				return true
 			}
@@ -93,7 +97,7 @@ func TestCompactCapabilityMatchesTheHarnesses(t *testing.T) {
 //
 // It must not be derived from msg.AllHarnesses, or from any table keyed by it.
 // TestAllHarnessesExcludesDisabled already computes its expectation as
-// len(msg.AllHarnesses) - len(disabledHarnesses); both sides shrink together,
+// len(msg.AllHarnesses) - len(DisabledHarnesses); both sides shrink together,
 // so it pins the derivation and cannot notice the population moving. A count
 // checked against the table it guards agrees with itself no matter how many
 // rows leave.
@@ -180,15 +184,17 @@ func harnessTableKeys[V any](name string, table map[msg.Harness]V) harnessKeyedT
 // goes red rather than leaving that as a sentence nobody re-checks.
 func harnessKeyedTables() []harnessKeyedTable {
 	return []harnessKeyedTable{
-		harnessTableKeys("harnessMetadata", harnessMetadata),
-		harnessTableKeys("harnessSupportedProviders", harnessSupportedProviders),
-		harnessTableKeys("harnessHookEvents", harnessHookEvents),
-		harnessTableKeys("harnessSupportsPTY", harnessSupportsPTY),
-		harnessTableKeys("harnessSupportsDisableNetwork", harnessSupportsDisableNetwork),
-		harnessTableKeys("harnessSupportedPermissionModes", harnessSupportedPermissionModes),
-		harnessTableKeys("harnessCapabilities", harnessCapabilities),
-		harnessTableKeys("disabledHarnesses", disabledHarnesses),
-		harnessTableKeys("oneShotOnlyHarnesses", oneShotOnlyHarnesses),
+		harnessTableKeys("HarnessMetadata", harnesscatalog.HarnessMetadata),
+		harnessTableKeys("HarnessSupportedProviders", harnesscatalog.HarnessSupportedProviders),
+		harnessTableKeys("HarnessHookEvents", hookvocabulary.HarnessHookEvents),
+		harnessTableKeys("HarnessSupportsPTY", harnesscatalog.HarnessSupportsPTY),
+		harnessTableKeys("HarnessSupportsDisableNetwork", harnesscatalog.HarnessSupportsDisableNetwork),
+		harnessTableKeys("HarnessSupportedPermissionModes", harnesscatalog.HarnessSupportedPermissionModes),
+		harnessTableKeys("HarnessCapabilities", harnesscatalog.HarnessCapabilities),
+		harnessTableKeys("DisabledHarnesses", harnesscatalog.DisabledHarnesses),
+		harnessTableKeys("OneShotOnlyHarnesses", harnesscatalog.OneShotOnlyHarnesses),
+		harnessTableKeys("HookConfigKeyByHarness", hookvocabulary.HookConfigKeyByHarness),
+		harnessTableKeys("PermissionGateRouteByHarness", hookvocabulary.PermissionGateRouteByHarness),
 	}
 }
 
@@ -196,12 +202,12 @@ func harnessKeyedTables() []harnessKeyedTable {
 // the harness it names — one left behind after a harness is renamed or removed
 // upstream, which would otherwise sit here forever describing nothing.
 //
-// This used to be TestDisabledHarnessesAreCanonical and covered disabledHarnesses
+// This used to be TestDisabledHarnessesAreCanonical and covered DisabledHarnesses
 // alone. The same hazard applies to every table keyed by msg.Harness, and there
-// are eight of them: a stale entry in harnessCapabilities or harnessMetadata is
+// are eight of them: a stale entry in HarnessCapabilities or HarnessMetadata is
 // what makes a harness retired upstream still look supported here, and a stale
-// entry in harnessSupportsPTY or harnessSupportedPermissionModes is a spawn-time
-// answer about a harness that no longer exists. Only disabledHarnesses was
+// entry in HarnessSupportsPTY or HarnessSupportedPermissionModes is a spawn-time
+// answer about a harness that no longer exists. Only DisabledHarnesses was
 // checked, so the other seven were unguarded.
 func TestHarnessKeyedTablesNameOnlyCanonicalHarnesses(t *testing.T) {
 	canonical := make(map[msg.Harness]bool, len(msg.AllHarnesses))
@@ -222,14 +228,21 @@ func TestHarnessKeyedTablesNameOnlyCanonicalHarnesses(t *testing.T) {
 // missing from harnessKeyedTables is not guarded by the test above, and nothing
 // about adding one would say so — the omission would look exactly like a table
 // that had been considered and cleared.
+// harnessKeyedTableFiles are the files that declare the harness-keyed tables.
+var harnessKeyedTableFiles = []string{"../harnesscatalog/health.go", "../sessions/hookvocabulary/hook_vocabulary.go"}
+
 func TestEveryHarnessKeyedTableIsListedHere(t *testing.T) {
-	source, err := os.ReadFile("health.go")
-	if err != nil {
-		t.Fatalf("read health.go: %v", err)
+	var source []byte
+	for _, file := range harnessKeyedTableFiles {
+		read, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		source = append(source, read...)
 	}
 	declared := regexp.MustCompile(`(?m)^var (\w+) = map\[msg\.Harness\]`).FindAllStringSubmatch(string(source), -1)
 	if len(declared) == 0 {
-		t.Fatal("found no map[msg.Harness] tables in health.go; the pattern this test scans with has gone stale")
+		t.Fatalf("found no map[msg.Harness] tables in %v; the pattern this test scans with has gone stale", harnessKeyedTableFiles)
 	}
 
 	listed := make(map[string]bool)
@@ -238,35 +251,35 @@ func TestEveryHarnessKeyedTableIsListedHere(t *testing.T) {
 	}
 	for _, decl := range declared {
 		if !listed[decl[1]] {
-			t.Errorf("health.go declares %s, keyed by msg.Harness, and harnessKeyedTables does not list it; "+
-				"add it there so TestHarnessKeyedTablesNameOnlyCanonicalHarnesses can see its rows", decl[1])
+			t.Errorf("%v declares %s, keyed by msg.Harness, and harnessKeyedTables does not list it; "+
+				"add it there so TestHarnessKeyedTablesNameOnlyCanonicalHarnesses can see its rows", harnessKeyedTableFiles, decl[1])
 		}
 	}
 	for name := range listed {
 		if !regexp.MustCompile(`(?m)^var ` + name + ` = map\[msg\.Harness\]`).Match(source) {
-			t.Errorf("harnessKeyedTables lists %s, which health.go no longer declares; drop the stale entry", name)
+			t.Errorf("harnessKeyedTables lists %s, which %v no longer declares; drop the stale entry", name, harnessKeyedTableFiles)
 		}
 	}
 }
 
 // TestAllHarnessesExcludesDisabled checks the derivation itself: everything the
-// gateway will surface, validate and spawn is canonical and enabled. isValidHarness
+// gateway will surface, validate and spawn is canonical and enabled. IsValidHarness
 // gates session create, so a disabled harness leaking in here is what would let
 // POST /sessions spawn its binary.
 //
 // The axis it is checked on, written down so nobody re-reads its count as more
 // than it is: the len() comparison below pins the DERIVATION and not the
 // population. Its expectation is computed from msg.AllHarnesses and
-// disabledHarnesses, the same two tables it is checking, so both sides move
+// DisabledHarnesses, the same two tables it is checking, so both sides move
 // together and a harness leaving msg.AllHarnesses keeps it green. Measured
 // 2026-08-14 by deleting each canonical row in turn. The floor over the
 // population is TestNoKnownHarnessLeavesTheCanonicalListSilently; the two
 // owned literals at the bottom of this test (copilot_cli must stay invalid,
 // claude_code must stay valid) are what make those two rows the exception.
 func TestAllHarnessesExcludesDisabled(t *testing.T) {
-	seen := make(map[msg.Harness]bool, len(allHarnesses))
-	for _, h := range allHarnesses {
-		if _, off := disabledHarnesses[h]; off {
+	seen := make(map[msg.Harness]bool, len(harnesscatalog.AllHarnesses))
+	for _, h := range harnesscatalog.AllHarnesses {
+		if _, off := harnesscatalog.DisabledHarnesses[h]; off {
 			t.Errorf("harness %q is in disabledHarnesses but still present in allHarnesses; isValidHarness would accept it and spawn its binary", h)
 		}
 		if seen[h] {
@@ -274,20 +287,20 @@ func TestAllHarnessesExcludesDisabled(t *testing.T) {
 		}
 		seen[h] = true
 	}
-	if want := len(msg.AllHarnesses) - len(disabledHarnesses); len(allHarnesses) != want {
+	if want := len(msg.AllHarnesses) - len(harnesscatalog.DisabledHarnesses); len(harnesscatalog.AllHarnesses) != want {
 		t.Errorf("allHarnesses has %d entries, want %d (canonical %d minus %d disabled)",
-			len(allHarnesses), want, len(msg.AllHarnesses), len(disabledHarnesses))
+			len(harnesscatalog.AllHarnesses), want, len(msg.AllHarnesses), len(harnesscatalog.DisabledHarnesses))
 	}
 	// This assertion pins that copilot_cli is OFF, for the reason recorded in
-	// disabledHarnesses: a stale binary on PATH. It says nothing about
+	// DisabledHarnesses: a stale binary on PATH. It says nothing about
 	// permissions, and it is the line someone deletes to enable the harness.
 	// TestEnablingAHarnessKeepsItsPermissionGate covers the other half —
-	// enabling it also needs a case in injectHookSettings, or its sessions
+	// enabling it also needs a case in InjectHookSettings, or its sessions
 	// spawn with no permission hook. Deleting this one does not excuse that.
-	if isValidHarness(msg.HarnessCopilotCLI) {
+	if harnesscatalog.IsValidHarness(msg.HarnessCopilotCLI) {
 		t.Error("isValidHarness accepts copilot_cli; session create would spawn the stale llm-bridge-copilotcli binary on PATH")
 	}
-	if !isValidHarness(msg.HarnessClaudeCode) {
+	if !harnesscatalog.IsValidHarness(msg.HarnessClaudeCode) {
 		t.Error("isValidHarness rejects claude_code; the derivation dropped an enabled harness")
 	}
 }

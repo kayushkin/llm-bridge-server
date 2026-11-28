@@ -4,13 +4,15 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions"
+
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
 // markDoneTestServer returns a server whose event writes succeed: a
 // claude_code instance and the session log in this process.
-// handleMarkSessionDone goes through Manager.BroadcastEvent, which stores the
+// HandleMarkSessionDone goes through Manager.BroadcastEvent, which stores the
 // injected event and returns the real error.
 func markDoneTestServer(t *testing.T) (*Server, *store.Store, string) {
 	t.Helper()
@@ -43,7 +45,7 @@ func readSession(t *testing.T, st *store.Store, id string) *store.Session {
 
 func postMarkDone(t *testing.T, srv *Server, id string, done bool) {
 	t.Helper()
-	resp := doJSON(t, srv, "POST", "/sessions/"+id+"/mark-done", MarkSessionDoneRequest{Done: done})
+	resp := doJSON(t, srv, "POST", "/sessions/"+id+"/mark-done", sessions.MarkSessionDoneRequest{Done: done})
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("mark-done(done=%v) status = %d; want 204", done, resp.StatusCode)
@@ -51,7 +53,7 @@ func postMarkDone(t *testing.T, srv *Server, id string, done bool) {
 }
 
 // TestMarkSessionDoneMovesBothHalvesInBothDirections is the property
-// handleMarkSessionDone's own doc comment claims: it moves the session
+// HandleMarkSessionDone's own doc comment claims: it moves the session
 // state AND the folder, and "reversing both undoes a manual mark".
 //
 // Marking done worked. Reversing it moved only the folder: the state

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access"
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
 	"github.com/kayushkin/llm-bridge-server/internal/access/permissions"
@@ -78,8 +80,8 @@ var (
 	callerWithNoCredential = accessTestCaller{"no credential", func(*accessTestServer, *http.Request) {}}
 	// A non-administrator, as dash calls for one of its signed-in users.
 	callerMemberThroughDash = accessTestCaller{"member through dash", func(_ *accessTestServer, request *http.Request) {
-		request.Header.Set(serviceTokenHeader, testServiceToken)
-		request.Header.Set(principalIdentityHeader, accessTestMemberID)
+		request.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
+		request.Header.Set(requestcaller.PrincipalIdentityHeader, accessTestMemberID)
 	}}
 	// A non-administrator signed in to this server, carrying every store
 	// token a client might forge.
@@ -89,14 +91,14 @@ var (
 		request.Header.Set("X-Sign-In-Store-Service-Token", "forged")
 	}}
 	callerAdministratorThroughDash = accessTestCaller{"administrator through dash", func(_ *accessTestServer, request *http.Request) {
-		request.Header.Set(serviceTokenHeader, testServiceToken)
-		request.Header.Set(principalIdentityHeader, accessTestAdministratorID)
+		request.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
+		request.Header.Set(requestcaller.PrincipalIdentityHeader, accessTestAdministratorID)
 	}}
 	callerAdministratorWithLoginCookie = accessTestCaller{"administrator with a login cookie", func(test *accessTestServer, request *http.Request) {
 		addLoginCookie(request, test.administratorCookie)
 	}}
 	callerServiceTokenAlone = accessTestCaller{"the service token naming nobody", func(_ *accessTestServer, request *http.Request) {
-		request.Header.Set(serviceTokenHeader, testServiceToken)
+		request.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
 	}}
 	callersWhoAreNotAdministrators = []accessTestCaller{callerWithNoCredential, callerMemberThroughDash, callerMemberWithLoginCookie}
 )
@@ -268,7 +270,7 @@ func TestOnlyAnAdministratorOrTheInternalServiceChangesAGrant(t *testing.T) {
 	}
 
 	// The grant is read in process at spawn: the member is now held to it.
-	ids, err := test.server.effectiveGrantResourceIDs(ctx, accessTestMemberID, "can_dispatch_on", "instance")
+	ids, err := test.server.grantChecker.EffectiveGrantResourceIDs(ctx, accessTestMemberID, "can_dispatch_on", "instance")
 	if err != nil || len(ids) != 1 || ids[0] != test.instanceID {
 		t.Fatalf("the member's effective can_dispatch_on = %v %v, want [%s]", ids, err, test.instanceID)
 	}
@@ -383,7 +385,7 @@ func TestAccessRoutesAnswer503WhenAccessIsOff(t *testing.T) {
 	server, _ := testServer(t)
 	for _, path := range []string{"/principals/kinds", "/grants/relations", "/sign-in/health", "/permissions/rules"} {
 		request := httptest.NewRequest("GET", path, nil)
-		request.Header.Set(serviceTokenHeader, testServiceToken)
+		request.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
 		if response := serve(server, request); response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "access_off") {
 			t.Errorf("GET %s with access off = %d %s, want 503 access_off", path, response.Code, response.Body)
 		}

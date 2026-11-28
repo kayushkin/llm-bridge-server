@@ -5,8 +5,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
+	"github.com/kayushkin/llm-bridge-server/internal/sessionactions"
+
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	schedulerapi "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/api"
-	schedulerdb "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/db"
 	"github.com/kayushkin/llm-bridge-server/internal/inprocesshttp"
 )
 
@@ -21,7 +26,7 @@ import (
 // modules; until then their routes answer 503.
 type automationStores struct {
 	scheduler atomic.Pointer[http.Handler]
-	jobs      atomic.Pointer[schedulerJobs]
+	jobs      atomic.Pointer[sessionactions.SchedulerJobs]
 	ruleStore atomic.Pointer[http.Handler]
 }
 
@@ -30,28 +35,20 @@ const (
 	rulesMountPrefix     = "/rules"
 )
 
-// schedulerJobs is the scheduler's jobs as this server reads and runs them,
-// in process: schedulerapi.Server, or a fake in a test. Each refuses as its
-// route does (schedulerapi.ErrJobNotFound for the route's 404).
-type schedulerJobs interface {
-	Job(id int64) (*schedulerdb.Job, error)
-	RunJobNow(id int64) (*schedulerdb.Run, error)
-}
-
 // EnableScheduler serves the scheduler's routes from scheduler, at the paths
 // without the /scheduler prefix, and reads and runs its jobs in process.
 func (s *Server) EnableScheduler(scheduler *schedulerapi.Server) {
 	s.enableSchedulerParts(scheduler.Routes(), scheduler)
 }
 
-func (s *Server) enableSchedulerParts(routes http.Handler, jobs schedulerJobs) {
+func (s *Server) enableSchedulerParts(routes http.Handler, jobs sessionactions.SchedulerJobs) {
 	s.automationStores.jobs.Store(&jobs)
 	s.automationStores.scheduler.Store(&routes)
 }
 
-// schedulerJobsInProcess is the scheduler's jobs, or nil while its module is
+// SchedulerJobsInProcess is the scheduler's jobs, or nil while its module is
 // not open.
-func (s *Server) schedulerJobsInProcess() schedulerJobs {
+func (s *Server) SchedulerJobsInProcess() sessionactions.SchedulerJobs {
 	jobs := s.automationStores.jobs.Load()
 	if jobs == nil {
 		return nil
@@ -71,7 +68,7 @@ func (s *Server) schedulerHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		routes := s.automationStores.scheduler.Load()
 		if routes == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "scheduler_off", "this server's scheduler module is not open")
+			httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "scheduler_off", "this server's scheduler module is not open")
 			return
 		}
 		(*routes).ServeHTTP(w, r)
@@ -82,7 +79,7 @@ func (s *Server) ruleStoreHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		routes := s.automationStores.ruleStore.Load()
 		if routes == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "rule_store_off", "this server's rule-store module is not open")
+			httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "rule_store_off", "this server's rule-store module is not open")
 			return
 		}
 		(*routes).ServeHTTP(w, r)
@@ -159,8 +156,8 @@ func (s *Server) HTTPClientToThisServer(timeout time.Duration) (string, *http.Cl
 	asInternalService := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		request := r.Clone(r.Context())
 		request.Header.Del("Authorization")
-		request.Header.Del(principalIdentityHeader)
-		request.Header.Set(serviceTokenHeader, s.cfg.ServiceToken)
+		request.Header.Del(requestcaller.PrincipalIdentityHeader)
+		request.Header.Set(requestcaller.ServiceTokenHeader, s.cfg.ServiceToken)
 		s.ServeHTTP(w, request)
 	})
 	client := inprocesshttp.Client(asInternalService)

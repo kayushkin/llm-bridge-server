@@ -9,7 +9,7 @@ import (
 
 // TestNoHandlerBuildsAMethodNameOutOfACompactSummary walks this package's own
 // source. The defect it guards against is not something a unit test on the
-// handler can see: handleCompactSession talks to a concrete *harness.Manager,
+// handler can see: HandleCompactSession talks to a concrete *harness.Manager,
 // so there is no seam to assert the method string through, and that is exactly
 // why "compact:<summary>" survived — no test could have caught it.
 //

@@ -1,0 +1,440 @@
+package sessions
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/harnessconfig"
+
+	"github.com/kayushkin/llm-bridge-server/internal/agents/bundles"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/tools"
+	"github.com/kayushkin/llm-bridge-server/internal/store"
+	"github.com/kayushkin/llm-bridge/msg"
+)
+
+// InjectMCPConfig gives a session the MCP servers it is entitled to, from
+// either of two sources, and rewrites HarnessConfig so "mcp_config" holds the
+// path of the generated config file (consumed by claudecode via --mcp-config;
+// opaque pass-through for other harnesses).
+//
+// The two sources, in precedence order:
+//
+//  1. A "tool_store_tools" key on HarnessConfig — a JSON array of tool names
+//     the caller asked for by hand. The key is removed afterwards: it is an
+//     instruction, not state to ship. An empty array means "no MCP servers",
+//     and is honored as an explicit opt-out.
+//  2. Otherwise, for a session started with a bundle (BundleID, normally a
+//     kanban board's default_bundle_id), the tools bundle-store resolves the
+//     bundle to — its extends chain plus base. A bundle is a per-session
+//     request like source 1, so a bundle-store that cannot answer, a bundle
+//     that resolves to tools tool-store cannot provision, or a bundle that
+//     has gone missing since creation aborts the spawn. When the session is
+//     also started as a principal holding can_use tool grants, only the
+//     bundle's tools those grants name are offered (a bundle says what the
+//     work needs; a grant says what the person may have); a principal with
+//     no such grant is lenient exactly as in source 3. A bundle naming no
+//     tools at all provisions nothing and does not fall through — the caller
+//     chose a bundle, and its answer was "no MCP servers".
+//  3. Otherwise, for a session started as a principal, the tools the
+//     principal's effective can_use grants name (grant-store) that the
+//     session's instance also has opted in (tool-store) — both must hold: a
+//     grant says who may have it, an opt-in says where it is wired. Lenient by
+//     the operator's choice on 2026-09-11: a principal holding no can_use tool
+//     grant at all falls through to source 4 unchanged, with a log line saying
+//     so. A grant-store that cannot answer aborts the spawn — a session that
+//     named a principal must not be offered everything because the check
+//     failed — where a tool-store that cannot answer starts it with nothing,
+//     as source 4 does.
+//  4. Otherwise, the opt-in list the session's instance carries in tool-store —
+//     the rows the Tools page writes. This is what makes a tick on that page
+//     reach a spawned session instead of sitting in a table nothing reads.
+//
+// The two sources fail differently, on purpose. A named list that cannot be
+// provisioned aborts the spawn: the caller asked for those tools, and starting
+// without them starts something other than what was asked for. An instance's
+// opt-ins are a standing preference rather than a per-session request, so a
+// tool-store that is down or a stale opt-in row logs loudly and the session
+// starts with no MCP servers — the same state every session on this box is in
+// today. A registry outage must not stop the fleet from working.
+//
+// If the caller already set "mcp_config" it wins outright and neither source is
+// consulted.
+//
+// The mutation is in-memory only, matching InjectHookSettings.
+// Tool offer sources, in the precedence order the comment above describes.
+const (
+	toolOfferPreset    = "mcp_config"       // the caller set mcp_config outright
+	toolOfferHandNamed = "tool_store_tools" // the caller named tools by hand
+	toolOfferBundle    = "bundle"
+	toolOfferGrants    = "grants"
+	toolOfferInstance  = "instance"
+	toolOfferNone      = "none"
+)
+
+// toolOffer is the MCP tools a session is offered and which source decided it.
+// resolveToolOffer computes it; InjectMCPConfig provisions it; the effective
+// config view reports it. One decision, three readers.
+type toolOffer struct {
+	Source string
+	// Names is the hand-named list (Source toolOfferHandNamed); IDs is every
+	// other source's answer, in tool-store ids.
+	Names []string
+	IDs   []int64
+	// Notes are what was consulted and how it narrowed or did not decide.
+	Notes []string
+	// Resolution is bundle-store's answer when Source is toolOfferBundle.
+	Resolution *bundles.ResolveResponse
+	// NarrowedByGrants is true when a principal's can_use grants cut the
+	// bundle's or the instance's list.
+	NarrowedByGrants bool
+}
+
+// resolveToolOffer decides which MCP tools sess is offered, by the rules in
+// the comment on InjectMCPConfig, without provisioning anything. An error is
+// a spawn that must not start; a lenient failure is a note on the offer.
+func (s *Service) resolveToolOffer(ctx context.Context, sess *store.Session, cfg map[string]json.RawMessage) (*toolOffer, error) {
+	raw, named := cfg["tool_store_tools"]
+	_, preset := cfg["mcp_config"]
+	if named && preset {
+		return nil, fmt.Errorf("HarnessConfig has both mcp_config and tool_store_tools; pick one")
+	}
+	if preset {
+		return &toolOffer{Source: toolOfferPreset, Notes: []string{"the caller set harness_config.mcp_config outright; no store was consulted"}}, nil
+	}
+	if named {
+		var tools []string
+		if err := json.Unmarshal(raw, &tools); err != nil {
+			return nil, fmt.Errorf("tool_store_tools is not a string array: %w", err)
+		}
+		return &toolOffer{Source: toolOfferHandNamed, Names: tools}, nil
+	}
+	if sess.BundleID != "" {
+		return s.resolveBundleToolOffer(ctx, sess)
+	}
+	if sess.InstanceID == "" {
+		return &toolOffer{Source: toolOfferNone, Notes: []string{"the session has no instance, so there are no opt-ins to read"}}, nil
+	}
+	if sess.PrincipalID != "" {
+		offer, err := s.resolveGrantedToolOffer(ctx, sess)
+		if err != nil || offer != nil {
+			return offer, err
+		}
+	}
+	offer := &toolOffer{Source: toolOfferInstance}
+	optedIn, err := s.instanceMCPTools(ctx, sess.InstanceID)
+	if err != nil {
+		offer.Notes = append(offer.Notes, fmt.Sprintf("instance %s's opt-ins could not be read from tool-store, so the session starts with no MCP servers: %v", sess.InstanceID, err))
+		return offer, nil
+	}
+	for _, t := range optedIn {
+		offer.IDs = append(offer.IDs, t.ID)
+	}
+	if len(offer.IDs) == 0 {
+		offer.Notes = append(offer.Notes, fmt.Sprintf("instance %s has opted in to no MCP tools", sess.InstanceID))
+	}
+	return offer, nil
+}
+
+func (s *Service) resolveBundleToolOffer(ctx context.Context, sess *store.Session) (*toolOffer, error) {
+	if s.BundleStore() == nil {
+		return nil, fmt.Errorf("session %s was started with bundle %s but %s", sess.SessionID, sess.BundleID, BundleStoreOffMessage)
+	}
+	resolution, err := s.BundleStore().ResolveSessionBundle(ctx, sess.BundleID)
+	if err != nil {
+		return nil, fmt.Errorf("session %s was started with bundle %s, which could not be resolved, so it was not started: %w", sess.SessionID, sess.BundleID, err)
+	}
+	offer := &toolOffer{Source: toolOfferBundle, Resolution: resolution, IDs: resolution.ToolIDs()}
+	if len(offer.IDs) > 0 {
+		// A harness tool the bundle includes is one the harness already has
+		// (they are on unless denied); tool-store provisions MCP servers only.
+		harnessIDs, err := s.harnessToolIDs(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("session %s bundle %s: could not tell its harness tools from its MCP tools, so it was not started: %w", sess.SessionID, sess.BundleID, err)
+		}
+		mcpIDs := make([]int64, 0, len(offer.IDs))
+		var included []string
+		for _, id := range offer.IDs {
+			if name, isHarnessTool := harnessIDs[id]; isHarnessTool {
+				included = append(included, name)
+				continue
+			}
+			mcpIDs = append(mcpIDs, id)
+		}
+		if len(included) > 0 {
+			offer.Notes = append(offer.Notes, fmt.Sprintf("the bundle includes harness tools %v; a harness offers its own tools unless denied, so nothing is provisioned for them", included))
+		}
+		offer.IDs = mcpIDs
+	}
+	if sess.PrincipalID != "" {
+		subject, err := s.grantSubjectOfSession(sess)
+		if err != nil {
+			return nil, err
+		}
+		canUse, err := s.GrantChecker.GrantedResourcesOf(ctx, subject, "can_use", "tool")
+		if err != nil {
+			return nil, fmt.Errorf("session %s is started as %s and its grants could not be read, so it was not started: %w", sess.SessionID, sess.PrincipalID, err)
+		}
+		if !canUse.Restricts() {
+			offer.Notes = append(offer.Notes, fmt.Sprintf("%s; the bundle's tools are offered unchanged (operator's choice 2026-09-11)", canUse.Describe()))
+		} else {
+			narrowed := make([]int64, 0, len(offer.IDs))
+			for _, id := range offer.IDs {
+				if canUse.PermitsTool(id) {
+					narrowed = append(narrowed, id)
+				}
+			}
+			if len(narrowed) < len(offer.IDs) {
+				offer.NarrowedByGrants = true
+				offer.Notes = append(offer.Notes, fmt.Sprintf("bundle %s names tools %v; %s; offering %v", sess.BundleID, offer.IDs, canUse.Describe(), narrowed))
+			}
+			offer.IDs = narrowed
+		}
+	}
+	if len(resolution.Skills) > 0 {
+		offer.Notes = append(offer.Notes, fmt.Sprintf("the bundle also names %d skills, which are not provisioned per session (Claude Code lists ~/.claude/skills wholesale)", len(resolution.Skills)))
+	}
+	return offer, nil
+}
+
+// resolveGrantedToolOffer is source 3: nil with no error exactly when the
+// principal's can_use grants do not restrict it (it holds none and its kind is
+// not restricted to its grants), so the caller falls through to the
+// instance's opt-ins. A peer holding none gets an empty offer instead.
+func (s *Service) resolveGrantedToolOffer(ctx context.Context, sess *store.Session) (*toolOffer, error) {
+	subject, err := s.grantSubjectOfSession(sess)
+	if err != nil {
+		return nil, err
+	}
+	canUse, err := s.GrantChecker.GrantedResourcesOf(ctx, subject, "can_use", "tool")
+	if err != nil {
+		return nil, fmt.Errorf("session %s is started as %s and its grants could not be read, so it was not started: %w", sess.SessionID, sess.PrincipalID, err)
+	}
+	if !canUse.Restricts() {
+		return nil, nil
+	}
+	offer := &toolOffer{Source: toolOfferGrants}
+	optedIn, err := s.instanceMCPTools(ctx, sess.InstanceID)
+	if err != nil {
+		offer.Notes = append(offer.Notes, fmt.Sprintf("instance %s's opt-ins could not be read from tool-store, so the session starts with no MCP servers: %v", sess.InstanceID, err))
+		return offer, nil
+	}
+	var optedInIDs []int64
+	for _, t := range optedIn {
+		optedInIDs = append(optedInIDs, t.ID)
+		if canUse.NamesTool(t.ID) {
+			offer.IDs = append(offer.IDs, t.ID)
+		}
+	}
+	offer.NarrowedByGrants = len(offer.IDs) < len(optedInIDs)
+	if len(offer.IDs) == 0 {
+		offer.Notes = append(offer.Notes, fmt.Sprintf("%s, and instance %s's opt-ins %v share nothing with them; the session starts with no MCP servers", canUse.Describe(), sess.InstanceID, optedInIDs))
+	} else {
+		offer.Notes = append(offer.Notes, fmt.Sprintf("%s ∩ instance %s opt-ins %v", canUse.Describe(), sess.InstanceID, optedInIDs))
+	}
+	return offer, nil
+}
+
+// harnessesThatStartProvisionedMCPServers are the harnesses whose wrappers
+// read mcp_config and start the servers in it. Claude Code takes it as
+// --mcp-config. llm-bridge-inber reads the servers out of it and hands them,
+// with the session's LLM_BRIDGE_ environment, to inber-server, which starts
+// them for that session. Any other harness would be handed a config it
+// ignores, at the cost of a call into tool-store.
+var harnessesThatStartProvisionedMCPServers = map[msg.Harness]bool{
+	msg.HarnessClaudeCode: true,
+	msg.HarnessInber:      true,
+	// llm-bridge-devin hands the servers to devin in ACP session/new.
+	msg.HarnessDevin: true,
+}
+
+func (s *Service) InjectMCPConfig(sess *store.Session) error {
+	if sess == nil || !harnessesThatStartProvisionedMCPServers[sess.Harness] {
+		return nil
+	}
+	cfg := map[string]json.RawMessage{}
+	if len(sess.HarnessConfig) > 0 {
+		if err := json.Unmarshal(sess.HarnessConfig, &cfg); err != nil {
+			return fmt.Errorf("HarnessConfig unparseable: %w", err)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	offer, err := s.resolveToolOffer(ctx, sess, cfg)
+	if err != nil {
+		return err
+	}
+	for _, note := range offer.Notes {
+		log.Printf("[tool-offer] session %s: %s", sess.SessionID, note)
+	}
+	switch offer.Source {
+	case toolOfferPreset, toolOfferNone:
+		return nil
+	case toolOfferHandNamed:
+		delete(cfg, "tool_store_tools")
+		if len(offer.Names) == 0 {
+			return harnessconfig.Replace(sess, cfg)
+		}
+		path, err := s.writeProvisionedMCPConfig(ctx, tools.ProvisionRequest{Tools: offer.Names})
+		if err != nil {
+			return err
+		}
+		if path == "" {
+			return fmt.Errorf("tool-store provisioned no servers for tools %v", offer.Names)
+		}
+		return s.setMCPConfigPath(sess, cfg, path, len(offer.Names))
+	case toolOfferBundle:
+		if len(offer.IDs) == 0 {
+			log.Printf("[bundle-store] session %s bundle %s resolves to no MCP tools (bundles %v); starting with no MCP servers",
+				sess.SessionID, sess.BundleID, offer.Resolution.Bundles)
+			return harnessconfig.Replace(sess, cfg)
+		}
+		path, err := s.writeProvisionedMCPConfig(ctx, tools.ProvisionRequest{ToolIDs: offer.IDs})
+		if err != nil {
+			return fmt.Errorf("session %s bundle %s: provisioning tools %v failed, so it was not started: %w", sess.SessionID, sess.BundleID, offer.IDs, err)
+		}
+		if path == "" {
+			return fmt.Errorf("session %s bundle %s: tool-store provisioned no servers for tools %v", sess.SessionID, sess.BundleID, offer.IDs)
+		}
+		if err := s.setMCPConfigPath(sess, cfg, path, len(offer.IDs)); err != nil {
+			return err
+		}
+		log.Printf("[bundle-store] session %s: offered tools %v from bundle %s (bundles %v)", sess.SessionID, offer.IDs, sess.BundleID, offer.Resolution.Bundles)
+		return nil
+	case toolOfferGrants:
+		if len(offer.IDs) == 0 {
+			return nil
+		}
+		path, err := s.writeProvisionedMCPConfig(ctx, tools.ProvisionRequest{ToolIDs: offer.IDs})
+		if err != nil {
+			return fmt.Errorf("session %s as %s: provisioning granted tools %v failed, so it was not started: %w", sess.SessionID, sess.PrincipalID, offer.IDs, err)
+		}
+		if path == "" {
+			return fmt.Errorf("session %s as %s: tool-store provisioned no servers for granted tools %v", sess.SessionID, sess.PrincipalID, offer.IDs)
+		}
+		if err := s.setMCPConfigPath(sess, cfg, path, len(offer.IDs)); err != nil {
+			return err
+		}
+		log.Printf("[grant-store] session %s as %s: offered tools %v", sess.SessionID, sess.PrincipalID, offer.IDs)
+		return nil
+	case toolOfferInstance:
+		// Provisioned by instance id, as before: tool-store applies the opt-in
+		// list itself, and a registry outage starts the session with nothing
+		// rather than stopping it.
+		path, err := s.writeProvisionedMCPConfig(ctx, tools.ProvisionRequest{InstanceID: sess.InstanceID})
+		if err != nil {
+			log.Printf("[tool-store] instance %s opt-ins unavailable for session %s, starting with no MCP servers: %v",
+				sess.InstanceID, sess.SessionID, err)
+			return nil
+		}
+		if path == "" {
+			return nil
+		}
+		return s.setMCPConfigPath(sess, cfg, path, 0)
+	}
+	return fmt.Errorf("tool offer source %q is not one this server knows how to provision", offer.Source)
+}
+
+// mcpTool is one row of tool-store's per-instance opt-in list that is an MCP
+// server: the only kind a session can be handed.
+type mcpTool struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+}
+
+func (s *Service) instanceMCPToolIDs(ctx context.Context, instanceID string) ([]int64, error) {
+	tools, err := s.instanceMCPTools(ctx, instanceID)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]int64, 0, len(tools))
+	for _, t := range tools {
+		ids = append(ids, t.ID)
+	}
+	return ids, nil
+}
+
+func (s *Service) instanceMCPTools(ctx context.Context, instanceID string) ([]mcpTool, error) {
+	if s.ToolRegistry() == nil {
+		return nil, fmt.Errorf("%s, so instance %s's opt-ins cannot be read", toolStoreOffMessage, instanceID)
+	}
+	instanceTools, err := s.ToolRegistry().ListInstanceTools(ctx, instanceID)
+	if err != nil {
+		return nil, fmt.Errorf("tool-store could not list instance %s's tools: %w", instanceID, err)
+	}
+	mcp := make([]mcpTool, 0, len(instanceTools))
+	for _, t := range instanceTools {
+		if t.Kind == tools.KindMCP {
+			mcp = append(mcp, mcpTool{ID: t.ID, Name: t.Name, Kind: string(t.Kind)})
+		}
+	}
+	return mcp, nil
+}
+
+// setMCPConfigPath points HarnessConfig's mcp_config at path and writes the
+// result back onto the session. toolCount is only for the log line; 0 means
+// the tools came from the instance's opt-in list rather than a named request.
+func (s *Service) setMCPConfigPath(sess *store.Session, cfg map[string]json.RawMessage, path string, toolCount int) error {
+	pathJSON, err := json.Marshal(path)
+	if err != nil {
+		os.Remove(path)
+		return fmt.Errorf("marshal mcp config path: %w", err)
+	}
+	cfg["mcp_config"] = pathJSON
+	if err := harnessconfig.Replace(sess, cfg); err != nil {
+		os.Remove(path)
+		return err
+	}
+	if toolCount > 0 {
+		log.Printf("[tool-store] provisioned %d tools for session %s → %s", toolCount, sess.SessionID, path)
+	} else {
+		log.Printf("[tool-store] provisioned instance %s opt-ins for session %s → %s", sess.InstanceID, sess.SessionID, path)
+	}
+	return nil
+}
+
+// writeProvisionedMCPConfig asks the tool-store module for the MCP server
+// config of request and writes it to a tmpfile, returning its path. An empty
+// returned path means tool-store had no servers to hand back — no file is
+// written, because an --mcp-config pointing at an empty server set is a way to
+// make a harness fail on nothing.
+func (s *Service) writeProvisionedMCPConfig(ctx context.Context, request tools.ProvisionRequest) (string, error) {
+	if s.ToolRegistry() == nil {
+		return "", fmt.Errorf("%s, so no tools can be provisioned", toolStoreOffMessage)
+	}
+	provisioned, err := s.ToolRegistry().Provision(ctx, request)
+	if err != nil {
+		return "", fmt.Errorf("tool-store provision: %w", err)
+	}
+	if len(provisioned.MCPServers) == 0 {
+		return "", nil
+	}
+	respBody, err := json.Marshal(provisioned)
+	if err != nil {
+		return "", fmt.Errorf("marshal provisioned MCP config: %w", err)
+	}
+
+	dir := filepath.Join(os.TempDir(), "llm-bridge-mcp")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	f, err := os.CreateTemp(dir, "mcp-*.json")
+	if err != nil {
+		return "", fmt.Errorf("create mcp tmpfile: %w", err)
+	}
+	if _, err := f.Write(respBody); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return "", fmt.Errorf("write mcp tmpfile: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(f.Name())
+		return "", fmt.Errorf("close mcp tmpfile: %w", err)
+	}
+	return f.Name(), nil
+}

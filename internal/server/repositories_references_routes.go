@@ -9,7 +9,7 @@ package server
 // patterns below are written out, because the route classification test
 // reads them from string literals, and each strips its prefix and hands the
 // request to that mux. Who reaches each route is decided by
-// routeAccessRules, as for every route.
+// RouteAccessRules, as for every route.
 
 import (
 	"context"
@@ -17,6 +17,10 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
 	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
@@ -51,7 +55,7 @@ func mountedStoreRoute(prefix string, mounted func() *mountedStore, offCode, off
 	return func(w http.ResponseWriter, r *http.Request) {
 		store := mounted()
 		if store == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, offCode, offReason)
+			httpjson.WriteJSONError(w, http.StatusServiceUnavailable, offCode, offReason)
 			return
 		}
 		http.StripPrefix(prefix, store.handler).ServeHTTP(w, r)
@@ -197,11 +201,11 @@ func (d referenceAccessDirectory) Grants(ctx context.Context, principalID string
 func (s *Server) referenceStoreRoute(w http.ResponseWriter, r *http.Request) {
 	store := s.referenceStoreHandler.Load()
 	if store == nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "reference_store_off", "reference-store is not open on this server")
+		httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "reference_store_off", "reference-store is not open on this server")
 		return
 	}
 	ctx := r.Context()
-	if principalID, identified := principalIdentityOfRequest(r); identified {
+	if principalID, identified := requestcaller.PrincipalIdentityOfRequest(r); identified {
 		ctx = references.ContextWithCaller(ctx, references.Caller{PrincipalID: principalID})
 	} else if s.requestIsTheInternalServiceActingAsItself(r) {
 		ctx = references.ContextWithCaller(ctx, references.Caller{Unchecked: true})

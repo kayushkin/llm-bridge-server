@@ -7,6 +7,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/peers"
+
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/signals"
+
+	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/operationroutes"
+
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -53,19 +59,19 @@ func attachServiceSettings(cfg *config.Config, st *store.Store) *servicesettings
 // after the components exist.
 func (s *Server) wireServiceSettings() {
 	if s.harnessStore != nil {
-		s.settings.SetValidator(config.SettingOneShotInstanceByProvider, s.checkOneShotInstanceByProvider)
+		s.settings.SetValidator(config.SettingOneShotInstanceByProvider, s.oneShot.CheckOneShotInstanceByProvider)
 		s.settings.SetValidator(config.SettingImageGenerationInstanceID, func(value string) error {
 			if value == "" {
 				return nil
 			}
-			return s.checkSettingNamesAnEnabledInstance(value)
+			return s.CheckSettingNamesAnEnabledInstance(value)
 		})
 	}
 	for _, key := range config.ModelRoleSettings {
-		s.settings.SetValidator(key, s.checkSettingNamesAnAssignedModelRole)
+		s.settings.SetValidator(key, s.oneShot.CheckSettingNamesAnAssignedModelRole)
 	}
-	s.settings.SetValidator(config.SettingOperationsGrantEnforcement, checkOperationGrantEnforcementValue)
-	s.settings.SetValidator(config.SettingServerName, checkServerNameValue)
+	s.settings.SetValidator(config.SettingOperationsGrantEnforcement, operationroutes.CheckOperationGrantEnforcementValue)
+	s.settings.SetValidator(config.SettingServerName, peers.CheckServerNameValue)
 	s.settings.SetValidator(config.SettingKeepAwakeGraceMinutes, checkKeepAwakeGraceMinutesValue)
 	s.settings.SetValidator(config.SettingSessionHostHoldMinutes, checkSessionHostHoldMinutesValue)
 	// Read when a runner connects, so a change reaches each runner at its
@@ -77,7 +83,7 @@ func (s *Server) wireServiceSettings() {
 	s.settings.OnChange(func(key string) {
 		switch key {
 		case config.SettingServerName:
-			go s.tellConnectedServersThisServersName()
+			go s.peers.TellConnectedServersThisServersName()
 		case config.SettingKeepAwakeEnabled, config.SettingKeepAwakeGraceMinutes:
 			if s.keepAwake != nil {
 				go s.keepAwake.Check()
@@ -88,10 +94,10 @@ func (s *Server) wireServiceSettings() {
 	s.retuneFromServiceSettings()
 }
 
-// checkSettingNamesAnEnabledInstance refuses an instance id harness-store does
+// CheckSettingNamesAnEnabledInstance refuses an instance id harness-store does
 // not know or has disabled: a one-shot call on it would fail every time, and
 // the setting would look fine until someone read the log.
-func (s *Server) checkSettingNamesAnEnabledInstance(instanceID string) error {
+func (s *Server) CheckSettingNamesAnEnabledInstance(instanceID string) error {
 	instance, err := s.harnessStore.GetInstance(instanceID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("harness-store knows no instance %q", instanceID)
@@ -113,17 +119,17 @@ func (s *Server) retuneFromServiceSettings() {
 	for _, harnessName := range s.settings.StringList(config.SettingSignalClassifierOptOutHarnesses) {
 		optOut[msg.Harness(harnessName)] = true
 	}
-	tuning := signalClassifierTuning{
-		modelRole: s.settings.ModelRole(config.SettingSignalClassifierModelRole),
-		timeout:   s.settings.Duration(config.SettingSignalClassifierTimeout),
-		maxChars:  s.settings.Integer(config.SettingSignalClassifierMaximumCharacters),
-		optOut:    optOut,
+	tuning := signals.SignalClassifierTuning{
+		ModelRole: s.settings.ModelRole(config.SettingSignalClassifierModelRole),
+		Timeout:   s.settings.Duration(config.SettingSignalClassifierTimeout),
+		MaxChars:  s.settings.Integer(config.SettingSignalClassifierMaximumCharacters),
+		OptOut:    optOut,
 	}
 	if s.signalClassifier != nil {
-		s.signalClassifier.retune(tuning)
+		s.signalClassifier.Retune(tuning)
 	}
 	if s.questionTriage != nil {
-		s.questionTriage.retune(s.settings.ModelRole(config.SettingQuestionTriageModelRole), tuning.timeout)
+		s.questionTriage.Retune(s.settings.ModelRole(config.SettingQuestionTriageModelRole), tuning.Timeout)
 	}
 }
 

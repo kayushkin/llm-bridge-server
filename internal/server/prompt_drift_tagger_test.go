@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions"
+
 	"github.com/kayushkin/llm-bridge-server/internal/agents"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -15,7 +17,7 @@ func TestPromptDriftTaggerRequestNamesOnlyAddedSectionsAndExistingTags(t *testin
 		{Kind: agents.PromptMarkdownEditInsert, Heading: "## Reminders", Body: strings.Repeat("x", 5000)},
 	}}
 	sections := []agents.PromptSection{{Tags: []string{"scheduler", "stores"}}, {Tags: []string{"stores"}}}
-	request, err := buildPromptDriftTaggerRequest(drift, sections, "balanced")
+	request, err := sessions.BuildPromptDriftTaggerRequest(drift, sections, "balanced")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,17 +40,17 @@ func TestPromptDriftTaggerRequestNamesOnlyAddedSectionsAndExistingTags(t *testin
 
 func TestPromptDriftTaggerRequestRefusesADriftThatAddsNothing(t *testing.T) {
 	drift := agents.PromptDrift{Operations: []agents.PromptDriftOperation{{Kind: agents.PromptMarkdownEditDelete, SectionID: 3}}}
-	if _, err := buildPromptDriftTaggerRequest(drift, nil, "m"); err == nil {
+	if _, err := sessions.BuildPromptDriftTaggerRequest(drift, nil, "m"); err == nil {
 		t.Fatal("built a request with nothing to label")
 	}
 }
 
 func TestPromptDriftTaggerReplyWithoutParsedOutputIsAnError(t *testing.T) {
-	if _, err := decodePromptDriftTaggerReply(msg.OneShotResponse{Text: "sure!", StopReason: "end_turn"}); err == nil {
+	if _, err := sessions.DecodePromptDriftTaggerReply(msg.OneShotResponse{Text: "sure!", StopReason: "end_turn"}); err == nil {
 		t.Fatal("free text was accepted as labels")
 	}
 	parsed, _ := json.Marshal(map[string]any{"note": "added reminders", "inserted_sections": []map[string]any{{"operation_index": 1, "tags": []string{"scheduler"}}}})
-	annotation, err := decodePromptDriftTaggerReply(msg.OneShotResponse{Parsed: parsed})
+	annotation, err := sessions.DecodePromptDriftTaggerReply(msg.OneShotResponse{Parsed: parsed})
 	if err != nil {
 		t.Fatal(err)
 	}

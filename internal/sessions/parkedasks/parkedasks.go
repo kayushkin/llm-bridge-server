@@ -1,0 +1,136 @@
+package parkedasks
+
+import (
+	"encoding/json"
+	"sync"
+)
+
+// Decision is the verdict delivered to a parked permission ask.
+// Behavior is "allow" or "deny"; UpdatedInput and Message ride through to
+// the hook response forwarded to Claude Code.
+type Decision struct {
+	Behavior     string
+	UpdatedInput json.RawMessage
+	Message      string
+	ResolvedBy   string
+
+	// SessionWentAway marks a decision nobody made: the process died, the
+	// connection dropped, or the reaper killed the session while the ask was
+	// still parked. The tool call still has to be answered — Claude Code is
+	// blocked on the hook response and a deny is the only safe thing to send
+	// a process that is going away — but the QUESTION was never resolved and
+	// must stay open.
+	//
+	// The distinction is the whole reason a question outlives its session. A
+	// human deciding "deny" is an answer; a process dying is not, and
+	// recording it as one silently discarded questions the user never saw.
+	// Modeled as its own field rather than sniffed from the "auto:" prefix
+	// on ResolvedBy, because ResolvedBy is a display string and the next
+	// auto: reason added would inherit behavior nobody chose for it.
+	SessionWentAway bool
+}
+
+// Asks tracks PreToolUse permission hooks whose verdict is "ask",
+// blocked on bridge-ui's banner click. Keyed by bridge_session_id →
+// request_id; the value is the channel the prehook handler is selecting on.
+//
+// Replaces the per-harness pendingHooks infrastructure inside
+// llm-bridge-claudecode's PermissionMCP. Lives in bridge-server because
+// that's where the parked HTTP handler (POST /permission/cc-prehook) and
+// the resolve handler (POST /sessions/:id/hooks/:rid/resolve) both run.
+type Asks struct {
+	mutex         sync.Mutex
+	asksBySession map[string]map[string]chan Decision
+}
+
+func New() *Asks {
+	return &Asks{asksBySession: make(map[string]map[string]chan Decision)}
+}
+
+// Park registers a new parked ask and returns the channel to block on.
+// The buffered channel capacity is 1 so deliver() never blocks even if the
+// reader is racing on its own context cancellation.
+func (p *Asks) Park(bridgeID, requestID string) chan Decision {
+	ch := make(chan Decision, 1)
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	bucket := p.asksBySession[bridgeID]
+	if bucket == nil {
+		bucket = make(map[string]chan Decision)
+		p.asksBySession[bridgeID] = bucket
+	}
+	bucket[requestID] = ch
+	return ch
+}
+
+// Deliver hands the decision to a parked ask. Returns true if a parked
+// request was found and the decision was delivered; false if no matching
+// entry exists (stale resolve, harness restart, never-parked request).
+//
+// The entry is removed on first delivery; a second resolve for the same
+// (bridgeID, requestID) lands in the false branch — the caller can emit a
+// stale phase=completed event for UI cleanup.
+func (p *Asks) Deliver(bridgeID, requestID string, d Decision) bool {
+	p.mutex.Lock()
+	bucket, ok := p.asksBySession[bridgeID]
+	if !ok {
+		p.mutex.Unlock()
+		return false
+	}
+	ch, ok := bucket[requestID]
+	if !ok {
+		p.mutex.Unlock()
+		return false
+	}
+	delete(bucket, requestID)
+	if len(bucket) == 0 {
+		delete(p.asksBySession, bridgeID)
+	}
+	p.mutex.Unlock()
+	ch <- d
+	return true
+}
+
+// IsParked reports whether a request is still blocked waiting for a verdict.
+// Read-only: it neither delivers nor removes the entry.
+//
+// The signal-level resolve verb asks this before closing a tool-sourced
+// signal. A signal is a surface on top of the park, and the park is the
+// source of truth for a tool question — closing the surface while the
+// harness still sits on the channel would leave the session blocked with
+// nothing on screen to unblock it.
+func (p *Asks) IsParked(bridgeID, requestID string) bool {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	bucket, ok := p.asksBySession[bridgeID]
+	if !ok {
+		return false
+	}
+	_, ok = bucket[requestID]
+	return ok
+}
+
+// Cancel removes a parked entry without delivering. Called by the prehook
+// handler when its request context is canceled (CC died, network drop) so
+// a later resolve doesn't try to deliver to a dead channel.
+func (p *Asks) Cancel(bridgeID, requestID string) {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	bucket, ok := p.asksBySession[bridgeID]
+	if !ok {
+		return
+	}
+	delete(bucket, requestID)
+	if len(bucket) == 0 {
+		delete(p.asksBySession, bridgeID)
+	}
+}
+
+// DropSession drops every parked entry for a session. Caller is responsible
+// for emitting completed-with-stale events; this method does not deliver.
+// Used when the harness process exits so a respawn doesn't see ghosts.
+func (p *Asks) DropSession(bridgeID string) {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	delete(p.asksBySession, bridgeID)
+}

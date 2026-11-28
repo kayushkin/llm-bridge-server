@@ -8,6 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads/issuereadstest"
+
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads"
+
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	issuesapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/api"
@@ -41,7 +45,7 @@ func TestEffectiveConfigReportsBundleToolsNarrowedByGrants(t *testing.T) {
 		HarnessConfig: json.RawMessage(`{"model":"claude-opus-5","model_selection":{"model":"claude-opus-5","selected_by":"session"}}`),
 	}
 
-	cfg := s.effectiveConfigFor(context.Background(), sess, msg.EffectiveConfigSubject{SessionID: "br_test", Harness: msg.HarnessClaudeCode}, nil)
+	cfg := s.sessions.EffectiveConfigFor(context.Background(), sess, msg.EffectiveConfigSubject{SessionID: "br_test", Harness: msg.HarnessClaudeCode}, nil)
 
 	toolsSetting := settingByKey(t, cfg, msg.EffectiveSettingTools)
 	if toolsSetting.Layer != msg.EffectiveLayerGrant {
@@ -69,12 +73,12 @@ func TestEffectiveConfigReportsBundleToolsNarrowedByGrants(t *testing.T) {
 // A model pinned at create is attributed to the layer that chose it then,
 // and the view says it was pinned.
 func TestEffectiveConfigAttributesAPinnedModel(t *testing.T) {
-	s := &Server{cfg: &config.Config{}}
+	s := (&Server{cfg: &config.Config{}}).withServicesComposed()
 	sess := &store.Session{
 		Harness: msg.HarnessClaudeCode, SessionID: "br_test",
 		HarnessConfig: json.RawMessage(`{"model":"claude-opus-5","model_selection":{"model":"claude-opus-5","selected_by":"prefs"},"effort":"high","permission_mode":"auto"}`),
 	}
-	cfg := s.effectiveConfigFor(context.Background(), sess, msg.EffectiveConfigSubject{SessionID: "br_test", Harness: msg.HarnessClaudeCode}, nil)
+	cfg := s.sessions.EffectiveConfigFor(context.Background(), sess, msg.EffectiveConfigSubject{SessionID: "br_test", Harness: msg.HarnessClaudeCode}, nil)
 
 	model := settingByKey(t, cfg, msg.EffectiveSettingModel)
 	if model.Layer != msg.EffectiveLayerHarnessDefault || model.Value != "claude-opus-5" || model.Record != "bridge-prefs.defaults.claude_code.model" {
@@ -101,7 +105,7 @@ func TestEffectiveConfigAttributesAPinnedModel(t *testing.T) {
 // none, and attributes each to the board or to the tag rule that set it.
 func TestDryRunEffectiveConfigTakesTheBoardsDefaults(t *testing.T) {
 	srv, _, instanceID := testServerWithInstance(t, msg.HarnessClaudeCode)
-	srv.issueReads = newIssueReader(&fakeIssueStore{BoardEffectiveDefaultsAnswer: func(boardID string, tags []string) (*issuesmodel.EffectiveDefaults, error) {
+	srv.issueReads = issuereads.New(&issuereadstest.Store{BoardEffectiveDefaultsAnswer: func(boardID string, tags []string) (*issuesmodel.EffectiveDefaults, error) {
 		if boardID != "board-1" || len(tags) != 1 || tags[0] != "urgent" {
 			t.Errorf("unexpected kanban-store read of board %s with tags %v", boardID, tags)
 			return nil, &issuesapi.Refusal{Status: http.StatusNotFound, Message: "not found"}
@@ -115,7 +119,7 @@ func TestDryRunEffectiveConfigTakesTheBoardsDefaults(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/effective-config?harness=claude_code&board_id=board-1&tag=urgent", nil)
 	w := httptest.NewRecorder()
-	srv.handleDryRunEffectiveConfig(w, req)
+	srv.sessions.HandleDryRunEffectiveConfig(w, req)
 	if w.Code != 200 {
 		t.Fatalf("status %d: %s", w.Code, w.Body.String())
 	}

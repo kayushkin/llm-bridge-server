@@ -9,6 +9,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/server/routeaccess"
+
+	"github.com/kayushkin/llm-bridge-server/internal/peers"
+
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -43,8 +49,8 @@ func newProxiedReadTestPair(t *testing.T) *proxiedReadTestPair {
 	}
 	for pattern, handler := range routes {
 		accepting.server.mux.HandleFunc(pattern, handler)
-		routeAccessRules[pattern] = openRoute("a test route")
-		t.Cleanup(func() { delete(routeAccessRules, pattern) })
+		routeaccess.RouteAccessRules[pattern] = routeaccess.OpenRoute("a test route")
+		t.Cleanup(func() { delete(routeaccess.RouteAccessRules, pattern) })
 	}
 	return pair
 }
@@ -113,9 +119,9 @@ func TestAProxiedReadIsServedAgainWhileFreshAndForgottenAfterAWrite(t *testing.T
 		t.Fatalf("a read after a write was answered from what was kept (%d reads), want a new call", got)
 	}
 
-	saved := peerProxySharedAnswerFreshFor
-	peerProxySharedAnswerFreshFor = 0
-	t.Cleanup(func() { peerProxySharedAnswerFreshFor = saved })
+	saved := peers.PeerProxySharedAnswerFreshFor
+	peers.PeerProxySharedAnswerFreshFor = 0
+	t.Cleanup(func() { peers.PeerProxySharedAnswerFreshFor = saved })
 	pair.call(t, "GET", "/a-counted-read?which=a")
 	if got := pair.reads.Load(); got != 4 {
 		t.Fatalf("a stale answer was served (%d reads), want a new call", got)
@@ -125,10 +131,10 @@ func TestAProxiedReadIsServedAgainWhileFreshAndForgottenAfterAWrite(t *testing.T
 // TestProxiedCallsPastTheLimitAreRefusedHere: past the connection's allowance
 // the proxy answers 429 in JSON itself, and the other server is not called.
 func TestProxiedCallsPastTheLimitAreRefusedHere(t *testing.T) {
-	savedRate, savedBurst, savedFresh := peerProxyCallsPerSecond, peerProxyCallBurst, peerProxySharedAnswerFreshFor
-	peerProxyCallsPerSecond, peerProxyCallBurst, peerProxySharedAnswerFreshFor = 0.001, 2, 0
+	savedRate, savedBurst, savedFresh := peers.PeerProxyCallsPerSecond, peers.PeerProxyCallBurst, peers.PeerProxySharedAnswerFreshFor
+	peers.PeerProxyCallsPerSecond, peers.PeerProxyCallBurst, peers.PeerProxySharedAnswerFreshFor = 0.001, 2, 0
 	t.Cleanup(func() {
-		peerProxyCallsPerSecond, peerProxyCallBurst, peerProxySharedAnswerFreshFor = savedRate, savedBurst, savedFresh
+		peers.PeerProxyCallsPerSecond, peers.PeerProxyCallBurst, peers.PeerProxySharedAnswerFreshFor = savedRate, savedBurst, savedFresh
 	})
 	pair := newProxiedReadTestPair(t)
 	for i, rest := range []string{"/a-counted-read?which=1", "/a-counted-read?which=2"} {
@@ -163,20 +169,20 @@ func TestProxiedRequestOnlyReads(t *testing.T) {
 		{"POST", "/sessions/br_1/send", http.Header{}, false},
 		{"DELETE", "/sessions/br_1", http.Header{}, false},
 	} {
-		if got := proxiedRequestOnlyReads(c.method, c.path, c.header); got != c.want {
+		if got := peers.ProxiedRequestOnlyReads(c.method, c.path, c.header); got != c.want {
 			t.Errorf("proxiedRequestOnlyReads(%s %s, %v) = %v, want %v", c.method, c.path, c.header, got, c.want)
 		}
 	}
 }
 
 func TestSharedProxiedReadKeyTellsCallersAndBodiesApart(t *testing.T) {
-	base := sharedProxiedReadKey("c1", "POST", "/sessions/validators", http.Header{}, []byte(`{"ids":["a"]}`))
+	base := peers.SharedProxiedReadKey("c1", "POST", "/sessions/validators", http.Header{}, []byte(`{"ids":["a"]}`))
 	named := http.Header{}
-	named.Set(peerUserHeader, "principal_000002")
+	named.Set(requestcaller.PeerUserHeader, "principal_000002")
 	for name, other := range map[string]string{
-		"another body":       sharedProxiedReadKey("c1", "POST", "/sessions/validators", http.Header{}, []byte(`{"ids":["b"]}`)),
-		"another user":       sharedProxiedReadKey("c1", "POST", "/sessions/validators", named, []byte(`{"ids":["a"]}`)),
-		"another connection": sharedProxiedReadKey("c2", "POST", "/sessions/validators", http.Header{}, []byte(`{"ids":["a"]}`)),
+		"another body":       peers.SharedProxiedReadKey("c1", "POST", "/sessions/validators", http.Header{}, []byte(`{"ids":["b"]}`)),
+		"another user":       peers.SharedProxiedReadKey("c1", "POST", "/sessions/validators", named, []byte(`{"ids":["a"]}`)),
+		"another connection": peers.SharedProxiedReadKey("c2", "POST", "/sessions/validators", http.Header{}, []byte(`{"ids":["a"]}`)),
 	} {
 		if other == base {
 			t.Errorf("%s shares a key with the first read", name)

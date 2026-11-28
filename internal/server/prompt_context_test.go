@@ -8,6 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads/issuereadstest"
+
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads"
+
 	"github.com/kayushkin/llm-bridge-server/internal/agents"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -17,9 +21,9 @@ import (
 
 // fakeKanbanCards answers a card's tags for the cards given, and 404 for any
 // other card.
-func fakeKanbanCards(t *testing.T, tagsByCard map[string][]string) *issueReader {
+func fakeKanbanCards(t *testing.T, tagsByCard map[string][]string) *issuereads.Reader {
 	t.Helper()
-	return newIssueReader(&fakeIssueStore{CardTagsAnswer: func(cardID string) ([]string, error) {
+	return issuereads.New(&issuereadstest.Store{CardTagsAnswer: func(cardID string) ([]string, error) {
 		tags, known := tagsByCard[cardID]
 		if !known {
 			return nil, &issuesapi.Refusal{Status: http.StatusNotFound, Message: "card not found"}
@@ -88,11 +92,11 @@ func harnessConfigString(t *testing.T, sess *store.Session, key string) (string,
 // go in follows the harness's delivery: Claude Code keeps its own system
 // prompt and gets the text appended; Codex gets it as its whole prompt.
 func TestInjectedContextFollowsTheCardTagsAndTheDelivery(t *testing.T) {
-	srv := &Server{cfg: &config.Config{}, agentStore: contextTestAgentStore(t), issueReads: fakeKanbanCards(t, map[string][]string{"card-billing": {"billing"}, "card-other": {"ops"}})}
+	srv := (&Server{cfg: &config.Config{}, agentStore: contextTestAgentStore(t), issueReads: fakeKanbanCards(t, map[string][]string{"card-billing": {"billing"}, "card-other": {"ops"}})}).withServicesComposed()
 	ctx := context.Background()
 
 	claudeCode := &store.Session{SessionID: "br_cc", Harness: msg.HarnessClaudeCode, CardID: "card-billing"}
-	srv.injectPromptContext(ctx, claudeCode, &msg.Instance{})
+	srv.sessions.InjectPromptContext(ctx, claudeCode, &msg.Instance{})
 	if _, ok := harnessConfigString(t, claudeCode, "system_prompt"); ok {
 		t.Fatal("Claude Code was given a system_prompt, which replaces its default prompt")
 	}
@@ -105,19 +109,19 @@ func TestInjectedContextFollowsTheCardTagsAndTheDelivery(t *testing.T) {
 	}
 
 	codex := &store.Session{SessionID: "br_codex", Harness: msg.HarnessCodex, CardID: "card-billing"}
-	srv.injectPromptContext(ctx, codex, &msg.Instance{})
+	srv.sessions.InjectPromptContext(ctx, codex, &msg.Instance{})
 	if prompt, _ := harnessConfigString(t, codex, "system_prompt"); !strings.Contains(prompt, "Refunds go through the ledger.") {
 		t.Fatalf("codex system_prompt = %q, want the billing section", prompt)
 	}
 
 	otherCard := &store.Session{SessionID: "br_other", Harness: msg.HarnessClaudeCode, CardID: "card-other"}
-	srv.injectPromptContext(ctx, otherCard, &msg.Instance{})
+	srv.sessions.InjectPromptContext(ctx, otherCard, &msg.Instance{})
 	if len(otherCard.HarnessConfig) != 0 {
 		t.Fatalf("a card without the billing tag was given %s", otherCard.HarnessConfig)
 	}
 
 	chosen := &store.Session{SessionID: "br_chosen", Harness: msg.HarnessClaudeCode, CardID: "card-billing", HarnessConfig: json.RawMessage(`{"system_prompt":"classify this"}`)}
-	srv.injectPromptContext(ctx, chosen, &msg.Instance{})
+	srv.sessions.InjectPromptContext(ctx, chosen, &msg.Instance{})
 	if _, ok := harnessConfigString(t, chosen, "append_system_prompt"); ok {
 		t.Fatal("text was appended to a prompt the caller chose whole")
 	}
@@ -126,7 +130,7 @@ func TestInjectedContextFollowsTheCardTagsAndTheDelivery(t *testing.T) {
 // The prompt is looked up in the directory the harness runs in, by the same
 // rule the spawn uses: the session's own directory, else the instance's.
 func TestInjectedContextUsesTheSpawnsWorkingDirectory(t *testing.T) {
-	srv := &Server{cfg: &config.Config{}, agentStore: contextTestAgentStore(t), issueReads: fakeKanbanCards(t, map[string][]string{"card-billing": {"billing"}})}
+	srv := (&Server{cfg: &config.Config{}, agentStore: contextTestAgentStore(t), issueReads: fakeKanbanCards(t, map[string][]string{"card-billing": {"billing"}})}).withServicesComposed()
 	for name, run := range map[string]struct {
 		sess *store.Session
 		inst *msg.Instance
@@ -134,7 +138,7 @@ func TestInjectedContextUsesTheSpawnsWorkingDirectory(t *testing.T) {
 		"session directory":  {&store.Session{SessionID: "br_a", Harness: msg.HarnessCodex, CardID: "card-billing", WorkingDir: "/work/northwind/cmd"}, &msg.Instance{}},
 		"instance directory": {&store.Session{SessionID: "br_b", Harness: msg.HarnessCodex, CardID: "card-billing"}, &msg.Instance{WorkingDir: "/work/northwind"}},
 	} {
-		srv.injectPromptContext(context.Background(), run.sess, run.inst)
+		srv.sessions.InjectPromptContext(context.Background(), run.sess, run.inst)
 		if prompt, _ := harnessConfigString(t, run.sess, "system_prompt"); !strings.Contains(prompt, "Northwind bills monthly.") {
 			t.Errorf("%s: system_prompt = %q, want the northwind section", name, prompt)
 		}

@@ -7,7 +7,7 @@ package server
 // way to switch that off: the credentials it needs are mandatory at startup
 // (config.ValidateRequestAuthorizationSettings).
 //
-// Every route is classified in routeAccessRules, keyed by the exact pattern
+// Every route is classified in RouteAccessRules, keyed by the exact pattern
 // it is registered under. The mux is asked which pattern a request matches,
 // and the rule for that pattern decides. A pattern with no rule is refused
 // (403 naming the pattern) to everyone but the service token, so a route
@@ -36,923 +36,23 @@ package server
 // is_administrator is past every per-resource check below.
 
 import (
-	"context"
 	"crypto/subtle"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/kayushkin/llm-bridge-server/internal/server/routeaccess"
+
+	"github.com/kayushkin/llm-bridge-server/internal/access/login"
+
+	"github.com/kayushkin/llm-bridge-server/internal/peers"
+
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 )
-
-// serviceTokenHeader carries LLMBRIDGE_SERVICE_TOKEN from an internal service.
-const serviceTokenHeader = "X-LLM-Bridge-Service-Token"
-
-// peerTokenHeader carries a peer token: another llm-bridge-server acting here
-// as the peer principal this server issued the token for (peers.go).
-const peerTokenHeader = "X-LLM-Bridge-Peer-Token"
-
-// peerUserHeader names, beside a peer token, which of the calling server's
-// own principals a request is for: its principal-store id there (phase 2 of
-// design note d107154a). This server acts for that user as the local
-// principal its administrator mapped the pair to (peer_users.go), allowed only
-// what both principals' grants allow. It means nothing without a peer token,
-// and the calling server sets it itself, never from a client's header.
-const peerUserHeader = "X-LLM-Bridge-Peer-User"
-
-// routeAccessClass says who may call a route and how a principal is limited.
-type routeAccessClass int
-
-const (
-	// routeOpenToEveryone needs no credential at all.
-	routeOpenToEveryone routeAccessClass = iota + 1
-	// routeHarnessCallback is called back by a harness child process, a
-	// sidecar or a runner on this host, which today carry no login. It keeps
-	// whatever check the handler itself makes, and nothing more.
-	routeHarnessCallback
-	// routeOperatorOnly needs the service token, or a principal
-	// principal-store calls an administrator.
-	routeOperatorOnly
-	// routePeerConnectionCall is called by a connected llm-bridge-server about
-	// the connection itself, never with a peer token: the handler checks the
-	// connection's credential, or the socket the call arrived over
-	// (peers.go).
-	routePeerConnectionCall
-	// routePrincipalCreatesSession is POST /sessions: the session is created
-	// as the calling principal, whatever the body says.
-	routePrincipalCreatesSession
-	// routePrincipalOwnsSession names a session in a path value; a principal
-	// reaches it only if the session's principal_id is theirs, and gets 404
-	// — the same answer as a missing session — otherwise. An administrator
-	// reaches every session, as does the service token.
-	routePrincipalOwnsSession
-	// routePrincipalOwnsSignal names a signal in a path value; a principal
-	// reaches it only if the signal's session is theirs, 404 otherwise.
-	routePrincipalOwnsSignal
-	// routePrincipalSeesOwnSessionsOnly lists or streams across sessions; the
-	// handler narrows the answer to the principal's own sessions, reading the
-	// principal from the request context.
-	routePrincipalSeesOwnSessionsOnly
-	// routePrincipalReadsCatalog is a read-only catalog a chat UI needs; a
-	// principal reads it as it is (or as the handler narrows it).
-	routePrincipalReadsCatalog
-	// routePrincipalRefusedCannotBeFiltered answers across sessions from a
-	// source that cannot be narrowed to one principal cheaply and correctly,
-	// so a principal is refused rather than shown other principals' data.
-	routePrincipalRefusedCannotBeFiltered
-	// routePrincipalCreatesOperation is POST /operations: the operation is
-	// the calling principal's, whatever the body says, and the handler checks
-	// the principal belongs to the organization.
-	routePrincipalCreatesOperation
-	// routePrincipalOwnsOperation names an operation in a path value; a
-	// principal reaches it only if the operation is theirs, 404 otherwise.
-	routePrincipalOwnsOperation
-	// routePrincipalSeesOwnOperationsOnly lists operations; the handler
-	// narrows the answer to the principal's own.
-	routePrincipalSeesOwnOperationsOnly
-	// routePrincipalOrSessionAgentThroughStoreProxy is an identity-carrying
-	// store proxy: a login cookie or a session agent token, and the request
-	// reaches the store as that principal.
-	routePrincipalOrSessionAgentThroughStoreProxy
-	// routeSessionOwnerOrItsAgentPostsIntoSession puts something into the
-	// session in a path value: a shared file, or an action for a person to
-	// confirm. A principal reaches it as on routePrincipalOwnsSession. So does
-	// the session's own agent, presenting its session posting token
-	// (session_posting_token.go) as a Bearer token — for that session and no
-	// other. The token is accepted on no other class.
-	routeSessionOwnerOrItsAgentPostsIntoSession
-	// routePrincipalManagesOwnLoginSessions lists or revokes login sessions;
-	// the handler narrows a principal to its own, and lets an administrator
-	// reach anyone's.
-	routePrincipalManagesOwnLoginSessions
-	// routePrincipalActsThroughPeerConnection is the connection proxy: any
-	// principal of this server may call a connected one through it, named
-	// there as itself (peerUserHeader) unless it is an administrator, who
-	// acts as this whole server everywhere but in starting a session. A peer
-	// may not go on through it to a third server.
-	routePrincipalActsThroughPeerConnection
-	// routePrincipalSeesPeerConnectionsItMayCallThrough reads this server's
-	// connections to others: an administrator every one, anyone else only
-	// those its can_call_through grants name, which the handler narrows to.
-	// Holding none shows none, whatever the kind.
-	routePrincipalSeesPeerConnectionsItMayCallThrough
-)
-
-// sessionAgentDelegateAccess says whether, and how, a session's own agent may
-// call a route with its session posting token to start and drive delegates:
-// sessions it creates under itself (manager_session_id), as bridge-agent does.
-// The agent acts with exactly the principal its own session runs with, and
-// reaches only its own delegates. Every route without one refuses the token as
-// before, except routeSessionOwnerOrItsAgentPostsIntoSession.
-type sessionAgentDelegateAccess int
-
-const (
-	// sessionAgentNotAccepted is every route but the few below.
-	sessionAgentNotAccepted sessionAgentDelegateAccess = iota
-	// sessionAgentCreatesItsDelegate is POST /sessions: the new session sits
-	// under the agent's session and runs as that session's principal.
-	sessionAgentCreatesItsDelegate
-	// sessionAgentReachesItsDelegate names a session in a path value that the
-	// agent's session must manage.
-	sessionAgentReachesItsDelegate
-	// sessionAgentReachesItsDelegateOrItself is the same, and also reaches the
-	// agent's own session.
-	sessionAgentReachesItsDelegateOrItself
-	// sessionAgentReadsCatalog is a catalog a delegate's start depends on.
-	sessionAgentReadsCatalog
-	// sessionAgentReadsSessions is a read-only session route — the list,
-	// full-text search, one session and its history — that a session's agent
-	// reads as its own session's principal: every session when that session
-	// runs with no principal, as the internal service does, and otherwise
-	// exactly what the principal (and, for a session a connected server
-	// started, that server too) may read. It never sends, stops or changes
-	// anything, and never answers through the public reverse proxy.
-	sessionAgentReadsSessions
-	// sessionAgentUsesPeerMessaging lists connected servers and their messages
-	// and sends one, as an administrator would, for an agent whose session runs
-	// with no principal or as an administrator. It never approves or declines:
-	// that is a person's decision.
-	sessionAgentUsesPeerMessaging
-)
-
-// routeAccessRule is one route's classification.
-type routeAccessRule struct {
-	class routeAccessClass
-	// sessionAgentAccess says whether a session's agent may call the route
-	// with its posting token to start and drive its delegates.
-	sessionAgentAccess sessionAgentDelegateAccess
-	// ownedResourcePathValueName names the path value holding the session id
-	// (routePrincipalOwnsSession) or the signal id (routePrincipalOwnsSignal).
-	ownedResourcePathValueName string
-	// reason says why the route is in its class, for the next reader and for
-	// the refusal message.
-	reason string
-	// answersThroughPublicProxy lets a routeHarnessCallback route answer a
-	// request that came through the public reverse proxy. Only the runner's
-	// routes set it, because their handlers check the runner's token or its
-	// one-time passphrase themselves; every other harness callback takes no
-	// credential and is for this host's own processes alone.
-	answersThroughPublicProxy bool
-	// signsIn marks an open route that makes, reads or ends a person's login
-	// session. Another server never signs anyone in here, so a request that
-	// carries a peer token is refused one, by https or over a peer socket.
-	signsIn bool
-}
-
-func openRoute(reason string) routeAccessRule {
-	return routeAccessRule{class: routeOpenToEveryone, reason: reason}
-}
-
-// signInRoute is an open route a person's browser uses to sign in, see who it
-// is signed in as, or sign out. No connected server may call one: until
-// 2026-11-07 a peer token of any level reached POST /auth/demo-login over the
-// socket and could make a login session for anyone on a server that dialed
-// out with demo login on.
-func signInRoute(reason string) routeAccessRule {
-	return routeAccessRule{class: routeOpenToEveryone, reason: reason, signsIn: true}
-}
-func harnessCallbackRoute(reason string) routeAccessRule {
-	return routeAccessRule{class: routeHarnessCallback, reason: reason}
-}
-
-// runnerRoute is a harness callback a remote runner calls, which may arrive
-// through the public reverse proxy because its handler checks the runner's
-// own credential.
-func runnerRoute(reason string) routeAccessRule {
-	return routeAccessRule{class: routeHarnessCallback, reason: reason, answersThroughPublicProxy: true}
-}
-func peerConnectionCallRoute(reason string) routeAccessRule {
-	return routeAccessRule{class: routePeerConnectionCall, reason: reason}
-}
-func peerConnectionProxyRoute(reason string) routeAccessRule {
-	return routeAccessRule{class: routePrincipalActsThroughPeerConnection, reason: reason}
-}
-func peerConnectionReadRoute(reason string) routeAccessRule {
-	return routeAccessRule{class: routePrincipalSeesPeerConnectionsItMayCallThrough, reason: reason}
-}
-
-// The rules of the agents stores mounted in this process. None of the three
-// keeps an owner on a row, and tool-store's provision answers with resolved
-// credentials and its invoke runs in-process tools, so all three are the
-// operator's, as they were behind dash's login. Runners keep their four
-// skill-store seed routes.
-var (
-	principalStoreOperatorRoute   = operatorRoute("principal-store has no owner on a row: whoever reaches it may create principals, make an administrator, disable anyone and read every email")
-	principalStoreVocabularyRoute = catalogRoute("a vocabulary principal-store serves, nothing about anyone")
-	identityBindingOperatorRoute  = operatorRoute("which outside identity signs in as which principal")
-	grantStoreRoute               = routeAccessRule{class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "grant-store as the caller's principal: it narrows every read and write to what that principal may see and administer, and the internal service is unrestricted"}
-	signInStoreBrowserRoute       = signInRoute("a browser signing in or out through sign-in-store; the route checks the browser's own cookie or link secret")
-	signInStoreAdministratorRoute = operatorRoute("mints sign-in links, lists or ends anyone's sessions, or messages a member: whoever reaches it could sign in as anyone")
-	permissionStoreOperatorRoute  = operatorRoute("permission-store's rules decide which tool calls every session may make, and its audit holds every gated tool input")
-	toolStoreRoute                = operatorRoute("tool-store is one registry with no owner on a row; provision answers resolved credentials and invoke runs tools in this process")
-	skillStoreRoute               = operatorRoute("skill-store is one registry with no owner on a row, and install writes into this host's skills directory")
-	bundleStoreRoute              = operatorRoute("bundle-store is one registry with no owner on a row, and every session given a bundle is composed from it")
-	skillStoreRunnerSeedRoute     = runnerRoute("skill-store seed route for runners; the handler authenticates the runner's bearer token")
-)
-
-// notesRoute is the rule of every notes route.
-var notesRoute = operatorRoute("notes holds the operator's private notes, ranked lists and workspaces with no owner on a row, so any caller could read or rewrite all of them")
-
-// issueItemsRoute is the rule of every /issues/items route: the content of
-// every issue, on a board or not. The boards and cards under the rest of
-// /issues/ answer a principal only the cards on boards it may view; these
-// routes cannot, because an issue on no board names nobody who may see it.
-var issueItemsRoute = operatorRoute("/issues/items holds the content of every issue with no owner on a row, on a board or not, so any caller could read or rewrite all of them; a principal reads its cards through /issues/cards")
-
-// projectStoreRoute is the rule of every project-store route.
-var projectStoreRoute = operatorRoute("project-store keeps one set of projects with no owner on a row, and its links name sessions, people and notes, so any caller could read or rewrite all of them")
-
-// The access stores' rules (access_routes.go). principal-store and
-// permission-store have no owner on a row and no rule of their own about who
-// may call them, so every route that changes or reveals more than a
-// vocabulary is the operator's. grant-store narrows every answer to the
-// caller itself, so it takes the store proxies' class and the verified
-// principal in the request context. sign-in-store's browser routes check the
-// browser's own cookie or secret, and its administrator routes record the
-// administrator who acted.
-// predictionStoreRoute is the rule of every prediction-store route.
-var predictionStoreRoute = operatorRoute("prediction-store keeps one ledger with no owner on a row, so any caller could rewrite, resolve or purge anyone's prediction")
-
-func operatorRoute(reason string) routeAccessRule {
-	return routeAccessRule{class: routeOperatorOnly, reason: reason}
-}
-func sessionAgentPostingRoute(pathValueName, reason string) routeAccessRule {
-	return routeAccessRule{class: routeSessionOwnerOrItsAgentPostsIntoSession, ownedResourcePathValueName: pathValueName, reason: reason}
-}
-func sessionOwnedRoute(pathValueName string) routeAccessRule {
-	return routeAccessRule{class: routePrincipalOwnsSession, ownedResourcePathValueName: pathValueName, reason: "acts on one session"}
-}
-
-// delegateDrivenSessionRoute is sessionOwnedRoute that a session's agent may
-// also call, with its posting token, on a delegate it started.
-func delegateDrivenSessionRoute(pathValueName string, access sessionAgentDelegateAccess) routeAccessRule {
-	return routeAccessRule{class: routePrincipalOwnsSession, ownedResourcePathValueName: pathValueName, sessionAgentAccess: access,
-		reason: "acts on one session, as its owner or as the agent of the session that started it"}
-}
-func signalOwnedRoute(pathValueName string) routeAccessRule {
-	return routeAccessRule{class: routePrincipalOwnsSignal, ownedResourcePathValueName: pathValueName, reason: "acts on one signal of one session"}
-}
-func operationOwnedRoute(pathValueName string) routeAccessRule {
-	return routeAccessRule{class: routePrincipalOwnsOperation, ownedResourcePathValueName: pathValueName, reason: "acts on one operation"}
-}
-func ownSessionsOnlyRoute(reason string) routeAccessRule {
-	return routeAccessRule{class: routePrincipalSeesOwnSessionsOnly, reason: reason}
-}
-
-// sessionReadRoute is a read-only session route a session's agent may also
-// call with its posting token, reading as its own session's principal.
-func sessionReadRoute(rule routeAccessRule) routeAccessRule {
-	rule.sessionAgentAccess = sessionAgentReadsSessions
-	rule.reason += "; a session's agent reads it as its own session's principal"
-	return rule
-}
-
-// peerMessagingRoute is an operator route a session's agent may also call
-// with its posting token to read connections and messages and send one.
-func peerMessagingRoute(rule routeAccessRule) routeAccessRule {
-	rule.sessionAgentAccess = sessionAgentUsesPeerMessaging
-	rule.reason += "; a session's agent with no principal, or an administrator's, may call it with its posting token"
-	return rule
-}
-func catalogRoute(reason string) routeAccessRule {
-	return routeAccessRule{class: routePrincipalReadsCatalog, reason: reason}
-}
-func cannotBeFilteredRoute(reason string) routeAccessRule {
-	return routeAccessRule{class: routePrincipalRefusedCannotBeFiltered, reason: reason}
-}
-
-// routeAccessRules classifies every route this server registers, by its exact
-// registration pattern. A route missing here is refused to all but the
-// service token; TestEveryRegisteredRouteIsClassified fails when a
-// HandleFunc/Handle in this package has no rule.
-var routeAccessRules = map[string]routeAccessRule{
-	// Open.
-	"GET /health":                                         openRoute("liveness for load balancers and healthcheck"),
-	"GET /ui/":                                            openRoute("the front end's own files, the same code as the repo; the app signs in through the login routes after it loads"),
-	"GET /{$}":                                            openRoute("sends a browser at the bare address to the front end"),
-	"POST /auth/demo-login":                               signInRoute("how a principal obtains a login; answers 404 itself when switched off"),
-	"GET /auth/entra/start":                               signInRoute("sends the browser to Entra ID to sign in"),
-	"GET /auth/entra/callback":                            signInRoute("Entra ID sends the browser back here; the handler verifies everything it is given"),
-	"GET /auth/principal":                                 signInRoute("answers 401 itself without a live login session"),
-	"POST /auth/logout":                                   signInRoute("revokes the cookie's live session, checking its CSRF token itself, and clears a dead cookie with none"),
-	"POST /peer-connection-invites":                       operatorRoute("lets another server connect to this one"),
-	"GET /peer-connection-invites":                        operatorRoute("who was invited to connect, and by whom"),
-	"POST /peer-connections":                              operatorRoute("connects to another server and stores a credential for it"),
-	"GET /peer-connections":                               peerMessagingRoute(peerConnectionReadRoute("which servers this one is connected to, and the access each way; anyone but an administrator sees only those its can_call_through grants name")),
-	"POST /peer-connections/{id}/messages":                peerMessagingRoute(operatorRoute("sends the other server a request, notice or status")),
-	"GET /peer-messages":                                  peerMessagingRoute(operatorRoute("messages to and from connected servers")),
-	"GET /peer-messages/{id}":                             peerMessagingRoute(operatorRoute("one message to or from a connected server")),
-	"POST /peer-messages/{id}/approve":                    operatorRoute("approves a connected server's request or patch (handing it to the orchestrator, or starting its session on a server with none) or notice (running the update); never an agent"),
-	"POST /peer-messages/{id}/decline":                    operatorRoute("declines a connected server's request or notice and tells it why"),
-	"POST /peer-messages/{id}/place":                      peerMessagingRoute(operatorRoute("starts an approved request's or patch's session on the instance the orchestrator chose; the handler lets an agent place only a message handed to its own session")),
-	"POST /peer/messages":                                 peerConnectionCallRoute("the other server delivers a message; the handler checks the connection and what it may send"),
-	"POST /peer-message-attachments":                      peerMessagingRoute(operatorRoute("stores a file to send to a connected server with the next message")),
-	"GET /peer-messages/{id}/attachments/{attachment_id}": peerMessagingRoute(operatorRoute("downloads a file of a message; an agent only of a message it sent or whose approval started its session")),
-	"POST /peer-messages/{id}/attachments/{attachment_id}/retry":  operatorRoute("fetches a file of an incoming message again now"),
-	"GET /peer/messages/{message_id}/attachments/{attachment_id}": peerConnectionCallRoute("the other server fetches a file of a message this server sent it; the handler checks the connection"),
-	"GET /peer-connections/{id}":                                  peerConnectionReadRoute("one connection and the access each way; anyone but an administrator reaches only one its can_call_through grants name"),
-	"POST /peer-connections/{id}/remove":                          operatorRoute("ends a connection and the access each way"),
-	"POST /peer-connections/{id}/grant":                           operatorRoute("gives another server access to this one"),
-	"POST /peer-connections/{id}/revoke-grant":                    operatorRoute("takes another server's access away"),
-	"POST /peer-connections/{id}/check":                           operatorRoute("calls another server with a stored token"),
-	"/peer-connections/{id}/proxy/{rest...}":                      peerConnectionProxyRoute("acts on another server: as this server's peer principal for an administrator, and for anyone else as that person, whom the other server maps to one of its own principals"),
-	"GET /peer-access-levels":                                     operatorRoute("the levels of access this server can give"),
-	"POST /peer-access-levels/{key}/provision":                    operatorRoute("makes a level's group and its grants"),
-	"POST /peer/connect":                                          openRoute("the other server has no credential yet; the one-time passphrase is the credential, checked by the handler"),
-	"GET /peer/socket":                                            peerConnectionCallRoute("the dial-out socket; the handler checks the connection's credential"),
-	"POST /peer/access":                                           peerConnectionCallRoute("the other server delivers a token; the handler checks the connection"),
-	"POST /peer/access/revoked":                                   peerConnectionCallRoute("the other server takes a token back; the handler checks the connection"),
-	"POST /peer/connection/removed":                               peerConnectionCallRoute("the other server says it removed the connection; the handler checks the connection"),
-	"GET /peer-user-mappings":                                     operatorRoute("which connected server's users act as which principal here"),
-	"POST /peer-user-mappings":                                    operatorRoute("lets a connected server's user act here as one of this server's principals"),
-	"POST /peer-user-mappings/{id}/remove":                        operatorRoute("takes that away"),
-	"GET /peer/self":                                              catalogRoute("tells a caller who it is; the handler answers only a peer token"),
-	"GET /peer/server-name":                                       peerConnectionCallRoute("a connected server asks this one's name and gives its own; the handler checks the connection"),
-	"GET /server":                                                 catalogRoute("what this server calls itself, which the chat draws as the heading of its sessions"),
-	"GET /auth/sessions":                                          {class: routePrincipalManagesOwnLoginSessions, reason: "a principal's own login sessions; an administrator names anyone's"},
-	"POST /auth/sessions/{id}/revoke":                             {class: routePrincipalManagesOwnLoginSessions, reason: "ends a principal's own login session; an administrator ends anyone's"},
-	"GET /auth/login-attempts":                                    operatorRoute("every sign-in attempt, with the identities of people refused"),
-
-	// Harness callbacks: called by processes this server spawned or by
-	// runners, none of which carry a login.
-	"POST /permission/cc-prehook/{bridge_id}":    harnessCallbackRoute("Claude Code PreToolUse hook, a curl from the harness child"),
-	"POST /permission/codex-prehook/{bridge_id}": harnessCallbackRoute("codex PreToolUse hook, a curl from the harness child"),
-	"POST /permission/devin-prehook/{bridge_id}": harnessCallbackRoute("devin PreToolUse hook, a curl from the harness child, and llm-bridge-devin itself for session/request_permission"),
-	"POST /sidecar/event/{bridge_id}":            harnessCallbackRoute("OTel sidecar of a pty session posts translated events"),
-	"POST /hooks/exec/{id}":                      harnessCallbackRoute("registered hook fired by the harness child via curl"),
-	"GET /api/runner/ws":                         runnerRoute("runner WebSocket; the handler authenticates the runner's bearer token"),
-	"POST /api/runner/enroll":                    runnerRoute("runner enrollment; the handler checks the single-use passphrase"),
-	"GET /api/runner/install.sh":                 runnerRoute("bootstrap script fetched by a machine before it has a runner token"),
-	"GET /api/runner/binary":                     runnerRoute("runner and harness binaries fetched by a machine during bootstrap"),
-	// log-store, mounted in this process: every event of every session, with no
-	// owner on a row it could narrow by, and an ingest route that writes into
-	// any session. The bridge's own session routes answer a principal from it.
-	"/session-log/":                          operatorRoute("log-store holds every session's events and takes events into any session, and has no owner on a row to narrow an answer by"),
-	"/api/harness-proxy/{harness}/{rest...}": harnessCallbackRoute("harness backend proxy for wrappers on runners; unauthenticated today (noteboard card f4e5e1ef)"),
-
-	// Sessions.
-	"POST /sessions":              {class: routePrincipalCreatesSession, sessionAgentAccess: sessionAgentCreatesItsDelegate, reason: "a principal creates sessions as itself, and a session's agent its delegates as its own session's principal"},
-	"GET /sessions":               sessionReadRoute(ownSessionsOnlyRoute("session list, narrowed in the store")),
-	"GET /sessions/summary":       ownSessionsOnlyRoute("sidebar list, narrowed in the store"),
-	"GET /sessions/principals":    ownSessionsOnlyRoute("who the sessions were started as, narrowed in the store"),
-	"POST /sessions/summary":      ownSessionsOnlyRoute("sidebar list, narrowed in the store"),
-	"GET /sessions/recent-bundle": ownSessionsOnlyRoute("recent sessions warmed for the chat page, narrowed in the store"),
-	"GET /sessions/validators":    ownSessionsOnlyRoute("staleness check; ids not owned by the caller are dropped before log-store is asked"),
-	"POST /sessions/validators":   ownSessionsOnlyRoute("staleness check; ids not owned by the caller are dropped before log-store is asked"),
-	"GET /session-events":         ownSessionsOnlyRoute("session list stream; frames about other principals' sessions are not written"),
-	"GET /signals":                ownSessionsOnlyRoute("cross-session signal inbox, narrowed in the store"),
-	"GET /session-briefs":         ownSessionsOnlyRoute("cross-session brief list, narrowed in the store"),
-	"GET /sessions/search":        sessionReadRoute(cannotBeFilteredRoute("full-text search answered by log-store across every session")),
-	"GET /sessions/aggregates":    cannotBeFilteredRoute("aggregates computed by log-store across every session"),
-	"GET /sessions/discover":      operatorRoute("imports sessions found on this host's disk"),
-
-	"GET /sessions/{id}":                                    sessionReadRoute(sessionOwnedRoute("id")),
-	"POST /sessions/{id}/send":                              delegateDrivenSessionRoute("id", sessionAgentReachesItsDelegate),
-	"POST /sessions/{id}/files":                             sessionAgentPostingRoute("id", "shares a file into one session, as its owner or as its own agent"),
-	"GET /sessions/{id}/files":                              sessionOwnedRoute("id"),
-	"GET /sessions/{id}/files/{file_id}/content":            sessionOwnedRoute("id"),
-	"GET /sessions/{id}/files-named-by-tools":               sessionOwnedRoute("id"),
-	"GET /sessions/{id}/files-named-by-tools/content":       sessionOwnedRoute("id"),
-	"GET /sessions/{id}/files-named-by-tools/image":         sessionOwnedRoute("id"),
-	"POST /sessions/{id}/chat-links":                        sessionAgentPostingRoute("id", "links one session to an outside conversation, as its owner or as its own agent"),
-	"GET /sessions/{id}/chat-links":                         sessionAgentPostingRoute("id", "reads one session's chat links, as its owner or as its own agent"),
-	"GET /sessions/{id}/chat-links/{link_id}":               sessionAgentPostingRoute("id", "reads one of a session's chat links and its log, as its owner or as its own agent"),
-	"POST /sessions/{id}/chat-links/{link_id}/end":          sessionAgentPostingRoute("id", "ends one of a session's chat links, as its owner or as its own agent"),
-	"POST /sessions/{id}/actions":                           sessionAgentPostingRoute("id", "offers an action in one session, as its owner or as its own agent"),
-	"POST /sessions/{id}/images":                            sessionAgentPostingRoute("id", "makes images and shares them into one session, as its owner or as its own agent"),
-	"GET /sessions/{id}/actions":                            sessionOwnedRoute("id"),
-	"POST /sessions/{id}/actions/{action_id}/run":           sessionOwnedRoute("id"),
-	"GET /sessions/{id}/events":                             delegateDrivenSessionRoute("id", sessionAgentReachesItsDelegate),
-	"GET /sessions/{id}/attach":                             sessionOwnedRoute("id"),
-	"GET /sessions/{id}/attach-token":                       sessionOwnedRoute("id"),
-	"GET /sessions/{id}/messages":                           sessionReadRoute(sessionOwnedRoute("id")),
-	"GET /sessions/{id}/messages/raw":                       sessionOwnedRoute("id"),
-	"GET /sessions/{id}/entries/{eventId}":                  sessionOwnedRoute("id"),
-	"GET /sessions/{id}/entries/{eventId}/images/{index}":   sessionOwnedRoute("id"),
-	"POST /sessions/{id}/interrupt":                         sessionOwnedRoute("id"),
-	"POST /sessions/{id}/resume":                            sessionOwnedRoute("id"),
-	"POST /sessions/{id}/stop":                              delegateDrivenSessionRoute("id", sessionAgentReachesItsDelegate),
-	"POST /sessions/{id}/mode":                              sessionOwnedRoute("id"),
-	"POST /sessions/{id}/compact":                           sessionOwnedRoute("id"),
-	"POST /sessions/{id}/fork":                              sessionOwnedRoute("id"),
-	"POST /sessions/{id}/rename":                            sessionOwnedRoute("id"),
-	"POST /sessions/{id}/config":                            sessionOwnedRoute("id"),
-	"POST /sessions/{id}/mark-done":                         sessionOwnedRoute("id"),
-	"GET /sessions/{id}/git/repos":                          sessionOwnedRoute("id"),
-	"GET /sessions/{id}/git":                                sessionOwnedRoute("id"),
-	"GET /sessions/{id}/effective-config":                   sessionOwnedRoute("id"),
-	"GET /sessions/{id}/hooks/pending":                      sessionOwnedRoute("id"),
-	"POST /sessions/{id}/hooks/{request_id}/resolve":        sessionOwnedRoute("id"),
-	"GET /sessions/{id}/signals":                            sessionOwnedRoute("id"),
-	"GET /sessions/{id}/brief":                              sessionReadRoute(sessionOwnedRoute("id")),
-	"POST /sessions/{id}/loose-ends/{loose_end_id}/answer":  sessionOwnedRoute("id"),
-	"POST /sessions/{id}/loose-ends/{loose_end_id}/dismiss": sessionOwnedRoute("id"),
-	"POST /sessions/{id}/signals":                           sessionOwnedRoute("id"),
-	"GET /sessions/{id}/tools/{tool_use_id}/snapshots":      sessionOwnedRoute("id"),
-	"PUT /sessions/{id}/folder":                             operatorRoute("files a session into the shared folder registry"),
-	"PUT /sessions/{id}/starter":                            operatorRoute("records which service started a session as another principal, letting it drive the session"),
-	"POST /service-principal-tokens":                        operatorRoute("issues a token a service principal calls this server with"),
-	"GET /service-principal-tokens":                         operatorRoute("every service principal token's record; never a token"),
-	"GET /self":                                             catalogRoute("tells any caller who it acts as"),
-	"POST /service-principal-tokens/{id}/revoke":            operatorRoute("stops a service principal token working"),
-	"PUT /sessions/{id}/permission-mode":                    operatorRoute("can switch a session to bypass, skipping permission-store"),
-	"PUT /sessions/{id}/bypass-permissions":                 operatorRoute("can switch a session to bypass, skipping permission-store"),
-	"POST /signals/{id}/resolve":                            signalOwnedRoute("id"),
-	"POST /signals/{id}/answer":                             signalOwnedRoute("id"),
-	"GET /snapshots/blob/{sha}":                             cannotBeFilteredRoute("content-addressed blob shared across sessions; nothing ties a sha to one session"),
-
-	// Operations.
-	"POST /operations":                            {class: routePrincipalCreatesOperation, reason: "a principal starts operations as itself, in an organization it belongs to"},
-	"GET /operations":                             {class: routePrincipalSeesOwnOperationsOnly, reason: "operation list, narrowed in the store"},
-	"GET /operations/{id}":                        operationOwnedRoute("id"),
-	"GET /operations/{id}/events":                 operationOwnedRoute("id"),
-	"POST /operations/{id}/cancel":                operationOwnedRoute("id"),
-	"GET /operations/{id}/children":               operationOwnedRoute("id"),
-	"GET /operation-types":                        openRoute("names the operation types this server runs and their limits, nothing about anyone; grant-store reads it without a credential to check an operation_type grant"),
-	"GET /operation-budgets":                      operatorRoute("every organization's spending"),
-	"GET /operation-budgets/{organization_id}":    operatorRoute("an organization's spending"),
-	"PUT /operation-budgets/{organization_id}":    operatorRoute("sets an organization's monthly limit"),
-	"DELETE /operation-budgets/{organization_id}": operatorRoute("removes an organization's monthly limit"),
-
-	// Catalogs a chat UI reads.
-	"GET /harnesses":                     catalogRoute("harness types"),
-	"GET /harnesses/{name}/capabilities": catalogRoute("what a harness type supports"),
-	"GET /harnesses/{name}/agents":       catalogRoute("agents available on a harness type"),
-	"/images/":                           catalogRoute("harness images"),
-	"GET /session-taxonomy":              catalogRoute("session type and purpose vocabulary"),
-	"GET /instances":                     {class: routePrincipalReadsCatalog, sessionAgentAccess: sessionAgentReadsCatalog, reason: "instances to start a session on; narrowed to can_dispatch_on grants and without machine details"},
-	"GET /agents":                        catalogRoute("agent-store agents, unfiltered by can_run_as"),
-	"GET /agents/{slug}":                 catalogRoute("one agent-store agent, unfiltered by can_run_as"),
-
-	// Identity-carrying store proxies.
-	issuesMountPrefix + "/": {class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "kanban-store at its root, in this process, as the caller's principal or the internal service"},
-	mailMountPrefix + "/":   {class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "mailstack, in this process, as the caller's principal or the internal service"},
-	// A sender of mail holds an ingress credential mailstack minted, bound to
-	// its accounts, and no login; mailstack checks it and refuses anything
-	// else.
-	mailstackIngressDeliveryPattern: openRoute("pushed mail delivery, which mailstack checks against an ingress credential"),
-
-	// Operator.
-	"GET /services":                                  operatorRoute("host service inventory"),
-	"GET /services/databases/schema":                 operatorRoute("host database schemas"),
-	"GET /services/databases/rows":                   operatorRoute("host database rows"),
-	"POST /bridge/permission-mode":                   operatorRoute("global permission mode"),
-	"POST /bridge/bypass-permissions":                operatorRoute("global permission mode"),
-	"GET /folders":                                   operatorRoute("folder registry"),
-	"POST /folders":                                  operatorRoute("folder registry"),
-	"DELETE /folders/{name}":                         operatorRoute("folder registry"),
-	"PUT /folders/{name}":                            operatorRoute("folder registry"),
-	"GET /source-folders":                            operatorRoute("purpose to folder mapping"),
-	"PUT /source-folders/{source}":                   operatorRoute("purpose to folder mapping"),
-	"DELETE /source-folders/{source}":                operatorRoute("purpose to folder mapping"),
-	"GET /session-taxonomy/report":                   operatorRoute("lists sessions across every principal"),
-	"POST /instances":                                operatorRoute("instance registry"),
-	"GET /instances/{id}":                            operatorRoute("instance with machine details"),
-	"PUT /instances/{id}":                            operatorRoute("instance registry"),
-	"DELETE /instances/{id}":                         operatorRoute("instance registry"),
-	"GET /instances/{id}/status":                     operatorRoute("machine reachability"),
-	"GET /instances/{id}/sessions":                   operatorRoute("sessions of every principal on an instance"),
-	"GET /instances/{id}/credentials":                operatorRoute("credential bindings"),
-	"POST /instances/{id}/credentials":               operatorRoute("credential bindings"),
-	"DELETE /instances/{id}/credentials/{cred_id}":   operatorRoute("credential bindings"),
-	"POST /instances/{id}/oneshot":                   operatorRoute("runs a model call outside any session"),
-	"POST /oneshot":                                  operatorRoute("runs a model call outside any session"),
-	"POST /images":                                   operatorRoute("makes images outside any session, on the operator's subscription"),
-	"POST /hooks":                                    operatorRoute("hook registry"),
-	"GET /hooks":                                     operatorRoute("hook registry"),
-	"GET /hook-options":                              operatorRoute("hook registry vocabulary"),
-	"POST /restart-drain":                            operatorRoute("hold every new turn until a restart, so the work running can finish"),
-	"DELETE /restart-drain":                          operatorRoute("stop holding new turns and send the messages held"),
-	"GET /restart-readiness":                         operatorRoute("which sessions a restart of this server would cut off; deploy.sh waits on it"),
-	"GET /settings":                                  operatorRoute("this server's own configuration, with where each value came from"),
-	"PUT /settings/{key}":                            operatorRoute("changes how this server behaves"),
-	"GET /hooks/{id}":                                operatorRoute("hook registry"),
-	"PATCH /hooks/{id}":                              operatorRoute("hook registry"),
-	"DELETE /hooks/{id}":                             operatorRoute("hook registry"),
-	"GET /credentials":                               operatorRoute("auth-store credentials"),
-	"POST /credentials":                              operatorRoute("auth-store credentials"),
-	"DELETE /credentials/{id}":                       operatorRoute("auth-store credentials"),
-	"GET /models":                                    operatorRoute("models joined to auth-store credential labels and masked keys"),
-	"GET /conformance":                               operatorRoute("harness conformance matrix"),
-	"POST /conformance/run":                          operatorRoute("runs harness conformance"),
-	"GET /bridge-prefs":                              operatorRoute("server preferences"),
-	"GET /effective-config":                          operatorRoute("what a session would be given, before it exists"),
-	"PUT /bridge-prefs":                              operatorRoute("server preferences"),
-	"POST /admin/file-inactive":                      operatorRoute("housekeeping across every session"),
-	"POST /admin/archive-old":                        operatorRoute("housekeeping across every session"),
-	"GET /machines":                                  operatorRoute("machine registry"),
-	"POST /machines":                                 operatorRoute("machine registry"),
-	"GET /machines/{id}":                             operatorRoute("machine registry"),
-	"PUT /machines/{id}":                             operatorRoute("machine registry"),
-	"PUT /machines/{id}/computer-use":                operatorRoute("machine registry"),
-	"DELETE /machines/{id}":                          operatorRoute("machine registry"),
-	"GET /machines/stats":                            operatorRoute("machine health readings"),
-	"GET /machines/{id}/stats/history":               operatorRoute("machine health readings"),
-	"GET /machines/{id}/disk-usage":                  operatorRoute("what fills a machine's drives"),
-	"POST /machines/{id}/disk-usage/scans":           operatorRoute("scans a machine's drive"),
-	"GET /machines/{id}/disk-usage/entries":          operatorRoute("what fills a machine's drives"),
-	"POST /machines/{id}/disk-usage/deletion-checks": operatorRoute("what fills a machine's drives"),
-	"POST /machines/{id}/disk-usage/deletions":       operatorRoute("deletes files on a machine for good"),
-	"GET /machines/{id}/disk-usage/deletions":        operatorRoute("the record of deletions on a machine"),
-	"POST /api/runner/seed/broadcast":                operatorRoute("tells every runner to reconcile"),
-
-	// Identity bindings in principal-store: who an Entra identity signs in as.
-	"GET /admin/identity-bindings":              operatorRoute("which outside identity signs in as which principal"),
-	"POST /admin/identity-bindings":             operatorRoute("decides who an outside identity signs in as"),
-	"POST /admin/identity-bindings/{id}/unlink": operatorRoute("stops an outside identity signing in, and ends its login sessions"),
-
-	// agent-store's library routes other than the two catalog reads above.
-	"POST /agents":                  operatorRoute("agent-store write"),
-	"PUT /agents/{slug}":            operatorRoute("agent-store write"),
-	"DELETE /agents/{slug}":         operatorRoute("agent-store write"),
-	"GET /agents/{slug}/harnesses":  operatorRoute("agent-store harness bindings"),
-	"POST /agents/{slug}/harnesses": operatorRoute("agent-store write"),
-	"GET /agents/{slug}/config":     operatorRoute("agent-store runtime config"),
-	"GET /configs":                  operatorRoute("agent-store runtime configs"),
-	"GET /reconcile":                operatorRoute("agent-store reconcile"),
-	"GET /files":                    operatorRoute("agent-store tracked context files"),
-	"GET /files/{id}":               operatorRoute("agent-store tracked context files"),
-	"GET /files/{id}/content":       operatorRoute("agent-store tracked context files"),
-	"PUT /files/{id}/content":       operatorRoute("agent-store write"),
-	"POST /files/{id}/enable":       operatorRoute("agent-store write"),
-	"POST /files/{id}/disable":      operatorRoute("agent-store write"),
-	"POST /files/scan":              operatorRoute("agent-store scan"),
-	// agent-store's prompt source: the host prompt every harness receives.
-	// Reading it shows the operator's whole prompt; writing it changes what
-	// every session on this host is told.
-	"GET /prompt-collections":                      operatorRoute("agent-store prompt source"),
-	"POST /prompt-collections":                     operatorRoute("agent-store write"),
-	"GET /prompt-collections/{id}":                 operatorRoute("agent-store prompt source"),
-	"POST /prompt-collections/{id}/sections":       operatorRoute("agent-store write"),
-	"POST /prompt-collections/{id}/render":         operatorRoute("agent-store write: rewrites prompt files on disk"),
-	"POST /prompt-collections/{id}/outputs":        operatorRoute("agent-store write"),
-	"GET /prompt-collections/{id}/revisions":       operatorRoute("agent-store prompt source"),
-	"POST /prompt-collections/import-untracked":    operatorRoute("agent-store write"),
-	"POST /prompt-outputs/{id}/enable":             operatorRoute("agent-store write"),
-	"POST /prompt-outputs/{id}/disable":            operatorRoute("agent-store write"),
-	"PUT /prompt-sections/{id}":                    operatorRoute("agent-store write"),
-	"DELETE /prompt-sections/{id}":                 operatorRoute("agent-store write"),
-	"GET /prompt-sections/{id}/revisions":          operatorRoute("agent-store prompt source"),
-	"GET /prompt-drifts":                           operatorRoute("agent-store prompt source"),
-	"POST /prompt-drifts/reconcile":                operatorRoute("agent-store write: may apply a file edit to the prompt"),
-	"GET /prompt-drifts/{id}":                      operatorRoute("agent-store prompt source"),
-	"GET /prompt-drifts/{id}/disk-content":         operatorRoute("agent-store prompt source"),
-	"PUT /prompt-drifts/{id}/annotation":           operatorRoute("agent-store write"),
-	"POST /prompt-drifts/{id}/apply":               operatorRoute("agent-store write: changes the prompt"),
-	"POST /prompt-drifts/{id}/dismiss":             operatorRoute("agent-store write"),
-	"GET /prompt-harness-deliveries":               operatorRoute("agent-store prompt source"),
-	"PUT /prompt-harness-deliveries/{harness}":     operatorRoute("agent-store write: decides whether a harness gets the prompt"),
-	"GET /prompt-delivery-options":                 operatorRoute("agent-store prompt source"),
-	"GET /tracked-file-ignore-rules":               operatorRoute("agent-store tracked context files"),
-	"POST /tracked-file-ignore-rules":              operatorRoute("agent-store write"),
-	"POST /tracked-file-ignore-rules/{id}/enable":  operatorRoute("agent-store write"),
-	"POST /tracked-file-ignore-rules/{id}/disable": operatorRoute("agent-store write"),
-	"GET /files/{id}/versions":                     operatorRoute("agent-store tracked context files"),
-	"GET /versions/{vid}/content":                  operatorRoute("agent-store tracked context files"),
-	"GET /seed/profiles":                           operatorRoute("agent-store seed"),
-	"GET /seed/profile":                            operatorRoute("agent-store seed"),
-	"PUT /seed/profile":                            operatorRoute("agent-store seed"),
-	"GET /seed/manifest":                           operatorRoute("agent-store seed"),
-	"POST /seed/observe":                           operatorRoute("agent-store seed"),
-	"POST /seed/drift":                             operatorRoute("agent-store seed"),
-	"GET /seed/state":                              operatorRoute("agent-store seed"),
-	"GET /context/resolve":                         operatorRoute("agent-store context"),
-
-	// tool-store, skill-store and bundle-store, mounted in this process.
-	"GET /tools/health":                                 toolStoreRoute,
-	"GET /tools/kinds":                                  toolStoreRoute,
-	"GET /tools/tools":                                  toolStoreRoute,
-	"POST /tools/tools":                                 toolStoreRoute,
-	"GET /tools/tools/{id}":                             toolStoreRoute,
-	"PATCH /tools/tools/{id}":                           toolStoreRoute,
-	"DELETE /tools/tools/{id}":                          toolStoreRoute,
-	"POST /tools/tools/{id}/enable":                     toolStoreRoute,
-	"POST /tools/tools/{id}/disable":                    toolStoreRoute,
-	"GET /tools/tools/by-name/{name}":                   toolStoreRoute,
-	"GET /tools/tools/by-name/{name}/spec":              toolStoreRoute,
-	"POST /tools/tools/by-name/{name}/invoke":           toolStoreRoute,
-	"GET /tools/tools/by-name/{name}/instances":         toolStoreRoute,
-	"POST /tools/harness-tools/observed":                toolStoreRoute,
-	"GET /tools/locals":                                 toolStoreRoute,
-	"POST /tools/provision":                             toolStoreRoute,
-	"GET /tools/instances/{id}/tools":                   toolStoreRoute,
-	"POST /tools/instances/{id}/tools/by-name/{name}":   toolStoreRoute,
-	"DELETE /tools/instances/{id}/tools/by-name/{name}": toolStoreRoute,
-	"GET /skills/health":                                skillStoreRoute,
-	"GET /skills/sources":                               skillStoreRoute,
-	"POST /skills/sources":                              skillStoreRoute,
-	"GET /skills/sources/{id}":                          skillStoreRoute,
-	"DELETE /skills/sources/{id}":                       skillStoreRoute,
-	"POST /skills/sources/{id}/sync":                    skillStoreRoute,
-	"GET /skills/skills":                                skillStoreRoute,
-	"GET /skills/skills/{id}":                           skillStoreRoute,
-	"DELETE /skills/skills/{id}":                        skillStoreRoute,
-	"GET /skills/skills/{id}/files":                     skillStoreRoute,
-	"GET /skills/skills/{id}/files/{path...}":           skillStoreRoute,
-	"POST /skills/skills/{id}/install":                  skillStoreRoute,
-	"POST /skills/skills/{id}/uninstall":                skillStoreRoute,
-	"GET /skills/installations":                         skillStoreRoute,
-	"GET /skills/seed/profile":                          skillStoreRoute,
-	"PUT /skills/seed/profile":                          skillStoreRoute,
-	"GET /skills/seed/manifest":                         skillStoreRoute,
-	"GET /skills/versions/{vid}/content":                skillStoreRoute,
-	"POST /skills/seed/observe":                         skillStoreRoute,
-	"POST /skills/seed/drift":                           skillStoreRoute,
-	"GET /api/skill-store/seed/manifest":                skillStoreRunnerSeedRoute,
-	"GET /api/skill-store/versions/{vid}/content":       skillStoreRunnerSeedRoute,
-	"POST /api/skill-store/seed/observe":                skillStoreRunnerSeedRoute,
-	"POST /api/skill-store/seed/drift":                  skillStoreRunnerSeedRoute,
-	"GET /bundles/health":                               bundleStoreRoute,
-	"GET /bundles/member-effects":                       bundleStoreRoute,
-	"GET /bundles/bundles":                              bundleStoreRoute,
-	"POST /bundles/bundles":                             bundleStoreRoute,
-	"GET /bundles/bundles/{id}":                         bundleStoreRoute,
-	"DELETE /bundles/bundles/{id}":                      bundleStoreRoute,
-	"POST /bundles/bundles/{id}/enable":                 bundleStoreRoute,
-	"POST /bundles/bundles/{id}/disable":                bundleStoreRoute,
-	"GET /bundles/bundles/by-name/{name}":               bundleStoreRoute,
-	"POST /bundles/resolve":                             bundleStoreRoute,
-
-	// memory-store's library routes.
-	// prediction-store, mounted in this process. Its ledger has no owner on a
-	// row, so any caller could rewrite, resolve or purge anyone's prediction;
-	// until rows carry an owning principal it is the operator's, as
-	// memory-store is. An administrator's session agent token reaches it.
-	"GET /predictions/health":                      predictionStoreRoute,
-	"GET /predictions/vocabulary":                  predictionStoreRoute,
-	"GET /predictions/categories":                  predictionStoreRoute,
-	"GET /predictions/tags":                        predictionStoreRoute,
-	"GET /predictions/calibration":                 predictionStoreRoute,
-	"GET /predictions/base-rates":                  predictionStoreRoute,
-	"GET /predictions/predictions":                 predictionStoreRoute,
-	"POST /predictions/predictions":                predictionStoreRoute,
-	"GET /predictions/predictions/{id}":            predictionStoreRoute,
-	"PATCH /predictions/predictions/{id}":          predictionStoreRoute,
-	"DELETE /predictions/predictions/{id}":         predictionStoreRoute,
-	"POST /predictions/predictions/{id}/restore":   predictionStoreRoute,
-	"GET /predictions/predictions/{id}/estimates":  predictionStoreRoute,
-	"POST /predictions/predictions/{id}/estimates": predictionStoreRoute,
-	"POST /predictions/predictions/{id}/resolve":   predictionStoreRoute,
-	"GET /predictions/predictions/{id}/links":      predictionStoreRoute,
-	"POST /predictions/predictions/{id}/links":     predictionStoreRoute,
-	"DELETE /predictions/links/{id}":               predictionStoreRoute,
-
-	// notes, mounted in this process. Its notes are the operator's own,
-	// private, with no owner on a row, so it is the operator's, as
-	// prediction-store is. An administrator's session agent token reaches it.
-	"GET /notes/health":                 notesRoute,
-	"GET /notes/items":                  notesRoute,
-	"POST /notes/items":                 notesRoute,
-	"POST /notes/items/rerank":          notesRoute,
-	"POST /notes/items/query":           notesRoute,
-	"POST /notes/items/batch":           notesRoute,
-	"GET /notes/items/query-options":    notesRoute,
-	"GET /notes/items/{id}":             notesRoute,
-	"PATCH /notes/items/{id}":           notesRoute,
-	"DELETE /notes/items/{id}":          notesRoute,
-	"GET /notes/items/{id}/revisions":   notesRoute,
-	"POST /notes/items/{id}/restore":    notesRoute,
-	"POST /notes/items/{id}/hold":       notesRoute,
-	"POST /notes/items/{id}/unhold":     notesRoute,
-	"GET /notes/items/{id}/occurrences": notesRoute,
-	"GET /notes/lists":                  notesRoute,
-	"GET /notes/tags":                   notesRoute,
-	"GET /notes/search":                 notesRoute,
-
-	// The content of issues, mounted in this process beside the boards and
-	// cards of /issues/.
-	"GET /issues/items":                  issueItemsRoute,
-	"POST /issues/items":                 issueItemsRoute,
-	"POST /issues/items/rerank":          issueItemsRoute,
-	"POST /issues/items/query":           issueItemsRoute,
-	"POST /issues/items/batch":           issueItemsRoute,
-	"GET /issues/items/query-options":    issueItemsRoute,
-	"GET /issues/items/health":           issueItemsRoute,
-	"GET /issues/items/tags":             issueItemsRoute,
-	"GET /issues/items/search":           issueItemsRoute,
-	"GET /issues/items/{id}":             issueItemsRoute,
-	"PATCH /issues/items/{id}":           issueItemsRoute,
-	"DELETE /issues/items/{id}":          issueItemsRoute,
-	"GET /issues/items/{id}/revisions":   issueItemsRoute,
-	"POST /issues/items/{id}/restore":    issueItemsRoute,
-	"POST /issues/items/{id}/hold":       issueItemsRoute,
-	"POST /issues/items/{id}/unhold":     issueItemsRoute,
-	"GET /issues/items/{id}/occurrences": issueItemsRoute,
-
-	// permission-store, mounted in this process.
-	"GET /permissions/healthz":       permissionStoreOperatorRoute,
-	"GET /permissions/rules":         permissionStoreOperatorRoute,
-	"POST /permissions/rules":        permissionStoreOperatorRoute,
-	"GET /permissions/rules/{id}":    permissionStoreOperatorRoute,
-	"PATCH /permissions/rules/{id}":  permissionStoreOperatorRoute,
-	"DELETE /permissions/rules/{id}": permissionStoreOperatorRoute,
-	"POST /permissions/evaluate":     permissionStoreOperatorRoute,
-	"GET /permissions/audit":         permissionStoreOperatorRoute,
-	// sign-in-store, mounted in this process.
-	"GET /sign-in/health":                            openRoute("says sign-in-store answers, nothing about anyone"),
-	"POST /sign-in/link-requests":                    signInStoreBrowserRoute,
-	"POST /sign-in/redeem":                           signInStoreBrowserRoute,
-	"GET /sign-in/session":                           signInStoreBrowserRoute,
-	"POST /sign-in/sign-out":                         signInStoreBrowserRoute,
-	"GET /sign-in/discord/start":                     signInStoreBrowserRoute,
-	"GET /sign-in/discord/callback":                  signInStoreBrowserRoute,
-	"POST /sign-in/sign-in-links":                    signInStoreAdministratorRoute,
-	"GET /sign-in/sign-in-links":                     signInStoreAdministratorRoute,
-	"GET /sign-in/sessions":                          signInStoreAdministratorRoute,
-	"POST /sign-in/sessions/{id}/revoke":             signInStoreAdministratorRoute,
-	"POST /sign-in/principals/{id}/discord-messages": signInStoreAdministratorRoute,
-	// grant-store, mounted in this process.
-	"GET /grants/health":                    grantStoreRoute,
-	"GET /grants/relations":                 grantStoreRoute,
-	"GET /grants/resource-types":            grantStoreRoute,
-	"GET /grants/grants":                    grantStoreRoute,
-	"POST /grants/grants":                   grantStoreRoute,
-	"GET /grants/grants/{id}":               grantStoreRoute,
-	"POST /grants/grants/{id}/revoke":       grantStoreRoute,
-	"GET /grants/principals/{id}/effective": grantStoreRoute,
-	// project-store, mounted in this process, for the same reason.
-	"GET /projects/health":                                       projectStoreRoute,
-	"GET /projects/vocabulary":                                   projectStoreRoute,
-	"GET /projects/projects":                                     projectStoreRoute,
-	"POST /projects/projects":                                    projectStoreRoute,
-	"GET /projects/digest":                                       projectStoreRoute,
-	"GET /projects/projects/{id}":                                projectStoreRoute,
-	"PATCH /projects/projects/{id}":                              projectStoreRoute,
-	"GET /projects/projects/{id}/rollup":                         projectStoreRoute,
-	"GET /projects/projects/{id}/changes":                        projectStoreRoute,
-	"GET /projects/projects/{id}/links":                          projectStoreRoute,
-	"POST /projects/projects/{id}/links":                         projectStoreRoute,
-	"DELETE /projects/projects/{id}/links/{link_id}":             projectStoreRoute,
-	"GET /projects/links":                                        projectStoreRoute,
-	"GET /projects/projects/{id}/activity":                       projectStoreRoute,
-	"POST /projects/projects/{id}/next-steps":                    projectStoreRoute,
-	"GET /projects/projects/{id}/suggestions":                    projectStoreRoute,
-	"POST /projects/projects/{id}/suggestions":                   projectStoreRoute,
-	"POST /projects/suggestions/{suggestion_id}/accept":          projectStoreRoute,
-	"POST /projects/suggestions/{suggestion_id}/dismiss":         projectStoreRoute,
-	"GET /projects/projects/{id}/goals":                          projectStoreRoute,
-	"POST /projects/projects/{id}/goals":                         projectStoreRoute,
-	"GET /projects/goals":                                        projectStoreRoute,
-	"GET /projects/goals/{goal_id}":                              projectStoreRoute,
-	"PATCH /projects/goals/{goal_id}":                            projectStoreRoute,
-	"GET /projects/goals/{goal_id}/changes":                      projectStoreRoute,
-	"GET /projects/goals/{goal_id}/links":                        projectStoreRoute,
-	"POST /projects/goals/{goal_id}/links":                       projectStoreRoute,
-	"DELETE /projects/goals/{goal_id}/links/{link_id}":           projectStoreRoute,
-	"GET /projects/goal-links":                                   projectStoreRoute,
-	"GET /projects/session-filings":                              projectStoreRoute,
-	"POST /projects/session-filings/run":                         projectStoreRoute,
-	"POST /projects/session-filings/{session_filing_id}/accept":  projectStoreRoute,
-	"POST /projects/session-filings/{session_filing_id}/dismiss": projectStoreRoute,
-
-	// principal-store, mounted in this process.
-	"GET /principals/health":                                  principalStoreOperatorRoute,
-	"GET /principals/kinds":                                   principalStoreVocabularyRoute,
-	"GET /principals/kind-definitions":                        principalStoreVocabularyRoute,
-	"GET /principals/availability-reasons":                    principalStoreVocabularyRoute,
-	"GET /principals/weekday-codes":                           principalStoreVocabularyRoute,
-	"GET /principals/identity-providers":                      principalStoreVocabularyRoute,
-	"GET /principals/principals":                              principalStoreOperatorRoute,
-	"POST /principals/principals":                             principalStoreOperatorRoute,
-	"POST /principals/contacts/resolve":                       principalStoreOperatorRoute,
-	"GET /principals/principals/{id}":                         principalStoreOperatorRoute,
-	"PATCH /principals/principals/{id}":                       principalStoreOperatorRoute,
-	"POST /principals/principals/{id}/disable":                principalStoreOperatorRoute,
-	"POST /principals/principals/{id}/enable":                 principalStoreOperatorRoute,
-	"GET /principals/principals/{id}/members":                 principalStoreOperatorRoute,
-	"PUT /principals/principals/{group}/members/{member}":     principalStoreOperatorRoute,
-	"DELETE /principals/principals/{group}/members/{member}":  principalStoreOperatorRoute,
-	"GET /principals/principals/{id}/groups":                  principalStoreOperatorRoute,
-	"GET /principals/principals/{id}/availability":            principalStoreOperatorRoute,
-	"GET /principals/principals/{id}/time-off":                principalStoreOperatorRoute,
-	"POST /principals/principals/{id}/time-off":               principalStoreOperatorRoute,
-	"DELETE /principals/principals/{id}/time-off/{timeOffID}": principalStoreOperatorRoute,
-	"GET /principals/identity-bindings":                       identityBindingOperatorRoute,
-	"GET /principals/identity-bindings/resolve":               identityBindingOperatorRoute,
-	"GET /principals/identity-bindings/{id}":                  identityBindingOperatorRoute,
-	"POST /principals/identity-bindings":                      operatorRoute("decides who an outside identity signs in as"),
-	"POST /principals/identity-bindings/{id}/unlink":          operatorRoute("stops an outside identity signing in, and ends its login sessions"),
-	"POST /memories":                                          operatorRoute("memory-store is not partitioned by principal"),
-	"GET /memories/{id}":                                      operatorRoute("memory-store is not partitioned by principal"),
-	"DELETE /memories/{id}":                                   operatorRoute("memory-store is not partitioned by principal"),
-	"POST /memories/search":                                   operatorRoute("memory-store is not partitioned by principal"),
-	"GET /memories/recent":                                    operatorRoute("memory-store is not partitioned by principal"),
-	"POST /memories/decay":                                    operatorRoute("memory-store is not partitioned by principal"),
-	"POST /memories/compact":                                  operatorRoute("memory-store is not partitioned by principal"),
-	"POST /memories/context":                                  operatorRoute("memory-store is not partitioned by principal"),
-}
-
-// requestCallerContextKey carries who an authorized request acts as.
-type requestCallerContextKey struct{}
-
-// requestCaller is who an authorized request acts as, as request
-// authorization established it.
-// peerCaller is what a peer token says about the server presenting it: the
-// grant it was issued by, the connection that grant is on, its level, and the
-// peer principal it acts as. When the request also names one of the calling
-// server's users (peerUserHeader), remoteUserPrincipalID is that user's id
-// there and mappingID the mapping that made it one of this server's
-// principals; the request's principalID is then the mapped local principal,
-// and peerPrincipalID still limits what it may do.
-type peerCaller struct {
-	grantID         string
-	connectionID    string
-	level           string
-	peerPrincipalID string
-	// peerIsAdministrator is principal-store's answer for the peer principal.
-	peerIsAdministrator   bool
-	remoteUserPrincipalID string
-	mappingID             string
-}
-
-// actsForRemoteUser reports whether a peer request names one of the calling
-// server's users and so acts as a mapped local principal.
-func (peer *peerCaller) actsForRemoteUser() bool {
-	return peer != nil && peer.remoteUserPrincipalID != ""
-}
-
-type requestCaller struct {
-	// principalID is the principal the request acts as, and empty for the
-	// internal service acting as itself.
-	principalID string
-	// isAdministrator is principal-store's own answer for principalID. An
-	// administrator is past every per-resource check: every session whoever
-	// owns it, every operator route, every list unfiltered, both store
-	// proxies.
-	isAdministrator bool
-	// loginSessionID is the login session whose cookie authenticated the
-	// request, and empty for every other credential.
-	loginSessionID string
-	// peer is set when another llm-bridge-server presented a peer token;
-	// principalID is then the peer principal the token acts as.
-	peer *peerCaller
-	// postingAgentOfSessionID is set, and nothing else is, when the caller
-	// is a session's own agent presenting its session posting token. It reaches
-	// only routeSessionOwnerOrItsAgentPostsIntoSession, for this session.
-	postingAgentOfSessionID string
-	// delegatingAgentOfSessionID is set when the caller is a session's agent
-	// presenting its posting token on a route that lets it start or drive its
-	// delegates. principalID is then the principal that session runs with,
-	// empty when it runs with none.
-	delegatingAgentOfSessionID string
-	// observesEverySession is set on a read-only route that narrows to one
-	// principal's sessions when the caller's can_observe_sessions_on grants
-	// name every instance: sessionScopeRestrictingRequest then narrows
-	// nothing.
-	observesEverySession bool
-}
-
-// sessionScopeOfCaller is the sessions a restricted caller reaches by
-// ownership (peer_users.go).
-func sessionScopeOfCaller(caller requestCaller) sessionScope {
-	scope := sessionScope{principalID: caller.principalID}
-	if caller.peer.actsForRemoteUser() {
-		scope.throughPeerPrincipalID = caller.peer.peerPrincipalID
-	}
-	return scope
-}
-
-// narrowsToOnePrincipal reports whether this caller's answers must be limited
-// to one principal's own records. The internal service and an administrator
-// are identified but not narrowed.
-func (caller requestCaller) narrowsToOnePrincipal() bool {
-	return caller.principalID != "" && !caller.isAdministrator
-}
-
-func callerOfRequest(r *http.Request) (requestCaller, bool) {
-	caller, ok := r.Context().Value(requestCallerContextKey{}).(requestCaller)
-	return caller, ok
-}
-
-// principalRestrictingRequest returns the principal a request is restricted
-// to, and "" with false when it is not restricted: the caller is the internal
-// service acting as itself, or an administrator. Handlers that narrow their
-// answer to one principal's sessions read it here and nowhere else.
-//
-// The id is empty whenever the bool is false, so a caller that reads only the
-// id — a store filter where "" means every owner — cannot narrow an
-// administrator to the sessions that happen to carry their own id.
-// principalIdentityOfRequest is the one that names an administrator.
-func principalRestrictingRequest(r *http.Request) (string, bool) {
-	caller, ok := callerOfRequest(r)
-	if !ok || !caller.narrowsToOnePrincipal() {
-		return "", false
-	}
-	return caller.principalID, true
-}
-
-// principalIdentityOfRequest returns who the request acts as, whether or not
-// that narrows what it may reach — an administrator is identified here and
-// restricted nowhere. The store proxies set X-Principal-Id from this, because
-// kanban-store and grant-store make their own administrator check.
-func principalIdentityOfRequest(r *http.Request) (string, bool) {
-	caller, ok := callerOfRequest(r)
-	return caller.principalID, ok && caller.principalID != ""
-}
-
-func withRequestCaller(r *http.Request, caller requestCaller) *http.Request {
-	return r.WithContext(context.WithValue(r.Context(), requestCallerContextKey{}, caller))
-}
 
 // authorizeAndServe is ServeHTTP: every request reaches the mux through here.
 func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
@@ -964,22 +64,22 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	presentedPeerTokens, peerTokenPresent := r.Header[http.CanonicalHeaderKey(peerTokenHeader)]
-	presentedPeerUsers, peerUserPresent := r.Header[http.CanonicalHeaderKey(peerUserHeader)]
+	presentedPeerTokens, peerTokenPresent := r.Header[http.CanonicalHeaderKey(requestcaller.PeerTokenHeader)]
+	presentedPeerUsers, peerUserPresent := r.Header[http.CanonicalHeaderKey(requestcaller.PeerUserHeader)]
 	if peerUserPresent && !peerTokenPresent {
-		writeJSONError(w, http.StatusBadRequest, "peer_user_without_peer_token", fmt.Sprintf(
-			"%s names a connected server's user and means nothing without %s", peerUserHeader, peerTokenHeader))
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "peer_user_without_peer_token", fmt.Sprintf(
+			"%s names a connected server's user and means nothing without %s", requestcaller.PeerUserHeader, requestcaller.PeerTokenHeader))
 		return
 	}
-	if _, serviceTokenPresent := r.Header[http.CanonicalHeaderKey(serviceTokenHeader)]; peerTokenPresent && serviceTokenPresent {
-		writeJSONError(w, http.StatusBadRequest, "ambiguous_credentials", fmt.Sprintf(
-			"%s and %s were both sent; a request comes from one caller", serviceTokenHeader, peerTokenHeader))
+	if _, serviceTokenPresent := r.Header[http.CanonicalHeaderKey(requestcaller.ServiceTokenHeader)]; peerTokenPresent && serviceTokenPresent {
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "ambiguous_credentials", fmt.Sprintf(
+			"%s and %s were both sent; a request comes from one caller", requestcaller.ServiceTokenHeader, requestcaller.PeerTokenHeader))
 		return
 	}
 
-	if presentedServiceToken, present := r.Header[http.CanonicalHeaderKey(serviceTokenHeader)]; present {
+	if presentedServiceToken, present := r.Header[http.CanonicalHeaderKey(requestcaller.ServiceTokenHeader)]; present {
 		if len(presentedServiceToken) != 1 || subtle.ConstantTimeCompare([]byte(presentedServiceToken[0]), []byte(s.cfg.ServiceToken)) != 1 {
-			writeJSONError(w, http.StatusUnauthorized, "invalid_service_token", serviceTokenHeader+" does not match this server's service token")
+			httpjson.WriteJSONError(w, http.StatusUnauthorized, "invalid_service_token", requestcaller.ServiceTokenHeader+" does not match this server's service token")
 			return
 		}
 		assertedPrincipalHeaderName := principalIdentityHeaderNameIn(r.Header)
@@ -991,16 +91,16 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 		}
 		assertedPrincipalIDs := r.Header[assertedPrincipalHeaderName]
 		if len(assertedPrincipalIDs) != 1 {
-			writeJSONError(w, http.StatusBadRequest, "ambiguous_principal_header", fmt.Sprintf(
+			httpjson.WriteJSONError(w, http.StatusBadRequest, "ambiguous_principal_header", fmt.Sprintf(
 				"%s was sent %d times (%v); a request acts as one principal", assertedPrincipalHeaderName, len(assertedPrincipalIDs), assertedPrincipalIDs))
 			return
 		}
 		caller, credentialError := s.callerAssertedByInternalService(r.Context(), strings.TrimSpace(assertedPrincipalIDs[0]))
 		if credentialError != nil {
-			credentialError.write(w)
+			credentialError.Write(w)
 			return
 		}
-		rule, classified := routeAccessRules[pattern]
+		rule, classified := routeaccess.RouteAccessRules[pattern]
 		if !classified {
 			// The fence in front of an unclassified route is not about who is
 			// calling: nobody has decided who may call it yet, and neither an
@@ -1017,13 +117,13 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 	// token makes it believable. Refused here, before the route's class is
 	// looked at, so there is no route on which it could be believed.
 	if headerName := principalIdentityHeaderNameIn(r.Header); headerName != "" {
-		writeJSONError(w, http.StatusUnauthorized, "principal_header_without_service_token", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusUnauthorized, "principal_header_without_service_token", fmt.Sprintf(
 			"%s says which principal a request acts as and is believed only from a caller presenting %s; sign in with GET /auth/entra/start or POST /auth/demo-login instead",
-			headerName, serviceTokenHeader))
+			headerName, requestcaller.ServiceTokenHeader))
 		return
 	}
 
-	rule, classified := routeAccessRules[pattern]
+	rule, classified := routeaccess.RouteAccessRules[pattern]
 	if !classified {
 		refuseUnclassifiedRoute(w, pattern)
 		return
@@ -1034,8 +134,8 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 	// public reverse proxy carries the headers it sets, and is refused here
 	// whatever else it presents, so a mistake in the proxy's rules cannot open
 	// them. The runner's own routes are exempt (answersThroughPublicProxy).
-	if rule.class == routeHarnessCallback && !rule.answersThroughPublicProxy && requestCameThroughPublicProxy(r) {
-		writeJSONError(w, http.StatusForbidden, "harness_callback_not_public", fmt.Sprintf(
+	if rule.Class == routeaccess.RouteHarnessCallback && !rule.AnswersThroughPublicProxy && requestcaller.RequestCameThroughPublicProxy(r) {
+		httpjson.WriteJSONError(w, http.StatusForbidden, "harness_callback_not_public", fmt.Sprintf(
 			"%s is called by this host's own processes and is not answered through the public proxy", pattern))
 		return
 	}
@@ -1044,10 +144,10 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 	// its token names, or is a connection call: the routes open to everyone
 	// and the harness callbacks are for this host's own callers, never for a
 	// peer, however it arrived.
-	socketConnectionID, arrivedOverPeerSocket := peerSocketConnectionOfRequest(r)
-	if arrivedOverPeerSocket && !peerTokenPresent && rule.class != routePeerConnectionCall {
-		writeJSONError(w, http.StatusForbidden, "peer_socket_requires_peer_token", fmt.Sprintf(
-			"a request over a peer socket must present %s, or be a connection call; %s is neither", peerTokenHeader, pattern))
+	socketConnectionID, arrivedOverPeerSocket := peers.PeerSocketConnectionOfRequest(r)
+	if arrivedOverPeerSocket && !peerTokenPresent && rule.Class != routeaccess.RoutePeerConnectionCall {
+		httpjson.WriteJSONError(w, http.StatusForbidden, "peer_socket_requires_peer_token", fmt.Sprintf(
+			"a request over a peer socket must present %s, or be a connection call; %s is neither", requestcaller.PeerTokenHeader, pattern))
 		return
 	}
 
@@ -1056,60 +156,60 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 	// signed in as that principal would be.
 	if peerTokenPresent {
 		if len(presentedPeerTokens) != 1 || strings.TrimSpace(presentedPeerTokens[0]) == "" {
-			writeJSONError(w, http.StatusBadRequest, "ambiguous_peer_token", fmt.Sprintf(
-				"%s was sent %d times or empty; a request presents one peer token", peerTokenHeader, len(presentedPeerTokens)))
+			httpjson.WriteJSONError(w, http.StatusBadRequest, "ambiguous_peer_token", fmt.Sprintf(
+				"%s was sent %d times or empty; a request presents one peer token", requestcaller.PeerTokenHeader, len(presentedPeerTokens)))
 			return
 		}
 		if _, hasAuthorization := r.Header["Authorization"]; hasAuthorization {
-			writeJSONError(w, http.StatusBadRequest, "ambiguous_credentials", fmt.Sprintf(
-				"%s and an Authorization header were both sent; a request comes from one caller", peerTokenHeader))
+			httpjson.WriteJSONError(w, http.StatusBadRequest, "ambiguous_credentials", fmt.Sprintf(
+				"%s and an Authorization header were both sent; a request comes from one caller", requestcaller.PeerTokenHeader))
 			return
 		}
 		if !arrivedOverPeerSocket && s.cfg.DemoLoginEnabled {
-			writeJSONError(w, http.StatusConflict, "demo_login_enabled",
+			httpjson.WriteJSONError(w, http.StatusConflict, "demo_login_enabled",
 				"a peer token by https is refused while demo login is on: it is a call from another machine, and demo login signs anyone in as anyone; a peer reaches this server over the socket this server dialed")
 			return
 		}
-		if rule.class == routeHarnessCallback || rule.class == routePeerConnectionCall {
-			writeJSONError(w, http.StatusForbidden, "route_not_for_peers", fmt.Sprintf(
+		if rule.Class == routeaccess.RouteHarnessCallback || rule.Class == routeaccess.RoutePeerConnectionCall {
+			httpjson.WriteJSONError(w, http.StatusForbidden, "route_not_for_peers", fmt.Sprintf(
 				"%s is called by this host's own processes or as a connection call, never with a peer token", pattern))
 			return
 		}
-		if rule.signsIn {
-			writeJSONError(w, http.StatusForbidden, "route_not_for_peers", fmt.Sprintf(
+		if rule.SignsIn {
+			httpjson.WriteJSONError(w, http.StatusForbidden, "route_not_for_peers", fmt.Sprintf(
 				"%s signs a person in or out of this server, and another server never does that", pattern))
 			return
 		}
 		caller, credentialError := s.callerOfPeerToken(r.Context(), presentedPeerTokens[0], socketConnectionID, arrivedOverPeerSocket)
 		if credentialError != nil {
-			credentialError.write(w)
+			credentialError.Write(w)
 			return
 		}
 		if !arrivedOverPeerSocket {
 			// Over a socket, serveRequest has already read and stamped the id and name.
-			s.noteOtherServerIdentity(caller.peer.connectionID, r.Header)
-			s.stampThisServersIdentity(w.Header())
+			s.peers.NoteOtherServerIdentity(caller.Peer.ConnectionID, r.Header)
+			s.peers.StampThisServersIdentity(w.Header())
 		}
 		if peerUserPresent {
 			if len(presentedPeerUsers) != 1 || strings.TrimSpace(presentedPeerUsers[0]) == "" {
-				writeJSONError(w, http.StatusBadRequest, "ambiguous_peer_user", fmt.Sprintf(
-					"%s was sent %d times or empty; a request names one user", peerUserHeader, len(presentedPeerUsers)))
+				httpjson.WriteJSONError(w, http.StatusBadRequest, "ambiguous_peer_user", fmt.Sprintf(
+					"%s was sent %d times or empty; a request names one user", requestcaller.PeerUserHeader, len(presentedPeerUsers)))
 				return
 			}
 			caller, credentialError = s.callerForPeerUser(r.Context(), caller, strings.TrimSpace(presentedPeerUsers[0]))
 			if credentialError != nil {
-				credentialError.write(w)
+				credentialError.Write(w)
 				return
 			}
 		}
-		trackedRequest, forget := s.peerRequestsInFlight.track(r, caller.peer)
+		trackedRequest, forget := s.peerRequestsInFlight.Track(r, caller.Peer)
 		defer forget()
 		s.serveAsCaller(w, trackedRequest, pattern, rule, caller)
 		return
 	}
 
-	switch rule.class {
-	case routeOpenToEveryone, routeHarnessCallback, routePeerConnectionCall:
+	switch rule.Class {
+	case routeaccess.RouteOpenToEveryone, routeaccess.RouteHarnessCallback, routeaccess.RoutePeerConnectionCall:
 		s.mux.ServeHTTP(w, r)
 		return
 	}
@@ -1119,39 +219,39 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 	// posting token.
 	_, hasAuthorization := r.Header["Authorization"]
 	presentedBearer := bearerTokenOf(r)
-	presentsPostingToken := hasAuthorization && !isSessionAgentToken(presentedBearer) && !isServicePrincipalToken(presentedBearer)
-	if presentsPostingToken && rule.class == routeSessionOwnerOrItsAgentPostsIntoSession {
+	presentsPostingToken := hasAuthorization && !login.IsSessionAgentToken(presentedBearer) && !login.IsServicePrincipalToken(presentedBearer)
+	if presentsPostingToken && rule.Class == routeaccess.RouteSessionOwnerOrItsAgentPostsIntoSession {
 		caller, credentialError := s.postingAgentOfRequest(r, pattern, rule)
 		if credentialError != nil {
-			credentialError.write(w)
+			credentialError.Write(w)
 			return
 		}
-		s.mux.ServeHTTP(w, withRequestCaller(r, caller))
+		s.mux.ServeHTTP(w, requestcaller.WithCaller(r, caller))
 		return
 	}
 
-	if presentsPostingToken && rule.sessionAgentAccess != sessionAgentNotAccepted {
+	if presentsPostingToken && rule.SessionAgentAccess != routeaccess.SessionAgentNotAccepted {
 		s.serveDelegatingAgent(w, r, pattern, rule)
 		return
 	}
 
 	principalID, loginSessionID, sessionAgentTokenSessionID, credentialError := s.principalOfRequest(r, rule)
 	if credentialError != nil {
-		credentialError.write(w)
+		credentialError.Write(w)
 		return
 	}
 	caller, credentialError := s.callerActingAsPrincipal(r.Context(), principalID)
 	if credentialError != nil {
-		credentialError.write(w)
+		credentialError.Write(w)
 		return
 	}
-	if sessionAgentTokenSessionID != "" && rule.class != routePrincipalOrSessionAgentThroughStoreProxy {
+	if sessionAgentTokenSessionID != "" && rule.Class != routeaccess.RoutePrincipalOrSessionAgentThroughStoreProxy {
 		if caller, credentialError = s.administratorOfSessionAgentToken(r, pattern, caller, sessionAgentTokenSessionID); credentialError != nil {
-			credentialError.write(w)
+			credentialError.Write(w)
 			return
 		}
 	}
-	caller.loginSessionID = loginSessionID
+	caller.LoginSessionID = loginSessionID
 	s.serveAsCaller(w, r, pattern, rule, caller)
 }
 
@@ -1163,19 +263,19 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 // peer the session was started through, as a posting token is, and never
 // answers through the public reverse proxy, so a token copied out of a
 // transcript reaches nothing from outside this host.
-func (s *Server) administratorOfSessionAgentToken(r *http.Request, pattern string, caller requestCaller, sessionID string) (requestCaller, *requestCredentialError) {
+func (s *Server) administratorOfSessionAgentToken(r *http.Request, pattern string, caller requestcaller.Caller, sessionID string) (requestcaller.Caller, *requestcaller.CredentialError) {
 	caller, credentialError := s.administratorOnlyIfSessionPeerIsOne(r.Context(), caller, sessionID)
 	if credentialError != nil {
-		return requestCaller{}, credentialError
+		return requestcaller.Caller{}, credentialError
 	}
-	if !caller.isAdministrator {
-		return requestCaller{}, &requestCredentialError{http.StatusUnauthorized, "authorization_header_not_accepted", fmt.Sprintf(
+	if !caller.IsAdministrator {
+		return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "authorization_header_not_accepted", fmt.Sprintf(
 			"a session agent token is accepted on %s only for a principal principal-store marks is_administrator, and %s is not one; anyone's is accepted on %s/, %s/, %s/ and %s/",
-			pattern, caller.principalID, issuesMountPrefix, grantsMountPrefix, mailMountPrefix, referencesMountPrefix)}
+			pattern, caller.PrincipalID, routeaccess.IssuesMountPrefix, routeaccess.GrantsMountPrefix, routeaccess.MailMountPrefix, referencesMountPrefix))
 	}
-	if requestCameThroughPublicProxy(r) {
-		return requestCaller{}, &requestCredentialError{http.StatusForbidden, "session_agent_token_not_public", fmt.Sprintf(
-			"an administrator's session agent token reaches %s only from this host, never through the public proxy", pattern)}
+	if requestcaller.RequestCameThroughPublicProxy(r) {
+		return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusForbidden, "session_agent_token_not_public", fmt.Sprintf(
+			"an administrator's session agent token reaches %s only from this host, never through the public proxy", pattern))
 	}
 	return caller, nil
 }
@@ -1190,82 +290,66 @@ func bearerTokenOf(r *http.Request) string {
 	return strings.TrimSpace(token)
 }
 
-// publicProxyHeaders are set by the reverse proxy in front of this server on
-// every request it forwards. A harness child, a sidecar or a runner reaching
-// 127.0.0.1 directly or through an SSH tunnel sends none of them.
-var publicProxyHeaders = []string{"X-Forwarded-For", "X-Forwarded-Proto", "X-Real-Ip", "Forwarded"}
-
-// requestCameThroughPublicProxy reports whether any header the public reverse
-// proxy sets is present.
-func requestCameThroughPublicProxy(r *http.Request) bool {
-	for _, name := range publicProxyHeaders {
-		if _, present := r.Header[http.CanonicalHeaderKey(name)]; present {
-			return true
-		}
-	}
-	return false
-}
-
 // refuseUnclassifiedRoute answers a route nobody has written a rule for.
 func refuseUnclassifiedRoute(w http.ResponseWriter, pattern string) {
-	writeJSONError(w, http.StatusForbidden, "route_not_classified", fmt.Sprintf(
+	httpjson.WriteJSONError(w, http.StatusForbidden, "route_not_classified", fmt.Sprintf(
 		"route %q has no access rule, so only the service token may call it", pattern))
 }
 
 // serveAsCaller applies the route's rule to a caller acting as a principal and
 // dispatches, or writes the refusal the rule decides on.
-func (s *Server) serveAsCaller(w http.ResponseWriter, r *http.Request, pattern string, rule routeAccessRule, caller requestCaller) {
-	switch rule.class {
-	case routeOpenToEveryone, routeHarnessCallback:
-		s.mux.ServeHTTP(w, withRequestCaller(r, caller))
+func (s *Server) serveAsCaller(w http.ResponseWriter, r *http.Request, pattern string, rule routeaccess.RouteAccessRule, caller requestcaller.Caller) {
+	switch rule.Class {
+	case routeaccess.RouteOpenToEveryone, routeaccess.RouteHarnessCallback:
+		s.mux.ServeHTTP(w, requestcaller.WithCaller(r, caller))
 		return
 	}
-	if caller.peer != nil && rule.class == routePrincipalActsThroughPeerConnection {
-		writeJSONError(w, http.StatusForbidden, "route_not_for_peers", fmt.Sprintf(
+	if caller.Peer != nil && rule.Class == routeaccess.RoutePrincipalActsThroughPeerConnection {
+		httpjson.WriteJSONError(w, http.StatusForbidden, "route_not_for_peers", fmt.Sprintf(
 			"%s reaches a server connected to this one, and a connected server may not go on through it to another", pattern))
 		return
 	}
-	if caller.isAdministrator {
+	if caller.IsAdministrator {
 		// principal-store says this person may do anything here, so no
 		// per-resource check applies. The identity still travels with the
 		// request: the store proxies set X-Principal-Id from it, and
 		// kanban-store and grant-store make their own administrator check.
-		s.mux.ServeHTTP(w, withRequestCaller(r, caller))
+		s.mux.ServeHTTP(w, requestcaller.WithCaller(r, caller))
 		return
 	}
-	if caller.peer.actsForRemoteUser() && routeClassIsRefusedToPeerUsers(rule.class) {
-		writeJSONError(w, http.StatusForbidden, "route_not_for_peer_users", fmt.Sprintf(
-			"%s answers as one principal from a store or record this server cannot narrow to what both the connected server and its mapped user may do, so a connected server's user is refused it (%s)", pattern, rule.reason))
+	if caller.Peer.ActsForRemoteUser() && routeClassIsRefusedToPeerUsers(rule.Class) {
+		httpjson.WriteJSONError(w, http.StatusForbidden, "route_not_for_peer_users", fmt.Sprintf(
+			"%s answers as one principal from a store or record this server cannot narrow to what both the connected server and its mapped user may do, so a connected server's user is refused it (%s)", pattern, rule.Reason))
 		return
 	}
-	switch rule.class {
-	case routeOperatorOnly:
-		writeJSONError(w, http.StatusForbidden, "operator_route", fmt.Sprintf(
-			"operator route: use the service token (%s: %s)", pattern, rule.reason))
+	switch rule.Class {
+	case routeaccess.RouteOperatorOnly:
+		httpjson.WriteJSONError(w, http.StatusForbidden, "operator_route", fmt.Sprintf(
+			"operator route: use the service token (%s: %s)", pattern, rule.Reason))
 		return
-	case routePrincipalRefusedCannotBeFiltered:
-		writeJSONError(w, http.StatusForbidden, "route_not_available_to_principals", fmt.Sprintf(
-			"%s cannot be narrowed to one principal's sessions (%s), so it is refused rather than answered across principals; use the service token", pattern, rule.reason))
+	case routeaccess.RoutePrincipalRefusedCannotBeFiltered:
+		httpjson.WriteJSONError(w, http.StatusForbidden, "route_not_available_to_principals", fmt.Sprintf(
+			"%s cannot be narrowed to one principal's sessions (%s), so it is refused rather than answered across principals; use the service token", pattern, rule.Reason))
 		return
-	case routePrincipalOwnsSession, routeSessionOwnerOrItsAgentPostsIntoSession:
-		sessionID, err := pathValueForPattern(pattern, r.URL.EscapedPath(), rule.ownedResourcePathValueName)
+	case routeaccess.RoutePrincipalOwnsSession, routeaccess.RouteSessionOwnerOrItsAgentPostsIntoSession:
+		sessionID, err := pathValueForPattern(pattern, r.URL.EscapedPath(), rule.OwnedResourcePathValueName)
 		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "route_rule_invalid", err.Error())
+			httpjson.WriteJSONError(w, http.StatusInternalServerError, "route_rule_invalid", err.Error())
 			return
 		}
-		reached, err := s.sessionReachedByCaller(r.Context(), caller, sessionID, requestOnlyReads(r, pattern))
+		reached, err := s.peers.SessionReachedByCaller(r.Context(), caller, sessionID, peers.RequestOnlyReads(r, pattern))
 		if err != nil {
-			writeJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
+			httpjson.WriteJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
 			return
 		}
 		if !reached {
 			http.Error(w, "session not found", http.StatusNotFound)
 			return
 		}
-	case routePrincipalOwnsSignal:
-		signalID, err := pathValueForPattern(pattern, r.URL.EscapedPath(), rule.ownedResourcePathValueName)
+	case routeaccess.RoutePrincipalOwnsSignal:
+		signalID, err := pathValueForPattern(pattern, r.URL.EscapedPath(), rule.OwnedResourcePathValueName)
 		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "route_rule_invalid", err.Error())
+			httpjson.WriteJSONError(w, http.StatusInternalServerError, "route_rule_invalid", err.Error())
 			return
 		}
 		signal, err := s.store.GetSignal(signalID)
@@ -1273,11 +357,11 @@ func (s *Server) serveAsCaller(w http.ResponseWriter, r *http.Request, pattern s
 			http.Error(w, "signal not found", http.StatusNotFound)
 			return
 		}
-		if !s.sessionIDIsInScope(signal.SessionID, sessionScopeOfCaller(caller)) {
+		if !requestcaller.SessionScopeOfCaller(caller).ReachesSessionID(s.store, signal.SessionID) {
 			observes := false
-			if requestOnlyReads(r, pattern) {
-				if observes, err = s.mayObserveSession(r.Context(), caller, signal.SessionID); err != nil {
-					writeJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
+			if peers.RequestOnlyReads(r, pattern) {
+				if observes, err = s.peers.MayObserveSession(r.Context(), caller, signal.SessionID); err != nil {
+					httpjson.WriteJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
 					return
 				}
 			}
@@ -1286,33 +370,33 @@ func (s *Server) serveAsCaller(w http.ResponseWriter, r *http.Request, pattern s
 				return
 			}
 		}
-	case routePrincipalOwnsOperation:
-		operationID, err := pathValueForPattern(pattern, r.URL.EscapedPath(), rule.ownedResourcePathValueName)
+	case routeaccess.RoutePrincipalOwnsOperation:
+		operationID, err := pathValueForPattern(pattern, r.URL.EscapedPath(), rule.OwnedResourcePathValueName)
 		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "route_rule_invalid", err.Error())
+			httpjson.WriteJSONError(w, http.StatusInternalServerError, "route_rule_invalid", err.Error())
 			return
 		}
-		if s.operations != nil && !s.operationIsOwnedByPrincipal(operationID, caller.principalID) {
+		if s.operations != nil && !s.operationRoutes.OperationIsOwnedByPrincipal(operationID, caller.PrincipalID) {
 			http.Error(w, "operation not found", http.StatusNotFound)
 			return
 		}
-	case routePrincipalSeesOwnSessionsOnly:
-		if requestOnlyReads(r, pattern) {
-			observes, err := s.mayObserveEverySession(r, caller)
+	case routeaccess.RoutePrincipalSeesOwnSessionsOnly:
+		if peers.RequestOnlyReads(r, pattern) {
+			observes, err := s.peers.MayObserveEverySession(r, caller)
 			if err != nil {
-				writeJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
+				httpjson.WriteJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
 				return
 			}
-			caller.observesEverySession = observes
+			caller.ObservesEverySession = observes
 		}
-	case routePrincipalCreatesSession, routePrincipalReadsCatalog, routePrincipalActsThroughPeerConnection,
-		routePrincipalOrSessionAgentThroughStoreProxy, routePrincipalCreatesOperation, routePrincipalSeesOwnOperationsOnly,
-		routePrincipalManagesOwnLoginSessions, routePrincipalSeesPeerConnectionsItMayCallThrough:
+	case routeaccess.RoutePrincipalCreatesSession, routeaccess.RoutePrincipalReadsCatalog, routeaccess.RoutePrincipalActsThroughPeerConnection,
+		routeaccess.RoutePrincipalOrSessionAgentThroughStoreProxy, routeaccess.RoutePrincipalCreatesOperation, routeaccess.RoutePrincipalSeesOwnOperationsOnly,
+		routeaccess.RoutePrincipalManagesOwnLoginSessions, routeaccess.RoutePrincipalSeesPeerConnectionsItMayCallThrough:
 	default:
-		writeJSONError(w, http.StatusInternalServerError, "route_rule_invalid", fmt.Sprintf("route %q has an access class this server does not handle", pattern))
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "route_rule_invalid", fmt.Sprintf("route %q has an access class this server does not handle", pattern))
 		return
 	}
-	s.mux.ServeHTTP(w, withRequestCaller(r, caller))
+	s.mux.ServeHTTP(w, requestcaller.WithCaller(r, caller))
 }
 
 // principalIdentityHeaderNameIn returns the key a request carries
@@ -1321,7 +405,7 @@ func (s *Server) serveAsCaller(w http.ResponseWriter, r *http.Request, pattern s
 // a header this server refuses to believe must be found however it is spelled.
 func principalIdentityHeaderNameIn(header http.Header) string {
 	for key, values := range header {
-		if !strings.EqualFold(key, principalIdentityHeader) {
+		if !strings.EqualFold(key, requestcaller.PrincipalIdentityHeader) {
 			continue
 		}
 		for _, value := range values {
@@ -1333,18 +417,6 @@ func principalIdentityHeaderNameIn(header http.Header) string {
 	return ""
 }
 
-// requestCredentialError is a refusal decided while establishing who a
-// request comes from.
-type requestCredentialError struct {
-	status  int
-	code    string
-	message string
-}
-
-func (e *requestCredentialError) write(w http.ResponseWriter) {
-	writeJSONError(w, e.status, e.code, e.message)
-}
-
 // principalOfRequest establishes which principal a request acts as, from its
 // login cookie or its session agent token, and returns the login session's id
 // when the cookie was the credential, or the session agent token's session
@@ -1352,35 +424,35 @@ func (e *requestCredentialError) write(w http.ResponseWriter) {
 // refused here unless it carries the session's CSRF token. Whether the token
 // may be used on this route is the caller's decision: anyone's on the store
 // proxies, an administrator's elsewhere.
-func (s *Server) principalOfRequest(r *http.Request, rule routeAccessRule) (string, string, string, *requestCredentialError) {
+func (s *Server) principalOfRequest(r *http.Request, rule routeaccess.RouteAccessRule) (string, string, string, *requestcaller.CredentialError) {
 	if _, hasAuthorization := r.Header["Authorization"]; hasAuthorization {
 		token := bearerTokenOf(r)
 		// A service's own token is accepted on every route, as the principal
 		// it was issued for (service_principal_tokens.go).
-		if isServicePrincipalToken(token) {
-			principalID, credentialError := s.principalOfServicePrincipalToken(r.Context(), r, token)
+		if login.IsServicePrincipalToken(token) {
+			principalID, credentialError := s.login.PrincipalOfServicePrincipalToken(r.Context(), r, token)
 			return principalID, "", "", credentialError
 		}
-		if rule.class != routePrincipalOrSessionAgentThroughStoreProxy && !isSessionAgentToken(token) {
-			return "", "", "", &requestCredentialError{http.StatusUnauthorized, "authorization_header_not_accepted", fmt.Sprintf(
+		if rule.Class != routeaccess.RoutePrincipalOrSessionAgentThroughStoreProxy && !login.IsSessionAgentToken(token) {
+			return "", "", "", requestcaller.NewCredentialError(http.StatusUnauthorized, "authorization_header_not_accepted", fmt.Sprintf(
 				"an Authorization header is accepted on %s/, %s/, %s/ and %s/ as a session agent token, and elsewhere only as an administrator's session agent token; this route takes the login cookie or %s",
-				issuesMountPrefix, grantsMountPrefix, mailMountPrefix, referencesMountPrefix, serviceTokenHeader)}
+				routeaccess.IssuesMountPrefix, routeaccess.GrantsMountPrefix, routeaccess.MailMountPrefix, referencesMountPrefix, requestcaller.ServiceTokenHeader))
 		}
 		if token == "" {
-			return "", "", "", &requestCredentialError{http.StatusUnauthorized, "invalid_session_agent_token",
-				"the Authorization header must be \"Bearer <session agent token>\""}
+			return "", "", "", requestcaller.NewCredentialError(http.StatusUnauthorized, "invalid_session_agent_token",
+				"the Authorization header must be \"Bearer <session agent token>\"")
 		}
-		claims, err := s.sessionAgentTokenClaimsOfLiveSession(token)
+		claims, err := s.login.SessionAgentTokenClaimsOfLiveSession(token)
 		if err != nil {
-			return "", "", "", &requestCredentialError{http.StatusUnauthorized, "invalid_session_agent_token", err.Error()}
+			return "", "", "", requestcaller.NewCredentialError(http.StatusUnauthorized, "invalid_session_agent_token", err.Error())
 		}
 		return claims.PrincipalID, "", claims.SessionID, nil
 	}
-	session, refusal := s.liveLoginSessionOfRequest(r)
+	session, refusal := s.login.LiveLoginSessionOfRequest(r)
 	if refusal != nil {
 		return "", "", "", refusal
 	}
-	if refusal := csrfRefusalOf(r, session); refusal != nil {
+	if refusal := login.CsrfRefusalOf(r, session); refusal != nil {
 		return "", "", "", refusal
 	}
 	return session.PrincipalID, session.ID, "", nil
@@ -1389,26 +461,26 @@ func (s *Server) principalOfRequest(r *http.Request, rule routeAccessRule) (stri
 // postingAgentOfRequest verifies a session posting token and holds it to the
 // session in the path. A token for another session is 404, the same answer a
 // principal gets for a session that is not theirs.
-func (s *Server) postingAgentOfRequest(r *http.Request, pattern string, rule routeAccessRule) (requestCaller, *requestCredentialError) {
+func (s *Server) postingAgentOfRequest(r *http.Request, pattern string, rule routeaccess.RouteAccessRule) (requestcaller.Caller, *requestcaller.CredentialError) {
 	scheme, token, _ := strings.Cut(r.Header.Get("Authorization"), " ")
 	if !strings.EqualFold(scheme, "Bearer") || strings.TrimSpace(token) == "" {
-		return requestCaller{}, &requestCredentialError{http.StatusUnauthorized, "invalid_session_posting_token",
-			"the Authorization header must be \"Bearer <session posting token>\""}
+		return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "invalid_session_posting_token",
+			"the Authorization header must be \"Bearer <session posting token>\"")
 	}
-	tokenSession, credentialError := s.verifiedPostingSession(token)
+	tokenSession, credentialError := s.login.VerifiedPostingSession(token)
 	if credentialError != nil {
-		return requestCaller{}, credentialError
+		return requestcaller.Caller{}, credentialError
 	}
 	tokenSessionID := tokenSession.SessionID
-	pathSessionID, err := pathValueForPattern(pattern, r.URL.EscapedPath(), rule.ownedResourcePathValueName)
+	pathSessionID, err := pathValueForPattern(pattern, r.URL.EscapedPath(), rule.OwnedResourcePathValueName)
 	if err != nil {
-		return requestCaller{}, &requestCredentialError{http.StatusInternalServerError, "route_rule_invalid", err.Error()}
+		return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusInternalServerError, "route_rule_invalid", err.Error())
 	}
 	session, err := s.store.GetSession(pathSessionID)
 	if err != nil || session.SessionID != tokenSessionID {
-		return requestCaller{}, &requestCredentialError{http.StatusNotFound, "session_not_found", "session not found"}
+		return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusNotFound, "session_not_found", "session not found")
 	}
-	return requestCaller{postingAgentOfSessionID: tokenSessionID}, nil
+	return requestcaller.Caller{PostingAgentOfSessionID: tokenSessionID}, nil
 }
 
 // pathValueForPattern extracts the named wildcard from an escaped request path
@@ -1436,4 +508,26 @@ func pathValueForPattern(pattern, escapedPath, pathValueName string) (string, er
 		return value, nil
 	}
 	return "", errors.New("pattern " + pattern + " has no path value named " + pathValueName)
+}
+
+// routeClassesRefusedToPeerUsers are the classes whose answer comes from a
+// store or record this server cannot narrow to the intersection of two
+// principals, so a connected server's user is refused them: the store
+// proxies act as the principal in another store, and operations and login
+// sessions are a principal's own with no peer origin.
+var routeClassesRefusedToPeerUsers = []routeaccess.RouteAccessClass{
+	routeaccess.RoutePrincipalOrSessionAgentThroughStoreProxy,
+	routeaccess.RoutePrincipalCreatesOperation,
+	routeaccess.RoutePrincipalOwnsOperation,
+	routeaccess.RoutePrincipalSeesOwnOperationsOnly,
+	routeaccess.RoutePrincipalManagesOwnLoginSessions,
+}
+
+func routeClassIsRefusedToPeerUsers(class routeaccess.RouteAccessClass) bool {
+	for _, refused := range routeClassesRefusedToPeerUsers {
+		if refused == class {
+			return true
+		}
+	}
+	return false
 }

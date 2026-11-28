@@ -15,18 +15,18 @@ func TestSessionPostingEnvironmentReachesLocalAndRunnerChildrenNotSSH(t *testing
 	session := newSessionForSignals(t, st, "br_posting_transport", msg.SessionTypeInteractive)
 
 	local := &msg.Instance{ID: "inst-local", Machine: &msg.Machine{ID: "m_localhost", Transport: msg.TransportLocal}}
-	if got := srv.sessionPostingEnvironmentForInstance(session, local); len(got) == 0 {
+	if got := srv.login.SessionPostingEnvironmentForInstance(session, local); len(got) == 0 {
 		t.Fatal("a local instance got no posting variables")
 	}
 	runner := &msg.Instance{ID: "inst-runner", Machine: &msg.Machine{ID: "m_runner", Transport: msg.TransportRunner}}
-	if got := srv.sessionPostingEnvironmentForInstance(session, runner); len(got) == 0 {
+	if got := srv.login.SessionPostingEnvironmentForInstance(session, runner); len(got) == 0 {
 		t.Error("a runner instance got no posting variables")
 	}
 	ssh := &msg.Instance{ID: "inst-ssh", Machine: &msg.Machine{ID: "m_ssh", Transport: msg.TransportSSH}}
-	if got := srv.sessionPostingEnvironmentForInstance(session, ssh); len(got) != 0 {
+	if got := srv.login.SessionPostingEnvironmentForInstance(session, ssh); len(got) != 0 {
 		t.Errorf("an ssh instance got %d posting variables; StartOnInstance would refuse the session", len(got))
 	}
-	if got := srv.sessionPostingEnvironmentForInstance(session, &msg.Instance{ID: "inst-no-machine"}); len(got) != 0 {
+	if got := srv.login.SessionPostingEnvironmentForInstance(session, &msg.Instance{ID: "inst-no-machine"}); len(got) != 0 {
 		t.Errorf("an instance with no machine got %d posting variables", len(got))
 	}
 }

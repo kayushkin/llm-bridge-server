@@ -9,6 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/signals"
+
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/briefs"
+
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -26,7 +30,7 @@ func stubSessionBrief(t *testing.T, srv *Server, verdict map[string]any) *[]msg.
 		}
 		return json.Marshal(msg.OneShotResponse{Parsed: parsed})
 	}
-	srv.signalClassifier = newSignalClassifier("turn-end-signal", 5*time.Second, 6000, nil, runner)
+	srv.signalClassifier = signals.NewSignalClassifier("turn-end-signal", 5*time.Second, 6000, nil, runner)
 	return &calls
 }
 
@@ -62,7 +66,7 @@ func TestTheBriefPassWritesTheFirstBriefAndALooseEnd(t *testing.T) {
 		},
 	})
 
-	srv.updateSessionBriefAtTurnEnd(sess.SessionID, msg.SessionIdle)
+	srv.briefService.UpdateSessionBriefAtTurnEnd(sess.SessionID, msg.SessionIdle)
 
 	if len(*calls) != 1 {
 		t.Fatalf("model calls = %d, want 1", len(*calls))
@@ -73,7 +77,7 @@ func TestTheBriefPassWritesTheFirstBriefAndALooseEnd(t *testing.T) {
 			t.Errorf("prompt does not contain %q:\n%s", want, prompt)
 		}
 	}
-	if (*calls)[0].Caller != oneShotCallerSessionBrief {
+	if (*calls)[0].Caller != briefs.OneShotCallerSessionBrief {
 		t.Errorf("caller = %q", (*calls)[0].Caller)
 	}
 	view, err := st.GetSessionBriefView(sess.SessionID)
@@ -99,7 +103,7 @@ func TestTheNextTurnSeesTheOpenLooseEndAndCanSettleOnlyThatOne(t *testing.T) {
 		"overall_goal": "goal", "goal_changed": false, "current_step": "step", "turn_change": "",
 		"settled": []any{}, "new_loose_ends": []any{map[string]any{"kind": "offer", "text": "rotate the logs?"}},
 	})
-	srv.updateSessionBriefAtTurnEnd(sess.SessionID, msg.SessionIdle)
+	srv.briefService.UpdateSessionBriefAtTurnEnd(sess.SessionID, msg.SessionIdle)
 	first, _ := st.GetSessionBriefView(sess.SessionID)
 	looseEndID := first.LooseEnds[0].ID
 
@@ -112,7 +116,7 @@ func TestTheNextTurnSeesTheOpenLooseEndAndCanSettleOnlyThatOne(t *testing.T) {
 		},
 		"new_loose_ends": []any{},
 	})
-	srv.updateSessionBriefAtTurnEnd(sess.SessionID, msg.SessionIdle)
+	srv.briefService.UpdateSessionBriefAtTurnEnd(sess.SessionID, msg.SessionIdle)
 
 	if !strings.Contains((*calls)[0].Prompt, looseEndID) {
 		t.Errorf("the second turn's prompt does not show the open loose end %s", looseEndID)
@@ -126,33 +130,12 @@ func TestTheNextTurnSeesTheOpenLooseEndAndCanSettleOnlyThatOne(t *testing.T) {
 	}
 }
 
-func TestTheBriefPassSkipsWhatIsNotASettledChatTurn(t *testing.T) {
-	cases := []struct {
-		name  string
-		sess  *store.Session
-		state msg.SessionState
-		skip  bool
-	}{
-		{"chat, idle", &store.Session{Type: msg.SessionTypeInteractive}, msg.SessionIdle, false},
-		{"chat, awaiting the person", &store.Session{Type: msg.SessionTypeInteractive}, msg.SessionAwaitingUser, false},
-		{"autonomous worker", &store.Session{Type: msg.SessionTypeAutonomous}, msg.SessionIdle, true},
-		{"session with no type", &store.Session{}, msg.SessionIdle, true},
-		{"renamer", &store.Session{Type: msg.SessionTypeInteractive, Purpose: renamerSourceTag}, msg.SessionIdle, true},
-		{"errored turn", &store.Session{Type: msg.SessionTypeInteractive}, msg.SessionError, true},
-	}
-	for _, c := range cases {
-		if got := skipSessionBriefReason(c.sess, c.state) != ""; got != c.skip {
-			t.Errorf("%s: skipped = %v, want %v", c.name, got, c.skip)
-		}
-	}
-}
-
 func TestTheBriefPassMakesNoCallForAnAutonomousSession(t *testing.T) {
 	srv, st := testServer(t)
 	sess := newSessionForSignals(t, st, "br_worker", msg.SessionTypeAutonomous)
 	storeChatTurn(t, st, sess.SessionID, "work", "worked")
 	calls := stubSessionBrief(t, srv, map[string]any{})
-	srv.updateSessionBriefAtTurnEnd(sess.SessionID, msg.SessionIdle)
+	srv.briefService.UpdateSessionBriefAtTurnEnd(sess.SessionID, msg.SessionIdle)
 	if len(*calls) != 0 {
 		t.Errorf("model calls = %d, want none for a worker", len(*calls))
 	}
@@ -185,14 +168,6 @@ func TestALooseEndCanBeDismissedOnceAndOnlyThroughItsOwnSession(t *testing.T) {
 	}
 }
 
-func TestKeepHeadAndTailKeepsBothEnds(t *testing.T) {
-	text := strings.Repeat("a", 50) + strings.Repeat("m", 1000) + strings.Repeat("z", 50)
-	got := keepHeadAndTail(text, 200)
-	if !strings.HasPrefix(got, strings.Repeat("a", 50)) || !strings.HasSuffix(got, strings.Repeat("z", 50)) {
-		t.Errorf("lost an end: %q", got)
-	}
-}
-
 // A chat's first brief can be written late, on a turn an automated report
 // started. The pass still shows the chat's first message, so the goal comes
 // from what the person asked, not from the report.
@@ -205,7 +180,7 @@ func TestTheBriefPassAlwaysShowsTheChatsFirstMessage(t *testing.T) {
 		"overall_goal": "g", "goal_changed": false, "current_step": "s", "turn_change": "",
 		"settled": []any{}, "new_loose_ends": []any{},
 	})
-	srv.updateSessionBriefAtTurnEnd(sess.SessionID, msg.SessionIdle)
+	srv.briefService.UpdateSessionBriefAtTurnEnd(sess.SessionID, msg.SessionIdle)
 	prompt := (*calls)[0].Prompt
 	first := strings.Index(prompt, "Build the session brief for the orchestrator")
 	report := strings.Index(prompt, "[deploy-gate]")

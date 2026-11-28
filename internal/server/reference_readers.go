@@ -28,6 +28,8 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 	schedulerapi "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/api"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/budget"
@@ -137,21 +139,21 @@ func (s *Server) ownershipCallerOfReferenceAsker(ctx context.Context, asker refe
 	if err != nil {
 		return ownership.Caller{}, err
 	}
-	return ownership.Caller{PrincipalID: caller.principalID, SeesEveryOwner: caller.isAdministrator}, nil
+	return ownership.Caller{PrincipalID: caller.PrincipalID, SeesEveryOwner: caller.IsAdministrator}, nil
 }
 
 // callerOfReferenceAsker checks the principal a read is for as an
 // X-Principal-Id beside the service token is checked. A refusal that route
 // answered 403 (a disabled principal) is the owner refusing.
-func (s *Server) callerOfReferenceAsker(ctx context.Context, principalID string) (requestCaller, error) {
+func (s *Server) callerOfReferenceAsker(ctx context.Context, principalID string) (requestcaller.Caller, error) {
 	caller, credentialError := s.callerAssertedByInternalService(ctx, principalID)
 	if credentialError == nil {
 		return caller, nil
 	}
-	if credentialError.status == 403 {
-		return requestCaller{}, fmt.Errorf("%w: %s", references.ErrRefusedByOwner, credentialError.message)
+	if credentialError.Status == 403 {
+		return requestcaller.Caller{}, fmt.Errorf("%w: %s", references.ErrRefusedByOwner, credentialError.Message)
 	}
-	return requestCaller{}, fmt.Errorf("%s: %s", credentialError.code, credentialError.message)
+	return requestcaller.Caller{}, fmt.Errorf("%s: %s", credentialError.Code, credentialError.Message)
 }
 
 // ownedRecordReader is a reader of one connected-records type: read is the
@@ -437,8 +439,8 @@ func (s *Server) readSessionForReference(ctx context.Context, id string, asker r
 		if err != nil {
 			return nil, err
 		}
-		if !caller.isAdministrator {
-			reached, err := s.sessionReachedByCaller(ctx, caller, id, true)
+		if !caller.IsAdministrator {
+			reached, err := s.peers.SessionReachedByCaller(ctx, caller, id, true)
 			if err != nil {
 				return nil, fmt.Errorf("grant_store_unavailable: %w", err)
 			}

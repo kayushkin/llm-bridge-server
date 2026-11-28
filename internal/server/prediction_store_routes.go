@@ -3,6 +3,8 @@ package server
 import (
 	"net/http"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/predictions"
 )
@@ -23,7 +25,7 @@ func (s *Server) predictionStoreRoute(route func(*predictions.Handlers, http.Res
 	return func(w http.ResponseWriter, r *http.Request) {
 		handlers := s.predictionStore.Load()
 		if handlers == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "prediction_store_off",
+			httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "prediction_store_off",
 				config.PostgresURLEnvironmentVariable+" is not set, so this server keeps no predictions")
 			return
 		}

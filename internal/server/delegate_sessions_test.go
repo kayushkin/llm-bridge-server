@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/login"
+
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -159,14 +161,14 @@ func TestAnEndedSessionsAgentStartsNoDelegate(t *testing.T) {
 // posting token that spawn's agent would be given.
 func currentPostingTokenFor(t *testing.T, srv *Server, sessionID string) string {
 	t.Helper()
-	spawnKey, err := newSessionPostingSpawnKey()
+	spawnKey, err := login.NewSessionPostingSpawnKey()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := srv.store.RecordSessionPostingSpawn(sessionID, spawnKey); err != nil {
 		t.Fatal(err)
 	}
-	return srv.harnessChildTokenSigner.encodeSessionPostingToken(sessionID, spawnKey)
+	return srv.harnessChildTokenSigner.EncodeSessionPostingToken(sessionID, spawnKey)
 }
 
 // TestAPostingTokenFromAnEarlierSpawnIsRefused spawns a session twice and
@@ -183,7 +185,7 @@ func TestAPostingTokenFromAnEarlierSpawnIsRefused(t *testing.T) {
 	if recorder := servedWithPostingToken(t, srv, current, http.MethodPost, "/sessions", delegateRequest(instanceID)); recorder.Code != http.StatusOK && recorder.Code != http.StatusCreated {
 		t.Fatalf("current spawn's token = %d %s", recorder.Code, recorder.Body)
 	}
-	unrecorded := srv.harnessChildTokenSigner.encodeSessionPostingToken("br_agent", "never-recorded")
+	unrecorded := srv.harnessChildTokenSigner.EncodeSessionPostingToken("br_agent", "never-recorded")
 	if recorder := servedWithPostingToken(t, srv, unrecorded, http.MethodPost, "/sessions", delegateRequest(instanceID)); recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("a token for a spawn never recorded = %d, want 401", recorder.Code)
 	}

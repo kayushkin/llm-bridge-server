@@ -1,0 +1,169 @@
+package machineroutes
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"time"
+
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
+	"github.com/kayushkin/llm-bridge-server/internal/machines"
+	"github.com/kayushkin/llm-bridge/msg"
+)
+
+// HandleEnrollRunner consumes a one-time enrollment passphrase, creates
+// (or updates) the machine row for the runner, mints a durable per-machine
+// runner token, and seeds one default instance per harness type the runner
+// reports as available (claude_code, codex, jig, …). Older runners that
+// don't report AvailableHarnesses get the legacy claude_code-only default.
+//
+// Idempotency: re-enrollment with the same machine_name reuses the existing
+// machine row (refreshing its hostname/os/etc. from the runner's report)
+// and rotates the token. Different machine_name produces a new row.
+func (s *Service) HandleEnrollRunner(w http.ResponseWriter, r *http.Request) {
+	if s.HarnessStore() == nil {
+		http.Error(w, "harness store unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	var req msg.EnrollRunnerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.Passphrase == "" {
+		http.Error(w, "passphrase is required", http.StatusBadRequest)
+		return
+	}
+	if req.Hostname == "" {
+		http.Error(w, "hostname is required", http.StatusBadRequest)
+		return
+	}
+
+	machineName := req.MachineName
+	if machineName == "" {
+		machineName = req.Hostname
+	}
+
+	// Find or create the machine.
+	machine, err := s.HarnessStore().GetMachineByName(machineName)
+	created := false
+	if err != nil {
+		machine = &msg.Machine{
+			ID:                "m_" + randomHex(8),
+			Name:              machineName,
+			Hostname:          req.Hostname,
+			OS:                req.OS,
+			Arch:              req.Arch,
+			Transport:         msg.TransportRunner,
+			User:              req.User,
+			DefaultWorkingDir: req.WorkingDir,
+		}
+		if err := s.HarnessStore().CreateMachine(machine); err != nil {
+			http.Error(w, fmt.Sprintf("create machine: %v", err), http.StatusInternalServerError)
+			return
+		}
+		created = true
+	} else {
+		// Refresh fields the runner just reported so the row reflects
+		// reality even after re-enrollment from a moved/upgraded host.
+		if machine.Transport == "" {
+			machine.Transport = msg.TransportRunner
+		}
+		machine.Hostname = req.Hostname
+		machine.OS = req.OS
+		machine.Arch = req.Arch
+		machine.User = req.User
+		if req.WorkingDir != "" {
+			machine.DefaultWorkingDir = req.WorkingDir
+		}
+		if err := s.HarnessStore().UpdateMachine(machine); err != nil {
+			http.Error(w, fmt.Sprintf("update machine: %v", err), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// Consume the passphrase, binding it to this machine. Done after
+	// machine create so a failed consume doesn't leave a half-enrolled
+	// row — but we roll back our created machine if the consume fails.
+	if err := s.HarnessStore().ConsumeEnrollment(req.Passphrase, machine.ID); err != nil {
+		if created {
+			_ = s.HarnessStore().DeleteMachine(machine.ID)
+		}
+		switch {
+		case errors.Is(err, machines.ErrEnrollmentExpired):
+			http.Error(w, err.Error(), http.StatusGone)
+		default:
+			http.Error(w, fmt.Sprintf("consume enrollment: %v", err), http.StatusUnauthorized)
+		}
+		return
+	}
+
+	// Mint and store the runner token.
+	token, err := machines.GenerateRunnerToken()
+	if err != nil {
+		http.Error(w, fmt.Sprintf("mint token: %v", err), http.StatusInternalServerError)
+		return
+	}
+	if err := s.HarnessStore().SetMachineRunnerTokenHash(machine.ID, machines.HashRunnerToken(token)); err != nil {
+		http.Error(w, fmt.Sprintf("store token: %v", err), http.StatusInternalServerError)
+		return
+	}
+	_ = s.HarnessStore().TouchMachineLastSeen(machine.ID)
+
+	// Seed default instances based on what the runner reports as
+	// available. For each available harness type that doesn't already
+	// have an instance bound to this machine, create one.
+	//
+	// Older runners that don't report AvailableHarnesses get the legacy
+	// claude_code-only default. Modern runners get one instance per
+	// reported harness — codex, claudecode, jig, etc. all seeded.
+	defaultHarnesses := []msg.Harness{msg.HarnessClaudeCode}
+	if len(req.AvailableHarnesses) > 0 {
+		defaultHarnesses = defaultHarnesses[:0]
+		seen := make(map[msg.Harness]bool, len(req.AvailableHarnesses))
+		for _, ah := range req.AvailableHarnesses {
+			if ah.Harness == "" || seen[ah.Harness] {
+				continue
+			}
+			seen[ah.Harness] = true
+			defaultHarnesses = append(defaultHarnesses, ah.Harness)
+		}
+	}
+
+	existing, _ := s.HarnessStore().ListInstancesByMachine(machine.ID)
+	hasHarness := make(map[msg.Harness]bool, len(existing))
+	for _, e := range existing {
+		hasHarness[e.HarnessType] = true
+	}
+	var instanceIDs []string
+	for _, h := range defaultHarnesses {
+		if hasHarness[h] {
+			continue
+		}
+		inst := &msg.Instance{
+			ID:                    fmt.Sprintf("inst_%d", time.Now().UnixNano()),
+			HarnessType:           h,
+			Name:                  fmt.Sprintf("%s/%s", machine.Name, h),
+			MachineID:             machine.ID,
+			MaxConcurrentSessions: 1,
+			Enabled:               true,
+		}
+		if err := s.HarnessStore().CreateInstance(inst); err != nil {
+			http.Error(w, fmt.Sprintf("create default instance %s: %v", h, err), http.StatusInternalServerError)
+			return
+		}
+		instanceIDs = append(instanceIDs, inst.ID)
+	}
+
+	resp := msg.EnrollRunnerResponse{
+		MachineID:   machine.ID,
+		MachineName: machine.Name,
+		RunnerToken: token,
+		InstanceIDs: instanceIDs,
+	}
+	w.WriteHeader(http.StatusCreated)
+	httpjson.WriteJSON(w, resp)
+}

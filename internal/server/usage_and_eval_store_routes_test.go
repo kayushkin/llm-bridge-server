@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/server/routeaccess"
+
 	"github.com/kayushkin/llm-bridge-server/internal/agents/evaluations"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/usage"
@@ -59,16 +61,16 @@ func TestEveryUsageStoreRouteIsMountedUnderThePrefix(t *testing.T) {
 	for _, pattern := range usagestorehttpapi.RoutePatterns {
 		method, path, _ := strings.Cut(pattern, " ")
 		mounted := method + " " + usageRoutePrefix + path
-		if _, classified := usageAndEvalStoreRouteAccessRules[mounted]; !classified {
+		if _, classified := routeaccess.UsageAndEvalStoreRouteAccessRules[mounted]; !classified {
 			t.Errorf("usage-store serves %s, and %s has no rule", pattern, mounted)
 		}
 	}
-	if len(usagestorehttpapi.RoutePatterns) != strings.Count(strings.Join(mapKeys(usageAndEvalStoreRouteAccessRules), "\n"), " /usage/") {
+	if len(usagestorehttpapi.RoutePatterns) != strings.Count(strings.Join(mapKeys(routeaccess.UsageAndEvalStoreRouteAccessRules), "\n"), " /usage/") {
 		t.Errorf("the mounted usage-store routes and the store's own differ in number")
 	}
 }
 
-func mapKeys(rules map[string]routeAccessRule) []string {
+func mapKeys(rules map[string]routeaccess.RouteAccessRule) []string {
 	keys := make([]string, 0, len(rules))
 	for key := range rules {
 		keys = append(keys, key)

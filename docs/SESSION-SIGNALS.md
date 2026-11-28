@@ -349,10 +349,10 @@ requires each option label to name the choice, never a bare letter or an instruc
 
 | Piece | File |
 |---|---|
-| Classifier, skip rules, signal write, state reconciliation | `internal/server/signal_classifier.go` |
+| Classifier, skip rules, signal write, state reconciliation | `internal/sessions/signals/signal_classifier.go` |
 | Turn-end observer + bounded external state write | `internal/harness/manager.go` |
 | `applyExternalState` / `currentState` | `internal/harness/derivation.go` |
-| Answering a derived question | `internal/server/sessions.go` (`handleSendMessage`) |
+| Answering a derived question | `internal/sessions/sessions.go` (`handleSendMessage`) |
 | Config + escape hatch | `internal/config/config.go` |
 | Client half | `bridge-ui` `feat/session-signals-p3` (`c35a7da`) |
 
@@ -431,11 +431,11 @@ the turn itself resolved.
 
 | Piece | File |
 |---|---|
-| The join, as a client | `internal/server/issue_reads.go` (`issueReader.LinkedTodoForSession`) |
-| Resolved once per signal mint | `internal/server/signal_todo_link.go` |
-| Stamped by the tool producer | `internal/server/signals.go` |
-| Stamped by the derived producer | `internal/server/signal_classifier.go` |
-| Read API: `?linked_todo_id=` | `internal/server/signals.go`, `internal/store/signals.go` |
+| The join, as a client | `internal/tasktracking/issues/issuereads/reader.go` (`issueReader.LinkedTodoForSession`) |
+| Resolved once per signal mint | `internal/sessions/signals/signal_todo_link.go` |
+| Stamped by the tool producer | `internal/sessions/signals/signals.go` |
+| Stamped by the derived producer | `internal/sessions/signals/signal_classifier.go` |
+| Read API: `?linked_todo_id=` | `internal/sessions/signals/signals.go`, `internal/store/signals.go` |
 | Deterministic link order | `kanban-store` `internal/db/db.go` (`ListCardsByEntity`) |
 | The badge | `bridge-ui` `src/components/BridgeKanban.tsx` (`SignalBadge`) |
 
@@ -546,8 +546,8 @@ forever** — the gap P2, P3 and P5 each recorded and each left alone.
 
 | Piece | File |
 |---|---|
-| Handler + the pure unpark rule | `internal/server/signals.go` (`handleResolveSignal`, `resolutionUnparksSession`) |
-| Live-park lookup | `internal/server/parked_asks.go` (`isParked`) |
+| Handler + the pure unpark rule | `internal/sessions/signals/signals.go` (`handleResolveSignal`, `resolutionUnparksSession`) |
+| Live-park lookup | `internal/sessions/parkedasks/parkedasks.go` (`isParked`) |
 | Route | `internal/server/server.go` |
 | Client half | `bridge-ui` `feat/session-signals-p4-ack` |
 
@@ -642,9 +642,9 @@ rather than one inferred from prose. `POST /sessions/{id}/signals` is that.
 
 | Piece | File |
 |---|---|
-| The verb | `internal/server/signal_notify.go` |
+| The verb | `internal/sessions/signals/signal_notify.go` |
 | Route | `internal/server/server.go` |
-| The classifier-suppression fix it required | `internal/server/signal_classifier.go` (`hasOpenToolQuestion`) |
+| The classifier-suppression fix it required | `internal/sessions/signals/signal_classifier.go` (`hasOpenToolQuestion`) |
 | Tests | `internal/server/signal_notify_test.go` |
 
 Request: `{"title": …, "body": …, "severity": "info"|"warn", "kind": "notification"}` —

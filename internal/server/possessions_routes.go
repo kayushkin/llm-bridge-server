@@ -35,6 +35,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/server/routeaccess"
+
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessions"
@@ -250,7 +254,7 @@ func (s *Server) possessionStoreRoute() http.HandlerFunc {
 			stores := s.possessions.Load()
 			if stores == nil {
 				return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-					writeJSONError(w, http.StatusServiceUnavailable, "possession_store_off", "possession-store is not open on this server: EnablePossessions was never called")
+					httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "possession_store_off", "possession-store is not open on this server: EnablePossessions was never called")
 				})
 			}
 			return stores.handler
@@ -261,7 +265,7 @@ func (s *Server) possessionStoreRoute() http.HandlerFunc {
 // registers, by its description.
 func (s *Server) registerPossessionsRoutes() {
 	route := s.possessionStoreRoute()
-	for pattern := range possessionStoreRouteDescriptions() {
+	for pattern := range routeaccess.PossessionStoreRouteDescriptions() {
 		s.mux.HandleFunc(pattern, route)
 	}
 }

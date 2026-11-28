@@ -1,0 +1,364 @@
+package sessionfiles
+
+// Files shared into a session, by the user or by the session's own agent.
+//
+// file-store keeps the bytes. This server keeps which session a file belongs to
+// (the session_files table), copies the bytes to a directory the agent can read
+// them from, and records the share as a session_file event, so every client
+// draws it at the point in the conversation it happened.
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"mime"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+	"unicode"
+
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/messagesender"
+
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
+	"github.com/kayushkin/llm-bridge-server/internal/filestorage/files"
+	"github.com/kayushkin/llm-bridge-server/internal/store"
+	"github.com/kayushkin/llm-bridge/msg"
+)
+
+// HandleShareSessionFile is POST /sessions/{id}/files?filename=<name>. The
+// body is the bytes and Content-Type is what they are, as file-store takes
+// them. Answers 201 and the msg.SessionFile.
+func (s *Service) HandleShareSessionFile(w http.ResponseWriter, r *http.Request) {
+	if s.FileStore() == nil {
+		httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "session_files_off", "LLMBRIDGE_FILE_STORE_URL is not set, so this server keeps no session files")
+		return
+	}
+	sessionID := r.PathValue("id")
+	session, err := s.Store.GetSession(sessionID)
+	if err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	filename := r.URL.Query().Get("filename")
+	if problem := PlainFilenameProblem(filename); problem != "" {
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_filename", problem)
+		return
+	}
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil {
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_content_type", "Content-Type must say what the bytes are: "+err.Error())
+		return
+	}
+	if _, err := s.sessionFilesDirectoryOf(session.SessionID); err != nil {
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_session_id", err.Error())
+		return
+	}
+
+	sharedBy := msg.SessionFileSharedByUser
+	if caller, ok := requestcaller.FromRequest(r); ok && caller.PostingAgentOfSessionID != "" {
+		sharedBy = msg.SessionFileSharedByAgent
+	}
+	// source_path is the agent's own statement of where it read the bytes; a
+	// person's browser has no such path, so from anyone else it is refused
+	// rather than recorded or dropped. The server never opens it.
+	var origin SessionFileOrigin
+	if r.URL.Query().Has("source_path") {
+		if sharedBy != msg.SessionFileSharedByAgent {
+			httpjson.WriteJSONError(w, http.StatusBadRequest, "source_path_not_accepted", "source_path is taken only from the session's own agent, with its session posting token")
+			return
+		}
+		origin.SourcePath = r.URL.Query().Get("source_path")
+		if problem := sourcePathProblem(origin.SourcePath); problem != "" {
+			httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_source_path", problem)
+			return
+		}
+	}
+	// A person sharing a file is its sender, as for a message they send.
+	var sender messagesender.Sender
+	if sharedBy == msg.SessionFileSharedByUser {
+		if sender, err = s.MessageSenders.OfRequest(r); err != nil {
+			httpjson.WriteJSONError(w, http.StatusBadGateway, "principal_store_unavailable", err.Error())
+			return
+		}
+	}
+
+	// Refused before the bytes are spooled, not after: file-store would refuse
+	// an oversized file anyway, but only once it had been written to disk here.
+	limits := s.FileStore().CurrentLimits()
+
+	record, failure := s.ShareFileIntoSession(session, http.MaxBytesReader(w, r.Body, limits.MaximumFileBytes), limits.MaximumFileBytes, mediaType, filename, sharedBy, sender, origin)
+	if failure != nil {
+		failure.Write(w)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	if err := json.NewEncoder(w).Encode(record); err != nil {
+		log.Printf("[session-files] write %s answer: %v", record.FileID, err)
+	}
+}
+
+// SessionFileShareFailure is why ShareFileIntoSession did not finish: either
+// file-store's own refusal, relayed as it came, or this server's status, code
+// and message.
+type SessionFileShareFailure struct {
+	FileStoreError error
+	Status         int
+	Code           string
+	Message        string
+}
+
+func (failure *SessionFileShareFailure) Error() string {
+	if failure.FileStoreError != nil {
+		return "file-store: " + failure.FileStoreError.Error()
+	}
+	return failure.Code + ": " + failure.Message
+}
+
+func (failure *SessionFileShareFailure) Write(w http.ResponseWriter) {
+	if failure.FileStoreError != nil {
+		writeFileStoreError(w, failure.FileStoreError)
+		return
+	}
+	httpjson.WriteJSONError(w, failure.Status, failure.Code, failure.Message)
+}
+
+// SessionFileOrigin is where a shared file came from, recorded as it was
+// stated: sourcePath, the path the sharer read the bytes from on its own
+// machine, and generation, how the image route made it. Both are empty for a
+// person's upload.
+type SessionFileOrigin struct {
+	SourcePath string
+	Generation *msg.SessionFileGeneration
+}
+
+// MaximumSourcePathBytes bounds a stated source_path, the usual PATH_MAX.
+const MaximumSourcePathBytes = 4096
+
+// sourcePathProblem says why a stated source_path cannot be recorded, or ""
+// when it can: it must be absolute, at most MaximumSourcePathBytes, and free
+// of control characters.
+func sourcePathProblem(sourcePath string) string {
+	switch {
+	case !strings.HasPrefix(sourcePath, "/"):
+		return "source_path must be an absolute path, starting with /"
+	case len(sourcePath) > MaximumSourcePathBytes:
+		return fmt.Sprintf("source_path is longer than %d bytes", MaximumSourcePathBytes)
+	case strings.IndexFunc(sourcePath, unicode.IsControl) >= 0:
+		return "source_path cannot contain a control character"
+	}
+	return ""
+}
+
+// ShareFileIntoSession stores content in file-store, copies it to the
+// session's directory for the agent, records it and its origin in
+// session_files and writes the session_file event that puts it in the
+// conversation. content must already be held to maximumFileBytes, which is
+// named in the refusal when it is not.
+func (s *Service) ShareFileIntoSession(session *store.Session, content io.Reader, maximumFileBytes int64, mediaType, filename string, sharedBy msg.SessionFileSharer, sender messagesender.Sender, origin SessionFileOrigin) (store.SessionFile, *SessionFileShareFailure) {
+	failed := func(status int, code, message string) (store.SessionFile, *SessionFileShareFailure) {
+		return store.SessionFile{}, &SessionFileShareFailure{Status: status, Code: code, Message: message}
+	}
+	sessionDirectory, err := s.sessionFilesDirectoryOf(session.SessionID)
+	if err != nil {
+		return failed(http.StatusBadRequest, "invalid_session_id", err.Error())
+	}
+
+	// Spooled to the session's directory first, because the same bytes go to
+	// two places — file-store and the agent's copy — and a request body can be
+	// read once.
+	if err := os.MkdirAll(sessionDirectory, 0o700); err != nil {
+		return failed(http.StatusInternalServerError, "session_files_directory", err.Error())
+	}
+	spool, err := os.CreateTemp(sessionDirectory, ".incoming-*")
+	if err != nil {
+		return failed(http.StatusInternalServerError, "session_files_directory", err.Error())
+	}
+	spoolPath := spool.Name()
+	keepSpool := false
+	defer func() {
+		spool.Close()
+		if !keepSpool {
+			os.Remove(spoolPath)
+		}
+	}()
+	sizeBytes, err := io.Copy(spool, content)
+	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			return failed(http.StatusRequestEntityTooLarge, "file_too_large",
+				fmt.Sprintf("a session file may be at most %d bytes (file-store's maximum_file_bytes)", maximumFileBytes))
+		}
+		return failed(http.StatusBadRequest, "upload_interrupted", err.Error())
+	}
+	if _, err := spool.Seek(0, io.SeekStart); err != nil {
+		return failed(http.StatusInternalServerError, "session_files_directory", err.Error())
+	}
+	stored, err := s.FileStore().Accept(spool, sizeBytes, mediaType, files.NewFile{Filename: filename, OwnerService: SessionFileOwnerService, OwnerRef: session.SessionID})
+	if err != nil {
+		return store.SessionFile{}, &SessionFileShareFailure{FileStoreError: err}
+	}
+
+	// <session>/<file id>/<filename>: the file id keeps two uploads of the same
+	// name apart, and the name stays exactly what the sharer called it.
+	fileDirectory := filepath.Join(sessionDirectory, stored.ID)
+	if err := os.MkdirAll(fileDirectory, 0o700); err != nil {
+		return failed(http.StatusInternalServerError, "session_files_directory", err.Error())
+	}
+	agentPath := filepath.Join(fileDirectory, filename)
+	if err := os.Rename(spoolPath, agentPath); err != nil {
+		return failed(http.StatusInternalServerError, "session_files_directory", err.Error())
+	}
+	keepSpool = true
+
+	record := store.SessionFile{
+		FileID:     stored.ID,
+		SessionID:  session.SessionID,
+		Filename:   filename,
+		MediaType:  stored.ContentType,
+		SizeBytes:  stored.SizeBytes,
+		SharedBy:   sharedBy,
+		Path:       agentPath,
+		SourcePath: origin.SourcePath,
+		Generation: origin.Generation,
+		CreatedAt:  time.Now().UTC(),
+	}
+	if err := s.Store.InsertSessionFile(record); err != nil {
+		return failed(http.StatusInternalServerError, "record_session_file", err.Error())
+	}
+	event := msg.Event{
+		Type:            msg.EventSessionFile,
+		BridgeSessionID: session.SessionID,
+		Timestamp:       record.CreatedAt,
+		SessionFile:     &record,
+	}
+	sender.Stamp(&event)
+	if _, err := s.Harness.BroadcastEvent(&event); err != nil {
+		// The file is kept and listed; only the timeline entry is missing, and
+		// the caller has to know that rather than find it out.
+		return failed(http.StatusInternalServerError, "record_session_file_event", fmt.Sprintf(
+			"%s is stored and listed at GET /sessions/%s/files, but its session_file event was not written: %v", record.FileID, session.SessionID, err))
+	}
+	return record, nil
+}
+
+// HandleListSessionFiles is GET /sessions/{id}/files: every file shared into
+// the session, oldest first.
+func (s *Service) HandleListSessionFiles(w http.ResponseWriter, r *http.Request) {
+	session, err := s.Store.GetSession(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	files, err := s.Store.ListSessionFiles(session.SessionID)
+	if err != nil {
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "list_session_files", err.Error())
+		return
+	}
+	httpjson.WriteJSON(w, files)
+}
+
+// HandleSessionFileContent is GET /sessions/{id}/files/{file_id}/content,
+// relaying file-store's answer — status, headers and bytes — unchanged. Its
+// headers are what keep an upload from running as this origin
+// (Content-Security-Policy: sandbox, nosniff, attachment unless ?inline=true
+// and the type is on file-store's inline list), so none is dropped or added.
+func (s *Service) HandleSessionFileContent(w http.ResponseWriter, r *http.Request) {
+	if s.FileStore() == nil {
+		httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "session_files_off", "LLMBRIDGE_FILE_STORE_URL is not set, so this server keeps no session files")
+		return
+	}
+	session, err := s.Store.GetSession(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	file, err := s.Store.GetSessionFile(session.SessionID, r.PathValue("file_id"))
+	if errors.Is(err, store.ErrSessionFileNotFound) {
+		http.Error(w, "file not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "read_session_file", err.Error())
+		return
+	}
+	// file-store sees the client's Range and nothing else of its request, as
+	// when it answered over HTTP: no other header the client sent changes
+	// its answer.
+	served := r.Clone(r.Context())
+	served.Header = http.Header{}
+	if rangeHeader := r.Header.Get("Range"); rangeHeader != "" {
+		served.Header.Set("Range", rangeHeader)
+	}
+	inline := "false"
+	if r.URL.Query().Get("inline") == "true" {
+		inline = "true"
+	}
+	s.FileStore().ServeContentOf(w, served, file.FileID, inline)
+}
+
+// sessionFilesDirectoryOf is where one session's files are copied. A session
+// id is escaped to one path segment, and one that escapes to "." or ".." is
+// refused rather than allowed to name the parent directory.
+func (s *Service) sessionFilesDirectoryOf(sessionID string) (string, error) {
+	segment := url.PathEscape(sessionID)
+	if segment == "" || segment == "." || segment == ".." {
+		return "", fmt.Errorf("session id %q cannot name a directory", sessionID)
+	}
+	return filepath.Join(s.Cfg.SessionFilesDir, segment), nil
+}
+
+// PlainFilenameProblem says why a filename cannot be used as one path
+// segment, or "" when it can. The same rule file-store applies, checked here
+// first because this server writes the name to disk itself.
+func PlainFilenameProblem(filename string) string {
+	switch {
+	case filename == "":
+		return "filename is required"
+	case len(filename) > 255:
+		return "filename is longer than 255 bytes"
+	case filename == "." || filename == "..":
+		return "filename cannot be . or .."
+	case strings.ContainsAny(filename, `/\`):
+		return "filename cannot contain a path separator"
+	case strings.IndexFunc(filename, unicode.IsControl) >= 0:
+		return "filename cannot contain a control character"
+	}
+	return ""
+}
+
+// writeFileStoreError answers as file-store's route would: its refusal with
+// its status, and a failure of the store as 500, each as {"error": …}.
+func writeFileStoreError(w http.ResponseWriter, err error) {
+	var refusal *files.Refusal
+	if !errors.As(err, &refusal) {
+		refusal = &files.Refusal{Status: http.StatusInternalServerError, Message: err.Error()}
+	}
+	refusal.Write(w)
+}
+
+// SessionFileOwnerService is how this server names itself as the owner of a
+// session's file in file-store.
+const SessionFileOwnerService = "llm-bridge-server"
+
+// SessionFileStore is file-store as session files use it: the module in this
+// process (*files.Server), or a fake in a test. file-store owns the bytes;
+// this server owns which session a file belongs to and who may reach it.
+type SessionFileStore interface {
+	// CurrentLimits is the largest file file-store takes, so an upload is
+	// refused before its bytes are spooled to disk rather than after.
+	CurrentLimits() files.Limits
+	// Accept keeps a file, or refuses it with a *files.Refusal.
+	Accept(content io.Reader, declaredLength int64, contentType string, file files.NewFile) (*files.File, error)
+	// ServeContentOf answers r with a file's bytes and file-store's headers,
+	// or its refusal.
+	ServeContentOf(w http.ResponseWriter, r *http.Request, id, inline string)
+}

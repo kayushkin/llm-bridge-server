@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/agents/bundles"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 )
@@ -20,9 +22,6 @@ type bundleResolver interface {
 	ResolveSessionBundle(ctx context.Context, bundleID string) (*bundles.ResolveResponse, error)
 }
 
-// bundleStoreOffMessage says why a server has no bundle-store.
-const bundleStoreOffMessage = "this server's bundle-store module is off (" + config.PostgresURLEnvironmentVariable + " is not set)"
-
 // EnableBundles serves the store's routes from store and answers session
 // bundles from it. main calls it once the module is provisioned, migrated and
 // open, before the server takes requests; until then, and on a server with no
@@ -37,7 +36,7 @@ func (s *Server) bundleStoreRoute(route func(*bundles.Handlers, http.ResponseWri
 	return func(w http.ResponseWriter, r *http.Request) {
 		handlers := s.bundleStoreHandlers.Load()
 		if handlers == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "bundle_store_off",
+			httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "bundle_store_off",
 				config.PostgresURLEnvironmentVariable+" is not set, so this server keeps no bundles")
 			return
 		}

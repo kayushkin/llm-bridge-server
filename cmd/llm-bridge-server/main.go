@@ -287,7 +287,7 @@ func main() {
 		// process left running and reconciles it.
 		LeaseOwner:     fmt.Sprintf("llm-bridge-server pid %d started %s", os.Getpid(), time.Now().UTC().Format(time.RFC3339Nano)),
 		ModelListPrice: srv.ModelListPrice,
-	}, srv.OperationExecutors()...)
+	}, srv.OneShot().OperationExecutors()...)
 	if err != nil {
 		log.Fatalf("operations: %v", err)
 	}
@@ -296,19 +296,19 @@ func main() {
 	defer stopOperations()
 	go coordinator.Run(operationsContext)
 	log.Printf("operations: %d workers | lease %s", cfg.OperationsWorkerCount, cfg.OperationsLeaseDuration)
-	srv.ReconcileAndResume() // Clean up stale running-state and resume recently-active sessions
-	srv.RedeliverWakeupsLostInRestart()
-	srv.DeliverMessagesHeldBeforeRestart()                    // Send what the previous process held while it drained for this restart
-	srv.AutoDiscover()                                        // Import on-disk sessions from harnesses
-	go srv.WatchExternalHarnessActivity(context.Background()) // Bring in terminal runs of claude and codex while the server is up
-	srv.StartWatchdog()                                       // Periodic check for sessions whose harness died mid-life
-	srv.StartPeerDialers()                                    // Reopen the socket of every dial-out connection this server initiated
-	srv.StartMachineDiskUsage()                               // Record runners' finished deletions on the Machines page
-	srv.StartMachineStatsSampler(context.Background())        // Read this machine every minute, keep runners' readings, delete old ones
-	go srv.RunChatLinks(context.Background())                 // Deliver what people send linked conversations, and send the replies
-	go func() {                                               // Read messaging.inbound for chat links; a bus that is down is retried, not fatal to every session
+	srv.Sessions().ReconcileAndResume() // Clean up stale running-state and resume recently-active sessions
+	srv.Sessions().RedeliverWakeupsLostInRestart()
+	srv.Sessions().DeliverMessagesHeldBeforeRestart()                    // Send what the previous process held while it drained for this restart
+	srv.Sessions().AutoDiscover()                                        // Import on-disk sessions from harnesses
+	go srv.Sessions().WatchExternalHarnessActivity(context.Background()) // Bring in terminal runs of claude and codex while the server is up
+	srv.Sessions().StartWatchdog()                                       // Periodic check for sessions whose harness died mid-life
+	srv.Peers().StartPeerDialers()                                       // Reopen the socket of every dial-out connection this server initiated
+	srv.Machines().StartMachineDiskUsage()                               // Record runners' finished deletions on the Machines page
+	srv.Machines().StartMachineStatsSampler(context.Background())        // Read this machine every minute, keep runners' readings, delete old ones
+	go srv.ChatLinks().Run(context.Background())                         // Deliver what people send linked conversations, and send the replies
+	go func() {                                                          // Read messaging.inbound for chat links; a bus that is down is retried, not fatal to every session
 		for {
-			err := srv.StartChatLinkInbound(cfg.ChatLinksNATSURL)
+			err := srv.ChatLinks().StartInbound(cfg.ChatLinksNATSURL)
 			if err == nil {
 				return
 			}
@@ -316,8 +316,8 @@ func main() {
 			time.Sleep(time.Minute)
 		}
 	}()
-	go srv.RunPeerMessageOutbox(context.Background()) // Deliver queued messages to connected servers, and report finished updates
-	stopKeepAwake := srv.StartKeepAwake()             // Hold this machine awake while sessions run, when keep_awake.enabled is on
+	go srv.Peers().RunPeerMessageOutbox(context.Background()) // Deliver queued messages to connected servers, and report finished updates
+	stopKeepAwake := srv.StartKeepAwake()                     // Hold this machine awake while sessions run, when keep_awake.enabled is on
 	defer stopKeepAwake()
 
 	go func() {

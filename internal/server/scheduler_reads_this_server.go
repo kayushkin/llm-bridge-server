@@ -44,7 +44,7 @@ func (s *Server) SchedulerModelStoreRoles() modelstoreroles.Roles {
 }
 
 func (reads schedulerReadsThisServer) Instances() ([]msg.Instance, error) {
-	return reads.server.listInstancesWithMachines()
+	return reads.server.machineRoutes.ListInstancesWithMachines()
 }
 
 func (reads schedulerReadsThisServer) Session(sessionID string) (*msg.ManagedSession, error) {
@@ -73,7 +73,7 @@ func (reads schedulerReadsThisServer) FirstModelOfRole(role string) (sessionmode
 }
 
 func (reads schedulerReadsThisServer) ProvidersOfHarness(harness msg.Harness) ([]string, error) {
-	for _, described := range reads.server.discoverHarnesses() {
+	for _, described := range reads.server.harnessCatalog.DiscoverHarnesses() {
 		if described.Name == string(harness) {
 			return described.SupportedProviders, nil
 		}

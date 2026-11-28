@@ -1,0 +1,712 @@
+package sessionactions
+
+// Session actions: buttons a session's agent puts in the chat, which this
+// server runs when a person confirms one.
+//
+// The agent offers one of a fixed set of action types (msg.OfferableSessionActionTypes)
+// with its label and the one argument its type needs; it never supplies a
+// command. This server writes Command — exactly what a confirm runs — from the
+// offer, and the chat shows it under the button. Confirming takes the
+// session's owner: the agent's session posting token opens the offer route
+// and not the run route, so an agent cannot press its own button.
+//
+// Every change to an action is a row update in session_actions, which is the
+// log of each press, and an EventSessionAction carrying the whole record, so
+// the chat shows the button where it was offered and each later step where it
+// happened.
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+	"unicode"
+
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+	"github.com/kayushkin/llm-bridge-server/internal/textutil"
+
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
+	schedulerapi "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/api"
+	schedulerdb "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/db"
+	"github.com/kayushkin/llm-bridge-server/internal/config"
+	"github.com/kayushkin/llm-bridge-server/internal/repositories/repos"
+	"github.com/kayushkin/llm-bridge-server/internal/store"
+	"github.com/kayushkin/llm-bridge/msg"
+)
+
+const (
+	// maximumSessionActionLabelCharacters keeps a label to what fits on a
+	// button; the detail belongs in the message or in Command.
+	maximumSessionActionLabelCharacters = 120
+	// maximumSessionActionOfferBytes bounds an offer's body. A message to
+	// send is the only long field.
+	maximumSessionActionOfferBytes = 256 << 10
+	// sessionActionStoreRequestTimeout bounds a deploy action's read of its
+	// repo from repo-store.
+	sessionActionStoreRequestTimeout = 30 * time.Second
+)
+
+// SchedulerJobs is the scheduler's jobs as this server reads and runs them,
+// in process: schedulerapi.Server, or a fake in a test. Each refuses as its
+// route does (schedulerapi.ErrJobNotFound for the route's 404).
+type SchedulerJobs interface {
+	Job(id int64) (*schedulerdb.Job, error)
+	RunJobNow(id int64) (*schedulerdb.Run, error)
+}
+
+// HandleOfferSessionAction is POST /sessions/{id}/actions. The body is a
+// msg.SessionActionOffer. Answers 201 and the msg.SessionAction, waiting for a
+// person to confirm it.
+func (s *Service) HandleOfferSessionAction(w http.ResponseWriter, r *http.Request) {
+	session, err := s.Store.GetSession(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	var offer msg.SessionActionOffer
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maximumSessionActionOfferBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&offer); err != nil {
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_session_action_offer", "body is not a session action offer: "+err.Error())
+		return
+	}
+	if problem := sessionActionOfferProblem(offer); problem != "" {
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_session_action_offer", problem)
+		return
+	}
+	command, refusal := s.describeSessionAction(r.Context(), session, offer)
+	if refusal != nil {
+		refusal.write(w)
+		return
+	}
+	var review *msg.SessionActionReview
+	if offer.Type == msg.SessionActionRunCommand {
+		directory, refusal := s.sessionActionWorkingDirectory(session, offer)
+		if refusal != nil {
+			refusal.write(w)
+			return
+		}
+		review, refusal = s.reviewSessionActionCommand(r.Context(), session, offer, directory)
+		if refusal != nil {
+			refusal.write(w)
+			return
+		}
+	}
+	if offer.ReportSuccess == nil && offer.Type != msg.SessionActionDeploy {
+		reportSuccess := msg.SessionActionReportsSuccessByDefault(offer.Type)
+		offer.ReportSuccess = &reportSuccess
+	}
+	action := store.SessionAction{
+		SessionID: session.SessionID,
+		Offer:     offer,
+		Command:   command,
+		State:     msg.SessionActionOffered,
+		OfferedAt: time.Now().UTC(),
+		Review:    review,
+	}
+	if err := s.Store.InsertSessionAction(&action); err != nil {
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "record_session_action", err.Error())
+		return
+	}
+	log.Printf("[session-actions] %s offered in %s: %q, %s%s", action.ActionID, session.SessionID, offer.Label, command, describeReviewForLog(review))
+	if err := s.broadcastSessionAction(action); err != nil {
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "record_session_action_event", fmt.Sprintf(
+			"%s is stored and listed at GET /sessions/%s/actions, but its session_action event was not written, so the chat does not show it: %v",
+			action.ActionID, session.SessionID, err))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	if err := json.NewEncoder(w).Encode(action); err != nil {
+		log.Printf("[session-actions] write %s answer: %v", action.ActionID, err)
+	}
+}
+
+// HandleListSessionActions is GET /sessions/{id}/actions: every action offered
+// in the session and how each run went, oldest first.
+func (s *Service) HandleListSessionActions(w http.ResponseWriter, r *http.Request) {
+	session, err := s.Store.GetSession(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	actions, err := s.Store.ListSessionActions(session.SessionID)
+	if err != nil {
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "list_session_actions", err.Error())
+		return
+	}
+	httpjson.WriteJSON(w, actions)
+}
+
+// HandleRunSessionAction is POST /sessions/{id}/actions/{action_id}/run: a
+// person confirmed the action. It is started and answered 202 with the record
+// as running; how the run ends arrives as a session_action event and in the
+// record. An action runs once: a second confirm is 409.
+func (s *Service) HandleRunSessionAction(w http.ResponseWriter, r *http.Request) {
+	session, err := s.Store.GetSession(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	actionID := r.PathValue("action_id")
+	offered, err := s.Store.GetSessionAction(session.SessionID, actionID)
+	if errors.Is(err, store.ErrSessionActionNotFound) {
+		http.Error(w, "session action not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "read_session_action", err.Error())
+		return
+	}
+	// What a confirm runs is what the person was shown. Described again now,
+	// so a repo that moved or a scheduler job that was changed since the offer
+	// is refused rather than run under the old description.
+	command, refusal := s.describeSessionAction(r.Context(), session, offered.Offer)
+	if refusal != nil {
+		refusal.write(w)
+		return
+	}
+	if offered.Review != nil && offered.Review.Verdict == msg.SessionActionReviewReject {
+		httpjson.WriteJSONError(w, http.StatusConflict, "session_action_rejected_by_review", fmt.Sprintf(
+			"%s's command was rejected by its reviewer (%s): %s", actionID, offered.Review.Model, offered.Review.Reasons))
+		return
+	}
+	// A target session's display name is in Command only for the person to
+	// read, and the renamer may change it after the offer; what a send or stop
+	// acts on is the target's id, which comes from the offer and cannot. The
+	// describe above has already checked the target is still there and still
+	// the offering session's principal's.
+	if command != offered.Command && !sessionActionTypeActsOnAnotherSession(offered.Offer.Type) {
+		httpjson.WriteJSONError(w, http.StatusConflict, "session_action_changed", fmt.Sprintf(
+			"what %s would run has changed since it was offered, so it was not run. It was offered as: %s. It would now run: %s. Ask the agent to offer it again.",
+			actionID, offered.Command, command))
+		return
+	}
+	// The typed values, checked before the action is marked running, so a
+	// missing one is a refusal the person can fix rather than a failed run.
+	inputValues, err := readSessionActionRunInputs(r, w, offered.Offer.Inputs)
+	if err != nil {
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_session_action_inputs", err.Error())
+		return
+	}
+
+	runByPrincipalID, _ := requestcaller.PrincipalIdentityOfRequest(r)
+	running, err := s.Store.StartSessionAction(session.SessionID, actionID, runByPrincipalID, time.Now().UTC())
+	if errors.Is(err, store.ErrSessionActionNotOffered) {
+		current, readErr := s.Store.GetSessionAction(session.SessionID, actionID)
+		if readErr != nil {
+			httpjson.WriteJSONError(w, http.StatusInternalServerError, "read_session_action", readErr.Error())
+			return
+		}
+		httpjson.WriteJSONError(w, http.StatusConflict, "session_action_already_run", fmt.Sprintf(
+			"%s is %s, not waiting to be confirmed; an action runs once", actionID, current.State))
+		return
+	}
+	if err != nil {
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "start_session_action", err.Error())
+		return
+	}
+	log.Printf("[session-actions] %s in %s confirmed by %s: running %s", actionID, session.SessionID, describePrincipalForLog(runByPrincipalID), running.Command)
+	if err := s.broadcastSessionAction(running); err != nil {
+		log.Printf("[session-actions] ERROR %s: running event not written: %v", actionID, err)
+	}
+
+	go s.runSessionAction(session, running, inputValues)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	if err := json.NewEncoder(w).Encode(running); err != nil {
+		log.Printf("[session-actions] write %s answer: %v", actionID, err)
+	}
+}
+
+// runSessionAction does a confirmed action's work and records how it ended.
+// inputValues are what the person typed into the button's boxes; they go to
+// the command and are blanked from what is recorded.
+func (s *Service) runSessionAction(session *store.Session, action store.SessionAction, inputValues map[string]string) {
+	outcome := BlankSecretSessionActionInputs(s.performSessionAction(session, action, inputValues), action.Offer.Inputs, inputValues)
+	state := msg.SessionActionSucceeded
+	if outcome.Err != nil {
+		state = msg.SessionActionFailed
+	}
+	errorText := ""
+	if outcome.Err != nil {
+		errorText = outcome.Err.Error()
+	}
+	finished, err := s.Store.FinishSessionAction(session.SessionID, action.ActionID, store.SessionActionEnd{
+		State: state, Output: outcome.Output, Error: errorText, ResultSessionID: outcome.ResultSessionID, CostUSD: outcome.costUSD,
+	}, time.Now().UTC())
+	if err != nil {
+		log.Printf("[session-actions] ERROR %s in %s ended %s (%s) but the end was not recorded: %v", action.ActionID, session.SessionID, state, errorText, err)
+		return
+	}
+	log.Printf("[session-actions] %s in %s %s%s", action.ActionID, session.SessionID, state, suffixIfNotEmpty(": ", errorText))
+	if err := s.broadcastSessionAction(finished); err != nil {
+		log.Printf("[session-actions] ERROR %s: %s event not written: %v", action.ActionID, state, err)
+	}
+	s.reportSessionActionToItsSession(finished)
+}
+
+type SessionActionOutcome struct {
+	Output          string
+	ResultSessionID string
+	costUSD         float64
+	Err             error
+}
+
+func (s *Service) performSessionAction(session *store.Session, action store.SessionAction, inputValues map[string]string) SessionActionOutcome {
+	offer := action.Offer
+	switch offer.Type {
+	case msg.SessionActionDeploy:
+		return s.runDeployAction(session, action)
+	case msg.SessionActionRunSchedulerJob:
+		return s.RunSchedulerJobAction(offer.SchedulerJobID)
+	case msg.SessionActionSendMessage:
+		output, err := s.SendMessageInternally(session.SessionID, offer.Message)
+		return SessionActionOutcome{Output: output, Err: err}
+	case msg.SessionActionForkAndSend:
+		return s.forkAndSendAction(session, offer)
+	case msg.SessionActionNewSessionAndSend:
+		return s.newSessionAndSendAction(session, offer)
+	case msg.SessionActionRunCommand:
+		return s.runCommandAction(session, action, inputValues)
+	case msg.SessionActionModelCall:
+		return s.modelCallAction(offer)
+	case msg.SessionActionBackgroundAgent:
+		return s.backgroundAgentAction(session, action)
+	case msg.SessionActionSendToSession:
+		return s.sendToSessionAction(offer, inputValues)
+	case msg.SessionActionStopSession:
+		return s.stopSessionAction(offer)
+	}
+	return SessionActionOutcome{Err: fmt.Errorf("unknown action type %q", offer.Type)}
+}
+
+// sessionActionOfferProblem says what is wrong with an offer on its own, or ""
+// when nothing is. Whether the repo or job it names exists is asked of its
+// owner afterwards.
+func sessionActionOfferProblem(offer msg.SessionActionOffer) string {
+	label := strings.TrimSpace(offer.Label)
+	switch {
+	case label == "":
+		return "label is required: it is the button's text"
+	case len([]rune(offer.Label)) > maximumSessionActionLabelCharacters:
+		return fmt.Sprintf("label is longer than %d characters; put the detail in the message", maximumSessionActionLabelCharacters)
+	case strings.IndexFunc(offer.Label, unicode.IsControl) >= 0:
+		return "label cannot contain a control character"
+	}
+	if offer.Type == msg.SessionActionSendMessage {
+		return "send_message buttons are no longer offered: a button that sends a reply only repeats a question. " +
+			"Ask the user with AskUserQuestion, whose options the chat draws as one-click answers, or ask in words"
+	}
+	if !slices.Contains(msg.OfferableSessionActionTypes, offer.Type) {
+		names := make([]string, len(msg.OfferableSessionActionTypes))
+		for index, actionType := range msg.OfferableSessionActionTypes {
+			names[index] = string(actionType)
+		}
+		return fmt.Sprintf("type %q is not an action type; it must be one of %s", offer.Type, strings.Join(names, ", "))
+	}
+	fields := sessionActionOfferFields(offer)
+	uses := sessionActionFieldsByType[offer.Type]
+	for _, field := range fields {
+		if field.set && !uses.allows(field.name) {
+			return fmt.Sprintf("%s is not used by a %s action", field.name, offer.Type)
+		}
+	}
+	for _, name := range uses.required {
+		for _, field := range fields {
+			if field.name == name && !field.set {
+				return fmt.Sprintf("a %s action needs %s", offer.Type, name)
+			}
+		}
+	}
+	switch {
+	case offer.RepoID < 0 || offer.SchedulerJobID < 0:
+		return "repo_id and scheduler_job_id are positive ids"
+	case offer.MaximumCostUSD < 0:
+		return "maximum_cost_usd cannot be negative"
+	case offer.WorkingDirectory != "" && !filepath.IsAbs(offer.WorkingDirectory):
+		return "working_directory must be an absolute path"
+	case offer.ResultFormat != "" && offer.ResultFormat != msg.SessionActionResultText && offer.ResultFormat != msg.SessionActionResultMarkdown:
+		return fmt.Sprintf("result_format %q is neither text nor markdown", offer.ResultFormat)
+	case offer.Type == msg.SessionActionDeploy && offer.ReportSuccess != nil:
+		return "report_success is not used by a deploy action: deploy-gate tells the session that started a deploy how it ended"
+	}
+	if problem := sessionActionInputsProblem(offer.Inputs); problem != "" {
+		return problem
+	}
+	if offer.Type == msg.SessionActionSendToSession {
+		return SessionActionMessageInputsProblem(offer.Message, offer.Inputs)
+	}
+	return ""
+}
+
+// sessionActionFieldUse is which offer fields one action type reads, and which
+// of those it cannot do without.
+type sessionActionFieldUse struct {
+	required []string
+	optional []string
+}
+
+func (use sessionActionFieldUse) allows(name string) bool {
+	return slices.Contains(use.required, name) || slices.Contains(use.optional, name)
+}
+
+var sessionActionFieldsByType = map[msg.SessionActionType]sessionActionFieldUse{
+	msg.SessionActionDeploy:            {required: []string{"repo_id"}},
+	msg.SessionActionRunSchedulerJob:   {required: []string{"scheduler_job_id"}},
+	msg.SessionActionRunCommand:        {required: []string{"shell_command"}, optional: []string{"working_directory", "result_format", "inputs"}},
+	msg.SessionActionModelCall:         {required: []string{"message", "model", "maximum_cost_usd"}},
+	msg.SessionActionBackgroundAgent:   {required: []string{"message", "maximum_cost_usd"}, optional: []string{"model"}},
+	msg.SessionActionForkAndSend:       {required: []string{"message"}},
+	msg.SessionActionNewSessionAndSend: {required: []string{"message"}},
+	msg.SessionActionSendToSession:     {required: []string{"target_session_id", "message"}, optional: []string{"inputs"}},
+	msg.SessionActionStopSession:       {required: []string{"target_session_id"}},
+}
+
+type sessionActionOfferField struct {
+	name string
+	set  bool
+}
+
+func sessionActionOfferFields(offer msg.SessionActionOffer) []sessionActionOfferField {
+	return []sessionActionOfferField{
+		{"repo_id", offer.RepoID != 0},
+		{"scheduler_job_id", offer.SchedulerJobID != 0},
+		{"message", strings.TrimSpace(offer.Message) != ""},
+		{"shell_command", strings.TrimSpace(offer.ShellCommand) != ""},
+		{"working_directory", offer.WorkingDirectory != ""},
+		{"result_format", offer.ResultFormat != ""},
+		{"model", offer.Model != ""},
+		{"maximum_cost_usd", offer.MaximumCostUSD > 0},
+		{"inputs", len(offer.Inputs) > 0},
+		{"target_session_id", strings.TrimSpace(offer.TargetSessionID) != ""},
+	}
+}
+
+// sessionActionRefusal is why an action cannot be described, and so cannot be
+// offered or run.
+type sessionActionRefusal struct {
+	status  int
+	Code    string
+	message string
+}
+
+func (refusal *sessionActionRefusal) write(w http.ResponseWriter) {
+	httpjson.WriteJSONError(w, refusal.status, refusal.Code, refusal.message)
+}
+
+// describeSessionAction writes Command for an offer: exactly what confirming
+// it runs, read from the stores that own the repo and the job.
+func (s *Service) describeSessionAction(ctx context.Context, session *store.Session, offer msg.SessionActionOffer) (string, *sessionActionRefusal) {
+	switch offer.Type {
+	case msg.SessionActionDeploy:
+		repo, refusal := s.deployableRepo(ctx, offer.RepoID)
+		if refusal != nil {
+			return "", refusal
+		}
+		return fmt.Sprintf("run `bash -l -c ./deploy.sh` in %s (repo-store repo %d, %s)", repo.Path, repo.ID, repo.Name), nil
+	case msg.SessionActionRunSchedulerJob:
+		job, refusal := s.SchedulerJob(ctx, offer.SchedulerJobID)
+		if refusal != nil {
+			return "", refusal
+		}
+		what := job.Command
+		if job.Type == "agent" {
+			what = fmt.Sprintf("the %s agent with this prompt: %s", job.Agent, job.Prompt)
+		}
+		return fmt.Sprintf("POST %s/api/jobs/%d/run on this server — start scheduler job %d, %s (a %s job), which runs %s",
+			s.SchedulerMountPrefix, job.ID, job.ID, job.Name, job.Type, what), nil
+	case msg.SessionActionSendMessage:
+		return fmt.Sprintf("send session %s this message: %s", session.SessionID, offer.Message), nil
+	case msg.SessionActionForkAndSend:
+		return fmt.Sprintf("fork session %s into a new session named %q, and send the fork this message: %s", session.SessionID, offer.Label, offer.Message), nil
+	case msg.SessionActionRunCommand:
+		directory, refusal := s.sessionActionWorkingDirectory(session, offer)
+		if refusal != nil {
+			return "", refusal
+		}
+		return fmt.Sprintf("in %s, run with `bash -l -c`:\n%s%s", directory, offer.ShellCommand, describeSessionActionInputs(offer.Inputs)), nil
+	case msg.SessionActionModelCall:
+		call, refusal := s.sessionActionModelCall(offer)
+		if refusal != nil {
+			return "", refusal
+		}
+		models := make([]string, 0, len(call.route.Candidates))
+		for _, candidate := range call.route.Candidates {
+			models = append(models, candidate.ModelID)
+		}
+		return fmt.Sprintf("ask %q (the first of %s that answers) this, with no tools, spending at most $%.2f at list price (at most %d output tokens):\n%s",
+			offer.Model, strings.Join(models, ", then "), offer.MaximumCostUSD, call.maximumOutputTokens, offer.Message), nil
+	case msg.SessionActionBackgroundAgent:
+		model := "the instance's default model"
+		if offer.Model != "" {
+			if s.ModelStore() == nil {
+				return "", &sessionActionRefusal{http.StatusServiceUnavailable, "model_store_not_configured", "this server has no model-store to resolve model with"}
+			}
+			resolved, err := s.ModelStore().ResolveModel(offer.Model)
+			if err != nil {
+				return "", &sessionActionRefusal{http.StatusUnprocessableEntity, "unknown_model", fmt.Sprintf("model-store cannot resolve %q: %v", offer.Model, err)}
+			}
+			model = resolved.ID
+		}
+		return fmt.Sprintf("start a background session named %q as a new chat starts — %s harness, instance %s, principal %s, the instance's working directory, model %s, spend ceiling $%.2f, none of session %s's history — send it this, and show its final reply here:\n%s",
+			offer.Label, session.Harness, textutil.OrNone(session.InstanceID), textutil.OrNone(session.PrincipalID),
+			model, offer.MaximumCostUSD, session.SessionID, offer.Message), nil
+	case msg.SessionActionNewSessionAndSend:
+		return fmt.Sprintf("start a new session named %q as a new chat starts — %s harness, instance %s, principal %s, the instance's working directory and default settings, none of session %s's history — and send it this message: %s",
+			offer.Label, session.Harness, textutil.OrNone(session.InstanceID), textutil.OrNone(session.PrincipalID),
+			session.SessionID, offer.Message), nil
+	case msg.SessionActionSendToSession, msg.SessionActionStopSession:
+		return s.describeTargetSessionAction(ctx, session, offer)
+	}
+	return "", &sessionActionRefusal{http.StatusBadRequest, "invalid_session_action_offer", fmt.Sprintf("type %q is not an action type", offer.Type)}
+}
+
+// repoStoreRepo is the part of repo-store's repo record a deploy reads.
+type repoStoreRepo struct {
+	ID   int64
+	Name string
+	Path string
+}
+
+// deployableRepo reads a repo from the repo-store module in this process and
+// checks it has a deploy.sh this server can run.
+func (s *Service) deployableRepo(ctx context.Context, repoID int64) (repoStoreRepo, *sessionActionRefusal) {
+	if s.RepoRegistryForDeploys() == nil {
+		return repoStoreRepo{}, &sessionActionRefusal{http.StatusServiceUnavailable, "repo_store_not_configured",
+			config.PostgresURLEnvironmentVariable + " is not set, so this server keeps no repos and cannot find one to deploy"}
+	}
+	stored, err := s.RepoRegistryForDeploys().GetRepo(repoID)
+	if errors.Is(err, repos.ErrNotFound) {
+		return repoStoreRepo{}, &sessionActionRefusal{http.StatusUnprocessableEntity, "unknown_record", fmt.Sprintf("repo-store has no repo %d", repoID)}
+	}
+	if err != nil {
+		return repoStoreRepo{}, &sessionActionRefusal{http.StatusBadGateway, "store_unavailable", fmt.Sprintf("repo-store could not read repo %d: %v", repoID, err)}
+	}
+	repo := repoStoreRepo{ID: stored.ID, Name: stored.Name, Path: stored.Path}
+	if repo.ID != repoID || repo.Path == "" {
+		return repoStoreRepo{}, &sessionActionRefusal{http.StatusBadGateway, "repo_store_answer_unusable",
+			fmt.Sprintf("repo-store answered repo %d with id %d and path %q", repoID, repo.ID, repo.Path)}
+	}
+	info, err := os.Stat(filepath.Join(repo.Path, "deploy.sh"))
+	if err != nil || info.IsDir() || info.Mode()&0o111 == 0 {
+		return repoStoreRepo{}, &sessionActionRefusal{http.StatusUnprocessableEntity, "repo_has_no_deploy_script",
+			fmt.Sprintf("repo %d (%s) has no executable deploy.sh in %s", repo.ID, repo.Name, repo.Path)}
+	}
+	return repo, nil
+}
+
+// SchedulerJob reads the job from the scheduler in this process. A job it
+// does not have is the caller's mistake (422: the offer names a record that
+// does not exist); any other failure is the scheduler's (502).
+func (s *Service) SchedulerJob(_ context.Context, jobID int64) (*schedulerdb.Job, *sessionActionRefusal) {
+	jobs := s.ServerReads.SchedulerJobsInProcess()
+	if jobs == nil {
+		return nil, &sessionActionRefusal{http.StatusBadGateway, "store_refused", "the scheduler is not open on this server, so job " + strconv.FormatInt(jobID, 10) + " cannot be read"}
+	}
+	job, err := jobs.Job(jobID)
+	if errors.Is(err, schedulerapi.ErrJobNotFound) {
+		return nil, &sessionActionRefusal{http.StatusUnprocessableEntity, "unknown_record", fmt.Sprintf("the scheduler has no job %d", jobID)}
+	}
+	if err != nil {
+		return nil, &sessionActionRefusal{http.StatusBadGateway, "store_unavailable", fmt.Sprintf("the scheduler could not read job %d: %v", jobID, err)}
+	}
+	if job.ID != jobID {
+		return nil, &sessionActionRefusal{http.StatusBadGateway, "scheduler_answer_unusable",
+			fmt.Sprintf("the scheduler answered job %d with id %d", jobID, job.ID)}
+	}
+	return job, nil
+}
+
+// runDeployAction runs the repo's deploy.sh, which runs deploy-gate like any
+// other deploy.
+func (s *Service) runDeployAction(session *store.Session, action store.SessionAction) SessionActionOutcome {
+	ctx, cancel := context.WithTimeout(context.Background(), sessionActionStoreRequestTimeout)
+	defer cancel()
+	repo, refusal := s.deployableRepo(ctx, action.Offer.RepoID)
+	if refusal != nil {
+		return SessionActionOutcome{Err: errors.New(refusal.message)}
+	}
+	return s.runShellForSessionAction(session, action, repo.Path, "./deploy.sh", nil)
+}
+
+// RunSchedulerJobAction asks the scheduler in this process to run the job
+// now, as POST /scheduler/api/jobs/{id}/run does. While scheduler.runs.enabled
+// is off the scheduler refuses, and the action fails with that refusal. The
+// output is the run, as that route answers it.
+func (s *Service) RunSchedulerJobAction(jobID int64) SessionActionOutcome {
+	jobs := s.ServerReads.SchedulerJobsInProcess()
+	if jobs == nil {
+		return SessionActionOutcome{Err: fmt.Errorf("the scheduler is not open on this server, so job %d cannot run", jobID)}
+	}
+	run, err := jobs.RunJobNow(jobID)
+	if err != nil {
+		return SessionActionOutcome{Output: err.Error(), Err: fmt.Errorf("the scheduler refused to run job %d: %w", jobID, err)}
+	}
+	encoded, err := json.Marshal(run)
+	if err != nil {
+		return SessionActionOutcome{Err: fmt.Errorf("the run of job %d does not encode: %w", jobID, err)}
+	}
+	return SessionActionOutcome{Output: string(encoded)}
+}
+
+func (s *Service) forkAndSendAction(session *store.Session, offer msg.SessionActionOffer) SessionActionOutcome {
+	status, body := s.ServeInternally(http.MethodPost, "/sessions/"+url.PathEscape(session.SessionID)+"/fork", msg.ForkSessionRequest{DisplayName: offer.Label})
+	if status != http.StatusCreated {
+		return SessionActionOutcome{Output: string(body), Err: fmt.Errorf("fork of %s refused with %d", session.SessionID, status)}
+	}
+	return s.sendToCreatedSession(body, offer.Message)
+}
+
+// NewChatLikeSessionRequest is the request the chat sends for a new chat —
+// harness, instance and principal, type interactive, purpose chat — so the
+// session gets the instance's working directory and the defaults for the
+// model, effort and tools, and with them the prompt of wherever it starts. It
+// copies nothing else from the offering session: a session started in an
+// orchestrator's home directory read that directory's CLAUDE.md and took on
+// the orchestrator's role (br_1793299558792674921, 2026-10-29). Nor does it
+// copy the bundle or the spend ceiling, unlike a fork: a session that starts
+// work through buttons, such as an orchestrator, has a bundle and a ceiling
+// for its own turns, not for the tasks it hands out. The principal is carried,
+// so its grants still bound the new session. The origin is carried so the
+// session still says who started it.
+func NewChatLikeSessionRequest(session *store.Session, displayName string) msg.CreateSessionRequest {
+	return msg.CreateSessionRequest{
+		Harness:     session.Harness,
+		InstanceID:  session.InstanceID,
+		DisplayName: displayName,
+		PrincipalID: session.PrincipalID,
+		Type:        msg.SessionTypeInteractive,
+		Purpose:     msg.PurposeChat,
+		Origin:      session.Origin,
+	}
+}
+
+// newSessionAndSendAction starts a session the way the chat starts one when a
+// person presses "new chat" (NewChatLikeSessionRequest), then sends it the
+// offer's message.
+func (s *Service) newSessionAndSendAction(session *store.Session, offer msg.SessionActionOffer) SessionActionOutcome {
+	request := NewChatLikeSessionRequest(session, offer.Label)
+	status, body := s.ServeInternally(http.MethodPost, "/sessions", request)
+	if status != http.StatusCreated && status != http.StatusOK {
+		return SessionActionOutcome{Output: string(body), Err: fmt.Errorf("new session refused with %d", status)}
+	}
+	var created store.Session
+	if err := json.Unmarshal(body, &created); err == nil && created.SessionID != "" {
+		// Before the message is sent, so the session never runs without the
+		// limits of the connected server this one was started through.
+		if _, err := s.Store.CopySessionPeerOrigin(session.SessionID, created.SessionID); err != nil {
+			return SessionActionOutcome{ResultSessionID: created.SessionID, Err: fmt.Errorf("session %s was created but its peer origin was not copied, so the message was not sent: %w", created.SessionID, err)}
+		}
+	}
+	return s.sendToCreatedSession(body, offer.Message)
+}
+
+// sendToCreatedSession sends message to the session a create or fork
+// answered with.
+func (s *Service) sendToCreatedSession(createdBody []byte, message string) SessionActionOutcome {
+	var created store.Session
+	if err := json.Unmarshal(createdBody, &created); err != nil || created.SessionID == "" {
+		return SessionActionOutcome{Output: string(createdBody), Err: fmt.Errorf("the created session's record does not name it: %v", err)}
+	}
+	output, err := s.SendMessageInternally(created.SessionID, message)
+	if err != nil {
+		return SessionActionOutcome{Output: output, ResultSessionID: created.SessionID, Err: fmt.Errorf("session %s was created but the message was not sent: %w", created.SessionID, err)}
+	}
+	return SessionActionOutcome{Output: output, ResultSessionID: created.SessionID}
+}
+
+func (s *Service) SendMessageInternally(sessionID, message string) (string, error) {
+	answer := s.Sessions.SendMessageFromThisServer(context.Background(), sessionID, msg.SendMessageRequest{Message: message}, "")
+	if answer.Status != http.StatusOK {
+		return string(answer.Body), fmt.Errorf("send to %s refused with %d: %s", sessionID, answer.Status, strings.TrimSpace(string(answer.Body)))
+	}
+	return string(answer.Body), nil
+}
+
+// ServeInternally runs one request through this server's own routes, past
+// request authorization — the person who confirmed the action was authorized
+// for its session already — so an action forks and creates exactly as those
+// routes do when a person calls them. Only POST /sessions and
+// POST /sessions/{id}/fork go this way: their handlers decide from the
+// request's caller throughout (delegates, peers, starters, scopes), and
+// splitting them into a function of their own is a change to session
+// creation, not to how it is called. A send calls SendMessageFromThisServer.
+func (s *Service) ServeInternally(method, path string, body any) (int, []byte) {
+	return s.serveInternallyWithContext(context.Background(), method, path, body)
+}
+
+// serveInternallyWithContext is ServeInternally with the request's context.
+func (s *Service) serveInternallyWithContext(ctx context.Context, method, path string, body any) (int, []byte) {
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return http.StatusInternalServerError, []byte(err.Error())
+	}
+	request := httptest.NewRequest(method, path, strings.NewReader(string(encoded))).WithContext(ctx)
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	s.Mux.ServeHTTP(recorder, request)
+	return recorder.Code, recorder.Body.Bytes()
+}
+
+func (s *Service) broadcastSessionAction(action store.SessionAction) error {
+	event := msg.Event{
+		Type:            msg.EventSessionAction,
+		BridgeSessionID: action.SessionID,
+		Timestamp:       time.Now().UTC(),
+		SessionAction:   &action,
+	}
+	_, err := s.Harness.BroadcastEvent(&event)
+	return err
+}
+
+// SettleSessionActionsLeftRunning marks every action a previous process left
+// running as outcome_unknown, since nobody saw its run end, and tells each
+// session.
+func (s *Service) SettleSessionActionsLeftRunning() {
+	settled, err := s.Store.MarkRunningSessionActionsOutcomeUnknown(
+		"llm-bridge-server stopped while this ran, so how it ended was not seen", time.Now().UTC())
+	if err != nil {
+		log.Printf("[session-actions] ERROR settling actions left running: %v", err)
+	}
+	for _, action := range settled {
+		log.Printf("[session-actions] %s in %s was running when the server stopped: outcome unknown", action.ActionID, action.SessionID)
+		if err := s.broadcastSessionAction(action); err != nil {
+			log.Printf("[session-actions] ERROR %s: outcome_unknown event not written: %v", action.ActionID, err)
+		}
+		s.reportSessionActionToItsSession(action)
+	}
+}
+
+func describeReviewForLog(review *msg.SessionActionReview) string {
+	if review == nil {
+		return ""
+	}
+	return fmt.Sprintf(" (review by %s: %s)", review.Model, review.Verdict)
+}
+
+func describePrincipalForLog(principalID string) string {
+	if principalID == "" {
+		return "the internal service"
+	}
+	return principalID
+}
+
+func suffixIfNotEmpty(separator, text string) string {
+	if text == "" {
+		return ""
+	}
+	return separator + text
+}

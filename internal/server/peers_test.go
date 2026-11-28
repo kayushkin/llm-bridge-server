@@ -19,6 +19,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/server/routeaccess"
+
+	"github.com/kayushkin/llm-bridge-server/internal/peers"
+
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/gorilla/websocket"
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
 	"github.com/kayushkin/llm-bridge-server/internal/authstoreclient"
@@ -207,7 +213,7 @@ func newFakeAuthStore(t *testing.T) (*fakeAuthStore, *httptest.Server) {
 	mux.HandleFunc("POST /api/credentials", func(w http.ResponseWriter, r *http.Request) {
 		var input authstoreclient.CredentialInput
 		if err := json.NewDecoder(r.Body).Decode(&input); err != nil || input.Token == "" ||
-			(input.Provider != peerCredentialProvider && input.Provider != peerConnectionCredentialProvider) {
+			(input.Provider != peers.PeerCredentialProvider && input.Provider != peers.PeerConnectionCredentialProvider) {
 			http.Error(w, "bad credential", http.StatusBadRequest)
 			return
 		}
@@ -284,8 +290,8 @@ func (gated *gatedTestServer) requestAsAdministrator(t *testing.T, method, path 
 		t.Fatal(err)
 	}
 	request := httptest.NewRequest(method, path, bytes.NewReader(data))
-	request.Header.Set(serviceTokenHeader, testServiceToken)
-	request.Header.Set(principalIdentityHeader, administratorTestPrincipalID)
+	request.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
+	request.Header.Set(requestcaller.PrincipalIdentityHeader, administratorTestPrincipalID)
 	return serve(gated.server, request)
 }
 
@@ -304,8 +310,8 @@ func (gated *gatedTestServer) requestAsPrincipal(t *testing.T, principalID, meth
 		reader = bytes.NewReader(nil)
 	}
 	request := httptest.NewRequest(method, path, reader)
-	request.Header.Set(serviceTokenHeader, testServiceToken)
-	request.Header.Set(principalIdentityHeader, principalID)
+	request.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
+	request.Header.Set(requestcaller.PrincipalIdentityHeader, principalID)
 	return serve(gated.server, request)
 }
 
@@ -318,12 +324,12 @@ func trustTestCertificates(t *testing.T, servers ...*httptest.Server) {
 		pool.AddCert(server.Certificate())
 	}
 	transport := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}}
-	previousHTTP, previousProxy, previousDialer := peerHTTPClient, peerProxyHTTPClient, peerSocketDialer
-	peerHTTPClient = &http.Client{Transport: transport, Timeout: 20 * time.Second, CheckRedirect: refusePeerRedirect}
-	peerProxyHTTPClient = &http.Client{Transport: transport, CheckRedirect: refusePeerRedirect}
-	peerSocketDialer = &websocket.Dialer{TLSClientConfig: &tls.Config{RootCAs: pool}, HandshakeTimeout: 5 * time.Second}
+	previousHTTP, previousProxy, previousDialer := peers.PeerHTTPClient, peers.PeerProxyHTTPClient, peers.PeerSocketDialer
+	peers.PeerHTTPClient = &http.Client{Transport: transport, Timeout: 20 * time.Second, CheckRedirect: peers.RefusePeerRedirect}
+	peers.PeerProxyHTTPClient = &http.Client{Transport: transport, CheckRedirect: peers.RefusePeerRedirect}
+	peers.PeerSocketDialer = &websocket.Dialer{TLSClientConfig: &tls.Config{RootCAs: pool}, HandshakeTimeout: 5 * time.Second}
 	t.Cleanup(func() {
-		peerHTTPClient, peerProxyHTTPClient, peerSocketDialer = previousHTTP, previousProxy, previousDialer
+		peers.PeerHTTPClient, peers.PeerProxyHTTPClient, peers.PeerSocketDialer = previousHTTP, previousProxy, previousDialer
 	})
 }
 
@@ -367,7 +373,7 @@ func waitForSockets(t *testing.T, servers map[*peerTestServer]string) {
 	for time.Now().Before(deadline) {
 		connected := 0
 		for server, connectionID := range servers {
-			if server.server.peerSockets.socketOf(connectionID) != nil {
+			if server.server.peerSockets.SocketOf(connectionID) != nil {
 				connected++
 			}
 		}
@@ -391,7 +397,7 @@ func TestTwoServersConnectByDialingOut(t *testing.T) {
 	initiating := newPeerTestServer(t, true)
 
 	acceptingID, initiatingID := connectPair(t, accepting, initiating, acceptingOverTLS.URL, "")
-	t.Cleanup(func() { initiating.server.peerSockets.stop(initiatingID) })
+	t.Cleanup(func() { initiating.server.peerSockets.Stop(initiatingID) })
 	waitForSockets(t, map[*peerTestServer]string{accepting: acceptingID, initiating: initiatingID})
 
 	if answer := initiating.requestAsAdministrator(t, "POST", "/peer-connections/"+initiatingID+"/check", map[string]any{}); answer.Code != http.StatusConflict ||
@@ -473,9 +479,9 @@ func TestTwoServersConnectDirectly(t *testing.T) {
 	token := initiating.auth.token(held.CredentialID)
 
 	decodeAnswer[msg.PeerGrantRevoked](t, accepting.requestAsAdministrator(t, "POST", "/peer-connections/"+acceptingID+"/revoke-grant", map[string]any{"reason": "test over"}), http.StatusOK, "revoke")
-	request, _ := http.NewRequest("GET", acceptingOverTLS.URL+peerSelfPath, nil)
-	request.Header.Set(peerTokenHeader, token)
-	answer, err := peerHTTPClient.Do(request)
+	request, _ := http.NewRequest("GET", acceptingOverTLS.URL+peers.PeerSelfPath, nil)
+	request.Header.Set(requestcaller.PeerTokenHeader, token)
+	answer, err := peers.PeerHTTPClient.Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -499,7 +505,7 @@ func TestPeerConnectionRefusals(t *testing.T) {
 		t.Fatalf("a connect with demo login on = %d %s, want 409", answer.Code, answer.Body)
 	}
 	byHTTPS := httptest.NewRequest("GET", "/peer/self", nil)
-	byHTTPS.Header.Set(peerTokenHeader, "anything")
+	byHTTPS.Header.Set(requestcaller.PeerTokenHeader, "anything")
 	if answer := serve(withDemoLogin.server, byHTTPS); answer.Code != http.StatusConflict {
 		t.Fatalf("a peer token by https with demo login on = %d %s, want 409", answer.Code, answer.Body)
 	}
@@ -515,7 +521,7 @@ func TestPeerConnectionRefusals(t *testing.T) {
 	}
 
 	overSocket := httptest.NewRequest("GET", "/health", nil)
-	overSocket = overSocket.WithContext(context.WithValue(overSocket.Context(), peerSocketConnectionContextKey{}, "peer_connection_000001"))
+	overSocket = overSocket.WithContext(context.WithValue(overSocket.Context(), peers.PeerSocketConnectionContextKey{}, "peer_connection_000001"))
 	if answer := serve(withDemoLogin.server, overSocket); answer.Code != http.StatusForbidden || !strings.Contains(answer.Body.String(), "peer_socket_requires_peer_token") {
 		t.Fatalf("an open route over a peer socket with no token = %d %s, want 403", answer.Code, answer.Body)
 	}
@@ -534,7 +540,7 @@ func TestPeerConnectionRefusals(t *testing.T) {
 	var body bytes.Buffer
 	body.WriteString(`{"level":"administrator"}`)
 	request := httptest.NewRequest("POST", "/peer-connection-invites", &body)
-	request.Header.Set(serviceTokenHeader, testServiceToken)
+	request.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
 	if answer := serve(withDemoLogin.server, request); answer.Code != http.StatusForbidden {
 		t.Fatalf("a change with the service token and no administrator = %d %s, want 403", answer.Code, answer.Body)
 	}
@@ -542,11 +548,11 @@ func TestPeerConnectionRefusals(t *testing.T) {
 
 func TestPeerBaseURLsMustBeHTTPS(t *testing.T) {
 	for _, raw := range []string{"http://bridge.example.com", "https://", "https://user@bridge.example.com", "https://bridge.example.com/?q=1"} {
-		if _, err := peerBaseURLOf("base_url", raw); err == nil {
+		if _, err := peers.PeerBaseURLOf("base_url", raw); err == nil {
 			t.Errorf("%q should be refused", raw)
 		}
 	}
-	if got, err := peerBaseURLOf("base_url", "https://dash.example.com/bridge/"); err != nil || got != "https://dash.example.com/bridge" {
+	if got, err := peers.PeerBaseURLOf("base_url", "https://dash.example.com/bridge/"); err != nil || got != "https://dash.example.com/bridge" {
 		t.Errorf("https with a path = %q %v", got, err)
 	}
 }
@@ -561,7 +567,7 @@ func connectedPairByDialingOut(t *testing.T, configureAccepting ...func(*config.
 	trustTestCertificates(t, acceptingOverTLS)
 	initiating = newPeerTestServer(t, true)
 	acceptingID, initiatingID = connectPair(t, accepting, initiating, acceptingOverTLS.URL, "")
-	t.Cleanup(func() { initiating.server.peerSockets.stop(initiatingID) })
+	t.Cleanup(func() { initiating.server.peerSockets.Stop(initiatingID) })
 	waitForSockets(t, map[*peerTestServer]string{accepting: acceptingID, initiating: initiatingID})
 	return accepting, initiating, acceptingID, initiatingID
 }
@@ -574,9 +580,9 @@ func connectedPairByDialingOut(t *testing.T, configureAccepting ...func(*config.
 func TestPeerUsersActAsMappedPrincipalsWithinBothGrants(t *testing.T) {
 	// This test changes grants on the other server between identical reads,
 	// so the proxy must not serve an answer it kept from before the change.
-	savedFresh := peerProxySharedAnswerFreshFor
-	peerProxySharedAnswerFreshFor = 0
-	t.Cleanup(func() { peerProxySharedAnswerFreshFor = savedFresh })
+	savedFresh := peers.PeerProxySharedAnswerFreshFor
+	peers.PeerProxySharedAnswerFreshFor = 0
+	t.Cleanup(func() { peers.PeerProxySharedAnswerFreshFor = savedFresh })
 	accepting, initiating, acceptingID, initiatingID := connectedPairByDialingOut(t)
 	grant := decodeAnswer[msg.PeerGrant](t, accepting.requestAsAdministrator(t, "POST", "/peer-connections/"+acceptingID+"/grant", map[string]any{"level": "none"}),
 		http.StatusCreated, "grant none, so the test sets the peer's grants itself")
@@ -652,11 +658,11 @@ func TestPeerUsersActAsMappedPrincipalsWithinBothGrants(t *testing.T) {
 		t.Fatalf("the mapped user's list = %+v, want only br_through_peer", listed)
 	}
 
-	accepting.grants.setEffective(localUser, observeSessionsRelation, "instance", "*")
+	accepting.grants.setEffective(localUser, peers.ObserveSessionsRelation, "instance", "*")
 	if answer := asUser("GET", "/sessions/br_local_own"); answer.Code != http.StatusNotFound {
 		t.Fatalf("observing with only the user's grant = %d, want 404: the peer may not observe", answer.Code)
 	}
-	accepting.grants.setEffective(peerID, observeSessionsRelation, "instance", "*")
+	accepting.grants.setEffective(peerID, peers.ObserveSessionsRelation, "instance", "*")
 	if answer := asUser("GET", "/sessions/br_local_own"); answer.Code != http.StatusOK {
 		t.Fatalf("observing with both grants = %d %s, want 200", answer.Code, answer.Body)
 	}
@@ -680,8 +686,8 @@ func TestPeerUsersActAsMappedPrincipalsWithinBothGrants(t *testing.T) {
 	}
 
 	sent := httptest.NewRequest("GET", "/instances", nil)
-	sent.Header.Set(serviceTokenHeader, testServiceToken)
-	sent.Header.Set(peerUserHeader, remoteUser)
+	sent.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
+	sent.Header.Set(requestcaller.PeerUserHeader, remoteUser)
 	if answer := serve(accepting.server, sent); answer.Code != http.StatusBadRequest || !strings.Contains(answer.Body.String(), "peer_user_without_peer_token") {
 		t.Fatalf("a user header with no peer token = %d %s, want 400", answer.Code, answer.Body)
 	}
@@ -690,9 +696,9 @@ func TestPeerUsersActAsMappedPrincipalsWithinBothGrants(t *testing.T) {
 // TestRemovingAConnectionTellsTheOtherServer removes a dial-out connection
 // on the side that dials and checks the other side marks it removed.
 func TestRemovingAConnectionTellsTheOtherServer(t *testing.T) {
-	previous := peerSocketCloseAfterRemovalNotice
-	peerSocketCloseAfterRemovalNotice = 50 * time.Millisecond
-	t.Cleanup(func() { peerSocketCloseAfterRemovalNotice = previous })
+	previous := peers.PeerSocketCloseAfterRemovalNotice
+	peers.PeerSocketCloseAfterRemovalNotice = 50 * time.Millisecond
+	t.Cleanup(func() { peers.PeerSocketCloseAfterRemovalNotice = previous })
 	accepting, initiating, acceptingID, initiatingID := connectedPairByDialingOut(t)
 	decodeAnswer[msg.PeerGrant](t, accepting.requestAsAdministrator(t, "POST", "/peer-connections/"+acceptingID+"/grant", map[string]any{"level": "administrator"}), http.StatusCreated, "grant")
 
@@ -719,8 +725,8 @@ func TestSessionEventsStreamThroughTheSocket(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	request, _ := http.NewRequestWithContext(ctx, "GET", initiatingOverHTTP.URL+"/peer-connections/"+initiatingID+"/proxy/session-events", nil)
-	request.Header.Set(serviceTokenHeader, testServiceToken)
-	request.Header.Set(principalIdentityHeader, administratorTestPrincipalID)
+	request.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
+	request.Header.Set(requestcaller.PrincipalIdentityHeader, administratorTestPrincipalID)
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatal(err)
@@ -760,8 +766,8 @@ func TestTheProxyNeverPassesBackAPageForThisOrigin(t *testing.T) {
 		w.Header().Set("Content-Security-Policy", "default-src *")
 		_, _ = w.Write([]byte("<script>alert(1)</script>"))
 	})
-	routeAccessRules[pattern] = openRoute("a test answer")
-	t.Cleanup(func() { delete(routeAccessRules, pattern) })
+	routeaccess.RouteAccessRules[pattern] = routeaccess.OpenRoute("a test answer")
+	t.Cleanup(func() { delete(routeaccess.RouteAccessRules, pattern) })
 
 	for kind, want := range map[string]string{"html": "application/octet-stream", "json": answers["json"], "stream": answers["stream"]} {
 		answer := initiating.requestAsAdministrator(t, "GET", "/peer-connections/"+initiatingID+"/proxy/an-answer-for-the-proxy-test?kind="+kind, nil)
@@ -788,7 +794,7 @@ func TestPassedBackContentTypeKeepsOnlyWhatTheBridgeAnswers(t *testing.T) {
 		"image/png": "image/png", "image/jpeg": "image/jpeg", "image/gif": "image/gif", "image/webp": "image/webp", "image/bmp": "application/octet-stream",
 		"": "application/octet-stream", "not a type": "application/octet-stream", "Application/JSON": "Application/JSON",
 	} {
-		if got := passedBackContentType(peerType); got != want {
+		if got := peers.PassedBackContentType(peerType); got != want {
 			t.Errorf("passedBackContentType(%q) = %q, want %q", peerType, got, want)
 		}
 	}
@@ -802,7 +808,7 @@ func TestAPeerSocketServesOnlySoManyRequestsAtOnce(t *testing.T) {
 	decodeAnswer[msg.PeerGrant](t, accepting.requestAsAdministrator(t, "POST", "/peer-connections/"+acceptingID+"/grant", map[string]any{"level": "administrator"}), http.StatusCreated, "grant")
 	const pattern = "GET /a-request-that-waits"
 	release := make(chan struct{})
-	started := make(chan struct{}, peerSocketMostRequestsServedAtOnce)
+	started := make(chan struct{}, peers.PeerSocketMostRequestsServedAtOnce)
 	accepting.server.mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 		started <- struct{}{}
 		select {
@@ -811,25 +817,25 @@ func TestAPeerSocketServesOnlySoManyRequestsAtOnce(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
-	routeAccessRules[pattern] = openRoute("a test answer")
-	t.Cleanup(func() { delete(routeAccessRules, pattern) })
+	routeaccess.RouteAccessRules[pattern] = routeaccess.OpenRoute("a test answer")
+	t.Cleanup(func() { delete(routeaccess.RouteAccessRules, pattern) })
 	initiatingOverHTTP := httptest.NewServer(initiating.server)
 	t.Cleanup(initiatingOverHTTP.Close)
 	// The proxy shares identical reads and limits calls per connection; this
 	// test is about the far side's own limit, so each request is distinct and
 	// the proxy's allowance is out of the way.
-	savedBurst := peerProxyCallBurst
-	peerProxyCallBurst = 10 * peerSocketMostRequestsServedAtOnce
-	t.Cleanup(func() { peerProxyCallBurst = savedBurst })
+	savedBurst := peers.PeerProxyCallBurst
+	peers.PeerProxyCallBurst = 10 * peers.PeerSocketMostRequestsServedAtOnce
+	t.Cleanup(func() { peers.PeerProxyCallBurst = savedBurst })
 	var requestNumber atomic.Int64
 	get := func() (*http.Response, error) {
 		request, _ := http.NewRequest("GET", fmt.Sprintf("%s/peer-connections/%s/proxy/a-request-that-waits?n=%d", initiatingOverHTTP.URL, initiatingID, requestNumber.Add(1)), nil)
-		request.Header.Set(serviceTokenHeader, testServiceToken)
-		request.Header.Set(principalIdentityHeader, administratorTestPrincipalID)
+		request.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
+		request.Header.Set(requestcaller.PrincipalIdentityHeader, administratorTestPrincipalID)
 		return http.DefaultClient.Do(request)
 	}
-	results := make(chan int, peerSocketMostRequestsServedAtOnce)
-	for range peerSocketMostRequestsServedAtOnce {
+	results := make(chan int, peers.PeerSocketMostRequestsServedAtOnce)
+	for range peers.PeerSocketMostRequestsServedAtOnce {
 		go func() {
 			response, err := get()
 			if err != nil {
@@ -840,7 +846,7 @@ func TestAPeerSocketServesOnlySoManyRequestsAtOnce(t *testing.T) {
 			results <- response.StatusCode
 		}()
 	}
-	for range peerSocketMostRequestsServedAtOnce {
+	for range peers.PeerSocketMostRequestsServedAtOnce {
 		select {
 		case <-started:
 		case <-time.After(10 * time.Second):
@@ -857,7 +863,7 @@ func TestAPeerSocketServesOnlySoManyRequestsAtOnce(t *testing.T) {
 		t.Fatalf("one request past the most = %d %s, want 503 peer_socket_busy", response.StatusCode, body)
 	}
 	close(release)
-	for range peerSocketMostRequestsServedAtOnce {
+	for range peers.PeerSocketMostRequestsServedAtOnce {
 		if code := <-results; code != http.StatusNoContent {
 			t.Fatalf("a held request ended %d, want 204", code)
 		}
@@ -870,13 +876,13 @@ func TestALargeAnswerCrossesThePeerSocketInChunks(t *testing.T) {
 	accepting, initiating, acceptingID, initiatingID := connectedPairByDialingOut(t)
 	decodeAnswer[msg.PeerGrant](t, accepting.requestAsAdministrator(t, "POST", "/peer-connections/"+acceptingID+"/grant", map[string]any{"level": "administrator"}), http.StatusCreated, "grant")
 	const pattern = "GET /a-large-answer"
-	large := bytes.Repeat([]byte("0123456789abcdef"), 3*peerSocketLargestAnswerChunk/16+5)
+	large := bytes.Repeat([]byte("0123456789abcdef"), 3*peers.PeerSocketLargestAnswerChunk/16+5)
 	accepting.server.mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(large)
 	})
-	routeAccessRules[pattern] = openRoute("a test answer")
-	t.Cleanup(func() { delete(routeAccessRules, pattern) })
+	routeaccess.RouteAccessRules[pattern] = routeaccess.OpenRoute("a test answer")
+	t.Cleanup(func() { delete(routeaccess.RouteAccessRules, pattern) })
 	answer := initiating.requestAsAdministrator(t, "GET", "/peer-connections/"+initiatingID+"/proxy/a-large-answer", nil)
 	if answer.Code != http.StatusOK || !bytes.Equal(answer.Body.Bytes(), large) {
 		t.Fatalf("large answer = %d, %d bytes, want 200 and %d bytes", answer.Code, answer.Body.Len(), len(large))
@@ -886,12 +892,12 @@ func TestALargeAnswerCrossesThePeerSocketInChunks(t *testing.T) {
 // TestAFrameOverTheReadLimitEndsTheSocket sends one message larger than the
 // accepting side reads and checks that side closes the socket.
 func TestAFrameOverTheReadLimitEndsTheSocket(t *testing.T) {
-	previous := peerSocketReadLimit
-	peerSocketReadLimit = 4096
-	t.Cleanup(func() { peerSocketReadLimit = previous })
+	previous := peers.PeerSocketReadLimit
+	peers.PeerSocketReadLimit = 4096
+	t.Cleanup(func() { peers.PeerSocketReadLimit = previous })
 	accepting, initiating, acceptingID, initiatingID := connectedPairByDialingOut(t)
-	acceptingSocket := accepting.server.peerSockets.socketOf(acceptingID)
-	initiatingSocket := initiating.server.peerSockets.socketOf(initiatingID)
+	acceptingSocket := accepting.server.peerSockets.SocketOf(acceptingID)
+	initiatingSocket := initiating.server.peerSockets.SocketOf(initiatingID)
 	if acceptingSocket == nil || initiatingSocket == nil {
 		t.Fatal("a side has no open socket")
 	}
@@ -900,11 +906,11 @@ func TestAFrameOverTheReadLimitEndsTheSocket(t *testing.T) {
 	// close while the sender still writes: the sender's read loop answers that
 	// close, and the next fragment's write fails with ErrCloseSent. That is
 	// the refusal arriving early, not a failure; the wait below still decides.
-	if err := initiatingSocket.send(peerSocketFrame{Type: peerSocketFrameCancel, Stream: 1, Error: strings.Repeat("x", 8192)}); err != nil && !errors.Is(err, websocket.ErrCloseSent) {
+	if err := initiatingSocket.Send(peers.PeerSocketFrame{Type: peers.PeerSocketFrameCancel, Stream: 1, Error: strings.Repeat("x", 8192)}); err != nil && !errors.Is(err, websocket.ErrCloseSent) {
 		t.Fatal(err)
 	}
 	select {
-	case <-acceptingSocket.closed:
+	case <-acceptingSocket.Closed:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the accepting side kept a socket that sent a frame over its read limit")
 	}
@@ -954,15 +960,15 @@ func TestAPeerStartedSessionsAgentIsNoAdministratorThroughAPeerThatIsNot(t *test
 // a proxied call then fails at once with 503 peer_not_answering, and the
 // first probe answered after that clears it.
 func TestAServerWhoseBridgeStopsAnsweringIsNotAnswering(t *testing.T) {
-	savedInterval, savedWhileNot, savedTimeout, savedPath := peerSocketProbeInterval, peerSocketProbeIntervalWhileNotAnswering, peerSocketProbeTimeout, peerSocketProbePath
-	peerSocketProbeInterval, peerSocketProbeIntervalWhileNotAnswering, peerSocketProbeTimeout = 150*time.Millisecond, 100*time.Millisecond, 300*time.Millisecond
+	savedInterval, savedWhileNot, savedTimeout, savedPath := peers.PeerSocketProbeInterval, peers.PeerSocketProbeIntervalWhileNotAnswering, peers.PeerSocketProbeTimeout, peers.PeerSocketProbePath
+	peers.PeerSocketProbeInterval, peers.PeerSocketProbeIntervalWhileNotAnswering, peers.PeerSocketProbeTimeout = 150*time.Millisecond, 100*time.Millisecond, 300*time.Millisecond
 	const probePattern = "GET /a-probe-that-can-hang"
-	peerSocketProbePath = "/a-probe-that-can-hang"
+	peers.PeerSocketProbePath = "/a-probe-that-can-hang"
 	t.Cleanup(func() {
-		peerSocketProbeInterval, peerSocketProbeIntervalWhileNotAnswering, peerSocketProbeTimeout, peerSocketProbePath = savedInterval, savedWhileNot, savedTimeout, savedPath
+		peers.PeerSocketProbeInterval, peers.PeerSocketProbeIntervalWhileNotAnswering, peers.PeerSocketProbeTimeout, peers.PeerSocketProbePath = savedInterval, savedWhileNot, savedTimeout, savedPath
 	})
-	routeAccessRules[probePattern] = peerConnectionCallRoute("a test probe, answered as a connection call like the real one")
-	t.Cleanup(func() { delete(routeAccessRules, probePattern) })
+	routeaccess.RouteAccessRules[probePattern] = routeaccess.PeerConnectionCallRoute("a test probe, answered as a connection call like the real one")
+	t.Cleanup(func() { delete(routeaccess.RouteAccessRules, probePattern) })
 
 	accepting, initiating, acceptingID, initiatingID := connectedPairByDialingOut(t)
 	decodeAnswer[msg.PeerGrant](t, accepting.requestAsAdministrator(t, "POST", "/peer-connections/"+acceptingID+"/grant", map[string]any{"level": "administrator"}), http.StatusCreated, "grant")
@@ -1098,7 +1104,7 @@ func TestASessionAnAdministratorStartsRunsAsThem(t *testing.T) {
 	}
 	data, _ := json.Marshal(body)
 	request := httptest.NewRequest("POST", "/sessions", bytes.NewReader(data))
-	request.Header.Set(serviceTokenHeader, testServiceToken)
+	request.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
 	if got := principalOf(serve(gated.server, request), "the internal service starts a session"); got != "" {
 		t.Errorf("the internal service's session runs as %q, want no principal", got)
 	}

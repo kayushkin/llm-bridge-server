@@ -3,6 +3,8 @@ package server
 import (
 	"net/http"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/agents/skills"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 )
@@ -25,7 +27,7 @@ func (s *Server) skillStoreRoute(route func(*skills.Handlers, http.ResponseWrite
 	return func(w http.ResponseWriter, r *http.Request) {
 		handlers := s.skillStoreHandlers.Load()
 		if handlers == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "skill_store_off",
+			httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "skill_store_off",
 				config.PostgresURLEnvironmentVariable+" is not set, so this server keeps no skills")
 			return
 		}

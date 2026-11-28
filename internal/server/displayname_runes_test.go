@@ -6,6 +6,8 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions"
+
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -50,7 +52,7 @@ func slideFourByteRuneAcrossCut(t *testing.T, cutAt int, fn func(string) string,
 
 func TestDisplayNameFromMessageNeverSplitsARune(t *testing.T) {
 	const maxRunes = 80
-	straddles, controls := slideFourByteRuneAcrossCut(t, maxRunes, displayNameFromMessage,
+	straddles, controls := slideFourByteRuneAcrossCut(t, maxRunes, sessions.DisplayNameFromMessage,
 		func(text string) string { return string([]rune(text)[:maxRunes]) + "…" })
 
 	// Guard the instrument. If these inputs ever stop reaching the truncating
@@ -65,16 +67,16 @@ func TestDisplayNameFromMessageNeverSplitsARune(t *testing.T) {
 
 func TestDisplayNameFromMessageLeavesShortTextAlone(t *testing.T) {
 	for _, text := range []string{"hello", "héllo " + fourByteRune, fourByteRune} {
-		if got := displayNameFromMessage(text); got != text {
+		if got := sessions.DisplayNameFromMessage(text); got != text {
 			t.Errorf("displayNameFromMessage(%q) = %q, want it unchanged", text, got)
 		}
 	}
 }
 
 func TestDisplayNameForDiscoveredSessionNeverSplitsARune(t *testing.T) {
-	const maxRunes = maxDiscoveredDisplayNameRunes
+	const maxRunes = sessions.MaxDiscoveredDisplayNameRunes
 	straddles, controls := slideFourByteRuneAcrossCut(t, maxRunes,
-		func(prompt string) string { return displayNameForDiscoveredSession(prompt, "unused-project") },
+		func(prompt string) string { return sessions.DisplayNameForDiscoveredSession(prompt, "unused-project") },
 		func(text string) string { return string([]rune(text)[:maxRunes]) })
 
 	if straddles != 3 {
@@ -89,31 +91,31 @@ func TestDisplayNameForDiscoveredSessionNeverSplitsARune(t *testing.T) {
 // too — a discovered session with no prompt is the only way this branch is
 // reached, so it would otherwise never be exercised.
 func TestDisplayNameForDiscoveredSessionFallsBackToProject(t *testing.T) {
-	if got := displayNameForDiscoveredSession("a prompt", "a project"); got != "a prompt" {
+	if got := sessions.DisplayNameForDiscoveredSession("a prompt", "a project"); got != "a prompt" {
 		t.Errorf("prompt should win: got %q", got)
 	}
-	if got := displayNameForDiscoveredSession("", "a project"); got != "a project" {
+	if got := sessions.DisplayNameForDiscoveredSession("", "a project"); got != "a project" {
 		t.Errorf("empty prompt should fall back to project: got %q", got)
 	}
 
-	longProject := strings.Repeat("a", maxDiscoveredDisplayNameRunes-1) + fourByteRune + "tail"
-	got := displayNameForDiscoveredSession("", longProject)
+	longProject := strings.Repeat("a", sessions.MaxDiscoveredDisplayNameRunes-1) + fourByteRune + "tail"
+	got := sessions.DisplayNameForDiscoveredSession("", longProject)
 	if !utf8.ValidString(got) {
 		t.Errorf("project fallback is not valid UTF-8: %q", got)
 	}
-	if want := string([]rune(longProject)[:maxDiscoveredDisplayNameRunes]); got != want {
+	if want := string([]rune(longProject)[:sessions.MaxDiscoveredDisplayNameRunes]); got != want {
 		t.Errorf("project fallback: got %q, want %q", got, want)
 	}
 }
 
 // TestDisplayNameForDiscoveredSessionCapIsExactly100Runes pins the VALUE of
-// maxDiscoveredDisplayNameRunes, which the two tests above cannot.
+// MaxDiscoveredDisplayNameRunes, which the two tests above cannot.
 //
 // Both of them name the cap through the constant — `cutAt` and the expected
-// prefix are both maxDiscoveredDisplayNameRunes — so the input and the
+// prefix are both MaxDiscoveredDisplayNameRunes — so the input and the
 // expectation move together and the pair stays green for any value of it. Moved
 // to 99 and to 101, the whole package stayed green. The neighboring 80 in
-// displayNameFromMessage is spelled out as a literal and is caught both ways;
+// DisplayNameFromMessage is spelled out as a literal and is caught both ways;
 // these two caps read alike and were pinned very differently.
 //
 // So the literal is written out here, and it has to be a SECOND test rather than
@@ -129,14 +131,14 @@ func TestDisplayNameForDiscoveredSessionCapIsExactly100Runes(t *testing.T) {
 		t.Fatalf("fixture is %d runes, want 100 — the test no longer reaches the defect", n)
 	}
 
-	if got := displayNameForDiscoveredSession(exactly100, "unused-project"); got != exactly100 {
+	if got := sessions.DisplayNameForDiscoveredSession(exactly100, "unused-project"); got != exactly100 {
 		t.Errorf("a 100-rune prompt must be served whole:\n got %q\nwant %q", got, exactly100)
 	}
 
 	// One rune over. It must come back as exactly the first 100 — still ending
 	// in the marker, with the 101st rune gone.
 	oneOver := exactly100 + "b"
-	if got := displayNameForDiscoveredSession(oneOver, "unused-project"); got != exactly100 {
+	if got := sessions.DisplayNameForDiscoveredSession(oneOver, "unused-project"); got != exactly100 {
 		t.Errorf("a 101-rune prompt must be cut to 100:\n got %q\nwant %q", got, exactly100)
 	}
 }
@@ -146,22 +148,22 @@ func TestDisplayNameForDiscoveredSessionCapIsExactly100Runes(t *testing.T) {
 // the real renamer and reads the name back out of the store.
 func TestTheRenamerNeverStoresASplitRune(t *testing.T) {
 	// Put the four-byte rune across the byte offset the cut used to use.
-	name := strings.Repeat("a", maxAutoRenameRunes-1) + fourByteRune + strings.Repeat("b", 40)
+	name := strings.Repeat("a", sessions.MaxAutoRenameRunes-1) + fourByteRune + strings.Repeat("b", 40)
 
 	stored := storeNameViaRenamer(t, name)
 	if !utf8.ValidString(stored) {
 		t.Errorf("stored display_name is not valid UTF-8: %q", stored)
 	}
-	if want := string([]rune(name)[:maxAutoRenameRunes]); stored != want {
+	if want := string([]rune(name)[:sessions.MaxAutoRenameRunes]); stored != want {
 		t.Errorf("stored display_name = %q, want %q", stored, want)
 	}
 }
 
-// TestAutoRenameCapIsExactly24Runes pins the VALUE of maxAutoRenameRunes, which
+// TestAutoRenameCapIsExactly24Runes pins the VALUE of MaxAutoRenameRunes, which
 // the test above cannot.
 //
-// That test builds its input from maxAutoRenameRunes and expects
-// `[:maxAutoRenameRunes]`, so input and expectation move together: the cap moved
+// That test builds its input from MaxAutoRenameRunes and expects
+// `[:MaxAutoRenameRunes]`, so input and expectation move together: the cap moved
 // to 23 and to 25 both left the package green. The case that IS caught there
 // multiplies the cap by ten — which asks whether the cap still applies at all, a
 // different question from where it sits, and the two are one `*10` apart in the
@@ -215,7 +217,7 @@ func storeNameViaRenamer(t *testing.T, displayName string) string {
 	if err != nil {
 		t.Fatalf("get session: %v", err)
 	}
-	if err := srv.renameFromTranscript(target, []store.TurnText{{User: "hi", Assistant: "hello"}}, "efficient"); err != nil {
+	if err := srv.sessions.RenameFromTranscript(target, []store.TurnText{{User: "hi", Assistant: "hello"}}, "efficient"); err != nil {
 		t.Fatalf("rename: %v", err)
 	}
 	sess, err := st.GetSession(created.SessionID)

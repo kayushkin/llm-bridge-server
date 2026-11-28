@@ -244,7 +244,7 @@ type projectStoreScheduler struct {
 }
 
 func (scheduler projectStoreScheduler) JobName(_ context.Context, jobID int64) (string, error) {
-	jobs := scheduler.server.schedulerJobsInProcess()
+	jobs := scheduler.server.SchedulerJobsInProcess()
 	if jobs == nil {
 		return "", errors.New("the scheduler is not open on this server")
 	}
@@ -310,7 +310,7 @@ func (bridge projectStoreBridge) SessionBrief(_ context.Context, sessionID strin
 
 // OneShot is POST /oneshot, with the same checks of the request.
 func (bridge projectStoreBridge) OneShot(ctx context.Context, request msg.OneShotRequest) (msg.OneShotResponse, error) {
-	response, refusal := bridge.server.routedOneShot(ctx, request)
+	response, refusal := bridge.server.oneShot.RoutedOneShot(ctx, request)
 	if refusal != nil {
 		return msg.OneShotResponse{}, refusal
 	}

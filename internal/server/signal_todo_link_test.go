@@ -7,6 +7,14 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/signals"
+
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/parkedasks"
+
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads/issuereadstest"
+
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads"
+
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	issuesapi "github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/api"
@@ -17,13 +25,13 @@ import (
 // testServerWithKanban is testServer wired to a stub kanban-store. kanban
 // answers the session-cards reverse lookup in this process; pass nil for a
 // store that refuses every read 502, as it does when noteboard is down.
-func testServerWithKanban(t *testing.T, kanban *fakeIssueStore) (*Server, *store.Store) {
+func testServerWithKanban(t *testing.T, kanban *issuereadstest.Store) (*Server, *store.Store) {
 	t.Helper()
 	dir := t.TempDir()
 	st := newTestBridgeStore(t)
 
 	if kanban == nil {
-		kanban = &fakeIssueStore{EntityCardsAnswer: func(string, string) ([]issuesmodel.EntityCardView, error) {
+		kanban = &issuereadstest.Store{EntityCardsAnswer: func(string, string) ([]issuesmodel.EntityCardView, error) {
 			return nil, &issuesapi.Refusal{Status: http.StatusBadGateway, Message: "noteboard did not answer"}
 		}}
 	}
@@ -35,7 +43,7 @@ func testServerWithKanban(t *testing.T, kanban *fakeIssueStore) (*Server, *store
 	testAuthorizationConfig(cfg)
 	srv := New(st, nil, nil, nil, nil, nil, nil, cfg)
 	enableTestSessionEvents(t, srv, st)
-	srv.issueReads = newIssueReader(kanban)
+	srv.issueReads = issuereads.New(kanban)
 	return srv, st
 }
 
@@ -49,8 +57,8 @@ func testServerWithKanban(t *testing.T, kanban *fakeIssueStore) (*Server, *store
 // and the signal is minted unlinked with nothing logged. A stub that serves
 // the canned card for every ref cannot tell a right id from a wrong one, so
 // it certifies whichever id the caller happens to pass.
-func newSessionCardsStub(todoByRef map[string]string) *fakeIssueStore {
-	return &fakeIssueStore{EntityCardsAnswer: func(entityType, entityRef string) ([]issuesmodel.EntityCardView, error) {
+func newSessionCardsStub(todoByRef map[string]string) *issuereadstest.Store {
+	return &issuereadstest.Store{EntityCardsAnswer: func(entityType, entityRef string) ([]issuesmodel.EntityCardView, error) {
 		todo, linked := todoByRef[entityRef]
 		if entityType != "session" || !linked {
 			return []issuesmodel.EntityCardView{}, nil
@@ -60,7 +68,7 @@ func newSessionCardsStub(todoByRef map[string]string) *fakeIssueStore {
 }
 
 // cardsForSession links one bridge session id to one todo.
-func cardsForSession(bridgeID, todoID string) *fakeIssueStore {
+func cardsForSession(bridgeID, todoID string) *issuereadstest.Store {
 	return newSessionCardsStub(map[string]string{bridgeID: todoID})
 }
 
@@ -88,7 +96,7 @@ func TestToolSignalsCarryTheLinkedTodo(t *testing.T) {
 	sess := newSessionForSignals(t, st, "br_1", msg.SessionTypeAutonomous)
 	withHarnessSessionID(t, st, sess)
 
-	srv.recordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
+	srv.signals.RecordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
 
 	signals, err := st.ListSignals(store.SignalFilter{SessionID: "br_1"})
 	if err != nil {
@@ -110,7 +118,7 @@ func TestSignalsAreUnlinkedWhenTheSessionHasNoTodo(t *testing.T) {
 	srv, st := testServerWithKanban(t, newSessionCardsStub(nil))
 	sess := newSessionForSignals(t, st, "br_1", msg.SessionTypeInteractive)
 
-	srv.recordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
+	srv.signals.RecordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
 
 	signals, _ := st.ListSignals(store.SignalFilter{SessionID: "br_1"})
 	if len(signals) == 0 {
@@ -131,7 +139,7 @@ func TestDerivedSignalsCarryTheLinkedTodo(t *testing.T) {
 	sess := newSessionForSignals(t, st, "br_1", msg.SessionTypeAutonomous)
 	withHarnessSessionID(t, st, sess)
 
-	srv.recordDerivedQuestions(sess, []classifiedQuestion{{Question: "Which branch should I ship from?"}}, nil, cardContext{})
+	srv.signals.RecordDerivedQuestions(sess, []signals.ClassifiedQuestion{{Question: "Which branch should I ship from?"}}, nil, signals.CardContext{})
 
 	signals, err := st.ListSignals(store.SignalFilter{SessionID: "br_1"})
 	if err != nil {
@@ -149,7 +157,7 @@ func TestDerivedSignalsCarryTheLinkedTodo(t *testing.T) {
 // way. A kanban-store that is down, wedged or absent may cost the todo
 // pointer; it may never cost the signal.
 func TestSignalIsStillRecordedWhenTheLookupFails(t *testing.T) {
-	cases := map[string]*fakeIssueStore{
+	cases := map[string]*issuereadstest.Store{
 		"store errors": {EntityCardsAnswer: func(string, string) ([]issuesmodel.EntityCardView, error) {
 			return nil, &issuesapi.Refusal{Status: http.StatusInternalServerError, Message: "boom"}
 		}},
@@ -163,7 +171,7 @@ func TestSignalIsStillRecordedWhenTheLookupFails(t *testing.T) {
 			srv, st := testServerWithKanban(t, handler)
 			sess := newSessionForSignals(t, st, "br_1", msg.SessionTypeAutonomous)
 
-			srv.recordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
+			srv.signals.RecordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
 
 			signals, _ := st.ListSignals(store.SignalFilter{SessionID: "br_1"})
 			if len(signals) != 2 {
@@ -186,7 +194,7 @@ func TestNoKanbanStoreConfiguredMeansNoLookup(t *testing.T) {
 		t.Fatal("expected no kanban client on a server that never enabled kanban-store")
 	}
 	sess := newSessionForSignals(t, st, "br_1", msg.SessionTypeAutonomous)
-	srv.recordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
+	srv.signals.RecordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
 
 	signals, _ := st.ListSignals(store.SignalFilter{SessionID: "br_1"})
 	if len(signals) != 2 {
@@ -208,7 +216,7 @@ func TestTheLinkLookupAsksAboutTheBridgeSessionID(t *testing.T) {
 	sess := newSessionForSignals(t, st, "br_1", msg.SessionTypeAutonomous)
 	withHarnessSessionID(t, st, sess)
 
-	srv.recordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
+	srv.signals.RecordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
 
 	asked := stub.Calls()
 	if len(asked) != 1 {
@@ -237,7 +245,7 @@ func TestAnUnknownSessionRefIsAnEmptyListNotAFailure(t *testing.T) {
 	srv, st := testServerWithKanban(t, stub)
 	sess := newSessionForSignals(t, st, "br_1", msg.SessionTypeAutonomous)
 
-	srv.recordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
+	srv.signals.RecordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
 
 	signals, _ := st.ListSignals(store.SignalFilter{SessionID: "br_1"})
 	if len(signals) != 2 {
@@ -260,9 +268,9 @@ func TestHandleListSignalsFiltersByLinkedTodo(t *testing.T) {
 	}))
 	first := newSessionForSignals(t, st, "br_1", msg.SessionTypeAutonomous)
 	second := newSessionForSignals(t, st, "br_2", msg.SessionTypeAutonomous)
-	srv.recordAskUserQuestionSignals("br_1", first, "hreq_1", json.RawMessage(askUserQuestionToolInput))
-	srv.recordAskUserQuestionSignals("br_2", second, "hreq_2", json.RawMessage(askUserQuestionToolInput))
-	srv.resolveSignalsForRequest("br_2", "hreq_2", permissionDecision{Behavior: "deny"})
+	srv.signals.RecordAskUserQuestionSignals("br_1", first, "hreq_1", json.RawMessage(askUserQuestionToolInput))
+	srv.signals.RecordAskUserQuestionSignals("br_2", second, "hreq_2", json.RawMessage(askUserQuestionToolInput))
+	srv.signals.ResolveSignalsForRequest("br_2", "hreq_2", parkedasks.Decision{Behavior: "deny"})
 
 	for _, tc := range []struct {
 		query string
@@ -297,7 +305,7 @@ func TestHandleListSignalsFiltersByLinkedTodo(t *testing.T) {
 func TestHandleListSignalsRejectsAnEmptyLinkedTodo(t *testing.T) {
 	srv, st := testServerWithKanban(t, cardsForSession("br_1", "todo-42"))
 	sess := newSessionForSignals(t, st, "br_1", msg.SessionTypeAutonomous)
-	srv.recordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
+	srv.signals.RecordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
 
 	for _, query := range []string{"/signals?linked_todo_id=", "/signals?linked_todo_id=%20"} {
 		t.Run(query, func(t *testing.T) {

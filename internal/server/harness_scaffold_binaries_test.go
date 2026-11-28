@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
+	"github.com/kayushkin/llm-bridge-server/internal/harnesscatalog"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -151,7 +152,7 @@ func lastStderrLine(s string) string {
 // missing — /harnesses would show it permanently unavailable for a reason
 // that has nothing to do with what is deployed.
 func TestHarnessBinaryNamesResolve(t *testing.T) {
-	for _, h := range allHarnesses {
+	for _, h := range harnesscatalog.AllHarnesses {
 		if msg.HarnessBinaryName(h) == "" {
 			t.Errorf("harness %q has no binary name; harness.Available can only ever "+
 				"report it unavailable, whatever is deployed", h)

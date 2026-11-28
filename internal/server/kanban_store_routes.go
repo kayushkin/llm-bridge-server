@@ -23,6 +23,20 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/server/routeaccess"
+
+	"github.com/kayushkin/llm-bridge-server/internal/sessions"
+
+	"github.com/kayushkin/llm-bridge-server/internal/access/login"
+
+	"github.com/kayushkin/llm-bridge-server/internal/httproutes"
+
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads"
+
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access"
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
 	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
@@ -93,7 +107,7 @@ func (s *Server) EnableIssues(store *issuesdb.Store, owners KanbanStoreOwners) {
 		checker:   s.grantResourceChecker(owners.Access.Principals),
 	}})
 	handler := api.Handler()
-	s.issueReads = newIssueReader(api)
+	s.issueReads = issuereads.New(api)
 	s.kanbanStore.Store(&kanbanStoreHandlers{handler: handler, store: store, api: api, messageTriggersEnabled: owners.MessageTriggersEnabled})
 }
 
@@ -134,23 +148,23 @@ var errKanbanStoreOff = errors.New("kanban-store is off: EnableIssues was never 
 func (s *Server) serveKanbanStore(w http.ResponseWriter, r *http.Request, mountPrefix string) {
 	handlers := s.kanbanStore.Load()
 	if handlers == nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "kanban_store_off", errKanbanStoreOff.Error())
+		httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "kanban_store_off", errKanbanStoreOff.Error())
 		return
 	}
 	var caller issuesapi.Caller
-	if principalID, identified := principalIdentityOfRequest(r); identified {
+	if principalID, identified := requestcaller.PrincipalIdentityOfRequest(r); identified {
 		caller = issuesapi.Caller{PrincipalID: principalID}
 	} else if s.requestIsTheInternalServiceActingAsItself(r) {
 		caller = issuesapi.Caller{InternalService: true}
 	} else {
 		// Request authorization lets nothing else through to a store route.
-		writeJSONError(w, http.StatusUnauthorized, "kanban_store_requires_a_caller",
+		httpjson.WriteJSONError(w, http.StatusUnauthorized, "kanban_store_requires_a_caller",
 			mountPrefix+"/ answers a principal or this server's service token")
 		return
 	}
-	storePath, err := url.Parse(escapedPathAfterPrefix(r.URL, mountPrefix))
+	storePath, err := url.Parse(httproutes.EscapedPathAfterPrefix(r.URL, mountPrefix))
 	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_path", fmt.Sprintf("the path after %s/ is not one kanban-store can read: %v", mountPrefix, err))
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_path", fmt.Sprintf("the path after %s/ is not one kanban-store can read: %v", mountPrefix, err))
 		return
 	}
 	served := r.Clone(issuesapi.ContextWithCaller(r.Context(), caller))
@@ -166,14 +180,14 @@ func (s *Server) serveKanbanStore(w http.ResponseWriter, r *http.Request, mountP
 			}
 		}
 	}
-	removeCookieFromRequestHeader(served.Header, loginSessionCookieName)
+	login.RemoveCookieFromRequestHeader(served.Header, login.LoginSessionCookieName)
 	handlers.handler.ServeHTTP(w, served)
 }
 
 // handleIssuesAsCaller answers /issues/<rest> with kanban-store's
 // /<rest>, unchanged.
 func (s *Server) handleIssuesAsCaller(w http.ResponseWriter, r *http.Request) {
-	s.serveKanbanStore(w, r, issuesMountPrefix)
+	s.serveKanbanStore(w, r, routeaccess.IssuesMountPrefix)
 }
 
 // checkKanbanBoardExists is grant-store's check that a board a grant names
@@ -319,7 +333,7 @@ type kanbanBundles struct {
 
 func (owner kanbanBundles) CheckBundleExists(id string) error {
 	if owner.server.bundleStore == nil {
-		return errors.New(bundleStoreOffMessage)
+		return errors.New(sessions.BundleStoreOffMessage)
 	}
 	err := owner.server.bundleStore.CheckSessionBundleExists(context.Background(), id)
 	if errors.Is(err, bundles.ErrSessionBundleNotFound) {

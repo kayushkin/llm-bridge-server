@@ -37,7 +37,7 @@ func TestHandleListSessions_LimitOffset(t *testing.T) {
 		t.Helper()
 		req := httptest.NewRequest(http.MethodGet, "/sessions"+query, nil)
 		w := httptest.NewRecorder()
-		srv.handleListSessions(w, req)
+		srv.sessions.HandleListSessions(w, req)
 		if w.Code != http.StatusOK {
 			return nil, w.Code
 		}

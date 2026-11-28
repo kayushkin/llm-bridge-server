@@ -21,7 +21,7 @@ package server
 //     so an agent can find and read past sessions on its own server.
 //
 // The routes that take this are marked by sessionAgentAccess on their rule in
-// routeAccessRules. Every other route refuses the token as before.
+// RouteAccessRules. Every other route refuses the token as before.
 
 import (
 	"context"
@@ -30,22 +30,30 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/kayushkin/llm-bridge-server/internal/server/routeaccess"
+
+	"github.com/kayushkin/llm-bridge-server/internal/access/login"
+
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
 // serveDelegatingAgent authorizes a request carrying a session posting token
 // on a route whose rule names sessionAgentAccess, and dispatches it.
-func (s *Server) serveDelegatingAgent(w http.ResponseWriter, r *http.Request, pattern string, rule routeAccessRule) {
+func (s *Server) serveDelegatingAgent(w http.ResponseWriter, r *http.Request, pattern string, rule routeaccess.RouteAccessRule) {
 	scheme, token, _ := strings.Cut(r.Header.Get("Authorization"), " ")
 	if !strings.EqualFold(scheme, "Bearer") || strings.TrimSpace(token) == "" {
-		writeJSONError(w, http.StatusUnauthorized, "invalid_session_posting_token",
+		httpjson.WriteJSONError(w, http.StatusUnauthorized, "invalid_session_posting_token",
 			"the Authorization header must be \"Bearer <session posting token>\"")
 		return
 	}
-	agentSession, credentialError := s.verifiedPostingSession(token)
+	agentSession, credentialError := s.login.VerifiedPostingSession(token)
 	if credentialError != nil {
-		credentialError.write(w)
+		credentialError.Write(w)
 		return
 	}
 	agentSessionID := agentSession.SessionID
@@ -55,70 +63,70 @@ func (s *Server) serveDelegatingAgent(w http.ResponseWriter, r *http.Request, pa
 	// it runs: its shell holds the session's token (runShellForSessionAction),
 	// and a chat session sits in completed between turns, which is when
 	// buttons are pressed.
-	if slices.Contains(sessionStatesThatEndSessionAgentTokens, msg.SessionState(agentSession.State)) {
+	if slices.Contains(login.SessionStatesThatEndSessionAgentTokens, msg.SessionState(agentSession.State)) {
 		buttonRunning, err := s.store.SessionHasRunningCommandAction(agentSessionID)
 		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "session_actions_unreadable", fmt.Sprintf(
+			httpjson.WriteJSONError(w, http.StatusInternalServerError, "session_actions_unreadable", fmt.Sprintf(
 				"could not read whether session %s has a button running: %v", agentSessionID, err))
 			return
 		}
 		if !buttonRunning {
-			writeJSONError(w, http.StatusForbidden, "delegating_session_ended", fmt.Sprintf(
+			httpjson.WriteJSONError(w, http.StatusForbidden, "delegating_session_ended", fmt.Sprintf(
 				"session %s is %s, so its agent may not start or drive delegates", agentSessionID, agentSession.State))
 			return
 		}
 	}
 
-	caller := requestCaller{}
+	caller := requestcaller.Caller{}
 	if agentSession.PrincipalID != "" {
-		principalCaller, credentialError := s.callerForPrincipalID(r.Context(), agentSession.PrincipalID, "the session the posting token names runs as")
+		principalCaller, credentialError := s.CallerForPrincipalID(r.Context(), agentSession.PrincipalID, "the session the posting token names runs as")
 		if credentialError != nil {
-			credentialError.write(w)
+			credentialError.Write(w)
 			return
 		}
 		caller, credentialError = s.administratorOnlyIfSessionPeerIsOne(r.Context(), principalCaller, agentSessionID)
 		if credentialError != nil {
-			credentialError.write(w)
+			credentialError.Write(w)
 			return
 		}
 	}
-	if rule.sessionAgentAccess == sessionAgentReadsSessions {
+	if rule.SessionAgentAccess == routeaccess.SessionAgentReadsSessions {
 		s.serveSessionReadingAgent(w, r, pattern, rule, agentSession, caller)
 		return
 	}
-	caller.delegatingAgentOfSessionID = agentSessionID
+	caller.DelegatingAgentOfSessionID = agentSessionID
 
-	switch rule.sessionAgentAccess {
-	case sessionAgentCreatesItsDelegate:
-	case sessionAgentReachesItsDelegate, sessionAgentReachesItsDelegateOrItself:
-		targetSessionID, err := pathValueForPattern(pattern, r.URL.EscapedPath(), rule.ownedResourcePathValueName)
+	switch rule.SessionAgentAccess {
+	case routeaccess.SessionAgentCreatesItsDelegate:
+	case routeaccess.SessionAgentReachesItsDelegate, routeaccess.SessionAgentReachesItsDelegateOrItself:
+		targetSessionID, err := pathValueForPattern(pattern, r.URL.EscapedPath(), rule.OwnedResourcePathValueName)
 		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "route_rule_invalid", err.Error())
+			httpjson.WriteJSONError(w, http.StatusInternalServerError, "route_rule_invalid", err.Error())
 			return
 		}
-		ownSession := rule.sessionAgentAccess == sessionAgentReachesItsDelegateOrItself && targetSessionID == agentSessionID
+		ownSession := rule.SessionAgentAccess == routeaccess.SessionAgentReachesItsDelegateOrItself && targetSessionID == agentSessionID
 		if !ownSession && !s.sessionIsDelegateOf(targetSessionID, agentSessionID) {
 			http.Error(w, "session not found", http.StatusNotFound)
 			return
 		}
-	case sessionAgentReadsCatalog:
-	case sessionAgentUsesPeerMessaging:
-		if requestCameThroughPublicProxy(r) {
-			writeJSONError(w, http.StatusForbidden, "session_posting_token_not_public", fmt.Sprintf(
+	case routeaccess.SessionAgentReadsCatalog:
+	case routeaccess.SessionAgentUsesPeerMessaging:
+		if requestcaller.RequestCameThroughPublicProxy(r) {
+			httpjson.WriteJSONError(w, http.StatusForbidden, "session_posting_token_not_public", fmt.Sprintf(
 				"%s takes a session posting token only from this server's own harness children, never through the public proxy", pattern))
 			return
 		}
-		if agentSession.PrincipalID != "" && !caller.isAdministrator {
-			writeJSONError(w, http.StatusForbidden, "peer_messaging_needs_an_administrator", fmt.Sprintf(
+		if agentSession.PrincipalID != "" && !caller.IsAdministrator {
+			httpjson.WriteJSONError(w, http.StatusForbidden, "peer_messaging_needs_an_administrator", fmt.Sprintf(
 				"session %s runs as %s, who is not an administrator here, so its agent may not message connected servers", agentSessionID, agentSession.PrincipalID))
 			return
 		}
 	default:
-		writeJSONError(w, http.StatusInternalServerError, "route_rule_invalid", fmt.Sprintf(
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "route_rule_invalid", fmt.Sprintf(
 			"route %q lets a session's agent in with a kind of access this server does not handle", pattern))
 		return
 	}
-	s.mux.ServeHTTP(w, withRequestCaller(r, caller))
+	s.mux.ServeHTTP(w, requestcaller.WithCaller(r, caller))
 }
 
 // sessionIsDelegateOf reports whether the session exists and managerSessionID
@@ -126,30 +134,6 @@ func (s *Server) serveDelegatingAgent(w http.ResponseWriter, r *http.Request, pa
 func (s *Server) sessionIsDelegateOf(sessionID, managerSessionID string) bool {
 	session, err := s.store.GetSession(sessionID)
 	return err == nil && session.ManagerSessionID == managerSessionID
-}
-
-// delegateRequestRefusal holds a create request from a session's agent to its
-// own session: the delegate sits under that session and runs as its
-// principal. It fills in either when the request leaves it empty, and refuses
-// a request that names another, so a caller that asked for more is told so.
-func delegateRequestRefusal(req *CreateSessionRequest, agentSessionID, agentPrincipalID string) *requestCredentialError {
-	if req.ManagerSessionID != "" && req.ManagerSessionID != agentSessionID {
-		return &requestCredentialError{http.StatusForbidden, "delegate_manager_mismatch", fmt.Sprintf(
-			"manager_session_id %q is not %s, the session this posting token belongs to; an agent starts delegates only under its own session (omit manager_session_id)",
-			req.ManagerSessionID, agentSessionID)}
-	}
-	if req.PrincipalID != "" && req.PrincipalID != agentPrincipalID {
-		own := "no principal"
-		if agentPrincipalID != "" {
-			own = "principal " + agentPrincipalID
-		}
-		return &requestCredentialError{http.StatusForbidden, "delegate_principal_mismatch", fmt.Sprintf(
-			"principal_id %q is not the principal of session %s, which runs with %s; a delegate runs with its session's principal and no other (omit principal_id)",
-			req.PrincipalID, agentSessionID, own)}
-	}
-	req.ManagerSessionID = agentSessionID
-	req.PrincipalID = agentPrincipalID
-	return nil
 }
 
 // serveSessionReadingAgent answers a read-only session route for a session's
@@ -167,31 +151,31 @@ func delegateRequestRefusal(req *CreateSessionRequest, agentSessionID, agentPrin
 // The token reaches this server only from its own harness children, so a
 // request that came through the public reverse proxy is refused before
 // anything is read.
-func (s *Server) serveSessionReadingAgent(w http.ResponseWriter, r *http.Request, pattern string, rule routeAccessRule, agentSession *store.Session, caller requestCaller) {
-	if requestCameThroughPublicProxy(r) {
-		writeJSONError(w, http.StatusForbidden, "session_posting_token_not_public", fmt.Sprintf(
+func (s *Server) serveSessionReadingAgent(w http.ResponseWriter, r *http.Request, pattern string, rule routeaccess.RouteAccessRule, agentSession *store.Session, caller requestcaller.Caller) {
+	if requestcaller.RequestCameThroughPublicProxy(r) {
+		httpjson.WriteJSONError(w, http.StatusForbidden, "session_posting_token_not_public", fmt.Sprintf(
 			"%s takes a session posting token only from this server's own harness children, never through the public proxy", pattern))
 		return
 	}
 	if agentSession.PrincipalID == "" {
-		s.mux.ServeHTTP(w, withRequestCaller(r, requestCaller{}))
+		s.mux.ServeHTTP(w, requestcaller.WithCaller(r, requestcaller.Caller{}))
 		return
 	}
 	origin, throughPeer, err := s.store.SessionPeerOriginOfLineage(agentSession.SessionID)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "session_peer_origin_unreadable", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "session_peer_origin_unreadable", err.Error())
 		return
 	}
 	if throughPeer {
-		peer, credentialError := s.callerForPrincipalID(r.Context(), origin.PeerPrincipalID, "the peer session "+agentSession.SessionID+" was started through is")
+		peer, credentialError := s.CallerForPrincipalID(r.Context(), origin.PeerPrincipalID, "the peer session "+agentSession.SessionID+" was started through is")
 		if credentialError != nil {
-			credentialError.write(w)
+			credentialError.Write(w)
 			return
 		}
-		caller.peer = &peerCaller{
-			peerPrincipalID:       origin.PeerPrincipalID,
-			peerIsAdministrator:   peer.isAdministrator,
-			remoteUserPrincipalID: origin.RemotePrincipalID,
+		caller.Peer = &requestcaller.Peer{
+			PeerPrincipalID:       origin.PeerPrincipalID,
+			PeerIsAdministrator:   peer.IsAdministrator,
+			RemoteUserPrincipalID: origin.RemotePrincipalID,
 		}
 	}
 	s.serveAsCaller(w, r, pattern, rule, caller)
@@ -203,20 +187,20 @@ func (s *Server) serveSessionReadingAgent(w http.ResponseWriter, r *http.Request
 // as well as its principal's, so its agent is an administrator here only when
 // both are: a peer user mapped to a local administrator through a peer that is
 // not one gets no administrator's reach through its agent's token.
-func (s *Server) administratorOnlyIfSessionPeerIsOne(ctx context.Context, caller requestCaller, agentSessionID string) (requestCaller, *requestCredentialError) {
-	if !caller.isAdministrator {
+func (s *Server) administratorOnlyIfSessionPeerIsOne(ctx context.Context, caller requestcaller.Caller, agentSessionID string) (requestcaller.Caller, *requestcaller.CredentialError) {
+	if !caller.IsAdministrator {
 		return caller, nil
 	}
 	origin, throughPeer, err := s.store.SessionPeerOriginOfLineage(agentSessionID)
 	if err != nil {
-		return requestCaller{}, &requestCredentialError{http.StatusInternalServerError, "session_peer_origin_unreadable", err.Error()}
+		return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusInternalServerError, "session_peer_origin_unreadable", err.Error())
 	}
 	if throughPeer {
-		peer, credentialError := s.callerForPrincipalID(ctx, origin.PeerPrincipalID, "the peer session "+agentSessionID+" was started through is")
+		peer, credentialError := s.CallerForPrincipalID(ctx, origin.PeerPrincipalID, "the peer session "+agentSessionID+" was started through is")
 		if credentialError != nil {
-			return requestCaller{}, credentialError
+			return requestcaller.Caller{}, credentialError
 		}
-		caller.isAdministrator = peer.isAdministrator
+		caller.IsAdministrator = peer.IsAdministrator
 	}
 	return caller, nil
 }

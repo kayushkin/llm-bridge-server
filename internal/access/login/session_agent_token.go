@@ -1,0 +1,203 @@
+package login
+
+// Session agent tokens: how an agent's tool calls act as the session's
+// principal.
+//
+// When a session started as a principal is spawned, its harness child is
+// given LLM_BRIDGE_GATEWAY_URL and
+// LLM_BRIDGE_PRINCIPAL_TOKEN. An MCP server or a shell command the agent runs
+// sends the token as "Authorization: Bearer <token>" to the gateway's
+// identity-carrying store proxies (/issues/ and /grants/), and the
+// request reaches the store as the session's principal, exactly as a login
+// cookie would. The token is accepted nowhere else.
+//
+// The token is signed with the demo login signing key under its own domain
+// separator, so it can never verify as a session posting token or the other
+// way round. The login cookie is not signed at all: it is an opaque token
+// looked up in login_sessions (login_sessions.go). It carries the principal, the session and an expiry, and
+// every request that presents it is checked against the store: the session
+// must still exist, still belong to that principal, and not be in a terminal
+// state. That is how a token dies with its session.
+//
+// This binds only agents that go through the gateway. In deployment
+// kanban-store and grant-store must not be reachable from agent processes,
+// and no store service token may be in an agent's environment
+// (internal/childprocessenv removes the ones this server knows).
+
+import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/kayushkin/llm-bridge-server/internal/httproutes"
+
+	"github.com/kayushkin/llm-bridge-server/internal/store"
+	"github.com/kayushkin/llm-bridge/msg"
+)
+
+// Names of the variables a principal's harness child receives.
+const (
+	GatewayURLEnvironmentVariable     = "LLM_BRIDGE_GATEWAY_URL"
+	PrincipalTokenEnvironmentVariable = "LLM_BRIDGE_PRINCIPAL_TOKEN"
+)
+
+// sessionAgentTokenPrefix starts every session agent token, so a token is
+// recognizable in a log.
+const sessionAgentTokenPrefix = "llm-bridge-session-agent-token-v1"
+
+// sessionAgentTokenSignatureDomain is prepended to the signed bytes of a
+// session agent token and of nothing else, so no signature made for another
+// purpose with the same key is valid for one.
+const sessionAgentTokenSignatureDomain = "llm-bridge-server session agent token v1\x00"
+
+// sessionAgentTokenLifetime bounds a token independently of its session. A
+// token is minted at every spawn and resume, so a session that runs longer
+// than this without being respawned loses gateway access until it is.
+const sessionAgentTokenLifetime = 24 * time.Hour
+
+// SessionStatesThatEndSessionAgentTokens are the terminal session states: a
+// session in one of them has no running agent that should still act.
+var SessionStatesThatEndSessionAgentTokens = []msg.SessionState{
+	msg.SessionCompleted,
+	msg.SessionError,
+	msg.SessionAborted,
+	msg.SessionDisconnected,
+}
+
+// HarnessChildTokenSigner signs and verifies the two tokens a harness child
+// is given: the session agent token (this file) and the session posting token
+// (session_posting_token.go), each under its own domain separator, with the
+// key in LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY. Until 2026-10-19 it also signed the
+// login cookie and was named for it.
+type HarnessChildTokenSigner struct {
+	SigningKey []byte
+	Now        func() time.Time
+}
+
+// SessionAgentTokenClaims is what a verified token says.
+type SessionAgentTokenClaims struct {
+	PrincipalID string
+	SessionID   string
+	ExpiresAt   time.Time
+}
+
+// EncodeSessionAgentToken signs claims with the demo login signing key.
+//
+// Shape: <prefix>.<principal id>.<base64url session id>.<expiry seconds>.<signature>.
+// The session id is base64url-encoded because a caller-minted session id may
+// contain dots.
+func (codec *HarnessChildTokenSigner) EncodeSessionAgentToken(claims SessionAgentTokenClaims) string {
+	signedPortion := sessionAgentTokenPrefix + "." + claims.PrincipalID + "." +
+		base64.RawURLEncoding.EncodeToString([]byte(claims.SessionID)) + "." +
+		strconv.FormatInt(claims.ExpiresAt.Unix(), 10)
+	return signedPortion + "." + codec.sessionAgentTokenSignature(signedPortion)
+}
+
+func (codec *HarnessChildTokenSigner) sessionAgentTokenSignature(signedPortion string) string {
+	mac := hmac.New(sha256.New, codec.SigningKey)
+	mac.Write([]byte(sessionAgentTokenSignatureDomain))
+	mac.Write([]byte(signedPortion))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// DecodeSessionAgentToken verifies a token's shape, signature and expiry.
+// It does not look at the session; SessionAgentTokenClaimsOfLiveSession does.
+func (codec *HarnessChildTokenSigner) DecodeSessionAgentToken(token string) (SessionAgentTokenClaims, error) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 5 || parts[0] != sessionAgentTokenPrefix {
+		return SessionAgentTokenClaims{}, errors.New("not a session agent token")
+	}
+	signedPortion := strings.Join(parts[:4], ".")
+	if !hmac.Equal([]byte(parts[4]), []byte(codec.sessionAgentTokenSignature(signedPortion))) {
+		return SessionAgentTokenClaims{}, errors.New("session agent token signature does not verify")
+	}
+	if !IsWellFormedPrincipalID(parts[1]) {
+		return SessionAgentTokenClaims{}, errors.New("session agent token names a malformed principal id")
+	}
+	sessionID, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil || len(sessionID) == 0 {
+		return SessionAgentTokenClaims{}, errors.New("session agent token names a malformed session id")
+	}
+	expirySeconds, err := strconv.ParseInt(parts[3], 10, 64)
+	if err != nil {
+		return SessionAgentTokenClaims{}, errors.New("session agent token expiry is not a number")
+	}
+	expiresAt := time.Unix(expirySeconds, 0).UTC()
+	if !codec.Now().Before(expiresAt) {
+		return SessionAgentTokenClaims{}, errors.New("session agent token has expired")
+	}
+	return SessionAgentTokenClaims{PrincipalID: parts[1], SessionID: string(sessionID), ExpiresAt: expiresAt}, nil
+}
+
+// IsSessionAgentToken reports whether a bearer token is shaped as a session
+// agent token rather than a session posting token. It verifies nothing: it
+// only picks which verifier the token goes to.
+func IsSessionAgentToken(token string) bool {
+	return strings.HasPrefix(token, sessionAgentTokenPrefix+".")
+}
+
+// SessionAgentTokenClaimsOfLiveSession verifies a presented token and the
+// session it names, and returns its claims: the principal the request acts as
+// and the session whose agent holds the token.
+func (s *Service) SessionAgentTokenClaimsOfLiveSession(token string) (SessionAgentTokenClaims, error) {
+	claims, err := s.HarnessChildTokenSigner().DecodeSessionAgentToken(token)
+	if err != nil {
+		return SessionAgentTokenClaims{}, err
+	}
+	session, err := s.Store.GetSession(claims.SessionID)
+	if err != nil {
+		return SessionAgentTokenClaims{}, fmt.Errorf("session agent token names session %s, which does not exist", claims.SessionID)
+	}
+	if session.PrincipalID != claims.PrincipalID {
+		return SessionAgentTokenClaims{}, fmt.Errorf("session agent token names principal %s, and session %s is not started as that principal", claims.PrincipalID, claims.SessionID)
+	}
+	for _, terminalState := range SessionStatesThatEndSessionAgentTokens {
+		if msg.SessionState(session.State) == terminalState {
+			return SessionAgentTokenClaims{}, fmt.Errorf("session %s has ended (state %s), and its session agent token ended with it", claims.SessionID, session.State)
+		}
+	}
+	return claims, nil
+}
+
+// SessionAgentEnvironment returns the variables a session's harness child
+// receives so its tool calls can act as the session's principal: none unless
+// the session is started as a principal. A gateway
+// URL that cannot be determined is an error — a child given a token and no
+// place to send it would fail at its first tool call instead of at spawn.
+func (s *Service) SessionAgentEnvironment(session *store.Session) ([]string, error) {
+	if session.PrincipalID == "" {
+		return nil, nil
+	}
+	gatewayURL := s.gatewayURLForSessionAgents()
+	if gatewayURL == "" {
+		return nil, fmt.Errorf("session %s acts for %s and needs %s, and neither LLMBRIDGE_PUBLIC_URL nor LLMBRIDGE_LISTEN_ADDR gives this server's address",
+			session.SessionID, session.PrincipalID, GatewayURLEnvironmentVariable)
+	}
+	token := s.HarnessChildTokenSigner().EncodeSessionAgentToken(SessionAgentTokenClaims{
+		PrincipalID: session.PrincipalID,
+		SessionID:   session.SessionID,
+		ExpiresAt:   s.HarnessChildTokenSigner().Now().Add(sessionAgentTokenLifetime).UTC().Truncate(time.Second),
+	})
+	return []string{
+		GatewayURLEnvironmentVariable + "=" + gatewayURL,
+		PrincipalTokenEnvironmentVariable + "=" + token,
+	}, nil
+}
+
+// gatewayURLForSessionAgents is the base URL a harness child reaches this
+// server at: LLMBRIDGE_PUBLIC_URL when set, otherwise the address it listens
+// on, the same one the permission prehook URLs are built from.
+func (s *Service) gatewayURLForSessionAgents() string {
+	if s.Cfg.PublicURL != "" {
+		return strings.TrimRight(s.Cfg.PublicURL, "/")
+	}
+	if s.Cfg.ListenAddr == "" {
+		return ""
+	}
+	return httproutes.PublicBaseURL(s.Cfg.ListenAddr)
+}

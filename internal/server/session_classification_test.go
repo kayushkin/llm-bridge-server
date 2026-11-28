@@ -285,13 +285,13 @@ func TestDiscoveryReclassifiesAnExistingDiscoveredRow(t *testing.T) {
 	}
 
 	for _, tag := range []string{"", msg.PurposeDiscovered, "not-in-the-registry"} {
-		changed, err := srv.reclassifyDiscoveredSession(bridgeID, tag)
+		changed, err := srv.sessions.ReclassifyDiscoveredSession(bridgeID, tag)
 		if err != nil || changed {
 			t.Errorf("tag %q: changed=%v err=%v, want the row left alone", tag, changed, err)
 		}
 	}
 
-	changed, err := srv.reclassifyDiscoveredSession(bridgeID, msg.PurposeOneshot)
+	changed, err := srv.sessions.ReclassifyDiscoveredSession(bridgeID, msg.PurposeOneshot)
 	if err != nil || !changed {
 		t.Fatalf("reclassify as oneshot: changed=%v err=%v", changed, err)
 	}

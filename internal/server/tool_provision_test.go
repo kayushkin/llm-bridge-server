@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions"
+
 	"github.com/kayushkin/llm-bridge-server/internal/agents/tools"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -27,8 +29,8 @@ func fakeToolStore(t *testing.T, body string) *fakeToolRegistry {
 	return registry
 }
 
-func newServerWithToolRegistry(tools toolRegistry) *Server {
-	return &Server{cfg: &config.Config{}, toolRegistry: tools}
+func newServerWithToolRegistry(tools sessions.ToolRegistry) *Server {
+	return (&Server{cfg: &config.Config{}, toolRegistry: tools}).withServicesComposed()
 }
 
 func TestInjectMCPConfigNoOpIfKeyAbsent(t *testing.T) {
@@ -39,7 +41,7 @@ func TestInjectMCPConfigNoOpIfKeyAbsent(t *testing.T) {
 		HarnessConfig: json.RawMessage(`{"settings":"{}"}`),
 	}
 	before := string(sess.HarnessConfig)
-	if err := s.injectMCPConfig(sess); err != nil {
+	if err := s.sessions.InjectMCPConfig(sess); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if string(sess.HarnessConfig) != before {
@@ -56,7 +58,7 @@ func TestInjectMCPConfigHappyPath(t *testing.T) {
 		SessionID:     "test-bid",
 		HarnessConfig: json.RawMessage(`{"tool_store_tools":["brave-search"]}`),
 	}
-	if err := s.injectMCPConfig(sess); err != nil {
+	if err := s.sessions.InjectMCPConfig(sess); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	var cfg map[string]json.RawMessage
@@ -91,7 +93,7 @@ func TestInjectMCPConfigEmptyToolListIsNoOp(t *testing.T) {
 		Harness:       msg.HarnessClaudeCode,
 		HarnessConfig: json.RawMessage(`{"tool_store_tools":[],"x":"y"}`),
 	}
-	if err := s.injectMCPConfig(sess); err != nil {
+	if err := s.sessions.InjectMCPConfig(sess); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	var cfg map[string]json.RawMessage
@@ -111,7 +113,7 @@ func TestInjectMCPConfigConflictingMCPConfigErrors(t *testing.T) {
 		Harness:       msg.HarnessClaudeCode,
 		HarnessConfig: json.RawMessage(`{"tool_store_tools":["x"],"mcp_config":"/some/path"}`),
 	}
-	err := s.injectMCPConfig(sess)
+	err := s.sessions.InjectMCPConfig(sess)
 	if err == nil {
 		t.Fatal("expected error when both fields present")
 	}
@@ -125,7 +127,7 @@ func TestInjectMCPConfigSkipsAHarnessThatStartsNoMCPServers(t *testing.T) {
 		HarnessConfig: json.RawMessage(`{"tool_store_tools":["x"]}`),
 	}
 	before := string(sess.HarnessConfig)
-	if err := s.injectMCPConfig(sess); err != nil {
+	if err := s.sessions.InjectMCPConfig(sess); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if string(sess.HarnessConfig) != before {
@@ -141,7 +143,7 @@ func TestInjectMCPConfigUpstreamErrorPropagates(t *testing.T) {
 		Harness:       msg.HarnessClaudeCode,
 		HarnessConfig: json.RawMessage(`{"tool_store_tools":["nope"]}`),
 	}
-	err := s.injectMCPConfig(sess)
+	err := s.sessions.InjectMCPConfig(sess)
 	if err == nil {
 		t.Fatal("expected error from upstream 400")
 	}
@@ -202,7 +204,7 @@ func TestInjectMCPConfigProvisionsTheInstanceOptIns(t *testing.T) {
 		SessionID:  "test-bid",
 		InstanceID: "inst-1",
 	}
-	if err := s.injectMCPConfig(sess); err != nil {
+	if err := s.sessions.InjectMCPConfig(sess); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if len(*asked) != 1 || (*asked)[0] != "inst-1" {
@@ -233,7 +235,7 @@ func TestInjectMCPConfigInstanceWithNoOptInsChangesNothing(t *testing.T) {
 		HarnessConfig: json.RawMessage(`{"settings":"{}"}`),
 	}
 	before := string(sess.HarnessConfig)
-	if err := s.injectMCPConfig(sess); err != nil {
+	if err := s.sessions.InjectMCPConfig(sess); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if string(sess.HarnessConfig) != before {
@@ -250,7 +252,7 @@ func TestInjectMCPConfigStartsTheSessionWhenToolStoreIsDown(t *testing.T) {
 		Harness:    msg.HarnessClaudeCode,
 		InstanceID: "inst-1",
 	}
-	if err := s.injectMCPConfig(sess); err != nil {
+	if err := s.sessions.InjectMCPConfig(sess); err != nil {
 		t.Fatalf("an unreachable tool-store must not abort the spawn, got: %v", err)
 	}
 	if p := mcpConfigPath(t, sess); p != "" {
@@ -267,7 +269,7 @@ func TestInjectMCPConfigStartsTheSessionWhenAnOptInIsStale(t *testing.T) {
 	srv.provisionError = errors.New(`provision: tool id 12 not found`)
 	s := newServerWithToolRegistry(srv)
 	sess := &store.Session{Harness: msg.HarnessClaudeCode, InstanceID: "inst-1"}
-	if err := s.injectMCPConfig(sess); err != nil {
+	if err := s.sessions.InjectMCPConfig(sess); err != nil {
 		t.Fatalf("a stale opt-in must not abort the spawn, got: %v", err)
 	}
 }
@@ -284,7 +286,7 @@ func TestInjectMCPConfigEmptyNamedListOptsOutOfInstanceDefaults(t *testing.T) {
 		InstanceID:    "inst-1",
 		HarnessConfig: json.RawMessage(`{"tool_store_tools":[]}`),
 	}
-	if err := s.injectMCPConfig(sess); err != nil {
+	if err := s.sessions.InjectMCPConfig(sess); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if len(*asked) != 0 {
@@ -305,7 +307,7 @@ func TestInjectMCPConfigPresetPathWinsOverInstanceDefaults(t *testing.T) {
 		InstanceID:    "inst-1",
 		HarnessConfig: json.RawMessage(`{"mcp_config":"/caller/own.json"}`),
 	}
-	if err := s.injectMCPConfig(sess); err != nil {
+	if err := s.sessions.InjectMCPConfig(sess); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if len(*asked) != 0 {
@@ -322,7 +324,7 @@ func TestInjectMCPConfigDoesNotLookUpAHarnessThatStartsNoMCPServers(t *testing.T
 	srv, asked := fakeInstanceToolStore(t, nil)
 	s := newServerWithToolRegistry(srv)
 	sess := &store.Session{Harness: msg.HarnessCodex, InstanceID: "inst-1"}
-	if err := s.injectMCPConfig(sess); err != nil {
+	if err := s.sessions.InjectMCPConfig(sess); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if len(*asked) != 0 {
@@ -343,7 +345,7 @@ func TestInjectMCPConfigProvisionsTheInstanceOptInsForInber(t *testing.T) {
 		SessionID:  "test-inber",
 		InstanceID: "inst-inber",
 	}
-	if err := s.injectMCPConfig(sess); err != nil {
+	if err := s.sessions.InjectMCPConfig(sess); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if len(*asked) != 1 || (*asked)[0] != "inst-inber" {

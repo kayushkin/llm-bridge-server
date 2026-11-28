@@ -26,6 +26,12 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/login"
+
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 	"github.com/kayushkin/llm-bridge-server/internal/access/signin"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/calendar"
@@ -131,22 +137,22 @@ func (s *Server) connectedRecordsRoute(mountPrefix, storeName, offCode string, h
 	return func(w http.ResponseWriter, r *http.Request) {
 		stores := s.connectedRecords.Load()
 		if stores == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, offCode, storeName+" is not open on this server: EnableConnectedRecords was never called")
+			httpjson.WriteJSONError(w, http.StatusServiceUnavailable, offCode, storeName+" is not open on this server: EnableConnectedRecords was never called")
 			return
 		}
 		var caller ownership.Caller
-		if requestCaller, ok := callerOfRequest(r); ok && requestCaller.principalID != "" {
-			caller = ownership.Caller{PrincipalID: requestCaller.principalID, SeesEveryOwner: requestCaller.isAdministrator}
+		if requestCaller, ok := requestcaller.FromRequest(r); ok && requestCaller.PrincipalID != "" {
+			caller = ownership.Caller{PrincipalID: requestCaller.PrincipalID, SeesEveryOwner: requestCaller.IsAdministrator}
 		} else if s.requestIsTheInternalServiceActingAsItself(r) {
 			if requirePrincipal {
-				writeJSONError(w, http.StatusForbidden, strings.ReplaceAll(storeName, "-", "_")+"_requires_a_principal", fmt.Sprintf(
-					"%s answers only its owner's or an administrator's principal; send the service token with %s naming the person it is for", storeName, principalIdentityHeader))
+				httpjson.WriteJSONError(w, http.StatusForbidden, strings.ReplaceAll(storeName, "-", "_")+"_requires_a_principal", fmt.Sprintf(
+					"%s answers only its owner's or an administrator's principal; send the service token with %s naming the person it is for", storeName, requestcaller.PrincipalIdentityHeader))
 				return
 			}
 			caller = ownership.Caller{SeesEveryOwner: true}
 		} else {
 			// Request authorization lets nothing else through to these routes.
-			writeJSONError(w, http.StatusUnauthorized, strings.ReplaceAll(storeName, "-", "_")+"_requires_a_caller",
+			httpjson.WriteJSONError(w, http.StatusUnauthorized, strings.ReplaceAll(storeName, "-", "_")+"_requires_a_caller",
 				mountPrefix+"/ answers a principal or this server's service token")
 			return
 		}
@@ -160,7 +166,7 @@ func (s *Server) connectedRecordsRoute(mountPrefix, storeName, offCode string, h
 				}
 			}
 		}
-		removeCookieFromRequestHeader(served.Header, loginSessionCookieName)
+		login.RemoveCookieFromRequestHeader(served.Header, login.LoginSessionCookieName)
 		http.StripPrefix(mountPrefix, handlerOf(stores)).ServeHTTP(w, served)
 	}
 }

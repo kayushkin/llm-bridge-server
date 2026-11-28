@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions"
+
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -15,7 +17,7 @@ func TestDisplayNameForDiscoveredSessionRefusesCodexText(t *testing.T) {
 		{"", "/work/repo", "/work/repo"},
 	}
 	for _, c := range cases {
-		if got := displayNameForDiscoveredSession(c.prompt, c.project); got != c.want {
+		if got := sessions.DisplayNameForDiscoveredSession(c.prompt, c.project); got != c.want {
 			t.Errorf("displayNameForDiscoveredSession(%q, %q) = %q, want %q", c.prompt, c.project, got, c.want)
 		}
 	}
@@ -34,7 +36,7 @@ func TestFillOrRepairDiscoveredSessionMetadataCorrectsARowDiscoveredEarlier(t *t
 	}
 
 	reported := msg.StoredSession{HarnessSessionID: harnessID, Harness: msg.HarnessCodex, Prompt: "Which are the recent orders?", Project: "/work/repo"}
-	if !srv.fillOrRepairDiscoveredSessionMetadata("[test]", bridgeID, reported) {
+	if !srv.sessions.FillOrRepairDiscoveredSessionMetadata("[test]", bridgeID, reported) {
 		t.Fatal("fillOrRepairDiscoveredSessionMetadata changed nothing")
 	}
 	row, err := st.GetSession(bridgeID)
@@ -44,7 +46,7 @@ func TestFillOrRepairDiscoveredSessionMetadataCorrectsARowDiscoveredEarlier(t *t
 	if row.DisplayName != "Which are the recent orders?" || row.WorkingDir != "/work/repo" {
 		t.Errorf("row = (%q, %q), want the typed request and the rollout's cwd", row.DisplayName, row.WorkingDir)
 	}
-	if srv.fillOrRepairDiscoveredSessionMetadata("[test]", bridgeID, reported) {
+	if srv.sessions.FillOrRepairDiscoveredSessionMetadata("[test]", bridgeID, reported) {
 		t.Error("a second pass changed the row again")
 	}
 }

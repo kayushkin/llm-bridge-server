@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/toolfiles"
+
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -37,7 +39,7 @@ func TestPathsNamedByToolEventsFollowsCdAcrossCallsAndReadsGrepOutput(t *testing
 		toolCallEvent(t, "d", map[string]any{"command": []any{"bash", "-lc", "cat main.go"}, "workdir": "/srv/other"}),
 		toolCallEvent(t, "e", map[string]any{"command": `cat $HOME/secret.txt *.go -n config.Load`}),
 	}
-	got := pathsNamedByToolEvents(events, "/home/someone/repos", "/home/someone")
+	got := toolfiles.PathsNamedByToolEvents(events, "/home/someone/repos", "/home/someone")
 	want := []string{
 		"/home/someone/repos/llm-bridge-server/internal/server/renamer.go",
 		"/home/someone/repos/llm-bridge-server/internal/server/sessions.go",
@@ -64,7 +66,7 @@ func TestLooksLikeFilePath(t *testing.T) {
 		"KEY=value.txt":              false,
 		"":                           false,
 	} {
-		if got := looksLikeFilePath(token); got != want {
+		if got := toolfiles.LooksLikeFilePath(token); got != want {
 			t.Errorf("looksLikeFilePath(%q) = %v, want %v", token, got, want)
 		}
 	}
@@ -79,7 +81,7 @@ func TestPathIsDenied(t *testing.T) {
 		"/var/server.key":                     true,
 		"/var/server.pem":                     false,
 	} {
-		if got := pathIsDenied(path, denied, "/home/someone"); got != want {
+		if got := toolfiles.PathIsDenied(path, denied, "/home/someone"); got != want {
 			t.Errorf("pathIsDenied(%q) = %v, want %v", path, got, want)
 		}
 	}
@@ -93,22 +95,22 @@ func TestFileServedAsFollowsTheBytesAndTheSize(t *testing.T) {
 		size          int64
 		want          string
 	}{
-		{"notes.md", "# a heading\n", 12, fileServedAsText},
-		{"shot.png", string(png), int64(len(png)), fileServedAsImage},
-		{"big.png", string(png), maximumImageNamedByToolsBytes + 1, fileNotServed},
-		{"big.log", "line\n", maximumFileNamedByToolsBytes + 1, fileNotServed},
-		{"data.db", "SQLite format 3\x00\x10\x00", 18, fileNotServed},
+		{"notes.md", "# a heading\n", 12, toolfiles.FileServedAsText},
+		{"shot.png", string(png), int64(len(png)), toolfiles.FileServedAsImage},
+		{"big.png", string(png), toolfiles.MaximumImageNamedByToolsBytes + 1, toolfiles.FileNotServed},
+		{"big.log", "line\n", toolfiles.MaximumFileNamedByToolsBytes + 1, toolfiles.FileNotServed},
+		{"data.db", "SQLite format 3\x00\x10\x00", 18, toolfiles.FileNotServed},
 	}
 	for _, c := range cases {
 		path := filepath.Join(directory, c.name)
 		if err := os.WriteFile(path, []byte(c.content), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		mediaType, err := sniffedMediaTypeOf(path)
+		mediaType, err := toolfiles.SniffedMediaTypeOf(path)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := fileServedAs(mediaType, c.size); got != c.want {
+		if got := toolfiles.FileServedAs(mediaType, c.size); got != c.want {
 			t.Errorf("%s (%s, %d bytes) served as %q, want %q", c.name, mediaType, c.size, got, c.want)
 		}
 	}

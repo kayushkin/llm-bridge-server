@@ -25,6 +25,10 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 )
 
 // identityBindingLinkRequest is the body POST /admin/identity-bindings takes.
@@ -91,45 +95,14 @@ func (s *Server) askPrincipalStore(r *http.Request, method, escapedPath, rawQuer
 	return principalStoreAnswer{status: recorder.Code, header: header, body: recorder.Body.Bytes()}, nil
 }
 
-// decodeAdministrationBody reads a JSON object into target, refusing any key
-// target does not have. A key the bridge sets itself gets a refusal that
-// names it, since silently replacing it would leave the caller believing
-// their value was kept.
-func decodeAdministrationBody(w http.ResponseWriter, r *http.Request, target any, keysTheBridgeSets ...string) bool {
-	raw, err := io.ReadAll(r.Body)
-	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_request", fmt.Sprintf("read the body: %v", err))
-		return false
-	}
-	var keys map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &keys); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_request", fmt.Sprintf("the body must be a JSON object: %v", err))
-		return false
-	}
-	for _, key := range keysTheBridgeSets {
-		if _, present := keys[key]; present {
-			writeJSONError(w, http.StatusBadRequest, key+"_not_accepted", fmt.Sprintf(
-				"%s is set by this server to the calling administrator's principal and may not be sent", key))
-			return false
-		}
-	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(target); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return false
-	}
-	return true
-}
-
 // administratorMakingIdentityBindingChange is the principal a binding change
 // is stamped with. The service token acting as itself is nobody, so it must
 // say whom it acts for.
 func administratorMakingIdentityBindingChange(w http.ResponseWriter, r *http.Request) (string, bool) {
-	principalID, identified := principalIdentityOfRequest(r)
+	principalID, identified := requestcaller.PrincipalIdentityOfRequest(r)
 	if !identified {
-		writeJSONError(w, http.StatusForbidden, "identity_binding_change_requires_a_principal", fmt.Sprintf(
-			"a binding records which administrator changed it; send %s with the service token", principalIdentityHeader))
+		httpjson.WriteJSONError(w, http.StatusForbidden, "identity_binding_change_requires_a_principal", fmt.Sprintf(
+			"a binding records which administrator changed it; send %s with the service token", requestcaller.PrincipalIdentityHeader))
 		return "", false
 	}
 	return principalID, true
@@ -154,7 +127,7 @@ func (s *Server) handleLinkIdentityBinding(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	var request identityBindingLinkRequest
-	if !decodeAdministrationBody(w, r, &request, "linked_by") {
+	if !httpjson.DecodeAdministrationBody(w, r, &request, "linked_by") {
 		return
 	}
 	body, err := json.Marshal(map[string]string{
@@ -166,7 +139,7 @@ func (s *Server) handleLinkIdentityBinding(w http.ResponseWriter, r *http.Reques
 		"linked_by":    administratorID,
 	})
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "invalid_request", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "invalid_request", err.Error())
 		return
 	}
 	answer, err := s.askPrincipalStore(r, http.MethodPost, "/identity-bindings", "", body)
@@ -185,13 +158,13 @@ func (s *Server) handleUnlinkIdentityBinding(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	var request identityBindingUnlinkRequest
-	if !decodeAdministrationBody(w, r, &request, "unlinked_by") {
+	if !httpjson.DecodeAdministrationBody(w, r, &request, "unlinked_by") {
 		return
 	}
 	bindingID := r.PathValue("id")
 	body, err := json.Marshal(map[string]string{"unlinked_by": administratorID, "reason": request.Reason})
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "invalid_request", err.Error())
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "invalid_request", err.Error())
 		return
 	}
 	answer, err := s.askPrincipalStore(r, http.MethodPost, "/identity-bindings/"+url.PathEscape(bindingID)+"/unlink", "", body)
@@ -205,7 +178,7 @@ func (s *Server) handleUnlinkIdentityBinding(w http.ResponseWriter, r *http.Requ
 			// principal-store has already unlinked it, so no new sign-in can
 			// use it; the sessions it already opened are what is left live.
 			log.Printf("[login] ERROR: identity binding %s was unlinked by %s, and its login sessions could not be revoked: %v", bindingID, administratorID, err)
-			writeJSONError(w, http.StatusInternalServerError, "login_sessions_not_revoked", fmt.Sprintf(
+			httpjson.WriteJSONError(w, http.StatusInternalServerError, "login_sessions_not_revoked", fmt.Sprintf(
 				"identity binding %s was unlinked in principal-store, but the login sessions signed in through it are still live: %v; revoke them with POST /auth/sessions/{id}/revoke", bindingID, err))
 			return
 		}

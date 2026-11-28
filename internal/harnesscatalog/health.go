@@ -1,0 +1,532 @@
+package harnesscatalog
+
+import (
+	"errors"
+	"fmt"
+	"io/fs"
+	"log"
+	"net/http"
+	"os"
+	"path/filepath"
+
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/hookvocabulary"
+
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
+	"github.com/kayushkin/llm-bridge-server/internal/harness"
+	"github.com/kayushkin/llm-bridge/msg"
+)
+
+// Response types are canonical — defined in llm-bridge/msg/server.go.
+// DO NOT define new request/response types here. Add them to msg/ instead,
+// then run generate-ts.sh so the TypeScript frontend stays in sync.
+type (
+	HealthResponse = msg.HealthResponse
+	HarnessStatus  = msg.HarnessInfo
+	SessionCounts  = msg.SessionCounts
+)
+
+// harnessMeta holds display metadata for each harness type. Tint is the
+// canonical sRGB hex UIs key chrome to (header washes, chips). Add a brand
+// color when the harness has one; otherwise leave empty and the UI falls
+// through to its theme accent.
+type harnessMeta struct {
+	Label string
+	Emoji string
+	Image string // filename in images/harnesses/, empty if none
+	Tint  string // sRGB hex like "#d97757", empty if none
+}
+
+var HarnessMetadata = map[msg.Harness]harnessMeta{
+	msg.HarnessClaudeCode: {Label: "Claude Code", Emoji: "💻", Image: "claude_code.png", Tint: "#d97757"},
+	msg.HarnessCodex:      {Label: "Codex", Emoji: "📖", Image: "codex.svg", Tint: "#10a37f"},
+	msg.HarnessOpenClaw:   {Label: "OpenClaw", Emoji: "🦀", Tint: "#dc2626"},
+	msg.HarnessInber:      {Label: "Inber", Emoji: "🌿", Tint: "#22c55e"},
+	msg.HarnessHermes:     {Label: "Hermes", Emoji: "📨", Tint: "#eab308"},
+	msg.HarnessAider:      {Label: "Aider", Emoji: "🛠️", Image: "aider.png", Tint: "#f97316"},
+	msg.HarnessGoose:      {Label: "Goose", Emoji: "🪿", Image: "goose.png", Tint: "#84cc16"},
+	msg.HarnessAutohand:   {Label: "Autohand", Emoji: "🤖", Tint: "#94a3b8"},
+	msg.HarnessJig:        {Label: "Jig", Emoji: "🧩", Tint: "#a855f7"},
+	msg.HarnessDexto:      {Label: "Dexto", Emoji: "🎯", Tint: "#ec4899"},
+	msg.HarnessCommander:  {Label: "Commander", Emoji: "🎖️", Tint: "#64748b"},
+	msg.HarnessNanoClaw:   {Label: "NanoClaw", Emoji: "🔬", Tint: "#06b6d4"},
+	msg.HarnessCline:      {Label: "Cline", Emoji: "📝", Image: "cline.png", Tint: "#3b82f6"},
+	msg.HarnessRooCode:    {Label: "Roo Code", Emoji: "🦘", Image: "roo_code.svg", Tint: "#fb7185"},
+	msg.HarnessKiloCode:   {Label: "Kilo Code", Emoji: "⚡", Image: "kilo_code.png", Tint: "#f59e0b"},
+	msg.HarnessOpenCode:   {Label: "OpenCode", Emoji: "🔓", Image: "opencode.svg", Tint: "#8b5cf6"},
+	msg.HarnessForgecode:  {Label: "ForgeCode", Emoji: "🔥", Image: "forgecode.png", Tint: "#ef4444"},
+	msg.HarnessGemini:     {Label: "Gemini", Emoji: "✨", Tint: "#4285f4"},
+	msg.HarnessDevin:      {Label: "Devin", Emoji: "🛰️", Tint: "#2f6fed"},
+	msg.HarnessDatabricks: {Label: "Databricks", Emoji: "🧱", Tint: "#ff3621"},
+	msg.HarnessMock:       {Label: "Mock", Emoji: "🧪", Tint: "#6b7280"},
+}
+
+// HarnessSupportedProviders defines which model providers each harness accepts.
+// nil means all providers are valid (framework-managed or multi-provider).
+var HarnessSupportedProviders = map[msg.Harness][]string{
+	msg.HarnessClaudeCode: {"anthropic"},
+	msg.HarnessCodex:      {"openai"},
+	msg.HarnessJig:        {"anthropic"},
+	msg.HarnessAutohand:   {"anthropic"},
+	msg.HarnessDatabricks: {"databricks"},
+}
+
+// OneShotOnlyHarnesses names harnesses whose wrapper makes single calls and
+// cannot hold a session. The value is why, and it is what a caller asking for
+// a session on one is told.
+var OneShotOnlyHarnesses = map[msg.Harness]string{
+	msg.HarnessDatabricks: "llm-bridge-databricks calls a Databricks serving endpoint once per process (-oneshot, -invoke) and has no session mode",
+}
+
+// HarnessSupportsPTY reports whether each harness can run inside a
+// pseudoterminal (pty session mode). Mirrors the bridge.PTYCapableHarness
+// optional interface declared in llm-bridge — actual subprocess plumbing
+// lands per-harness in later children of the pty-mode roadmap. Until a
+// harness flips its entry here AND implements SupportsPTY() on its bridge,
+// the server keeps reporting false.
+//
+// claude_code lit up in pty-mode child 2 (this commit): the harness binary
+// detects LLMBRIDGE_PTY_MODE in env at startup and execs into the upstream
+// `claude` CLI so the pty fd is wired straight through to its TUI.
+//
+// codex lit up in pty-mode child 5: the codex harness binary follows the
+// same env-var hand-off and execs into the upstream `codex` CLI's
+// interactive mode. The existing AppServer/WebSocket path coexists for
+// events-mode sessions; pty mode opts out at spawn time.
+var HarnessSupportsPTY = map[msg.Harness]bool{
+	msg.HarnessClaudeCode: true,
+	msg.HarnessCodex:      true,
+}
+
+// HarnessSupportsDisableNetwork reports whether the harness can enforce
+// "no outbound network" at the sandbox layer. The bridge surfaces this
+// as a checkbox alongside the permission-mode dropdown; greyed out for
+// harnesses without sandbox-level network gating.
+//
+// codex maps to sandbox_workspace_write.network_access=false (passed as
+// a `-c` override on app-server spawn). claude_code has no sandbox-level
+// network knob today; a future hook-store rule could implement the same
+// gate, at which point we flip its entry to true.
+var HarnessSupportsDisableNetwork = map[msg.Harness]bool{
+	msg.HarnessCodex: true,
+}
+
+// HarnessSupportedPermissionModes lists the permission modes each harness
+// knows how to express in its own start params. Auto is harness-aware (the
+// harness translates to its native vocab). Custom is opt-in per harness
+// since it surfaces raw harness-specific knobs.
+//
+// This table says what the UI is OFFERED, not what is ENFORCED. The
+// bridge-side prehook that carries out block_all / plan / read / ask_all /
+// ask / bypass is installed by InjectHookSettings, whose switch has no
+// default arm: only claude_code, codex and devin ever receive a gate URL. For
+// every other harness the mode is recorded and nothing evaluates it.
+//
+// This comment used to call the prehook universal and say the restrictive
+// modes work for every harness. Both were false, and permission-store's
+// audit log agrees: every tool name in >=10,000 evaluations to 2026-08-15
+// is a Claude Code name. Card 49a697df holds the repair — give the gate a
+// default arm, or report only the modes a harness can enforce. Pinned by
+// TestInjectHookSettings_OnlyGatedHarnessesGetAPermissionGate.
+var HarnessSupportedPermissionModes = map[msg.Harness][]string{
+	msg.HarnessClaudeCode: {
+		msg.PermissionModeBlockAll,
+		msg.PermissionModePlan,
+		msg.PermissionModeRead,
+		msg.PermissionModeAskAll,
+		msg.PermissionModeAsk,
+		msg.PermissionModeAuto,
+		msg.PermissionModeBypass,
+	},
+	// devin: every mode is carried out by the prehook, which devin calls
+	// through its PreToolUse hook on every tool call (llm-bridge-devin runs
+	// devin in its own bypass mode, so the gate is the only judge). Auto is
+	// translated by the devin tool names in autoModeSafeTools.
+	msg.HarnessDevin: {
+		msg.PermissionModeBlockAll,
+		msg.PermissionModePlan,
+		msg.PermissionModeRead,
+		msg.PermissionModeAskAll,
+		msg.PermissionModeAsk,
+		msg.PermissionModeAuto,
+		msg.PermissionModeBypass,
+	},
+	// Codex supports all modes including Custom, which exposes the raw
+	// approval_policy + sandbox_mode pair through bridge-ui's Custom panel.
+	msg.HarnessCodex: {
+		msg.PermissionModeBlockAll,
+		msg.PermissionModePlan,
+		msg.PermissionModeRead,
+		msg.PermissionModeAskAll,
+		msg.PermissionModeAsk,
+		msg.PermissionModeAuto,
+		msg.PermissionModeBypass,
+		msg.PermissionModeCustom,
+	},
+}
+
+// SupportedPermissionModesFor returns the modes for a harness, defaulting
+// to the full restrictive set for any harness without an explicit entry.
+// Auto and Custom require harness opt-in (auto needs a translation; custom
+// needs a UI panel).
+//
+// That default is wider than what the bridge can enforce, and deliberately
+// left so pending card 49a697df. block_all / plan / read / ask_all / ask /
+// bypass are carried out by the prehook, and the prehook is installed only
+// for claude_code, codex and devin — so an unlisted harness is handed a set
+// nothing keeps, and bridge-ui offers a user "Block All" on a session that
+// has no gate. The comment here used to call that subset prehook-enforced.
+// Narrowing the set is a visible UI change, which is why it is reserved
+// rather than done; see HarnessSupportedPermissionModes above.
+func SupportedPermissionModesFor(h msg.Harness) []string {
+	if modes, ok := HarnessSupportedPermissionModes[h]; ok {
+		return modes
+	}
+	return []string{
+		msg.PermissionModeBlockAll,
+		msg.PermissionModePlan,
+		msg.PermissionModeRead,
+		msg.PermissionModeAskAll,
+		msg.PermissionModeAsk,
+		msg.PermissionModeBypass,
+	}
+}
+
+// HarnessCapabilities defines what features each harness supports. The chat
+// UI reads it over GET /harnesses/{name}/capabilities and shows or hides its
+// Compact, Fork, Model, Effort, Tools and System-prompt controls accordingly
+// (bridge-ui Workspace.tsx), so a wrong entry here is directly visible to the
+// user in both directions: a granted capability the harness drops is a button
+// that silently does nothing, and a withheld one is a working feature the user
+// cannot reach.
+//
+// It is hand-maintained, which is the standing hazard — the harnesses live in
+// their own repos and nothing here re-reads them. The "compact" column was
+// audited against every harness's dispatcher on 2026-07-31 (noteboard todo
+// f8035505 tracks deriving this table instead of writing it down; 8fbaf27d
+// tracks the two harnesses that answer compact without compacting):
+//
+//   - real: claude_code (/compact), codex (HandleCompact), inber (POST
+//     /sessions/{id}/compact), kilo_code (server.Summarize), jig (/compact,
+//     llm-bridge-jig 9ac0b0e)
+//   - honest refusal, correctly withheld: hermes (UNSUPPORTED error), cline,
+//     aider, forgecode (no-op acks that say so)
+//   - claims a delegation that never happens: openclaw, nanoclaw. Both emit
+//     "compaction delegated to X" and write nothing. openclaw is withheld
+//     here rather than left showing a button that does nothing; nanoclaw was
+//     already withheld. Fixing either needs its own protocol work — nanoclaw's
+//     container contract does not cover compaction and no image implements it.
+//
+// The remaining six columns were audited the same way on 2026-07-31, against
+// each harness's origin/main (not whatever branch its checkout happened to
+// have out). What the audit had to establish first is that only two things
+// reach a running harness from this server: the bare "compact" / "compact:
+// <summary>" method, and "config:<json>" carrying msg.ConfigSessionRequest —
+// its four fields model / effort / disabled_tools / max_budget are the entire
+// mid-session vocabulary. Manager.SendJSONRPC has exactly one caller here
+// (sessions.go HandleCompactSession) and it passes the literal method
+// "compact", so every harness's set_model, fork and interrupt JSON-RPC method
+// is still unreachable from this gateway however well it is written, and POST
+// /sessions/{id}/interrupt is SIGINT (process.go Interrupt), not a request.
+// ⚠️ What makes those methods unreachable is the fixed method string at that
+// call site, NOT the absence of a caller — the absence is what this sentence
+// used to claim, and it stopped being true when compact was wired through. "fork" is start-params
+// only: buildStartParams sets params.Fork from the parent's harness UUID.
+//
+// The grading rule, so a future entry is decidable rather than a matter of
+// taste: a capability is granted when the control it gates changes something
+// for a session that is already running. Storing a value and applying it at
+// the next spawn counts (jig) — the user's choice takes effect. Refusing it
+// and keeping the old value does not (claude_code max_budget /
+// disabled_tools, which answer "spawn-time only, unchanged" and return an
+// error), and neither does parsing a field and never reading it (mock's fork,
+// nanoclaw's, aider's, forgecode's).
+//
+// Per column, with the implementation each claim names:
+//
+//   - model: claude_code (handleSessionConfig -> handleSetModel, live),
+//     codex (HandleConfig -> cfg.CodexModel, next turn), inber (POST
+//     /sessions/{id}/config -> Engine.SetModel), cline (-m on the next
+//     one-shot turn), jig (patches the profile, next spawn), hermes
+//     (handleConfig -> applyModel; sendMessageDirect reads h.cfg.Model when it
+//     builds every /v1/responses turn). Withheld from everything else, and the
+//     reasons differ: openclaw hardcodes the literal model "openclaw",
+//     kilo_code and nanoclaw plumb no model at all, forgecode's own README says
+//     the -m it passes is inert, aider fixes the model at start, and the six
+//     scaffolds have no config: branch.
+//   - effort: claude_code (handleSessionConfig -> handleSetEffort, live:
+//     apply_flag_settings with effortLevel; granted back on 2026-09-26 after
+//     measuring Claude Code 2.1.282 accept it mid-session), codex, inber, jig.
+//     cline refuses it by name.
+//   - tools: this one column gates two different controls, and no harness
+//     earns both halves — the chat pane's Tools button reads SessionInfo.Tools,
+//     the settings pane's grid writes disabled_tools. Granted where either
+//     half is real, and which half differs: claude_code and mock report a tool
+//     list and refuse to disable; inber and jig disable for real and report
+//     nothing. Splitting the column is noteboard todo f8035505's sibling.
+//   - budget: jig only. inber refuses it outright and explains why (the bridge
+//     sends dollars, inber's config takes input tokens); claude_code takes
+//     --max-budget-usd at spawn; nobody else parses the field.
+//   - fork: claude_code and jig (--resume <uuid> --fork-session), codex
+//     (thread/fork), inber (POST /sessions/{id}/fork, deep-copies messages),
+//     kilo_code (POST /session/{id}/fork). Withheld from hermes, which fails
+//     the start outright with FORK_UNSUPPORTED, and from cline, whose "fork"
+//     passes the parent id to the same -T flag resume uses, so both sessions
+//     write into one task and nothing branches.
+//   - system_prompt: claude_code and mock. It is a reporting capability — the
+//     button renders SessionInfo.SystemPrompt — and codex, hermes, inber and
+//     jig emit no SessionInfo event at all, so the button had nothing to show.
+//
+// "interrupt" is gone: it was on hermes alone, it named a JSON-RPC method this
+// server never sends, and no UI reads the column. Re-checked on 2026-07-31
+// after llm-bridge-hermes ba7beb4 gave hermes a working SIGINT handler, which
+// is the obvious reason to want the cell back: the handler is real, but nothing
+// consumes the string. The four consumer surfaces branch on exactly compact,
+// fork, model, effort, tools, budget and system_prompt (TestCapabilityNamesAre
+// Consumed pins the list), so granting "interrupt" would add a badge no control
+// reads. It stays out until a consumer gates on it.
+//
+// hermes's "model" is the first cell to move since the audit, and it moved the
+// way the header above asks for: the harness changed in its own repo
+// (llm-bridge-hermes ba7beb4 added the config: branch the audit found missing),
+// it was re-measured against that code, and the binary was deployed to ~/bin
+// first. Order matters — bridge-server resolves a harness through exec.LookPath
+// and spawns a fresh process per session, so the binary is its own deployment;
+// granting the cell before it lands advertises a Model dropdown that drops
+// what the user picks.
+var HarnessCapabilities = map[msg.Harness][]string{
+	msg.HarnessClaudeCode: {"compact", "fork", "model", "effort", "tools", "system_prompt"},
+	msg.HarnessCodex:      {"compact", "fork", "model", "effort"},
+	msg.HarnessOpenClaw:   {},
+	msg.HarnessInber:      {"compact", "fork", "model", "effort", "tools"},
+	msg.HarnessHermes:     {"model"},
+	msg.HarnessAider:      {},
+	msg.HarnessGoose:      {},
+	msg.HarnessAutohand:   {},
+	msg.HarnessJig:        {"compact", "fork", "model", "effort", "tools", "budget"},
+	msg.HarnessDexto:      {},
+	msg.HarnessCommander:  {},
+	msg.HarnessNanoClaw:   {},
+	msg.HarnessCline:      {"model"},
+	msg.HarnessRooCode:    {},
+	msg.HarnessKiloCode:   {"compact", "fork"},
+	msg.HarnessOpenCode:   {},
+	msg.HarnessForgecode:  {},
+	msg.HarnessGemini:     {},
+	// devin (llm-bridge-devin): model and effort switch live through ACP
+	// session/set_config_option (each effort is its own devin model variant);
+	// compact runs devin's /compact; system_prompt is reported in
+	// SessionInfo. fork is withheld (devin's ACP has no fork; the wrapper
+	// fails it with FORK_UNSUPPORTED), and tools is withheld (devin reads
+	// disabled_tools only at start and the wrapper reports no tool list).
+	msg.HarnessDevin:      {"compact", "model", "effort", "system_prompt"},
+	msg.HarnessDatabricks: {},
+	msg.HarnessMock:       {"compact", "tools", "system_prompt"},
+}
+
+// DisabledHarnesses names canonical harnesses (msg.AllHarnesses) that this
+// gateway deliberately does not surface, validate, or spawn. The value is the
+// reason, so the omission stays an explicit decision rather than an oversight.
+//
+// Every canonical harness must be either listed here or fully described by the
+// tables above; TestHarnessTablesCoverCanonicalSet enforces that, so a harness
+// added to llm-bridge cannot silently go missing here again.
+var DisabledHarnesses = map[msg.Harness]string{
+	// The llm-bridge-copilotcli repo is still an un-retargeted clone of
+	// llm-bridge-claudecode (its README says status: planning, and its code
+	// spawns `claude`), and the llm-bridge-copilotcli binary sitting on PATH is
+	// a stale 2026-05-08 build of an abandoned prototype that links the retired
+	// aiauth. Enabling this harness would spawn that binary. Whether to
+	// re-target, publish privately, or drop the scaffold is an open decision —
+	// noteboard todo 2d8b6d10.
+	//
+	// ⚠️ Enabling it costs more than the entries here describe. This map is the
+	// only thing holding the harness off, and InjectHookSettings
+	// (hook_settings.go) has no case for copilot_cli — so deleting this line
+	// also ships a harness whose sessions carry no PreToolUse permission hook.
+	// The two facts live in different files and the reason above is about a
+	// stale binary, not about permissions, so nothing connected them.
+	// TestEnablingAHarnessKeepsItsPermissionGate now does: enable this without
+	// wiring the gate and it fails.
+	msg.HarnessCopilotCLI: "scaffold not yet re-targeted from claudecode; see noteboard todo 2d8b6d10",
+}
+
+// AllHarnesses is the set this gateway surfaces, validates and spawns: the
+// canonical list minus DisabledHarnesses. Derived, never hand-maintained — a
+// hand-copied duplicate of msg.AllHarnesses is what let copilot_cli drift out
+// of this file unnoticed.
+var AllHarnesses = func() []msg.Harness {
+	enabled := make([]msg.Harness, 0, len(msg.AllHarnesses))
+	for _, h := range msg.AllHarnesses {
+		if _, off := DisabledHarnesses[h]; off {
+			continue
+		}
+		enabled = append(enabled, h)
+	}
+	return enabled
+}()
+
+// IsValidHarness checks whether a harness type is in the known set.
+func IsValidHarness(h msg.Harness) bool {
+	for _, known := range AllHarnesses {
+		if h == known {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) HandleHealth(w http.ResponseWriter, r *http.Request) {
+	harnesses := s.DiscoverHarnesses()
+	counts := s.sessionCounts()
+
+	status := "ok"
+	if counts.Running == 0 && !anyAvailable(harnesses) {
+		status = "degraded"
+	}
+
+	httpjson.WriteJSON(w, HealthResponse{
+		Status:    status,
+		Harnesses: harnesses,
+		Sessions:  counts,
+	})
+}
+
+func (s *Service) HandleHarnesses(w http.ResponseWriter, r *http.Request) {
+	httpjson.WriteJSON(w, s.DiscoverHarnesses())
+}
+
+// HandleHarnessCapabilities returns the capability summary for a single
+// harness: features, hook events, supported providers, plus the metadata
+// already on HarnessInfo. Kept as a dedicated endpoint so clients wiring the
+// hook UI don't have to filter the full /harnesses list themselves.
+func (s *Service) HandleHarnessCapabilities(w http.ResponseWriter, r *http.Request) {
+	name := msg.Harness(r.PathValue("name"))
+	if !IsValidHarness(name) {
+		http.Error(w, "unknown harness", http.StatusNotFound)
+		return
+	}
+	for _, info := range s.DiscoverHarnesses() {
+		if info.Name == string(name) {
+			httpjson.WriteJSON(w, info)
+			return
+		}
+	}
+	http.Error(w, "unknown harness", http.StatusNotFound)
+}
+
+// HandleHarnessAgents returns the agents registered for a harness, sourced
+// from agent-store filtered by orchestrator id == harness name. Empty array
+// when no agents are configured (or agent-store is unavailable) — that's a
+// valid state for harnesses without a named-agent concept.
+func (s *Service) HandleHarnessAgents(w http.ResponseWriter, r *http.Request) {
+	name := msg.Harness(r.PathValue("name"))
+	if !IsValidHarness(name) {
+		http.Error(w, "unknown harness", http.StatusNotFound)
+		return
+	}
+	agents := []msg.HarnessAgent{}
+	if s.AgentStore() != nil {
+		expanded, err := s.AgentStore().ListAgentsExpanded()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		for _, a := range expanded {
+			if a.Harness != string(name) || !a.Enabled {
+				continue
+			}
+			id := a.HarnessName
+			if id == "" {
+				id = a.Slug
+			}
+			agents = append(agents, msg.HarnessAgent{
+				Name:        id,
+				DisplayName: a.DisplayName,
+				Description: a.Description,
+				IsDefault:   a.IsDefault,
+			})
+		}
+	}
+	httpjson.WriteJSON(w, agents)
+}
+
+// HarnessImageURL is the address of a harness's logo under /images/, or empty
+// when it has none or its file is not in the images directory: an address for
+// a file that is not there is only a broken picture and a 404 in the page. A
+// missing file other than "not there" is logged, since the logo then goes
+// missing for a reason nobody chose.
+func (s *Service) HarnessImageURL(h msg.Harness, image string) string {
+	if image == "" {
+		return ""
+	}
+	st, err := os.Stat(filepath.Join(s.Cfg.ImagesDir, "harnesses", image))
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			log.Printf("[harnesses] ERROR: reading the logo of %s: %v", h, err)
+		}
+		return ""
+	}
+	return fmt.Sprintf("/images/harnesses/%s?v=%d", image, st.ModTime().Unix())
+}
+
+func (s *Service) DiscoverHarnesses() []HarnessStatus {
+	var statuses []HarnessStatus
+	for _, h := range AllHarnesses {
+		path, available := harness.Available(h)
+		caps := HarnessCapabilities[h]
+		if caps == nil {
+			caps = []string{}
+		}
+		meta := HarnessMetadata[h]
+		imageURL := s.HarnessImageURL(h, meta.Image)
+		statuses = append(statuses, HarnessStatus{
+			Name:                     string(h),
+			Label:                    meta.Label,
+			Emoji:                    meta.Emoji,
+			Image:                    imageURL,
+			Tint:                     meta.Tint,
+			Available:                available,
+			Binary:                   path,
+			Capabilities:             caps,
+			HookEvents:               hookvocabulary.HarnessHookEvents[h],
+			SupportedProviders:       HarnessSupportedProviders[h],
+			SupportedPermissionModes: SupportedPermissionModesFor(h),
+			PTY:                      HarnessSupportsPTY[h],
+			SupportsDisableNetwork:   HarnessSupportsDisableNetwork[h],
+		})
+	}
+	return statuses
+}
+
+func (s *Service) sessionCounts() SessionCounts {
+	var counts SessionCounts
+
+	// Every ACTIVE state, not just `running`. Counting one string
+	// under-reported by whatever was mid-tool at the time, and now that the
+	// derivation emits model_generating and tool_running it would report
+	// almost nothing at all. ActiveSessionStates is the enum's own answer to
+	// "which of these means work is in flight", so this cannot drift from it.
+	for _, st := range msg.ActiveSessionStates() {
+		if sessions, err := s.Store.ListSessionsByState(string(st)); err == nil {
+			counts.Running += len(sessions)
+		}
+	}
+	if sessions, err := s.Store.ListSessionsByState(string(msg.SessionIdle)); err == nil {
+		counts.Idle = len(sessions)
+	}
+	if sessions, err := s.Store.ListSessionsByState(string(msg.SessionCompleted)); err == nil {
+		counts.Completed = len(sessions)
+	}
+
+	return counts
+}
+
+func anyAvailable(harnesses []HarnessStatus) bool {
+	for _, h := range harnesses {
+		if h.Available {
+			return true
+		}
+	}
+	return false
+}

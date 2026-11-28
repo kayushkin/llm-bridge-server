@@ -8,7 +8,7 @@ package server
 // grants a session is held to, and the verdict on a tool call are now calls
 // into these stores, not requests over HTTP.
 //
-// Who reaches each route is decided by routeAccessRules, as for every route.
+// Who reaches each route is decided by RouteAccessRules, as for every route.
 // What the stores used to read from headers a gateway set — X-Principal-Id,
 // X-Grant-Store-Service-Token, X-Sign-In-Store-Service-Token — they now read
 // from the request context, set here from the caller request authorization
@@ -21,6 +21,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access"
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
@@ -49,15 +53,6 @@ type principalDirectory interface {
 	Patch(ctx context.Context, id string, patch principals.Patch) (*principals.Principal, error)
 	AddMember(ctx context.Context, groupID, memberID string) (created bool, err error)
 	RemoveMember(ctx context.Context, groupID, memberID string) error
-}
-
-// grantReader is grant-store as this server reads and writes it:
-// *grants.Store in production, a fake in tests. Effective answers
-// grants.ErrNotFound for a principal principal-store does not have, never an
-// empty list, so a spawn can tell "nothing granted" from "no such principal".
-type grantReader interface {
-	Effective(ctx context.Context, directory grants.PrincipalDirectory, principalID, relation, resourceType string) ([]*grants.Grant, error)
-	Create(ctx context.Context, directory grants.PrincipalDirectory, checker grants.ResourceChecker, request grants.GrantRequest) (*grants.Grant, bool, error)
 }
 
 // permissionEvaluator is permission-store's verdict on one tool call;
@@ -143,7 +138,7 @@ func (s *Server) signInConfiguration() (signin.DirectoryConfig, signin.HandlersC
 func (s *Server) accessHandlersOrRefuse(w http.ResponseWriter) (*accessRouteHandlers, bool) {
 	handlers := s.access.Load()
 	if handlers == nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "access_off", errAccessOff.Error())
+		httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "access_off", errAccessOff.Error())
 		return nil, false
 	}
 	return handlers, true
@@ -172,13 +167,13 @@ func (s *Server) principalStoreRoute(route func(*principals.Handlers, http.Respo
 // again rather than infer it from a missing caller, so no other way of
 // arriving without a caller can be mistaken for it.
 func (s *Server) requestIsTheInternalServiceActingAsItself(r *http.Request) bool {
-	if _, identified := principalIdentityOfRequest(r); identified {
+	if _, identified := requestcaller.PrincipalIdentityOfRequest(r); identified {
 		return false
 	}
 	if principalIdentityHeaderNameIn(r.Header) != "" {
 		return false
 	}
-	presented := r.Header.Values(serviceTokenHeader)
+	presented := r.Header.Values(requestcaller.ServiceTokenHeader)
 	return len(presented) == 1 && s.cfg.ServiceToken != "" &&
 		subtle.ConstantTimeCompare([]byte(presented[0]), []byte(s.cfg.ServiceToken)) == 1
 }
@@ -194,7 +189,7 @@ func (s *Server) grantStoreRoute(route func(*grants.Handlers, http.ResponseWrite
 			return
 		}
 		ctx := r.Context()
-		if principalID, identified := principalIdentityOfRequest(r); identified {
+		if principalID, identified := requestcaller.PrincipalIdentityOfRequest(r); identified {
 			ctx = grants.ContextWithCaller(ctx, grants.Caller{PrincipalID: principalID})
 		} else if s.requestIsTheInternalServiceActingAsItself(r) {
 			ctx = grants.ContextWithCaller(ctx, grants.Caller{InternalService: true})
@@ -212,7 +207,7 @@ func (s *Server) signInStoreRoute(route func(*signin.Handlers, http.ResponseWrit
 			return
 		}
 		if handlers.signIn == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "sign_in_off", handlers.signInOffReason)
+			httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "sign_in_off", handlers.signInOffReason)
 			return
 		}
 		route(handlers.signIn, w, r)
@@ -226,7 +221,7 @@ func (s *Server) signInStoreRoute(route func(*signin.Handlers, http.ResponseWrit
 // records the administrator who made it.
 func (s *Server) signInStoreAdministratorRoute(route func(*signin.Handlers, http.ResponseWriter, *http.Request)) http.HandlerFunc {
 	return s.signInStoreRoute(func(handlers *signin.Handlers, w http.ResponseWriter, r *http.Request) {
-		if principalID, identified := principalIdentityOfRequest(r); identified {
+		if principalID, identified := requestcaller.PrincipalIdentityOfRequest(r); identified {
 			r = r.WithContext(signin.ContextWithAdministrator(r.Context(), principalID))
 		}
 		route(handlers, w, r)
@@ -319,8 +314,8 @@ func (s *Server) registerAccessRoutes() {
 // reach its handler: 503 when access is off, 500 otherwise.
 func writePrincipalStoreCallError(w http.ResponseWriter, err error) {
 	if errors.Is(err, errAccessOff) {
-		writeJSONError(w, http.StatusServiceUnavailable, "access_off", err.Error())
+		httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "access_off", err.Error())
 		return
 	}
-	writeJSONError(w, http.StatusInternalServerError, "principal_store_call_failed", err.Error())
+	httpjson.WriteJSONError(w, http.StatusInternalServerError, "principal_store_call_failed", err.Error())
 }

@@ -7,6 +7,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/permissiongate"
+
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/parkedasks"
+
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/prehookanswers"
+
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -32,7 +38,7 @@ func TestIsUnattendedSession(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := isUnattendedSession(tc.sess); got != tc.want {
+			if got := permissiongate.IsUnattendedSession(tc.sess); got != tc.want {
 				t.Errorf("isUnattendedSession(%+v) = %v, want %v", tc.sess, got, tc.want)
 			}
 		})
@@ -56,7 +62,7 @@ func TestWriteHookDecision(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			writeHookDecision(rec, tc.decision, tc.reason, nil)
+			prehookanswers.WriteHookDecision(rec, tc.decision, tc.reason, nil)
 
 			if got := rec.Header().Get("Content-Type"); got != "application/json" {
 				t.Errorf("Content-Type = %q, want application/json", got)
@@ -97,7 +103,7 @@ func TestWriteHookDecision(t *testing.T) {
 func TestWriteHookDecisionWithUpdatedInput(t *testing.T) {
 	rec := httptest.NewRecorder()
 	updated := json.RawMessage(`{"questions":[{"question":"Which color?"}],"answers":{"Which color?":"Red"}}`)
-	writeHookDecision(rec, "allow", "user picked Red", updated)
+	prehookanswers.WriteHookDecision(rec, "allow", "user picked Red", updated)
 
 	var got struct {
 		HookSpecificOutput struct {
@@ -133,18 +139,18 @@ func TestWriteHookDecisionWithUpdatedInput(t *testing.T) {
 // asks already parked on the banner, while leaving AskUserQuestion
 // (user_input) asks parked so their answer payload isn't stripped.
 func TestAutoAllowParkedPermissionAsks(t *testing.T) {
-	srv := &Server{parkedAsks: newParkedAsks()}
+	srv := (&Server{parkedAsks: parkedasks.New()}).withServicesComposed()
 	const bridgeID = "bridge-1"
 
-	permCh := srv.parkedAsks.park(bridgeID, "req-perm")
-	askCh := srv.parkedAsks.park(bridgeID, "req-ask")
+	permCh := srv.parkedAsks.Park(bridgeID, "req-perm")
+	askCh := srv.parkedAsks.Park(bridgeID, "req-ask")
 
 	pending := []msg.Event{
 		{Hook: &msg.HookEvent{Source: msg.HookSourcePermission, RequestID: "req-perm", Phase: "awaiting_resolution"}},
 		{Hook: &msg.HookEvent{Source: msg.HookSourceUserInput, RequestID: "req-ask", Phase: "awaiting_resolution"}},
 	}
 
-	n := srv.autoAllowParkedPermissionAsks(bridgeID, pending)
+	n := srv.sessions.PermissionGate.AutoAllowParkedPermissionAsks(bridgeID, pending)
 	if n != 1 {
 		t.Fatalf("resolved = %d, want 1 (permission ask only)", n)
 	}
@@ -190,7 +196,7 @@ func seedPrehookSession(t *testing.T, st *store.Store, id string, typ msg.Sessio
 }
 
 // postPrehook drives the real handler the way Claude Code does and returns the
-// permissionDecision and its reason.
+// PermissionDecision and its reason.
 func postPrehook(t *testing.T, srv *Server, bridgeID, body string) (decision, reason string) {
 	t.Helper()
 	return postPrehookToRoute(t, srv, "cc-prehook", bridgeID, body)
@@ -202,7 +208,7 @@ func postPrehookToRoute(t *testing.T, srv *Server, route, bridgeID, body string)
 	req := httptest.NewRequest("POST", "/permission/"+route+"/"+bridgeID, strings.NewReader(body))
 	req.SetPathValue("bridge_id", bridgeID)
 	rec := httptest.NewRecorder()
-	srv.handleCCPermissionPrehook(rec, req)
+	srv.sessions.PermissionGate.HandleCCPermissionPrehook(rec, req)
 
 	var got struct {
 		HookSpecificOutput struct {
@@ -390,7 +396,7 @@ func TestPrehookUnreachableStoreDeniesInteractiveCodexSession(t *testing.T) {
 func TestWriteHookDenyAlwaysGivesAReason(t *testing.T) {
 	for _, given := range []string{"", "  "} {
 		rec := httptest.NewRecorder()
-		writeHookDeny(rec, given)
+		prehookanswers.WriteDeny(rec, given)
 		var got struct {
 			HookSpecificOutput struct {
 				PermissionDecision       string `json:"permissionDecision"`
@@ -400,12 +406,12 @@ func TestWriteHookDenyAlwaysGivesAReason(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 			t.Fatal(err)
 		}
-		if got.HookSpecificOutput.PermissionDecision != "deny" || got.HookSpecificOutput.PermissionDecisionReason != permissionGateDeniedWithoutAReasonMessage {
-			t.Errorf("writeHookDeny(%q) = %+v, want deny with %q", given, got.HookSpecificOutput, permissionGateDeniedWithoutAReasonMessage)
+		if got.HookSpecificOutput.PermissionDecision != "deny" || got.HookSpecificOutput.PermissionDecisionReason != prehookanswers.DeniedWithoutAReasonMessage {
+			t.Errorf("writeHookDeny(%q) = %+v, want deny with %q", given, got.HookSpecificOutput, prehookanswers.DeniedWithoutAReasonMessage)
 		}
 	}
 	rec := httptest.NewRecorder()
-	writeHookDeny(rec, "rule deny:Bash:rm")
+	prehookanswers.WriteDeny(rec, "rule deny:Bash:rm")
 	if !strings.Contains(rec.Body.String(), "rule deny:Bash:rm") {
 		t.Errorf("a given reason was replaced: %s", rec.Body.String())
 	}

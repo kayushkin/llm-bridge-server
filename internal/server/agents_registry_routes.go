@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/agents"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models"
 	"github.com/kayushkin/llm-bridge-server/internal/machines/runnerprotocol"
@@ -28,7 +30,7 @@ func (s *Server) agentStoreHandlerHooks() agents.HandlerHooks {
 		OnScanCompleted: func(_ *agents.ScanResult) {
 			s.broadcastSeedSnapshot(runnerprotocol.SeedSourceAgentStore, "scan")
 		},
-		OnPromptDriftsDetected: s.onPromptDriftsDetected,
+		OnPromptDriftsDetected: s.sessions.OnPromptDriftsDetected,
 	}
 }
 
@@ -36,7 +38,7 @@ func (s *Server) agentStoreHandlerHooks() agents.HandlerHooks {
 func (s *Server) modelStoreRoute(route func(*models.Handlers, http.ResponseWriter, *http.Request)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if s.modelStore == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "model_store_off", "this server was built without a model registry")
+			httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "model_store_off", "this server was built without a model registry")
 			return
 		}
 		route(models.NewHandlers(s.modelStore), w, r)
@@ -54,7 +56,7 @@ func (s *Server) agentStoreRunnerSeedRoute(agentStoreRoutes http.Handler) http.H
 			return
 		}
 		if agentStoreRoutes == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "agent_store_off", "this server was built without agent-store")
+			httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "agent_store_off", "this server was built without agent-store")
 			return
 		}
 		inner := r.Clone(r.Context())

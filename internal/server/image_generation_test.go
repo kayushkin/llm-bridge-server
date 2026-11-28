@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/login"
+
 	"github.com/kayushkin/llm-bridge-server/internal/machines/machinestest"
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
@@ -74,18 +76,18 @@ func TestAnAgentMakesAnImageAndItIsSharedIntoItsOwnSession(t *testing.T) {
 	srv, imageDirectory, harnessRecordDirectory := testServerForImages(t, "", 0)
 	session := newSessionForSignals(t, srv.store, "br_images", msg.SessionTypeInteractive)
 	environment := map[string]string{}
-	for _, variable := range srv.sessionPostingEnvironment(session) {
+	for _, variable := range srv.login.SessionPostingEnvironment(session) {
 		name, value, _ := strings.Cut(variable, "=")
 		environment[name] = value
 	}
-	if environment[sessionImagesURLEnvironmentVariable] != "http://127.0.0.1:8160/sessions/br_images/images" {
+	if environment[login.SessionImagesURLEnvironmentVariable] != "http://127.0.0.1:8160/sessions/br_images/images" {
 		t.Fatalf("child environment = %v", environment)
 	}
 	events := srv.harness.Subscribe("br_images")
 
 	body := `{"prompt":"a red crab","reference_image_paths":["/work/renders/reference.png"]}`
 	request := httptest.NewRequest(http.MethodPost, "/sessions/br_images/images", strings.NewReader(body))
-	request.Header.Set("Authorization", "Bearer "+environment[sessionPostingTokenEnvironmentVariable])
+	request.Header.Set("Authorization", "Bearer "+environment[login.SessionPostingTokenEnvironmentVariable])
 	recorder := httptest.NewRecorder()
 	srv.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {

@@ -7,7 +7,7 @@ package server
 // and travels beside its name. server.name is a stored behavior setting: GET /server answers it to any
 // signed-in caller, every request and answer over a peer connection carries it
 // in msg.ServerNameHeader with the id in msg.ServerIDHeader, and a change is sent at once to every connected
-// server (peers.go, tellConnectedServersThisServersName). keep_awake.* drive
+// server (peers.go, TellConnectedServersThisServersName). keep_awake.* drive
 // internal/keepawake, which holds a sleep block while sessions run here.
 
 import (
@@ -17,7 +17,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
-	"unicode"
+
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
@@ -25,15 +26,11 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// longestServerName bounds server.name: it travels in a header and is drawn
-// as a folder heading.
-const longestServerName = 80
-
 // keepAwakeCheckInterval is how often keep-awake looks at the sessions.
 const keepAwakeCheckInterval = 30 * time.Second
 
-// thisServerName is server.name as it is now, trimmed. Empty means none.
-func (s *Server) thisServerName() string {
+// ThisServerName is server.name as it is now, trimmed. Empty means none.
+func (s *Server) ThisServerName() string {
 	return strings.TrimSpace(s.settings.String(config.SettingServerName))
 }
 
@@ -41,28 +38,10 @@ func (s *Server) thisServerName() string {
 // user may read: its name when it has one, and always its id, which is what
 // tells servers apart.
 func (s *Server) thisServerDescription() string {
-	if name := s.thisServerName(); name != "" {
+	if name := s.ThisServerName(); name != "" {
 		return fmt.Sprintf("server %q (%s)", name, s.store.ThisServerID())
 	}
 	return "server " + s.store.ThisServerID()
-}
-
-// checkServerNameValue refuses a name that cannot travel in a header or be
-// drawn on one line.
-func checkServerNameValue(value string) error {
-	trimmed := strings.TrimSpace(value)
-	if trimmed != value {
-		return errors.New("a server name has no spaces at either end")
-	}
-	if len([]rune(value)) > longestServerName {
-		return fmt.Errorf("a server name is at most %d characters", longestServerName)
-	}
-	for _, character := range value {
-		if unicode.IsControl(character) {
-			return errors.New("a server name has no control characters or line breaks")
-		}
-	}
-	return nil
 }
 
 // checkKeepAwakeGraceMinutesValue refuses a negative grace.
@@ -75,7 +54,7 @@ func checkKeepAwakeGraceMinutesValue(value string) error {
 
 // handleGetServer: GET /server.
 func (s *Server) handleGetServer(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, msg.ServerDescription{ID: s.store.ThisServerID(), Name: s.thisServerName(), KeepAwake: s.keepAwakeState()})
+	httpjson.WriteJSON(w, msg.ServerDescription{ID: s.store.ThisServerID(), Name: s.ThisServerName(), KeepAwake: s.keepAwakeState()})
 }
 
 func (s *Server) keepAwakeSettings() keepawake.Settings {

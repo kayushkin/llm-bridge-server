@@ -22,12 +22,12 @@ func TestAHeldMessageIsSentInItsSendersName(t *testing.T) {
 			return principals.Principal{ID: principalID, Kind: "human", DisplayName: "Priya Raman"}, nil
 		},
 	}
-	srv.startRestartDrain(time.Hour, "test deploy")
-	heldMessageID, held, err := srv.holdMessageIfRestartDraining(session.SessionID, msg.SendMessageRequest{Message: "from priya"}, "principal_000002", "send")
+	srv.sessions.StartRestartDrain(time.Hour, "test deploy")
+	heldMessageID, held, err := srv.sessions.HoldMessageIfRestartDraining(session.SessionID, msg.SendMessageRequest{Message: "from priya"}, "principal_000002", "send")
 	if err != nil || !held {
 		t.Fatalf("hold = %q %v %v", heldMessageID, held, err)
 	}
-	srv.endRestartDrain("test")
+	srv.sessions.EndRestartDrain("test")
 	waitForHeldMessagesToBeSent(t, st)
 	waitForEvent(t, st, session.SessionID, msg.SystemSubtypeHeldMessageDelivered)
 

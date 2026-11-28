@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/signals"
+
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -133,7 +135,7 @@ func TestRaiseNotificationDefaultsSeverityToInfo(t *testing.T) {
 }
 
 // A question raised here would be answerable by nothing: no request_id for the
-// hook resolve, source=tool so closeQuestionsAnsweredByMessage skips it, and the
+// hook resolve, source=tool so CloseQuestionsAnsweredByMessage skips it, and the
 // signal-level resolve verb refuses to acknowledge a question. Refuse it at
 // the door rather than mint a row with no way out.
 func TestRaiseNotificationRefusesAQuestion(t *testing.T) {
@@ -191,7 +193,7 @@ func TestRaiseNotificationBoundsTextAndRefusesRatherThanTruncates(t *testing.T) 
 	srv, st := testServer(t)
 	newSessionForSignals(t, st, "br_1", msg.SessionTypeInteractive)
 
-	longTitle, err := json.Marshal(map[string]string{"title": strings.Repeat("t", notifyMaxTitleRunes+1)})
+	longTitle, err := json.Marshal(map[string]string{"title": strings.Repeat("t", signals.NotifyMaxTitleRunes+1)})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -201,7 +203,7 @@ func TestRaiseNotificationBoundsTextAndRefusesRatherThanTruncates(t *testing.T) 
 	}
 	assertNoSignals(t, st, "br_1")
 
-	longBody, err := json.Marshal(map[string]string{"title": "ok", "body": strings.Repeat("b", notifyMaxBodyRunes+1)})
+	longBody, err := json.Marshal(map[string]string{"title": "ok", "body": strings.Repeat("b", signals.NotifyMaxBodyRunes+1)})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -214,7 +216,7 @@ func TestRaiseNotificationBoundsTextAndRefusesRatherThanTruncates(t *testing.T) 
 	// The bound counts characters, not bytes: a multi-byte title inside the
 	// limit is accepted. Counting bytes would refuse a legitimate headline
 	// at a third of the stated length.
-	multibyte, err := json.Marshal(map[string]string{"title": strings.Repeat("é", notifyMaxTitleRunes)})
+	multibyte, err := json.Marshal(map[string]string{"title": strings.Repeat("é", signals.NotifyMaxTitleRunes)})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -283,7 +285,7 @@ func TestOpenToolNotificationDoesNotSuppressTheClassifier(t *testing.T) {
 	if rec := raiseSignal(t, srv, "br_1", `{"title":"halfway through the migration"}`); rec.Code != http.StatusCreated {
 		t.Fatalf("raise: status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	if srv.hasOpenToolQuestion("br_1") {
+	if srv.signals.HasOpenToolQuestion("br_1") {
 		t.Fatal("an open tool NOTIFICATION counts as an open ask; it demands nothing and must not gate the classifier")
 	}
 
@@ -296,7 +298,7 @@ func TestOpenToolNotificationDoesNotSuppressTheClassifier(t *testing.T) {
 		Surface:   msg.SignalSurfaceKanban,
 		State:     msg.SignalStateOpen,
 	})
-	if !srv.hasOpenToolQuestion("br_1") {
+	if !srv.signals.HasOpenToolQuestion("br_1") {
 		t.Error("an open parked tool question must still suppress the classifier")
 	}
 }
@@ -313,7 +315,7 @@ func TestTurnEndDoesNotSupersedeAToolNotification(t *testing.T) {
 	}
 	raised := decodeSignal(t, rec)
 
-	srv.supersedeStaleQuestions("br_1")
+	srv.signals.SupersedeStaleQuestions("br_1")
 
 	stored, err := st.GetSignal(raised.ID)
 	if err != nil {

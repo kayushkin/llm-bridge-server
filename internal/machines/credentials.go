@@ -132,3 +132,18 @@ func (s *Store) CountCredentialBindings(instanceID string) (int, error) {
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM instance_credentials WHERE instance_id = $1`, instanceID).Scan(&count)
 	return count, err
 }
+
+// FirstEnabledCredentialID is the highest-priority enabled credential bound
+// to an instance, or empty when none is.
+func (s *Store) FirstEnabledCredentialID(instanceID string) string {
+	bindings, err := s.ListInstanceCredentials(instanceID)
+	if err != nil || len(bindings) == 0 {
+		return ""
+	}
+	for _, b := range bindings {
+		if b.Enabled {
+			return b.CredentialID
+		}
+	}
+	return ""
+}

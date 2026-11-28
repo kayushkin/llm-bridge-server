@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/server/routeaccess"
+
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessions"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
@@ -75,7 +77,7 @@ func TestEveryPossessionStoreRouteIsMountedAndDescribed(t *testing.T) {
 	enablePossessionsOnTestDatabase(t, gated)
 	registered := gated.server.possessions.Load().patterns
 	described := []string{}
-	for pattern := range possessionStoreRouteDescriptions() {
+	for pattern := range routeaccess.PossessionStoreRouteDescriptions() {
 		method, path, _ := strings.Cut(pattern, " ")
 		described = append(described, method+" "+strings.TrimPrefix(path, possessionsMountPrefix))
 	}

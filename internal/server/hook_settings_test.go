@@ -7,6 +7,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/harnesscatalog"
+
+	"github.com/kayushkin/llm-bridge-server/internal/sessions"
+
+	"github.com/kayushkin/llm-bridge-server/internal/httproutes"
+
 	"github.com/kayushkin/llm-bridge-server/internal/agents/hooks"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -58,7 +64,7 @@ func TestBuildCCSettings_PermissionHookPresentWithNoHookEntries(t *testing.T) {
 	// This test was named "...AlwaysPresent" for months and read as though it
 	// covered both; it never called the caller.
 	srv, _ := testServerWithHookStore(t)
-	got, err := srv.buildClaudeCodeSettings(&store.Session{SessionID: "b1", Harness: msg.HarnessClaudeCode})
+	got, err := srv.sessions.BuildClaudeCodeSettings(&store.Session{SessionID: "b1", Harness: msg.HarnessClaudeCode})
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -101,7 +107,7 @@ func TestBuildCCSettings_EmptyWhenNoBridgeID(t *testing.T) {
 	// "empty when no user hooks" behavior so tests / utilities calling
 	// this helper without a real session don't crash.
 	srv, _ := testServerWithHookStore(t)
-	got, err := srv.buildClaudeCodeSettings(&store.Session{Harness: msg.HarnessClaudeCode})
+	got, err := srv.sessions.BuildClaudeCodeSettings(&store.Session{Harness: msg.HarnessClaudeCode})
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -118,7 +124,7 @@ func TestBuildCCSettings_GlobalAndInstanceMerged(t *testing.T) {
 	seedHook(t, hks, "i2", "PreToolUse", "Bash", msg.HookScopeInstance, "inst_y")
 
 	sess := &store.Session{SessionID: "b1", InstanceID: "inst_x", Harness: msg.HarnessClaudeCode}
-	raw, err := srv.buildClaudeCodeSettings(sess)
+	raw, err := srv.sessions.BuildClaudeCodeSettings(sess)
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -152,7 +158,7 @@ func TestBuildCCSettings_CommandPointsAtExecEndpoint(t *testing.T) {
 	srv, hks := testServerWithHookStore(t)
 	seedHook(t, hks, "abc123", "PreToolUse", "Edit|Write", msg.HookScopeGlobal, "")
 
-	raw, err := srv.buildClaudeCodeSettings(&store.Session{SessionID: "b1", Harness: msg.HarnessClaudeCode})
+	raw, err := srv.sessions.BuildClaudeCodeSettings(&store.Session{SessionID: "b1", Harness: msg.HarnessClaudeCode})
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -173,7 +179,7 @@ func TestInjectHookSettings_RespectsUserOverride(t *testing.T) {
 		Harness:       msg.HarnessClaudeCode,
 		HarnessConfig: []byte(`{"settings":"/path/to/user.json"}`),
 	}
-	if err := srv.injectHookSettings(sess); err != nil {
+	if err := srv.sessions.InjectHookSettings(sess); err != nil {
 		t.Fatal(err)
 	}
 
@@ -191,7 +197,7 @@ func TestInjectHookSettings_WritesSettingsStringForStartParams(t *testing.T) {
 	seedHook(t, hks, "g1", "PreToolUse", "Edit|Write", msg.HookScopeGlobal, "")
 
 	sess := &store.Session{SessionID: "b1", Harness: msg.HarnessClaudeCode}
-	if err := srv.injectHookSettings(sess); err != nil {
+	if err := srv.sessions.InjectHookSettings(sess); err != nil {
 		t.Fatal(err)
 	}
 
@@ -237,7 +243,7 @@ func TestInjectHookSettings_NilHookStoreKeepsTheClaudeCodePermissionGate(t *test
 	srv := testServerWithoutHookStore(t)
 
 	sess := &store.Session{SessionID: "b1", Harness: msg.HarnessClaudeCode}
-	if err := srv.injectHookSettings(sess); err != nil {
+	if err := srv.sessions.InjectHookSettings(sess); err != nil {
 		t.Fatal(err)
 	}
 
@@ -260,7 +266,7 @@ func TestInjectHookSettings_NilHookStoreKeepsTheCodexPermissionGate(t *testing.T
 	srv := testServerWithoutHookStore(t)
 
 	sess := &store.Session{SessionID: "b2", Harness: msg.HarnessCodex}
-	if err := srv.injectHookSettings(sess); err != nil {
+	if err := srv.sessions.InjectHookSettings(sess); err != nil {
 		t.Fatal(err)
 	}
 
@@ -276,11 +282,11 @@ func TestInjectHookSettings_NilHookStoreKeepsTheCodexPermissionGate(t *testing.T
 	if err != nil {
 		t.Fatalf("re-marshal codex_hooks: %v", err)
 	}
-	gateCommand, _ := json.Marshal(permissionGateCommandPostingToTheURLInTheEnvironment())
+	gateCommand, _ := json.Marshal(sessions.PermissionGateCommandPostingToTheURLInTheEnvironment())
 	if !strings.Contains(string(encoded), string(gateCommand[1:len(gateCommand)-1])) {
 		t.Errorf("permission gate missing from codex_hooks with a nil hook-store: %s", encoded)
 	}
-	if environment := srv.permissionGateEnvironment(sess); len(environment) != 1 || !strings.HasSuffix(environment[0], "/permission/codex-prehook/b2") {
+	if environment := srv.sessions.PermissionGateEnvironment(sess); len(environment) != 1 || !strings.HasSuffix(environment[0], "/permission/codex-prehook/b2") {
 		t.Errorf("gate address for the spawn = %q, want one variable ending /permission/codex-prehook/b2", environment)
 	}
 }
@@ -294,7 +300,7 @@ func TestInjectHookSettings_NilHookStoreStillWritesNothingWithoutASessionID(t *t
 	srv := testServerWithoutHookStore(t)
 
 	sess := &store.Session{SessionID: "", Harness: msg.HarnessClaudeCode}
-	if err := srv.injectHookSettings(sess); err != nil {
+	if err := srv.sessions.InjectHookSettings(sess); err != nil {
 		t.Fatal(err)
 	}
 
@@ -313,7 +319,7 @@ func TestInjectHookSettings_NilHookStoreStillRespectsAUserOverride(t *testing.T)
 		Harness:       msg.HarnessClaudeCode,
 		HarnessConfig: []byte(`{"settings":"/path/to/user.json"}`),
 	}
-	if err := srv.injectHookSettings(sess); err != nil {
+	if err := srv.sessions.InjectHookSettings(sess); err != nil {
 		t.Fatal(err)
 	}
 
@@ -334,7 +340,7 @@ func TestPublicBaseURL(t *testing.T) {
 		"https://bridge.local/": "https://bridge.local",
 	}
 	for in, want := range cases {
-		if got := publicBaseURL(in); got != want {
+		if got := httproutes.PublicBaseURL(in); got != want {
 			t.Errorf("publicBaseURL(%q) = %q, want %q", in, got, want)
 		}
 	}
@@ -364,12 +370,12 @@ func TestInjectHookSettings_OnlyGatedHarnessesGetAPermissionGate(t *testing.T) {
 		t.Run(string(harness), func(t *testing.T) {
 			srv := testServerWithoutHookStore(t)
 			sess := &store.Session{SessionID: "s1", Harness: harness}
-			srv.injectHookSettings(sess)
+			srv.sessions.InjectHookSettings(sess)
 
 			wantURL, wantGate := gatedHarnesses[harness]
 			// codex and devin find their gate's address in the spawn's
-			// environment, not in the hook command (permissionGateEnvironment).
-			config := string(sess.HarnessConfig) + strings.Join(srv.permissionGateEnvironment(sess), " ")
+			// environment, not in the hook command (PermissionGateEnvironment).
+			config := string(sess.HarnessConfig) + strings.Join(srv.sessions.PermissionGateEnvironment(sess), " ")
 
 			if !wantGate {
 				if len(sess.HarnessConfig) != 0 {
@@ -385,7 +391,7 @@ func TestInjectHookSettings_OnlyGatedHarnessesGetAPermissionGate(t *testing.T) {
 }
 
 // TestSupportedPermissionModesForOutrunsTheGate is a characterisation, not an
-// endorsement. supportedPermissionModesFor hands an ungated harness the full
+// endorsement. SupportedPermissionModesFor hands an ungated harness the full
 // restrictive set, so bridge-ui offers a user "Block All" on a session where
 // nothing enforces it.
 //
@@ -395,8 +401,8 @@ func TestInjectHookSettings_OnlyGatedHarnessesGetAPermissionGate(t *testing.T) {
 // behavior exactly as it stands and will redden when either is taken. That is
 // the point: whoever takes the decision must come here and say which it was.
 func TestSupportedPermissionModesForOutrunsTheGate(t *testing.T) {
-	// aider has no entry in harnessSupportedPermissionModes and no gate arm.
-	modes := supportedPermissionModesFor(msg.HarnessAider)
+	// aider has no entry in HarnessSupportedPermissionModes and no gate arm.
+	modes := harnesscatalog.SupportedPermissionModesFor(msg.HarnessAider)
 
 	if !slices.Contains(modes, msg.PermissionModeBlockAll) {
 		t.Fatalf("characterisation drifted: aider no longer offered block_all (got %v) — card 49a697df's decision may have been taken; update this test and the comments it guards", modes)
@@ -404,7 +410,7 @@ func TestSupportedPermissionModesForOutrunsTheGate(t *testing.T) {
 
 	srv := testServerWithoutHookStore(t)
 	sess := &store.Session{SessionID: "s1", Harness: msg.HarnessAider}
-	srv.injectHookSettings(sess)
+	srv.sessions.InjectHookSettings(sess)
 	if len(sess.HarnessConfig) != 0 {
 		t.Fatalf("characterisation drifted: aider now receives a gate (%q) — card 49a697df's decision may have been taken", sess.HarnessConfig)
 	}
@@ -419,7 +425,7 @@ func TestSupportedPermissionModesForOutrunsTheGate(t *testing.T) {
 func TestInjectDevinHookSettingsPutsTheGateInDevinsHookTree(t *testing.T) {
 	srv := testServerWithoutHookStore(t)
 	sess := &store.Session{SessionID: "s1", Harness: msg.HarnessDevin, HarnessConfig: json.RawMessage(`{"model":"swe-2-flash-medium"}`)}
-	if err := srv.injectHookSettings(sess); err != nil {
+	if err := srv.sessions.InjectHookSettings(sess); err != nil {
 		t.Fatal(err)
 	}
 	var cfg struct {
@@ -442,7 +448,7 @@ func TestInjectDevinHookSettingsPutsTheGateInDevinsHookTree(t *testing.T) {
 	}
 	pre := cfg.DevinHooks["PreToolUse"]
 	if len(pre) == 0 || pre[0].Matcher != ".*" || len(pre[0].Hooks) != 1 || pre[0].Hooks[0].Type != "command" ||
-		pre[0].Hooks[0].Command != permissionGateCommandPostingToTheURLInTheEnvironment() || pre[0].Hooks[0].Timeout != 86400 {
+		pre[0].Hooks[0].Command != sessions.PermissionGateCommandPostingToTheURLInTheEnvironment() || pre[0].Hooks[0].Timeout != 86400 {
 		t.Fatalf("PreToolUse gate entry = %+v", pre)
 	}
 	if !strings.HasSuffix(cfg.DevinPermissionURL, "/permission/devin-prehook/s1") {
@@ -450,7 +456,7 @@ func TestInjectDevinHookSettingsPutsTheGateInDevinsHookTree(t *testing.T) {
 	}
 
 	override := &store.Session{SessionID: "s2", Harness: msg.HarnessDevin, HarnessConfig: json.RawMessage(`{"devin_hooks":{"PreToolUse":[]}}`)}
-	if err := srv.injectHookSettings(override); err != nil {
+	if err := srv.sessions.InjectHookSettings(override); err != nil {
 		t.Fatal(err)
 	}
 	if string(override.HarnessConfig) != `{"devin_hooks":{"PreToolUse":[]}}` {

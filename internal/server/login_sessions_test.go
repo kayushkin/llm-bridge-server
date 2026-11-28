@@ -8,17 +8,23 @@ import (
 	"strings"
 	"testing"
 
+	loginservice "github.com/kayushkin/llm-bridge-server/internal/access/login"
+
+	"github.com/kayushkin/llm-bridge-server/internal/access/accesstokens"
+
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-func loginSessionsOfList(t *testing.T, recorder *httptest.ResponseRecorder) []loginSessionView {
+func loginSessionsOfList(t *testing.T, recorder *httptest.ResponseRecorder) []loginservice.LoginSessionView {
 	t.Helper()
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("list = %d %s, want 200", recorder.Code, recorder.Body.String())
 	}
-	var views []loginSessionView
+	var views []loginservice.LoginSessionView
 	if err := json.Unmarshal(recorder.Body.Bytes(), &views); err != nil {
 		t.Fatalf("decode %s: %v", recorder.Body.String(), err)
 	}
@@ -27,7 +33,7 @@ func loginSessionsOfList(t *testing.T, recorder *httptest.ResponseRecorder) []lo
 
 func loginSessionIDOfCookie(t *testing.T, gated *gatedTestServer, cookie *http.Cookie) string {
 	t.Helper()
-	session, err := gated.store.GetLoginSessionByTokenHash(sha256Hex(cookie.Value))
+	session, err := gated.store.GetLoginSessionByTokenHash(accesstokens.SHA256Hex(cookie.Value))
 	if err != nil {
 		t.Fatalf("no login session for the cookie: %v", err)
 	}
@@ -41,7 +47,7 @@ func TestTheDatabaseKeepsOnlyAHashOfTheLoginToken(t *testing.T) {
 	if len(cookie.Value) < 43 {
 		t.Fatalf("cookie token %q is shorter than 32 random bytes encoded", cookie.Value)
 	}
-	session, err := gated.store.GetLoginSessionByTokenHash(sha256Hex(cookie.Value))
+	session, err := gated.store.GetLoginSessionByTokenHash(accesstokens.SHA256Hex(cookie.Value))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +57,7 @@ func TestTheDatabaseKeepsOnlyAHashOfTheLoginToken(t *testing.T) {
 	if session.Method != store.LoginSessionMethodDemo || session.PrincipalID != firstTestPrincipalID || session.IdentityBindingID != "" {
 		t.Fatalf("stored %+v", session)
 	}
-	var body loggedInPrincipalResponse
+	var body loginservice.LoggedInPrincipalResponse
 	if err := json.Unmarshal(login.Body.Bytes(), &body); err != nil || body.CSRFToken == "" || body.CSRFToken != session.CSRFToken || body.LoginSessionID != session.ID {
 		t.Fatalf("login body %s, want the session's id and CSRF token", login.Body.String())
 	}
@@ -183,7 +189,7 @@ func TestAnAdministratorListsAndRevokesAnyonesLoginSessions(t *testing.T) {
 		t.Fatalf("service token listing = %d %s", response.Code, response.Body.String())
 	}
 	request := httptest.NewRequest("POST", "/auth/sessions/"+listed[0].ID+"/revoke", strings.NewReader(`{"reason":"x"}`))
-	request.Header.Set(serviceTokenHeader, testServiceToken)
+	request.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
 	if response := serve(gated.server, request); response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "revoke_requires_a_principal") {
 		t.Fatalf("service token revoking as nobody = %d %s", response.Code, response.Body.String())
 	}
@@ -216,7 +222,7 @@ func TestACookieAuthenticatedUnsafeRequestNeedsItsCSRFToken(t *testing.T) {
 		request.Header.Set("Content-Type", "application/json")
 		request.AddCookie(cookie)
 		for _, value := range check.headerValues {
-			request.Header.Add(csrfTokenHeader, value)
+			request.Header.Add(loginservice.CsrfTokenHeader, value)
 		}
 		response := serve(gated.server, request)
 		if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), check.code) {
@@ -245,15 +251,15 @@ func TestACookieAuthenticatedUnsafeRequestNeedsItsCSRFToken(t *testing.T) {
 	// stale login cookie rides along.
 	asService := httptest.NewRequest("POST", "/sessions", createBody())
 	asService.Header.Set("Content-Type", "application/json")
-	asService.Header.Set(serviceTokenHeader, testServiceToken)
+	asService.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
 	asService.AddCookie(cookie)
 	if response := serve(gated.server, asService); response.Code != http.StatusCreated {
 		t.Fatalf("POST /sessions with the service token = %d %s, want 201", response.Code, response.Body.String())
 	}
 	asServiceForPrincipal := httptest.NewRequest("POST", "/sessions", createBody())
 	asServiceForPrincipal.Header.Set("Content-Type", "application/json")
-	asServiceForPrincipal.Header.Set(serviceTokenHeader, testServiceToken)
-	asServiceForPrincipal.Header.Set(principalIdentityHeader, firstTestPrincipalID)
+	asServiceForPrincipal.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
+	asServiceForPrincipal.Header.Set(requestcaller.PrincipalIdentityHeader, firstTestPrincipalID)
 	if response := serve(gated.server, asServiceForPrincipal); response.Code != http.StatusCreated {
 		t.Fatalf("POST /sessions with the service token for a principal = %d %s, want 201", response.Code, response.Body.String())
 	}
@@ -263,13 +269,13 @@ func TestGetAuthPrincipalGivesAReloadedPageItsCSRFToken(t *testing.T) {
 	gated := newGatedTestServer(t, nil)
 	login := demoLogin(t, gated.server, firstTestPrincipalID)
 	cookie := loginCookieFrom(t, login)
-	var fromLogin loggedInPrincipalResponse
+	var fromLogin loginservice.LoggedInPrincipalResponse
 	_ = json.Unmarshal(login.Body.Bytes(), &fromLogin)
 
 	who := httptest.NewRequest("GET", "/auth/principal", nil)
 	who.AddCookie(cookie)
 	answer := serve(gated.server, who)
-	var fromPrincipal loggedInPrincipalResponse
+	var fromPrincipal loginservice.LoggedInPrincipalResponse
 	if answer.Code != http.StatusOK || json.Unmarshal(answer.Body.Bytes(), &fromPrincipal) != nil {
 		t.Fatalf("GET /auth/principal = %d %s", answer.Code, answer.Body.String())
 	}

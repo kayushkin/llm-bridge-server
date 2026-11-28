@@ -8,6 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/signals"
+
+	"github.com/kayushkin/llm-bridge-server/internal/agents/models/oneshot"
+
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
@@ -144,12 +148,12 @@ func TestTheSignalClassifierAsksItsRoleThroughTheRouter(t *testing.T) {
 		asked = request
 		return msg.OneShotResponse{Parsed: json.RawMessage(`{"kind":"neither","title":"","body":"","options":[],"severity":""}`)}, nil
 	})
-	classifier := newSignalClassifier("efficient", 0, 100, nil, srv.routedOneShotJSON)
-	verdict, err := classifier.classify(t.Context(), "Done.")
-	if err != nil || verdict.Kind != turnSignalNeither {
+	classifier := signals.NewSignalClassifier("efficient", 0, 100, nil, srv.oneShot.RoutedOneShotJSON)
+	verdict, err := classifier.Classify(t.Context(), "Done.")
+	if err != nil || verdict.Kind != signals.TurnSignalNeither {
 		t.Fatalf("classify: %+v %v", verdict, err)
 	}
-	if asked.Model != "mock-model-alt" || asked.Caller != oneShotCallerSignalClassifier {
+	if asked.Model != "mock-model-alt" || asked.Caller != oneshot.OneShotCallerSignalClassifier {
 		t.Errorf("the harness was asked %+v", asked)
 	}
 }

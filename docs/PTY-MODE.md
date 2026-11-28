@@ -174,7 +174,7 @@ Children are scoped so each can be finished by an unattended session. Order is r
 
 - `[OPEN]` Wire format — option C (text=JSON, binary=pty bytes) is the recommendation but not yet ratified. Can be revisited in child #2.
 - `[OPEN]` Should pty mode be allowed on remote/SSH harnesses? In principle yes (allocate pty on the remote side), but it adds a forwarding hop. Defer; treat as `false` from `SupportsPTY()` on remote-spawned sessions in v1.
-- ~~`[OPEN]` Auth — current sessions have no per-session token.~~ Resolved 2026-05-10: per-session attach token (128-bit hex, in-memory on the AttachHub, returned in the `POST /sessions` response, passed as `?token=` on the WS upgrade). Chosen over a shared admin secret because the token dies with the pty — leaking one session's token can't be replayed against a different session, and there's no env-var rotation step. See `internal/harness/attachhub.go` `mintAttachToken` and `internal/server/attach.go` token check.
+- ~~`[OPEN]` Auth — current sessions have no per-session token.~~ Resolved 2026-05-10: per-session attach token (128-bit hex, in-memory on the AttachHub, returned in the `POST /sessions` response, passed as `?token=` on the WS upgrade). Chosen over a shared admin secret because the token dies with the pty — leaking one session's token can't be replayed against a different session, and there's no env-var rotation step. See `internal/harness/attachhub.go` `mintAttachToken` and `internal/sessions/attach.go` token check.
 - ~~`[OPEN]` Buffer size for late-attach replay — 64KB is a guess. Make it configurable; tune later.~~ Resolved in child 3: `LLMBRIDGE_PTY_RING_BUFFER_BYTES` env var, defaults to 65536.
 
 ## Out of scope, but worth noting

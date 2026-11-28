@@ -3,6 +3,10 @@ package server
 import (
 	"net/http"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions"
+
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
 	"github.com/kayushkin/llm-bridge-server/internal/agents/tools"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 )
@@ -10,7 +14,7 @@ import (
 // The registry of tools a harness can be given, moved in from the standalone
 // tool-store: the same routes under /tools/, answered from the Postgres
 // module, and the questions session creation and spawn ask it, answered in
-// process through toolRegistry.
+// process through ToolRegistry.
 
 // EnableTools serves the store's routes from store and answers the tool
 // offer, the harness tool denials and the harness tool reports from it.
@@ -20,7 +24,7 @@ import (
 // takes requests; until then, and on a server with no Postgres URL, the routes
 // answer 503 and sessions get no tools from the registry.
 func (s *Server) EnableTools(store *tools.Store, resolveCredential tools.ResolveCredentialFunc) {
-	s.toolRegistry = inProcessToolRegistry{store: store, resolveCredential: resolveCredential}
+	s.toolRegistry = sessions.InProcessToolRegistry{Store: store, ResolveCredential: resolveCredential}
 	s.toolStoreForResourceChecks.Store(store)
 	s.toolStoreHandlers.Store(tools.NewHandlers(store, tools.HandlerOptions{
 		ResolveCredential: resolveCredential,
@@ -32,7 +36,7 @@ func (s *Server) EnableTools(store *tools.Store, resolveCredential tools.Resolve
 // ToolStoreCredentialResolver is the resolver EnableTools is given on this
 // server: auth-store, through the server's own auth-store client.
 func (s *Server) ToolStoreCredentialResolver() tools.ResolveCredentialFunc {
-	return credentialResolverFromAuthStore(s.authClient)
+	return sessions.CredentialResolverFromAuthStore(s.authClient)
 }
 
 // toolStoreRoute answers one route with the store's handler for it.
@@ -40,7 +44,7 @@ func (s *Server) toolStoreRoute(route func(*tools.Handlers, http.ResponseWriter,
 	return func(w http.ResponseWriter, r *http.Request) {
 		handlers := s.toolStoreHandlers.Load()
 		if handlers == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "tool_store_off",
+			httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "tool_store_off",
 				config.PostgresURLEnvironmentVariable+" is not set, so this server keeps no tool registry")
 			return
 		}

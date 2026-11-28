@@ -6,6 +6,10 @@ import (
 	"net/url"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions"
+
+	"github.com/kayushkin/llm-bridge-server/internal/httproutes"
+
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -107,7 +111,7 @@ func TestTheEndpointLiteralIsNotMovedByTheId(t *testing.T) {
 // above and quietly hands the manager an id no session has — and the manager is
 // a concrete type here, so nothing in this package can observe that.
 //
-// logStoreSessionURL exists so the decision is somewhere a test can call it. It
+// LogStoreSessionURL exists so the decision is somewhere a test can call it. It
 // takes the decoded id and escapes it itself, which is what makes "the caller
 // keeps the real id" a property of the signature rather than of a comment.
 func TestLogStoreSessionURLEscapesTheIdItIsGiven(t *testing.T) {
@@ -122,7 +126,7 @@ func TestLogStoreSessionURLEscapesTheIdItIsGiven(t *testing.T) {
 		{"an ordinary id", "br-archived", "http://ls/api/v1/sessions/br-archived/messages"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := logStoreSessionURL("http://ls", tc.sessionID, "messages")
+			got := sessions.LogStoreSessionURL("http://ls", tc.sessionID, "messages")
 			if got != tc.want {
 				t.Errorf("logStoreSessionURL(%q) = %q, want %q", tc.sessionID, got, tc.want)
 			}
@@ -134,11 +138,11 @@ func TestLogStoreSessionURLEscapesTheIdItIsGiven(t *testing.T) {
 // and it escapes the escape. This is what a read-site escape would produce, and
 // it addresses a session whose id contains a literal "%2F".
 func TestLogStoreSessionURLIsGivenTheDecodedId(t *testing.T) {
-	doubled := logStoreSessionURL("http://ls", url.PathEscape("a/b"), "messages")
+	doubled := sessions.LogStoreSessionURL("http://ls", url.PathEscape("a/b"), "messages")
 	if want := "http://ls/api/v1/sessions/a%252Fb/messages"; doubled != want {
 		t.Fatalf("pre-escaped id produced %q, want %q", doubled, want)
 	}
-	if once := logStoreSessionURL("http://ls", "a/b", "messages"); once == doubled {
+	if once := sessions.LogStoreSessionURL("http://ls", "a/b", "messages"); once == doubled {
 		t.Error("escaping twice is indistinguishable from escaping once; " +
 			"a read-site escape would no longer be detectable")
 	}
@@ -148,7 +152,7 @@ func TestLogStoreSessionURLIsGivenTheDecodedId(t *testing.T) {
 // surfaces as an upstream 404 rather than a quiet hit on a different resource.
 func TestAPrefixMissForwardsThePathWhole(t *testing.T) {
 	u, _ := url.Parse("/api/agent-store/agents/x")
-	if got, want := escapedPathAfterPrefix(u, "/api/skill-store"), "/api/agent-store/agents/x"; got != want {
+	if got, want := httproutes.EscapedPathAfterPrefix(u, "/api/skill-store"), "/api/agent-store/agents/x"; got != want {
 		t.Errorf("escapedPathAfterPrefix = %q, want %q", got, want)
 	}
 }
@@ -158,7 +162,7 @@ func TestAPrefixMissForwardsThePathWhole(t *testing.T) {
 // A naive TrimPrefix on the escaped path reads this as a miss.
 func TestAnEscapeInsideTheMountPrefixIsStillAMatch(t *testing.T) {
 	u, _ := url.Parse("/api/skill%2Dstore/skills/a%2Fb")
-	if got, want := escapedPathAfterPrefix(u, "/api/skill-store"), "/skills/a%2Fb"; got != want {
+	if got, want := httproutes.EscapedPathAfterPrefix(u, "/api/skill-store"), "/skills/a%2Fb"; got != want {
 		t.Errorf("escapedPathAfterPrefix = %q, want %q — the escaped prefix was read as a miss", got, want)
 	}
 }
@@ -166,7 +170,7 @@ func TestAnEscapeInsideTheMountPrefixIsStillAMatch(t *testing.T) {
 // A request to the bare mount has no remainder, and the empty string says so.
 func TestTheBareMountHasNoRemainder(t *testing.T) {
 	u, _ := url.Parse("/api/skill-store")
-	if got := escapedPathAfterPrefix(u, "/api/skill-store"); got != "" {
+	if got := httproutes.EscapedPathAfterPrefix(u, "/api/skill-store"); got != "" {
 		t.Errorf("escapedPathAfterPrefix = %q, want \"\"", got)
 	}
 }

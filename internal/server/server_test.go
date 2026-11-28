@@ -5,6 +5,8 @@ import (
 	"net/http/httputil"
 	"net/url"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/machines/machinestest"
 
 	"encoding/json"
@@ -136,7 +138,7 @@ func doJSON(t *testing.T, srv http.Handler, method, path string, body any) *http
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	req.Header.Set(serviceTokenHeader, testServiceToken)
+	req.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
 	return w.Result()
@@ -169,7 +171,7 @@ func testAuthorizationConfig(cfg *config.Config) {
 // their requests by hand instead.
 func asInternalService(srv *Server) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.Header.Set(serviceTokenHeader, testServiceToken)
+		r.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
 		srv.ServeHTTP(w, r)
 	})
 }
@@ -405,7 +407,7 @@ func TestCreateSession_PtyMode_ClaudeCode(t *testing.T) {
 // mode on a harness without pty support comes back as 400 with the
 // pty_unsupported error code, not as a generic invalid-mode error.
 // Hermes is HTTP-only so it stays in the false column of
-// harnessSupportsPTY indefinitely.
+// HarnessSupportsPTY indefinitely.
 func TestCreateSession_PtyMode_Unsupported(t *testing.T) {
 	srv, _, instID := testServerWithInstance(t, "hermes")
 
@@ -888,7 +890,7 @@ func TestModels_NotRegistered(t *testing.T) {
 //
 // It was called TestCreateSession_AutoStart_HarnessUnavailable and carried the
 // comments "use a harness type whose binary is not in PATH" and "should fail
-// because binary not found". Both were false, and measurably so: handleCreateSession
+// because binary not found". Both were false, and measurably so: HandleCreateSession
 // checks `s.harnessStore == nil` before it resolves an instance and long before
 // it looks at AutoStart, so the 503 here is "harness-store not configured".
 // Setting AutoStart to false and naming an installed harness left the test
@@ -998,7 +1000,7 @@ func TestDiscoverySourceFolder(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			source, folder := srv.discoverySourceFolder(tc.prompt)
+			source, folder := srv.sessions.DiscoverySourceFolder(tc.prompt)
 			if source != tc.wantSource {
 				t.Errorf("source = %q, want %q", source, tc.wantSource)
 			}

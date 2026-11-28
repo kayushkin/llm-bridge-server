@@ -15,6 +15,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/login"
+
+	"github.com/kayushkin/llm-bridge-server/internal/sessionactions"
+
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelrouting"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/executors"
 	schedulerapi "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/api"
@@ -106,12 +110,12 @@ func repoWithDeployScript(t *testing.T, script string) string {
 
 func postingTokenOf(t *testing.T, srv *Server, session *store.Session) string {
 	t.Helper()
-	for _, variable := range srv.sessionPostingEnvironment(session) {
-		if name, value, _ := strings.Cut(variable, "="); name == sessionPostingTokenEnvironmentVariable {
+	for _, variable := range srv.login.SessionPostingEnvironment(session) {
+		if name, value, _ := strings.Cut(variable, "="); name == login.SessionPostingTokenEnvironmentVariable {
 			return value
 		}
 	}
-	t.Fatalf("no %s in the child environment", sessionPostingTokenEnvironmentVariable)
+	t.Fatalf("no %s in the child environment", login.SessionPostingTokenEnvironmentVariable)
 	return ""
 }
 
@@ -343,7 +347,7 @@ func TestActionsLeftRunningByAStoppedServerAreSettledAsOutcomeUnknown(t *testing
 	if _, err := st.StartSessionAction("br_buttons", action.ActionID, "principal_000001", time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	srv.settleSessionActionsLeftRunning()
+	srv.sessionActions.SettleSessionActionsLeftRunning()
 	settled, err := st.GetSessionAction("br_buttons", action.ActionID)
 	if err != nil {
 		t.Fatal(err)
@@ -357,14 +361,14 @@ func TestTheChildEnvironmentCarriesTheActionsAddressWithoutFileStore(t *testing.
 	srv, st, _ := testServerForSessionActions(t)
 	session := newSessionForSignals(t, st, "br_buttons", msg.SessionTypeInteractive)
 	environment := map[string]string{}
-	for _, variable := range srv.sessionPostingEnvironment(session) {
+	for _, variable := range srv.login.SessionPostingEnvironment(session) {
 		name, value, _ := strings.Cut(variable, "=")
 		environment[name] = value
 	}
-	if environment[sessionActionsURLEnvironmentVariable] != "http://127.0.0.1:8160/sessions/br_buttons/actions" || environment[sessionPostingTokenEnvironmentVariable] == "" {
+	if environment[login.SessionActionsURLEnvironmentVariable] != "http://127.0.0.1:8160/sessions/br_buttons/actions" || environment[login.SessionPostingTokenEnvironmentVariable] == "" {
 		t.Errorf("environment = %v", environment)
 	}
-	if _, has := environment[sessionFilesURLEnvironmentVariable]; has {
+	if _, has := environment[login.SessionFilesURLEnvironmentVariable]; has {
 		t.Errorf("a files address with no file-store: %v", environment)
 	}
 }
@@ -604,18 +608,18 @@ func TestABackgroundAgentsFinalReplyIsItsResult(t *testing.T) {
 	events := make(chan harness.StoredEvent, 8)
 	events <- harness.StoredEvent{Event: msg.Event{Type: msg.EventStream}}
 	events <- harness.StoredEvent{Event: msg.Event{Type: msg.EventResult, Result: &msg.ResultEvent{Text: "Found 3 events"}}}
-	outcome := srv.waitForFinalReply("br_background", events)
-	if outcome.err != nil || outcome.output != "Found 3 events" || outcome.resultSessionID != "br_background" {
+	outcome := srv.sessionActions.WaitForFinalReply("br_background", events)
+	if outcome.Err != nil || outcome.Output != "Found 3 events" || outcome.ResultSessionID != "br_background" {
 		t.Errorf("outcome = %+v", outcome)
 	}
 
 	events = make(chan harness.StoredEvent, 8)
 	events <- harness.StoredEvent{Event: msg.Event{Type: msg.EventTurnComplete}}
-	if outcome := srv.waitForFinalReply("br_background", events); outcome.err == nil {
+	if outcome := srv.sessionActions.WaitForFinalReply("br_background", events); outcome.Err == nil {
 		t.Error("a turn that ended with no reply seen counted as a success")
 	}
 
-	config, err := harnessConfigWithModel(json.RawMessage(`{"permission_mode":"bypassPermissions","model":"old","model_selection":{"model":"old"}}`), "efficient")
+	config, err := sessionactions.HarnessConfigWithModel(json.RawMessage(`{"permission_mode":"bypassPermissions","model":"old","model_selection":{"model":"old"}}`), "efficient")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -641,7 +645,7 @@ func TestANewSessionButtonStartsTheSessionAsANewChatDoes(t *testing.T) {
 		HarnessConfig: json.RawMessage(`{"model":"orchestrator-model","effort":"low","permission_mode":"bypass"}`),
 		MaxBudgetUSD:  4,
 	}
-	request := newChatLikeSessionRequest(offering, "Start: fix the thing")
+	request := sessionactions.NewChatLikeSessionRequest(offering, "Start: fix the thing")
 	if request.WorkingDir != "" || len(request.HarnessConfig) != 0 || request.AgentID != "" || request.BundleID != "" || request.MaxBudget != nil {
 		t.Errorf("the new session took the offering session's working directory, harness config, agent, bundle or ceiling: %+v", request)
 	}
@@ -662,7 +666,7 @@ func TestARunCommandCarriesThePostingVariablesOfTheCurrentSpawn(t *testing.T) {
 	session := newSessionForSignals(t, st, "br_buttons", msg.SessionTypeInteractive)
 	withFakeSessionActionModels(srv, "approve")
 	agentEnvironment := map[string]string{}
-	for _, variable := range srv.sessionPostingEnvironment(session) {
+	for _, variable := range srv.login.SessionPostingEnvironment(session) {
 		name, value, _ := strings.Cut(variable, "=")
 		agentEnvironment[name] = value
 	}
@@ -686,10 +690,10 @@ func TestARunCommandCarriesThePostingVariablesOfTheCurrentSpawn(t *testing.T) {
 	if actionsURL != "http://127.0.0.1:8160/sessions/br_buttons/actions" {
 		t.Errorf("actions address in the command = %q (output %q)", actionsURL, finished.Output)
 	}
-	if posting, refusal := srv.verifiedPostingSession(buttonToken); refusal != nil || posting.SessionID != "br_buttons" {
+	if posting, refusal := srv.login.VerifiedPostingSession(buttonToken); refusal != nil || posting.SessionID != "br_buttons" {
 		t.Errorf("the command's token does not verify for br_buttons: %+v", refusal)
 	}
-	if _, refusal := srv.verifiedPostingSession(agentEnvironment[sessionPostingTokenEnvironmentVariable]); refusal != nil {
+	if _, refusal := srv.login.VerifiedPostingSession(agentEnvironment[login.SessionPostingTokenEnvironmentVariable]); refusal != nil {
 		t.Errorf("pressing the button cut off the agent's own token: %+v", refusal)
 	}
 }

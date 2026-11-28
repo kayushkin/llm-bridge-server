@@ -7,6 +7,10 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/operationroutes"
+
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/agents/evaluations"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/operations/operationstore"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -40,15 +44,15 @@ func (thisServer evalStoreInThisServer) SubmitOperation(ctx context.Context, int
 	if err != nil {
 		return msg.OperationReceipt{}, err
 	}
-	if len(encoded) > maximumOperationIntentBytes {
-		return msg.OperationReceipt{}, &operationRefusal{http.StatusBadRequest, "invalid_intent",
-			fmt.Sprintf("the intent is %d bytes; an operation intent is at most %d", len(encoded), maximumOperationIntentBytes)}
+	if len(encoded) > operationroutes.MaximumOperationIntentBytes {
+		return msg.OperationReceipt{}, &operationroutes.Refusal{Status: http.StatusBadRequest, Code: "invalid_intent",
+			Message: fmt.Sprintf("the intent is %d bytes; an operation intent is at most %d", len(encoded), operationroutes.MaximumOperationIntentBytes)}
 	}
-	receipt, _, refusal := thisServer.server.submitOperation(ctx, requestCaller{}, intent)
+	receipt, _, refusal := thisServer.server.operationRoutes.SubmitOperation(ctx, requestcaller.Caller{}, intent)
 	if refusal == nil {
 		return receipt, nil
 	}
-	if refusal.status == http.StatusPaymentRequired {
+	if refusal.Status == http.StatusPaymentRequired {
 		return msg.OperationReceipt{}, fmt.Errorf("%w: %v", evaluations.ErrBridgeBudgetRefused, refusal)
 	}
 	return msg.OperationReceipt{}, refusal
@@ -80,8 +84,8 @@ func (thisServer evalStoreInThisServer) ListSucceededOperations(_ context.Contex
 	if coordinator == nil {
 		return nil, errOperationsOff
 	}
-	if query.Limit < 1 || query.Limit > maximumOperationListLimit {
-		return nil, fmt.Errorf("a page of operations holds 1 to %d, not %d", maximumOperationListLimit, query.Limit)
+	if query.Limit < 1 || query.Limit > operationroutes.MaximumOperationListLimit {
+		return nil, fmt.Errorf("a page of operations holds 1 to %d, not %d", operationroutes.MaximumOperationListLimit, query.Limit)
 	}
 	return coordinator.Store().List(operationstore.Filter{
 		OrganizationID: query.OrganizationID,

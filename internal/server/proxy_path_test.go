@@ -1,6 +1,10 @@
 package server
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/kayushkin/llm-bridge-server/internal/sessions"
+)
 
 // The endpoint literal is everything AFTER the id segment, not the last segment.
 //
@@ -25,7 +29,7 @@ func TestLogStoreEndpointFromPath(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := logStoreEndpointFromPath(tc.path); got != tc.want {
+			if got := sessions.LogStoreEndpointFromPath(tc.path); got != tc.want {
 				t.Errorf("logStoreEndpointFromPath(%q) = %q, want %q", tc.path, got, tc.want)
 			}
 		})
@@ -34,8 +38,8 @@ func TestLogStoreEndpointFromPath(t *testing.T) {
 
 // The full upstream URL for the raw page, end to end — the thing that was wrong.
 func TestLogStoreSessionURL_RawPage(t *testing.T) {
-	endpoint := logStoreEndpointFromPath("/sessions/br_1/messages/raw")
-	got := logStoreSessionURL("http://ls:8175", "br_1", endpoint)
+	endpoint := sessions.LogStoreEndpointFromPath("/sessions/br_1/messages/raw")
+	got := sessions.LogStoreSessionURL("http://ls:8175", "br_1", endpoint)
 	want := "http://ls:8175/api/v1/sessions/br_1/messages/raw"
 	if got != want {
 		t.Errorf("upstream URL = %q, want %q", got, want)

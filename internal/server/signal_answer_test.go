@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/signals"
+
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -31,7 +33,7 @@ func answerRequest(t *testing.T, srv *Server, signalID string, body any) *httpte
 	req := httptest.NewRequest(http.MethodPost, "/signals/"+signalID+"/answer", bytes.NewReader(encoded))
 	req.SetPathValue("id", signalID)
 	rec := httptest.NewRecorder()
-	srv.handleAnswerSignal(rec, req)
+	srv.signals.HandleAnswerSignal(rec, req)
 	return rec
 }
 
@@ -55,13 +57,13 @@ func TestAnswerRefusesAPartialAnswerToAMultiQuestionRequest(t *testing.T) {
 	// this; the card is not the only caller, so the request does now.
 	srv, st := testServer(t)
 	sess := newSessionForSignals(t, st, "br_1", msg.SessionTypeInteractive)
-	srv.recordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
+	srv.signals.RecordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
 	ids := openQuestionsFor(t, srv, "br_1", "hreq_1")
 	if len(ids) != 2 {
 		t.Fatalf("expected 2 questions, got %d", len(ids))
 	}
 
-	rec := answerRequest(t, srv, ids[0], signalAnswerRequest{Answers: map[string]string{ids[0]: "Yes"}})
+	rec := answerRequest(t, srv, ids[0], signals.SignalAnswerRequest{Answers: map[string]string{ids[0]: "Yes"}})
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body %s", rec.Code, rec.Body.String())
@@ -93,7 +95,7 @@ func TestAnswerRefusesANotificationAndAResolvedQuestion(t *testing.T) {
 	if err := st.CreateSignal(notification); err != nil {
 		t.Fatalf("create notification: %v", err)
 	}
-	rec := answerRequest(t, srv, notification.ID, signalAnswerRequest{Answers: map[string]string{notification.ID: "ok"}})
+	rec := answerRequest(t, srv, notification.ID, signals.SignalAnswerRequest{Answers: map[string]string{notification.ID: "ok"}})
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("answering a notification: status = %d, want 400", rec.Code)
 	}
@@ -109,7 +111,7 @@ func TestAnswerRefusesANotificationAndAResolvedQuestion(t *testing.T) {
 	if err := st.ResolveSignal(question.ID, msg.SignalStateDismissed, nil); err != nil {
 		t.Fatalf("pre-resolve: %v", err)
 	}
-	rec = answerRequest(t, srv, question.ID, signalAnswerRequest{Answers: map[string]string{question.ID: "codex"}})
+	rec = answerRequest(t, srv, question.ID, signals.SignalAnswerRequest{Answers: map[string]string{question.ID: "codex"}})
 	if rec.Code != http.StatusConflict {
 		t.Errorf("answering a resolved question: status = %d, want 409", rec.Code)
 	}
@@ -117,7 +119,7 @@ func TestAnswerRefusesANotificationAndAResolvedQuestion(t *testing.T) {
 
 func TestAnswerIsUnknownSignal404(t *testing.T) {
 	srv, _ := testServer(t)
-	rec := answerRequest(t, srv, "sig_nope", signalAnswerRequest{Answers: map[string]string{}})
+	rec := answerRequest(t, srv, "sig_nope", signals.SignalAnswerRequest{Answers: map[string]string{}})
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", rec.Code)
 	}
@@ -128,12 +130,12 @@ func TestAnswerTextRendersOneQuestionVerbatimAndManyLabeled(t *testing.T) {
 	// in their mouth. Several answers have to say which question each belongs
 	// to, because the assistant asked them separately.
 	one := []store.Signal{{ID: "a", Title: "Which transport?"}}
-	if got := answerTextForMessage(one, map[string]string{"a": "codex"}); got != "codex" {
+	if got := signals.AnswerTextForMessage(one, map[string]string{"a": "codex"}); got != "codex" {
 		t.Errorf("single answer = %q, want %q", got, "codex")
 	}
 
 	many := []store.Signal{{ID: "a", Title: "Ship it?"}, {ID: "b", Title: "Which branch?"}}
-	got := answerTextForMessage(many, map[string]string{"a": "Yes", "b": "main"})
+	got := signals.AnswerTextForMessage(many, map[string]string{"a": "Yes", "b": "main"})
 	want := "Ship it?\nYes\n\nWhich branch?\nmain"
 	if got != want {
 		t.Errorf("multi answer =\n%q\nwant\n%q", got, want)
@@ -150,8 +152,8 @@ func TestAnswerTextRendersOneQuestionVerbatimAndManyLabeled(t *testing.T) {
 // handler.
 //
 // A turn ending is not a sixth, and naming it as one is what used to leave the
-// answer verb off this list: onTurnEnd closes questions by calling
-// supersedeStaleQuestions, which is the same call site an answer supersedes
+// answer verb off this list: OnTurnEnd closes questions by calling
+// SupersedeStaleQuestions, which is the same call site an answer supersedes
 // through.
 func TestEverySignalWriteAnnouncesItself(t *testing.T) {
 	srv, st := testServer(t)
@@ -161,7 +163,7 @@ func TestEverySignalWriteAnnouncesItself(t *testing.T) {
 	}})
 	sess := newSessionForSignals(t, st, "br_1", msg.SessionTypeInteractive)
 
-	srv.recordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
+	srv.signals.RecordAskUserQuestionSignals("br_1", sess, "hreq_1", json.RawMessage(askUserQuestionToolInput))
 	if len(announced) != 2 {
 		t.Errorf("raising 2 questions announced %d times, want 2", len(announced))
 	}
@@ -234,7 +236,7 @@ func TestAnsweringOneQuestionRetiresTheOthersOnTheThread(t *testing.T) {
 	if err := st.ResolveSignal(group[0].ID, msg.SignalStateAnswered, &msg.SignalAnswer{Text: "codex"}); err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	srv.supersedeStaleQuestions("br_1")
+	srv.signals.SupersedeStaleQuestions("br_1")
 
 	left, err := st.ListSignals(store.SignalFilter{SessionID: "br_1", State: msg.SignalStateOpen})
 	if err != nil {

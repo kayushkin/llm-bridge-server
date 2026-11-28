@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/sessions"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -56,9 +58,9 @@ func fakeToolStoreWithOptIns(t *testing.T, optIns map[string][]map[string]any) (
 	return registry, &registry.provisionBodies
 }
 
-func newServerWithGrants(tools toolRegistry, grantStoreURL string) *Server {
-	return &Server{cfg: &config.Config{}, toolRegistry: tools, grantStore: testGrantReaderAt(grantStoreURL),
-		principalLookupCache: principalLookupCacheAnswering(humanPrincipalForGrantTests)}
+func newServerWithGrants(tools sessions.ToolRegistry, grantStoreURL string) *Server {
+	return (&Server{cfg: &config.Config{}, toolRegistry: tools, grantStore: testGrantReaderAt(grantStoreURL),
+		principalLookupCache: principalLookupCacheAnswering(humanPrincipalForGrantTests)}).withServicesComposed()
 }
 
 // humanPrincipalForGrantTests is the principal the grant tests run as: a
@@ -108,7 +110,7 @@ func TestInjectMCPConfigOffersOnlyGrantedToolsWiredOnTheInstance(t *testing.T) {
 	s := newServerWithGrants(tools, grants.URL)
 	sess := &store.Session{Harness: msg.HarnessClaudeCode, SessionID: "br_test", InstanceID: "inst-1", PrincipalID: "principal_000001"}
 
-	if err := s.injectMCPConfig(sess); err != nil {
+	if err := s.sessions.InjectMCPConfig(sess); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if len(*asked) != 1 {
@@ -133,7 +135,7 @@ func TestInjectMCPConfigPrincipalWithNoGrantsGetsTheInstanceOptIns(t *testing.T)
 	s := newServerWithGrants(tools, grants.URL)
 	sess := &store.Session{Harness: msg.HarnessClaudeCode, SessionID: "br_test", InstanceID: "inst-1", PrincipalID: "principal_000002"}
 
-	if err := s.injectMCPConfig(sess); err != nil {
+	if err := s.sessions.InjectMCPConfig(sess); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if len(*asked) != 1 || (*asked)[0]["instance_id"] != "inst-1" {
@@ -155,7 +157,7 @@ func TestInjectMCPConfigNothingBothGrantedAndWiredStartsWithNoServers(t *testing
 	sess := &store.Session{Harness: msg.HarnessClaudeCode, SessionID: "br_test", InstanceID: "inst-1", PrincipalID: "principal_000001", HarnessConfig: json.RawMessage(`{"settings":"{}"}`)}
 	before := string(sess.HarnessConfig)
 
-	if err := s.injectMCPConfig(sess); err != nil {
+	if err := s.sessions.InjectMCPConfig(sess); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if len(*asked) != 0 {
@@ -175,7 +177,7 @@ func TestInjectMCPConfigAbortsWhenTheGrantsCannotBeRead(t *testing.T) {
 	unknown := fakeGrantStore(t, "principal_000001", []string{"13"})
 	s := newServerWithGrants(tools, unknown.URL)
 	sess := &store.Session{Harness: msg.HarnessClaudeCode, SessionID: "br_test", InstanceID: "inst-1", PrincipalID: "principal_000404"}
-	err := s.injectMCPConfig(sess)
+	err := s.sessions.InjectMCPConfig(sess)
 	if err == nil || !strings.Contains(err.Error(), "principal unknown") {
 		t.Fatalf("unknown principal: err = %v, want the spawn aborted naming the principal", err)
 	}
@@ -185,7 +187,7 @@ func TestInjectMCPConfigAbortsWhenTheGrantsCannotBeRead(t *testing.T) {
 	down.Close()
 	s = newServerWithGrants(tools, downURL)
 	sess = &store.Session{Harness: msg.HarnessClaudeCode, SessionID: "br_test", InstanceID: "inst-1", PrincipalID: "principal_000001"}
-	err = s.injectMCPConfig(sess)
+	err = s.sessions.InjectMCPConfig(sess)
 	if err == nil || !strings.Contains(err.Error(), "grant-store unreachable") {
 		t.Fatalf("grant-store down: err = %v, want the spawn aborted", err)
 	}
@@ -206,7 +208,7 @@ func TestInjectMCPConfigWithoutAPrincipalNeverAsksGrantStore(t *testing.T) {
 	tools, _ := fakeToolStoreWithOptIns(t, map[string][]map[string]any{"inst-1": {mcpTool12}})
 	s := newServerWithGrants(tools, grants.URL)
 	sess := &store.Session{Harness: msg.HarnessClaudeCode, SessionID: "br_test", InstanceID: "inst-1"}
-	if err := s.injectMCPConfig(sess); err != nil {
+	if err := s.sessions.InjectMCPConfig(sess); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if grantsAsked {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,6 +17,12 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/kayushkin/llm-bridge-server/internal/server/routeaccess"
+
+	"github.com/kayushkin/llm-bridge-server/internal/sessions"
+
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
 
 	"github.com/kayushkin/llm-bridge-server/internal/machines/machinestest"
 
@@ -184,7 +191,7 @@ func (gated *gatedTestServer) requestAs(t *testing.T, cookie *http.Cookie, metho
 func (gated *gatedTestServer) requestAsService(t *testing.T, method, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	request := httptest.NewRequest(method, path, nil)
-	request.Header.Set(serviceTokenHeader, testServiceToken)
+	request.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
 	return serve(gated.server, request)
 }
 
@@ -194,8 +201,8 @@ func (gated *gatedTestServer) requestAsService(t *testing.T, method, path string
 func (gated *gatedTestServer) requestAsServiceAssertingPrincipal(t *testing.T, principalID, method, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	request := httptest.NewRequest(method, path, nil)
-	request.Header.Set(serviceTokenHeader, testServiceToken)
-	request.Header.Set(principalIdentityHeader, principalID)
+	request.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
+	request.Header.Set(requestcaller.PrincipalIdentityHeader, principalID)
 	return serve(gated.server, request)
 }
 
@@ -261,7 +268,7 @@ func TestTwoPrincipalsEachSeeAndReachOnlyTheirOwnSessions(t *testing.T) {
 			t.Errorf("%s lists %v, want only %s", check.own.PrincipalID, got, check.own.SessionID)
 		}
 		summary := gated.requestAs(t, check.cookie, "GET", "/sessions/summary", nil)
-		var summaryBody SummaryResponse
+		var summaryBody sessions.SummaryResponse
 		if err := json.Unmarshal(summary.Body.Bytes(), &summaryBody); err != nil || len(summaryBody.Sessions) != 1 || summaryBody.Sessions[0].SessionID != check.own.SessionID {
 			t.Errorf("%s summary = %s, want only its own session", check.own.PrincipalID, summary.Body.String())
 		}
@@ -357,7 +364,7 @@ func TestAnAdministratorReachesTheOperatorRoutesAndTheStoreProxies(t *testing.T)
 		t.Fatalf("kanban-store received %d requests, want 1", len(recorded))
 	}
 	if got := recorded[0].principalIDsSeen(); len(got) != 1 || got[0] != administratorTestPrincipalID {
-		t.Errorf("kanban-store saw %s %v, want [%s]: the store makes its own administrator check", principalIdentityHeader, got, administratorTestPrincipalID)
+		t.Errorf("kanban-store saw %s %v, want [%s]: the store makes its own administrator check", requestcaller.PrincipalIdentityHeader, got, administratorTestPrincipalID)
 	}
 
 	// An unclassified route is not a per-resource check. Nobody has decided
@@ -371,7 +378,7 @@ func TestAnAdministratorReachesTheOperatorRoutesAndTheStoreProxies(t *testing.T)
 
 // TestAnAdministratorListsEverySessionWhoeverOwnsIt pins the lists that are
 // narrowed in the store. The operator's sidebar went down to two sessions out
-// of 65,000 on 2026-09-17: principalRestrictingRequest handed back an
+// of 65,000 on 2026-09-17: PrincipalRestrictingRequest handed back an
 // administrator's id beside restricted=false, and the four callers that read
 // only the id filtered on it. The same requests as the service, and as the
 // administrator through a trusted caller, must all answer every session.
@@ -404,7 +411,7 @@ func TestAnAdministratorListsEverySessionWhoeverOwnsIt(t *testing.T) {
 
 	summaryIDs := func(response *httptest.ResponseRecorder) []string {
 		t.Helper()
-		var body SummaryResponse
+		var body sessions.SummaryResponse
 		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 			t.Fatalf("decode summary %s: %v", response.Body.String(), err)
 		}
@@ -506,7 +513,7 @@ func TestATrustedCallerMayAssertWhichPrincipalARequestIsFor(t *testing.T) {
 	}
 	// The same token with no assertion stays unrestricted.
 	if response := gated.requestAsService(t, "GET", "/bridge-prefs"); response.Code != http.StatusOK {
-		t.Errorf("service token with no %s on an operator route = %d, want 200", principalIdentityHeader, response.Code)
+		t.Errorf("service token with no %s on an operator route = %d, want 200", requestcaller.PrincipalIdentityHeader, response.Code)
 	}
 
 	// The administrator rule applies to an asserted principal too.
@@ -527,10 +534,10 @@ func TestATrustedCallerMayAssertWhichPrincipalARequestIsFor(t *testing.T) {
 		t.Fatalf("kanban-store received %d requests, want 1", len(recorded))
 	}
 	if got := recorded[0].principalIDsSeen(); len(got) != 1 || got[0] != secondTestPrincipalID {
-		t.Errorf("kanban-store saw %s %v, want exactly [%s]", principalIdentityHeader, got, secondTestPrincipalID)
+		t.Errorf("kanban-store saw %s %v, want exactly [%s]", requestcaller.PrincipalIdentityHeader, got, secondTestPrincipalID)
 	}
 	for _, key := range recorded[0].HeaderKeyNames {
-		if strings.EqualFold(key, serviceTokenHeader) {
+		if strings.EqualFold(key, requestcaller.ServiceTokenHeader) {
 			t.Errorf("kanban-store saw this server's service token under %q", key)
 		}
 	}
@@ -647,7 +654,7 @@ func TestGatedServerRefusesAnonymousOperatorAndUnclassifiedRequests(t *testing.T
 	}
 
 	wrongToken := httptest.NewRequest("GET", "/bridge-prefs", nil)
-	wrongToken.Header.Set(serviceTokenHeader, "not-the-service-token-but-long-enough-000")
+	wrongToken.Header.Set(requestcaller.ServiceTokenHeader, "not-the-service-token-but-long-enough-000")
 	wrongToken.AddCookie(cookie)
 	if response := serve(gated.server, wrongToken); response.Code != http.StatusUnauthorized {
 		t.Errorf("wrong service token = %d, want 401 even alongside a valid cookie", response.Code)
@@ -813,21 +820,21 @@ func TestPathValueForPatternReadsTheNamedSegment(t *testing.T) {
 }
 
 // TestEveryRegisteredRouteIsClassified reads every pattern literal this
-// package registers and fails for any without an access rule, so a new route
-// is classified in the change that adds it rather than discovered as a 403.
-// agent-store's and memory-store's routes are registered by those libraries;
-// TestEveryAccessRuleNamesARegisteredRoute covers them from the other side.
+// package registers, and every one registered by a package that mounts routes
+// on this server's mux (one that imports internal/httproutes), and fails for
+// any without an access rule, so a new route is classified in the change that
+// adds it rather than discovered as a 403. agent-store's and memory-store's
+// routes are registered by those libraries;
+// TestEveryPatternTheMuxRecordedIsClassified and
+// TestEveryAccessRuleNamesARegisteredRoute cover them.
 func TestEveryRegisteredRouteIsClassified(t *testing.T) {
-	registration := regexp.MustCompile(`\.(?:HandleFunc|Handle)\(\s*("[^"]+"|issuesMountPrefix\s*\+\s*"/"|grantsMountPrefix\s*\+\s*"/"|mailMountPrefix\s*\+\s*"/")`)
-	sourceFiles, err := filepath.Glob("*.go")
+	registration := regexp.MustCompile(`\.(?:HandleFunc|Handle)\(\s*("[^"]+"|(?:routeaccess\.)?(?:[Ii]ssues|[Gg]rants|[Mm]ail)MountPrefix\s*\+\s*"/")`)
+	sourceFiles, err := routeRegisteringSourceFiles()
 	if err != nil {
 		t.Fatal(err)
 	}
 	found := 0
 	for _, sourceFile := range sourceFiles {
-		if strings.HasSuffix(sourceFile, "_test.go") {
-			continue
-		}
 		source, err := os.ReadFile(sourceFile)
 		if err != nil {
 			t.Fatal(err)
@@ -835,17 +842,20 @@ func TestEveryRegisteredRouteIsClassified(t *testing.T) {
 		for _, match := range registration.FindAllStringSubmatch(string(source), -1) {
 			pattern := match[1]
 			switch {
-			case strings.HasPrefix(pattern, "issuesMountPrefix"):
-				pattern = issuesMountPrefix + "/"
-			case strings.HasPrefix(pattern, "grantsMountPrefix"):
-				pattern = grantsMountPrefix + "/"
-			case strings.HasPrefix(pattern, "mailMountPrefix"):
-				pattern = mailMountPrefix + "/"
+			case strings.Contains(strings.ToLower(pattern), "issuesmountprefix"):
+				pattern = routeaccess.IssuesMountPrefix + "/"
+			case strings.Contains(strings.ToLower(pattern), "grantsmountprefix"):
+				pattern = routeaccess.GrantsMountPrefix + "/"
+			case strings.Contains(strings.ToLower(pattern), "mailmountprefix"):
+				pattern = routeaccess.MailMountPrefix + "/"
 			default:
 				pattern = strings.Trim(pattern, `"`)
 			}
 			found++
-			if _, classified := routeAccessRules[pattern]; !classified {
+			if _, known := registeredRoutesLeftUnclassified[pattern]; known {
+				continue
+			}
+			if _, classified := routeaccess.RouteAccessRules[pattern]; !classified {
 				t.Errorf("%s registers %q, which has no entry in routeAccessRules", sourceFile, pattern)
 			}
 		}
@@ -855,13 +865,85 @@ func TestEveryRegisteredRouteIsClassified(t *testing.T) {
 	}
 }
 
+// routeRegisteringSourceFiles is every non-test Go file of this package, and
+// of each package under internal/ that imports internal/httproutes, which is
+// how a package mounts routes on this server's mux.
+func routeRegisteringSourceFiles() ([]string, error) {
+	var sourceFiles []string
+	err := filepath.WalkDir("..", func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		if filepath.Dir(path) == "../server" {
+			sourceFiles = append(sourceFiles, path)
+			return nil
+		}
+		packageSources, err := filepath.Glob(filepath.Join(filepath.Dir(path), "*.go"))
+		if err != nil {
+			return err
+		}
+		for _, packageSource := range packageSources {
+			if strings.HasSuffix(packageSource, "_test.go") {
+				continue
+			}
+			source, err := os.ReadFile(packageSource)
+			if err != nil {
+				return err
+			}
+			if strings.Contains(string(source), `"github.com/kayushkin/llm-bridge-server/internal/httproutes"`) {
+				sourceFiles = append(sourceFiles, path)
+				return nil
+			}
+		}
+		return nil
+	})
+	return sourceFiles, err
+}
+
+// TestEveryPatternTheMuxRecordedIsClassified fails for any pattern a server
+// with every store configured registered on its mux without an access rule,
+// whichever package registered it.
+func TestEveryPatternTheMuxRecordedIsClassified(t *testing.T) {
+	server := newServerWithAllStoresConfigured(t, nil)
+	patterns := server.mux.Patterns()
+	if len(patterns) < 100 {
+		t.Fatalf("the mux recorded only %d patterns", len(patterns))
+	}
+	for _, pattern := range patterns {
+		if _, known := registeredRoutesLeftUnclassified[pattern]; known {
+			continue
+		}
+		if _, classified := routeaccess.RouteAccessRules[pattern]; !classified {
+			t.Errorf("%q is registered on the mux and has no entry in routeAccessRules", pattern)
+		}
+	}
+	for pattern := range registeredRoutesLeftUnclassified {
+		if _, classified := routeaccess.RouteAccessRules[pattern]; classified {
+			t.Errorf("%q now has an access rule; take it out of registeredRoutesLeftUnclassified", pattern)
+		}
+	}
+}
+
+// registeredRoutesLeftUnclassified are routes a store library registers on
+// the mux that have no access rule, so they answer 403 route_not_classified
+// to everyone but the service token. Each is listed so the tests above can
+// tell them from a route someone forgot; give one a rule, and take it out of
+// here, in the change that decides who may call it.
+var registeredRoutesLeftUnclassified = map[string]string{
+	"PUT /prompt-collections/{id}/root":    "agent-store's prompt collection root; nobody has decided who may call it",
+	"POST /prompt-collections/{id}/retire": "agent-store's prompt collection retirement; nobody has decided who may call it",
+}
+
 // TestEveryAccessRuleNamesARegisteredRoute fails for a rule whose pattern the
 // mux does not have, so a typo in the table cannot leave the real route
 // unclassified while the table looks complete.
 func TestEveryAccessRuleNamesARegisteredRoute(t *testing.T) {
 	server := newServerWithAllStoresConfigured(t, nil)
 	wildcard := regexp.MustCompile(`\{[^}]+\}`)
-	for pattern := range routeAccessRules {
+	for pattern := range routeaccess.RouteAccessRules {
 		method, path, hasMethod := strings.Cut(pattern, " ")
 		if !hasMethod {
 			method, path = "GET", pattern
@@ -886,7 +968,7 @@ func TestHarnessCallbacksAreNotAnsweredThroughThePublicProxy(t *testing.T) {
 		{"POST", "/permission/cc-prehook/br_x"}, {"POST", "/permission/codex-prehook/br_x"},
 		{"POST", "/sidecar/event/br_x"}, {"GET", "/api/harness-proxy/inber/health"},
 	}
-	for _, proxyHeader := range publicProxyHeaders {
+	for _, proxyHeader := range requestcaller.PublicProxyHeaders {
 		for _, route := range callbacks {
 			request := httptest.NewRequest(route.method, route.path, strings.NewReader("{}"))
 			request.Header.Set(proxyHeader, "203.0.113.7")

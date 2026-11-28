@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/predictions"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
 )
@@ -36,7 +38,7 @@ func (gated *gatedTestServer) requestAsServiceWithJSON(t *testing.T, method, pat
 	}
 	request := httptest.NewRequest(method, path, strings.NewReader(string(data)))
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set(serviceTokenHeader, testServiceToken)
+	request.Header.Set(requestcaller.ServiceTokenHeader, testServiceToken)
 	return serve(gated.server, request)
 }
 

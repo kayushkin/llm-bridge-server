@@ -1,0 +1,1719 @@
+package sessions
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/kayushkin/llm-bridge-server/internal/harnesscatalog"
+
+	"github.com/kayushkin/llm-bridge-server/internal/access/login"
+
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/messagesender"
+
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/harnessconfig"
+
+	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads"
+
+	"github.com/kayushkin/llm-bridge-server/internal/serversentevents"
+
+	"github.com/kayushkin/llm-bridge-server/internal/access/grantcheck"
+
+	"github.com/kayushkin/llm-bridge-server/internal/sessions/sendanswer"
+
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
+	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+
+	"github.com/kayushkin/llm-bridge-server/conformance"
+	"github.com/kayushkin/llm-bridge-server/internal/access/principals"
+	"github.com/kayushkin/llm-bridge-server/internal/agents/bundles"
+	"github.com/kayushkin/llm-bridge-server/internal/harness"
+	"github.com/kayushkin/llm-bridge-server/internal/machines"
+	"github.com/kayushkin/llm-bridge-server/internal/store"
+	"github.com/kayushkin/llm-bridge-server/internal/textutil"
+	"github.com/kayushkin/llm-bridge/msg"
+)
+
+// FolderForPurpose returns the effective folder for a purpose, or "" if the
+// purpose is unmapped (leaving the session unfiled).
+//
+// Three layers, most specific first: the user's runtime overrides in the
+// source_folders table, then LLMBRIDGE_PURPOSE_FOLDERS, then the folder the
+// purpose registry declares. DB errors fall back to the lower layers — failing
+// closed (returning "") would silently un-file new sessions.
+//
+// A superseded purpose resolves through to its current spelling, so sessions
+// created under an old slug land in the same folder as new ones instead of
+// splitting the folder in two.
+func (s *Service) FolderForPurpose(purpose string) string {
+	if purpose == "" || s.Cfg == nil {
+		return ""
+	}
+	canonical := msg.CanonicalPurpose(purpose)
+	if s.Store != nil {
+		if overrides, err := s.Store.ListSourceFolders(); err == nil {
+			if v, ok := overrides[purpose]; ok {
+				return v
+			}
+			if v, ok := overrides[canonical]; ok {
+				return v
+			}
+		} else {
+			log.Printf("[purpose-folders] failed to load overrides: %v", err)
+		}
+	}
+	if v, ok := s.Cfg.PurposeFolders[purpose]; ok {
+		return v
+	}
+	if v, ok := s.Cfg.PurposeFolders[canonical]; ok {
+		return v
+	}
+	// The registry is the floor, consulted directly rather than only through
+	// the config map. config.Load() seeds that map from the registry, but a
+	// Config built any other way — a test, an embedder — would otherwise file
+	// nothing at all, and silently: every session would come back unfiled with
+	// no error to explain it.
+	return msg.FolderForPurpose(canonical)
+}
+
+// discoveryPromptPrefixes maps stable prompt prefixes to a source tag for
+// sessions ingested via auto-discover. The live spawn path tags sessions via
+// CreateSessionRequest.Purpose, but discovery only sees the on-disk session
+// (prompt + harness id) — prefix recognition is the only signal that classifies
+// these as scheduled jobs rather than user sessions. Producers own their
+// prompts; if a prefix here drifts from the live prompt, new sessions land
+// unfiled and the regression is immediately visible in /sessions.
+var discoveryPromptPrefixes = []struct {
+	prefix string
+	source string
+}{
+	// internal/automation/workers/autoworker/cmd/autoworker/main.go defaultPrompt
+	{"You are the nightly todo-worker.", "autoworker"},
+	// inber/scripts/harness-watch.sh
+	{"You are running as a scheduled harness-watch job", "harness-watch"},
+}
+
+// DiscoverySourceFolder infers a (source, folder) pair for a freshly-discovered
+// on-disk session. Conformance prompts are recognized by exact match; other
+// scheduled sources are recognized by stable prompt prefixes registered in
+// discoveryPromptPrefixes. Anything else is left unfiled — the harness CLI is
+// the source of truth for the original prompt and we don't second-guess user
+// sessions.
+// ReclassifyDiscoveredSession carries an adapter-reported purpose to a
+// discovered session that already existed, which UpsertDiscoveredSession
+// never re-classifies. adapterPurpose is the adapter's structural tag
+// (msg.StoredSession.Source) and nothing else: the prompt-prefix inference is
+// not re-run over old rows. An empty tag, the generic "discovered" label, or a
+// slug the registry does not know leaves the row alone; the store decides
+// whether the row is still unclassified and whether its folder may move.
+func (s *Service) ReclassifyDiscoveredSession(bridgeID, adapterPurpose string) (bool, error) {
+	if adapterPurpose == "" || adapterPurpose == msg.PurposeDiscovered {
+		return false, nil
+	}
+	if _, ok := msg.LookupPurpose(adapterPurpose); !ok {
+		return false, nil
+	}
+	return s.Store.ReclassifyDiscoveredSession(bridgeID, adapterPurpose, s.FolderForPurpose(adapterPurpose))
+}
+
+func (s *Service) DiscoverySourceFolder(prompt string) (string, string) {
+	if conformance.IsConformancePrompt(prompt) {
+		return conformance.SourceTag, s.FolderForPurpose(conformance.SourceTag)
+	}
+	for _, p := range discoveryPromptPrefixes {
+		if strings.HasPrefix(prompt, p.prefix) {
+			return p.source, s.FolderForPurpose(p.source)
+		}
+	}
+	return "", ""
+}
+
+// DisplayNameFromMessage produces a compact session title from a user message:
+// first non-empty line, truncated to 80 runes with an ellipsis.
+func DisplayNameFromMessage(text string) string {
+	text = strings.TrimSpace(text)
+	if i := strings.IndexByte(text, '\n'); i >= 0 {
+		text = strings.TrimSpace(text[:i])
+	}
+	const maxRunes = 80
+	if truncated := textutil.TruncateToRuneLimit(text, maxRunes); truncated != text {
+		return truncated + "…"
+	}
+	return text
+}
+
+// MaxDiscoveredDisplayNameRunes bounds the title derived for a session that
+// discovery found on disk.
+const MaxDiscoveredDisplayNameRunes = 100
+
+// DisplayNameForDiscoveredSession derives the title shown for a discovered
+// session. The prompt identifies a session better than its project directory
+// does, so the prompt wins wherever there is one.
+//
+// The limit counts runes, not bytes. The name is stored and then served as
+// JSON to the dash, so a byte cut would survive the request and reach the
+// browser as a replacement character.
+//
+// A prompt that is text codex injected (msg.IsCodexInjectedText) is no prompt:
+// a wrapper too old to skip it reports the AGENTS.md instructions as the first
+// user message, and the session would be titled with them.
+func DisplayNameForDiscoveredSession(prompt, project string) string {
+	displayName := prompt
+	if displayName == "" || msg.IsCodexInjectedText(displayName) {
+		displayName = project
+	}
+	return textutil.TruncateToRuneLimit(displayName, MaxDiscoveredDisplayNameRunes)
+}
+
+// FillOrRepairDiscoveredSessionMetadata brings a discovered session's working
+// folder and title onto its row where the row lacks them, holds codex's own
+// text, or holds a working folder the Claude Code wrapper misread
+// (store.FillOrRepairDiscoveredSessionMetadata decides which), and logs what changed
+// under logPrefix. Every path that sees a session on disk calls it — startup
+// discovery, GET /sessions/discover and the external activity watcher — so a
+// row written before the wrapper reported these converges on the next pass.
+func (s *Service) FillOrRepairDiscoveredSessionMetadata(logPrefix, bridgeID string, ds msg.StoredSession) bool {
+	changed, err := s.Store.FillOrRepairDiscoveredSessionMetadata(bridgeID, DisplayNameForDiscoveredSession(ds.Prompt, ds.Project), ds.Project)
+	if err != nil {
+		log.Printf("%s ERROR fill %s (%s %s): %v", logPrefix, bridgeID, ds.Harness, ds.HarnessSessionID, err)
+		return false
+	}
+	if len(changed) == 0 {
+		return false
+	}
+	log.Printf("%s %s (%s %s): filled %s from the session on disk", logPrefix, bridgeID, ds.Harness, ds.HarnessSessionID, strings.Join(changed, " and "))
+	return true
+}
+
+// Request types are canonical — defined in llm-bridge/msg/server.go.
+// DO NOT define new request/response types here. Add them to msg/ instead,
+// then run generate-ts.sh so the TypeScript frontend stays in sync.
+type (
+	CreateSessionRequest  = msg.CreateSessionRequest
+	SendMessageRequest    = msg.SendMessageRequest
+	ForkSessionRequest    = msg.ForkSessionRequest
+	CompactSessionRequest = msg.CompactSessionRequest
+	ConfigSessionRequest  = msg.ConfigSessionRequest
+	RenameSessionRequest  = msg.RenameSessionRequest
+)
+
+// parseLimitOffset reads optional `limit` and `offset` query params. Both
+// default to 0, which the store treats as "no bound" so the endpoint's default
+// response is unchanged and non-breaking. A present-but-malformed or negative
+// value is a client error, surfaced loudly rather than silently ignored.
+func parseLimitOffset(r *http.Request) (limit, offset int, err error) {
+	q := r.URL.Query()
+	if raw := q.Get("limit"); raw != "" {
+		limit, err = strconv.Atoi(raw)
+		if err != nil || limit < 0 {
+			return 0, 0, fmt.Errorf("invalid limit %q: must be a non-negative integer", raw)
+		}
+	}
+	if raw := q.Get("offset"); raw != "" {
+		offset, err = strconv.Atoi(raw)
+		if err != nil || offset < 0 {
+			return 0, 0, fmt.Errorf("invalid offset %q: must be a non-negative integer", raw)
+		}
+	}
+	return limit, offset, nil
+}
+
+func (s *Service) HandleListSessions(w http.ResponseWriter, r *http.Request) {
+	state := r.URL.Query().Get("state")
+	limit, offset, err := parseLimitOffset(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	var sessions []store.Session
+	if scope, restricted := requestcaller.SessionScopeRestrictingRequest(r); restricted {
+		sessions, err = s.Store.ListSessionsOwnedByPrincipalPaged(scope.PrincipalID, scope.ThroughPeerPrincipalID, state, limit, offset)
+	} else if state != "" {
+		sessions, err = s.Store.ListSessionsByStatePaged(state, limit, offset)
+	} else {
+		sessions, err = s.Store.ListSessionsPaged(limit, offset)
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if sessions == nil {
+		sessions = []store.Session{}
+	}
+	httpjson.WriteJSON(w, sessions)
+}
+
+func (s *Service) HandleGetSession(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sess, err := s.Store.GetSession(id)
+	if err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	httpjson.WriteJSON(w, sess)
+}
+
+func (s *Service) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
+	var req CreateSessionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Forensic logging: capture who created this session so we can identify
+	// mystery clients (e.g. agent-driven Playwright runs against dash that
+	// leave behind purposeless "hi" / "say hi" / "test" chats). Logged at
+	// decode time so even rejected requests are visible.
+	log.Printf("[sessions.create] ua=%q referer=%q xff=%q remote=%s harness=%s type=%s purpose=%s origin=%s display_name=%q session_id=%q",
+		r.Header.Get("User-Agent"),
+		r.Header.Get("Referer"),
+		r.Header.Get("X-Forwarded-For"),
+		r.RemoteAddr,
+		req.Harness, req.Type, req.Purpose, req.Origin,
+		req.DisplayName, req.SessionID,
+	)
+
+	// A session's agent starts a delegate under its own session, as that
+	// session's principal (delegate_sessions.go).
+	if caller, ok := requestcaller.FromRequest(r); ok && caller.DelegatingAgentOfSessionID != "" {
+		if refusal := delegateRequestRefusal(&req, caller.DelegatingAgentOfSessionID, caller.PrincipalID); refusal != nil {
+			refusal.Write(w)
+			return
+		}
+	}
+
+	// A principal creates sessions as itself, and as another principal only
+	// when it holds can_start_sessions_as on that one (a service such as
+	// orchestratord starting sessions that run as the person it works for);
+	// the starter is then recorded with the session. An administrator and the
+	// internal service are not restricted here. Naming another principal
+	// without the grant is refused rather than overwritten, so a client bug
+	// that sends the wrong id is visible.
+	startedAsAnotherPrincipalBy := ""
+	if callerPrincipalID, restricted := requestcaller.PrincipalRestrictingRequest(r); restricted {
+		if req.PrincipalID != "" && req.PrincipalID != callerPrincipalID {
+			caller, _ := requestcaller.FromRequest(r)
+			allowed := false
+			if caller.Peer == nil && caller.DelegatingAgentOfSessionID == "" {
+				var err error
+				if allowed, err = s.Login.MayStartSessionsAs(r.Context(), grantcheck.SubjectOfCaller(caller), req.PrincipalID); err != nil {
+					httpjson.WriteJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
+					return
+				}
+			}
+			if !allowed {
+				httpjson.WriteJSONError(w, http.StatusForbidden, "principal_mismatch", fmt.Sprintf(
+					"principal_id %q is not the logged-in principal %s, which holds no %s grant on it; a session can only be created as yourself (omit principal_id)", req.PrincipalID, callerPrincipalID, login.StartSessionsAsRelation))
+				return
+			}
+			startedAsAnotherPrincipalBy = callerPrincipalID
+		} else {
+			req.PrincipalID = callerPrincipalID
+		}
+	}
+	// A connected server's user starts sessions as the principal they are
+	// mapped to here, administrator or not, so the session's agent holds that
+	// principal's token. The connected server cannot name one of this
+	// server's ids.
+	if caller, ok := requestcaller.FromRequest(r); ok && caller.Peer.ActsForRemoteUser() {
+		if req.PrincipalID != "" && req.PrincipalID != caller.PrincipalID {
+			httpjson.WriteJSONError(w, http.StatusForbidden, "principal_mismatch", fmt.Sprintf(
+				"principal_id %q is not %s, the principal this connected server's user is mapped to; omit principal_id", req.PrincipalID, caller.PrincipalID))
+			return
+		}
+		req.PrincipalID = caller.PrincipalID
+	}
+	// An administrator who names no principal starts the session as
+	// themselves, as every other principal does, so its agent holds their
+	// token. Only a caller acting as nobody — the internal service with no
+	// X-Principal-Id — starts a session with no principal.
+	if req.PrincipalID == "" {
+		req.PrincipalID = principalStartingSessionAsThemselves(r)
+	}
+
+	// Whose grants decide where and as whom the session may run, and the peer
+	// origin the new session keeps: a connected server acting for one of its
+	// users starts it limited by that server's grants too, and so does an
+	// agent whose own session was started that way.
+	creatorSubject := grantcheck.Subject{PrincipalID: req.PrincipalID}
+	var creatorPeerOrigin *store.SessionPeerOrigin
+	if caller, ok := requestcaller.FromRequest(r); ok {
+		switch {
+		case caller.Peer.ActsForRemoteUser():
+			creatorPeerOrigin = &store.SessionPeerOrigin{PeerPrincipalID: caller.Peer.PeerPrincipalID, RemotePrincipalID: caller.Peer.RemoteUserPrincipalID}
+		case caller.DelegatingAgentOfSessionID != "":
+			origin, found, err := s.Store.SessionPeerOriginOfLineage(caller.DelegatingAgentOfSessionID)
+			if err != nil {
+				httpjson.WriteJSONError(w, http.StatusInternalServerError, "session_peer_origin_lookup_failed", err.Error())
+				return
+			}
+			if found {
+				creatorPeerOrigin = &origin
+			}
+		}
+	}
+	if creatorPeerOrigin != nil {
+		creatorSubject.ThroughPeerPrincipalID = creatorPeerOrigin.PeerPrincipalID
+	}
+
+	h := msg.Harness(req.Harness)
+	if !harnesscatalog.IsValidHarness(h) {
+		http.Error(w, "invalid harness", http.StatusBadRequest)
+		return
+	}
+	if reason, oneShotOnly := harnesscatalog.OneShotOnlyHarnesses[h]; oneShotOnly {
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "harness_has_no_sessions", reason)
+		return
+	}
+
+	// Classification. Type and Origin are rejected when absent or unknown;
+	// Purpose is checked against the registry but never rejected.
+	//
+	// The split is deliberate. A type outside the enum cannot be stored
+	// honestly — permission gating, folder routing and every frontend branch
+	// on it — and an empty origin loses the only record of who asked for the
+	// session, which is unrecoverable after the fact. Both are cheap for a
+	// caller to get right and were already documented as required.
+	//
+	// Purpose is different: the registry is a list of slugs we happen to know
+	// about, and a caller inventing a new one is how the list grows. Refusing
+	// those would make adding a feature require a change to this repo first.
+	// So an unknown purpose is stored and logged, and session-taxonomy-guard
+	// reports it — visible, not fatal.
+	if !msg.ValidSessionType(req.Type) {
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_session_type", fmt.Sprintf(
+			"type must be one of %v, got %q — see SessionType in llm-bridge/msg/server.go",
+			msg.SessionTypes(), req.Type))
+		return
+	}
+	if strings.TrimSpace(req.Origin) == "" {
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "missing_origin",
+			"origin is required: name the service or script creating this session (e.g. \"scheduler\", \"healthcheck\", \"frontend-dash\")")
+		return
+	}
+	if problems := msg.ClassifyPurpose(req.Type, req.Purpose, req.Origin); len(problems) > 0 {
+		for _, p := range problems {
+			log.Printf("[sessions.create] taxonomy %s: %s (want=%q got=%q) type=%s purpose=%s origin=%s",
+				p.Kind, p.Detail, p.Want, p.Got, req.Type, req.Purpose, req.Origin)
+		}
+	}
+
+	// Mode validation. Empty defaults to events for backward compat.
+	mode := req.Mode
+	if mode == "" {
+		mode = msg.SessionModeEvents
+	}
+	switch mode {
+	case msg.SessionModeEvents:
+		// always allowed
+	case msg.SessionModePTY:
+		if !harnesscatalog.HarnessSupportsPTY[h] {
+			http.Error(w, `{"error":{"code":"pty_unsupported","message":"harness does not support pty mode"}}`, http.StatusBadRequest)
+			return
+		}
+	default:
+		http.Error(w, fmt.Sprintf("invalid mode: %q", mode), http.StatusBadRequest)
+		return
+	}
+
+	// Spend ceiling. Absent and zero both mean "no ceiling" — see the
+	// warning on msg.ManagedSession.MaxBudgetUSD — so only a negative
+	// value is an error. It is rejected rather than clamped because a
+	// negative ceiling is always a caller bug, and silently reading it as
+	// "unlimited" would turn an attempt to cap spending into the absence
+	// of a cap, which is the one direction this gate must never fail in.
+	maxBudgetUSD := 0.0
+	if req.MaxBudget != nil {
+		if *req.MaxBudget < 0 {
+			http.Error(w, `{"error":{"code":"invalid_max_budget","message":"max_budget must not be negative; omit it or send 0 for no ceiling"}}`, http.StatusBadRequest)
+			return
+		}
+		maxBudgetUSD = *req.MaxBudget
+	}
+
+	// Every session must be bound to a harness instance — no local-spawn
+	// fallback. harness-store is the single source of truth for which
+	// instance runs a session.
+	if s.HarnessStore() == nil {
+		http.Error(w, "harness-store not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	inst, err := resolveInstance(s.HarnessStore(), req.InstanceID, h)
+	if err != nil {
+		http.Error(w, err.message, err.status)
+		return
+	}
+
+	// Who the session is started as. Optional; when given it must be a
+	// principal-store id that principal-store has, because the spawn reads
+	// grant-store's effective set for it and a session created as an id
+	// nobody hands out would be offered nothing with no explanation. A
+	// display name or email is refused by shape: neither is unique.
+	if req.PrincipalID != "" {
+		if !strings.HasPrefix(req.PrincipalID, "principal_") {
+			httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_principal_id", fmt.Sprintf(
+				"principal_id %q is not a principal-store id (principal_000001); a name or email is not accepted, because neither is unique", req.PrincipalID))
+			return
+		}
+		if s.PrincipalStore() == nil {
+			httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "principal_store_not_configured",
+				"principal_id was given but this server has no principal-store to check it with (LLMBRIDGE_PRINCIPAL_STORE_URL)")
+			return
+		}
+		if _, err := s.PrincipalStore().Get(r.Context(), req.PrincipalID, false); err != nil {
+			if errors.Is(err, principals.ErrNotFound) {
+				httpjson.WriteJSONError(w, http.StatusBadRequest, "unknown_principal", fmt.Sprintf(
+					"principal_id %s does not exist in principal-store: %v", req.PrincipalID, err))
+				return
+			}
+			httpjson.WriteJSONError(w, http.StatusBadGateway, "principal_store_unavailable", fmt.Sprintf(
+				"could not confirm principal_id %s with principal-store, so the session was not created: %v", req.PrincipalID, err))
+			return
+		}
+	}
+
+	// The bundle the session is composed from. Optional; when given it must
+	// be a bundle-store id that bundle-store has, because the spawn resolves
+	// it and provisions exactly what it names — a session created with an id
+	// nobody hands out would fail at spawn, far from the request that caused
+	// it. A bundle's name is refused by shape: it is renameable.
+	if req.BundleID != "" {
+		if s.BundleStore() == nil {
+			httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "bundle_store_not_configured",
+				"bundle_id was given but "+BundleStoreOffMessage+", so it cannot be checked")
+			return
+		}
+		if err := s.BundleStore().CheckSessionBundleExists(r.Context(), req.BundleID); err != nil {
+			if errors.Is(err, bundles.ErrSessionBundleNotFound) {
+				httpjson.WriteJSONError(w, http.StatusBadRequest, "unknown_bundle", fmt.Sprintf(
+					"bundle_id %q is not a bundle bundle-store has: %v", req.BundleID, err))
+				return
+			}
+			httpjson.WriteJSONError(w, http.StatusBadGateway, "bundle_store_unavailable", fmt.Sprintf(
+				"could not confirm bundle_id %s with bundle-store, so the session was not created: %v", req.BundleID, err))
+			return
+		}
+	}
+
+	// The agent the session runs as. Optional; when given it must be an agent
+	// agent-store has, by id or slug, whatever the principal's grants say.
+	if req.AgentID != "" {
+		if err := s.Login.CheckAgentExists(req.AgentID); err != nil {
+			switch {
+			case errors.Is(err, login.ErrUnknownAgent):
+				httpjson.WriteJSONError(w, http.StatusBadRequest, "unknown_agent", err.Error())
+			case errors.Is(err, login.ErrAgentStoreNotConfigured):
+				httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "agent_store_not_configured", err.Error())
+			default:
+				httpjson.WriteJSONError(w, http.StatusInternalServerError, "agent_store_unavailable", fmt.Sprintf(
+					"could not confirm agent_id %s, so the session was not created: %v", req.AgentID, err))
+			}
+			return
+		}
+	}
+
+	// The card the session works. Optional; when given it must be a card
+	// kanban-store has, because every spawn reads its tags to pick the
+	// context sections it injects — a card id nobody has would leave every
+	// spawn without them, far from the request that caused it.
+	if req.CardID != "" {
+		if s.IssueReads() == nil {
+			httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "kanban_store_not_configured",
+				"card_id was given but this server has no kanban-store to check it with (kanban-store is off)")
+			return
+		}
+		if _, err := s.IssueReads().CardTags(r.Context(), req.CardID); err != nil {
+			if errors.Is(err, issuereads.ErrNotFound) {
+				httpjson.WriteJSONError(w, http.StatusBadRequest, "unknown_card", fmt.Sprintf(
+					"card_id %q is not a card kanban-store has: %v", req.CardID, err))
+				return
+			}
+			httpjson.WriteJSONError(w, http.StatusBadGateway, "kanban_store_unavailable", fmt.Sprintf(
+				"could not confirm card_id %s with kanban-store, so the session was not created: %v", req.CardID, err))
+			return
+		}
+	}
+
+	// The session that started this one. A principal may name only a session
+	// of its own; someone else's gets the same answer as a missing one.
+	var managerSession *store.Session
+	if req.ManagerSessionID != "" {
+		parent, err := s.Store.GetSession(req.ManagerSessionID)
+		if errors.Is(err, sql.ErrNoRows) {
+			httpjson.WriteJSONError(w, http.StatusBadRequest, "unknown_manager_session", fmt.Sprintf(
+				"manager_session_id %q is not a session this server has", req.ManagerSessionID))
+			return
+		}
+		if err != nil {
+			httpjson.WriteJSONError(w, http.StatusInternalServerError, "manager_session_lookup_failed", fmt.Sprintf(
+				"could not read manager_session_id %s, so the session was not created: %v", req.ManagerSessionID, err))
+			return
+		}
+		if scope, restricted := requestcaller.SessionScopeRestrictingRequest(r); restricted && !scope.Reaches(s.Store, parent) {
+			caller, _ := requestcaller.FromRequest(r)
+			drives, err := s.Login.CallerStartedSessionAndMayDriveIt(r.Context(), caller, parent)
+			if err != nil {
+				httpjson.WriteJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
+				return
+			}
+			if !drives {
+				httpjson.WriteJSONError(w, http.StatusBadRequest, "unknown_manager_session", fmt.Sprintf(
+					"manager_session_id %q is not a session this server has", req.ManagerSessionID))
+				return
+			}
+		}
+		managerSession = parent
+	}
+
+	// Caller-minted session id: workers (autoworker, scheduler, dispatcher)
+	// pass their own session_id so they can persist a kanban link or queue
+	// row before the create round-trip returns. Empty = bridge mints
+	// br_<nanos> as before. Collisions return 409.
+	bridgeID := req.SessionID
+	if bridgeID == "" {
+		bridgeID = generateBridgeID()
+	} else if _, err := s.Store.GetSession(bridgeID); err == nil {
+		http.Error(w, "session_id already exists", http.StatusConflict)
+		return
+	}
+
+	if req.PrincipalID != "" {
+		if err := s.checkPrincipalMayRunHere(r.Context(), creatorSubject, &store.Session{SessionID: bridgeID, PrincipalID: req.PrincipalID, AgentID: req.AgentID}, inst); err != nil {
+			status, code := grantGateStatus(err)
+			httpjson.WriteJSONError(w, status, code, err.Error())
+			return
+		}
+	}
+
+	sess := &store.Session{
+		SessionID:     bridgeID,
+		DisplayName:   req.DisplayName,
+		Harness:       req.Harness,
+		InstanceID:    inst.ID,
+		State:         string(msg.SessionIdle),
+		AgentID:       req.AgentID,
+		PrincipalID:   req.PrincipalID,
+		BundleID:      req.BundleID,
+		CardID:        req.CardID,
+		HarnessConfig: req.HarnessConfig,
+		Purpose:       req.Purpose,
+		Type:          req.Type,
+		Origin:        req.Origin,
+		FolderName:    s.FolderForPurpose(req.Purpose),
+		Mode:          mode,
+		MaxBudgetUSD:  maxBudgetUSD,
+		WorkingDir:    req.WorkingDir,
+	}
+	if managerSession != nil {
+		sess.ManagerSessionID = managerSession.SessionID
+		sess.RootSessionID = managerSession.RootSessionID
+		if sess.RootSessionID == "" {
+			sess.RootSessionID = managerSession.SessionID
+		}
+		sess.Depth = managerSession.Depth + 1
+	}
+
+	// Snapshot the global permission mode into the session so the
+	// per-session value is durable from creation onward. Skipped if the
+	// caller already set permission_mode (or legacy bypass_permissions) in
+	// req.HarnessConfig.
+	s.PermissionGate.SnapshotPermissionModeIntoSession(sess)
+
+	// Model, effort, spend ceiling and disabled tools are decided here, once,
+	// and pinned into the row before it exists: the session's own value, then
+	// its bundle, then the harness default — see session_defaults.go and
+	// model_selection.go. A session whose model cannot be resolved is not
+	// created: the alternative was a row that spawned on whatever the harness
+	// felt like while the picker showed the user's pick.
+	if err := s.snapshotSessionDefaultsIntoSession(r.Context(), sess, req.MaxBudget != nil); err != nil {
+		code := "model_unresolvable"
+		switch {
+		case errors.Is(err, errDeniedReadPathsUnenforceable):
+			code = "denied_read_paths_unenforceable"
+		case errors.Is(err, errBuiltInToolAllowListUnenforceable):
+			code = "built_in_tool_allow_list_unenforceable"
+		case errors.Is(err, errToolStoreUnavailable):
+			code = "tool_store_unavailable"
+		}
+		body, _ := json.Marshal(map[string]any{"error": map[string]string{"code": code, "message": err.Error()}})
+		http.Error(w, string(body), http.StatusUnprocessableEntity)
+		return
+	}
+
+	// The origin goes in before the session does, so no session started for a
+	// connected server's user ever exists without the peer's limits.
+	if creatorPeerOrigin != nil {
+		origin := *creatorPeerOrigin
+		origin.SessionID = sess.SessionID
+		if err := s.Store.RecordSessionPeerOrigin(origin); err != nil {
+			httpjson.WriteJSONError(w, http.StatusInternalServerError, "session_peer_origin_not_recorded", err.Error())
+			return
+		}
+	}
+	// The starter goes in before the session does, so no session started as
+	// another principal ever exists without saying who may drive it.
+	if startedAsAnotherPrincipalBy != "" {
+		if err := s.Store.RecordSessionStarter(store.SessionStarter{SessionID: sess.SessionID, PrincipalID: startedAsAnotherPrincipalBy, RecordedBy: startedAsAnotherPrincipalBy}); err != nil {
+			httpjson.WriteJSONError(w, http.StatusInternalServerError, "session_starter_not_recorded", err.Error())
+			return
+		}
+	}
+	if err := s.Store.CreateSession(sess); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if req.AutoStart {
+		credID := s.HarnessStore().FirstEnabledCredentialID(inst.ID)
+		if _, startErr := s.StartOnInstance(r.Context(), sess, inst, credID); startErr != nil {
+			// The cause goes on the session's status and in the log. Until
+			// 2026-10-19 it went nowhere: br_1791866142589272438 errored in
+			// its creation second, the create answered 201, and only a retry
+			// through /resume ever showed anyone why.
+			s.recordSpawnFailure(sess, startErr)
+		} else {
+			sess.State = string(msg.SessionStarting)
+		}
+	}
+
+	w.WriteHeader(http.StatusCreated)
+
+	// PTY sessions need an attach token so the browser can hand it to the
+	// /attach WS upgrade. The token lives only on the in-memory AttachHub
+	// (it dies with the pty), so we serialize it alongside the persisted
+	// session via an inline-embedded wrapper rather than adding a transient
+	// field to ManagedSession.
+	if sess.Mode == msg.SessionModePTY {
+		if hub := s.Harness.AttachHubFor(sess.SessionID); hub != nil {
+			httpjson.WriteJSON(w, createSessionResponse{Session: sess, AttachToken: hub.Token()})
+			return
+		}
+	}
+	httpjson.WriteJSON(w, sess)
+}
+
+// createSessionResponse is the JSON shape returned by POST /sessions. It
+// embeds *store.Session so existing fields are unchanged for events-mode
+// callers; AttachToken is set only for pty sessions that started cleanly.
+type createSessionResponse struct {
+	*store.Session
+	AttachToken string `json:"attach_token,omitempty"`
+}
+
+// httpErr carries a message and the HTTP status to return.
+type httpErr struct {
+	status  int
+	message string
+}
+
+// resolveInstance picks the harness instance that a session should run on.
+// Callers pass an explicit instance_id or "" to auto-pick any enabled instance
+// for the given harness type. Returns an error suitable for http.Error when
+// no usable instance is found.
+func resolveInstance(hs *machines.Store, instanceID string, h msg.Harness) (*msg.Instance, *httpErr) {
+	if instanceID != "" {
+		inst, err := hs.GetInstance(instanceID)
+		if err != nil {
+			return nil, &httpErr{http.StatusNotFound, "instance not found"}
+		}
+		if !inst.Enabled {
+			return nil, &httpErr{http.StatusServiceUnavailable, "instance is disabled"}
+		}
+		if inst.HarnessType != h {
+			return nil, &httpErr{http.StatusBadRequest, fmt.Sprintf("instance is for %s, not %s", inst.HarnessType, h)}
+		}
+		return inst, nil
+	}
+
+	instances, err := hs.ListInstancesByHarness(h)
+	if err != nil {
+		return nil, &httpErr{http.StatusInternalServerError, err.Error()}
+	}
+	for i := range instances {
+		if instances[i].Enabled {
+			return &instances[i], nil
+		}
+	}
+	return nil, &httpErr{http.StatusServiceUnavailable, fmt.Sprintf("no enabled instance for harness: %s", h)}
+}
+
+func (s *Service) HandleRenameSession(w http.ResponseWriter, r *http.Request) {
+	bridgeID := r.PathValue("id")
+	var req RenameSessionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	name := strings.TrimSpace(req.DisplayName)
+	if name == "" {
+		http.Error(w, "display_name is required", http.StatusBadRequest)
+		return
+	}
+	if err := s.Store.UpdateSessionDisplayName(bridgeID, name); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// User-set name wins. Drop any in-flight renamer reservation so a title
+	// call still running stores nothing (ApplyAutoRename will see the cleared
+	// slot).
+	if err := s.Store.ClearRenamerSlot(bridgeID); err != nil {
+		log.Printf("[session] clear renamer slot on rename: %v", err)
+	}
+	sess, err := s.Store.GetSession(bridgeID)
+	if err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	s.broadcastDisplayNameChanged(bridgeID, sess.DisplayName)
+	httpjson.WriteJSON(w, sess)
+}
+
+func (s *Service) HandleStopSession(w http.ResponseWriter, r *http.Request) {
+	bridgeID := r.PathValue("id")
+	sess, err := s.Store.GetSession(bridgeID)
+	if err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	if err := s.StopSession(bridgeID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	sess.State = string(msg.SessionAborted)
+	httpjson.WriteJSON(w, sess)
+}
+
+// recordSpawnFailure records that a harness process could not be started for
+// sess: state error, reason spawn_failed, and the error itself as the status's
+// reason_detail, which GET /sessions and the session's event stream both
+// carry. It also logs the error and updates sess in place, State and Status,
+// so a handler that answers with sess shows the cause too.
+func (s *Service) recordSpawnFailure(sess *store.Session, spawnErr error) {
+	log.Printf("[spawn] %s: ERROR could not start a harness process: %v", sess.SessionID, spawnErr)
+	if _, err := s.Harness.ForceSessionStateWithDetail(sess.SessionID, msg.SessionError, msg.ReasonSpawnFailed, spawnErr.Error()); err != nil {
+		log.Printf("[spawn] %s: ERROR recording the spawn failure: %v", sess.SessionID, err)
+	}
+	sess.State = string(msg.SessionError)
+	if stored, err := s.Store.GetSession(sess.SessionID); err == nil && stored != nil {
+		sess.Status = stored.Status
+	}
+}
+
+// StopSession kills a session's harness process and marks it aborted. It is
+// what POST /sessions/{id}/stop does, and what a stop_session action runs.
+func (s *Service) StopSession(bridgeID string) error {
+	if err := s.Harness.Kill(bridgeID); err != nil {
+		// Process might not be running, just update state
+	}
+	_, err := s.Harness.ForceSessionState(bridgeID, msg.SessionAborted, msg.ReasonKilled)
+	return err
+}
+
+func (s *Service) HandleSendMessage(w http.ResponseWriter, r *http.Request) {
+	// A session that does not exist, or that its parent harness controls, is
+	// refused whatever the body says, before the body is read.
+	sess, err := s.Store.GetSession(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	if sess.ControlledBy == msg.ControlledByHarness {
+		sendanswer.NotBridgeControlled().Write(w)
+		return
+	}
+	var req SendMessageRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	s.sendMessageToSession(r.Context(), r.PathValue("id"), req, messagesender.SenderPrincipalIDOfRequest(r)).Write(w)
+}
+
+// sendMessageToSession sends a message into a session as senderPrincipalID
+// (empty for none): every check and step of POST /sessions/{id}/send, which
+// calls it, and the answer that route writes. A sender inside this server
+// calls it directly, so its message is checked and sent exactly as a
+// person's is; such a caller goes through SendMessageFromThisServer, which
+// also does what the route's wrapper does.
+func (s *Service) sendMessageToSession(ctx context.Context, bridgeID string, req SendMessageRequest, senderPrincipalID string) sendanswer.Answer {
+	sess, err := s.Store.GetSession(bridgeID)
+	if err != nil {
+		return sendanswer.PlainText(http.StatusNotFound, "session not found")
+	}
+
+	// Sending to a harness subagent would spawn a fresh agent rather than
+	// reach the one that ran, for the same reason resume does — see the gate
+	// in HandleResumeSession. The parent is the addressable session.
+	if sess.ControlledBy == msg.ControlledByHarness {
+		return sendanswer.NotBridgeControlled()
+	}
+
+	// Message and Blocks are mutually exclusive — fail fast at the boundary
+	// so harnesses never see both populated.
+	if req.Message != "" && len(req.Blocks) > 0 {
+		return sendanswer.PlainText(http.StatusBadRequest, "message and blocks are mutually exclusive")
+	}
+	if req.Message == "" && len(req.Blocks) == 0 {
+		return sendanswer.PlainText(http.StatusBadRequest, "message or blocks must be set")
+	}
+
+	// Refuse to spend past the session's ceiling. Checked before the
+	// harness is started below, so an over-budget session does not get a
+	// process spawned for a message it will not be allowed to send.
+	if refusal, over := s.overBudgetSendAnswer(bridgeID); over {
+		return refusal
+	}
+
+	// While the server drains before a restart, a new turn waits: the
+	// message is kept and sent once the drain ends (restart_drain.go).
+	if heldMessageID, held, err := s.HoldMessageIfRestartDraining(bridgeID, req, senderPrincipalID, "send"); err != nil {
+		return sendanswer.JSONError(http.StatusInternalServerError, "hold_failed", err.Error())
+	} else if held {
+		return sendanswer.JSON(http.StatusAccepted, msg.SendMessageResponse{Status: msg.SendStatusHeld, HeldMessageID: heldMessageID})
+	}
+
+	if s.Harness.Get(bridgeID) == nil {
+		if sess.InstanceID == "" || s.HarnessStore() == nil {
+			return sendanswer.PlainText(http.StatusInternalServerError, "session has no instance bound")
+		}
+		inst, err := s.HarnessStore().GetInstance(sess.InstanceID)
+		if err != nil {
+			return sendanswer.PlainText(http.StatusInternalServerError, fmt.Sprintf("instance not found: %v", err))
+		}
+		credID := s.HarnessStore().FirstEnabledCredentialID(inst.ID)
+		if _, startErr := s.StartOnInstance(ctx, sess, inst, credID); startErr != nil {
+			return sendanswer.PlainText(http.StatusInternalServerError, fmt.Sprintf("failed to start harness: %v", startErr))
+		}
+	}
+
+	userEvent := msg.Event{
+		Type:            msg.EventUserMessage,
+		BridgeSessionID: bridgeID,
+		ClientRequestID: req.ClientRequestID,
+		Timestamp:       time.Now(),
+		Result:          &msg.ResultEvent{Text: req.Message, Blocks: req.Blocks},
+	}
+	sender, err := s.MessageSenders.Of(ctx, senderPrincipalID)
+	if err != nil {
+		return sendanswer.JSONError(http.StatusBadGateway, "principal_store_unavailable", err.Error())
+	}
+	sender.Stamp(&userEvent)
+	// Persist before forwarding to the harness. If either store can't take
+	// the user_message, refuse the send — otherwise the assistant runs against
+	// a prompt that's missing from the durable log (log-store is what the
+	// /messages endpoint reads). Caller can retry safely; the harness has not
+	// seen the message yet. BroadcastEvent now writes both stores and returns
+	// the log-store error if it fails.
+	if _, err := s.Harness.BroadcastEvent(&userEvent); err != nil {
+		return sendanswer.PlainText(http.StatusInternalServerError, fmt.Sprintf("persist user_message: %v", err))
+	}
+
+	if name := DisplayNameFromMessage(req.Message); name != "" {
+		if _, err := s.Store.SetDisplayNameIfEmpty(bridgeID, name); err != nil {
+			log.Printf("[session] failed to set display_name from first message: %v", err)
+		}
+	}
+
+	if err := s.Harness.Send(bridgeID, req.Message, req.Blocks); err != nil {
+		return sendanswer.PlainText(http.StatusInternalServerError, err.Error())
+	}
+
+	// Replying to a chat that was marked done reopens it: pull it back out of
+	// the Archive folder so it rejoins the active list. This mirrors, for the
+	// folder half of "done", the state half that re-engagement already undoes
+	// through derivation (see HandleMarkSessionDone). State is owned by the
+	// derivation pipeline, so we deliberately touch only the folder here.
+	if sess.FolderName == store.ArchiveFolder {
+		if err := s.Store.SetSessionFolder(bridgeID, ""); err != nil {
+			log.Printf("[session] failed to reopen archived session %s on reply: %v", bridgeID, err)
+		}
+	}
+
+	// A session is a thread, so any message closes the questions open on it.
+	// The reply lands at the end of the conversation whether or not the sender
+	// meant it as an answer, and a question left open behind it could never be
+	// answered in its own context again. Doing it here rather than in a client
+	// means a question closed from the CLI, from another surface, or by an
+	// orchestrator closes the same way as one answered from the card. A
+	// question whose park is still live is skipped — it resolves through its
+	// channel, not through the next message.
+	s.Signals.CloseQuestionsAnsweredByMessage(bridgeID, req.Message)
+
+	return sendanswer.JSON(http.StatusOK, msg.SendMessageResponse{Status: msg.SendStatusSent, MessageID: userEvent.MessageID})
+}
+
+// SendMessageFromThisServer sends a message the server itself sends — a
+// button's message, a chat link's delivery, a loose end's answer, a wakeup,
+// a held message — through sendMessageToSession, as POST /sessions/{id}/send
+// does, after the touch of keep-awake that route's wrapper makes. These
+// senders were let through request authorization when they started (the
+// person who pressed the button, the link's owner) or are the server's own,
+// so no route rule is skipped.
+func (s *Service) SendMessageFromThisServer(ctx context.Context, sessionID string, req SendMessageRequest, senderPrincipalID string) sendanswer.Answer {
+	if s.KeepAwake() != nil {
+		// Taking a block can wait on a child starting; the send must not.
+		go s.KeepAwake().Touch()
+	}
+	return s.sendMessageToSession(ctx, sessionID, req, senderPrincipalID)
+}
+
+// writeRefusalIfOverBudget refuses the request when the session has spent its
+// spend ceiling, writing the refusal and reporting true so the caller
+// returns. Reports false — write nothing — for every session that is
+// under its ceiling or has none.
+//
+// 402 Payment Required is the honest status: the request is well formed
+// and the caller is permitted to make it, and the only thing standing in
+// the way is money. The body names both numbers so a client can say what
+// happened without a second round trip.
+func (s *Service) writeRefusalIfOverBudget(w http.ResponseWriter, bridgeID string) bool {
+	over, spendUSD, maxBudgetUSD := s.Harness.SessionOverBudget(bridgeID)
+	if !over {
+		return false
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusPaymentRequired)
+	json.NewEncoder(w).Encode(overBudgetRefusalBody(spendUSD, maxBudgetUSD))
+	return true
+}
+
+// overBudgetRefusalBody names both numbers so a client can say what happened
+// without a second round trip.
+func overBudgetRefusalBody(spendUSD, maxBudgetUSD float64) map[string]any {
+	return map[string]any{
+		"error": map[string]any{
+			"code":           msg.ErrCodeBudgetExceeded,
+			"message":        fmt.Sprintf("session has spent $%.2f of its $%.2f ceiling; raise max_budget to continue", spendUSD, maxBudgetUSD),
+			"spend_usd":      spendUSD,
+			"max_budget_usd": maxBudgetUSD,
+		},
+	}
+}
+
+// overBudgetSendAnswer is writeRefusalIfOverBudget's refusal as a send
+// answer, and true, when the session has spent its ceiling.
+func (s *Service) overBudgetSendAnswer(bridgeID string) (sendanswer.Answer, bool) {
+	over, spendUSD, maxBudgetUSD := s.Harness.SessionOverBudget(bridgeID)
+	if !over {
+		return sendanswer.Answer{}, false
+	}
+	return sendanswer.JSON(http.StatusPaymentRequired, overBudgetRefusalBody(spendUSD, maxBudgetUSD)), true
+}
+
+func (s *Service) HandleSessionEvents(w http.ResponseWriter, r *http.Request) {
+	bridgeID := r.PathValue("id")
+	if _, err := s.Store.GetSession(bridgeID); err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+
+	events := s.Harness.Subscribe(bridgeID)
+	// Tail local Codex history for as long as this view is connected. A separate
+	// goroutine lets the SSE consumer drain events while a backlog imports.
+	syncCtx, stopSync := context.WithCancel(r.Context())
+	defer stopSync()
+	syncErrors := make(chan error, 1)
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			if _, err := s.Harness.SyncCodexHistory(syncCtx, bridgeID); err != nil {
+				if syncCtx.Err() == nil {
+					syncErrors <- err
+				}
+				return
+			}
+			select {
+			case <-syncCtx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		s.Harness.Unsubscribe(bridgeID, events)
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	lastEventID := r.Header.Get("Last-Event-ID")
+	var lastRowID int
+	if lastEventID != "" {
+		fmt.Sscanf(lastEventID, "%d", &lastRowID)
+	}
+
+	// A cursor numbered by the store the session log replaced names no
+	// event here, so the stream starts as a new connection does, with the
+	// current turn.
+	if s.Harness.SessionEvents().StreamCursorFromEarlierNumbering(int64(lastRowID)) {
+		lastRowID = 0
+	}
+
+	replayedIDs := make(map[int]bool)
+	if lastRowID > 0 {
+		if stored, err := s.Harness.SessionEvents().ListEventsSinceID(bridgeID, lastRowID); err == nil {
+			for _, ev := range stored {
+				var parsed msg.Event
+				if json.Unmarshal(ev.Data, &parsed) == nil {
+					fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", ev.RowID, parsed.Type, ev.Data)
+					replayedIDs[ev.RowID] = true
+				}
+			}
+			flusher.Flush()
+		}
+	} else {
+		if stored, err := s.Harness.SessionEvents().ListCurrentTurnEventsWithIDs(bridgeID); err == nil && len(stored) > 0 {
+			for _, ev := range stored {
+				var parsed msg.Event
+				if json.Unmarshal(ev.Data, &parsed) == nil {
+					fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", ev.RowID, parsed.Type, ev.Data)
+					replayedIDs[ev.RowID] = true
+				}
+			}
+			flusher.Flush()
+		}
+	}
+
+	keepalive := time.NewTicker(serversentevents.SseKeepaliveInterval)
+	defer keepalive.Stop()
+
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			s.Harness.Unsubscribe(bridgeID, events)
+			return
+		case err := <-syncErrors:
+			log.Printf("[codex-history-sync] %s: %v", bridgeID, err)
+			data, _ := json.Marshal(map[string]string{"error": err.Error()})
+			fmt.Fprintf(w, "event: error\ndata: %s\n\n", data)
+			flusher.Flush()
+			s.Harness.Unsubscribe(bridgeID, events)
+			return
+		case <-keepalive.C:
+			// An idle session emits nothing between turns, so keep the stream
+			// warm or an intermediary's idle read timeout will reap it. See
+			// HandleSessionListEvents for the full rationale.
+			if _, err := fmt.Fprint(w, ": keepalive\n\n"); err != nil {
+				s.Harness.Unsubscribe(bridgeID, events)
+				return
+			}
+			flusher.Flush()
+		case stored, ok := <-events:
+			if !ok {
+				w.Write([]byte("event: close\ndata: {}\n\n"))
+				flusher.Flush()
+				return
+			}
+			if replayedIDs[int(stored.RowID)] {
+				delete(replayedIDs, int(stored.RowID))
+				continue
+			}
+			data, _ := json.Marshal(stored.Event)
+			fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", stored.RowID, stored.Event.Type, data)
+			flusher.Flush()
+		}
+	}
+}
+
+func (s *Service) HandleInterruptSession(w http.ResponseWriter, r *http.Request) {
+	bridgeID := r.PathValue("id")
+	sess, err := s.Store.GetSession(bridgeID)
+	if err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+
+	// The live process registry — not the denormalized state cache — is the
+	// authority on whether there is anything to interrupt. Stop() returns
+	// "session not running" when no live process exists; surface that as the
+	// 409. Interrupting a live-but-idle process is a harmless no-op. The old
+	// `sess.State != running` guard 409'd whenever the session was in
+	// tool_running (a tool in flight — the most common moment a user hits
+	// Stop), silently failing the interrupt. See
+	// docs/findings/2026-07-27-interrupt-dual-emit-turn-hijack.md §2/§5.
+	if err := s.Harness.Stop(bridgeID); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+
+	// `paused` — "user-interrupted, can be resumed" — not `idle`. The two
+	// are different facts: idle is a turn that finished on its own terms,
+	// paused is one a person stopped. Writing idle threw that away, so
+	// every client that wanted to show it had to remember locally what it
+	// had asked for; bridge-ui kept a localStorage set of interrupted ids
+	// for exactly this reason.
+	//
+	// Through the manager rather than straight to the store, so the
+	// derivation moves with the row and SSE subscribers hear it live.
+	// See docs/findings/2026-07-27-interrupt-dual-emit-turn-hijack.md §7.
+	//
+	// NOTE: paused here means the TURN was stopped, not that the process
+	// died. `Manager.Stop` calls `proc.Interrupt()` and leaves the process
+	// registered, so a paused session still has a live harness and is NOT
+	// resumable — resume 409s on the process registry, and sending the
+	// next message is what continues it.
+	s.Harness.ForceSessionState(bridgeID, msg.SessionPaused, msg.ReasonUserInterrupt)
+
+	sess.State = string(msg.SessionPaused)
+	httpjson.WriteJSON(w, sess)
+}
+
+func (s *Service) HandleResumeSession(w http.ResponseWriter, r *http.Request) {
+	bridgeID := r.PathValue("id")
+	sess, err := s.Store.GetSession(bridgeID)
+	if err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+
+	// The live process registry is the authority on whether the session is
+	// resumable, not the denormalized state cache. A session with a live
+	// process is already running and has nothing to resume (409); one with
+	// no live process is resumable regardless of a stale state string — a
+	// crashed or interrupted session can read "running"/"error" yet have no
+	// process. The old `sess.State != idle` guard mis-classified both. Same
+	// cache-as-authority mistake as interrupt; see
+	// docs/findings/2026-07-27-interrupt-dual-emit-turn-hijack.md §2/§5.
+	if s.Harness.Get(bridgeID) != nil {
+		http.Error(w, "session already running", http.StatusConflict)
+		return
+	}
+
+	// A harness subagent has no process of its own to resume — it ran inside
+	// its parent. Starting one does not continue it: bridge-server cannot
+	// resume what it did not spawn, so the harness starts a FRESH agent that
+	// replays the turn and runs tools unsupervised, and the new session id
+	// overwrites the row's harness_session_id, destroying the dedupe key
+	// discovery converges on. Observed in production via the watchdog, which is
+	// gated in autoResume for the same reason.
+	if sess.ControlledBy == msg.ControlledByHarness {
+		httpjson.WriteJSONError(w, http.StatusConflict, "not_bridge_controlled",
+			"this session is controlled by its parent harness process and cannot be resumed directly; resume the session that spawned it")
+		return
+	}
+
+	// A session that spent its ceiling does not come back by being
+	// resumed. Raise the ceiling first (POST /sessions/{id}/config).
+	if s.writeRefusalIfOverBudget(w, bridgeID) {
+		return
+	}
+
+	if sess.InstanceID == "" || s.HarnessStore() == nil {
+		http.Error(w, "session has no instance bound", http.StatusInternalServerError)
+		return
+	}
+	inst, err := s.HarnessStore().GetInstance(sess.InstanceID)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("instance not found: %v", err), http.StatusInternalServerError)
+		return
+	}
+	credID := s.HarnessStore().FirstEnabledCredentialID(inst.ID)
+	if _, err := s.StartOnInstance(r.Context(), sess, inst, credID); err != nil {
+		http.Error(w, fmt.Sprintf("failed to resume: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	sess.State = string(msg.SessionStarting)
+	httpjson.WriteJSON(w, sess)
+}
+
+func (s *Service) HandleCompactSession(w http.ResponseWriter, r *http.Request) {
+	bridgeID := r.PathValue("id")
+	sess, err := s.Store.GetSession(bridgeID)
+	if err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+
+	var req CompactSessionRequest
+	json.NewDecoder(r.Body).Decode(&req)
+
+	params, err := harness.BuildCompactParams(bridgeID, req.Summary)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := s.Harness.SendJSONRPC(bridgeID, "compact", params); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	httpjson.WriteJSON(w, sess)
+}
+
+func (s *Service) HandleForkSession(w http.ResponseWriter, r *http.Request) {
+	bridgeID := r.PathValue("id")
+	parent, err := s.Store.GetSession(bridgeID)
+	if err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+
+	var req ForkSessionRequest
+	json.NewDecoder(r.Body).Decode(&req)
+
+	displayName := req.DisplayName
+	if displayName == "" {
+		displayName = parent.DisplayName + " (fork)"
+	}
+
+	if parent.InstanceID == "" || s.HarnessStore() == nil {
+		http.Error(w, "parent session has no instance bound", http.StatusInternalServerError)
+		return
+	}
+	if parent.HarnessSessionID == "" {
+		http.Error(w, "parent session has no harness_session_id yet (not initialized)", http.StatusConflict)
+		return
+	}
+	inst, err := s.HarnessStore().GetInstance(parent.InstanceID)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("instance not found: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// ParentID feeds buildStartParams' params.Fork, which the harness uses
+	// as the --resume / thread-fork target. Harnesses need the parent's
+	// harness UUID, not the bridge_session_id (cf. renamer.go's note that
+	// parent_id is "CC-fork plumbing"). The forward link to the parent's
+	// stable bridge_id is implied by the chain in the harness's state.db.
+	// Inherit Type / Purpose / Origin from parent unless caller overrides —
+	// a fork of an interactive session is itself interactive; an autonomous
+	// worker forking off a sub-task stays autonomous; the originator of the
+	// fork is the parent's originator unless an explicit override is given.
+	sessionType := req.Type
+	if sessionType == "" {
+		sessionType = parent.Type
+	}
+	purpose := req.Purpose
+	if purpose == "" {
+		purpose = parent.Purpose
+	}
+	origin := req.Origin
+	if origin == "" {
+		origin = parent.Origin
+	}
+	forkedID := generateBridgeID()
+	forked := &store.Session{
+		SessionID:   forkedID,
+		DisplayName: displayName,
+		Harness:     parent.Harness,
+		InstanceID:  parent.InstanceID,
+		State:       string(msg.SessionIdle),
+		AgentID:     parent.AgentID,
+		// A fork runs as whoever the parent runs as, with the parent's bundle
+		// and card: otherwise forking would be how a principal's session sheds
+		// its owner (becoming invisible to them and ungated by their grants),
+		// its bundle or its context.
+		PrincipalID: parent.PrincipalID,
+		BundleID:    parent.BundleID,
+		CardID:      parent.CardID,
+		// ParentID carries the parent's HARNESS uuid — the value `--fork` needs.
+		// ForkedFromSessionID is the honest lineage link: the parent's bridge id.
+		// Once the fork plumbing resolves the harness id from the parent row,
+		// ParentID goes away (§21).
+		ParentID:            parent.HarnessSessionID,
+		ForkedFromSessionID: parent.SessionID,
+		Type:                sessionType,
+		Purpose:             purpose,
+		Origin:              origin,
+		// A fork runs the parent's setup: its model, its permission mode, its
+		// tool provisioning. Not copying this was how a fork silently landed on
+		// the harness default while the parent ran the model the user chose.
+		HarnessConfig: parent.HarnessConfig,
+		// Inherit the parent's spend ceiling. Not inheriting it would make
+		// forking the way to get an uncapped session out of a capped one,
+		// which is the whole gate defeated by one button. The fork does
+		// start its own spend at zero, so a capped session can still be
+		// forked into a second full allowance — a per-tree pot, rather
+		// than a per-session one, is the follow-up this does not attempt.
+		MaxBudgetUSD: parent.MaxBudgetUSD,
+	}
+
+	if _, err := s.Store.CopySessionPeerOrigin(parent.SessionID, forked.SessionID); err != nil {
+		httpjson.WriteJSONError(w, http.StatusInternalServerError, "session_peer_origin_not_recorded", err.Error())
+		return
+	}
+	if err := s.Store.CreateSession(forked); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	credID := s.HarnessStore().FirstEnabledCredentialID(inst.ID)
+	if _, err := s.StartOnInstance(context.Background(), forked, inst, credID); err != nil {
+		s.recordSpawnFailure(forked, err)
+	} else {
+		forked.State = string(msg.SessionStarting)
+	}
+
+	w.WriteHeader(http.StatusCreated)
+	httpjson.WriteJSON(w, forked)
+}
+
+// CarriesHarnessConfig reports whether a config request asks the harness to
+// change anything, as opposed to only moving the spend ceiling, which is server
+// state and never leaves this process.
+//
+// DisabledTools is tested for nil, not for length. It is the whole set of names
+// to exclude, so an empty list is the request that re-enables every tool — the
+// loudest thing this endpoint can say about a tool set, and a length test reads
+// it as silence. A budget-only fast path that swallowed it would drop the tool
+// change on exactly the sessions the escape hatch exists to revive.
+func CarriesHarnessConfig(req ConfigSessionRequest) bool {
+	return req.Model != "" || req.Effort != "" || req.DisabledTools != nil
+}
+
+func (s *Service) HandleConfigSession(w http.ResponseWriter, r *http.Request) {
+	bridgeID := r.PathValue("id")
+	sess, err := s.Store.GetSession(bridgeID)
+	if err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+
+	var req ConfigSessionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// The spend ceiling is server state, not harness state, so it is
+	// persisted here as well as forwarded. This is also the only way to
+	// revive a session the gate has halted: raising the ceiling above the
+	// spend puts it back under, and the next send is allowed through.
+	// Setting it to 0 removes the ceiling entirely.
+	if req.MaxBudget != nil {
+		if *req.MaxBudget < 0 {
+			http.Error(w, `{"error":{"code":"invalid_max_budget","message":"max_budget must not be negative; send 0 to remove the ceiling"}}`, http.StatusBadRequest)
+			return
+		}
+		if err := s.Store.SetSessionMaxBudgetUSD(bridgeID, *req.MaxBudget); err != nil {
+			http.Error(w, fmt.Sprintf("persist max_budget: %v", err), http.StatusInternalServerError)
+			return
+		}
+		sess.MaxBudgetUSD = *req.MaxBudget
+		// The ceiling is now the session's own, whatever layer set it at create.
+		if relabeled, err := harnessConfigWithSettingsChosenOnSession(sess.HarnessConfig, msg.EffectiveSettingMaxBudget); err != nil {
+			http.Error(w, "record max_budget layer: "+err.Error(), http.StatusInternalServerError)
+			return
+		} else if err := s.Store.UpdateSessionHarnessConfig(bridgeID, relabeled); err != nil {
+			http.Error(w, "persist harness_config: "+err.Error(), http.StatusInternalServerError)
+			return
+		} else {
+			sess.HarnessConfig = relabeled
+		}
+
+		// Raising the ceiling on a session with no live process is the
+		// normal shape of the escape hatch — the gate interrupted it, so
+		// there is nothing left to forward the config to. Forwarding
+		// anyway would fail with "session not running" and report the
+		// revival as an error even though the ceiling was saved.
+		if !CarriesHarnessConfig(req) && s.Harness.Get(bridgeID) == nil {
+			httpjson.WriteJSON(w, sess)
+			return
+		}
+	}
+
+	// No live process, but harness config to apply: PERSIST it instead of
+	// forwarding, and let the spawn pick it up.
+	//
+	// ⚠️ This branch used to be an error, on the stated reasoning that harness
+	// config "still needs a harness to carry it to". That is not true of this
+	// server: `startParams` (internal/harness/process.go:145) merges the stored
+	// `harness_config` into the params it spawns with, which is exactly how
+	// `permission_mode` already reaches a session that has never run.
+	//
+	// What the old behavior cost: a freshly created session is in the database
+	// and has no process until the first send starts one, so a client that
+	// configures between create and send — which is the normal shape of "new chat
+	// with a model chosen", chat-core's `send` does precisely that — got a 500
+	// and the config was DROPPED. The session then ran on the harness default
+	// while the picker showed the user's choice. A silent wrong answer, not a
+	// visible failure, which is why it survived.
+	//
+	// Merged into whatever is already stored, never written over it: a bare
+	// replace would delete the `permission_mode` the create path had just put
+	// there. Same rule, and the same reason, as `hooks_resolve.go`.
+	// A model named here is resolved THROUGH the registry before anything
+	// else happens — a role name becomes its id, an unknown id is a 400 — so
+	// neither branch below can forward or persist a model nothing can run.
+	var selection *msg.ModelSelection
+	if req.Model != "" {
+		resolved, err := s.selectionFromRequested(req.Model, msg.ModelSelectedBySession)
+		if err != nil {
+			body, _ := json.Marshal(map[string]any{"error": map[string]string{"code": "model_unresolvable", "message": err.Error()}})
+			http.Error(w, string(body), http.StatusBadRequest)
+			return
+		}
+		selection = &resolved
+		req.Model = string(resolved.Model) // the harness receives the id, never the role name
+	}
+
+	merged, err := mergeHarnessConfig(sess.HarnessConfig, req)
+	if err != nil {
+		http.Error(w, "merge harness_config: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	sess.HarnessConfig = merged
+	if selection != nil {
+		if err := writeModelSelectionIntoSession(sess, *selection); err != nil {
+			http.Error(w, "record model selection: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// Persisted on BOTH branches, and BEFORE forwarding. This used to persist
+	// only when there was no live process: a model set on a running session
+	// lived in that process's memory alone, silently reverted at the next
+	// respawn, and the row the client got back still showed the old value.
+	// Persisting first means the durable truth is never behind the process;
+	// if the forward below fails, the next spawn still applies the change.
+	if err := s.Store.UpdateSessionHarnessConfig(bridgeID, sess.HarnessConfig); err != nil {
+		http.Error(w, "persist harness_config: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if s.Harness.Get(bridgeID) != nil {
+		params, _ := json.Marshal(req)
+		if err := s.Harness.SendCommand(bridgeID, "config:"+string(params)); err != nil {
+			// A CONFLICT, not a server fault: the caller asked a session to change
+			// something it is not in a state to change. 500 said the server broke, which
+			// sent every reader of this endpoint looking in the wrong place.
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+	}
+
+	httpjson.WriteJSON(w, sess)
+}
+
+// mergeHarnessConfig folds the harness-facing fields of a config request into a
+// session's stored `harness_config` blob, leaving every other key alone.
+//
+// Only the three fields `CarriesHarnessConfig` recognizes are written, and only
+// when set — `max_budget` is server state persisted separately, and an unset
+// field means "leave this as it is" rather than "clear it".
+func mergeHarnessConfig(current json.RawMessage, req ConfigSessionRequest) (json.RawMessage, error) {
+	cfg := map[string]json.RawMessage{}
+	if len(current) > 0 {
+		if err := json.Unmarshal(current, &cfg); err != nil {
+			// Refused rather than replaced. An unreadable blob is not license to
+			// throw away whatever a running session was configured with.
+			return nil, fmt.Errorf("stored harness_config is not an object: %w", err)
+		}
+	}
+	set := func(key, value string) error {
+		if value == "" {
+			return nil
+		}
+		raw, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		cfg[key] = raw
+		return nil
+	}
+	if err := set("model", req.Model); err != nil {
+		return nil, err
+	}
+	if err := set("effort", req.Effort); err != nil {
+		return nil, err
+	}
+	if req.Effort != "" {
+		if err := markSettingChosenOnSession(cfg, msg.EffectiveSettingEffort); err != nil {
+			return nil, err
+		}
+	}
+	if req.DisabledTools != nil {
+		// The new list replaces the creator's own and the harness default,
+		// never what the bundle denies or tool-store has switched off.
+		var byLayer map[msg.EffectiveConfigLayer][]string
+		if raw, ok := cfg[harnessconfig.KeyDisabledToolsByLayer]; ok {
+			if err := json.Unmarshal(raw, &byLayer); err != nil {
+				return nil, fmt.Errorf("harness_config.disabled_tools_by_layer is unreadable: %w", err)
+			}
+		}
+		if byLayer == nil {
+			byLayer = map[msg.EffectiveConfigLayer][]string{}
+		}
+		delete(byLayer, msg.EffectiveLayerHarnessDefault)
+		byLayer[msg.EffectiveLayerSession] = req.DisabledTools
+		rawByLayer, err := json.Marshal(byLayer)
+		if err != nil {
+			return nil, err
+		}
+		cfg[harnessconfig.KeyDisabledToolsByLayer] = rawByLayer
+		raw, err := json.Marshal(unionInOrder(req.DisabledTools, byLayer[msg.EffectiveLayerBundle], byLayer[msg.EffectiveLayerToolStore]))
+		if err != nil {
+			return nil, err
+		}
+		cfg["disabled_tools"] = raw
+		if err := markSettingChosenOnSession(cfg, msg.EffectiveSettingDisabledTools); err != nil {
+			return nil, err
+		}
+	}
+	return json.Marshal(cfg)
+}
+
+func (s *Service) HandleDiscoverSessions(w http.ResponseWriter, r *http.Request) {
+	s.DiscoveryMu.Lock()
+	defer s.DiscoveryMu.Unlock()
+	if err := s.validateDiscoveryPrincipal(r.Context()); err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	harnessFilter := msg.Harness(r.URL.Query().Get("harness"))
+
+	sessions, err := s.Harness.DiscoverSessions(r.Context(), harnessFilter)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if sessions == nil {
+		sessions = []msg.StoredSession{}
+	}
+
+	// Build map of harness type → local instance ID.
+	// Discovery runs the harness binary locally, so sessions belong to the local instance.
+	localInstances := s.localInstancesByHarness([]msg.Harness{msg.HarnessClaudeCode, msg.HarnessCodex})
+
+	// Same announcement, and the same reason, as AutoDiscover's — this route
+	// runs the identical import loop, so one HTTP call against an instance
+	// with an empty DB writes just as many permanent rows into log-store.
+	if len(sessions) > 0 {
+		log.Printf("[discover] %d sessions on disk; any not already in this instance's DB will have their transcripts imported into the session log",
+			len(sessions))
+	}
+
+	// Persist discovered sessions to the store so they appear in GET /sessions
+	var imported, linkedCount, reclassified int
+	var pendingLinks []discoveredLink
+	for _, ds := range sessions {
+		displayName := DisplayNameForDiscoveredSession(ds.Prompt, ds.Project)
+
+		// Sessions discovered locally belong to the local instance
+		instanceID := localInstances[ds.Harness]
+		// Prefer the adapter's structural source tag (e.g. codex marks
+		// conformance-leaked chains by bridge_session_id prefix; claudecode
+		// marks Task()-spawned subagents from the on-disk layout) over our
+		// prompt-prefix heuristic. Fall back to prefix inference only when
+		// the adapter has no structural signal. Mirrors AutoDiscover.
+		source, folder := ds.Source, s.FolderForPurpose(ds.Source)
+		if source == "" {
+			source, folder = s.DiscoverySourceFolder(ds.Prompt)
+		}
+
+		bridgeID, inserted, err := s.Store.UpsertDiscoveredSessionOwnedBy(
+			ds.HarnessSessionID,
+			ds.BridgeSessionID,
+			displayName,
+			string(ds.Harness),
+			instanceID,
+			source,
+			folder,
+			ds.CreatedAt,
+			ds.UpdatedAt,
+			s.Cfg.DiscoveryPrincipalID,
+		)
+		if err != nil {
+			log.Printf("[discover] failed to upsert session %s: %v", ds.HarnessSessionID, err)
+			continue
+		}
+		s.FillOrRepairDiscoveredSessionMetadata("[discover]", bridgeID, ds)
+		// Lineage is resolved after every row exists — discovery has no
+		// parent-before-child ordering, so linking inline drops every subagent
+		// walked before its parent. Mirrors AutoDiscover.
+		if ds.ParentHarnessSessionID != "" {
+			pendingLinks = append(pendingLinks, discoveredLink{bridgeID: bridgeID, parentHarnessID: ds.ParentHarnessSessionID})
+		}
+		if !inserted {
+			changed, err := s.ReclassifyDiscoveredSession(bridgeID, ds.Source)
+			if err != nil {
+				log.Printf("[discover] failed to reclassify %s as %q: %v", bridgeID, ds.Source, err)
+			} else if changed {
+				reclassified++
+			}
+		}
+		// Import history for newly-inserted sessions, and for existing sessions
+		// that have no events in log-store yet (e.g. log-store was down when
+		// the session was first discovered).
+		needsImport := inserted && ds.HarnessSessionID != ""
+		if !inserted && ds.HarnessSessionID != "" {
+			held, err := s.Harness.SessionsHoldingHarnessSessionID(ds.HarnessSessionID)
+			if err != nil {
+				log.Printf("[discover] cannot check stored history for %s: %v", ds.HarnessSessionID, err)
+				httpjson.WriteJSONError(w, http.StatusBadGateway, "log_store_unavailable", err.Error())
+				return
+			}
+			needsImport = len(held) == 0
+		}
+		if needsImport {
+			if inserted {
+				imported++
+			}
+			// Inside the pass, one at a time, under discoveryMu, as
+			// discoverOnce imports: each import runs the harness wrapper as
+			// a child process. Started in a goroutine and left running, the
+			// imports of one call ran all at once, after the lock was let
+			// go and after the answer was sent, so a test's temporary HOME
+			// was deleted while a wrapper still wrote into it.
+			n, err := s.Harness.ImportHistory(r.Context(), bridgeID, ds.Harness, ds.HarnessSessionID)
+			if err != nil {
+				log.Printf("[discover] failed to import history for %s: %v", ds.HarnessSessionID, err)
+			} else if n > 0 {
+				log.Printf("[discover] imported %d events for session %s", n, ds.HarnessSessionID)
+			}
+		}
+	}
+	if imported > 0 {
+		log.Printf("[discover] imported %d new sessions", imported)
+	}
+	log.Printf("[discover] reclassified %d existing discovered sessions to the purpose their adapter now reports", reclassified)
+	for _, l := range pendingLinks {
+		linked, err := s.Store.LinkDiscoveredSessionParent(l.bridgeID, l.parentHarnessID)
+		if err != nil {
+			log.Printf("[discover] failed to link %s to parent %s: %v", l.bridgeID, l.parentHarnessID, err)
+		} else if linked {
+			linkedCount++
+		}
+	}
+	if linkedCount > 0 {
+		log.Printf("[discover] linked %d sessions to the parent that spawned them", linkedCount)
+	}
+
+	httpjson.WriteJSON(w, sessions)
+}
+
+func generateBridgeID() string {
+	return fmt.Sprintf("br_%d", time.Now().UnixNano())
+}
+
+// principalStartingSessionAsThemselves is the principal a request to start a
+// session acts as, when that is whom the session runs as if the request names
+// none: a signed-in principal, administrator or not, or the internal service
+// acting for one (X-Principal-Id). Empty for the internal service acting as
+// itself, for a connected server (it starts sessions only as a mapped user,
+// handled above), and for a session's agent starting a delegate, whose
+// principal delegateRequestRefusal decides.
+func principalStartingSessionAsThemselves(r *http.Request) string {
+	caller, ok := requestcaller.FromRequest(r)
+	if !ok || caller.Peer != nil || caller.DelegatingAgentOfSessionID != "" {
+		return ""
+	}
+	return caller.PrincipalID
+}
