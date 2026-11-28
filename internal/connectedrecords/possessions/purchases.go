@@ -226,7 +226,12 @@ func (s *Store) DeletePurchase(ctx context.Context, id, actor, reason string) ([
 	}
 	now := s.unixNow()
 	withdrawn := []string{}
-	resolution, _ := json.Marshal(Resolution{Action: "withdrawn", Explanation: reason})
+	// Written as a Resolution with only its action and explanation set
+	// would be, since the question is read back as one.
+	resolution, _ := json.Marshal(struct {
+		Action      string `json:"action"`
+		Explanation string `json:"explanation,omitempty"`
+	}{Action: "withdrawn", Explanation: reason})
 	for _, lineID := range lineIDs {
 		questions, err := stringColumn(transaction, `SELECT id FROM owner_questions WHERE answered_at = 0 AND strpos(choices, ?) > 0`, jsonField("purchase_line_id", lineID))
 		if err != nil {

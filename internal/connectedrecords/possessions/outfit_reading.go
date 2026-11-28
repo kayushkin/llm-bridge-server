@@ -332,18 +332,6 @@ func (s *Store) addToReviewOutfit(transaction *databaseTransaction, sightingID s
 	return err
 }
 
-// insertStillHaveItQuestion asks whether a piece seen in a photo is still
-// owned. Each choice sets its status.
-func insertStillHaveItQuestion(transaction *databaseTransaction, sightingID, name string, now int64) error {
-	choice := func(label, status string) Choice {
-		return Choice{Label: label, Resolution: Resolution{Action: "amend", Proposal: &Proposal{Status: status, KindFields: map[string]json.RawMessage{}}}}
-	}
-	return insertQuestion(transaction, sightingID, fmt.Sprintf("Do you still have the %s?", name), []Choice{
-		choice("Yes, I still have it", "owned"), choice("No, I gave it away", "given_away"), choice("No, I sold it", "sold"),
-		choice("No, I lost it", "lost"), choice("No, I threw it out", "discarded"),
-	}, "detail", now)
-}
-
 // DoubtTriage says what TriageOutfitDoubts did.
 type DoubtTriage struct {
 	Looked   int                 `json:"looked"`

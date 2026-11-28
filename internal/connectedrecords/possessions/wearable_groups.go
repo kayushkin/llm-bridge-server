@@ -232,3 +232,62 @@ func (s *Store) closedGroupMembers(group string, exclude ...string) ([]map[strin
 	}
 	return members, nil
 }
+
+// wearableGroup is the group a wearable is compared and counted within, as
+// the owner thinks of them (2026-11-07): a garment's category (shirts are
+// tops, pants bottoms, jackets outerwear), except the garment types in
+// GroupedGarmentTypes, which are groups of their own (scarves); a jewelry
+// type, with pendants and chains counted as necklaces; a bag type; watches
+// and eyewear one group each. Socks are in no group. "" for a possession
+// that is not in a group.
+func wearableGroup(kind string, fields func(name string) string) string {
+	switch kind {
+	case "garment":
+		garmentType := fields("garment_type")
+		if contains(ungroupedGarmentTypes, garmentType) {
+			return ""
+		}
+		if contains(GroupedGarmentTypes, garmentType) {
+			return "garment:" + garmentType
+		}
+		return "garment:" + fields("category")
+	case "jewelry":
+		jewelryType := fields("jewelry_type")
+		if contains(NecklaceJewelryTypes, jewelryType) {
+			jewelryType = "necklace"
+		}
+		return "jewelry:" + jewelryType
+	case "bag_or_case":
+		return "bag_or_case:" + fields("bag_type")
+	case "watch", "eyewear":
+		return kind
+	}
+	return ""
+}
+
+func possessionGroup(possession map[string]any) string {
+	kind := possession["kind"].(string)
+	if !contains(WearableKinds, kind) {
+		return ""
+	}
+	record := possession[kind].(map[string]any)
+	return wearableGroup(kind, func(name string) string { value, _ := record[name].(string); return value })
+}
+
+// liveWearables answers every live possession of a wearable kind, oldest
+// first.
+func (s *Store) liveWearables() ([]map[string]any, error) {
+	all := []map[string]any{}
+	for _, kind := range WearableKinds {
+		possessions, err := s.ListPossessions(PossessionFilter{Kind: kind, Limit: 1000})
+		if err != nil {
+			return nil, err
+		}
+		if len(possessions) == 1000 {
+			return nil, fmt.Errorf("there are 1000 or more %s possessions; the audit reads at most 1000 of a kind", kind)
+		}
+		all = append(all, possessions...)
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i]["id"].(string) < all[j]["id"].(string) })
+	return all, nil
+}

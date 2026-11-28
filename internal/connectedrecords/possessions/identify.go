@@ -36,27 +36,6 @@ const (
 	largeGroupPicturesPerCall = 30
 )
 
-// GroupCount says how one group came out of identification.
-type GroupCount struct {
-	Group        string       `json:"group"`
-	ExpectedLow  *int         `json:"expected_low"`
-	ExpectedHigh *int         `json:"expected_high"`
-	Slots        int          `json:"slots"`        // slots identified in this pass
-	Pieces       int          `json:"pieces"`       // pieces the first reader sorted them into, recorded ones included
-	Identified   int          `json:"identified"`   // live owned and unconfirmed possessions in the group after the pass
-	WithinRange  *bool        `json:"within_range"` // Identified against the expected range; null when none is set
-	PullIn       *GroupPullIn `json:"pull_in"`      // the extra round for a group over its range; null when none ran
-}
-
-// GroupPullIn says what the extra sorting round did to a group that held
-// more pieces than the owner's expected high.
-type GroupPullIn struct {
-	Before int `json:"before"` // live owned and unconfirmed pieces before the round
-	Shown  int `json:"shown"`  // pieces with a picture to show
-	Merged int `json:"merged"` // merges both readers agreed on
-	After  int `json:"after"`
-}
-
 type clusterItem struct {
 	Label        string
 	SlotID       string

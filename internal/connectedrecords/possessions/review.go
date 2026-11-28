@@ -1838,31 +1838,14 @@ func (reviewer *Reviewer) SightingImage(ctx context.Context, sightingID string) 
 	return cropJPEG(photo, sighting.Box)
 }
 
-// PossessionImage cuts a possession out of its cover photo; with no box it
-// is the whole thumbnail.
-func (reviewer *Reviewer) PossessionImage(ctx context.Context, possessionID string) ([]byte, error) {
-	photos, err := possessionPhotos(reviewer.Store.db, possessionID)
-	if err != nil {
-		return nil, err
+// insertStillHaveItQuestion asks whether a piece seen in a photo is still
+// owned. Each choice sets its status.
+func insertStillHaveItQuestion(transaction *databaseTransaction, sightingID, name string, now int64) error {
+	choice := func(label, status string) Choice {
+		return Choice{Label: label, Resolution: Resolution{Action: "amend", Proposal: &Proposal{Status: status, KindFields: map[string]json.RawMessage{}}}}
 	}
-	if err := requireLivePossession(reviewer.Store.db, possessionID); err != nil {
-		var deletedAt int64
-		if reviewer.Store.db.QueryRow(`SELECT deleted_at FROM possessions WHERE id = ?`, possessionID).Scan(&deletedAt) != nil {
-			return nil, err
-		}
-	}
-	for _, photo := range photos {
-		if !photo.IsCover {
-			continue
-		}
-		thumbnail, err := reviewer.Photos.Thumbnail(ctx, photo.PhotoID)
-		if err != nil {
-			return nil, err
-		}
-		if photo.BoxLeft == nil {
-			return thumbnail, nil
-		}
-		return cropJPEG(thumbnail, Box{*photo.BoxLeft, *photo.BoxTop, *photo.BoxRight, *photo.BoxBottom})
-	}
-	return nil, fmt.Errorf("%w: %s has no photo", ErrNotFound, possessionID)
+	return insertQuestion(transaction, sightingID, fmt.Sprintf("Do you still have the %s?", name), []Choice{
+		choice("Yes, I still have it", "owned"), choice("No, I gave it away", "given_away"), choice("No, I sold it", "sold"),
+		choice("No, I lost it", "lost"), choice("No, I threw it out", "discarded"),
+	}, "detail", now)
 }

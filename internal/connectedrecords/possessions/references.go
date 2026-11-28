@@ -27,7 +27,7 @@ func (server *Server) kindImage(ctx context.Context, kind RecordType, id string)
 	if err != nil {
 		return nil, err
 	}
-	return server.Reviewer.PossessionImage(ctx, possessionID)
+	return server.Store.PossessionImage(ctx, server.Reviewer.Photos, possessionID)
 }
 
 // outfitWithCoverBox is an outfit as GET /outfits/{id} answers it.
@@ -86,7 +86,7 @@ func (server *Server) ImageInScope(ctx context.Context, scope ownership.Scope, r
 	}
 	switch route {
 	case PossessionsRoute:
-		return narrowed.Reviewer.PossessionImage(ctx, id)
+		return narrowed.Store.PossessionImage(ctx, narrowed.Reviewer.Photos, id)
 	case OutfitsRoute:
 		return narrowed.Reviewer.OutfitCoverImage(ctx, id)
 	}

@@ -155,71 +155,12 @@ func (reviewer *Reviewer) askBothPrompts(ctx context.Context, systemPrompt strin
 
 const auditSystemPrompt = `You help a person keep an exact inventory of the clothes and accessories they own, from photos. Two readers, made by different companies, answer each question on their own; where they agree the inventory changes at once, so say "same" only when the pictures show it. Judge the physical piece, not the kind of thing: color, cut, pattern, fabric, logos, prints, hardware, wear marks. Light, angle, folds and how it is worn differ between photos; a black t-shirt is not every black t-shirt.`
 
-// wearableGroup is the group a wearable is compared and counted within, as
-// the owner thinks of them (2026-11-07): a garment's category (shirts are
-// tops, pants bottoms, jackets outerwear), except the garment types in
-// GroupedGarmentTypes, which are groups of their own (scarves); a jewelry
-// type, with pendants and chains counted as necklaces; a bag type; watches
-// and eyewear one group each. Socks are in no group. "" for a possession
-// that is not in a group.
-func wearableGroup(kind string, fields func(name string) string) string {
-	switch kind {
-	case "garment":
-		garmentType := fields("garment_type")
-		if contains(ungroupedGarmentTypes, garmentType) {
-			return ""
-		}
-		if contains(GroupedGarmentTypes, garmentType) {
-			return "garment:" + garmentType
-		}
-		return "garment:" + fields("category")
-	case "jewelry":
-		jewelryType := fields("jewelry_type")
-		if contains(NecklaceJewelryTypes, jewelryType) {
-			jewelryType = "necklace"
-		}
-		return "jewelry:" + jewelryType
-	case "bag_or_case":
-		return "bag_or_case:" + fields("bag_type")
-	case "watch", "eyewear":
-		return kind
-	}
-	return ""
-}
-
-func possessionGroup(possession map[string]any) string {
-	kind := possession["kind"].(string)
-	if !contains(WearableKinds, kind) {
-		return ""
-	}
-	record := possession[kind].(map[string]any)
-	return wearableGroup(kind, func(name string) string { value, _ := record[name].(string); return value })
-}
-
 func proposalGroup(proposal Proposal) string {
 	return wearableGroup(proposal.Kind, func(name string) string {
 		var value string
 		_ = json.Unmarshal(proposal.KindFields[name], &value)
 		return value
 	})
-}
-
-// liveWearables answers every live possession of a wearable kind, oldest
-// first.
-func (s *Store) liveWearables() ([]map[string]any, error) {
-	all := []map[string]any{}
-	for _, kind := range WearableKinds {
-		possessions, err := s.ListPossessions(PossessionFilter{Kind: kind, Limit: 1000})
-		if err != nil {
-			return nil, err
-		}
-		if len(possessions) == 1000 {
-			return nil, fmt.Errorf("there are 1000 or more %s possessions; the audit reads at most 1000 of a kind", kind)
-		}
-		all = append(all, possessions...)
-	}
-	sort.Slice(all, func(i, j int) bool { return all[i]["id"].(string) < all[j]["id"].(string) })
-	return all, nil
 }
 
 func describeWearable(possession map[string]any) string {
@@ -926,4 +867,25 @@ func (s *Store) askAboutDuplicate(ctx context.Context, firstID, secondID string,
 		return AuditAction{}, err
 	}
 	return AuditAction{Action: "asked", Records: []string{duplicateID, keptID, sightingID}, QuestionID: questionID, Reason: question}, transaction.Commit()
+}
+
+// GroupCount says how one group came out of identification.
+type GroupCount struct {
+	Group        string       `json:"group"`
+	ExpectedLow  *int         `json:"expected_low"`
+	ExpectedHigh *int         `json:"expected_high"`
+	Slots        int          `json:"slots"`        // slots identified in this pass
+	Pieces       int          `json:"pieces"`       // pieces the first reader sorted them into, recorded ones included
+	Identified   int          `json:"identified"`   // live owned and unconfirmed possessions in the group after the pass
+	WithinRange  *bool        `json:"within_range"` // Identified against the expected range; null when none is set
+	PullIn       *GroupPullIn `json:"pull_in"`      // the extra round for a group over its range; null when none ran
+}
+
+// GroupPullIn says what the extra sorting round did to a group that held
+// more pieces than the owner's expected high.
+type GroupPullIn struct {
+	Before int `json:"before"` // live owned and unconfirmed pieces before the round
+	Shown  int `json:"shown"`  // pieces with a picture to show
+	Merged int `json:"merged"` // merges both readers agreed on
+	After  int `json:"after"`
 }

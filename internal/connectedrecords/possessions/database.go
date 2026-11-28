@@ -3,7 +3,9 @@ package possessions
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -178,4 +180,11 @@ func postgresArguments(arguments []any) []any {
 func isUniqueViolation(err error) bool {
 	var postgresError *pgconn.PgError
 	return errors.As(err, &postgresError) && postgresError.Code == "23505"
+}
+
+// jsonField is one "name":value pair as JSON writes it, to find a value in
+// a column that holds JSON text.
+func jsonField(name, value string) string {
+	encoded, _ := json.Marshal(value)
+	return fmt.Sprintf(`"%s":%s`, name, encoded)
 }

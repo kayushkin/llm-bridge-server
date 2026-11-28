@@ -155,11 +155,6 @@ func questionAboutExists(q querier, fragments ...string) (bool, error) {
 	return found > 0, err
 }
 
-func jsonField(name, value string) string {
-	encoded, _ := json.Marshal(value)
-	return fmt.Sprintf(`"%s":%s`, name, encoded)
-}
-
 // sightingShowing answers an accepted sighting that recorded a possession,
 // the cover's first, for a question to hang on; "" when there is none.
 func sightingShowing(q querier, possessionID string) (string, error) {

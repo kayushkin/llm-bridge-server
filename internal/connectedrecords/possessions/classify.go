@@ -54,7 +54,7 @@ func (reviewer *Reviewer) ClassifyKindless(ctx context.Context, actor string, ba
 		for _, possession := range batch {
 			id := possession["id"].(string)
 			picture := "no picture"
-			if crop, err := reviewer.PossessionImage(ctx, id); err == nil {
+			if crop, err := reviewer.Store.PossessionImage(ctx, reviewer.Photos, id); err == nil {
 				images = append(images, msg.OneShotImage{MediaType: "image/jpeg", DataBase64: base64.StdEncoding.EncodeToString(crop)})
 				picture = fmt.Sprintf("picture %d", len(images))
 			} else if !errors.Is(err, ErrNotFound) {

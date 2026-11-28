@@ -840,7 +840,7 @@ func (server *Server) revisions(w http.ResponseWriter, r *http.Request) {
 
 func (server *Server) possessionImage(w http.ResponseWriter, r *http.Request) {
 	server.writeImage(w, r.Context(), func(ctx context.Context) ([]byte, error) {
-		return server.Reviewer.PossessionImage(ctx, r.PathValue("id"))
+		return server.Store.PossessionImage(ctx, server.Reviewer.Photos, r.PathValue("id"))
 	})
 }
 

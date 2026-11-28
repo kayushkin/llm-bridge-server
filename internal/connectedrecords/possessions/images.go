@@ -477,3 +477,32 @@ func cropJPEG(photo []byte, box Box) ([]byte, error) {
 	}
 	return out.Bytes(), nil
 }
+
+// PossessionImage cuts a possession out of its cover photo, read from
+// photos; with no box it is the whole thumbnail.
+func (s *Store) PossessionImage(ctx context.Context, photos PhotoSource, possessionID string) ([]byte, error) {
+	links, err := possessionPhotos(s.db, possessionID)
+	if err != nil {
+		return nil, err
+	}
+	if err := requireLivePossession(s.db, possessionID); err != nil {
+		var deletedAt int64
+		if s.db.QueryRow(`SELECT deleted_at FROM possessions WHERE id = ?`, possessionID).Scan(&deletedAt) != nil {
+			return nil, err
+		}
+	}
+	for _, photo := range links {
+		if !photo.IsCover {
+			continue
+		}
+		thumbnail, err := photos.Thumbnail(ctx, photo.PhotoID)
+		if err != nil {
+			return nil, err
+		}
+		if photo.BoxLeft == nil {
+			return thumbnail, nil
+		}
+		return cropJPEG(thumbnail, Box{*photo.BoxLeft, *photo.BoxTop, *photo.BoxRight, *photo.BoxBottom})
+	}
+	return nil, fmt.Errorf("%w: %s has no photo", ErrNotFound, possessionID)
+}
