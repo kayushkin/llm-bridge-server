@@ -23,6 +23,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/server/routeaccess"
+
 	"github.com/kayushkin/llm-bridge-server/internal/sessions"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/login"
@@ -185,7 +187,7 @@ func (s *Server) serveKanbanStore(w http.ResponseWriter, r *http.Request, mountP
 // handleIssuesAsCaller answers /issues/<rest> with kanban-store's
 // /<rest>, unchanged.
 func (s *Server) handleIssuesAsCaller(w http.ResponseWriter, r *http.Request) {
-	s.serveKanbanStore(w, r, issuesMountPrefix)
+	s.serveKanbanStore(w, r, routeaccess.IssuesMountPrefix)
 }
 
 // checkKanbanBoardExists is grant-store's check that a board a grant names

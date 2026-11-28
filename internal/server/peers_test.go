@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/server/routeaccess"
+
 	"github.com/kayushkin/llm-bridge-server/internal/peers"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
@@ -764,8 +766,8 @@ func TestTheProxyNeverPassesBackAPageForThisOrigin(t *testing.T) {
 		w.Header().Set("Content-Security-Policy", "default-src *")
 		_, _ = w.Write([]byte("<script>alert(1)</script>"))
 	})
-	routeAccessRules[pattern] = openRoute("a test answer")
-	t.Cleanup(func() { delete(routeAccessRules, pattern) })
+	routeaccess.RouteAccessRules[pattern] = routeaccess.OpenRoute("a test answer")
+	t.Cleanup(func() { delete(routeaccess.RouteAccessRules, pattern) })
 
 	for kind, want := range map[string]string{"html": "application/octet-stream", "json": answers["json"], "stream": answers["stream"]} {
 		answer := initiating.requestAsAdministrator(t, "GET", "/peer-connections/"+initiatingID+"/proxy/an-answer-for-the-proxy-test?kind="+kind, nil)
@@ -815,8 +817,8 @@ func TestAPeerSocketServesOnlySoManyRequestsAtOnce(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
-	routeAccessRules[pattern] = openRoute("a test answer")
-	t.Cleanup(func() { delete(routeAccessRules, pattern) })
+	routeaccess.RouteAccessRules[pattern] = routeaccess.OpenRoute("a test answer")
+	t.Cleanup(func() { delete(routeaccess.RouteAccessRules, pattern) })
 	initiatingOverHTTP := httptest.NewServer(initiating.server)
 	t.Cleanup(initiatingOverHTTP.Close)
 	// The proxy shares identical reads and limits calls per connection; this
@@ -879,8 +881,8 @@ func TestALargeAnswerCrossesThePeerSocketInChunks(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(large)
 	})
-	routeAccessRules[pattern] = openRoute("a test answer")
-	t.Cleanup(func() { delete(routeAccessRules, pattern) })
+	routeaccess.RouteAccessRules[pattern] = routeaccess.OpenRoute("a test answer")
+	t.Cleanup(func() { delete(routeaccess.RouteAccessRules, pattern) })
 	answer := initiating.requestAsAdministrator(t, "GET", "/peer-connections/"+initiatingID+"/proxy/a-large-answer", nil)
 	if answer.Code != http.StatusOK || !bytes.Equal(answer.Body.Bytes(), large) {
 		t.Fatalf("large answer = %d, %d bytes, want 200 and %d bytes", answer.Code, answer.Body.Len(), len(large))
@@ -965,8 +967,8 @@ func TestAServerWhoseBridgeStopsAnsweringIsNotAnswering(t *testing.T) {
 	t.Cleanup(func() {
 		peers.PeerSocketProbeInterval, peers.PeerSocketProbeIntervalWhileNotAnswering, peers.PeerSocketProbeTimeout, peers.PeerSocketProbePath = savedInterval, savedWhileNot, savedTimeout, savedPath
 	})
-	routeAccessRules[probePattern] = peerConnectionCallRoute("a test probe, answered as a connection call like the real one")
-	t.Cleanup(func() { delete(routeAccessRules, probePattern) })
+	routeaccess.RouteAccessRules[probePattern] = routeaccess.PeerConnectionCallRoute("a test probe, answered as a connection call like the real one")
+	t.Cleanup(func() { delete(routeaccess.RouteAccessRules, probePattern) })
 
 	accepting, initiating, acceptingID, initiatingID := connectedPairByDialingOut(t)
 	decodeAnswer[msg.PeerGrant](t, accepting.requestAsAdministrator(t, "POST", "/peer-connections/"+acceptingID+"/grant", map[string]any{"level": "administrator"}), http.StatusCreated, "grant")

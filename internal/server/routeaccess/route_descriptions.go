@@ -1,7 +1,7 @@
-package server
+package routeaccess
 
 // routeDescription says what one route does, for the route table in the
-// README. routeAccessRules says who may call a route; this says what it is
+// README. RouteAccessRules says who may call a route; this says what it is
 // for. Both are keyed by the exact registration pattern, and
 // TestReadmeRouteTableMatchesTheRoutes fails when the two key sets differ or
 // when the README's table is not the one these produce.
@@ -285,9 +285,9 @@ var routeDescriptions = map[string]routeDescription{
 	"GET /admin/identity-bindings":                                {routeGroupLogin, "principal-store's identity bindings, query passed through"},
 	"POST /admin/identity-bindings":                               {routeGroupLogin, "Link an Entra identity to a principal, as the calling administrator"},
 	"POST /admin/identity-bindings/{id}/unlink":                   {routeGroupLogin, "Unlink an identity and revoke its live login sessions"},
-	issuesMountPrefix + "/":                                       {routeGroupLogin, "The boards and cards of issues (`/boards`, `/cards/…`, `/health`), as the caller; `/issues/items` is the content of issues"},
-	mailMountPrefix + "/":                                         {routeGroupLogin, "mailstack `/…`, in this process, as the caller, checked against their mail grants and tickets"},
-	mailstackIngressDeliveryPattern:                               {routeGroupLogin, "Pushed mail delivery into mailstack's local accounts, with an ingress credential and no login"},
+	IssuesMountPrefix + "/":                                       {routeGroupLogin, "The boards and cards of issues (`/boards`, `/cards/…`, `/health`), as the caller; `/issues/items` is the content of issues"},
+	MailMountPrefix + "/":                                         {routeGroupLogin, "mailstack `/…`, in this process, as the caller, checked against their mail grants and tickets"},
+	MailstackIngressDeliveryPattern:                               {routeGroupLogin, "Pushed mail delivery into mailstack's local accounts, with an ingress credential and no login"},
 
 	// Runners and harness callbacks.
 	"GET /api/runner/ws":                         {routeGroupRunners, "A runner's WebSocket"},

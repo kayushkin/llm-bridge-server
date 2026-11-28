@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/server/routeaccess"
+
 	"github.com/kayushkin/llm-bridge-server/internal/peers"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
@@ -110,8 +112,8 @@ func TestRevokingAGrantEndsAStreamAlreadyOpen(t *testing.T) {
 		case <-time.After(30 * time.Second):
 		}
 	})
-	routeAccessRules[pattern] = openRoute("a test stream")
-	t.Cleanup(func() { delete(routeAccessRules, pattern) })
+	routeaccess.RouteAccessRules[pattern] = routeaccess.OpenRoute("a test stream")
+	t.Cleanup(func() { delete(routeaccess.RouteAccessRules, pattern) })
 
 	initiatingOverHTTP := httptest.NewServer(initiating.server)
 	t.Cleanup(initiatingOverHTTP.Close)

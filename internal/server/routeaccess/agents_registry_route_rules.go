@@ -1,9 +1,9 @@
-package server
+package routeaccess
 
 import "fmt"
 
 // The rules and descriptions of the routes agents_registry_routes.go mounts.
-// They are kept here and added to routeAccessRules, routeDescriptions and the
+// They are kept here and added to RouteAccessRules, routeDescriptions and the
 // README's group order at start, so the shared tables gain them in one place.
 // agent-store's and memory-store's own routes keep their rules in
 // request_authorization.go, where they were before the move.
@@ -15,7 +15,7 @@ var modelStoreRouteRule = operatorRoute("model-store is one registry with no own
 // runners.
 var agentStoreRunnerSeedRouteRule = runnerRoute("agent-store seed route for runners; the handler authenticates the runner's bearer token")
 
-var agentsRegistryRouteAccessRules = map[string]routeAccessRule{
+var agentsRegistryRouteAccessRules = map[string]RouteAccessRule{
 	"GET /models/api/models":              modelStoreRouteRule,
 	"POST /models/api/models/toggle":      modelStoreRouteRule,
 	"GET /models/api/roles":               modelStoreRouteRule,
@@ -49,10 +49,10 @@ var agentsRegistryRouteDescriptions = map[string]routeDescription{
 
 func init() {
 	for pattern, rule := range agentsRegistryRouteAccessRules {
-		if _, taken := routeAccessRules[pattern]; taken {
+		if _, taken := RouteAccessRules[pattern]; taken {
 			panic(fmt.Sprintf("route %s has two access rules", pattern))
 		}
-		routeAccessRules[pattern] = rule
+		RouteAccessRules[pattern] = rule
 	}
 	for pattern, description := range agentsRegistryRouteDescriptions {
 		if _, taken := routeDescriptions[pattern]; taken {

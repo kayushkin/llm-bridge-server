@@ -26,6 +26,8 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/kayushkin/llm-bridge-server/internal/server/routeaccess"
+
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/messages"
@@ -173,9 +175,9 @@ func (s *Server) registerMessageActivityAndTimeLedgerRoutes() {
 		route    http.HandlerFunc
 		patterns []string
 	}{
-		{s.messageStoreRoute(), messageStoreRoutePatterns},
-		{s.activityStoreRoute(), activityStoreRoutePatterns},
-		{s.timeLedgerStoreRoute(), timeLedgerStoreRoutePatterns},
+		{s.messageStoreRoute(), routeaccess.MessageStoreRoutePatterns},
+		{s.activityStoreRoute(), routeaccess.ActivityStoreRoutePatterns},
+		{s.timeLedgerStoreRoute(), routeaccess.TimeLedgerStoreRoutePatterns},
 	} {
 		for _, pattern := range mounted.patterns {
 			s.mux.HandleFunc(pattern, mounted.route)

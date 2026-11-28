@@ -23,6 +23,8 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/kayushkin/llm-bridge-server/internal/server/routeaccess"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access/login"
 
 	"github.com/kayushkin/llm-bridge-server/internal/httproutes"
@@ -37,10 +39,6 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/mail"
 	mailfilestore "github.com/kayushkin/llm-bridge-server/internal/mail/filestore"
 )
-
-// mailstackIngressDeliveryPattern is pushed delivery, answered by mailstack
-// against the ingress credential the sender presents.
-const mailstackIngressDeliveryPattern = "POST " + mailMountPrefix + "/api/ingress/deliveries"
 
 // errMailstackOff is a use of mailstack on a server that never enabled it.
 var errMailstackOff = errors.New("mailstack is off: EnableMail was never called on this server")
@@ -77,9 +75,9 @@ func (s *Server) serveMailstack(w http.ResponseWriter, r *http.Request, caller *
 		httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "mailstack_off", errMailstackOff.Error())
 		return
 	}
-	storePath, err := url.Parse(httproutes.EscapedPathAfterPrefix(r.URL, mailMountPrefix))
+	storePath, err := url.Parse(httproutes.EscapedPathAfterPrefix(r.URL, routeaccess.MailMountPrefix))
 	if err != nil {
-		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_path", fmt.Sprintf("the path after %s/ is not one mailstack can read: %v", mailMountPrefix, err))
+		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_path", fmt.Sprintf("the path after %s/ is not one mailstack can read: %v", routeaccess.MailMountPrefix, err))
 		return
 	}
 	ctx := r.Context()
@@ -113,7 +111,7 @@ func (s *Server) handleMailstackAsCaller(w http.ResponseWriter, r *http.Request)
 	} else {
 		// Request authorization lets nothing else through to a store route.
 		httpjson.WriteJSONError(w, http.StatusUnauthorized, "mailstack_requires_a_caller",
-			mailMountPrefix+"/ answers a principal or this server's service token")
+			routeaccess.MailMountPrefix+"/ answers a principal or this server's service token")
 		return
 	}
 	s.serveMailstack(w, r, &caller)

@@ -1,9 +1,9 @@
-package server
+package routeaccess
 
 import "fmt"
 
 // The rules and descriptions of the routes automation_routes.go mounts. They
-// are added to routeAccessRules, routeDescriptions and the README's group
+// are added to RouteAccessRules, routeDescriptions and the README's group
 // order at start, so the shared tables gain them in one place.
 
 // schedulerRouteRule is the rule of every scheduler route.
@@ -12,7 +12,7 @@ var schedulerRouteRule = operatorRoute("the scheduler's jobs are shell commands 
 // ruleStoreRouteRule is the rule of every rule-store route.
 var ruleStoreRouteRule = operatorRoute("rule-store's rules act on any session and card as the internal service, with no owner on a row, and its subject copies hold every session's state")
 
-var automationRouteAccessRules = map[string]routeAccessRule{
+var automationRouteAccessRules = map[string]RouteAccessRule{
 	"GET /scheduler/health":                         schedulerRouteRule,
 	"GET /scheduler/api/jobs":                       schedulerRouteRule,
 	"POST /scheduler/api/jobs":                      schedulerRouteRule,
@@ -89,10 +89,10 @@ var automationRouteDescriptions = map[string]routeDescription{
 
 func init() {
 	for pattern, rule := range automationRouteAccessRules {
-		if _, taken := routeAccessRules[pattern]; taken {
+		if _, taken := RouteAccessRules[pattern]; taken {
 			panic(fmt.Sprintf("route %s has two access rules", pattern))
 		}
-		routeAccessRules[pattern] = rule
+		RouteAccessRules[pattern] = rule
 	}
 	for pattern, description := range automationRouteDescriptions {
 		if _, taken := routeDescriptions[pattern]; taken {

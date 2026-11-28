@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/server/routeaccess"
+
 	"github.com/kayushkin/llm-bridge-server/internal/peers"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
@@ -47,8 +49,8 @@ func newProxiedReadTestPair(t *testing.T) *proxiedReadTestPair {
 	}
 	for pattern, handler := range routes {
 		accepting.server.mux.HandleFunc(pattern, handler)
-		routeAccessRules[pattern] = openRoute("a test route")
-		t.Cleanup(func() { delete(routeAccessRules, pattern) })
+		routeaccess.RouteAccessRules[pattern] = routeaccess.OpenRoute("a test route")
+		t.Cleanup(func() { delete(routeaccess.RouteAccessRules, pattern) })
 	}
 	return pair
 }

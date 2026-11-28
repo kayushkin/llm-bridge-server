@@ -1,10 +1,10 @@
-package server
+package routeaccess
 
 import "fmt"
 
 // The rules and descriptions of the repositories, file_storage and
 // references routes (repositories_references_routes.go). They are kept here
-// and added to routeAccessRules, routeDescriptions and the README's group
+// and added to RouteAccessRules, routeDescriptions and the README's group
 // order at start, so the shared tables gain them in one place.
 
 // repoStoreRoute is the rule of every repo-store route.
@@ -18,12 +18,12 @@ var fileStoreRoute = operatorRoute("file-store decides nothing about who may rea
 
 // referenceStoreCatalogRoute is the rule of reference-store's catalog, which
 // the standalone store served to any caller.
-var referenceStoreCatalogRoute = openRoute("names the reference types, their id patterns and vocabulary, and nothing about any record; kanban-store and the chat surfaces read it without a credential")
+var referenceStoreCatalogRoute = OpenRoute("names the reference types, their id patterns and vocabulary, and nothing about any record; kanban-store and the chat surfaces read it without a credential")
 
 // referenceStoreLookupRoute is the rule of reference-store's lookups.
-var referenceStoreLookupRoute = routeAccessRule{class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "reference-store as the caller's principal: it narrows every record to what that principal may see, and the internal service acting as itself looks records up for nobody, unchecked"}
+var referenceStoreLookupRoute = RouteAccessRule{Class: RoutePrincipalOrSessionAgentThroughStoreProxy, Reason: "reference-store as the caller's principal: it narrows every record to what that principal may see, and the internal service acting as itself looks records up for nobody, unchecked"}
 
-var repositoriesAndReferencesRouteAccessRules = map[string]routeAccessRule{
+var repositoriesAndReferencesRouteAccessRules = map[string]RouteAccessRule{
 	"GET /repos/health":                         repoStoreRoute,
 	"GET /repos/repos":                          repoStoreRoute,
 	"POST /repos/repos":                         repoStoreRoute,
@@ -120,10 +120,10 @@ var repositoriesAndReferencesRouteDescriptions = map[string]routeDescription{
 
 func init() {
 	for pattern, rule := range repositoriesAndReferencesRouteAccessRules {
-		if _, taken := routeAccessRules[pattern]; taken {
+		if _, taken := RouteAccessRules[pattern]; taken {
 			panic(fmt.Sprintf("route %s has two access rules", pattern))
 		}
-		routeAccessRules[pattern] = rule
+		RouteAccessRules[pattern] = rule
 	}
 	for pattern, description := range repositoriesAndReferencesRouteDescriptions {
 		if _, taken := routeDescriptions[pattern]; taken {

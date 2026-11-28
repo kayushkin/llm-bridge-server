@@ -1,17 +1,17 @@
-package server
+package routeaccess
 
 import "fmt"
 
 // The rules and descriptions of the photo-store and location-store routes
 // (photos_locations_routes.go). They are kept here and added to
-// routeAccessRules, routeDescriptions and the README's group order at start,
+// RouteAccessRules, routeDescriptions and the README's group order at start,
 // so the shared tables gain them in one place.
 
 // photoStoreRouteRule is the rule of every photo-store route.
-var photoStoreRouteRule = routeAccessRule{class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "photo-store as the caller's principal: every photo, face and face group has an owner, and the store narrows every read and write to the caller's own, or every owner's for an administrator and for the internal service acting as itself"}
+var photoStoreRouteRule = RouteAccessRule{Class: RoutePrincipalOrSessionAgentThroughStoreProxy, Reason: "photo-store as the caller's principal: every photo, face and face group has an owner, and the store narrows every read and write to the caller's own, or every owner's for an administrator and for the internal service acting as itself"}
 
 // locationStoreRouteRule is the rule of every location-store route.
-var locationStoreRouteRule = routeAccessRule{class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "location-store as the caller's principal: every place, visit, trip, point and import has an owner, and the store narrows every read and write to the caller's own, or every owner's for an administrator and for the internal service acting as itself; a pass over records acts for one owner"}
+var locationStoreRouteRule = RouteAccessRule{Class: RoutePrincipalOrSessionAgentThroughStoreProxy, Reason: "location-store as the caller's principal: every place, visit, trip, point and import has an owner, and the store narrows every read and write to the caller's own, or every owner's for an administrator and for the internal service acting as itself; a pass over records acts for one owner"}
 
 const (
 	routeGroupPhotoStore    routeGroup = "photo-store, mounted in this process"
@@ -112,13 +112,13 @@ var locationStoreRouteDescriptions = map[string]routeDescription{
 func init() {
 	for _, routes := range []struct {
 		descriptions map[string]routeDescription
-		rule         routeAccessRule
+		rule         RouteAccessRule
 	}{{photoStoreRouteDescriptions, photoStoreRouteRule}, {locationStoreRouteDescriptions, locationStoreRouteRule}} {
 		for pattern, description := range routes.descriptions {
-			if _, taken := routeAccessRules[pattern]; taken {
+			if _, taken := RouteAccessRules[pattern]; taken {
 				panic(fmt.Sprintf("route %s has two access rules", pattern))
 			}
-			routeAccessRules[pattern] = routes.rule
+			RouteAccessRules[pattern] = routes.rule
 			if _, taken := routeDescriptions[pattern]; taken {
 				panic(fmt.Sprintf("route %s has two descriptions", pattern))
 			}

@@ -14,24 +14,6 @@ import "github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
 // header and credential the client sent is deleted before a store sees the
 // request.
 
-const (
-	// issuesMountPrefix is where kanban-store is mounted, with the remainder
-	// answered at its root, unchanged: /issues/boards reaches /boards.
-	// kanban-store runs in this process (kanban_store_routes.go), so it is
-	// not proxied: the caller reaches it through the request context, not a
-	// header.
-	issuesMountPrefix = "/issues"
-	// grantsMountPrefix is where grant-store's routes are mounted.
-	// grant-store runs in this process (access_routes.go), so they are not
-	// proxied: the caller reaches it through the request context, not a header.
-	grantsMountPrefix = "/grants"
-	// mailMountPrefix is where mailstack's routes are mounted: the
-	// remainder of the path is answered at mailstack's root, where /api/…
-	// lives. mailstack runs in this process (mailstack_routes.go), so it is
-	// not proxied: the caller reaches it through the request context.
-	mailMountPrefix = "/mail"
-)
-
 // requestHeadersNeverForwardedToStores are deleted from every request a store
 // in this process is handed, whichever store it is: the identity header,
 // every store's service token (so a client cannot claim the unrestricted

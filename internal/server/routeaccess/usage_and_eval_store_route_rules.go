@@ -1,9 +1,9 @@
-package server
+package routeaccess
 
 import "fmt"
 
 // The rules and descriptions of the routes usage_and_eval_store_routes.go
-// mounts. They are added to routeAccessRules, routeDescriptions and the
+// mounts. They are added to RouteAccessRules, routeDescriptions and the
 // README's group order at start, so the shared tables gain them in one place.
 
 // usageStoreRouteRule is the rule of every usage-store route.
@@ -12,7 +12,7 @@ var usageStoreRouteRule = operatorRoute("usage-store holds the subscription usag
 // evalStoreRouteRule is the rule of every eval-store route.
 var evalStoreRouteRule = operatorRoute("eval-store's cases are copies of real model calls, which hold real mail, with no owner on a row; a run spends an organization's operation budget")
 
-var usageAndEvalStoreRouteAccessRules = map[string]routeAccessRule{
+var UsageAndEvalStoreRouteAccessRules = map[string]RouteAccessRule{
 	"GET /usage/api/usage":                                        usageStoreRouteRule,
 	"GET /usage/api/usage/limits":                                 usageStoreRouteRule,
 	"GET /usage/api/usage/limits/{provider}":                      usageStoreRouteRule,
@@ -104,11 +104,11 @@ var usageAndEvalStoreRouteDescriptions = map[string]routeDescription{
 }
 
 func init() {
-	for pattern, rule := range usageAndEvalStoreRouteAccessRules {
-		if _, taken := routeAccessRules[pattern]; taken {
+	for pattern, rule := range UsageAndEvalStoreRouteAccessRules {
+		if _, taken := RouteAccessRules[pattern]; taken {
 			panic(fmt.Sprintf("route %s has two access rules", pattern))
 		}
-		routeAccessRules[pattern] = rule
+		RouteAccessRules[pattern] = rule
 	}
 	for pattern, description := range usageAndEvalStoreRouteDescriptions {
 		if _, taken := routeDescriptions[pattern]; taken {

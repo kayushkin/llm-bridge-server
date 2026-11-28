@@ -1,22 +1,22 @@
-package server
+package routeaccess
 
 import "fmt"
 
 // The rules and descriptions of the connected_records routes
 // (connected_records_routes.go). They are kept here and added to
-// routeAccessRules, routeDescriptions and the README's group order at start,
+// RouteAccessRules, routeDescriptions and the README's group order at start,
 // so the shared tables gain them in one place.
 
 // peopleStoreRoute is the rule of every people-store route.
-var peopleStoreRoute = routeAccessRule{class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "people-store as the caller's principal: every person has an owner, and the store narrows every read and write to the caller's own people, or every owner's for an administrator and for the internal service acting as itself"}
+var peopleStoreRoute = RouteAccessRule{Class: RoutePrincipalOrSessionAgentThroughStoreProxy, Reason: "people-store as the caller's principal: every person has an owner, and the store narrows every read and write to the caller's own people, or every owner's for an administrator and for the internal service acting as itself"}
 
 // calendarStoreRoute is the rule of every calendar-store route.
-var calendarStoreRoute = routeAccessRule{class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "calendar-store as the caller's principal: every calendar has an owner, and the store narrows every read and write to the caller's own calendars, or every owner's for an administrator and for the internal service acting as itself"}
+var calendarStoreRoute = RouteAccessRule{Class: RoutePrincipalOrSessionAgentThroughStoreProxy, Reason: "calendar-store as the caller's principal: every calendar has an owner, and the store narrows every read and write to the caller's own calendars, or every owner's for an administrator and for the internal service acting as itself"}
 
 // journalStoreRoute is the rule of every journal-store route.
-var journalStoreRoute = routeAccessRule{class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "journal-store as the caller's principal: every entry has an owner, and the store answers only the owner and an administrator; the internal service acting as nobody is refused, so the service token reaches it only beside the person it acts for"}
+var journalStoreRoute = RouteAccessRule{Class: RoutePrincipalOrSessionAgentThroughStoreProxy, Reason: "journal-store as the caller's principal: every entry has an owner, and the store answers only the owner and an administrator; the internal service acting as nobody is refused, so the service token reaches it only beside the person it acts for"}
 
-var connectedRecordsRouteAccessRules = map[string]routeAccessRule{
+var connectedRecordsRouteAccessRules = map[string]RouteAccessRule{
 	"GET /people/health":                      peopleStoreRoute,
 	"GET /people/identity-kinds":              peopleStoreRoute,
 	"GET /people/relationship-kinds":          peopleStoreRoute,
@@ -160,10 +160,10 @@ var connectedRecordsRouteDescriptions = map[string]routeDescription{
 
 func init() {
 	for pattern, rule := range connectedRecordsRouteAccessRules {
-		if _, taken := routeAccessRules[pattern]; taken {
+		if _, taken := RouteAccessRules[pattern]; taken {
 			panic(fmt.Sprintf("route %s has two access rules", pattern))
 		}
-		routeAccessRules[pattern] = rule
+		RouteAccessRules[pattern] = rule
 	}
 	for pattern, description := range connectedRecordsRouteDescriptions {
 		if _, taken := routeDescriptions[pattern]; taken {

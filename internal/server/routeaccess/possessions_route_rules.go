@@ -1,4 +1,4 @@
-package server
+package routeaccess
 
 import (
 	"fmt"
@@ -8,12 +8,12 @@ import (
 )
 
 // The rules and descriptions of the possession-store routes
-// (possessions_routes.go). They are kept here and added to routeAccessRules,
+// (possessions_routes.go). They are kept here and added to RouteAccessRules,
 // routeDescriptions and the README's group order at start, so the shared
 // tables gain them in one place.
 
 // possessionStoreRouteRule is the rule of every possession-store route.
-var possessionStoreRouteRule = routeAccessRule{class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "possession-store as the caller's principal: every possession, outfit, product, purchase and review record has an owner, and the store narrows every read to the caller's own, or every owner's for an administrator and for the internal service acting as itself, and every write and pass to one owner"}
+var possessionStoreRouteRule = RouteAccessRule{Class: RoutePrincipalOrSessionAgentThroughStoreProxy, Reason: "possession-store as the caller's principal: every possession, outfit, product, purchase and review record has an owner, and the store narrows every read to the caller's own, or every owner's for an administrator and for the internal service acting as itself, and every write and pass to one owner"}
 
 const routeGroupPossessionStore routeGroup = "possession-store, mounted in this process"
 
@@ -94,9 +94,9 @@ var possessionStoreFixedRouteDescriptions = map[string]string{
 	"GET /possessions/owner-questions/{id}/image":             "The picture a question asks about, as a JPEG",
 }
 
-// possessionStoreRouteDescriptions are the fixed routes and, for every kind,
+// PossessionStoreRouteDescriptions are the fixed routes and, for every kind,
 // its list, its records and their pictures.
-func possessionStoreRouteDescriptions() map[string]routeDescription {
+func PossessionStoreRouteDescriptions() map[string]routeDescription {
 	descriptions := map[string]routeDescription{}
 	for pattern, description := range possessionStoreFixedRouteDescriptions {
 		descriptions[pattern] = routeDescription{routeGroupPossessionStore, description}
@@ -111,11 +111,11 @@ func possessionStoreRouteDescriptions() map[string]routeDescription {
 }
 
 func init() {
-	for pattern, description := range possessionStoreRouteDescriptions() {
-		if _, taken := routeAccessRules[pattern]; taken {
+	for pattern, description := range PossessionStoreRouteDescriptions() {
+		if _, taken := RouteAccessRules[pattern]; taken {
 			panic(fmt.Sprintf("route %s has two access rules", pattern))
 		}
-		routeAccessRules[pattern] = possessionStoreRouteRule
+		RouteAccessRules[pattern] = possessionStoreRouteRule
 		if _, taken := routeDescriptions[pattern]; taken {
 			panic(fmt.Sprintf("route %s has two descriptions", pattern))
 		}

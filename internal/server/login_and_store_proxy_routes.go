@@ -1,5 +1,7 @@
 package server
 
+import "github.com/kayushkin/llm-bridge-server/internal/server/routeaccess"
+
 // registerLoginAndStoreProxyRoutes mounts the login routes, the login session
 // and identity binding administration routes, and the kanban-store and
 // grant-store proxies. They are always mounted: a switched-off sign-in method
@@ -15,7 +17,7 @@ func (s *Server) registerLoginAndStoreProxyRoutes() {
 	s.mux.HandleFunc("GET /restart-readiness", s.sessions.HandleRestartReadiness)
 	s.mux.HandleFunc("POST /restart-drain", s.sessions.HandleStartRestartDrain)
 	s.mux.HandleFunc("DELETE /restart-drain", s.sessions.HandleEndRestartDrain)
-	s.mux.HandleFunc(issuesMountPrefix+"/", s.handleIssuesAsCaller)
-	s.mux.HandleFunc(mailMountPrefix+"/", s.handleMailstackAsCaller)
-	s.mux.HandleFunc(mailstackIngressDeliveryPattern, s.handleMailstackIngressDelivery)
+	s.mux.HandleFunc(routeaccess.IssuesMountPrefix+"/", s.handleIssuesAsCaller)
+	s.mux.HandleFunc(routeaccess.MailMountPrefix+"/", s.handleMailstackAsCaller)
+	s.mux.HandleFunc(routeaccess.MailstackIngressDeliveryPattern, s.handleMailstackIngressDelivery)
 }

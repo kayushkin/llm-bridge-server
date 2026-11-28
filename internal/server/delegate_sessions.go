@@ -21,7 +21,7 @@ package server
 //     so an agent can find and read past sessions on its own server.
 //
 // The routes that take this are marked by sessionAgentAccess on their rule in
-// routeAccessRules. Every other route refuses the token as before.
+// RouteAccessRules. Every other route refuses the token as before.
 
 import (
 	"context"
@@ -29,6 +29,8 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+
+	"github.com/kayushkin/llm-bridge-server/internal/server/routeaccess"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/login"
 
@@ -42,7 +44,7 @@ import (
 
 // serveDelegatingAgent authorizes a request carrying a session posting token
 // on a route whose rule names sessionAgentAccess, and dispatches it.
-func (s *Server) serveDelegatingAgent(w http.ResponseWriter, r *http.Request, pattern string, rule routeAccessRule) {
+func (s *Server) serveDelegatingAgent(w http.ResponseWriter, r *http.Request, pattern string, rule routeaccess.RouteAccessRule) {
 	scheme, token, _ := strings.Cut(r.Header.Get("Authorization"), " ")
 	if !strings.EqualFold(scheme, "Bearer") || strings.TrimSpace(token) == "" {
 		httpjson.WriteJSONError(w, http.StatusUnauthorized, "invalid_session_posting_token",
@@ -88,27 +90,27 @@ func (s *Server) serveDelegatingAgent(w http.ResponseWriter, r *http.Request, pa
 			return
 		}
 	}
-	if rule.sessionAgentAccess == sessionAgentReadsSessions {
+	if rule.SessionAgentAccess == routeaccess.SessionAgentReadsSessions {
 		s.serveSessionReadingAgent(w, r, pattern, rule, agentSession, caller)
 		return
 	}
 	caller.DelegatingAgentOfSessionID = agentSessionID
 
-	switch rule.sessionAgentAccess {
-	case sessionAgentCreatesItsDelegate:
-	case sessionAgentReachesItsDelegate, sessionAgentReachesItsDelegateOrItself:
-		targetSessionID, err := pathValueForPattern(pattern, r.URL.EscapedPath(), rule.ownedResourcePathValueName)
+	switch rule.SessionAgentAccess {
+	case routeaccess.SessionAgentCreatesItsDelegate:
+	case routeaccess.SessionAgentReachesItsDelegate, routeaccess.SessionAgentReachesItsDelegateOrItself:
+		targetSessionID, err := pathValueForPattern(pattern, r.URL.EscapedPath(), rule.OwnedResourcePathValueName)
 		if err != nil {
 			httpjson.WriteJSONError(w, http.StatusInternalServerError, "route_rule_invalid", err.Error())
 			return
 		}
-		ownSession := rule.sessionAgentAccess == sessionAgentReachesItsDelegateOrItself && targetSessionID == agentSessionID
+		ownSession := rule.SessionAgentAccess == routeaccess.SessionAgentReachesItsDelegateOrItself && targetSessionID == agentSessionID
 		if !ownSession && !s.sessionIsDelegateOf(targetSessionID, agentSessionID) {
 			http.Error(w, "session not found", http.StatusNotFound)
 			return
 		}
-	case sessionAgentReadsCatalog:
-	case sessionAgentUsesPeerMessaging:
+	case routeaccess.SessionAgentReadsCatalog:
+	case routeaccess.SessionAgentUsesPeerMessaging:
 		if requestcaller.RequestCameThroughPublicProxy(r) {
 			httpjson.WriteJSONError(w, http.StatusForbidden, "session_posting_token_not_public", fmt.Sprintf(
 				"%s takes a session posting token only from this server's own harness children, never through the public proxy", pattern))
@@ -149,7 +151,7 @@ func (s *Server) sessionIsDelegateOf(sessionID, managerSessionID string) bool {
 // The token reaches this server only from its own harness children, so a
 // request that came through the public reverse proxy is refused before
 // anything is read.
-func (s *Server) serveSessionReadingAgent(w http.ResponseWriter, r *http.Request, pattern string, rule routeAccessRule, agentSession *store.Session, caller requestcaller.Caller) {
+func (s *Server) serveSessionReadingAgent(w http.ResponseWriter, r *http.Request, pattern string, rule routeaccess.RouteAccessRule, agentSession *store.Session, caller requestcaller.Caller) {
 	if requestcaller.RequestCameThroughPublicProxy(r) {
 		httpjson.WriteJSONError(w, http.StatusForbidden, "session_posting_token_not_public", fmt.Sprintf(
 			"%s takes a session posting token only from this server's own harness children, never through the public proxy", pattern))

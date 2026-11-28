@@ -8,7 +8,7 @@ package server
 // grants a session is held to, and the verdict on a tool call are now calls
 // into these stores, not requests over HTTP.
 //
-// Who reaches each route is decided by routeAccessRules, as for every route.
+// Who reaches each route is decided by RouteAccessRules, as for every route.
 // What the stores used to read from headers a gateway set — X-Principal-Id,
 // X-Grant-Store-Service-Token, X-Sign-In-Store-Service-Token — they now read
 // from the request context, set here from the caller request authorization

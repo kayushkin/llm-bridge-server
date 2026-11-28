@@ -1,4 +1,4 @@
-package server
+package routeaccess
 
 import (
 	"fmt"
@@ -7,16 +7,16 @@ import (
 
 // The rules and descriptions of the message-store, activity-store and
 // time-ledger-store routes (message_activity_time_ledger_routes.go). They are
-// added to routeAccessRules, routeDescriptions and the README's group order
+// added to RouteAccessRules, routeDescriptions and the README's group order
 // at start, so the shared tables gain them in one place. Each store's routes
 // share one rule: the store narrows every read and write to the caller's own
 // records, so any principal may call it.
 
-var messageStoreRoute = routeAccessRule{class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "message-store as the caller's principal: every conversation, message and day has an owner, and the store narrows every read and write to the caller's own, or every owner's for an administrator and for the internal service acting as itself"}
+var messageStoreRoute = RouteAccessRule{Class: RoutePrincipalOrSessionAgentThroughStoreProxy, Reason: "message-store as the caller's principal: every conversation, message and day has an owner, and the store narrows every read and write to the caller's own, or every owner's for an administrator and for the internal service acting as itself"}
 
-var activityStoreRoute = routeAccessRule{class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "activity-store as the caller's principal: every activity has an owner, and the store narrows every read and write to the caller's own activities, or every owner's for an administrator and for the internal service acting as itself"}
+var activityStoreRoute = RouteAccessRule{Class: RoutePrincipalOrSessionAgentThroughStoreProxy, Reason: "activity-store as the caller's principal: every activity has an owner, and the store narrows every read and write to the caller's own activities, or every owner's for an administrator and for the internal service acting as itself"}
 
-var timeLedgerStoreRoute = routeAccessRule{class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "time-ledger-store as the caller's principal: every time entry, kind and review has an owner, and the store narrows every read and write to the caller's own, or every owner's for an administrator and for the internal service acting as itself"}
+var timeLedgerStoreRoute = RouteAccessRule{Class: RoutePrincipalOrSessionAgentThroughStoreProxy, Reason: "time-ledger-store as the caller's principal: every time entry, kind and review has an owner, and the store narrows every read and write to the caller's own, or every owner's for an administrator and for the internal service acting as itself"}
 
 const (
 	routeGroupMessageStore    routeGroup = "message-store, mounted in this process"
@@ -98,9 +98,9 @@ var timeLedgerStoreRouteSummaries = map[string]string{
 // Each store's route patterns, as registerMessageActivityAndTimeLedgerRoutes
 // mounts them.
 var (
-	messageStoreRoutePatterns    = sortedPatterns(messageStoreRouteSummaries)
-	activityStoreRoutePatterns   = sortedPatterns(activityStoreRouteSummaries)
-	timeLedgerStoreRoutePatterns = sortedPatterns(timeLedgerStoreRouteSummaries)
+	MessageStoreRoutePatterns    = sortedPatterns(messageStoreRouteSummaries)
+	ActivityStoreRoutePatterns   = sortedPatterns(activityStoreRouteSummaries)
+	TimeLedgerStoreRoutePatterns = sortedPatterns(timeLedgerStoreRouteSummaries)
 )
 
 func sortedPatterns(summaries map[string]string) []string {
@@ -114,7 +114,7 @@ func sortedPatterns(summaries map[string]string) []string {
 
 func init() {
 	for _, store := range []struct {
-		rule      routeAccessRule
+		rule      RouteAccessRule
 		group     routeGroup
 		summaries map[string]string
 	}{
@@ -123,10 +123,10 @@ func init() {
 		{timeLedgerStoreRoute, routeGroupTimeLedgerStore, timeLedgerStoreRouteSummaries},
 	} {
 		for pattern, summary := range store.summaries {
-			if _, taken := routeAccessRules[pattern]; taken {
+			if _, taken := RouteAccessRules[pattern]; taken {
 				panic(fmt.Sprintf("route %s has two access rules", pattern))
 			}
-			routeAccessRules[pattern] = store.rule
+			RouteAccessRules[pattern] = store.rule
 			if _, taken := routeDescriptions[pattern]; taken {
 				panic(fmt.Sprintf("route %s has two descriptions", pattern))
 			}

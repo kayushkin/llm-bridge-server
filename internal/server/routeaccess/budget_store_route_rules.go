@@ -1,14 +1,14 @@
-package server
+package routeaccess
 
 import "fmt"
 
 // The rule and descriptions of the budget-store routes
-// (budget_store_routes.go). They are kept here and added to routeAccessRules,
+// (budget_store_routes.go). They are kept here and added to RouteAccessRules,
 // routeDescriptions and the README's group order at start, so the shared
 // tables gain them in one place.
 
 // budgetStoreRouteRule is the rule of every budget-store route.
-var budgetStoreRouteRule = routeAccessRule{class: routePrincipalOrSessionAgentThroughStoreProxy, reason: "budget-store as the caller's principal: every row has an owner and each person keeps books of their own, so the store works in the books of whoever keeps the record a path names (404 for anyone else) or in the caller's own; an administrator, and the internal service acting as itself, reach any owner's record by its id and any owner's books by owner_principal_id"}
+var budgetStoreRouteRule = RouteAccessRule{Class: RoutePrincipalOrSessionAgentThroughStoreProxy, Reason: "budget-store as the caller's principal: every row has an owner and each person keeps books of their own, so the store works in the books of whoever keeps the record a path names (404 for anyone else) or in the caller's own; an administrator, and the internal service acting as itself, reach any owner's record by its id and any owner's books by owner_principal_id"}
 
 const routeGroupBudgetStore routeGroup = "budget-store, mounted in this process"
 
@@ -94,10 +94,10 @@ var budgetStoreRouteDescriptions = map[string]routeDescription{
 
 func init() {
 	for pattern, description := range budgetStoreRouteDescriptions {
-		if _, taken := routeAccessRules[pattern]; taken {
+		if _, taken := RouteAccessRules[pattern]; taken {
 			panic(fmt.Sprintf("route %s has two access rules", pattern))
 		}
-		routeAccessRules[pattern] = budgetStoreRouteRule
+		RouteAccessRules[pattern] = budgetStoreRouteRule
 		if _, taken := routeDescriptions[pattern]; taken {
 			panic(fmt.Sprintf("route %s has two descriptions", pattern))
 		}

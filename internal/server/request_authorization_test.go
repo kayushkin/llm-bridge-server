@@ -18,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/server/routeaccess"
+
 	"github.com/kayushkin/llm-bridge-server/internal/sessions"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
@@ -826,7 +828,7 @@ func TestPathValueForPatternReadsTheNamedSegment(t *testing.T) {
 // TestEveryPatternTheMuxRecordedIsClassified and
 // TestEveryAccessRuleNamesARegisteredRoute cover them.
 func TestEveryRegisteredRouteIsClassified(t *testing.T) {
-	registration := regexp.MustCompile(`\.(?:HandleFunc|Handle)\(\s*("[^"]+"|issuesMountPrefix\s*\+\s*"/"|grantsMountPrefix\s*\+\s*"/"|mailMountPrefix\s*\+\s*"/")`)
+	registration := regexp.MustCompile(`\.(?:HandleFunc|Handle)\(\s*("[^"]+"|(?:routeaccess\.)?(?:[Ii]ssues|[Gg]rants|[Mm]ail)MountPrefix\s*\+\s*"/")`)
 	sourceFiles, err := routeRegisteringSourceFiles()
 	if err != nil {
 		t.Fatal(err)
@@ -840,12 +842,12 @@ func TestEveryRegisteredRouteIsClassified(t *testing.T) {
 		for _, match := range registration.FindAllStringSubmatch(string(source), -1) {
 			pattern := match[1]
 			switch {
-			case strings.HasPrefix(pattern, "issuesMountPrefix"):
-				pattern = issuesMountPrefix + "/"
-			case strings.HasPrefix(pattern, "grantsMountPrefix"):
-				pattern = grantsMountPrefix + "/"
-			case strings.HasPrefix(pattern, "mailMountPrefix"):
-				pattern = mailMountPrefix + "/"
+			case strings.Contains(strings.ToLower(pattern), "issuesmountprefix"):
+				pattern = routeaccess.IssuesMountPrefix + "/"
+			case strings.Contains(strings.ToLower(pattern), "grantsmountprefix"):
+				pattern = routeaccess.GrantsMountPrefix + "/"
+			case strings.Contains(strings.ToLower(pattern), "mailmountprefix"):
+				pattern = routeaccess.MailMountPrefix + "/"
 			default:
 				pattern = strings.Trim(pattern, `"`)
 			}
@@ -853,7 +855,7 @@ func TestEveryRegisteredRouteIsClassified(t *testing.T) {
 			if _, known := registeredRoutesLeftUnclassified[pattern]; known {
 				continue
 			}
-			if _, classified := routeAccessRules[pattern]; !classified {
+			if _, classified := routeaccess.RouteAccessRules[pattern]; !classified {
 				t.Errorf("%s registers %q, which has no entry in routeAccessRules", sourceFile, pattern)
 			}
 		}
@@ -914,12 +916,12 @@ func TestEveryPatternTheMuxRecordedIsClassified(t *testing.T) {
 		if _, known := registeredRoutesLeftUnclassified[pattern]; known {
 			continue
 		}
-		if _, classified := routeAccessRules[pattern]; !classified {
+		if _, classified := routeaccess.RouteAccessRules[pattern]; !classified {
 			t.Errorf("%q is registered on the mux and has no entry in routeAccessRules", pattern)
 		}
 	}
 	for pattern := range registeredRoutesLeftUnclassified {
-		if _, classified := routeAccessRules[pattern]; classified {
+		if _, classified := routeaccess.RouteAccessRules[pattern]; classified {
 			t.Errorf("%q now has an access rule; take it out of registeredRoutesLeftUnclassified", pattern)
 		}
 	}
@@ -941,7 +943,7 @@ var registeredRoutesLeftUnclassified = map[string]string{
 func TestEveryAccessRuleNamesARegisteredRoute(t *testing.T) {
 	server := newServerWithAllStoresConfigured(t, nil)
 	wildcard := regexp.MustCompile(`\{[^}]+\}`)
-	for pattern := range routeAccessRules {
+	for pattern := range routeaccess.RouteAccessRules {
 		method, path, hasMethod := strings.Cut(pattern, " ")
 		if !hasMethod {
 			method, path = "GET", pattern

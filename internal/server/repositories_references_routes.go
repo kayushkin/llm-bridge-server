@@ -9,7 +9,7 @@ package server
 // patterns below are written out, because the route classification test
 // reads them from string literals, and each strips its prefix and hands the
 // request to that mux. Who reaches each route is decided by
-// routeAccessRules, as for every route.
+// RouteAccessRules, as for every route.
 
 import (
 	"context"

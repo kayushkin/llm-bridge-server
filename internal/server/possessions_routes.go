@@ -35,6 +35,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/server/routeaccess"
+
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
@@ -263,7 +265,7 @@ func (s *Server) possessionStoreRoute() http.HandlerFunc {
 // registers, by its description.
 func (s *Server) registerPossessionsRoutes() {
 	route := s.possessionStoreRoute()
-	for pattern := range possessionStoreRouteDescriptions() {
+	for pattern := range routeaccess.PossessionStoreRouteDescriptions() {
 		s.mux.HandleFunc(pattern, route)
 	}
 }
