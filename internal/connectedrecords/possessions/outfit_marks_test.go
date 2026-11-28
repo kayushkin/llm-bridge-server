@@ -48,7 +48,7 @@ func TestOutfitsTakeAFavoriteAndTagsAndFilterOnThem(t *testing.T) {
 	}
 
 	mux := http.NewServeMux()
-	(&Server{Store: store, Reviewer: &Reviewer{Store: store, Photos: portraitPhotos{}, CoverImagesDirectory: t.TempDir()}}).RegisterHandlers(mux)
+	(&OutfitServer{Reviewer: &Reviewer{Store: store, Photos: portraitPhotos{}, CoverImagesDirectory: t.TempDir()}}).RegisterHandlers(mux)
 	call := func(method, path, body string) *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
 		asTestOwner(mux).ServeHTTP(recorder, httptest.NewRequest(method, path, strings.NewReader(body)))

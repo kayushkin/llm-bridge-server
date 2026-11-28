@@ -27,26 +27,12 @@ func (server *Server) kindImage(ctx context.Context, kind RecordType, id string)
 	if err != nil {
 		return nil, err
 	}
-	return server.Store.PossessionImage(ctx, server.Reviewer.Photos, possessionID)
+	return server.Store.PossessionImage(ctx, server.Photos, possessionID)
 }
 
-// outfitWithCoverBox is an outfit as GET /outfits/{id} answers it.
-func (server *Server) outfitWithCoverBox(ctx context.Context, id string, includeDeleted bool) (Outfit, error) {
-	outfit, err := server.Store.GetOutfit(id, includeDeleted)
-	if err != nil {
-		return Outfit{}, err
-	}
-	if err := server.Reviewer.FillOutfitCoverBox(ctx, &outfit); err != nil {
-		return Outfit{}, err
-	}
-	return outfit, nil
-}
-
-// Routes the record readers answer, besides each kind's own.
-const (
-	PossessionsRoute = "possessions"
-	OutfitsRoute     = "outfits"
-)
+// PossessionsRoute is the route the record readers answer possessions
+// under, besides each kind's own. Outfits are OutfitServer's.
+const PossessionsRoute = "possessions"
 
 func kindOfRoute(route string) (RecordType, bool) {
 	for _, kind := range KindTypes {
@@ -58,7 +44,7 @@ func kindOfRoute(route string) (RecordType, bool) {
 }
 
 // RecordInScope reads the record GET /<route>/{id} answers, in scope: a
-// possession, an outfit, or a kind's record (as its possession). A record
+// possession, or a kind's record (as its possession). A record
 // outside scope is ErrNotFound, as a missing one is.
 func (server *Server) RecordInScope(ctx context.Context, scope ownership.Scope, route, id string) (any, error) {
 	narrowed, err := server.narrowedTo(ctx, scope)
@@ -68,8 +54,6 @@ func (server *Server) RecordInScope(ctx context.Context, scope ownership.Scope, 
 	switch route {
 	case PossessionsRoute:
 		return narrowed.Store.GetPossession(id, false)
-	case OutfitsRoute:
-		return narrowed.outfitWithCoverBox(ctx, id, false)
 	}
 	kind, known := kindOfRoute(route)
 	if !known {
@@ -86,9 +70,7 @@ func (server *Server) ImageInScope(ctx context.Context, scope ownership.Scope, r
 	}
 	switch route {
 	case PossessionsRoute:
-		return narrowed.Store.PossessionImage(ctx, narrowed.Reviewer.Photos, id)
-	case OutfitsRoute:
-		return narrowed.Reviewer.OutfitCoverImage(ctx, id)
+		return narrowed.Store.PossessionImage(ctx, narrowed.Photos, id)
 	}
 	kind, known := kindOfRoute(route)
 	if !known {

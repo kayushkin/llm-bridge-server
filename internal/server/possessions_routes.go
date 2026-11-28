@@ -128,12 +128,49 @@ func (s *Server) EnablePossessions(module PossessionsModule) error {
 		},
 		CoverImagesDirectory: module.CoverCacheDirectory,
 	}
-	mux := http.NewServeMux()
-	possessionServer := &possessions.Server{Store: store, Reviewer: reviewer, LocalMachine: s.possessionLocalMachine}
-	patterns := possessionServer.RegisterHandlers(mux)
-	s.referenceReadable.possessionsAt.Store(possessionServer)
+	mux, patterns, referenceReads := mountPossessions(reviewer, s.possessionLocalMachine)
+	s.referenceReadable.possessionsAt.Store(referenceReads)
 	s.possessions.Store(&possessionStores{store: store, reviewer: reviewer, handler: mux, patterns: patterns})
 	return nil
+}
+
+// mountPossessions puts every route of possession-store on one mux — the
+// records', the photo review's and the outfits' — and answers the mux, their
+// patterns, and the readers of its records by reference. localMachine names
+// this server's machine for the originals it keeps.
+func mountPossessions(reviewer *possessions.Reviewer, localMachine func(context.Context) (string, error)) (*http.ServeMux, []string, *possessionReferenceReads) {
+	mux := http.NewServeMux()
+	records := &possessions.Server{Store: reviewer.Store, Photos: reviewer.Photos, LocalMachine: localMachine}
+	outfits := &possessions.OutfitServer{Reviewer: reviewer}
+	var patterns []string
+	patterns = append(patterns, records.RegisterHandlers(mux)...)
+	patterns = append(patterns, (&possessions.ReviewServer{Reviewer: reviewer}).RegisterHandlers(mux)...)
+	patterns = append(patterns, outfits.RegisterHandlers(mux)...)
+	return mux, patterns, &possessionReferenceReads{records: records, outfits: outfits}
+}
+
+// possessionReferenceReads reads possession-store's records by the route a
+// reference type names them under: outfits from the outfits' server, and
+// possessions and each kind's records from the records' server.
+type possessionReferenceReads struct {
+	records *possessions.Server
+	outfits *possessions.OutfitServer
+}
+
+// RecordInScope reads the record GET /<route>/{id} answers, in scope.
+func (reads *possessionReferenceReads) RecordInScope(ctx context.Context, scope ownership.Scope, route, id string) (any, error) {
+	if route == possessions.OutfitsRoute {
+		return reads.outfits.OutfitInScope(ctx, scope, id)
+	}
+	return reads.records.RecordInScope(ctx, scope, route, id)
+}
+
+// ImageInScope is the JPEG GET /<route>/{id}/image answers, in scope.
+func (reads *possessionReferenceReads) ImageInScope(ctx context.Context, scope ownership.Scope, route, id string) ([]byte, error) {
+	if route == possessions.OutfitsRoute {
+		return reads.outfits.OutfitImageInScope(ctx, scope, id)
+	}
+	return reads.records.ImageInScope(ctx, scope, route, id)
 }
 
 // possessionModelPrice is model-store's list price for a model, from the

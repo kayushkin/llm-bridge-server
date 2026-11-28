@@ -21,30 +21,42 @@ import (
 //     mixes two owners' records and a record outside the scope answers 404 as
 //     a missing one.
 
-// narrowedFor is the server answering r's scope, and r with the caller every
-// store asked on the way acts as.
-func (server *Server) narrowedFor(r *http.Request) (*Server, *http.Request, *ownership.RequestError) {
-	var scope ownership.Scope
-	served := r
+// requestScope is r's scope, and r with the caller every store asked on the
+// way acts as.
+func requestScope(r *http.Request) (ownership.Scope, *http.Request, *ownership.RequestError) {
 	if r.Method == http.MethodGet || r.Method == http.MethodHead {
 		readScope, refusal := ownership.ReadScope(r)
 		if refusal != nil {
-			return nil, nil, refusal
+			return ownership.Scope{}, nil, refusal
 		}
-		scope = readScope
-	} else {
-		owner, refusal := ownership.OwnerActedFor(r)
-		if refusal != nil {
-			return nil, nil, refusal
-		}
-		scope = ownership.OwnedBy(owner)
-		served = r.WithContext(ownership.ContextWithCaller(r.Context(), ownership.Caller{PrincipalID: owner}))
+		return readScope, r, nil
 	}
-	narrowed, err := server.narrowedTo(served.Context(), scope)
-	if err != nil {
-		return nil, nil, &ownership.RequestError{Status: http.StatusServiceUnavailable, Message: err.Error()}
+	owner, refusal := ownership.OwnerActedFor(r)
+	if refusal != nil {
+		return ownership.Scope{}, nil, refusal
 	}
-	return narrowed, served, nil
+	return ownership.OwnedBy(owner), r.WithContext(ownership.ContextWithCaller(r.Context(), ownership.Caller{PrincipalID: owner})), nil
+}
+
+// handlerOn answers a function that registers a route on mux whose handler
+// build makes from narrow's answer for each request's scope: a server whose
+// stores reach that scope's records only.
+func handlerOn[Narrowed any](mux *http.ServeMux, narrow func(ctx context.Context, scope ownership.Scope) (Narrowed, error)) func(pattern string, build func(Narrowed) http.HandlerFunc) {
+	return func(pattern string, build func(Narrowed) http.HandlerFunc) {
+		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+			scope, served, refusal := requestScope(r)
+			if refusal != nil {
+				writeJSON(w, refusal.Status, map[string]string{"error": refusal.Message})
+				return
+			}
+			narrowed, err := narrow(served.Context(), scope)
+			if err != nil {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+				return
+			}
+			build(narrowed)(w, served)
+		})
+	}
 }
 
 func (server *Server) narrowedTo(ctx context.Context, scope ownership.Scope) (*Server, error) {
@@ -54,21 +66,21 @@ func (server *Server) narrowedTo(ctx context.Context, scope ownership.Scope) (*S
 	}
 	narrowed := *server
 	narrowed.Store = store
-	narrowed.Reviewer = server.Reviewer.Narrowed(store)
 	return &narrowed, nil
 }
 
-// handlerOn answers a function that registers a route on mux whose handler
-// build makes from the server narrowed to each request's scope.
-func (server *Server) handlerOn(mux *http.ServeMux) func(pattern string, build func(*Server) http.HandlerFunc) {
-	return func(pattern string, build func(*Server) http.HandlerFunc) {
-		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
-			narrowed, served, refusal := server.narrowedFor(r)
-			if refusal != nil {
-				writeJSON(w, refusal.Status, map[string]string{"error": refusal.Message})
-				return
-			}
-			build(narrowed)(w, served)
-		})
+func (server *ReviewServer) narrowedTo(ctx context.Context, scope ownership.Scope) (*ReviewServer, error) {
+	store, err := server.Reviewer.Store.Narrowed(ctx, scope)
+	if err != nil {
+		return nil, err
 	}
+	return &ReviewServer{Reviewer: server.Reviewer.Narrowed(store)}, nil
+}
+
+func (server *OutfitServer) narrowedTo(ctx context.Context, scope ownership.Scope) (*OutfitServer, error) {
+	store, err := server.Reviewer.Store.Narrowed(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	return &OutfitServer{Reviewer: server.Reviewer.Narrowed(store)}, nil
 }

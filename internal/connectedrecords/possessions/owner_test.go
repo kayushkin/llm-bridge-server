@@ -89,7 +89,7 @@ func TestAnotherOwnersRecordsAreOutOfReach(t *testing.T) {
 func TestTheRoutesNarrowEachCallerToItsOwnRecords(t *testing.T) {
 	root, _, _ := twoOwners(t)
 	mux := http.NewServeMux()
-	(&Server{Store: root, Reviewer: &Reviewer{Store: root, Photos: fakePhotos{}}, LocalMachine: func(context.Context) (string, error) { return "laptop", nil }}).RegisterHandlers(mux)
+	(&Server{Store: root, Photos: fakePhotos{}, LocalMachine: func(context.Context) (string, error) { return "laptop", nil }}).RegisterHandlers(mux)
 	call := func(caller ownership.Caller, method, path, body string) *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
 		asCaller(caller, mux).ServeHTTP(recorder, httptest.NewRequest(method, path, strings.NewReader(body)))

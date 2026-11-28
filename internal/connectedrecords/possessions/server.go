@@ -12,21 +12,27 @@ import (
 	"strconv"
 )
 
-// Server serves the HTTP API. Store and Reviewer reach no records until a
-// request narrows them to its scope (server_scope.go).
+// Server serves the routes of the records themselves: possessions and their
+// kinds, photos, originals, merges, wearable groups, products and purchases.
+// Store reaches no records until a request narrows it to its scope
+// (server_scope.go).
 type Server struct {
-	Store    *Store
-	Reviewer *Reviewer
+	Store *Store
+	// Photos reads the photos a possession's image is cut from.
+	Photos PhotoSource
 	// LocalMachine is the name of the machine this server runs on, as
 	// harness-store records it: photo-store's source_machine of an original
 	// kept here.
 	LocalMachine func(ctx context.Context) (string, error)
 }
 
-// RegisterHandlers adds every route to mux, and answers their patterns.
+// RegisterHandlers adds the routes of possessions and their kinds, their
+// photos, originals, merges, wearable groups, products and purchases to
+// mux, and answers their patterns. The photo review's routes are
+// ReviewServer's and the outfits' OutfitServer's.
 func (server *Server) RegisterHandlers(mux *http.ServeMux) []string {
 	var patterns []string
-	register := server.handlerOn(mux)
+	register := handlerOn(mux, server.narrowedTo)
 	handle := func(pattern string, build func(*Server) http.HandlerFunc) {
 		patterns = append(patterns, pattern)
 		register(pattern, build)
@@ -49,19 +55,6 @@ func (server *Server) RegisterHandlers(mux *http.ServeMux) []string {
 	handle("GET /possessions/{id}/image", func(server *Server) http.HandlerFunc { return server.possessionImage })
 	handle("POST /possessions/{id}/photos", func(server *Server) http.HandlerFunc { return server.linkPhoto })
 	handle("PUT /originals/{sha256}", func(server *Server) http.HandlerFunc { return server.keepOriginal })
-	handle("POST /possessions/classify-kindless", func(server *Server) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			var body struct {
-				Actor     string `json:"actor"`
-				BatchSize int    `json:"batch_size"`
-			}
-			if !decodeBody(w, r, &body) {
-				return
-			}
-			run, err := server.Reviewer.ClassifyKindless(r.Context(), body.Actor, body.BatchSize)
-			respond(w, http.StatusOK, run, err)
-		}
-	})
 	handle("PUT /possessions/{id}/kind", func(server *Server) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			var body struct {
@@ -119,63 +112,6 @@ func (server *Server) RegisterHandlers(mux *http.ServeMux) []string {
 			respond(w, http.StatusOK, merge, err)
 		}
 	})
-	handle("POST /wearables/check-links", func(server *Server) http.HandlerFunc { return server.auditPass(server.Reviewer.CheckWearableLinks) })
-	handle("POST /wearables/check-duplicates", func(server *Server) http.HandlerFunc {
-		return server.auditPass(server.Reviewer.CheckWearableDuplicates)
-	})
-	handle("POST /outfits/consolidate", func(server *Server) http.HandlerFunc { return server.auditPass(server.Reviewer.ConsolidateOutfits) })
-	handle("POST /outfit-pieces/rematch", func(server *Server) http.HandlerFunc { return server.auditPass(server.Reviewer.RematchOutfitPieces) })
-	handle("POST /outfit-looks/read", func(server *Server) http.HandlerFunc { return server.auditPass(server.Reviewer.ReadLooks) })
-	handle("POST /outfit-slots/identify", func(server *Server) http.HandlerFunc { return server.auditPass(server.Reviewer.IdentifySlots) })
-	handle("POST /outfits/rebuild-from-looks", func(server *Server) http.HandlerFunc {
-		return server.auditPass(server.Reviewer.RebuildOutfitsFromLooks)
-	})
-	handle("GET /outfit-looks", func(server *Server) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			limit, offset, err := paging(r)
-			if err != nil {
-				writeError(w, err)
-				return
-			}
-			looks, err := server.Store.ListLooks(r.URL.Query().Get("worn_on"), r.URL.Query().Get("outfit_id"), limit, offset)
-			respond(w, http.StatusOK, looks, err)
-		}
-	})
-	handle("GET /outfit-looks/{id}", func(server *Server) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			look, err := server.Store.GetLook(r.PathValue("id"))
-			respond(w, http.StatusOK, look, err)
-		}
-	})
-	handle("GET /outfit-slots/{id}", func(server *Server) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			slot, err := server.Store.GetSlot(r.PathValue("id"))
-			respond(w, http.StatusOK, slot, err)
-		}
-	})
-	handle("GET /outfit-slots/{id}/image", func(server *Server) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			server.writeImage(w, r.Context(), func(ctx context.Context) ([]byte, error) { return server.Reviewer.SlotImage(ctx, r.PathValue("id")) })
-		}
-	})
-	handle("GET /outfit-rebuilds/{id}", func(server *Server) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			rebuild, err := server.Store.GetOutfitRebuild(r.PathValue("id"))
-			respond(w, http.StatusOK, rebuild, err)
-		}
-	})
-	handle("POST /outfit-rebuilds/{id}/undo", func(server *Server) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			var body struct {
-				Actor string `json:"actor"`
-			}
-			if !decodeBody(w, r, &body) {
-				return
-			}
-			rebuild, err := server.Store.UndoOutfitRebuild(r.Context(), r.PathValue("id"), body.Actor)
-			respond(w, http.StatusOK, rebuild, err)
-		}
-	})
 	handle("GET /wearable-groups", func(server *Server) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			groups, err := server.Store.ListWearableGroups()
@@ -190,49 +126,6 @@ func (server *Server) RegisterHandlers(mux *http.ServeMux) []string {
 			}
 			group, err := server.Store.ChangeWearableGroup(r.Context(), r.PathValue("group"), body)
 			respond(w, http.StatusOK, group, err)
-		}
-	})
-	handle("POST /outfits/{id}/combine", func(server *Server) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			var body struct {
-				Into   string `json:"into"`
-				Actor  string `json:"actor"`
-				Reason string `json:"reason"`
-			}
-			if !decodeBody(w, r, &body) {
-				return
-			}
-			merge, err := server.Store.CombineOutfits(r.Context(), r.PathValue("id"), body.Into, body.Actor, body.Reason)
-			respond(w, http.StatusOK, merge, err)
-		}
-	})
-	handle("GET /outfit-merges", func(server *Server) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			limit, offset, err := paging(r)
-			if err != nil {
-				writeError(w, err)
-				return
-			}
-			merges, err := server.Store.ListOutfitMerges(r.URL.Query().Get("outfit_id"), limit, offset)
-			respond(w, http.StatusOK, merges, err)
-		}
-	})
-	handle("GET /outfit-merges/{id}", func(server *Server) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			merge, err := server.Store.GetOutfitMerge(r.PathValue("id"))
-			respond(w, http.StatusOK, merge, err)
-		}
-	})
-	handle("POST /outfit-merges/{id}/undo", func(server *Server) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			var body struct {
-				Actor string `json:"actor"`
-			}
-			if !decodeBody(w, r, &body) {
-				return
-			}
-			merge, err := server.Store.UndoOutfitMerge(r.Context(), r.PathValue("id"), body.Actor)
-			respond(w, http.StatusOK, merge, err)
 		}
 	})
 	handle("DELETE /possessions/{id}/photos/{photo_id}", func(server *Server) http.HandlerFunc { return server.unlinkPhoto })
@@ -259,7 +152,7 @@ func (server *Server) RegisterHandlers(mux *http.ServeMux) []string {
 		})
 		handle("GET /"+kind.Route+"/{id}/image", func(server *Server) http.HandlerFunc {
 			return func(w http.ResponseWriter, r *http.Request) {
-				server.writeImage(w, r.Context(), func(ctx context.Context) ([]byte, error) { return server.kindImage(ctx, kind, r.PathValue("id")) })
+				writeImage(w, r.Context(), func(ctx context.Context) ([]byte, error) { return server.kindImage(ctx, kind, r.PathValue("id")) })
 			}
 		})
 	}
@@ -287,151 +180,6 @@ func (server *Server) RegisterHandlers(mux *http.ServeMux) []string {
 			}
 			possession, err := server.Store.GetPossession(possessionID, false)
 			respond(w, http.StatusCreated, possession, err)
-		}
-	})
-
-	handle("GET /outfits", func(server *Server) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			limit, offset, err := paging(r)
-			if err != nil {
-				writeError(w, err)
-				return
-			}
-			query := r.URL.Query()
-			favoriteOnly := false
-			switch query.Get("favorite") {
-			case "", "false":
-			case "true":
-				favoriteOnly = true
-			default:
-				writeError(w, fmt.Errorf("%w: favorite is true or false", ErrInvalid))
-				return
-			}
-			outfits, err := server.Store.FindOutfits(OutfitFilter{Status: query.Get("status"), PossessionID: query.Get("possession_id"),
-				FavoriteOnly: favoriteOnly, Tag: query.Get("tag"), Limit: limit, Offset: offset})
-			if err == nil {
-				err = server.Reviewer.FillOutfitCoverBoxes(r.Context(), outfits)
-			}
-			if err == nil {
-				server.Reviewer.WarmOutfitCovers(outfits)
-				server.Reviewer.QueueCoverWearerReads(outfits)
-			}
-			respond(w, http.StatusOK, outfits, err)
-		}
-	})
-	handle("GET /outfit-tags", func(server *Server) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			counts, err := server.Store.OutfitTagCounts()
-			respond(w, http.StatusOK, counts, err)
-		}
-	})
-	handle("POST /outfit-covers/read-wearer-boxes", func(server *Server) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			var body struct {
-				Actor string `json:"actor"`
-			}
-			if !decodeBody(w, r, &body) {
-				return
-			}
-			result, err := server.Reviewer.ReadMissingCoverWearerBoxes(r.Context(), body.Actor)
-			respond(w, http.StatusOK, result, err)
-		}
-	})
-	handle("POST /outfits", func(server *Server) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			var body struct {
-				OutfitInput
-				Actor string `json:"actor"`
-			}
-			if !decodeBody(w, r, &body) {
-				return
-			}
-			outfit, err := server.Store.CreateOutfit(r.Context(), body.OutfitInput, body.Actor)
-			if err == nil {
-				err = server.Reviewer.FillOutfitCoverBox(r.Context(), &outfit)
-			}
-			respond(w, http.StatusCreated, outfit, err)
-		}
-	})
-	handle("GET /outfits/{id}", func(server *Server) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			outfit, err := server.outfitWithCoverBox(r.Context(), r.PathValue("id"), r.URL.Query().Get("include_deleted") == "true")
-			respond(w, http.StatusOK, outfit, err)
-		}
-	})
-	handle("PATCH /outfits/{id}", func(server *Server) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			var body struct {
-				OutfitInput
-				Actor string `json:"actor"`
-			}
-			if !decodeBody(w, r, &body) {
-				return
-			}
-			outfit, err := server.Store.PatchOutfit(r.Context(), r.PathValue("id"), body.OutfitInput, body.Actor)
-			if err == nil {
-				err = server.Reviewer.FillOutfitCoverBox(r.Context(), &outfit)
-			}
-			respond(w, http.StatusOK, outfit, err)
-		}
-	})
-	handle("DELETE /outfits/{id}", func(server *Server) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			actor := r.URL.Query().Get("actor")
-			if actor == "" {
-				writeError(w, fmt.Errorf("%w: ?actor= is required", ErrInvalid))
-				return
-			}
-			if err := server.Store.DeleteOutfit(r.PathValue("id"), actor); err != nil {
-				writeError(w, err)
-				return
-			}
-			w.WriteHeader(http.StatusNoContent)
-		}
-	})
-	handle("PUT /outfits/{id}/cover", func(server *Server) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			var body struct {
-				PhotoID *string `json:"photo_id"`
-				Actor   string  `json:"actor"`
-			}
-			if !decodeBody(w, r, &body) {
-				return
-			}
-			if body.PhotoID == nil {
-				writeError(w, fmt.Errorf("%w: photo_id is required (\"\" takes the owner's pick away)", ErrInvalid))
-				return
-			}
-			outfit, err := server.Store.SetOutfitCover(r.Context(), r.PathValue("id"), *body.PhotoID, body.Actor)
-			if err == nil {
-				// The pick is kept even when the reader fails; the error says so.
-				if readErr := server.Reviewer.EnsureCoverWearerBox(r.Context(), outfit, body.Actor); readErr != nil {
-					err = fmt.Errorf("the cover is now %s, but its wearer box could not be read, so it is cut to the piece boxes: %w", valueOrEmpty(outfit.CoverPhotoID), readErr)
-				}
-			}
-			if err == nil {
-				err = server.Reviewer.FillOutfitCoverBox(r.Context(), &outfit)
-			}
-			respond(w, http.StatusOK, outfit, err)
-		}
-	})
-	handle("GET /outfits/{id}/image", func(server *Server) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			server.writeImage(w, r.Context(), func(ctx context.Context) ([]byte, error) {
-				return server.Reviewer.OutfitCoverImage(ctx, r.PathValue("id"))
-			})
-		}
-	})
-	handle("POST /outfits/{id}/wearings", func(server *Server) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			var body struct {
-				WornOn string `json:"worn_on"`
-			}
-			if !decodeBody(w, r, &body) {
-				return
-			}
-			outfit, err := server.Store.RecordWearing(r.PathValue("id"), body.WornOn)
-			respond(w, http.StatusCreated, outfit, err)
 		}
 	})
 
@@ -468,29 +216,6 @@ func (server *Server) RegisterHandlers(mux *http.ServeMux) []string {
 			respond(w, http.StatusOK, purchase, err)
 		}
 	})
-	handle("POST /marketplace-orders/import-ebay-mail", func(server *Server) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			var request EbayImportRequest
-			if !decodeBody(w, r, &request) {
-				return
-			}
-			run, err := server.Reviewer.ImportEbayOrders(r.Context(), request)
-			server.writeRun(w, run, err)
-		}
-	})
-	handle("POST /marketplace-order-lines/match", func(server *Server) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			var body struct {
-				Actor              string `json:"actor"`
-				MarketplaceOrderID string `json:"marketplace_order_id"`
-			}
-			if !decodeBody(w, r, &body) {
-				return
-			}
-			run, err := server.Reviewer.MatchOrderLines(r.Context(), body.Actor, body.MarketplaceOrderID)
-			server.writeRun(w, run, err)
-		}
-	})
 	handle("GET /products", func(server *Server) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			limit, offset, err := paging(r)
@@ -500,16 +225,6 @@ func (server *Server) RegisterHandlers(mux *http.ServeMux) []string {
 			}
 			products, err := server.Store.ListProducts(r.URL.Query().Get("q"), limit, offset)
 			respond(w, http.StatusOK, products, err)
-		}
-	})
-	handle("POST /products", func(server *Server) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			var request ProductRequest
-			if !decodeBody(w, r, &request) {
-				return
-			}
-			product, err := server.Reviewer.CreateProduct(r.Context(), request)
-			respond(w, http.StatusCreated, product, err)
 		}
 	})
 	handle("GET /products/{id}", func(server *Server) http.HandlerFunc {
@@ -557,178 +272,7 @@ func (server *Server) RegisterHandlers(mux *http.ServeMux) []string {
 		}
 	})
 
-	handle("GET /photo-reviews", func(server *Server) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			limit, offset, err := paging(r)
-			if err != nil {
-				writeError(w, err)
-				return
-			}
-			reviews, err := server.Store.ListPhotoReviews(r.URL.Query().Get("status"), limit, offset)
-			respond(w, http.StatusOK, reviews, err)
-		}
-	})
-	handle("POST /photo-reviews", func(server *Server) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			var body struct {
-				PhotoID        string `json:"photo_id"`
-				QueuedBy       string `json:"queued_by"`
-				Reading        string `json:"reading"`
-				WearerPersonID string `json:"wearer_person_id"`
-			}
-			if !decodeBody(w, r, &body) {
-				return
-			}
-			review, created, err := server.Store.QueuePhotoReview(r.Context(), body.PhotoID, body.QueuedBy, body.Reading, body.WearerPersonID)
-			if err != nil {
-				writeError(w, err)
-				return
-			}
-			status := http.StatusOK
-			if created {
-				status = http.StatusCreated
-				server.Reviewer.Wake()
-			}
-			writeJSON(w, status, review)
-		}
-	})
-	handle("GET /photo-reviews/{id}", func(server *Server) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			review, err := server.Store.GetPhotoReview(r.PathValue("id"))
-			respond(w, http.StatusOK, review, err)
-		}
-	})
-	handle("POST /photo-reviews/{id}/retry", func(server *Server) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			var body struct {
-				Actor string `json:"actor"`
-			}
-			if !decodeBody(w, r, &body) {
-				return
-			}
-			if body.Actor == "" {
-				writeError(w, fmt.Errorf("%w: actor is required", ErrInvalid))
-				return
-			}
-			review, err := server.Store.RetryPhotoReview(r.PathValue("id"), body.Actor)
-			if err == nil {
-				server.Reviewer.Wake()
-			}
-			respond(w, http.StatusOK, review, err)
-		}
-	})
-	handle("POST /sightings/record-agreed", func(server *Server) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			var body struct {
-				Actor string `json:"actor"`
-			}
-			if !decodeBody(w, r, &body) {
-				return
-			}
-			result, err := server.Store.RecordAgreedSightings(r.Context(), body.Actor)
-			respond(w, http.StatusOK, result, err)
-		}
-	})
-	handle("GET /sightings/{id}", func(server *Server) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			sighting, err := server.Store.GetSighting(r.PathValue("id"))
-			respond(w, http.StatusOK, sighting, err)
-		}
-	})
-	handle("GET /sightings/{id}/image", func(server *Server) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			server.writeImage(w, r.Context(), func(ctx context.Context) ([]byte, error) {
-				return server.Reviewer.SightingImage(ctx, r.PathValue("id"))
-			})
-		}
-	})
-	handle("GET /owner-questions", func(server *Server) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			limit, offset, err := paging(r)
-			if err != nil {
-				writeError(w, err)
-				return
-			}
-			questions, err := server.Store.ListQuestions(r.URL.Query().Get("include_answered") == "true", r.URL.Query().Get("photo_review_id"), r.URL.Query().Get("purpose"), limit, offset)
-			respond(w, http.StatusOK, questions, err)
-		}
-	})
-	handle("POST /owner-questions/triage-outfit-doubts", func(server *Server) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			var body struct {
-				Actor string `json:"actor"`
-			}
-			if !decodeBody(w, r, &body) {
-				return
-			}
-			result, err := server.Reviewer.TriageOutfitDoubts(r.Context(), body.Actor)
-			respond(w, http.StatusOK, result, err)
-		}
-	})
-	handle("GET /owner-questions/{id}", func(server *Server) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			question, err := server.Store.GetQuestion(r.PathValue("id"))
-			respond(w, http.StatusOK, question, err)
-		}
-	})
-	handle("POST /owner-questions/{id}/answer", func(server *Server) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			var answer Answer
-			if !decodeBody(w, r, &answer) {
-				return
-			}
-			question, err := server.Reviewer.AnswerQuestion(r.Context(), r.PathValue("id"), answer)
-			respond(w, http.StatusOK, question, err)
-		}
-	})
-	handle("GET /owner-questions/{id}/image", func(server *Server) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			question, err := server.Store.GetQuestion(r.PathValue("id"))
-			if err != nil {
-				writeError(w, err)
-				return
-			}
-			server.writeImage(w, r.Context(), func(ctx context.Context) ([]byte, error) {
-				return server.Reviewer.SightingImage(ctx, question.SightingID)
-			})
-		}
-	})
 	return patterns
-}
-
-// auditPass serves one wearable audit pass. It runs until done; a pass
-// that stops on an error answers the error with what it did before it.
-func (server *Server) auditPass(pass func(ctx context.Context, actor string) (AuditRun, error)) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			Actor string `json:"actor"`
-		}
-		if !decodeBody(w, r, &body) {
-			return
-		}
-		run, err := pass(r.Context(), body.Actor)
-		if err != nil && (len(run.Actions) > 0 || run.CostUSD > 0) {
-			status := http.StatusInternalServerError
-			if errors.Is(err, ErrInvalid) {
-				status = http.StatusBadRequest
-			}
-			log.Printf("audit pass stopped: %v", err)
-			writeJSON(w, status, map[string]any{"error": err.Error(), "done_before_the_error": run})
-			return
-		}
-		respond(w, http.StatusOK, run, err)
-	}
-}
-
-// writeRun answers a pass's run; a pass that stopped on an error after
-// spending answers the error with what it did before it.
-func (server *Server) writeRun(w http.ResponseWriter, run AuditRun, err error) {
-	if err != nil && (len(run.Actions) > 0 || run.CostUSD > 0) {
-		log.Printf("pass stopped: %v", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error(), "done_before_the_error": run})
-		return
-	}
-	respond(w, http.StatusOK, run, err)
 }
 
 func (server *Server) health(w http.ResponseWriter, r *http.Request) {
@@ -839,8 +383,8 @@ func (server *Server) revisions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (server *Server) possessionImage(w http.ResponseWriter, r *http.Request) {
-	server.writeImage(w, r.Context(), func(ctx context.Context) ([]byte, error) {
-		return server.Store.PossessionImage(ctx, server.Reviewer.Photos, r.PathValue("id"))
+	writeImage(w, r.Context(), func(ctx context.Context) ([]byte, error) {
+		return server.Store.PossessionImage(ctx, server.Photos, r.PathValue("id"))
 	})
 }
 
@@ -858,7 +402,7 @@ func (server *Server) unlinkPhoto(w http.ResponseWriter, r *http.Request) {
 	respond(w, http.StatusOK, possession, err)
 }
 
-func (server *Server) writeImage(w http.ResponseWriter, ctx context.Context, make func(context.Context) ([]byte, error)) {
+func writeImage(w http.ResponseWriter, ctx context.Context, make func(context.Context) ([]byte, error)) {
 	image, err := make(ctx)
 	if err != nil {
 		writeError(w, err)

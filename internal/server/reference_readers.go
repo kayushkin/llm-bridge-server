@@ -93,7 +93,7 @@ type referenceReadableStores struct {
 	messages      atomic.Pointer[messages.Store]
 	activities    atomic.Pointer[onlineactivity.Store]
 	timeLedger    atomic.Pointer[timeledger.Store]
-	possessionsAt atomic.Pointer[possessions.Server]
+	possessionsAt atomic.Pointer[possessionReferenceReads]
 }
 
 // EnableSchedulerJobReferences lets reference-store read scheduler jobs by

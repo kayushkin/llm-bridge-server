@@ -11,7 +11,7 @@ import (
 func TestTheRoutesRegisterAndAnswer(t *testing.T) {
 	store := openTestStore(t)
 	mux := http.NewServeMux()
-	(&Server{Store: store, Reviewer: &Reviewer{Store: store, Photos: fakePhotos{}}}).RegisterHandlers(mux)
+	registerEveryRoute(mux, &Reviewer{Store: store, Photos: fakePhotos{}})
 	call := func(method, path, body string) *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
 		asTestOwner(mux).ServeHTTP(recorder, httptest.NewRequest(method, path, strings.NewReader(body)))
@@ -80,4 +80,12 @@ func TestTheRoutesRegisterAndAnswer(t *testing.T) {
 	if health.Counts["possessions"] != 1 {
 		t.Errorf("health counts = %v", health.Counts)
 	}
+}
+
+// registerEveryRoute registers the routes of the records, the review and
+// the outfits on mux, as the bridge mounts them.
+func registerEveryRoute(mux *http.ServeMux, reviewer *Reviewer) {
+	(&Server{Store: reviewer.Store, Photos: reviewer.Photos}).RegisterHandlers(mux)
+	(&ReviewServer{Reviewer: reviewer}).RegisterHandlers(mux)
+	(&OutfitServer{Reviewer: reviewer}).RegisterHandlers(mux)
 }

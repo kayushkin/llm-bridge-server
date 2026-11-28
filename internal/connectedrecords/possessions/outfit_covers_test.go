@@ -219,7 +219,7 @@ func TestTheCoverRoutesCutATallImageAndTakeTheOwnersPick(t *testing.T) {
 		return map[string]any{"wearer_found": true, "box": Box{0.35, 0.04, 0.62, 0.9}}, true
 	}}
 	reviewer := &Reviewer{Store: store, Photos: portraitPhotos{}, Models: models, FirstReaderRole: "first", CoverImagesDirectory: t.TempDir()}
-	(&Server{Store: store, Reviewer: reviewer}).RegisterHandlers(mux)
+	(&OutfitServer{Reviewer: reviewer}).RegisterHandlers(mux)
 	call := func(method, path, body string) *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
 		asTestOwner(mux).ServeHTTP(recorder, httptest.NewRequest(method, path, strings.NewReader(body)))

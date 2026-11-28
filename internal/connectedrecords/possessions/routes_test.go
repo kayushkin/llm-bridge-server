@@ -12,7 +12,7 @@ import (
 func TestTheRemainingRoutesWriteAndReadBack(t *testing.T) {
 	store := openTestStore(t)
 	mux := http.NewServeMux()
-	(&Server{Store: store, Reviewer: &Reviewer{Store: store, Photos: fakePhotos{}}}).RegisterHandlers(mux)
+	registerEveryRoute(mux, &Reviewer{Store: store, Photos: fakePhotos{}})
 	call := func(method, path, body string) *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
 		asTestOwner(mux).ServeHTTP(recorder, httptest.NewRequest(method, path, strings.NewReader(body)))

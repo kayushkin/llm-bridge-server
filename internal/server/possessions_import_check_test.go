@@ -131,8 +131,7 @@ func TestAnImportedPossessionStoreAnswersAsTheStandaloneOne(t *testing.T) {
 	plain := &http.Client{Timeout: time.Minute}
 	reviewer := &possessions.Reviewer{Store: root, CoverImagesDirectory: t.TempDir(),
 		Photos: possessions.PhotoStoreSource{PhotoStore: possessions.PhotoStoreOverHTTP{URL: *livePhotoStoreURL, HTTPClient: plain}, Originals: root, LongestSide: 2048}}
-	mux := http.NewServeMux()
-	(&possessions.Server{Store: root, Reviewer: reviewer}).RegisterHandlers(mux)
+	mux, _, _ := mountPossessions(reviewer, nil)
 	caller := ownership.Caller{PrincipalID: *possessionImportOwner}
 
 	source, err := sql.Open("sqlite", "file:"+*standalonePossessionStoreCopy+"?mode=ro")
