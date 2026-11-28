@@ -39,7 +39,11 @@ func (s *Store) applyAuditResolution(transaction *databaseTransaction, question 
 		_, err := s.mergePossessionInTransaction(transaction, resolution.PossessionID, resolution.IntoPossessionID, actor, "the owner answered "+question.ID, now)
 		return err
 	case "slot_link", "slot_new", "slot_not_mine":
-		return s.applySlotAnswer(transaction, resolution, actor, now)
+		steps, err := s.outfitSteps()
+		if err != nil {
+			return err
+		}
+		return steps.ApplySlotAnswer(s, transaction, resolution, actor, now)
 	case "order_line_link":
 		if resolution.PossessionID == "" || resolution.MarketplaceOrderLineID == "" {
 			return fmt.Errorf("%w: order_line_link needs possession_id and marketplace_order_line_id", ErrInvalid)
@@ -57,7 +61,11 @@ func (s *Store) applyAuditResolution(transaction *databaseTransaction, question 
 				return err
 			}
 		}
-		_, err := s.combineOutfitsInTransaction(transaction, resolution.OutfitID, resolution.IntoOutfitID, actor, "the owner answered "+question.ID, now)
+		steps, err := s.outfitSteps()
+		if err != nil {
+			return err
+		}
+		_, err = steps.CombineOutfits(s, transaction, resolution.OutfitID, resolution.IntoOutfitID, actor, "the owner answered "+question.ID, now)
 		return err
 	}
 	return fmt.Errorf("%w: %q is not an audit action", ErrInvalid, resolution.Action)

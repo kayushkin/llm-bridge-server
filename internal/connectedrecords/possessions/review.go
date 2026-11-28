@@ -107,7 +107,7 @@ func (reviewer *Reviewer) backgroundContext(ownerPrincipalID string) context.Con
 
 func (reviewer *Reviewer) wakeChannel() chan struct{} {
 	shared := reviewer.sharedState()
-	owner := reviewer.Store.scope.OwnerPrincipalID()
+	owner := reviewer.Store.Scope().OwnerPrincipalID()
 	shared.wakeMutex.Lock()
 	defer shared.wakeMutex.Unlock()
 	channel, made := shared.wake[owner]
@@ -124,6 +124,33 @@ func (reviewer *Reviewer) Wake() {
 	case reviewer.wakeChannel() <- struct{}{}:
 	default:
 	}
+}
+
+// OutfitSteps are the steps of the photo review and of the owner's answers
+// that change outfits, which the outfit code carries out. Store.UseOutfits
+// wires them; until then a step that needs one fails.
+type OutfitSteps interface {
+	// ReviewOutfit runs an outfit reading of one photo to its end.
+	ReviewOutfit(ctx context.Context, reviewer *Reviewer, review PhotoReview) error
+	// AddToReviewOutfit runs after any sighting is settled: an accepted
+	// piece of an outfit reading joins that reading's outfit.
+	AddToReviewOutfit(store *Store, transaction *databaseTransaction, sightingID string, now int64) error
+	// ApplySlotAnswer relinks an outfit slot as the owner answered.
+	ApplySlotAnswer(store *Store, transaction *databaseTransaction, resolution Resolution, actor string, now int64) error
+	// CombineOutfits folds one outfit into another, and answers the merge's
+	// id.
+	CombineOutfits(store *Store, transaction *databaseTransaction, duplicateOutfitID, keptOutfitID, actor, reason string, now int64) (string, error)
+}
+
+// UseOutfits wires the outfit code that carries out the review's
+// OutfitSteps.
+func (s *Store) UseOutfits(steps OutfitSteps) { s.outfits = steps }
+
+func (s *Store) outfitSteps() (OutfitSteps, error) {
+	if s.outfits == nil {
+		return nil, errors.New("possession-store: no outfit code is wired (UseOutfits), so nothing that changes an outfit can run")
+	}
+	return s.outfits, nil
 }
 
 // fieldValue is one kind field as a reader gives it: always text, so one
@@ -907,7 +934,11 @@ func (reviewer *Reviewer) Review(ctx context.Context, reviewID string) error {
 	}
 	switch review.Reading {
 	case "outfit":
-		return reviewer.reviewOutfit(ctx, review)
+		steps, err := store.outfitSteps()
+		if err != nil {
+			return err
+		}
+		return steps.ReviewOutfit(ctx, reviewer, review)
 	case "look":
 		return fmt.Errorf("%w: %s is a look reading, read with the day's other photos by POST /outfit-looks/read", ErrInvalid, reviewID)
 	}
@@ -1368,7 +1399,11 @@ func (s *Store) applyResolution(ctx context.Context, transaction *databaseTransa
 			return err
 		}
 	}
-	return s.addToReviewOutfit(transaction, sightingID, now)
+	steps, err := s.outfitSteps()
+	if err != nil {
+		return err
+	}
+	return steps.AddToReviewOutfit(s, transaction, sightingID, now)
 }
 
 func sightingByID(q querier, id string) (Sighting, error) {

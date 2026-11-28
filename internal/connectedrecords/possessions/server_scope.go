@@ -68,19 +68,3 @@ func (server *Server) narrowedTo(ctx context.Context, scope ownership.Scope) (*S
 	narrowed.Store = store
 	return &narrowed, nil
 }
-
-func (server *ReviewServer) narrowedTo(ctx context.Context, scope ownership.Scope) (*ReviewServer, error) {
-	store, err := server.Reviewer.Store.Narrowed(ctx, scope)
-	if err != nil {
-		return nil, err
-	}
-	return &ReviewServer{Reviewer: server.Reviewer.Narrowed(store)}, nil
-}
-
-func (server *OutfitServer) narrowedTo(ctx context.Context, scope ownership.Scope) (*OutfitServer, error) {
-	store, err := server.Reviewer.Store.Narrowed(ctx, scope)
-	if err != nil {
-		return nil, err
-	}
-	return &OutfitServer{Reviewer: server.Reviewer.Narrowed(store)}, nil
-}

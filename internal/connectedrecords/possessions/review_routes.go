@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 )
 
 // ReviewServer serves the routes of the photo review, the owner's questions,
@@ -236,4 +238,12 @@ func writeRun(w http.ResponseWriter, run AuditRun, err error) {
 		return
 	}
 	respond(w, http.StatusOK, run, err)
+}
+
+func (server *ReviewServer) narrowedTo(ctx context.Context, scope ownership.Scope) (*ReviewServer, error) {
+	store, err := server.Reviewer.Store.Narrowed(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	return &ReviewServer{Reviewer: server.Reviewer.Narrowed(store)}, nil
 }

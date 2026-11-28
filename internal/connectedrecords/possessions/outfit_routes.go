@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 )
 
 // OutfitServer serves the outfits' routes: outfits, their merges and covers,
@@ -276,4 +278,12 @@ func (server *OutfitServer) RegisterHandlers(mux *http.ServeMux) []string {
 		}
 	})
 	return patterns
+}
+
+func (server *OutfitServer) narrowedTo(ctx context.Context, scope ownership.Scope) (*OutfitServer, error) {
+	store, err := server.Reviewer.Store.Narrowed(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	return &OutfitServer{Reviewer: server.Reviewer.Narrowed(store)}, nil
 }

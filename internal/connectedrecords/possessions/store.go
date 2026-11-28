@@ -93,6 +93,9 @@ type Store struct {
 	// budget links order lines to possessions (UseBudgetStore); nil leaves
 	// order lines unlinkable.
 	budget BudgetOrders
+	// outfits carries out the review's steps that change outfits
+	// (UseOutfits).
+	outfits OutfitSteps
 }
 
 // scopedPools is one pool per owner a store has acted for, and one that reads
@@ -118,7 +121,7 @@ func New(open PoolOpener, references ReferenceChecker, originals OriginalFiles) 
 		return nil, errors.New("possession-store: nowhere to keep originals given")
 	}
 	return &Store{pools: &scopedPools{open: open, byOwner: map[string]*database{}},
-		references: references, originals: originals, writeMutex: &sync.Mutex{}, now: time.Now}, nil
+		references: references, originals: originals, writeMutex: &sync.Mutex{}, now: time.Now, outfits: outfitSteps{}}, nil
 }
 
 // UseBudgetStore wires budget-store, where an answer that a possession came
