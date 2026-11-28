@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// -dry-run promises a tick changes nothing: it publishes no session, writes no
+// -dry-run promises a tick changes nothing: it starts no session, writes no
 // cooldown, and creates no kanban board. TestADryRunIsNotAShortfall pins the
 // first. These pin the other two, at the call sites in run() that choose them;
 // initQueueClient's own read-only behavior is pinned in
@@ -20,14 +20,14 @@ import (
 // every "did not happen" assertion.
 //
 // Ported from 3fec1ffd, whose run(runConfig) extraction main already has in
-// its own shape: run(cfg, modelRoleFor, publish).
+// its own shape: run(cfg, modelRoleFor, start).
 
 func TestADryRunWritesNoCooldown(t *testing.T) {
 	usage := newStubUsage(t, firingLimits())
 	cfg := tickConfig(t, usage.URL(), newStubKanban(t).URL(), newStubSpend(t).URL())
 	cfg.dryRun = true
 
-	captureLog(t, func() { run(cfg, defaultLaneModelRole, (&recordingPublisher{}).publish) })
+	captureLog(t, func() { run(cfg, defaultLaneModelRole, (&recordingStarter{}).start) })
 
 	if _, err := os.Stat(cfg.statePath); !os.IsNotExist(err) {
 		t.Errorf("a dry run wrote the cooldown state (stat err=%v); the next real tick "+
@@ -39,7 +39,7 @@ func TestARealDispatchWritesTheCooldown(t *testing.T) {
 	usage := newStubUsage(t, firingLimits())
 	cfg := tickConfig(t, usage.URL(), newStubKanban(t).URL(), newStubSpend(t).URL())
 
-	captureLog(t, func() { run(cfg, defaultLaneModelRole, (&recordingPublisher{}).publish) })
+	captureLog(t, func() { run(cfg, defaultLaneModelRole, (&recordingStarter{}).start) })
 
 	st, err := loadState(cfg.statePath)
 	if err != nil {
@@ -86,7 +86,7 @@ func TestADryRunCreatesNoQueueBoard(t *testing.T) {
 	cfg := tickConfig(t, newStubUsage(t, quietLimits()).URL(), kanban, newStubSpend(t).URL())
 	cfg.dryRun = true
 
-	captureLog(t, func() { run(cfg, defaultLaneModelRole, (&recordingPublisher{}).publish) })
+	captureLog(t, func() { run(cfg, defaultLaneModelRole, (&recordingStarter{}).start) })
 
 	if n := writes(); n != 0 {
 		t.Errorf("a dry run sent %d writes to kanban-store; on a fresh install it would "+
@@ -98,7 +98,7 @@ func TestAQuietRealTickBootstrapsTheQueueBoard(t *testing.T) {
 	kanban, writes := writeCountingBoards(t)
 	cfg := tickConfig(t, newStubUsage(t, quietLimits()).URL(), kanban, newStubSpend(t).URL())
 
-	captureLog(t, func() { run(cfg, defaultLaneModelRole, (&recordingPublisher{}).publish) })
+	captureLog(t, func() { run(cfg, defaultLaneModelRole, (&recordingStarter{}).start) })
 
 	if writes() == 0 {
 		t.Error("a real tick against a store with no queue board never tried to create it; " +

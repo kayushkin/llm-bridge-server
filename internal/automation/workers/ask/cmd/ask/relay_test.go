@@ -8,15 +8,15 @@
 // against deliberate sabotage rather than by reading them:
 //
 //   - Never reproduce a gate in the fixture. Where a value is a contract with
-//     another program — the bus subject, the session Purpose, the herald- id
+//     another program — the session Purpose, the principal, the herald- id
 //     prefix — the assertion spells the wire literal out. Comparing the code's
 //     constant against itself is green through any drift of that constant.
 //
 //   - Never assert a bare error. runAsk has nine failure sites and they all
 //     return a non-nil error, so `err != nil` pins the signature and not the
 //     behavior. Each failure test also asserts the discriminating side effect:
-//     the instance endpoint that must not be reached, the connection that must
-//     not be opened, the message that must not be published.
+//     the instance endpoint that must not be reached, the session that must
+//     not be started.
 package main
 
 import (
@@ -29,53 +29,35 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/bus/messages"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/sessionmodelrole"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgestores"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/sessionstarts"
 )
 
 // ---------------------------------------------------------------- fixtures
 
-// recordingPublisher stands in for the NATS client and records what the binary
-// tried to send, so the dispatch decision is observable.
-type recordingPublisher struct {
-	published []publishedMessage
-	closed    int
-	failWith  error
-}
-
-type publishedMessage struct {
-	subject string
-	data    any
-}
-
-func (p *recordingPublisher) Publish(subject string, data any) error {
-	if p.failWith != nil {
-		return p.failWith
-	}
-	p.published = append(p.published, publishedMessage{subject: subject, data: data})
-	return nil
-}
-
-func (p *recordingPublisher) Close() { p.closed++ }
-
-// connector counts how many times the binary asked for a connection, which is
-// what makes "a dry run opens no connection" assertable.
-type connector struct {
-	pub      *recordingPublisher
+// starter stands in for the bridge's session API and records each turn the
+// binary tried to start, so the dispatch decision is observable, and counts the
+// tries, which is what makes "a dry run starts nothing" assertable.
+type starter struct {
+	turns    []sessionstarts.Turn
 	calls    int
 	failWith error
 }
 
-func (c *connector) connect() (heraldPublisher, error) {
-	c.calls++
-	if c.failWith != nil {
-		return nil, c.failWith
+func (s *starter) start(turn sessionstarts.Turn) error {
+	s.calls++
+	if s.failWith != nil {
+		return s.failWith
 	}
-	return c.pub, nil
+	s.turns = append(s.turns, turn)
+	return nil
 }
 
-func newConnector() *connector { return &connector{pub: &recordingPublisher{}} }
+func newStarter() *starter { return &starter{} }
+
+// testSessionPrincipalID is the principal the tests start sessions as.
+const testSessionPrincipalID = "principal_000001"
 
 // instanceServer serves a /instances payload and counts the requests it got.
 type instanceServer struct {
@@ -113,51 +95,33 @@ func baseConfig(bridgeURL string) askConfig {
 		heraldModelRole: func() (string, string, error) {
 			return "default", "claude-test", nil
 		},
+		sessionPrincipalID: testSessionPrincipalID,
 	}
 }
 
-// decodeInbound pulls the one published envelope back out.
-func decodeInbound(t *testing.T, m publishedMessage) messages.BridgeInbound {
-	t.Helper()
-	in, ok := m.data.(messages.BridgeInbound)
-	if !ok {
-		t.Fatalf("published %T, want messages.BridgeInbound", m.data)
-	}
-	return in
-}
+// ------------------------------------------------- the session turn
 
-// ------------------------------------------------- the published envelope
-
-func TestRunAsk_PublishesOneMessageOnTheBridgeInboundSubject(t *testing.T) {
+func TestRunAsk_StartsOneSessionTurn(t *testing.T) {
 	srv := newInstanceServer(t, 200, oneLocalClaudeCode)
-	c := newConnector()
+	c := newStarter()
 
-	if _, err := runAsk(baseConfig(srv.URL), c.connect, io.Discard); err != nil {
+	if _, err := runAsk(baseConfig(srv.URL), c.start, io.Discard); err != nil {
 		t.Fatalf("runAsk: %v", err)
 	}
 
-	if got := len(c.pub.published); got != 1 {
-		t.Fatalf("published %d messages, want exactly 1", got)
-	}
-	// The wire literal, not messages.BridgeInboundSubject: the constant compared
-	// against itself cannot see the subject drift away from what the adapter
-	// subscribes to.
-	if got := c.pub.published[0].subject; got != "bridge.inbound" {
-		t.Errorf("published on subject %q, want %q", got, "bridge.inbound")
-	}
-	if c.pub.closed != 1 {
-		t.Errorf("closed the connection %d times, want 1", c.pub.closed)
+	if got := len(c.turns); got != 1 {
+		t.Fatalf("started %d turns, want exactly 1", got)
 	}
 }
 
-func TestRunAsk_EnvelopeCarriesTheValuesLLMBridgeServerReadsBack(t *testing.T) {
+func TestRunAsk_TheCreateCarriesTheValuesLLMBridgeServerReadsBack(t *testing.T) {
 	srv := newInstanceServer(t, 200, oneLocalClaudeCode)
-	c := newConnector()
+	c := newStarter()
 
-	if _, err := runAsk(baseConfig(srv.URL), c.connect, io.Discard); err != nil {
+	if _, err := runAsk(baseConfig(srv.URL), c.start, io.Discard); err != nil {
 		t.Fatalf("runAsk: %v", err)
 	}
-	in := decodeInbound(t, c.pub.published[0])
+	in := c.turns[0]
 
 	// Every one of these is a contract with a program in another repo, so each
 	// is spelled as the literal that program matches on.
@@ -166,9 +130,7 @@ func TestRunAsk_EnvelopeCarriesTheValuesLLMBridgeServerReadsBack(t *testing.T) {
 		got   string
 		want  string
 	}{
-		{"Channel", in.Channel, "herald"},
-		{"Orchestrator", in.Orchestrator, "claude-code"},
-		{"Agent", in.Agent, "approval-proposer"},
+		{"Create.PrincipalID", in.Create.PrincipalID, testSessionPrincipalID},
 		{"Create.Purpose", in.Create.Purpose, "herald"},
 		{"Create.Origin", in.Create.Origin, "ask"},
 		{"Create.Type", string(in.Create.Type), "herald"},
@@ -183,8 +145,24 @@ func TestRunAsk_EnvelopeCarriesTheValuesLLMBridgeServerReadsBack(t *testing.T) {
 	if !in.Create.AutoStart {
 		t.Error("Create.AutoStart = false; the relay turn would never start")
 	}
-	if !in.Timestamp.Equal(baseConfig(srv.URL).now) {
-		t.Errorf("Timestamp = %v, want the run's clock %v", in.Timestamp, baseConfig(srv.URL).now)
+	if !strings.Contains(in.Send.Message, "`approval-proposer`") {
+		t.Errorf("the relay prompt does not name the sender --from gave:\n%s", in.Send.Message)
+	}
+}
+
+// A new session needs a principal to run as; with none, nothing is started.
+func TestRunAsk_ANewSessionWithNoPrincipalStartsNothing(t *testing.T) {
+	srv := newInstanceServer(t, 200, oneLocalClaudeCode)
+	c := newStarter()
+	cfg := baseConfig(srv.URL)
+	cfg.sessionPrincipalID = ""
+
+	id, err := runAsk(cfg, c.start, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "LLM_BRIDGE_START_SESSIONS_AS_PRINCIPAL_ID") {
+		t.Fatalf("err = %v, want a refusal naming the variable", err)
+	}
+	if id != "" || c.calls != 0 {
+		t.Errorf("returned %q and tried %d starts with no principal", id, c.calls)
 	}
 }
 
@@ -193,22 +171,22 @@ func TestRunAsk_EnvelopeCarriesTheValuesLLMBridgeServerReadsBack(t *testing.T) {
 // nobody to answer it, and the turn wedges — silently, and only in production.
 func TestRunAsk_SessionTypeIsTheOneLLMBridgeServerTreatsAsUnattended(t *testing.T) {
 	srv := newInstanceServer(t, 200, oneLocalClaudeCode)
-	c := newConnector()
+	c := newStarter()
 
-	if _, err := runAsk(baseConfig(srv.URL), c.connect, io.Discard); err != nil {
+	if _, err := runAsk(baseConfig(srv.URL), c.start, io.Discard); err != nil {
 		t.Fatalf("runAsk: %v", err)
 	}
-	if got := string(decodeInbound(t, c.pub.published[0]).Create.Type); got != "herald" {
+	if got := string(c.turns[0].Create.Type); got != "herald" {
 		t.Errorf("session Type = %q, want %q", got, "herald")
 	}
 }
 
 func TestRunAsk_SessionIDCarriesTheHeraldPrefixAndTheRunsClock(t *testing.T) {
 	srv := newInstanceServer(t, 200, oneLocalClaudeCode)
-	c := newConnector()
+	c := newStarter()
 	cfg := baseConfig(srv.URL)
 
-	id, err := runAsk(cfg, c.connect, io.Discard)
+	id, err := runAsk(cfg, c.start, io.Discard)
 	if err != nil {
 		t.Fatalf("runAsk: %v", err)
 	}
@@ -216,8 +194,8 @@ func TestRunAsk_SessionIDCarriesTheHeraldPrefixAndTheRunsClock(t *testing.T) {
 	if id != want {
 		t.Errorf("session id = %q, want %q", id, want)
 	}
-	if got := decodeInbound(t, c.pub.published[0]).BusSessionID; got != want {
-		t.Errorf("BusSessionID = %q, want the returned id %q", got, want)
+	if got := c.turns[0].SessionID; got != want {
+		t.Errorf("SessionID = %q, want the returned id %q", got, want)
 	}
 }
 
@@ -227,9 +205,9 @@ func TestRunAsk_SessionIDCarriesTheHeraldPrefixAndTheRunsClock(t *testing.T) {
 // converge the reaper closes the question the user has not answered yet.
 func TestRunAsk_SessionIDIsNotReapableByTheAutoworkerIdleReaper(t *testing.T) {
 	srv := newInstanceServer(t, 200, oneLocalClaudeCode)
-	c := newConnector()
+	c := newStarter()
 
-	id, err := runAsk(baseConfig(srv.URL), c.connect, io.Discard)
+	id, err := runAsk(baseConfig(srv.URL), c.start, io.Discard)
 	if err != nil {
 		t.Fatalf("runAsk: %v", err)
 	}
@@ -241,22 +219,22 @@ func TestRunAsk_SessionIDIsNotReapableByTheAutoworkerIdleReaper(t *testing.T) {
 func TestRunAsk_DisplayNameDefaultsToTheQuestionAndTitleOverridesIt(t *testing.T) {
 	srv := newInstanceServer(t, 200, oneLocalClaudeCode)
 
-	c := newConnector()
+	c := newStarter()
 	cfg := baseConfig(srv.URL)
-	if _, err := runAsk(cfg, c.connect, io.Discard); err != nil {
+	if _, err := runAsk(cfg, c.start, io.Discard); err != nil {
 		t.Fatalf("runAsk: %v", err)
 	}
-	if got := decodeInbound(t, c.pub.published[0]).Create.DisplayName; got != "Approve the update?" {
+	if got := c.turns[0].Create.DisplayName; got != "Approve the update?" {
 		t.Errorf("default DisplayName = %q, want the question", got)
 	}
 
-	c2 := newConnector()
+	c2 := newStarter()
 	cfg2 := baseConfig(srv.URL)
 	cfg2.title = "Approval needed"
-	if _, err := runAsk(cfg2, c2.connect, io.Discard); err != nil {
+	if _, err := runAsk(cfg2, c2.start, io.Discard); err != nil {
 		t.Fatalf("runAsk: %v", err)
 	}
-	if got := decodeInbound(t, c2.pub.published[0]).Create.DisplayName; got != "Approval needed" {
+	if got := c2.turns[0].Create.DisplayName; got != "Approval needed" {
 		t.Errorf("DisplayName = %q, want the --title value", got)
 	}
 }
@@ -266,41 +244,41 @@ func TestRunAsk_DisplayNameDefaultsToTheQuestionAndTitleOverridesIt(t *testing.T
 // would agree with itself while the flag default drifted to something else.
 func TestRunAsk_DefaultFromTagIsTheOneTheFlagCarries(t *testing.T) {
 	srv := newInstanceServer(t, 200, oneLocalClaudeCode)
-	c := newConnector()
+	c := newStarter()
 	cfg := baseConfig(srv.URL)
 	cfg.from = defaultFromTag
 
-	if _, err := runAsk(cfg, c.connect, io.Discard); err != nil {
+	if _, err := runAsk(cfg, c.start, io.Discard); err != nil {
 		t.Fatalf("runAsk: %v", err)
 	}
-	if got := decodeInbound(t, c.pub.published[0]).Agent; got != "herald" {
-		t.Errorf("Agent tag from the flag default = %q, want %q", got, "herald")
+	if got := c.turns[0].Send.Message; !strings.Contains(got, "from `herald`") {
+		t.Errorf("the relay prompt from the flag default does not name %q as the sender:\n%s", "herald", got)
 	}
 }
 
 // -------------------------------------------------------------- dry run
 
-func TestRunAsk_DryRunPublishesNothingAndOpensNoConnection(t *testing.T) {
+func TestRunAsk_DryRunStartsNothing(t *testing.T) {
 	srv := newInstanceServer(t, 200, oneLocalClaudeCode)
-	c := newConnector()
+	c := newStarter()
 	cfg := baseConfig(srv.URL)
 	cfg.dryRun = true
 
 	var out strings.Builder
-	id, err := runAsk(cfg, c.connect, &out)
+	id, err := runAsk(cfg, c.start, &out)
 	if err != nil {
 		t.Fatalf("runAsk: %v", err)
 	}
 	if id != "" {
 		t.Errorf("dry run returned session id %q, want empty — no session was minted", id)
 	}
-	// The discriminating side effects. Counting published messages alone would
-	// stay green if the connection were opened and left dangling.
+	// The discriminating side effects. Counting recorded turns alone would
+	// stay green if a start were tried and failed.
 	if c.calls != 0 {
-		t.Errorf("dry run opened %d connections, want 0", c.calls)
+		t.Errorf("dry run tried %d starts, want 0", c.calls)
 	}
-	if got := len(c.pub.published); got != 0 {
-		t.Errorf("dry run published %d messages, want 0", got)
+	if got := len(c.turns); got != 0 {
+		t.Errorf("dry run recorded %d turns, want 0", got)
 	}
 	if srv.requests != 1 {
 		t.Errorf("dry run made %d instance lookups, want 1 — it still resolves the host", srv.requests)
@@ -317,11 +295,11 @@ func TestRunAsk_DryRunPublishesNothingAndOpensNoConnection(t *testing.T) {
 
 func TestRunAsk_ABlankQuestionIsRefusedBeforeAnythingIsResolved(t *testing.T) {
 	srv := newInstanceServer(t, 200, oneLocalClaudeCode)
-	c := newConnector()
+	c := newStarter()
 	cfg := baseConfig(srv.URL)
 	cfg.question = ""
 
-	_, err := runAsk(cfg, c.connect, io.Discard)
+	_, err := runAsk(cfg, c.start, io.Discard)
 	if err == nil {
 		t.Fatal("runAsk accepted a blank question")
 	}
@@ -334,18 +312,18 @@ func TestRunAsk_ABlankQuestionIsRefusedBeforeAnythingIsResolved(t *testing.T) {
 		t.Errorf("resolved an instance (%d requests) despite having no question", srv.requests)
 	}
 	if c.calls != 0 {
-		t.Errorf("opened %d connections despite having no question", c.calls)
+		t.Errorf("tried %d starts despite having no question", c.calls)
 	}
 }
 
 func TestRunAsk_ABlankFromTagIsRefusedBeforeAnythingIsResolved(t *testing.T) {
 	for _, from := range []string{"", "   ", "\t\n"} {
 		srv := newInstanceServer(t, 200, oneLocalClaudeCode)
-		c := newConnector()
+		c := newStarter()
 		cfg := baseConfig(srv.URL)
 		cfg.from = from
 
-		_, err := runAsk(cfg, c.connect, io.Discard)
+		_, err := runAsk(cfg, c.start, io.Discard)
 		if err == nil {
 			t.Fatalf("runAsk accepted --from %q", from)
 		}
@@ -356,67 +334,44 @@ func TestRunAsk_ABlankFromTagIsRefusedBeforeAnythingIsResolved(t *testing.T) {
 			t.Errorf("from=%q: resolved an instance (%d requests) anyway", from, srv.requests)
 		}
 		if c.calls != 0 {
-			t.Errorf("from=%q: opened %d connections anyway", from, c.calls)
+			t.Errorf("from=%q: tried %d starts anyway", from, c.calls)
 		}
 	}
 }
 
 func TestRunAsk_AnUnresolvableInstanceStopsTheRunBeforeItConnects(t *testing.T) {
 	srv := newInstanceServer(t, 200, `[]`)
-	c := newConnector()
+	c := newStarter()
 
-	_, err := runAsk(baseConfig(srv.URL), c.connect, io.Discard)
+	_, err := runAsk(baseConfig(srv.URL), c.start, io.Discard)
 	if err == nil {
-		t.Fatal("runAsk published with no instance to host the session")
+		t.Fatal("runAsk started a session with no instance to host the session")
 	}
 	if !strings.Contains(err.Error(), "resolve instance") {
 		t.Errorf("error %q does not say the instance lookup was what failed", err)
 	}
 	if c.calls != 0 {
-		t.Errorf("opened %d connections with no instance resolved, want 0", c.calls)
+		t.Errorf("tried %d starts with no instance resolved, want 0", c.calls)
 	}
 }
 
-func TestRunAsk_AFailedConnectionStopsTheRunAndPublishesNothing(t *testing.T) {
-	srv := newInstanceServer(t, 200, oneLocalClaudeCode)
-	c := newConnector()
-	c.failWith = fmt.Errorf("no route to host")
-
-	id, err := runAsk(baseConfig(srv.URL), c.connect, io.Discard)
-	if err == nil {
-		t.Fatal("runAsk reported success with no connection")
-	}
-	if !strings.Contains(err.Error(), "nats connect") {
-		t.Errorf("error %q does not say the connection was what failed", err)
-	}
-	if id != "" {
-		t.Errorf("returned session id %q for a session that was never published", id)
-	}
-	if got := len(c.pub.published); got != 0 {
-		t.Errorf("published %d messages without a connection", got)
-	}
-}
-
-// A refused publish must not report a session id. The id is what a caller
+// A refused start must not report a session id. The id is what a caller
 // records and later looks up; handing one back for a session that does not
 // exist turns a loud failure into a dangling reference.
-func TestRunAsk_ARefusedPublishReturnsNoSessionID(t *testing.T) {
+func TestRunAsk_ARefusedStartReturnsNoSessionID(t *testing.T) {
 	srv := newInstanceServer(t, 200, oneLocalClaudeCode)
-	c := newConnector()
-	c.pub.failWith = fmt.Errorf("jetstream unavailable")
+	c := newStarter()
+	c.failWith = fmt.Errorf("POST /sessions answered 403: principal_mismatch")
 
-	id, err := runAsk(baseConfig(srv.URL), c.connect, io.Discard)
+	id, err := runAsk(baseConfig(srv.URL), c.start, io.Discard)
 	if err == nil {
-		t.Fatal("runAsk reported success on a refused publish")
+		t.Fatal("runAsk reported success on a refused start")
 	}
-	if !strings.Contains(err.Error(), "publish") {
-		t.Errorf("error %q does not say the publish was what failed", err)
+	if !strings.Contains(err.Error(), "start session herald-") || !strings.Contains(err.Error(), "principal_mismatch") {
+		t.Errorf("error %q does not say which session failed to start and why", err)
 	}
 	if id != "" {
-		t.Errorf("returned session id %q after the publish was refused", id)
-	}
-	if c.pub.closed != 1 {
-		t.Errorf("closed the connection %d times on the failure path, want 1", c.pub.closed)
+		t.Errorf("returned session id %q after the start was refused", id)
 	}
 }
 
@@ -617,54 +572,41 @@ func reuseConfig(bridgeURL string) askConfig {
 	return cfg
 }
 
-// A Send with no Create is what makes the adapter route to the bridge session it
-// already made for this bus id. A Create here opens a second session with the
+// A Send with no Create is what reaches the session an earlier ask opened
+// under this id. A Create here opens a second session with the
 // same title, which is the duplicate the flag exists to prevent.
 func TestRunAsk_ReuseDeliversASendIntoTheNamedSessionAndCreatesNothing(t *testing.T) {
 	srv := newInstanceServer(t, 200, oneLocalClaudeCode)
-	c := newConnector()
+	c := newStarter()
 	cfg := reuseConfig(srv.URL)
 
-	id, err := runAsk(cfg, c.connect, io.Discard)
+	id, err := runAsk(cfg, c.start, io.Discard)
 	if err != nil {
 		t.Fatalf("runAsk: %v", err)
 	}
 	if id != "herald-1754654400000000000" {
 		t.Errorf("returned session id %q, want the reused id — the caller records it for the next reuse", id)
 	}
-	if got := len(c.pub.published); got != 1 {
-		t.Fatalf("published %d messages, want exactly 1", got)
+	if got := len(c.turns); got != 1 {
+		t.Fatalf("started %d turns, want exactly 1", got)
 	}
-	if got := c.pub.published[0].subject; got != "bridge.inbound" {
-		t.Errorf("published on subject %q, want %q", got, "bridge.inbound")
-	}
-	in := decodeInbound(t, c.pub.published[0])
-	if in.BusSessionID != "herald-1754654400000000000" {
-		t.Errorf("BusSessionID = %q, want the reused id", in.BusSessionID)
+	in := c.turns[0]
+	if in.SessionID != "herald-1754654400000000000" {
+		t.Errorf("SessionID = %q, want the reused id", in.SessionID)
 	}
 	if in.Create != nil {
-		t.Errorf("reuse carried a Create (%+v); the adapter would open a second session", in.Create)
+		t.Errorf("reuse carried a Create (%+v); the bridge would open a second session", in.Create)
 	}
-	if in.Send == nil || !strings.Contains(in.Send.Message, "Approve the update?") {
+	if !strings.Contains(in.Send.Message, "Approve the update?") {
 		t.Errorf("reuse Send = %+v, want the relay prompt carrying the question", in.Send)
 	}
-	checks := []struct{ field, got, want string }{
-		{"Channel", in.Channel, "herald"},
-		{"Orchestrator", in.Orchestrator, "claude-code"},
-		{"Agent", in.Agent, "approval-proposer"},
-	}
-	for _, c := range checks {
-		if c.got != c.want {
-			t.Errorf("%s = %q, want %q", c.field, c.got, c.want)
-		}
+	if !strings.Contains(in.Send.Message, "`approval-proposer`") {
+		t.Errorf("the relay prompt does not name the sender:\n%s", in.Send.Message)
 	}
 	// The session already has a host; asking the bridge for one is wasted and,
 	// with the bridge down, would refuse a message that could have gone through.
 	if srv.requests != 0 {
 		t.Errorf("reuse made %d instance lookups, want 0", srv.requests)
-	}
-	if c.pub.closed != 1 {
-		t.Errorf("closed the connection %d times, want 1", c.pub.closed)
 	}
 }
 
@@ -680,11 +622,11 @@ func TestRunAsk_ReuseRefusesTheCreateTimeFlags(t *testing.T) {
 	}
 	for _, tc := range cases {
 		srv := newInstanceServer(t, 200, oneLocalClaudeCode)
-		c := newConnector()
+		c := newStarter()
 		cfg := reuseConfig(srv.URL)
 		tc.setUp(&cfg)
 
-		id, err := runAsk(cfg, c.connect, io.Discard)
+		id, err := runAsk(cfg, c.start, io.Discard)
 		if err == nil {
 			t.Errorf("%s with -session: accepted, want a refusal", tc.flag)
 			continue
@@ -696,7 +638,7 @@ func TestRunAsk_ReuseRefusesTheCreateTimeFlags(t *testing.T) {
 			t.Errorf("%s with -session: returned session id %q alongside the refusal", tc.flag, id)
 		}
 		if c.calls != 0 || srv.requests != 0 {
-			t.Errorf("%s with -session: opened %d connections and made %d lookups before refusing, want 0 and 0", tc.flag, c.calls, srv.requests)
+			t.Errorf("%s with -session: tried %d starts and made %d lookups before refusing, want 0 and 0", tc.flag, c.calls, srv.requests)
 		}
 	}
 }
@@ -713,11 +655,11 @@ func TestRunAsk_ReuseStillRefusesAnUnreadableQuestionAndFromTag(t *testing.T) {
 		{"from", func(c *askConfig) { c.from = "her\nald" }, "--from"},
 	} {
 		srv := newInstanceServer(t, 200, oneLocalClaudeCode)
-		c := newConnector()
+		c := newStarter()
 		cfg := reuseConfig(srv.URL)
 		tc.setUp(&cfg)
 
-		_, err := runAsk(cfg, c.connect, io.Discard)
+		_, err := runAsk(cfg, c.start, io.Discard)
 		if err == nil {
 			t.Errorf("reuse accepted an unreadable %s", tc.what)
 			continue
@@ -726,27 +668,27 @@ func TestRunAsk_ReuseStillRefusesAnUnreadableQuestionAndFromTag(t *testing.T) {
 			t.Errorf("reuse with a bad %s: error %q does not say %q", tc.what, err, tc.want)
 		}
 		if c.calls != 0 {
-			t.Errorf("reuse with a bad %s: opened %d connections, want 0", tc.what, c.calls)
+			t.Errorf("reuse with a bad %s: tried %d starts, want 0", tc.what, c.calls)
 		}
 	}
 }
 
-func TestRunAsk_ReuseDryRunPublishesNothingAndOpensNoConnection(t *testing.T) {
+func TestRunAsk_ReuseDryRunSendsNothing(t *testing.T) {
 	srv := newInstanceServer(t, 200, oneLocalClaudeCode)
-	c := newConnector()
+	c := newStarter()
 	cfg := reuseConfig(srv.URL)
 	cfg.dryRun = true
 
 	var out strings.Builder
-	id, err := runAsk(cfg, c.connect, &out)
+	id, err := runAsk(cfg, c.start, &out)
 	if err != nil {
 		t.Fatalf("runAsk: %v", err)
 	}
 	if id != "" {
 		t.Errorf("dry run returned session id %q, want empty", id)
 	}
-	if c.calls != 0 || len(c.pub.published) != 0 {
-		t.Errorf("dry run opened %d connections and published %d messages, want 0 and 0", c.calls, len(c.pub.published))
+	if c.calls != 0 || len(c.turns) != 0 {
+		t.Errorf("dry run tried %d starts and recorded %d turns, want 0 and 0", c.calls, len(c.turns))
 	}
 	report := out.String()
 	for _, want := range []string{"herald-1754654400000000000", "(reused)", "approval-proposer", "Approve the update?"} {
@@ -756,30 +698,17 @@ func TestRunAsk_ReuseDryRunPublishesNothingAndOpensNoConnection(t *testing.T) {
 	}
 }
 
-func TestRunAsk_ReuseReportsAFailedConnectionAndARefusedPublish(t *testing.T) {
+func TestRunAsk_ReuseReportsARefusedSend(t *testing.T) {
 	srv := newInstanceServer(t, 200, oneLocalClaudeCode)
 
-	down := newConnector()
-	down.failWith = fmt.Errorf("no route to host")
-	id, err := runAsk(reuseConfig(srv.URL), down.connect, io.Discard)
-	if err == nil || !strings.Contains(err.Error(), "nats connect") {
-		t.Errorf("reuse with no connection: err = %v, want a nats connect failure", err)
+	refused := newStarter()
+	refused.failWith = fmt.Errorf("POST /sessions/herald-1754654400000000000/send answered 404: session not found")
+	id, err := runAsk(reuseConfig(srv.URL), refused.start, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "send to session herald-1754654400000000000") || !strings.Contains(err.Error(), "404") {
+		t.Errorf("reuse with a refused send: err = %v, want the session and the bridge's answer", err)
 	}
 	if id != "" {
-		t.Errorf("reuse with no connection returned session id %q", id)
-	}
-
-	refused := newConnector()
-	refused.pub.failWith = fmt.Errorf("jetstream unavailable")
-	id, err = runAsk(reuseConfig(srv.URL), refused.connect, io.Discard)
-	if err == nil || !strings.Contains(err.Error(), "publish") {
-		t.Errorf("reuse with a refused publish: err = %v, want a publish failure", err)
-	}
-	if id != "" {
-		t.Errorf("reuse with a refused publish returned session id %q", id)
-	}
-	if refused.pub.closed != 1 {
-		t.Errorf("closed the connection %d times on the failure path, want 1", refused.pub.closed)
+		t.Errorf("reuse with a refused send returned session id %q", id)
 	}
 }
 
@@ -789,34 +718,34 @@ func TestRunAsk_ReuseReportsAFailedConnectionAndARefusedPublish(t *testing.T) {
 // the bridge's per-harness default never decides what it runs on.
 func TestRunAsk_NewSessionNamesTheHeraldModelRole(t *testing.T) {
 	srv := newInstanceServer(t, 200, oneLocalClaudeCode)
-	c := newConnector()
-	if _, err := runAsk(baseConfig(srv.URL), c.connect, io.Discard); err != nil {
+	c := newStarter()
+	if _, err := runAsk(baseConfig(srv.URL), c.start, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	in := decodeInbound(t, c.pub.published[0])
+	in := c.turns[0]
 	if string(in.Create.HarnessConfig) != `{"model":"default"}` {
 		t.Errorf("harness_config = %s, want the role as the session's model", in.Create.HarnessConfig)
 	}
 }
 
 // A role that cannot be read or that claude_code cannot run opens nothing.
-func TestRunAsk_AnUnusableModelRolePublishesNothing(t *testing.T) {
+func TestRunAsk_AnUnusableModelRoleStartsNothing(t *testing.T) {
 	srv := newInstanceServer(t, 200, oneLocalClaudeCode)
-	c := newConnector()
+	c := newStarter()
 	cfg := baseConfig(srv.URL)
 	cfg.heraldModelRole = func() (string, string, error) {
 		return "", "", fmt.Errorf("role \"balanced\" starts a session on gpt-test, and harness claude_code runs only anthropic models")
 	}
-	_, err := runAsk(cfg, c.connect, io.Discard)
+	_, err := runAsk(cfg, c.start, io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "runs only anthropic") {
 		t.Fatalf("err = %v, want the harness refusal", err)
 	}
 	if c.calls != 0 {
-		t.Errorf("opened %d connections for a session that must not start", c.calls)
+		t.Errorf("tried %d starts for a session that must not start", c.calls)
 	}
 	cfg.heraldModelRole = nil
-	if _, err := runAsk(cfg, c.connect, io.Discard); err == nil || c.calls != 0 {
-		t.Errorf("no role reader: err = %v, connections = %d", err, c.calls)
+	if _, err := runAsk(cfg, c.start, io.Discard); err == nil || c.calls != 0 {
+		t.Errorf("no role reader: err = %v, starts = %d", err, c.calls)
 	}
 }
 

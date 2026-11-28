@@ -14,8 +14,8 @@ package main
 // read as the harmless one of the three. It is not. decideReuse walks the
 // sibling sub-cards under a parent, reads each linked session's state, and the
 // FIRST one answering "idle" inside the revive window is returned as the
-// session to reuse. main() then publishes the new card's prompt into that
-// session id over NATS, links the card to it and moves the card to In Progress.
+// session to reuse. main() then sends the new card's prompt into that
+// session id through the bridge's session API, links the card to it and moves the card to In Progress.
 //
 // So this read is the whole of the check standing between a queued card and an
 // agent that is already busy. The failure that matters here is not an error —
@@ -185,7 +185,7 @@ func TestASessionIDThatNamesANeighboringRouteDoesNotReachItOnTheReadSite(t *test
 //
 // This is the borrowed "idle" in its purest form. decideReuse asks whether
 // sibling tcl-1?... is free, a truncated id answers for tcl-1, and if THAT
-// session happens to be idle the dispatcher publishes the new prompt into the
+// session happens to be idle the dispatcher sends the new prompt into the
 // session the card actually links to — which was never asked about at all.
 func TestASessionIDIsNotCutShortByAQuerySeparator(t *testing.T) {
 	const sessionID = "tcl-1?state=idle"

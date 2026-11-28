@@ -1,7 +1,9 @@
 // kanban-dispatcher picks sub-cards out of the "Task completion loop"
 // board's Backlog column, decides whether to spawn a fresh bridge session
-// or revive an idle sibling session, publishes a BridgeInbound on NATS,
-// and rolls up parent cards once their children have all settled.
+// or revive an idle sibling session, starts or continues it through the
+// bridge's session API (POST /sessions, POST /sessions/{id}/send) as the
+// principal LLM_BRIDGE_START_SESSIONS_AS_PRINCIPAL_ID names, and rolls up
+// parent cards once their children have all settled.
 //
 // Cadence:
 //
@@ -23,17 +25,17 @@
 //	        - Look at sibling cards (same parent, same group) for an idle
 //	          session whose last update was within the revive window and that
 //	          was started with the same instance, agent and bundle the child
-//	          resolves to. If one exists, REUSE its session_id (publish Send
-//	          only).
-//	        - Otherwise mint a fresh session_id and publish Create+Send.
+//	          resolves to. If one exists, REUSE its session_id (send only).
+//	        - Otherwise mint a fresh session_id, create the session and send.
 //	     d. Add a session card_link, move the child to In Progress.
 //	  3. Final pass — for each scoped parent, if every child noteboard item
 //	     has status "done" or "archived", move the parent to Done with a
 //	     rollup body note.
 //
-// Session IDs are canonical post session-consolidation (2026-05-09): the
-// BridgeInbound.BusSessionID we publish becomes the llm-bridge-server
-// session_id verbatim, so the card_link entity_ref is the deeplink target.
+// The dispatcher mints each session's id and creates the session under it, so
+// the card_link entity_ref is the session's id and the deeplink target. Until
+// 2026-11-27 it published the turn on NATS for llm-bridge-adapter, which
+// created the session under the same id as nobody, so its agent held no token.
 //
 // Closure of in-progress sub-cards is left to kanban-curator (run with
 // `-board-id <this board's id>` on its own scheduler tick), which moves
@@ -56,8 +58,6 @@ import (
 	"strings"
 	"time"
 
-	natsbus "github.com/kayushkin/bus"
-	"github.com/kayushkin/bus/messages"
 	schedulerconfig "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/config"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/sessionmodelrole"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/boardvocabulary"
@@ -69,6 +69,7 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/schedulerjobs"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/schedulersettings"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/sessionstarts"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/textcut"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/workersettings"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -120,7 +121,7 @@ func main() {
 	}
 	var (
 		registerFlag = flag.Bool("register", false, "Register/upsert this binary as a scheduler cron job and exit.")
-		dryRun       = flag.Bool("dry-run", false, "Decide but do not publish or move cards.")
+		dryRun       = flag.Bool("dry-run", false, "Decide but do not start sessions or move cards.")
 		boardID      = flag.String("board-id", "", "Kanban board id to dispatch on (required). The board owns what a session runs with — per card, its tag rules matched against the card's tags, then its own default_instance_id, default_agent_id and default_bundle_id — and this job owns only when.")
 		bridgeURL    = flag.String("bridge-url", settings.String(workersettings.SettingBridgeURL), "llm-bridge-server base URL; the board, the scheduler and model-store are all under it")
 		maxDispatch  = flag.Int("max", maxDispatchPerTick, "Max sub-card dispatches per tick.")
@@ -145,6 +146,14 @@ func main() {
 		return
 	}
 
+	// A dry run starts nothing, so it needs no principal to start sessions as.
+	sessionPrincipalID := ""
+	if !*dryRun {
+		if sessionPrincipalID, err = workersettings.StartSessionsAsPrincipalID(settings); err != nil {
+			log.Fatalf("[dispatcher] %v", err)
+		}
+	}
+
 	// Read once per tick: every fresh session this tick starts runs on it.
 	modelRole, err := schedulersettings.ReadModelRole(context.Background(), bridgestores.SchedulerURL(*bridgeURL), schedulerconfig.SettingKanbanDispatcherModelRole)
 	if err != nil {
@@ -152,13 +161,13 @@ func main() {
 	}
 
 	err = run(runOptions{
-		ModelRole:   modelRole,
-		ModelRoles:  sessionmodelrole.New(bridgestores.ModelsURL(*bridgeURL), *bridgeURL),
-		BoardID:     *boardID,
-		BridgeURL:   *bridgeURL,
-		NATSURL:     settings.String(workersettings.SettingNATSURL),
-		DryRun:      *dryRun,
-		MaxDispatch: *maxDispatch,
+		ModelRole:          modelRole,
+		ModelRoles:         sessionmodelrole.New(bridgestores.ModelsURL(*bridgeURL), *bridgeURL),
+		BoardID:            *boardID,
+		BridgeURL:          *bridgeURL,
+		DryRun:             *dryRun,
+		SessionPrincipalID: sessionPrincipalID,
+		MaxDispatch:        *maxDispatch,
 	})
 	if err != nil {
 		log.Fatalf("[dispatcher] %v", err)
@@ -176,14 +185,15 @@ type runOptions struct {
 	// BridgeURL is llm-bridge-server's address: the board is under its
 	// /issues, and the sessions, instances and agents at its root.
 	BridgeURL   string
-	NATSURL     string
 	DryRun      bool
 	MaxDispatch int
-	// Publish sends one BridgeInbound. Left nil, run connects to NATSURL and
-	// publishes there. A test sets it, because a test that reached the write
-	// path through the real bus would dispatch a real agent session and spend
-	// real money.
-	Publish func(messages.BridgeInbound) error
+	// SessionPrincipalID is the principal every fresh session runs as.
+	SessionPrincipalID string
+	// StartSession starts or continues one session. Left nil, run calls the
+	// bridge's session API at BridgeURL. A test sets it, because a test that
+	// reached the write path through the real bridge would dispatch a real
+	// agent session and spend real money.
+	StartSession func(sessionstarts.Turn) error
 }
 
 // run is one tick. It returns an error — and main exits non-zero, so the
@@ -239,15 +249,10 @@ func run(options runOptions) error {
 		}
 	}
 
-	publish := options.Publish
-	if publish == nil && !options.DryRun {
-		natsClient, err := natsbus.Connect(natsbus.Options{URL: options.NATSURL, Name: "kanban-dispatcher"})
-		if err != nil {
-			return fmt.Errorf("nats connect: %w", err)
-		}
-		defer natsClient.Close()
-		publish = func(in messages.BridgeInbound) error {
-			return natsClient.Publish(messages.BridgeInboundSubject, in)
+	startSession := options.StartSession
+	if startSession == nil && !options.DryRun {
+		startSession = func(turn sessionstarts.Turn) error {
+			return sessionstarts.Start(options.BridgeURL, turn)
 		}
 	}
 
@@ -260,7 +265,8 @@ func run(options runOptions) error {
 		board:              board,
 		view:               view,
 		inProgressColumnID: colByName[columnInProgress],
-		publish:            publish,
+		startSession:       startSession,
+		sessionPrincipalID: options.SessionPrincipalID,
 		dryRun:             options.DryRun,
 		maxDispatch:        options.MaxDispatch,
 		degraded:           degraded,
@@ -408,15 +414,18 @@ type backlogDispatcher struct {
 	board              *issuesclient.Board
 	view               *issuesclient.BoardView
 	inProgressColumnID string
-	// publish sends one BridgeInbound. Nil on a dry run, which publishes nothing.
-	publish     func(messages.BridgeInbound) error
-	dryRun      bool
-	maxDispatch int
+	// startSession starts or continues one session. Nil on a dry run, which
+	// starts nothing.
+	startSession func(sessionstarts.Turn) error
+	// sessionPrincipalID is the principal every fresh session runs as.
+	sessionPrincipalID string
+	dryRun             bool
+	maxDispatch        int
 	// degraded collects the reads this pass needed and could not make. A card
 	// it chose and could not dispatch is returned as undispatchedCard instead.
 	degraded *degradations.Recorder
 	// modelRole is the role a fresh session runs on; modelRoles checks it
-	// against the card's harness before the session is published.
+	// against the card's harness before the session is started.
 	modelRole  string
 	modelRoles sessionmodelrole.RoleChecker
 }
@@ -484,22 +493,22 @@ func (d *backlogDispatcher) dispatchBacklog(parents []scopedParent) (dispatched 
 				continue
 			}
 
-			in, err := buildBridgeInbound(sessionID, displayName, prompt, reusedSessionID == "", spec, d.modelRole)
+			turn, err := buildSessionTurn(sessionID, displayName, prompt, reusedSessionID == "", spec, d.modelRole, d.sessionPrincipalID)
 			if err != nil {
 				notDispatched(err)
 				continue
 			}
-			if err := d.publish(in); err != nil {
-				notDispatched(fmt.Errorf("nats publish: %w", err))
+			if err := d.startSession(turn); err != nil {
+				notDispatched(fmt.Errorf("start session: %w", err))
 				continue
 			}
 			if err := d.kanban.AddCardLink(childID, linkTypeSession, sessionID, "tcl-dispatcher"); err != nil {
-				notDispatched(fmt.Errorf("session %s was published but linking it to the card failed: %w", sessionID, err))
+				notDispatched(fmt.Errorf("session %s was started but linking it to the card failed: %w", sessionID, err))
 				continue
 			}
 			moveResult, err := d.kanban.MoveCard(childID, d.board.ID, d.inProgressColumnID, 0)
 			if err != nil {
-				notDispatched(fmt.Errorf("session %s was published and linked but moving the card to In Progress failed: %w", sessionID, err))
+				notDispatched(fmt.Errorf("session %s was started and linked but moving the card to In Progress failed: %w", sessionID, err))
 				continue
 			}
 			if moveResult.AutoStatusError != "" {
@@ -809,7 +818,7 @@ func groupSiblings(kc *issuesclient.Client, view *issuesclient.BoardView, g back
 	return out
 }
 
-// ============================ Bridge inbound ============================
+// ============================ Session turns ============================
 
 func mintSessionID(parentID string, g backlogGroup) string {
 	now := time.Now().UTC().UnixNano()
@@ -907,21 +916,19 @@ func (s cardSessionSpec) describe() string {
 	return strings.Join(parts, " ")
 }
 
-// buildBridgeInbound builds the message for one dispatch. A fresh session is
-// created on modelRole, sent as its own model choice.
-func buildBridgeInbound(sessionID, displayName, prompt string, fresh bool, spec cardSessionSpec, modelRole string) (messages.BridgeInbound, error) {
-	in := messages.BridgeInbound{
-		BusSessionID: sessionID,
-		Agent:        "tcl-worker",
-		Orchestrator: "task-completion-loop",
-		Channel:      "task-completion-loop",
-		Timestamp:    time.Now().UTC(),
-		Send: &msg.SendMessageRequest{
-			Message: prompt,
-		},
+// buildSessionTurn builds the turn for one dispatch. A fresh session is
+// created on modelRole, sent as its own model choice, as principalID.
+func buildSessionTurn(sessionID, displayName, prompt string, fresh bool, spec cardSessionSpec, modelRole, principalID string) (sessionstarts.Turn, error) {
+	turn := sessionstarts.Turn{
+		SessionID: sessionID,
+		Send:      msg.SendMessageRequest{Message: prompt},
 	}
 	if fresh {
-		in.Create = &msg.CreateSessionRequest{
+		if principalID == "" {
+			return sessionstarts.Turn{}, fmt.Errorf("no principal to start session %s as: its agent would hold no token for the issues its prompt closes", sessionID)
+		}
+		turn.Create = &msg.CreateSessionRequest{
+			PrincipalID: principalID,
 			Harness:     spec.Harness,
 			InstanceID:  spec.InstanceID,
 			AgentID:     spec.AgentSlug,
@@ -933,11 +940,11 @@ func buildBridgeInbound(sessionID, displayName, prompt string, fresh bool, spec 
 			Type:        msg.SessionTypeAutonomous,
 			AutoStart:   true,
 		}
-		if err := sessionmodelrole.SetModelRole(in.Create, modelRole); err != nil {
-			return messages.BridgeInbound{}, err
+		if err := sessionmodelrole.SetModelRole(turn.Create, modelRole); err != nil {
+			return sessionstarts.Turn{}, err
 		}
 	}
-	return in, nil
+	return turn, nil
 }
 
 func buildPrompt(p scopedParent, child issuesclient.CardView, g backlogGroup, reusedSessionID, issuesURL string) string {
@@ -972,7 +979,7 @@ func buildPrompt(p scopedParent, child issuesclient.CardView, g backlogGroup, re
 
 ## Instructions
 1. Do the work described above.
-2. When done, PATCH %s/items/%s with {"status":"done"} and a body update describing what you did.
+2. When done, PATCH %s/items/%s with {"status":"done"} and a body update describing what you did. Send your session's token with it: -H "Authorization: Bearer $LLM_BRIDGE_PRINCIPAL_TOKEN".
 3. Then exit cleanly. The kanban-curator will detect session completion and move the card to Done.
 4. If the task is blocked or unclear, leave a body update explaining why and exit; the card stays In Progress and a human will intervene.
 
@@ -1022,7 +1029,7 @@ func childrenSettlement(kc *issuesclient.Client, parentID string) (int, int, str
 	return settled, total, summary, nil
 }
 
-// ============================ HTTP / NATS helpers ============================
+// ============================ HTTP helpers ============================
 
 // errSessionGone is getBridgeSession's answer to a 404. A session that no
 // longer exists is not one the tick failed to read: there is nothing to revive.

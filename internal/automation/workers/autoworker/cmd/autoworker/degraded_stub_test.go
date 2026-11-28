@@ -21,8 +21,8 @@ import (
 // with the status the client wanted.
 //
 // The bus is not among them. It is the one service a test cannot stand up
-// without dispatching a real agent session, so it crosses the workerPublisher
-// seam instead and every test states what publishing did.
+// without dispatching a real agent session, so it crosses the workerStarter
+// seam instead and every test states what starting did.
 
 // captureLog collects everything the run under it writes to the standard logger,
 // which is where degradations.Report lands and therefore the only place a person
@@ -388,7 +388,7 @@ func tickConfig(t *testing.T, usage, kanban, spend string) config {
 		slackPercentPoints: 15,
 		prompt:             "the default discovery prompt",
 		timezone:           "America/Los_Angeles",
-		natsURL:            "nats://unreachable.invalid:4222",
+		sessionPrincipalID: testSessionPrincipalID,
 		llmBridgeURL:       spend,
 		issuesURL:          issuesRoutedTo(t, kanban, spend),
 		usageURL:           usage,
@@ -397,15 +397,15 @@ func tickConfig(t *testing.T, usage, kanban, spend string) config {
 	}
 }
 
-// recordingPublisher is a workerPublisher that succeeds and remembers what it
+// recordingStarter is a workerStarter that succeeds and remembers what it
 // was asked to dispatch.
-type recordingPublisher struct {
+type recordingStarter struct {
 	calls   int
 	prompts []string
 	budgets []float64
 }
 
-func (p *recordingPublisher) publish(_ providerSpec, _ string, prompt string, maxBudgetUSD float64, _, _, _ string) (string, error) {
+func (p *recordingStarter) start(_ providerSpec, _ string, prompt string, maxBudgetUSD float64, _, _, _ string) (string, error) {
 	p.calls++
 	p.prompts = append(p.prompts, prompt)
 	p.budgets = append(p.budgets, maxBudgetUSD)

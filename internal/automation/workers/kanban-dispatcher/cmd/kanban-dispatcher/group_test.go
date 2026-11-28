@@ -139,23 +139,23 @@ func TestUngroupedCardsAreDispatchedTogetherIntoFreshSessions(t *testing.T) {
 		"card-finished": {{CardID: "card-finished", EntityType: "session", EntityRef: "sess-sibling"}},
 	}
 	body := `{"state":"idle","updated_at":"` + time.Now().Add(-time.Minute).UTC().Format(time.RFC3339) + `","instance_id":"inst-codex-local","agent_id":"northwind-builder","bundle_id":"6"}`
-	err, published := tick(t, kanban, map[string]string{"sess-sibling": body})
+	err, started := tick(t, kanban, map[string]string{"sess-sibling": body})
 	if err != nil {
 		t.Fatalf("tick: %v", err)
 	}
-	if len(published) != 2 {
-		t.Fatalf("published %d, want both ungrouped cards in one tick: %+v", len(published), published)
+	if len(started) != 2 {
+		t.Fatalf("started %d, want both ungrouped cards in one tick: %+v", len(started), started)
 	}
-	for _, in := range published {
-		if in.BusSessionID == "sess-sibling" || in.Create == nil {
-			t.Errorf("an ungrouped card must get a fresh session of its own, got %q create=%v", in.BusSessionID, in.Create != nil)
+	for _, in := range started {
+		if in.SessionID == "sess-sibling" || in.Create == nil {
+			t.Errorf("an ungrouped card must get a fresh session of its own, got %q create=%v", in.SessionID, in.Create != nil)
 		}
-		if !strings.Contains(in.BusSessionID, "-ungrouped-card-") {
-			t.Errorf("session id %q does not say its card was ungrouped", in.BusSessionID)
+		if !strings.Contains(in.SessionID, "-ungrouped-card-") {
+			t.Errorf("session id %q does not say its card was ungrouped", in.SessionID)
 		}
 	}
-	if published[0].BusSessionID == published[1].BusSessionID {
-		t.Errorf("both ungrouped cards were published into %q", published[0].BusSessionID)
+	if started[0].SessionID == started[1].SessionID {
+		t.Errorf("both ungrouped cards were started into %q", started[0].SessionID)
 	}
 }
 

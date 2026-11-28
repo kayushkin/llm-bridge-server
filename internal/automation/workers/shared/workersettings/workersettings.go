@@ -18,8 +18,8 @@
 // A job's environment carries every other job's variables, so a binary owns
 // only the names that are its alone: a set variable under one of them that the
 // binary does not declare stops it, because it is a misspelling or a leftover.
-// The shared ones (LLM_BRIDGE_URL, NATS_URL, …) are declared and owned by
-// nobody.
+// The shared ones (LLM_BRIDGE_URL, LLM_BRIDGE_START_SESSIONS_AS_PRINCIPAL_ID,
+// …) are declared and owned by nobody.
 package workersettings
 
 import (
@@ -59,7 +59,7 @@ func (binary JobBinary) NewSettingsRegistry(environment servicesettings.Environm
 const (
 	SettingBridgeURL                   = "llm_bridge_url"
 	SettingBridgeServicePrincipalToken = "llm_bridge_service_principal_token"
-	SettingNATSURL                     = "nats_url"
+	SettingStartSessionsAsPrincipalID  = "start_sessions_as_principal_id"
 	SettingDashURL                     = "dash_url"
 	SettingEmailBoardID                = "email_board_id"
 	SettingRoleTags                    = "role_tags"
@@ -73,7 +73,6 @@ const (
 // The values in force with nothing set, where more than one binary uses them.
 const (
 	DefaultBridgeURL = "http://localhost:8160"
-	DefaultNATSURL   = "nats://localhost:4222"
 	DefaultDashURL   = "http://localhost:8101"
 )
 
@@ -112,22 +111,42 @@ func bridgeDefinitions() []servicesettings.Definition {
 	}
 }
 
-func natsURLDefinition() servicesettings.Definition {
-	return servicesettings.Definition{Key: SettingNATSURL, EnvironmentVariable: "NATS_URL", Kind: msg.ServiceSettingKindWiring, ValueType: msg.ServiceSettingValueTypeString, Default: DefaultNATSURL,
-		Description: "The NATS server the binary publishes to. The scheduler's environment carries it and its jobs inherit it."}
+// startSessionsAsDefinition is the principal the sessions a binary starts run
+// as. The binaries that start sessions declare it.
+func startSessionsAsDefinition() servicesettings.Definition {
+	return servicesettings.Definition{Key: SettingStartSessionsAsPrincipalID, EnvironmentVariable: startSessionsAsEnvironmentVariable, Kind: msg.ServiceSettingKindBehavior, ValueType: msg.ServiceSettingValueTypeString,
+		Description: "The principal (a principal-store id, such as principal_000001) every session the binary starts runs as, sent as principal_id on POST /sessions. The session's agent then holds that principal's token for the routes its prompt calls (/issues/items, an operator route), so this is an administrator, normally the operator. The binary's own principal must hold can_start_sessions_as on it unless it is an administrator itself; without, the bridge answers 403 principal_mismatch. Unset, the binary refuses to start a session, so no session runs as the wrong principal by default. A dry run does not read it."}
+}
+
+const startSessionsAsEnvironmentVariable = "LLM_BRIDGE_START_SESSIONS_AS_PRINCIPAL_ID"
+
+// StartSessionsAsPrincipalID is the principal the sessions the binary starts
+// run as, or an error naming the variable when it is unset.
+func StartSessionsAsPrincipalID(settings *servicesettings.Registry) (string, error) {
+	principalID := settings.String(SettingStartSessionsAsPrincipalID)
+	return principalID, CheckStartSessionsAsPrincipalID(principalID)
+}
+
+// CheckStartSessionsAsPrincipalID refuses an empty principal to start sessions
+// as, naming the variable.
+func CheckStartSessionsAsPrincipalID(principalID string) error {
+	if principalID == "" {
+		return fmt.Errorf("%s is unset: name the principal the sessions this binary starts run as (normally the operator), so their agents hold a token for the routes their prompts call", startSessionsAsEnvironmentVariable)
+	}
+	return nil
 }
 
 // Ask is workers/ask: it opens or continues a session with an alert or
 // question for the user. Agents and other jobs run it from their own shells.
 var Ask = JobBinary{Name: "ask", settingDefinitions: func() []servicesettings.Definition {
-	return append(bridgeDefinitions(), natsURLDefinition())
+	return append(bridgeDefinitions(), startSessionsAsDefinition())
 }}
 
 // Autoworker is workers/autoworker: it dispatches an unattended worker when a
 // provider's weekly budget is under-used.
 var Autoworker = JobBinary{Name: "autoworker", OwnedEnvironmentVariablePrefixes: []string{"AUTOWORKER_"}, settingDefinitions: func() []servicesettings.Definition {
 	return append(bridgeDefinitions(),
-		natsURLDefinition(),
+		startSessionsAsDefinition(),
 		servicesettings.Definition{Key: SettingDefaultMaxBudgetUSD, EnvironmentVariable: "AUTOWORKER_DEFAULT_MAX_BUDGET_USD", Kind: msg.ServiceSettingKindBehavior, ValueType: msg.ServiceSettingValueTypeDecimal,
 			Description: "The spend cap in USD for a dispatched session whose card has no ceiling of its own; unset or 0 is uncapped. A value that is not a number stops the binary rather than run uncapped. The -default-max-budget-usd flag overrides it."},
 	)
@@ -163,7 +182,7 @@ var KanbanCurator = JobBinary{Name: "kanban-curator", settingDefinitions: bridge
 // KanbanDispatcher is workers/kanban-dispatcher: it starts sessions for a
 // board's queued cards.
 var KanbanDispatcher = JobBinary{Name: "kanban-dispatcher", settingDefinitions: func() []servicesettings.Definition {
-	return append(bridgeDefinitions(), natsURLDefinition())
+	return append(bridgeDefinitions(), startSessionsAsDefinition())
 }}
 
 // KanbanScoper is workers/kanban-scoper: it decomposes a board's parent cards.

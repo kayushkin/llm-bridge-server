@@ -42,18 +42,18 @@ func siblingIdleFor(t *testing.T, age time.Duration) (*fakeKanban, map[string]st
 func TestTheReviveWindowIsOneHour(t *testing.T) {
 	t.Run("thirty seconds inside the hour is revived", func(t *testing.T) {
 		kanban, sessions := siblingIdleFor(t, time.Hour-30*time.Second)
-		err, published := tick(t, kanban, sessions)
-		if err != nil || len(published) != 1 || published[0].BusSessionID != "sess-sibling" || published[0].Create != nil {
+		err, started := tick(t, kanban, sessions)
+		if err != nil || len(started) != 1 || started[0].SessionID != "sess-sibling" || started[0].Create != nil {
 			t.Errorf("a sibling idle for 59m30s must be revived; the window has shrunk below an hour "+
-				"and every tick now pays for a fresh session: err=%v published=%+v", err, published)
+				"and every tick now pays for a fresh session: err=%v started=%+v", err, started)
 		}
 	})
 	t.Run("thirty seconds past the hour is not revived", func(t *testing.T) {
 		kanban, sessions := siblingIdleFor(t, time.Hour+30*time.Second)
-		err, published := tick(t, kanban, sessions)
-		if err != nil || len(published) != 1 || published[0].BusSessionID == "sess-sibling" || published[0].Create == nil {
+		err, started := tick(t, kanban, sessions)
+		if err != nil || len(started) != 1 || started[0].SessionID == "sess-sibling" || started[0].Create == nil {
 			t.Errorf("a sibling idle for 60m30s must not be revived; the window has grown past an hour: "+
-				"err=%v published=%+v", err, published)
+				"err=%v started=%+v", err, started)
 		}
 	})
 }

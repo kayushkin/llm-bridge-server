@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kayushkin/bus/messages"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/degradations"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/issuesclient"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/sessionstarts"
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
@@ -237,15 +237,16 @@ func productCardDefaults() issuesclient.EffectiveDefaults {
 		}}
 }
 
-func newDispatcher(kanban *fakeKanban, kanbanURL, bridgeURL string, published *[]messages.BridgeInbound) *backlogDispatcher {
+func newDispatcher(kanban *fakeKanban, kanbanURL, bridgeURL string, started *[]sessionstarts.Turn) *backlogDispatcher {
 	return &backlogDispatcher{
 		kanban:             issuesclient.New(kanbanURL),
 		bridgeURL:          bridgeURL,
 		board:              &kanban.board,
 		view:               &kanban.view,
 		inProgressColumnID: "col-in-progress",
-		publish: func(in messages.BridgeInbound) error {
-			*published = append(*published, in)
+		sessionPrincipalID: testSessionPrincipalID,
+		startSession: func(in sessionstarts.Turn) error {
+			*started = append(*started, in)
 			return nil
 		},
 		maxDispatch: 10,
@@ -278,21 +279,28 @@ func TestEachCardIsDispatchedWithItsOwnEffectiveDefaults(t *testing.T) {
 	bridgeServer := fakeBridge(t, nil)
 	defer bridgeServer.Close()
 
-	var published []messages.BridgeInbound
-	dispatcher := newDispatcher(kanban, kanbanServer.URL, bridgeServer.URL, &published)
+	var started []sessionstarts.Turn
+	dispatcher := newDispatcher(kanban, kanbanServer.URL, bridgeServer.URL, &started)
 	dispatched, undispatched := dispatcher.dispatchBacklog([]scopedParent{{cardID: "parent", item: map[string]any{"title": "Goal"}}})
 
-	if dispatched != 2 || len(published) != 2 {
-		t.Fatalf("dispatched=%d published=%d, want 2 and 2", dispatched, len(published))
+	if dispatched != 2 || len(started) != 2 {
+		t.Fatalf("dispatched=%d started=%d, want 2 and 2", dispatched, len(started))
 	}
 	// Groups dispatch in key order: a (the product card), then b.
-	product := published[0].Create
+	product := started[0].Create
 	if product == nil || product.InstanceID != "inst-codex-local" || product.Harness != msg.HarnessCodex || product.BundleID != "6" || product.AgentID != "northwind-builder" {
 		t.Errorf("the tagged card must run on its rule's instance and bundle with the board's agent, got %+v", product)
 	}
-	plain := published[1].Create
+	plain := started[1].Create
 	if plain == nil || plain.InstanceID != "inst-cc-local" || plain.Harness != msg.HarnessClaudeCode || plain.BundleID != "" || plain.AgentID != "northwind-builder" {
 		t.Errorf("the untagged card must run on the board's instance with no bundle, got %+v", plain)
+	}
+
+	// Each session runs as the principal the dispatcher starts sessions as.
+	for _, create := range []*msg.CreateSessionRequest{product, plain} {
+		if create != nil && create.PrincipalID != testSessionPrincipalID {
+			t.Errorf("principal_id = %q, want %s", create.PrincipalID, testSessionPrincipalID)
+		}
 	}
 
 	// Each session names its own card, whose tags pick its context sections.
@@ -389,19 +397,19 @@ func TestASiblingSessionIsReusedOnlyWhenStartedWithWhatTheCardResolvesTo(t *test
 			bridgeServer := fakeBridge(t, map[string]string{"sess-sibling": tc.session})
 			defer bridgeServer.Close()
 
-			var published []messages.BridgeInbound
-			dispatcher := newDispatcher(kanban, kanbanServer.URL, bridgeServer.URL, &published)
+			var started []sessionstarts.Turn
+			dispatcher := newDispatcher(kanban, kanbanServer.URL, bridgeServer.URL, &started)
 			dispatched, undispatched := dispatcher.dispatchBacklog([]scopedParent{{cardID: "parent", item: map[string]any{"title": "Goal"}}})
-			if dispatched != 1 || len(undispatched) != 0 || len(published) != 1 {
-				t.Fatalf("dispatched=%d undispatched=%v published=%d, want one dispatch", dispatched, undispatched, len(published))
+			if dispatched != 1 || len(undispatched) != 0 || len(started) != 1 {
+				t.Fatalf("dispatched=%d undispatched=%v started=%d, want one dispatch", dispatched, undispatched, len(started))
 			}
-			in := published[0]
-			reused := in.BusSessionID == "sess-sibling" && in.Create == nil
+			in := started[0]
+			reused := in.SessionID == "sess-sibling" && in.Create == nil
 			if reused != tc.wantReuse {
-				t.Errorf("reused=%v (session %s, create %+v), want reuse=%v", reused, in.BusSessionID, in.Create, tc.wantReuse)
+				t.Errorf("reused=%v (session %s, create %+v), want reuse=%v", reused, in.SessionID, in.Create, tc.wantReuse)
 			}
-			if !tc.wantReuse && (in.Create == nil || in.Create.InstanceID != "inst-codex-local" || in.BusSessionID == "sess-sibling") {
-				t.Errorf("a fresh session must be minted on the card's own instance, got session %s create %+v", in.BusSessionID, in.Create)
+			if !tc.wantReuse && (in.Create == nil || in.Create.InstanceID != "inst-codex-local" || in.SessionID == "sess-sibling") {
+				t.Errorf("a fresh session must be minted on the card's own instance, got session %s create %+v", in.SessionID, in.Create)
 			}
 		})
 	}

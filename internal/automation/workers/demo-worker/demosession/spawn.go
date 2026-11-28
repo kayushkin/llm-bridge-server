@@ -13,7 +13,9 @@
 // instance does not get a claude_code request it would refuse.
 //
 // It talks to llm-bridge-server over HTTP rather than publishing to NATS, which
-// is what autoworker and kanban-dispatcher do. Two reasons, both learned here:
+// is what autoworker and kanban-dispatcher did until 2026-11-27, when they
+// moved to the same two calls (workers/shared/sessionstarts). Two reasons, both
+// learned here:
 //
 //   - A NATS publish is fire-and-forget. It succeeds whether or not a session
 //     is ever created, so a caller that publishes and then links the session id

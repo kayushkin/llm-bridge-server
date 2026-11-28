@@ -22,8 +22,15 @@
 //     guardrails) instead of parking on the prehook and wedging the turn — no
 //     permission_mode=bypass needed. The herald- prefix keeps these out of the
 //     kanban-curator idle-reaper (scoped to autoworker-).
-//   - Attribution is structured: --from sets the message's Agent tag (the
-//     sender shown in the UI). The prompt does not roleplay a persona.
+//   - Attribution: --from names the sender in the relay prompt ("Relay the
+//     following message from `approval-proposer`"). The prompt does not
+//     roleplay a persona. Until 2026-11-27 it was also the Agent tag of the NATS
+//     message, which labeled only the events the adapter published back on the
+//     bus, so it never reached the bridge or the UI.
+//   - The session is created and sent its turn through the bridge's session
+//     API (POST /sessions, POST /sessions/{id}/send), as the principal
+//     LLM_BRIDGE_START_SESSIONS_AS_PRINCIPAL_ID names, so its agent holds that
+//     principal's token for whatever the on-reply instruction asks of it.
 //   - Session reuse: --session <herald-...> delivers the message as a new turn
 //     in an existing herald session instead of opening another one. The caller
 //     keeps the id ask printed and passes it back; reminder-coordinator uses
@@ -50,13 +57,12 @@ import (
 	"time"
 	"unicode"
 
-	natsbus "github.com/kayushkin/bus"
-	"github.com/kayushkin/bus/messages"
 	schedulerconfig "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/config"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/sessionmodelrole"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgeauth"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/bridgestores"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/schedulersettings"
+	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/sessionstarts"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/textcut"
 	"github.com/kayushkin/llm-bridge-server/internal/automation/workers/shared/workersettings"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -73,15 +79,10 @@ const (
 	// heraldSessionPrefix marks a relay session. kanban-curator's idle-reaper is
 	// scoped to the autoworker- prefix, so a herald session is left alone.
 	heraldSessionPrefix = "herald-"
-	// heraldChannel is the bus channel a relay session is published on.
-	heraldChannel = "herald"
 	// heraldPurpose is the session Purpose llm-bridge-server stores.
 	heraldPurpose = "herald"
-	// askOrigin names this binary as the session's creator, and names its NATS
-	// connection.
+	// askOrigin names this binary as the session's creator.
 	askOrigin = "ask"
-	// orchestratorClaudeCode is the orchestrator the relay session runs under.
-	orchestratorClaudeCode = "claude-code"
 )
 
 // askConfig carries everything one run needs, so the run is a function of its
@@ -96,22 +97,18 @@ type askConfig struct {
 	question     string
 	dryRun       bool
 	now          time.Time
+	// sessionPrincipalID is the principal a new herald session runs as.
+	sessionPrincipalID string
 	// heraldModelRole returns the model-store role a new herald session starts
 	// on, already checked against what claude_code can run, and the model it
 	// resolves to. It is called only when a new session is opened.
 	heraldModelRole func() (role, model string, err error)
 }
 
-// heraldPublisher is the seam a test stands in at to observe the dispatch
-// decision — the half of this binary that spends money on a session.
-type heraldPublisher interface {
-	Publish(subject string, data any) error
-	Close()
-}
-
-// connectFunc opens the publisher. It is a function rather than a value so a
-// dry run never opens a connection, which is what the flag has always meant.
-type connectFunc func() (heraldPublisher, error)
+// turnStarter starts or continues a session with one turn. It is the seam a
+// test stands in at to observe the dispatch decision — the half of this binary
+// that spends money on a session.
+type turnStarter func(sessionstarts.Turn) error
 
 func main() {
 	settings, err := workersettings.Ask.NewSettingsRegistry(servicesettings.ProcessEnvironment())
@@ -123,9 +120,9 @@ func main() {
 		from         = flag.String("from", defaultFromTag, "Originating agent — sets the message's Agent (sender) tag. Use the real agent name, e.g. approval-proposer. Must already be one line of nothing but text: a name carrying control, bidi or line-breaking characters is refused, not rewritten, because ask will not invent an attribution.")
 		title        = flag.String("title", "", "Session display name. Put on one line with control characters removed, but kept at whatever length you give it. Defaults to a truncated form of the question.")
 		onReply      = flag.String("on-reply", "", "Instruction for what the agent should do once the user replies. Empty = just relay the alert; no action expected.")
-		reuseSession = flag.String("session", "", "Existing herald bus session id to deliver into as a new turn, instead of opening a new session. The adapter routes it to the bridge session it created for that id; -instance and -title are meaningless here and rejected.")
+		reuseSession = flag.String("session", "", "Existing herald session id, as an earlier ask printed it, to deliver into as a new turn instead of opening a new session; -instance and -title are meaningless here and rejected.")
 		bridgeURL    = flag.String("bridge-url", settings.String(workersettings.SettingBridgeURL), "llm-bridge-server base URL (for instance resolution).")
-		dryRun       = flag.Bool("dry-run", false, "Print the resolved instance and prompt; do not publish.")
+		dryRun       = flag.Bool("dry-run", false, "Print the resolved instance and prompt; do not start or send to a session.")
 	)
 	flag.Parse()
 
@@ -152,12 +149,15 @@ func main() {
 				sessionmodelrole.New(bridgestores.ModelsURL(*bridgeURL), *bridgeURL))
 		},
 	}
-	natsURL := settings.String(workersettings.SettingNATSURL)
-	connect := func() (heraldPublisher, error) {
-		return natsbus.Connect(natsbus.Options{URL: natsURL, Name: askOrigin})
+	// Only a new session runs as someone; a dry run starts nothing.
+	if !cfg.dryRun && cfg.reuseSession == "" {
+		if cfg.sessionPrincipalID, err = workersettings.StartSessionsAsPrincipalID(settings); err != nil {
+			log.Fatalf("ask: %v", err)
+		}
 	}
+	start := func(turn sessionstarts.Turn) error { return sessionstarts.Start(*bridgeURL, turn) }
 
-	sessionID, err := runAsk(cfg, connect, os.Stdout)
+	sessionID, err := runAsk(cfg, start, os.Stdout)
 	if err != nil {
 		log.Fatalf("ask: %v", err)
 	}
@@ -167,13 +167,13 @@ func main() {
 }
 
 // runAsk relays one question: into the existing herald session cfg.reuseSession
-// names, or into a new one on the resolved instance. It returns the bus session
-// id the message went to. A dry run writes what it would have sent to out,
-// returns an empty id and opens no connection.
+// names, or into a new one on the resolved instance. It returns the session id
+// the message went to. A dry run writes what it would have sent to out,
+// returns an empty id and starts nothing.
 //
 // Every failure is returned rather than fatal, so the caller decides — main
 // still exits non-zero on all of them.
-func runAsk(cfg askConfig, connect connectFunc, out io.Writer) (string, error) {
+func runAsk(cfg askConfig, start turnStarter, out io.Writer) (string, error) {
 	if !hasReadableText(cfg.question) {
 		return "", fmt.Errorf("a question/alert message is required (positional argument), and it must contain readable text — a message of only whitespace and control characters has nothing to relay and nothing to name the session with")
 	}
@@ -183,11 +183,11 @@ func runAsk(cfg askConfig, connect connectFunc, out io.Writer) (string, error) {
 
 	prompt := buildPrompt(cfg.from, cfg.question, cfg.onReply)
 
-	// Reuse: deliver into an existing herald session as a new turn. The adapter
-	// keeps a persisted bus_session_id → bridge session mapping and reuses it
-	// for a Send with no Create, so the message lands in the same chat session
-	// the earlier ask opened. Create-time knobs cannot apply to a session that
-	// already exists, so passing one is an error, not something to ignore.
+	// Reuse: deliver into an existing herald session as a new turn. The id an
+	// earlier ask printed is the bridge's session id, so a send with no create
+	// lands in the same chat session that ask opened. Create-time knobs cannot
+	// apply to a session that already exists, so passing one is an error, not
+	// something to ignore.
 	if cfg.reuseSession != "" {
 		if cfg.instanceName != "" {
 			return "", fmt.Errorf("-instance sets where a NEW session is hosted; it cannot apply with -session")
@@ -199,18 +199,8 @@ func runAsk(cfg askConfig, connect connectFunc, out io.Writer) (string, error) {
 			fmt.Fprintf(out, "session:  %s (reused)\nfrom:     %s\n\n--- prompt ---\n%s\n", cfg.reuseSession, cfg.from, prompt)
 			return "", nil
 		}
-		err := publishInbound(connect, messages.BridgeInbound{
-			BusSessionID: cfg.reuseSession,
-			Agent:        cfg.from,
-			Orchestrator: orchestratorClaudeCode,
-			Channel:      heraldChannel,
-			Timestamp:    cfg.now,
-			Send: &msg.SendMessageRequest{
-				Message: prompt,
-			},
-		})
-		if err != nil {
-			return "", err
+		if err := start(sessionstarts.Turn{SessionID: cfg.reuseSession, Send: msg.SendMessageRequest{Message: prompt}}); err != nil {
+			return "", fmt.Errorf("send to session %s: %w", cfg.reuseSession, err)
 		}
 		return cfg.reuseSession, nil
 	}
@@ -241,8 +231,12 @@ func runAsk(cfg askConfig, connect connectFunc, out io.Writer) (string, error) {
 		return "", nil
 	}
 
+	if cfg.sessionPrincipalID == "" {
+		return "", workersettings.CheckStartSessionsAsPrincipalID(cfg.sessionPrincipalID)
+	}
 	sessionID := fmt.Sprintf("%s%d", heraldSessionPrefix, cfg.now.UnixNano())
 	create := &msg.CreateSessionRequest{
+		PrincipalID: cfg.sessionPrincipalID,
 		Harness:     msg.HarnessClaudeCode,
 		InstanceID:  instanceID,
 		DisplayName: displayName,
@@ -258,19 +252,8 @@ func runAsk(cfg askConfig, connect connectFunc, out io.Writer) (string, error) {
 	if err := sessionmodelrole.SetModelRole(create, modelRole); err != nil {
 		return "", err
 	}
-	err = publishInbound(connect, messages.BridgeInbound{
-		BusSessionID: sessionID,
-		Agent:        cfg.from,
-		Orchestrator: orchestratorClaudeCode,
-		Channel:      heraldChannel,
-		Timestamp:    cfg.now,
-		Create:       create,
-		Send: &msg.SendMessageRequest{
-			Message: prompt,
-		},
-	})
-	if err != nil {
-		return "", err
+	if err := start(sessionstarts.Turn{SessionID: sessionID, Create: create, Send: msg.SendMessageRequest{Message: prompt}}); err != nil {
+		return "", fmt.Errorf("start session %s: %w", sessionID, err)
 	}
 	return sessionID, nil
 }
@@ -288,21 +271,6 @@ func readHeraldModelRole(ctx context.Context, schedulerURL string, checker sessi
 		return "", "", fmt.Errorf("%s %q: %w", schedulerconfig.SettingHeraldModelRole, role, err)
 	}
 	return role, model.ID, nil
-}
-
-// publishInbound opens one connection, publishes the request on the bridge's
-// inbound subject, and closes the connection. ask is a one-shot; there is
-// nothing else to clean up.
-func publishInbound(connect connectFunc, in messages.BridgeInbound) error {
-	pub, err := connect()
-	if err != nil {
-		return fmt.Errorf("nats connect: %w", err)
-	}
-	defer pub.Close()
-	if err := pub.Publish(messages.BridgeInboundSubject, in); err != nil {
-		return fmt.Errorf("publish: %w", err)
-	}
-	return nil
 }
 
 // buildPrompt frames the spawned agent as a relay: present the message
@@ -408,7 +376,7 @@ const displayNameRuneLimit = 60
 //
 // The result is persisted on the created session and shown in the dash, and
 // nothing downstream re-derives it, so a value damaged here is damaged for good.
-// It also travels as JSON over the bus, and encoding/json replaces invalid bytes
+// It also travels as JSON to the bridge, and encoding/json replaces invalid bytes
 // with U+FFFD and reports no error — which is why cutting mid-rune here was
 // silent rather than loud. That laundering does NOT cover what spaceOutNonText
 // removes: those characters are valid UTF-8, so json passes them through with a

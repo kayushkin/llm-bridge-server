@@ -2,7 +2,6 @@ package server
 
 import (
 	"net/http"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -29,17 +28,16 @@ func (modelRolesForTheMockHarness) Check(role string, harness msg.Harness) (sess
 // published its turn on NATS, the adapter created the session as nobody, and
 // the child got neither.
 func TestASchedulerAgentJobSessionRunsAsTheConfiguredPrincipalWithItsToken(t *testing.T) {
-	recordTo := writeEnvironmentRecordingMockHarness(t)
+	recordTo := writeEnvironmentRecordingLiveMockHarness(t)
 	gated := newGatedTestServer(t, nil)
 	agents := executor.NewAgentExecutor(gated.server.SchedulerBridge(), "http://127.0.0.1:8160/notes", administratorTestPrincipalID,
 		func() string { return "default" }, modelRolesForTheMockHarness{})
 
 	result := agents.Run(executor.AgentRun{Prompt: "check the drift", Orchestrator: string(msg.HarnessMock), WorkspaceID: "ws-1",
 		SessionWaitLimit: 50 * time.Millisecond})
-	// The mock child reads its input and never ends the turn, so the run
-	// times out; what matters is the session it started.
-	if !strings.Contains(result.Output, "created session scheduler-mock-") || !strings.Contains(result.Output, "as "+administratorTestPrincipalID) {
-		t.Fatalf("run = %q %q, want a created session naming its principal", result.Status, result.Output)
+	if !strings.Contains(result.Output, "created session scheduler-mock-") || !strings.Contains(result.Output, "as "+administratorTestPrincipalID) ||
+		strings.Contains(result.Output, "sending its turn") {
+		t.Fatalf("run = %q %q, want a created session naming its principal, sent its turn", result.Status, result.Output)
 	}
 	sessionID := strings.Fields(strings.TrimPrefix(result.Output, "created session "))[0]
 	t.Cleanup(func() { gated.server.harness.Kill(sessionID) })
@@ -55,18 +53,7 @@ func TestASchedulerAgentJobSessionRunsAsTheConfiguredPrincipalWithItsToken(t *te
 		t.Errorf("origin %q, purpose %q, type %q", session.Origin, session.Purpose, session.Type)
 	}
 
-	var environment []string
-	deadline := time.Now().Add(10 * time.Second)
-	for environment == nil && time.Now().Before(deadline) {
-		if data, err := os.ReadFile(recordTo); err == nil {
-			environment = strings.Split(strings.TrimSpace(string(data)), "\n")
-		} else {
-			time.Sleep(10 * time.Millisecond)
-		}
-	}
-	if environment == nil {
-		t.Fatal("the harness child never recorded its environment: the send did not start it")
-	}
+	environment := readRecordedEnvironment(t, recordTo)
 	var gatewayURL, token string
 	for _, entry := range environment {
 		name, value, _ := strings.Cut(entry, "=")

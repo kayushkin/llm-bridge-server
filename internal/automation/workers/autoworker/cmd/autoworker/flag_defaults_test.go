@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/kayushkin/llm-bridge/servicesettings"
@@ -17,7 +18,7 @@ import (
 // starts with had never been read by anything. That is sharper here than in
 // most of these mains, because this binary decides how much money a dispatched
 // session may spend, and its two worst defaults fail silently: -dry-run on
-// evaluates every provider, logs what it would dispatch, publishes nothing and
+// evaluates every provider, logs what it would dispatch, starts nothing and
 // exits 0, and a -default-max-budget-usd that drifted off 0 caps sessions the
 // user never asked to cap.
 
@@ -52,8 +53,8 @@ func TestTheDefaultsThatShipAreTheOnesThisBinaryStartsWith(t *testing.T) {
 		{"-tz", cfg.timezone, "America/Los_Angeles"},
 		{"-default-max-budget-usd", cfg.defaultMaxBudgetUSD, 0.0},
 
-		{"NATS_URL", cfg.natsURL, "nats://localhost:4222"},
 		{"LLM_BRIDGE_URL", cfg.llmBridgeURL, "http://localhost:8160"},
+		{"LLM_BRIDGE_START_SESSIONS_AS_PRINCIPAL_ID", cfg.sessionPrincipalID, ""},
 		{"issues under the bridge", cfg.issuesURL, "http://localhost:8160/issues"},
 		{"usage under the bridge", cfg.usageURL, "http://localhost:8160/usage"},
 		{"scheduler under the bridge", cfg.schedulerURL, "http://localhost:8160/scheduler"},
@@ -84,7 +85,7 @@ func TestTheDefaultsThatShipAreTheOnesThisBinaryStartsWith(t *testing.T) {
 // the table above even though it repeats one row of it, because the reason this
 // value matters is not that it is `false` but what `true` would look like from
 // outside: a tick that discovers every provider, logs a full decision for each,
-// writes no state, publishes nothing, and exits 0.
+// writes no state, starts nothing, and exits 0.
 func TestDryRunShipsOffBecauseOnIsIndistinguishableFromAQuietWeek(t *testing.T) {
 	cfg, err := parseFlags(nil, noEnvironment, "/home/someone")
 	if err != nil {
@@ -108,7 +109,7 @@ func TestDryRunShipsOffBecauseOnIsIndistinguishableFromAQuietWeek(t *testing.T) 
 // on is what makes a swap fail.
 func TestEachEnvironmentVariableReachesItsOwnField(t *testing.T) {
 	cfg, err := parseFlags(nil, environmentWith(map[string]string{
-		"NATS_URL":                           "nats://nats.example:4222",
+		"LLM_BRIDGE_START_SESSIONS_AS_PRINCIPAL_ID": "principal_000001",
 		"LLM_BRIDGE_URL":                     "http://bridge.example",
 		"LLM_BRIDGE_SERVICE_PRINCIPAL_TOKEN": "a-service-principal-token",
 	}), "/home/someone")
@@ -121,7 +122,7 @@ func TestEachEnvironmentVariableReachesItsOwnField(t *testing.T) {
 		got      string
 		want     string
 	}{
-		{"NATS_URL", cfg.natsURL, "nats://nats.example:4222"},
+		{"LLM_BRIDGE_START_SESSIONS_AS_PRINCIPAL_ID", cfg.sessionPrincipalID, "principal_000001"},
 		{"LLM_BRIDGE_URL", cfg.llmBridgeURL, "http://bridge.example"},
 		{"LLM_BRIDGE_URL issues", cfg.issuesURL, "http://bridge.example/issues"},
 		{"LLM_BRIDGE_URL usage", cfg.usageURL, "http://bridge.example/usage"},
@@ -151,8 +152,8 @@ func TestAnUnsetVariableFallsBackAndASetOneDoesNot(t *testing.T) {
 	if cfg.issuesURL != "http://bridge.example/issues" {
 		t.Errorf("a set variable was ignored: issuesURL = %q", cfg.issuesURL)
 	}
-	if cfg.natsURL != "nats://localhost:4222" {
-		t.Errorf("an unset variable did not fall back: natsURL = %q", cfg.natsURL)
+	if cfg.usageURL != "http://bridge.example/usage" {
+		t.Errorf("an unset path did not follow the bridge: usageURL = %q", cfg.usageURL)
 	}
 	// The prompt's addresses follow the bridge too: a worker told to PATCH the
 	// default bridge's issues would write to the wrong server.
@@ -248,13 +249,34 @@ func TestANegativeSpendCapIsRejected(t *testing.T) {
 	}
 }
 
-func TestTheDefaultConfigurationValidates(t *testing.T) {
-	cfg, err := parseFlags(nil, noEnvironment, "/home/someone")
+func TestTheDefaultConfigurationValidatesOnceItNamesAPrincipal(t *testing.T) {
+	cfg, err := parseFlags(nil, environmentWith(map[string]string{"LLM_BRIDGE_START_SESSIONS_AS_PRINCIPAL_ID": "principal_000001"}), "/home/someone")
 	if err != nil {
 		t.Fatalf("parsing an empty command line: %v", err)
 	}
 	if err := cfg.validate(); err != nil {
 		t.Fatalf("the configuration this binary ships with does not validate: %v", err)
+	}
+}
+
+// A run that may start a session refuses to begin with no principal to start
+// it as; a dry run and a registration start none, and need none.
+func TestARunWithNoPrincipalToStartSessionsAsIsRejected(t *testing.T) {
+	cfg, err := parseFlags(nil, noEnvironment, "/home/someone")
+	if err != nil {
+		t.Fatalf("parsing: %v", err)
+	}
+	if err := cfg.validate(); err == nil || !strings.Contains(err.Error(), "LLM_BRIDGE_START_SESSIONS_AS_PRINCIPAL_ID") {
+		t.Fatalf("validate = %v, want a refusal naming the variable", err)
+	}
+	for _, args := range [][]string{{"-dry-run"}, {"-register"}} {
+		cfg, err := parseFlags(args, noEnvironment, "/home/someone")
+		if err != nil {
+			t.Fatalf("parsing %v: %v", args, err)
+		}
+		if err := cfg.validate(); err != nil {
+			t.Errorf("%v starts no session and needs no principal: %v", args, err)
+		}
 	}
 }
 
