@@ -33,6 +33,7 @@ import (
 	"unicode"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+	"github.com/kayushkin/llm-bridge-server/internal/textutil"
 
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
@@ -55,6 +56,14 @@ const (
 	// repo from repo-store.
 	sessionActionStoreRequestTimeout = 30 * time.Second
 )
+
+// schedulerJobs is the scheduler's jobs as this server reads and runs them,
+// in process: schedulerapi.Server, or a fake in a test. Each refuses as its
+// route does (schedulerapi.ErrJobNotFound for the route's 404).
+type schedulerJobs interface {
+	Job(id int64) (*schedulerdb.Job, error)
+	RunJobNow(id int64) (*schedulerdb.Run, error)
+}
 
 // handleOfferSessionAction is POST /sessions/{id}/actions. The body is a
 // msg.SessionActionOffer. Answers 201 and the msg.SessionAction, waiting for a
@@ -453,11 +462,11 @@ func (s *Server) describeSessionAction(ctx context.Context, session *store.Sessi
 			model = resolved.ID
 		}
 		return fmt.Sprintf("start a background session named %q as a new chat starts — %s harness, instance %s, principal %s, the instance's working directory, model %s, spend ceiling $%.2f, none of session %s's history — send it this, and show its final reply here:\n%s",
-			offer.Label, session.Harness, orNone(session.InstanceID), orNone(session.PrincipalID),
+			offer.Label, session.Harness, textutil.OrNone(session.InstanceID), textutil.OrNone(session.PrincipalID),
 			model, offer.MaximumCostUSD, session.SessionID, offer.Message), nil
 	case msg.SessionActionNewSessionAndSend:
 		return fmt.Sprintf("start a new session named %q as a new chat starts — %s harness, instance %s, principal %s, the instance's working directory and default settings, none of session %s's history — and send it this message: %s",
-			offer.Label, session.Harness, orNone(session.InstanceID), orNone(session.PrincipalID),
+			offer.Label, session.Harness, textutil.OrNone(session.InstanceID), textutil.OrNone(session.PrincipalID),
 			session.SessionID, offer.Message), nil
 	case msg.SessionActionSendToSession, msg.SessionActionStopSession:
 		return s.describeTargetSessionAction(ctx, session, offer)

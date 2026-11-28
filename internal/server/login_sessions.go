@@ -140,29 +140,29 @@ func clearLoginSessionCookie(w http.ResponseWriter, r *http.Request) {
 // liveLoginSessionOfRequest finds the login session the request's cookie
 // names and refuses one that is unknown, revoked or expired, each with its own
 // code so a page can tell "sign in again" from "you were signed out".
-func (s *Server) liveLoginSessionOfRequest(r *http.Request) (store.LoginSession, *requestCredentialError) {
+func (s *Server) liveLoginSessionOfRequest(r *http.Request) (store.LoginSession, *requestcaller.CredentialError) {
 	cookie, err := r.Cookie(loginSessionCookieName)
 	if err != nil || cookie.Value == "" {
-		return store.LoginSession{}, &requestCredentialError{http.StatusUnauthorized, "not_logged_in", fmt.Sprintf(
-			"no %s cookie: sign in with GET /auth/entra/start or POST /auth/demo-login", loginSessionCookieName)}
+		return store.LoginSession{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "not_logged_in", fmt.Sprintf(
+			"no %s cookie: sign in with GET /auth/entra/start or POST /auth/demo-login", loginSessionCookieName))
 	}
 	session, err := s.store.GetLoginSessionByTokenHash(sha256Hex(cookie.Value))
 	if errors.Is(err, store.ErrLoginSessionNotFound) {
-		return store.LoginSession{}, &requestCredentialError{http.StatusUnauthorized, "login_session_unknown",
-			"the login cookie names no login session this server issued; sign in again"}
+		return store.LoginSession{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "login_session_unknown",
+			"the login cookie names no login session this server issued; sign in again")
 	}
 	if err != nil {
-		return store.LoginSession{}, &requestCredentialError{http.StatusInternalServerError, "login_session_lookup_failed", fmt.Sprintf(
-			"could not read the login session: %v", err)}
+		return store.LoginSession{}, requestcaller.NewCredentialError(http.StatusInternalServerError, "login_session_lookup_failed", fmt.Sprintf(
+			"could not read the login session: %v", err))
 	}
 	now := s.loginClock().UTC()
 	if session.RevokedAt != nil {
-		return store.LoginSession{}, &requestCredentialError{http.StatusUnauthorized, "login_session_revoked", fmt.Sprintf(
-			"login session %s was revoked at %s (%s); sign in again", session.ID, session.RevokedAt.Format(time.RFC3339), session.RevokeReason)}
+		return store.LoginSession{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "login_session_revoked", fmt.Sprintf(
+			"login session %s was revoked at %s (%s); sign in again", session.ID, session.RevokedAt.Format(time.RFC3339), session.RevokeReason))
 	}
 	if !now.Before(session.ExpiresAt) {
-		return store.LoginSession{}, &requestCredentialError{http.StatusUnauthorized, "login_session_expired", fmt.Sprintf(
-			"login session %s expired at %s; sign in again", session.ID, session.ExpiresAt.Format(time.RFC3339))}
+		return store.LoginSession{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "login_session_expired", fmt.Sprintf(
+			"login session %s expired at %s; sign in again", session.ID, session.ExpiresAt.Format(time.RFC3339)))
 	}
 	if now.Sub(session.LastSeenAt) >= loginSessionLastSeenResolution {
 		// last_seen_at is a record for the person reviewing their sessions,
@@ -182,19 +182,19 @@ func requestMethodIsSafe(method string) bool {
 
 // csrfRefusalOf checks the CSRF token of a request authenticated by session's
 // cookie. It returns nil for a safe method or a matching token.
-func csrfRefusalOf(r *http.Request, session store.LoginSession) *requestCredentialError {
+func csrfRefusalOf(r *http.Request, session store.LoginSession) *requestcaller.CredentialError {
 	if requestMethodIsSafe(r.Method) {
 		return nil
 	}
 	presented := r.Header.Values(csrfTokenHeader)
 	if len(presented) == 0 || presented[0] == "" {
-		return &requestCredentialError{http.StatusForbidden, "csrf_token_missing", fmt.Sprintf(
+		return requestcaller.NewCredentialError(http.StatusForbidden, "csrf_token_missing", fmt.Sprintf(
 			"a %s authenticated by the login cookie must carry the session's CSRF token in %s; the login response and GET /auth/principal give it",
-			r.Method, csrfTokenHeader)}
+			r.Method, csrfTokenHeader))
 	}
 	if len(presented) != 1 || subtle.ConstantTimeCompare([]byte(presented[0]), []byte(session.CSRFToken)) != 1 {
-		return &requestCredentialError{http.StatusForbidden, "csrf_token_mismatch", fmt.Sprintf(
-			"%s does not match this login session's CSRF token", csrfTokenHeader)}
+		return requestcaller.NewCredentialError(http.StatusForbidden, "csrf_token_mismatch", fmt.Sprintf(
+			"%s does not match this login session's CSRF token", csrfTokenHeader))
 	}
 	return nil
 }
@@ -224,7 +224,7 @@ func loggedInPrincipalResponseOf(session store.LoginSession) loggedInPrincipalRe
 func (s *Server) handleGetLoggedInPrincipal(w http.ResponseWriter, r *http.Request) {
 	session, refusal := s.liveLoginSessionOfRequest(r)
 	if refusal != nil {
-		refusal.write(w)
+		refusal.Write(w)
 		return
 	}
 	httpjson.WriteJSON(w, loggedInPrincipalResponseOf(session))
@@ -240,7 +240,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case refusal == nil:
 		if csrfRefusal := csrfRefusalOf(r, session); csrfRefusal != nil {
-			csrfRefusal.write(w)
+			csrfRefusal.Write(w)
 			return
 		}
 		if _, err := s.store.RevokeLoginSession(session.ID, session.PrincipalID, "logout", s.loginClock()); err != nil &&
@@ -249,12 +249,12 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 				"could not revoke login session %s, so it is still live: %v", session.ID, err))
 			return
 		}
-	case refusal.status == http.StatusUnauthorized:
+	case refusal.Status == http.StatusUnauthorized:
 		// No cookie, or one naming no live session: nothing to revoke.
 	default:
 		// The session could not be read, so whether it is live is unknown;
 		// saying "logged out" would be a guess.
-		refusal.write(w)
+		refusal.Write(w)
 		return
 	}
 	clearLoginSessionCookie(w, r)

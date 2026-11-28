@@ -150,10 +150,10 @@ func (s *Server) callerOfReferenceAsker(ctx context.Context, principalID string)
 	if credentialError == nil {
 		return caller, nil
 	}
-	if credentialError.status == 403 {
-		return requestcaller.Caller{}, fmt.Errorf("%w: %s", references.ErrRefusedByOwner, credentialError.message)
+	if credentialError.Status == 403 {
+		return requestcaller.Caller{}, fmt.Errorf("%w: %s", references.ErrRefusedByOwner, credentialError.Message)
 	}
-	return requestcaller.Caller{}, fmt.Errorf("%s: %s", credentialError.code, credentialError.message)
+	return requestcaller.Caller{}, fmt.Errorf("%s: %s", credentialError.Code, credentialError.Message)
 }
 
 // ownedRecordReader is a reader of one connected-records type: read is the

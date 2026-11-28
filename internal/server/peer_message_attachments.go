@@ -423,7 +423,7 @@ func peerAttachmentConnectionCallPath(messageID, attachmentID string) string {
 func (s *Server) handleServePeerAttachment(w http.ResponseWriter, r *http.Request) {
 	connection, credentialError := s.connectionOfConnectionCall(r)
 	if credentialError != nil {
-		credentialError.write(w)
+		credentialError.Write(w)
 		return
 	}
 	message, err := s.store.GetPeerMessage(r.PathValue("message_id"))

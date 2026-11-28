@@ -37,6 +37,8 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
 )
@@ -102,23 +104,23 @@ func (codec *harnessChildTokenSigner) decodeSessionPostingToken(token string) (s
 // session it belongs to, refusing one minted for an earlier spawn of that
 // session: each spawn records a new spawn key, so a token copied out of a
 // transcript dies when the session is next spawned.
-func (s *Server) verifiedPostingSession(token string) (*store.Session, *requestCredentialError) {
+func (s *Server) verifiedPostingSession(token string) (*store.Session, *requestcaller.CredentialError) {
 	sessionID, spawnKey, err := s.harnessChildTokenSigner.decodeSessionPostingToken(strings.TrimSpace(token))
 	if err != nil {
-		return nil, &requestCredentialError{http.StatusUnauthorized, "invalid_session_posting_token", err.Error()}
+		return nil, requestcaller.NewCredentialError(http.StatusUnauthorized, "invalid_session_posting_token", err.Error())
 	}
 	session, err := s.store.GetSession(sessionID)
 	if err != nil {
-		return nil, &requestCredentialError{http.StatusUnauthorized, "invalid_session_posting_token", fmt.Sprintf(
-			"the session posting token names session %s, which this server does not have", sessionID)}
+		return nil, requestcaller.NewCredentialError(http.StatusUnauthorized, "invalid_session_posting_token", fmt.Sprintf(
+			"the session posting token names session %s, which this server does not have", sessionID))
 	}
 	currentSpawnKey, recorded, err := s.store.SessionPostingSpawnKey(sessionID)
 	if err != nil {
-		return nil, &requestCredentialError{http.StatusInternalServerError, "session_posting_spawn_unreadable", err.Error()}
+		return nil, requestcaller.NewCredentialError(http.StatusInternalServerError, "session_posting_spawn_unreadable", err.Error())
 	}
 	if !recorded || !hmac.Equal([]byte(spawnKey), []byte(currentSpawnKey)) {
-		return nil, &requestCredentialError{http.StatusUnauthorized, "session_posting_token_from_an_earlier_spawn", fmt.Sprintf(
-			"this posting token was minted for an earlier spawn of session %s; only the token its current agent was given is accepted", sessionID)}
+		return nil, requestcaller.NewCredentialError(http.StatusUnauthorized, "session_posting_token_from_an_earlier_spawn", fmt.Sprintf(
+			"this posting token was minted for an earlier spawn of session %s; only the token its current agent was given is accepted", sessionID))
 	}
 	return session, nil
 }

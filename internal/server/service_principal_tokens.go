@@ -73,22 +73,22 @@ func mintServicePrincipalToken() (string, error) {
 
 // principalOfServicePrincipalToken verifies a presented token and returns the
 // principal it acts as.
-func (s *Server) principalOfServicePrincipalToken(ctx context.Context, r *http.Request, token string) (string, *requestCredentialError) {
+func (s *Server) principalOfServicePrincipalToken(ctx context.Context, r *http.Request, token string) (string, *requestcaller.CredentialError) {
 	if requestCameThroughPublicProxy(r) {
-		return "", &requestCredentialError{http.StatusForbidden, "service_principal_token_not_public",
-			"a service principal token is accepted only from this host, never through the public proxy"}
+		return "", requestcaller.NewCredentialError(http.StatusForbidden, "service_principal_token_not_public",
+			"a service principal token is accepted only from this host, never through the public proxy")
 	}
 	record, err := s.store.ServicePrincipalTokenByHash(hashOfServicePrincipalToken(token))
 	if errors.Is(err, store.ErrServicePrincipalTokenNotFound) {
-		return "", &requestCredentialError{http.StatusUnauthorized, "invalid_service_principal_token",
-			"no service principal token matches the one presented"}
+		return "", requestcaller.NewCredentialError(http.StatusUnauthorized, "invalid_service_principal_token",
+			"no service principal token matches the one presented")
 	}
 	if err != nil {
-		return "", &requestCredentialError{http.StatusInternalServerError, "store_failed", err.Error()}
+		return "", requestcaller.NewCredentialError(http.StatusInternalServerError, "store_failed", err.Error())
 	}
 	if record.RevokedAt != nil {
-		return "", &requestCredentialError{http.StatusUnauthorized, "service_principal_token_revoked", fmt.Sprintf(
-			"service principal token %s was revoked at %s by %s: %s", record.ID, record.RevokedAt.Format(time.RFC3339), record.RevokedBy, record.RevokeReason)}
+		return "", requestcaller.NewCredentialError(http.StatusUnauthorized, "service_principal_token_revoked", fmt.Sprintf(
+			"service principal token %s was revoked at %s by %s: %s", record.ID, record.RevokedAt.Format(time.RFC3339), record.RevokedBy, record.RevokeReason))
 	}
 	principal, credentialError := s.principalThatHoldsServicePrincipalTokens(ctx, record.PrincipalID)
 	if credentialError != nil {
@@ -102,18 +102,18 @@ func (s *Server) principalOfServicePrincipalToken(ctx context.Context, r *http.R
 
 // principalThatHoldsServicePrincipalTokens reads a principal and refuses one
 // whose kind principal-store says may not hold a service principal token.
-func (s *Server) principalThatHoldsServicePrincipalTokens(ctx context.Context, principalID string) (principals.Principal, *requestCredentialError) {
+func (s *Server) principalThatHoldsServicePrincipalTokens(ctx context.Context, principalID string) (principals.Principal, *requestcaller.CredentialError) {
 	principal, err := s.principalLookupCache.LookUp(ctx, principalID)
 	if errors.Is(err, principals.ErrNotFound) {
-		return principals.Principal{}, &requestCredentialError{http.StatusBadRequest, "unknown_principal", fmt.Sprintf(
-			"principal %s is not in principal-store", principalID)}
+		return principals.Principal{}, requestcaller.NewCredentialError(http.StatusBadRequest, "unknown_principal", fmt.Sprintf(
+			"principal %s is not in principal-store", principalID))
 	}
 	if err != nil {
-		return principals.Principal{}, &requestCredentialError{http.StatusBadGateway, "principal_store_unavailable", err.Error()}
+		return principals.Principal{}, requestcaller.NewCredentialError(http.StatusBadGateway, "principal_store_unavailable", err.Error())
 	}
 	if !principal.HoldsServicePrincipalTokens {
-		return principals.Principal{}, &requestCredentialError{http.StatusForbidden, "principal_does_not_hold_service_principal_tokens", fmt.Sprintf(
-			"principal %s is a %s, and principal-store says only a kind with holds_service_principal_tokens (a service) may hold a service principal token", principalID, principal.Kind)}
+		return principals.Principal{}, requestcaller.NewCredentialError(http.StatusForbidden, "principal_does_not_hold_service_principal_tokens", fmt.Sprintf(
+			"principal %s is a %s, and principal-store says only a kind with holds_service_principal_tokens (a service) may hold a service principal token", principalID, principal.Kind))
 	}
 	return principal, nil
 }
@@ -169,7 +169,7 @@ func (s *Server) handleIssueServicePrincipalToken(w http.ResponseWriter, r *http
 	}
 	principal, credentialError := s.principalThatHoldsServicePrincipalTokens(r.Context(), request.PrincipalID)
 	if credentialError != nil {
-		credentialError.write(w)
+		credentialError.Write(w)
 		return
 	}
 	if principal.DisabledAt != 0 {

@@ -20,6 +20,7 @@ import (
 	"net/http"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
+	"github.com/kayushkin/llm-bridge-server/internal/textutil"
 
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -53,11 +54,11 @@ func (s *Server) targetSessionOfAction(ctx context.Context, session *store.Sessi
 		// The same answer as a missing session, as the routes give a principal
 		// who reaches someone else's.
 		return nil, &sessionActionRefusal{http.StatusNotFound, "unknown_target_session", fmt.Sprintf(
-			"there is no session %s that %s, the principal of session %s, may reach", offer.TargetSessionID, orNone(session.PrincipalID), session.SessionID)}
+			"there is no session %s that %s, the principal of session %s, may reach", offer.TargetSessionID, textutil.OrNone(session.PrincipalID), session.SessionID)}
 	}
 	if offer.Type == msg.SessionActionSendToSession && target.ControlledBy == msg.ControlledByHarness {
 		return nil, &sessionActionRefusal{http.StatusConflict, "target_not_bridge_controlled", fmt.Sprintf(
-			"session %s is a subagent its parent harness process controls, so it cannot be sent a message; send it to the session that started it, %s", target.SessionID, orNone(target.ParentID))}
+			"session %s is a subagent its parent harness process controls, so it cannot be sent a message; send it to the session that started it, %s", target.SessionID, textutil.OrNone(target.ParentID))}
 	}
 	return target, nil
 }
@@ -88,14 +89,14 @@ func (s *Server) sessionPrincipalMayReachTarget(ctx context.Context, session, ta
 	}
 	owner, credentialError := s.callerForPrincipalID(ctx, session.PrincipalID, "session "+session.SessionID+" belongs to")
 	if credentialError != nil {
-		return false, &sessionActionRefusal{credentialError.status, credentialError.code, credentialError.message}
+		return false, &sessionActionRefusal{credentialError.Status, credentialError.Code, credentialError.Message}
 	}
 	if !throughPeer {
 		return owner.IsAdministrator, nil
 	}
 	peer, credentialError := s.callerForPrincipalID(ctx, origin.PeerPrincipalID, "session "+session.SessionID+" was started through")
 	if credentialError != nil {
-		return false, &sessionActionRefusal{credentialError.status, credentialError.code, credentialError.message}
+		return false, &sessionActionRefusal{credentialError.Status, credentialError.Code, credentialError.Message}
 	}
 	return owner.IsAdministrator && peer.IsAdministrator, nil
 }

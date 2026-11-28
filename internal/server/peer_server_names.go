@@ -109,7 +109,7 @@ func firstNonEmpty(values ...string) string {
 // path keeps the name it had before ids, so older servers still call it.
 func (s *Server) handlePeerServerIdentity(w http.ResponseWriter, r *http.Request) {
 	if _, credentialError := s.connectionOfConnectionCall(r); credentialError != nil {
-		credentialError.write(w)
+		credentialError.Write(w)
 		return
 	}
 	s.stampThisServersIdentity(w.Header())

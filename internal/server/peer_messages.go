@@ -546,7 +546,7 @@ func (s *Server) peerGrantMayMessage(grant store.PeerGrant) (bool, error) {
 func (s *Server) handleReceivePeerMessage(w http.ResponseWriter, r *http.Request) {
 	connection, credentialError := s.connectionOfConnectionCall(r)
 	if credentialError != nil {
-		credentialError.write(w)
+		credentialError.Write(w)
 		return
 	}
 	var delivery msg.PeerMessageDelivery

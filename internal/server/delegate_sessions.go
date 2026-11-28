@@ -49,7 +49,7 @@ func (s *Server) serveDelegatingAgent(w http.ResponseWriter, r *http.Request, pa
 	}
 	agentSession, credentialError := s.verifiedPostingSession(token)
 	if credentialError != nil {
-		credentialError.write(w)
+		credentialError.Write(w)
 		return
 	}
 	agentSessionID := agentSession.SessionID
@@ -77,12 +77,12 @@ func (s *Server) serveDelegatingAgent(w http.ResponseWriter, r *http.Request, pa
 	if agentSession.PrincipalID != "" {
 		principalCaller, credentialError := s.callerForPrincipalID(r.Context(), agentSession.PrincipalID, "the session the posting token names runs as")
 		if credentialError != nil {
-			credentialError.write(w)
+			credentialError.Write(w)
 			return
 		}
 		caller, credentialError = s.administratorOnlyIfSessionPeerIsOne(r.Context(), principalCaller, agentSessionID)
 		if credentialError != nil {
-			credentialError.write(w)
+			credentialError.Write(w)
 			return
 		}
 	}
@@ -136,20 +136,20 @@ func (s *Server) sessionIsDelegateOf(sessionID, managerSessionID string) bool {
 // own session: the delegate sits under that session and runs as its
 // principal. It fills in either when the request leaves it empty, and refuses
 // a request that names another, so a caller that asked for more is told so.
-func delegateRequestRefusal(req *CreateSessionRequest, agentSessionID, agentPrincipalID string) *requestCredentialError {
+func delegateRequestRefusal(req *CreateSessionRequest, agentSessionID, agentPrincipalID string) *requestcaller.CredentialError {
 	if req.ManagerSessionID != "" && req.ManagerSessionID != agentSessionID {
-		return &requestCredentialError{http.StatusForbidden, "delegate_manager_mismatch", fmt.Sprintf(
+		return requestcaller.NewCredentialError(http.StatusForbidden, "delegate_manager_mismatch", fmt.Sprintf(
 			"manager_session_id %q is not %s, the session this posting token belongs to; an agent starts delegates only under its own session (omit manager_session_id)",
-			req.ManagerSessionID, agentSessionID)}
+			req.ManagerSessionID, agentSessionID))
 	}
 	if req.PrincipalID != "" && req.PrincipalID != agentPrincipalID {
 		own := "no principal"
 		if agentPrincipalID != "" {
 			own = "principal " + agentPrincipalID
 		}
-		return &requestCredentialError{http.StatusForbidden, "delegate_principal_mismatch", fmt.Sprintf(
+		return requestcaller.NewCredentialError(http.StatusForbidden, "delegate_principal_mismatch", fmt.Sprintf(
 			"principal_id %q is not the principal of session %s, which runs with %s; a delegate runs with its session's principal and no other (omit principal_id)",
-			req.PrincipalID, agentSessionID, own)}
+			req.PrincipalID, agentSessionID, own))
 	}
 	req.ManagerSessionID = agentSessionID
 	req.PrincipalID = agentPrincipalID
@@ -189,7 +189,7 @@ func (s *Server) serveSessionReadingAgent(w http.ResponseWriter, r *http.Request
 	if throughPeer {
 		peer, credentialError := s.callerForPrincipalID(r.Context(), origin.PeerPrincipalID, "the peer session "+agentSession.SessionID+" was started through is")
 		if credentialError != nil {
-			credentialError.write(w)
+			credentialError.Write(w)
 			return
 		}
 		caller.Peer = &requestcaller.Peer{
@@ -207,13 +207,13 @@ func (s *Server) serveSessionReadingAgent(w http.ResponseWriter, r *http.Request
 // as well as its principal's, so its agent is an administrator here only when
 // both are: a peer user mapped to a local administrator through a peer that is
 // not one gets no administrator's reach through its agent's token.
-func (s *Server) administratorOnlyIfSessionPeerIsOne(ctx context.Context, caller requestcaller.Caller, agentSessionID string) (requestcaller.Caller, *requestCredentialError) {
+func (s *Server) administratorOnlyIfSessionPeerIsOne(ctx context.Context, caller requestcaller.Caller, agentSessionID string) (requestcaller.Caller, *requestcaller.CredentialError) {
 	if !caller.IsAdministrator {
 		return caller, nil
 	}
 	origin, throughPeer, err := s.store.SessionPeerOriginOfLineage(agentSessionID)
 	if err != nil {
-		return requestcaller.Caller{}, &requestCredentialError{http.StatusInternalServerError, "session_peer_origin_unreadable", err.Error()}
+		return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusInternalServerError, "session_peer_origin_unreadable", err.Error())
 	}
 	if throughPeer {
 		peer, credentialError := s.callerForPrincipalID(ctx, origin.PeerPrincipalID, "the peer session "+agentSessionID+" was started through is")

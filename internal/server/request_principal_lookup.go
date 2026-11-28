@@ -102,7 +102,7 @@ func (cache *principalLookupCache) LookUp(ctx context.Context, principalID strin
 // callerActingAsPrincipal turns a principal id this server has already
 // authenticated — a login cookie or a session agent token — into the caller
 // the route rules are applied to.
-func (s *Server) callerActingAsPrincipal(ctx context.Context, principalID string) (requestcaller.Caller, *requestCredentialError) {
+func (s *Server) callerActingAsPrincipal(ctx context.Context, principalID string) (requestcaller.Caller, *requestcaller.CredentialError) {
 	return s.callerForPrincipalID(ctx, principalID, "the login names")
 }
 
@@ -111,10 +111,10 @@ func (s *Server) callerActingAsPrincipal(ctx context.Context, principalID string
 // are applied to. dash holds that token and is the browser's front door on this
 // host, so it may say which of its logged-in users a request is for — but the
 // principal is still checked here, not taken on trust.
-func (s *Server) callerAssertedByInternalService(ctx context.Context, principalID string) (requestcaller.Caller, *requestCredentialError) {
+func (s *Server) callerAssertedByInternalService(ctx context.Context, principalID string) (requestcaller.Caller, *requestcaller.CredentialError) {
 	if !isWellFormedPrincipalID(principalID) {
-		return requestcaller.Caller{}, &requestCredentialError{http.StatusBadRequest, "invalid_principal_id", fmt.Sprintf(
-			"%s: %q is not a principal-store id (principal_000001); a name or an email is not accepted, because neither is unique", principalIdentityHeader, principalID)}
+		return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusBadRequest, "invalid_principal_id", fmt.Sprintf(
+			"%s: %q is not a principal-store id (principal_000001); a name or an email is not accepted, because neither is unique", principalIdentityHeader, principalID))
 	}
 	return s.callerForPrincipalID(ctx, principalID, principalIdentityHeader+" names")
 }
@@ -122,31 +122,31 @@ func (s *Server) callerAssertedByInternalService(ctx context.Context, principalI
 // callerForPrincipalID reads principalID from principal-store and turns the
 // answer into a caller or the refusal it earns. subjectDescription says where
 // the id came from, so a refusal names the credential that carried it.
-func (s *Server) callerForPrincipalID(ctx context.Context, principalID, subjectDescription string) (requestcaller.Caller, *requestCredentialError) {
+func (s *Server) callerForPrincipalID(ctx context.Context, principalID, subjectDescription string) (requestcaller.Caller, *requestcaller.CredentialError) {
 	// New always builds the cache, right beside the cookie codec, so there is
 	// no server that gates a request and cannot read the caller's principal.
 	principal, err := s.principalLookupCache.LookUp(ctx, principalID)
 	if err != nil {
 		if errors.Is(err, principals.ErrNotFound) {
-			return requestcaller.Caller{}, &requestCredentialError{http.StatusBadRequest, "unknown_principal", fmt.Sprintf(
-				"%s %s, which principal-store does not have: %v", subjectDescription, principalID, err)}
+			return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusBadRequest, "unknown_principal", fmt.Sprintf(
+				"%s %s, which principal-store does not have: %v", subjectDescription, principalID, err))
 		}
 		if errors.Is(err, errAccessOff) {
-			return requestcaller.Caller{}, &requestCredentialError{http.StatusServiceUnavailable, "access_off", fmt.Sprintf(
-				"%s %s, and this server cannot read principals: %v", subjectDescription, principalID, err)}
+			return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusServiceUnavailable, "access_off", fmt.Sprintf(
+				"%s %s, and this server cannot read principals: %v", subjectDescription, principalID, err))
 		}
-		return requestcaller.Caller{}, &requestCredentialError{http.StatusBadGateway, "principal_store_unavailable", fmt.Sprintf(
-			"could not read principal %s from principal-store, so this request is refused rather than answered as a principal nobody confirmed: %v", principalID, err)}
+		return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusBadGateway, "principal_store_unavailable", fmt.Sprintf(
+			"could not read principal %s from principal-store, so this request is refused rather than answered as a principal nobody confirmed: %v", principalID, err))
 	}
 	if !principal.ActsAsCaller {
-		return requestcaller.Caller{}, &requestCredentialError{http.StatusBadRequest, "principal_does_not_act", fmt.Sprintf(
-			"%s %s, which is a %q principal, and principal-store says that kind does not act as a caller: a group is a set of principals and a contact holds nothing", subjectDescription, principalID, principal.Kind)}
+		return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusBadRequest, "principal_does_not_act", fmt.Sprintf(
+			"%s %s, which is a %q principal, and principal-store says that kind does not act as a caller: a group is a set of principals and a contact holds nothing", subjectDescription, principalID, principal.Kind))
 	}
 	// Disabled is decided before is_administrator is looked at: a departed
 	// administrator is a departed person first.
 	if principal.DisabledAt != 0 {
-		return requestcaller.Caller{}, &requestCredentialError{http.StatusForbidden, "principal_disabled", fmt.Sprintf(
-			"principal %s was disabled in principal-store at %s", principalID, time.Unix(principal.DisabledAt, 0).UTC().Format(time.RFC3339))}
+		return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusForbidden, "principal_disabled", fmt.Sprintf(
+			"principal %s was disabled in principal-store at %s", principalID, time.Unix(principal.DisabledAt, 0).UTC().Format(time.RFC3339)))
 	}
 	return requestcaller.Caller{PrincipalID: principal.ID, IsAdministrator: principal.IsAdministrator}, nil
 }
@@ -157,21 +157,21 @@ func (s *Server) callerForPrincipalID(ctx context.Context, principalID, subjectD
 // server never issued, or one an administrator revoked, is 401, and so is a
 // token presented over the socket of a connection it was not granted on. The
 // token's value is never logged or echoed; only its grant's id is named.
-func (s *Server) callerOfPeerToken(ctx context.Context, presentedToken, socketConnectionID string, arrivedOverPeerSocket bool) (requestcaller.Caller, *requestCredentialError) {
+func (s *Server) callerOfPeerToken(ctx context.Context, presentedToken, socketConnectionID string, arrivedOverPeerSocket bool) (requestcaller.Caller, *requestcaller.CredentialError) {
 	grant, err := s.store.GetPeerGrantByTokenHash(hashPeerSecret(presentedToken))
 	if errors.Is(err, store.ErrPeerGrantNotFound) {
-		return requestcaller.Caller{}, &requestCredentialError{http.StatusUnauthorized, "peer_token_unknown", peerTokenHeader + " is not a peer token this server issued"}
+		return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "peer_token_unknown", peerTokenHeader + " is not a peer token this server issued")
 	}
 	if err != nil {
-		return requestcaller.Caller{}, &requestCredentialError{http.StatusInternalServerError, "peer_token_lookup_failed", fmt.Sprintf("could not look up the peer token: %v", err)}
+		return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusInternalServerError, "peer_token_lookup_failed", fmt.Sprintf("could not look up the peer token: %v", err))
 	}
 	if grant.RevokedAt != nil {
-		return requestcaller.Caller{}, &requestCredentialError{http.StatusUnauthorized, "peer_token_revoked", fmt.Sprintf(
-			"peer grant %s was revoked at %s: %s", grant.ID, grant.RevokedAt.UTC().Format(time.RFC3339), grant.RevokeReason)}
+		return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "peer_token_revoked", fmt.Sprintf(
+			"peer grant %s was revoked at %s: %s", grant.ID, grant.RevokedAt.UTC().Format(time.RFC3339), grant.RevokeReason))
 	}
 	if arrivedOverPeerSocket && grant.ConnectionID != socketConnectionID {
-		return requestcaller.Caller{}, &requestCredentialError{http.StatusUnauthorized, "peer_token_on_another_connection", fmt.Sprintf(
-			"peer grant %s is on %s, and this request came over %s's socket", grant.ID, grant.ConnectionID, socketConnectionID)}
+		return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "peer_token_on_another_connection", fmt.Sprintf(
+			"peer grant %s is on %s, and this request came over %s's socket", grant.ID, grant.ConnectionID, socketConnectionID))
 	}
 	caller, credentialError := s.callerForPrincipalID(ctx, grant.PeerPrincipalID, "peer grant "+grant.ID+" acts as")
 	if credentialError != nil {
@@ -189,20 +189,20 @@ func (s *Server) callerOfPeerToken(ctx context.Context, presentedToken, socketCo
 // the request reaches only the sessions that principal started through this
 // peer. An unmapped user is 403: the calling server's word about who its user
 // is gives nothing here until an administrator here says who that user is.
-func (s *Server) callerForPeerUser(ctx context.Context, peer requestcaller.Caller, remotePrincipalID string) (requestcaller.Caller, *requestCredentialError) {
+func (s *Server) callerForPeerUser(ctx context.Context, peer requestcaller.Caller, remotePrincipalID string) (requestcaller.Caller, *requestcaller.CredentialError) {
 	mapping, err := s.store.LivePeerUserMapping(peer.Peer.PeerPrincipalID, remotePrincipalID)
 	if errors.Is(err, store.ErrPeerUserMappingNotFound) {
 		// This answer is usually read on the calling server, relayed by its
 		// connection proxy, where both ids belong to the other server. So it
 		// says which server it came from and that the mapping is made there:
 		// on 2026-11-03 a reader posted it to their own server instead.
-		return requestcaller.Caller{}, &requestCredentialError{http.StatusForbidden, "peer_user_not_mapped", fmt.Sprintf(
+		return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusForbidden, "peer_user_not_mapped", fmt.Sprintf(
 			"%s answers: the connected server acting here as %s names its user %s, whom no administrator of %s has mapped to a principal of it. The mapping is made on %s, not on the calling server: POST /peer-user-mappings {\"peer_principal_id\":%q,\"remote_principal_id\":%q,\"local_principal_id\":…} there, which the calling server reaches through its own connection proxy at /peer-connections/{its connection id}/proxy/peer-user-mappings; both principal ids are %s's",
 			s.thisServerDescription(), peer.Peer.PeerPrincipalID, remotePrincipalID, s.thisServerDescription(), s.thisServerDescription(),
-			peer.Peer.PeerPrincipalID, remotePrincipalID, s.thisServerDescription())}
+			peer.Peer.PeerPrincipalID, remotePrincipalID, s.thisServerDescription()))
 	}
 	if err != nil {
-		return requestcaller.Caller{}, &requestCredentialError{http.StatusInternalServerError, "peer_user_mapping_lookup_failed", err.Error()}
+		return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusInternalServerError, "peer_user_mapping_lookup_failed", err.Error())
 	}
 	local, credentialError := s.callerForPrincipalID(ctx, mapping.LocalPrincipalID, "peer user mapping "+mapping.ID+" maps to")
 	if credentialError != nil {

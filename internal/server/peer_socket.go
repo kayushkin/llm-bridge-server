@@ -806,7 +806,7 @@ func (s *Server) handlePeerSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	connection, credentialError := s.connectionPresentingCredential(r)
 	if credentialError != nil {
-		credentialError.write(w)
+		credentialError.Write(w)
 		return
 	}
 	if connection.Transport != msg.PeerTransportDialOut || connection.Role != msg.PeerConnectionRoleAccepting {

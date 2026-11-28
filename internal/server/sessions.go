@@ -281,7 +281,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// session's principal (delegate_sessions.go).
 	if caller, ok := requestcaller.FromRequest(r); ok && caller.DelegatingAgentOfSessionID != "" {
 		if refusal := delegateRequestRefusal(&req, caller.DelegatingAgentOfSessionID, caller.PrincipalID); refusal != nil {
-			refusal.write(w)
+			refusal.Write(w)
 			return
 		}
 	}

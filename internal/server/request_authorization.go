@@ -888,7 +888,7 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 		}
 		caller, credentialError := s.callerAssertedByInternalService(r.Context(), strings.TrimSpace(assertedPrincipalIDs[0]))
 		if credentialError != nil {
-			credentialError.write(w)
+			credentialError.Write(w)
 			return
 		}
 		rule, classified := routeAccessRules[pattern]
@@ -973,7 +973,7 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 		}
 		caller, credentialError := s.callerOfPeerToken(r.Context(), presentedPeerTokens[0], socketConnectionID, arrivedOverPeerSocket)
 		if credentialError != nil {
-			credentialError.write(w)
+			credentialError.Write(w)
 			return
 		}
 		if !arrivedOverPeerSocket {
@@ -989,7 +989,7 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 			}
 			caller, credentialError = s.callerForPeerUser(r.Context(), caller, strings.TrimSpace(presentedPeerUsers[0]))
 			if credentialError != nil {
-				credentialError.write(w)
+				credentialError.Write(w)
 				return
 			}
 		}
@@ -1014,7 +1014,7 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 	if presentsPostingToken && rule.class == routeSessionOwnerOrItsAgentPostsIntoSession {
 		caller, credentialError := s.postingAgentOfRequest(r, pattern, rule)
 		if credentialError != nil {
-			credentialError.write(w)
+			credentialError.Write(w)
 			return
 		}
 		s.mux.ServeHTTP(w, requestcaller.WithCaller(r, caller))
@@ -1028,17 +1028,17 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 
 	principalID, loginSessionID, sessionAgentTokenSessionID, credentialError := s.principalOfRequest(r, rule)
 	if credentialError != nil {
-		credentialError.write(w)
+		credentialError.Write(w)
 		return
 	}
 	caller, credentialError := s.callerActingAsPrincipal(r.Context(), principalID)
 	if credentialError != nil {
-		credentialError.write(w)
+		credentialError.Write(w)
 		return
 	}
 	if sessionAgentTokenSessionID != "" && rule.class != routePrincipalOrSessionAgentThroughStoreProxy {
 		if caller, credentialError = s.administratorOfSessionAgentToken(r, pattern, caller, sessionAgentTokenSessionID); credentialError != nil {
-			credentialError.write(w)
+			credentialError.Write(w)
 			return
 		}
 	}
@@ -1054,19 +1054,19 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 // peer the session was started through, as a posting token is, and never
 // answers through the public reverse proxy, so a token copied out of a
 // transcript reaches nothing from outside this host.
-func (s *Server) administratorOfSessionAgentToken(r *http.Request, pattern string, caller requestcaller.Caller, sessionID string) (requestcaller.Caller, *requestCredentialError) {
+func (s *Server) administratorOfSessionAgentToken(r *http.Request, pattern string, caller requestcaller.Caller, sessionID string) (requestcaller.Caller, *requestcaller.CredentialError) {
 	caller, credentialError := s.administratorOnlyIfSessionPeerIsOne(r.Context(), caller, sessionID)
 	if credentialError != nil {
 		return requestcaller.Caller{}, credentialError
 	}
 	if !caller.IsAdministrator {
-		return requestcaller.Caller{}, &requestCredentialError{http.StatusUnauthorized, "authorization_header_not_accepted", fmt.Sprintf(
+		return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "authorization_header_not_accepted", fmt.Sprintf(
 			"a session agent token is accepted on %s only for a principal principal-store marks is_administrator, and %s is not one; anyone's is accepted on %s/, %s/, %s/ and %s/",
-			pattern, caller.PrincipalID, issuesMountPrefix, grantsMountPrefix, mailMountPrefix, referencesMountPrefix)}
+			pattern, caller.PrincipalID, issuesMountPrefix, grantsMountPrefix, mailMountPrefix, referencesMountPrefix))
 	}
 	if requestCameThroughPublicProxy(r) {
-		return requestcaller.Caller{}, &requestCredentialError{http.StatusForbidden, "session_agent_token_not_public", fmt.Sprintf(
-			"an administrator's session agent token reaches %s only from this host, never through the public proxy", pattern)}
+		return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusForbidden, "session_agent_token_not_public", fmt.Sprintf(
+			"an administrator's session agent token reaches %s only from this host, never through the public proxy", pattern))
 	}
 	return caller, nil
 }
@@ -1224,18 +1224,6 @@ func principalIdentityHeaderNameIn(header http.Header) string {
 	return ""
 }
 
-// requestCredentialError is a refusal decided while establishing who a
-// request comes from.
-type requestCredentialError struct {
-	status  int
-	code    string
-	message string
-}
-
-func (e *requestCredentialError) write(w http.ResponseWriter) {
-	httpjson.WriteJSONError(w, e.status, e.code, e.message)
-}
-
 // principalOfRequest establishes which principal a request acts as, from its
 // login cookie or its session agent token, and returns the login session's id
 // when the cookie was the credential, or the session agent token's session
@@ -1243,7 +1231,7 @@ func (e *requestCredentialError) write(w http.ResponseWriter) {
 // refused here unless it carries the session's CSRF token. Whether the token
 // may be used on this route is the caller's decision: anyone's on the store
 // proxies, an administrator's elsewhere.
-func (s *Server) principalOfRequest(r *http.Request, rule routeAccessRule) (string, string, string, *requestCredentialError) {
+func (s *Server) principalOfRequest(r *http.Request, rule routeAccessRule) (string, string, string, *requestcaller.CredentialError) {
 	if _, hasAuthorization := r.Header["Authorization"]; hasAuthorization {
 		token := bearerTokenOf(r)
 		// A service's own token is accepted on every route, as the principal
@@ -1253,17 +1241,17 @@ func (s *Server) principalOfRequest(r *http.Request, rule routeAccessRule) (stri
 			return principalID, "", "", credentialError
 		}
 		if rule.class != routePrincipalOrSessionAgentThroughStoreProxy && !isSessionAgentToken(token) {
-			return "", "", "", &requestCredentialError{http.StatusUnauthorized, "authorization_header_not_accepted", fmt.Sprintf(
+			return "", "", "", requestcaller.NewCredentialError(http.StatusUnauthorized, "authorization_header_not_accepted", fmt.Sprintf(
 				"an Authorization header is accepted on %s/, %s/, %s/ and %s/ as a session agent token, and elsewhere only as an administrator's session agent token; this route takes the login cookie or %s",
-				issuesMountPrefix, grantsMountPrefix, mailMountPrefix, referencesMountPrefix, serviceTokenHeader)}
+				issuesMountPrefix, grantsMountPrefix, mailMountPrefix, referencesMountPrefix, serviceTokenHeader))
 		}
 		if token == "" {
-			return "", "", "", &requestCredentialError{http.StatusUnauthorized, "invalid_session_agent_token",
-				"the Authorization header must be \"Bearer <session agent token>\""}
+			return "", "", "", requestcaller.NewCredentialError(http.StatusUnauthorized, "invalid_session_agent_token",
+				"the Authorization header must be \"Bearer <session agent token>\"")
 		}
 		claims, err := s.sessionAgentTokenClaimsOfLiveSession(token)
 		if err != nil {
-			return "", "", "", &requestCredentialError{http.StatusUnauthorized, "invalid_session_agent_token", err.Error()}
+			return "", "", "", requestcaller.NewCredentialError(http.StatusUnauthorized, "invalid_session_agent_token", err.Error())
 		}
 		return claims.PrincipalID, "", claims.SessionID, nil
 	}
@@ -1280,11 +1268,11 @@ func (s *Server) principalOfRequest(r *http.Request, rule routeAccessRule) (stri
 // postingAgentOfRequest verifies a session posting token and holds it to the
 // session in the path. A token for another session is 404, the same answer a
 // principal gets for a session that is not theirs.
-func (s *Server) postingAgentOfRequest(r *http.Request, pattern string, rule routeAccessRule) (requestcaller.Caller, *requestCredentialError) {
+func (s *Server) postingAgentOfRequest(r *http.Request, pattern string, rule routeAccessRule) (requestcaller.Caller, *requestcaller.CredentialError) {
 	scheme, token, _ := strings.Cut(r.Header.Get("Authorization"), " ")
 	if !strings.EqualFold(scheme, "Bearer") || strings.TrimSpace(token) == "" {
-		return requestcaller.Caller{}, &requestCredentialError{http.StatusUnauthorized, "invalid_session_posting_token",
-			"the Authorization header must be \"Bearer <session posting token>\""}
+		return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "invalid_session_posting_token",
+			"the Authorization header must be \"Bearer <session posting token>\"")
 	}
 	tokenSession, credentialError := s.verifiedPostingSession(token)
 	if credentialError != nil {
@@ -1293,11 +1281,11 @@ func (s *Server) postingAgentOfRequest(r *http.Request, pattern string, rule rou
 	tokenSessionID := tokenSession.SessionID
 	pathSessionID, err := pathValueForPattern(pattern, r.URL.EscapedPath(), rule.ownedResourcePathValueName)
 	if err != nil {
-		return requestcaller.Caller{}, &requestCredentialError{http.StatusInternalServerError, "route_rule_invalid", err.Error()}
+		return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusInternalServerError, "route_rule_invalid", err.Error())
 	}
 	session, err := s.store.GetSession(pathSessionID)
 	if err != nil || session.SessionID != tokenSessionID {
-		return requestcaller.Caller{}, &requestCredentialError{http.StatusNotFound, "session_not_found", "session not found"}
+		return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusNotFound, "session_not_found", "session not found")
 	}
 	return requestcaller.Caller{PostingAgentOfSessionID: tokenSessionID}, nil
 }

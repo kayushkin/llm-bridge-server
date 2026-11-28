@@ -8,7 +8,6 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
 
 	schedulerapi "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/api"
-	schedulerdb "github.com/kayushkin/llm-bridge-server/internal/automation/scheduler/db"
 	"github.com/kayushkin/llm-bridge-server/internal/inprocesshttp"
 )
 
@@ -31,14 +30,6 @@ const (
 	schedulerMountPrefix = "/scheduler"
 	rulesMountPrefix     = "/rules"
 )
-
-// schedulerJobs is the scheduler's jobs as this server reads and runs them,
-// in process: schedulerapi.Server, or a fake in a test. Each refuses as its
-// route does (schedulerapi.ErrJobNotFound for the route's 404).
-type schedulerJobs interface {
-	Job(id int64) (*schedulerdb.Job, error)
-	RunJobNow(id int64) (*schedulerdb.Run, error)
-}
 
 // EnableScheduler serves the scheduler's routes from scheduler, at the paths
 // without the /scheduler prefix, and reads and runs its jobs in process.

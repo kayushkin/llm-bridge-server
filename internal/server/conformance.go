@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
+	"github.com/kayushkin/llm-bridge-server/internal/textutil"
 
 	"github.com/kayushkin/llm-bridge-server/conformance"
 	"github.com/kayushkin/llm-bridge-server/internal/harness"
@@ -108,7 +109,7 @@ func (s *conformanceState) commitRun(matrix *msg.ConformanceMatrix, outcome runO
 		}
 		s.lastRunError = strings.Join(problems, "; ")
 		log.Printf("[conformance] run produced zero harness results — keeping the last-good matrix (errors: %s)",
-			orNone(s.lastRunError))
+			textutil.OrNone(s.lastRunError))
 		return
 	}
 
@@ -162,13 +163,6 @@ func joinHarnesses(harnesses []msg.Harness) string {
 		names[i] = string(h)
 	}
 	return strings.Join(names, ", ")
-}
-
-func orNone(s string) string {
-	if s == "" {
-		return "none"
-	}
-	return s
 }
 
 func (s *Server) handleConformanceGet(w http.ResponseWriter, r *http.Request) {

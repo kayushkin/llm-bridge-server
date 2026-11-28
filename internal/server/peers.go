@@ -400,7 +400,7 @@ func (s *Server) handlePeerConnect(w http.ResponseWriter, r *http.Request) {
 	passphraseHash := hashPeerSecret(call.Passphrase)
 	invite, err := s.store.CheckPeerConnectionInvite(passphraseHash, now)
 	if inviteError := peerConnectionInviteError(err); inviteError != nil {
-		inviteError.write(w)
+		inviteError.Write(w)
 		return
 	}
 	credentialForThem, err := randomURLSafeToken(peerSecretRandomBytes)
@@ -433,7 +433,7 @@ func (s *Server) handlePeerConnect(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[peers] ERROR: delete auth-store credential %s after a failed connection: %v", outbound.ID, deleteErr)
 		}
 		if inviteError := peerConnectionInviteError(err); inviteError != nil {
-			inviteError.write(w)
+			inviteError.Write(w)
 			return
 		}
 		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
@@ -443,18 +443,18 @@ func (s *Server) handlePeerConnect(w http.ResponseWriter, r *http.Request) {
 }
 
 // peerConnectionInviteError maps a passphrase check to its answer, or nil.
-func peerConnectionInviteError(err error) *requestCredentialError {
+func peerConnectionInviteError(err error) *requestcaller.CredentialError {
 	switch {
 	case err == nil:
 		return nil
 	case errors.Is(err, store.ErrPeerConnectionInviteNotFound):
-		return &requestCredentialError{http.StatusUnauthorized, "peer_connection_invite_unknown", "no peer connection passphrase matches"}
+		return requestcaller.NewCredentialError(http.StatusUnauthorized, "peer_connection_invite_unknown", "no peer connection passphrase matches")
 	case errors.Is(err, store.ErrPeerConnectionInviteAlreadyRedeemed):
-		return &requestCredentialError{http.StatusConflict, "peer_connection_invite_already_redeemed", err.Error()}
+		return requestcaller.NewCredentialError(http.StatusConflict, "peer_connection_invite_already_redeemed", err.Error())
 	case errors.Is(err, store.ErrPeerConnectionInviteExpired):
-		return &requestCredentialError{http.StatusGone, "peer_connection_invite_expired", err.Error()}
+		return requestcaller.NewCredentialError(http.StatusGone, "peer_connection_invite_expired", err.Error())
 	default:
-		return &requestCredentialError{http.StatusInternalServerError, "store_failed", err.Error()}
+		return requestcaller.NewCredentialError(http.StatusInternalServerError, "store_failed", err.Error())
 	}
 }
 
@@ -639,7 +639,7 @@ type peerLevelEffect struct {
 
 // peerLevelEffectOf resolves a grant request to its effect, or the answer
 // that refuses it.
-func (s *Server) peerLevelEffectOf(ctx context.Context, request msg.PeerGrantRequest) (peerLevelEffect, *requestCredentialError) {
+func (s *Server) peerLevelEffectOf(ctx context.Context, request msg.PeerGrantRequest) (peerLevelEffect, *requestcaller.CredentialError) {
 	switch request.Level {
 	case msg.PeerAccessLevelNone:
 		return peerLevelEffect{}, nil
@@ -647,34 +647,34 @@ func (s *Server) peerLevelEffectOf(ctx context.Context, request msg.PeerGrantReq
 		return peerLevelEffect{isAdministrator: true}, nil
 	case msg.PeerAccessLevelGroup:
 		if request.GroupPrincipalID == "" {
-			return peerLevelEffect{}, &requestCredentialError{http.StatusBadRequest, "group_principal_id_required", "level group needs group_principal_id"}
+			return peerLevelEffect{}, requestcaller.NewCredentialError(http.StatusBadRequest, "group_principal_id_required", "level group needs group_principal_id")
 		}
 		group, err := s.principalStore.Get(ctx, request.GroupPrincipalID, false)
 		switch {
 		case errors.Is(err, principals.ErrNotFound):
-			return peerLevelEffect{}, &requestCredentialError{http.StatusBadRequest, "unknown_principal", err.Error()}
+			return peerLevelEffect{}, requestcaller.NewCredentialError(http.StatusBadRequest, "unknown_principal", err.Error())
 		case err != nil:
-			return peerLevelEffect{}, &requestCredentialError{http.StatusBadGateway, "principal_store_unavailable", err.Error()}
+			return peerLevelEffect{}, requestcaller.NewCredentialError(http.StatusBadGateway, "principal_store_unavailable", err.Error())
 		case group.Kind != principals.KindGroup:
-			return peerLevelEffect{}, &requestCredentialError{http.StatusBadRequest, "principal_not_a_group", fmt.Sprintf("%s is a %q, not a group", group.ID, group.Kind)}
+			return peerLevelEffect{}, requestcaller.NewCredentialError(http.StatusBadRequest, "principal_not_a_group", fmt.Sprintf("%s is a %q, not a group", group.ID, group.Kind))
 		case group.DisabledAt != 0:
-			return peerLevelEffect{}, &requestCredentialError{http.StatusBadRequest, "principal_disabled", group.ID + " is disabled"}
+			return peerLevelEffect{}, requestcaller.NewCredentialError(http.StatusBadRequest, "principal_disabled", group.ID + " is disabled")
 		}
 		return peerLevelEffect{groupPrincipalID: group.ID}, nil
 	}
 	if request.GroupPrincipalID != "" {
-		return peerLevelEffect{}, &requestCredentialError{http.StatusBadRequest, "group_principal_id_not_accepted", "group_principal_id goes only with level group"}
+		return peerLevelEffect{}, requestcaller.NewCredentialError(http.StatusBadRequest, "group_principal_id_not_accepted", "group_principal_id goes only with level group")
 	}
 	if _, known := peerAccessLevelDefinitionOf(request.Level); !known {
-		return peerLevelEffect{}, &requestCredentialError{http.StatusBadRequest, "unknown_peer_access_level", fmt.Sprintf("%q is not a level; GET /peer-access-levels lists them", request.Level)}
+		return peerLevelEffect{}, requestcaller.NewCredentialError(http.StatusBadRequest, "unknown_peer_access_level", fmt.Sprintf("%q is not a level; GET /peer-access-levels lists them", request.Level))
 	}
 	groupID, err := s.store.PeerAccessLevelGroup(request.Level)
 	if errors.Is(err, store.ErrPeerAccessLevelNotProvisioned) {
-		return peerLevelEffect{}, &requestCredentialError{http.StatusConflict, "peer_access_level_not_provisioned", fmt.Sprintf(
-			"level %s has no group on this server yet; POST /peer-access-levels/%s/provision makes it", request.Level, request.Level)}
+		return peerLevelEffect{}, requestcaller.NewCredentialError(http.StatusConflict, "peer_access_level_not_provisioned", fmt.Sprintf(
+			"level %s has no group on this server yet; POST /peer-access-levels/%s/provision makes it", request.Level, request.Level))
 	}
 	if err != nil {
-		return peerLevelEffect{}, &requestCredentialError{http.StatusInternalServerError, "store_failed", err.Error()}
+		return peerLevelEffect{}, requestcaller.NewCredentialError(http.StatusInternalServerError, "store_failed", err.Error())
 	}
 	return peerLevelEffect{groupPrincipalID: groupID}, nil
 }
@@ -754,7 +754,7 @@ func (s *Server) handleGrantPeerAccess(w http.ResponseWriter, r *http.Request) {
 	}
 	effect, refusal := s.peerLevelEffectOf(r.Context(), request)
 	if refusal != nil {
-		refusal.write(w)
+		refusal.Write(w)
 		return
 	}
 	peerPrincipalID, err := s.peerPrincipalOfConnection(r.Context(), connection)
@@ -843,7 +843,7 @@ func (s *Server) handleRevokePeerGrant(w http.ResponseWriter, r *http.Request) {
 	}
 	revoked, notice, failure := s.revokeLivePeerGrant(r.Context(), connection, administratorID, request.Reason)
 	if failure != nil {
-		failure.write(w)
+		failure.Write(w)
 		return
 	}
 	httpjson.WriteJSON(w, msg.PeerGrantRevoked{Grant: revoked.PeerGrant, Notice: notice})
@@ -851,29 +851,29 @@ func (s *Server) handleRevokePeerGrant(w http.ResponseWriter, r *http.Request) {
 
 // revokeLivePeerGrant revokes the connection's live grant, takes its level
 // back, and tells the other server, saying in notice whether it heard.
-func (s *Server) revokeLivePeerGrant(ctx context.Context, connection store.PeerConnection, administratorID, reason string) (store.PeerGrant, string, *requestCredentialError) {
+func (s *Server) revokeLivePeerGrant(ctx context.Context, connection store.PeerConnection, administratorID, reason string) (store.PeerGrant, string, *requestcaller.CredentialError) {
 	return s.revokeLivePeerGrantTelling(ctx, connection, administratorID, reason, true)
 }
 
 // revokeLivePeerGrantTelling is revokeLivePeerGrant, telling the other server
 // only when tell is set: a server the other side has just told it removed the
 // connection has no one left to tell.
-func (s *Server) revokeLivePeerGrantTelling(ctx context.Context, connection store.PeerConnection, administratorID, reason string, tell bool) (store.PeerGrant, string, *requestCredentialError) {
+func (s *Server) revokeLivePeerGrantTelling(ctx context.Context, connection store.PeerConnection, administratorID, reason string, tell bool) (store.PeerGrant, string, *requestcaller.CredentialError) {
 	live, err := s.store.LivePeerGrantOfConnection(connection.ID)
 	if errors.Is(err, store.ErrPeerGrantNotFound) {
-		return store.PeerGrant{}, "", &requestCredentialError{http.StatusNotFound, "peer_grant_not_found", connection.ID + " gives the other server no access"}
+		return store.PeerGrant{}, "", requestcaller.NewCredentialError(http.StatusNotFound, "peer_grant_not_found", connection.ID + " gives the other server no access")
 	}
 	if err != nil {
-		return store.PeerGrant{}, "", &requestCredentialError{http.StatusInternalServerError, "store_failed", err.Error()}
+		return store.PeerGrant{}, "", requestcaller.NewCredentialError(http.StatusInternalServerError, "store_failed", err.Error())
 	}
 	revoked, err := s.store.RevokePeerGrant(live.ID, administratorID, reason, time.Now().UTC())
 	if err != nil {
-		return store.PeerGrant{}, "", &requestCredentialError{http.StatusInternalServerError, "store_failed", err.Error()}
+		return store.PeerGrant{}, "", requestcaller.NewCredentialError(http.StatusInternalServerError, "store_failed", err.Error())
 	}
 	s.endRequestsServedUnderGrant(revoked.ID)
 	if err := s.undoPeerLevelEffect(ctx, revoked); err != nil {
-		return store.PeerGrant{}, "", &requestCredentialError{http.StatusBadGateway, "principal_store_failed", fmt.Sprintf(
-			"%s is revoked, so its token no longer works, and its level could not be taken back from %s: %v", revoked.ID, revoked.PeerPrincipalID, err)}
+		return store.PeerGrant{}, "", requestcaller.NewCredentialError(http.StatusBadGateway, "principal_store_failed", fmt.Sprintf(
+			"%s is revoked, so its token no longer works, and its level could not be taken back from %s: %v", revoked.ID, revoked.PeerPrincipalID, err))
 	}
 	if !tell {
 		return revoked, "the other server removed the connection, so it was not told", nil
@@ -887,47 +887,47 @@ func (s *Server) revokeLivePeerGrantTelling(ctx context.Context, connection stor
 
 // connectionOfConnectionCall says which connection a connection call is on:
 // the socket it arrived over, or the credential it presents by https.
-func (s *Server) connectionOfConnectionCall(r *http.Request) (store.PeerConnection, *requestCredentialError) {
+func (s *Server) connectionOfConnectionCall(r *http.Request) (store.PeerConnection, *requestcaller.CredentialError) {
 	if connectionID, overSocket := peerSocketConnectionOfRequest(r); overSocket {
 		connection, err := s.store.GetPeerConnection(connectionID)
 		if err != nil {
-			return store.PeerConnection{}, &requestCredentialError{http.StatusInternalServerError, "store_failed", err.Error()}
+			return store.PeerConnection{}, requestcaller.NewCredentialError(http.StatusInternalServerError, "store_failed", err.Error())
 		}
 		if connection.RemovedAt != nil {
-			return store.PeerConnection{}, &requestCredentialError{http.StatusUnauthorized, "peer_connection_removed", connection.ID + " was removed"}
+			return store.PeerConnection{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "peer_connection_removed", connection.ID + " was removed")
 		}
 		return connection, nil
 	}
 	if s.cfg.DemoLoginEnabled {
-		return store.PeerConnection{}, &requestCredentialError{http.StatusConflict, "demo_login_enabled",
-			"a connection call by https is refused while demo login is on: it is a call from another machine, and demo login signs anyone in as anyone"}
+		return store.PeerConnection{}, requestcaller.NewCredentialError(http.StatusConflict, "demo_login_enabled",
+			"a connection call by https is refused while demo login is on: it is a call from another machine, and demo login signs anyone in as anyone")
 	}
 	connection, credentialError := s.connectionPresentingCredential(r)
 	if credentialError != nil {
 		return store.PeerConnection{}, credentialError
 	}
 	if connection.Transport != msg.PeerTransportDirect {
-		return store.PeerConnection{}, &requestCredentialError{http.StatusConflict, "peer_connection_uses_its_socket", connection.ID + " is dial_out, so its connection calls travel over its socket"}
+		return store.PeerConnection{}, requestcaller.NewCredentialError(http.StatusConflict, "peer_connection_uses_its_socket", connection.ID + " is dial_out, so its connection calls travel over its socket")
 	}
 	return connection, nil
 }
 
 // connectionPresentingCredential finds the live connection whose credential
 // the request presents in X-LLM-Bridge-Peer-Connection.
-func (s *Server) connectionPresentingCredential(r *http.Request) (store.PeerConnection, *requestCredentialError) {
+func (s *Server) connectionPresentingCredential(r *http.Request) (store.PeerConnection, *requestcaller.CredentialError) {
 	presented := r.Header.Values(peerConnectionCredentialHeader)
 	if len(presented) != 1 || strings.TrimSpace(presented[0]) == "" {
-		return store.PeerConnection{}, &requestCredentialError{http.StatusUnauthorized, "peer_connection_credential_missing", "send one " + peerConnectionCredentialHeader}
+		return store.PeerConnection{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "peer_connection_credential_missing", "send one " + peerConnectionCredentialHeader)
 	}
 	connection, err := s.store.GetPeerConnectionByInboundCredentialHash(hashPeerSecret(presented[0]))
 	if errors.Is(err, store.ErrPeerConnectionNotFound) {
-		return store.PeerConnection{}, &requestCredentialError{http.StatusUnauthorized, "peer_connection_credential_unknown", peerConnectionCredentialHeader + " names no connection here"}
+		return store.PeerConnection{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "peer_connection_credential_unknown", peerConnectionCredentialHeader + " names no connection here")
 	}
 	if err != nil {
-		return store.PeerConnection{}, &requestCredentialError{http.StatusInternalServerError, "store_failed", err.Error()}
+		return store.PeerConnection{}, requestcaller.NewCredentialError(http.StatusInternalServerError, "store_failed", err.Error())
 	}
 	if connection.RemovedAt != nil {
-		return store.PeerConnection{}, &requestCredentialError{http.StatusUnauthorized, "peer_connection_removed", connection.ID + " was removed"}
+		return store.PeerConnection{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "peer_connection_removed", connection.ID + " was removed")
 	}
 	s.noteOtherServerIdentity(connection.ID, r.Header)
 	return connection, nil
@@ -939,7 +939,7 @@ func (s *Server) connectionPresentingCredential(r *http.Request) (store.PeerConn
 func (s *Server) handleReceivePeerAccess(w http.ResponseWriter, r *http.Request) {
 	connection, credentialError := s.connectionOfConnectionCall(r)
 	if credentialError != nil {
-		credentialError.write(w)
+		credentialError.Write(w)
 		return
 	}
 	var delivery msg.PeerAccessDelivery
@@ -981,7 +981,7 @@ func (s *Server) handleReceivePeerAccess(w http.ResponseWriter, r *http.Request)
 func (s *Server) handleReceivePeerAccessRevoked(w http.ResponseWriter, r *http.Request) {
 	connection, credentialError := s.connectionOfConnectionCall(r)
 	if credentialError != nil {
-		credentialError.write(w)
+		credentialError.Write(w)
 		return
 	}
 	var revocation msg.PeerAccessRevocation
@@ -1057,8 +1057,8 @@ func (s *Server) handleRemovePeerConnection(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
-	if _, _, failure := s.revokeLivePeerGrant(r.Context(), connection, administratorID, "connection removed: "+request.Reason); failure != nil && failure.code != "peer_grant_not_found" {
-		failure.write(w)
+	if _, _, failure := s.revokeLivePeerGrant(r.Context(), connection, administratorID, "connection removed: "+request.Reason); failure != nil && failure.Code != "peer_grant_not_found" {
+		failure.Write(w)
 		return
 	}
 	if ended, err := s.store.EndPeerAccess(connection.ID, "", "connection removed: "+request.Reason, time.Now().UTC()); err == nil {
@@ -1103,7 +1103,7 @@ func (s *Server) handleRemovePeerConnection(w http.ResponseWriter, r *http.Reque
 func (s *Server) handleReceivePeerConnectionRemoved(w http.ResponseWriter, r *http.Request) {
 	connection, credentialError := s.connectionOfConnectionCall(r)
 	if credentialError != nil {
-		credentialError.write(w)
+		credentialError.Write(w)
 		return
 	}
 	var notice msg.PeerConnectionRemovedNotice
@@ -1114,8 +1114,8 @@ func (s *Server) handleReceivePeerConnectionRemoved(w http.ResponseWriter, r *ht
 		return
 	}
 	reason := "removed by the other server: " + notice.Reason
-	if _, _, failure := s.revokeLivePeerGrantTelling(r.Context(), connection, "", reason, false); failure != nil && failure.code != "peer_grant_not_found" {
-		failure.write(w)
+	if _, _, failure := s.revokeLivePeerGrantTelling(r.Context(), connection, "", reason, false); failure != nil && failure.Code != "peer_grant_not_found" {
+		failure.Write(w)
 		return
 	}
 	if ended, err := s.store.EndPeerAccess(connection.ID, "", reason, time.Now().UTC()); err == nil {
