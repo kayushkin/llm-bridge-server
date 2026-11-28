@@ -85,7 +85,7 @@ func scanProduct(row interface{ Scan(...any) error }) (Product, error) {
 	return product, nil
 }
 
-func requireLiveProduct(q querier, id string) error {
+func requireLiveProduct(q Querier, id string) error {
 	var deletedAt int64
 	err := q.QueryRow(`SELECT deleted_at FROM products WHERE id = ?`, id).Scan(&deletedAt)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && deletedAt != 0) {
@@ -96,14 +96,14 @@ func requireLiveProduct(q querier, id string) error {
 
 // GetProduct answers one product with the possessions that are it.
 func (s *Store) GetProduct(id string) (Product, error) {
-	product, err := scanProduct(s.db.QueryRow(`SELECT `+productColumns+` FROM products WHERE id = ?`, id))
+	product, err := scanProduct(s.DB.QueryRow(`SELECT `+productColumns+` FROM products WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Product{}, fmt.Errorf("%w: no product %s", ErrNotFound, id)
 	}
 	if err != nil {
 		return Product{}, err
 	}
-	product.PossessionIDs, err = stringColumn(s.db, `SELECT id FROM possessions WHERE product_id = ? AND deleted_at = 0 ORDER BY seq`, id)
+	product.PossessionIDs, err = StringColumn(s.DB, `SELECT id FROM possessions WHERE product_id = ? AND deleted_at = 0 ORDER BY seq`, id)
 	return product, err
 }
 
@@ -120,7 +120,7 @@ func (s *Store) ListProducts(query string, limit, offset int) ([]Product, error)
 		limit = 100
 	}
 	arguments = append(arguments, limit, offset)
-	ids, err := stringColumn(s.db, `SELECT id FROM products WHERE `+strings.Join(conditions, " AND ")+` ORDER BY seq DESC LIMIT ? OFFSET ?`, arguments...)
+	ids, err := StringColumn(s.DB, `SELECT id FROM products WHERE `+strings.Join(conditions, " AND ")+` ORDER BY seq DESC LIMIT ? OFFSET ?`, arguments...)
 	if err != nil {
 		return nil, err
 	}
@@ -157,8 +157,8 @@ func checkProductFields(product Product) error {
 	return nil
 }
 
-// insertProduct records a product and points each possession at it.
-func (s *Store) insertProduct(ctx context.Context, product Product, possessionIDs []string, actor string) (Product, error) {
+// InsertProduct records a product and points each possession at it.
+func (s *Store) InsertProduct(ctx context.Context, product Product, possessionIDs []string, actor string) (Product, error) {
 	if actor == "" {
 		return Product{}, fmt.Errorf("%w: say who is writing (the actor)", ErrInvalid)
 	}
@@ -168,19 +168,19 @@ func (s *Store) insertProduct(ctx context.Context, product Product, possessionID
 	if err := checkProductFields(product); err != nil {
 		return Product{}, err
 	}
-	if err := s.checkOutside(ctx, ReferenceArticle, product.ArticleID); err != nil {
+	if err := s.CheckOutside(ctx, ReferenceArticle, product.ArticleID); err != nil {
 		return Product{}, err
 	}
 	specs, _ := json.Marshal(product.Specs)
-	s.writeMutex.Lock()
-	defer s.writeMutex.Unlock()
-	transaction, err := s.db.BeginTx(ctx, nil)
+	s.WriteMutex.Lock()
+	defer s.WriteMutex.Unlock()
+	transaction, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return Product{}, err
 	}
 	defer transaction.Rollback()
 	if product.ModelNumber != "" {
-		existing, err := stringColumn(transaction, `SELECT id FROM products WHERE lower(brand) = lower(?) AND lower(model_number) = lower(?) AND deleted_at = 0`, product.Brand, product.ModelNumber)
+		existing, err := StringColumn(transaction, `SELECT id FROM products WHERE lower(brand) = lower(?) AND lower(model_number) = lower(?) AND deleted_at = 0`, product.Brand, product.ModelNumber)
 		if err != nil {
 			return Product{}, err
 		}
@@ -188,11 +188,11 @@ func (s *Store) insertProduct(ctx context.Context, product Product, possessionID
 			return Product{}, fmt.Errorf("%w: %s %s is already %s", ErrConflict, product.Brand, product.ModelNumber, existing[0])
 		}
 	}
-	id, sequence, err := nextID(transaction, "products", "product")
+	id, sequence, err := NextID(transaction, "products", "product")
 	if err != nil {
 		return Product{}, err
 	}
-	now := s.unixNow()
+	now := s.UnixNow()
 	if _, err := transaction.Exec(`INSERT INTO products (id, seq, brand, model_number, name, listing_url, listing_source, listing_publisher, article_id, found_by, description, specs,
 		list_price_cents, list_price_currency, extracted_by, extraction_cost_usd, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, sequence, product.Brand, product.ModelNumber, product.Name, product.ListingURL, product.ListingSource, product.ListingPublisher, product.ArticleID, product.FoundBy,
@@ -201,7 +201,7 @@ func (s *Store) insertProduct(ctx context.Context, product Product, possessionID
 	}
 	productField, _ := json.Marshal(id)
 	for _, possessionID := range possessionIDs {
-		if err := s.patchPossessionInTransaction(ctx, transaction, possessionID, map[string]json.RawMessage{"product_id": productField}, nil, nil, actor); err != nil {
+		if err := s.PatchPossessionInTransaction(ctx, transaction, possessionID, map[string]json.RawMessage{"product_id": productField}, nil, nil, actor); err != nil {
 			return Product{}, fmt.Errorf("link %s: %w", possessionID, err)
 		}
 	}
@@ -244,27 +244,27 @@ func (s *Store) PatchProduct(ctx context.Context, id string, fields map[string]j
 		return Product{}, err
 	}
 	if product.ArticleID != articleBefore {
-		if err := s.checkOutside(ctx, ReferenceArticle, product.ArticleID); err != nil {
+		if err := s.CheckOutside(ctx, ReferenceArticle, product.ArticleID); err != nil {
 			return Product{}, err
 		}
 	}
 	specs, _ := json.Marshal(product.Specs)
-	s.writeMutex.Lock()
-	defer s.writeMutex.Unlock()
-	transaction, err := s.db.BeginTx(ctx, nil)
+	s.WriteMutex.Lock()
+	defer s.WriteMutex.Unlock()
+	transaction, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return Product{}, err
 	}
 	defer transaction.Rollback()
-	now := s.unixNow()
-	if err := saveRevision(transaction, "products", "id", id, actor, now); err != nil {
+	now := s.UnixNow()
+	if err := SaveRevision(transaction, "products", "id", id, actor, now); err != nil {
 		return Product{}, err
 	}
 	if _, err := transaction.Exec(`UPDATE products SET brand = ?, model_number = ?, name = ?, listing_url = ?, listing_source = ?, listing_publisher = ?, article_id = ?,
 		found_by = ?, description = ?, specs = ?, list_price_cents = ?, list_price_currency = ?, updated_at = ? WHERE id = ?`,
 		product.Brand, product.ModelNumber, product.Name, product.ListingURL, product.ListingSource, product.ListingPublisher, product.ArticleID,
 		product.FoundBy, product.Description, string(specs), product.ListPriceCents, product.ListPriceCurrency, now, id); err != nil {
-		if isUniqueViolation(err) {
+		if IsUniqueViolation(err) {
 			return Product{}, fmt.Errorf("%w: another product is %s %s", ErrConflict, product.Brand, product.ModelNumber)
 		}
 		return Product{}, err

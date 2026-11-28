@@ -29,8 +29,8 @@ type database struct {
 	pool *sql.DB
 }
 
-// databaseTransaction is one transaction on a database, with the same two changes.
-type databaseTransaction struct {
+// DatabaseTransaction is one transaction on a database, with the same two changes.
+type DatabaseTransaction struct {
 	tx *sql.Tx
 }
 
@@ -69,36 +69,36 @@ func (d *database) ExecContext(ctx context.Context, query string, arguments ...a
 	return d.pool.ExecContext(ctx, numberPlaceholders(query), postgresArguments(arguments)...)
 }
 
-func (d *database) Begin() (*databaseTransaction, error) {
+func (d *database) Begin() (*DatabaseTransaction, error) {
 	return d.BeginTx(context.Background(), nil)
 }
 
-func (d *database) BeginTx(ctx context.Context, options *sql.TxOptions) (*databaseTransaction, error) {
+func (d *database) BeginTx(ctx context.Context, options *sql.TxOptions) (*DatabaseTransaction, error) {
 	d.checkOpen()
 	tx, err := d.pool.BeginTx(ctx, options)
 	if err != nil {
 		return nil, err
 	}
-	return &databaseTransaction{tx: tx}, nil
+	return &DatabaseTransaction{tx: tx}, nil
 }
 
-func (t *databaseTransaction) Query(query string, arguments ...any) (*sql.Rows, error) {
+func (t *DatabaseTransaction) Query(query string, arguments ...any) (*sql.Rows, error) {
 	return t.tx.Query(numberPlaceholders(query), postgresArguments(arguments)...)
 }
 
-func (t *databaseTransaction) QueryRow(query string, arguments ...any) *sql.Row {
+func (t *DatabaseTransaction) QueryRow(query string, arguments ...any) *sql.Row {
 	return t.tx.QueryRow(numberPlaceholders(query), postgresArguments(arguments)...)
 }
 
-func (t *databaseTransaction) Exec(query string, arguments ...any) (sql.Result, error) {
+func (t *DatabaseTransaction) Exec(query string, arguments ...any) (sql.Result, error) {
 	return t.tx.Exec(numberPlaceholders(query), postgresArguments(arguments)...)
 }
 
-func (t *databaseTransaction) Commit() error { return t.tx.Commit() }
+func (t *DatabaseTransaction) Commit() error { return t.tx.Commit() }
 
 // Rollback undoes the transaction. After a commit it does nothing and
 // answers sql.ErrTxDone, which every deferred Rollback ignores.
-func (t *databaseTransaction) Rollback() error { return t.tx.Rollback() }
+func (t *DatabaseTransaction) Rollback() error { return t.tx.Rollback() }
 
 // numberPlaceholders writes each ? outside a quoted string, a quoted name or a
 // comment as $1, $2… in order, and SQLite's ?NNN as $NNN. A statement that already numbers its
@@ -175,16 +175,16 @@ func postgresArguments(arguments []any) []any {
 	return converted
 }
 
-// isUniqueViolation reports whether err is Postgres refusing a row that a
+// IsUniqueViolation reports whether err is Postgres refusing a row that a
 // unique constraint already holds.
-func isUniqueViolation(err error) bool {
+func IsUniqueViolation(err error) bool {
 	var postgresError *pgconn.PgError
 	return errors.As(err, &postgresError) && postgresError.Code == "23505"
 }
 
-// jsonField is one "name":value pair as JSON writes it, to find a value in
+// JSONField is one "name":value pair as JSON writes it, to find a value in
 // a column that holds JSON text.
-func jsonField(name, value string) string {
+func JSONField(name, value string) string {
 	encoded, _ := json.Marshal(value)
 	return fmt.Sprintf(`"%s":%s`, name, encoded)
 }

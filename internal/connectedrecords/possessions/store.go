@@ -80,22 +80,19 @@ type PoolOpener func(ctx context.Context, settings map[string]string) (*sql.DB, 
 // read. The Store New answers chooses no scope and reaches nothing; Narrowed
 // answers one that does.
 type Store struct {
-	db    *database
+	DB    *database
 	scope ownership.Scope
 	pools *scopedPools
 
 	references ReferenceChecker
 	originals  OriginalFiles
-	// writeMutex serializes every write the store makes, across every scope,
+	// WriteMutex serializes every write the store makes, across every scope,
 	// as it did when the store was one SQLite file.
-	writeMutex *sync.Mutex
+	WriteMutex *sync.Mutex
 	now        func() time.Time
-	// budget links order lines to possessions (UseBudgetStore); nil leaves
+	// Budget links order lines to possessions (UseBudgetStore); nil leaves
 	// order lines unlinkable.
-	budget BudgetOrders
-	// outfits carries out the review's steps that change outfits
-	// (UseOutfits).
-	outfits OutfitSteps
+	Budget BudgetOrders
 }
 
 // scopedPools is one pool per owner a store has acted for, and one that reads
@@ -121,12 +118,12 @@ func New(open PoolOpener, references ReferenceChecker, originals OriginalFiles) 
 		return nil, errors.New("possession-store: nowhere to keep originals given")
 	}
 	return &Store{pools: &scopedPools{open: open, byOwner: map[string]*database{}},
-		references: references, originals: originals, writeMutex: &sync.Mutex{}, now: time.Now, outfits: outfitSteps{}}, nil
+		references: references, originals: originals, WriteMutex: &sync.Mutex{}, now: time.Now}, nil
 }
 
 // UseBudgetStore wires budget-store, where an answer that a possession came
 // from an order line is written as a link.
-func (s *Store) UseBudgetStore(budget BudgetOrders) { s.budget = budget }
+func (s *Store) UseBudgetStore(budget BudgetOrders) { s.Budget = budget }
 
 // Narrowed is the store reaching scope's records: one owner's, read and
 // written, or every owner's, read only.
@@ -139,7 +136,7 @@ func (s *Store) Narrowed(ctx context.Context, scope ownership.Scope) (*Store, er
 		return nil, err
 	}
 	narrowed := *s
-	narrowed.db = pool
+	narrowed.DB = pool
 	narrowed.scope = scope
 	return &narrowed, nil
 }
@@ -162,8 +159,8 @@ func (s *Store) writeOwner() (string, error) {
 	return s.scope.OwnerPrincipalID(), nil
 }
 
-// checkOutside asks the store that owns id whether the write's owner has it.
-func (s *Store) checkOutside(ctx context.Context, kind ReferenceKind, id string) error {
+// CheckOutside asks the store that owns id whether the write's owner has it.
+func (s *Store) CheckOutside(ctx context.Context, kind ReferenceKind, id string) error {
 	owner, err := s.writeOwner()
 	if err != nil {
 		return err
@@ -222,11 +219,11 @@ func (s *Store) Close() error {
 	return errors.Join(errs...)
 }
 
-func (s *Store) unixNow() int64 { return s.now().Unix() }
+func (s *Store) UnixNow() int64 { return s.now().Unix() }
 
-// nextID mints the next id of a table: <prefix>_<seq, six digits or more>,
+// NextID mints the next id of a table: <prefix>_<seq, six digits or more>,
 // from the table's identity, which Postgres hands out once and never again.
-func nextID(transaction *databaseTransaction, table, prefix string) (string, int64, error) {
+func NextID(transaction *DatabaseTransaction, table, prefix string) (string, int64, error) {
 	var sequence int64
 	if err := transaction.QueryRow(`SELECT nextval(pg_get_serial_sequence(?, 'seq'))`, table).Scan(&sequence); err != nil {
 		return "", 0, fmt.Errorf("next id of %s: %w", table, err)
@@ -234,8 +231,8 @@ func nextID(transaction *databaseTransaction, table, prefix string) (string, int
 	return postgresstorage.FormatRecordID(prefix, sequence), sequence, nil
 }
 
-// saveRevision copies a whole row, as it stands, into revisions.
-func saveRevision(transaction *databaseTransaction, table, idColumn, id, changedBy string, changedAt int64) error {
+// SaveRevision copies a whole row, as it stands, into revisions.
+func SaveRevision(transaction *DatabaseTransaction, table, idColumn, id, changedBy string, changedAt int64) error {
 	rows, err := transaction.Query(`SELECT * FROM `+table+` WHERE `+idColumn+` = ?`, id)
 	if err != nil {
 		return err
@@ -289,7 +286,7 @@ type Revision struct {
 
 // Revisions lists a record's saved copies, newest first.
 func (s *Store) Revisions(recordID string) ([]Revision, error) {
-	rows, err := s.db.Query(`SELECT id, record_id, record, changed_by, changed_at FROM revisions WHERE record_id = ? ORDER BY id DESC`, recordID)
+	rows, err := s.DB.Query(`SELECT id, record_id, record, changed_by, changed_at FROM revisions WHERE record_id = ? ORDER BY id DESC`, recordID)
 	if err != nil {
 		return nil, err
 	}
@@ -309,23 +306,23 @@ func (s *Store) Revisions(recordID string) ([]Revision, error) {
 
 // checkReference checks one id a write is about to store: this store's own
 // records in the transaction, another store's through the checker.
-func (s *Store) checkReference(ctx context.Context, transaction *databaseTransaction, kind ReferenceKind, id string) error {
+func (s *Store) checkReference(ctx context.Context, transaction *DatabaseTransaction, kind ReferenceKind, id string) error {
 	switch kind {
 	case ReferenceComputer:
 		return requireRow(transaction, "computers", id)
 	case ReferencePurchaseLine:
 		return requireRow(transaction, "purchase_lines", id)
 	case ReferencePossession:
-		return requireLivePossession(transaction, id)
+		return RequireLivePossession(transaction, id)
 	case ReferenceProduct:
 		return requireLiveProduct(transaction, id)
 	case ReferenceMusicInstrument:
 		return nil
 	}
-	return s.checkOutside(ctx, kind, id)
+	return s.CheckOutside(ctx, kind, id)
 }
 
-func requireRow(transaction *databaseTransaction, table, id string) error {
+func requireRow(transaction *DatabaseTransaction, table, id string) error {
 	var found int
 	err := transaction.QueryRow(`SELECT 1 FROM `+table+` WHERE id = ?`, id).Scan(&found)
 	if errors.Is(err, sql.ErrNoRows) {

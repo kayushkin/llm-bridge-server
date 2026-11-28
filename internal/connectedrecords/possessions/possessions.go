@@ -11,8 +11,8 @@ import (
 	"strings"
 )
 
-// querier is a *database or a *databaseTransaction.
-type querier interface {
+// Querier is a *database or a *databaseTransaction.
+type Querier interface {
 	QueryRow(query string, arguments ...any) *sql.Row
 	Query(query string, arguments ...any) (*sql.Rows, error)
 }
@@ -80,7 +80,7 @@ func splitPossessionFields(fields map[string]json.RawMessage) (own map[string]js
 	return own, kind, kindFields, photos, nil
 }
 
-func (s *Store) checkValues(ctx context.Context, transaction *databaseTransaction, values map[string]decodedValue) error {
+func (s *Store) checkValues(ctx context.Context, transaction *DatabaseTransaction, values map[string]decodedValue) error {
 	for _, decoded := range values {
 		if decoded.column.References == "" || decoded.value == nil {
 			continue
@@ -94,7 +94,7 @@ func (s *Store) checkValues(ctx context.Context, transaction *databaseTransactio
 
 // insertRecord writes a new row of recordType with the given values; the
 // caller has minted id and sequence.
-func insertRecord(transaction *databaseTransaction, recordType RecordType, id string, sequence int64, extra map[string]any, values map[string]decodedValue) error {
+func insertRecord(transaction *DatabaseTransaction, recordType RecordType, id string, sequence int64, extra map[string]any, values map[string]decodedValue) error {
 	names := []string{"id", "seq"}
 	arguments := []any{id, sequence}
 	extraNames := make([]string, 0, len(extra))
@@ -114,13 +114,13 @@ func insertRecord(transaction *databaseTransaction, recordType RecordType, id st
 	}
 	placeholders := strings.TrimSuffix(strings.Repeat("?, ", len(names)), ", ")
 	_, err := transaction.Exec(`INSERT INTO `+recordType.Table+` (`+strings.Join(names, ", ")+`) VALUES (`+placeholders+`)`, arguments...)
-	if err != nil && isUniqueViolation(err) {
+	if err != nil && IsUniqueViolation(err) {
 		return fmt.Errorf("%w: %v", ErrConflict, err)
 	}
 	return err
 }
 
-func updateRecord(transaction *databaseTransaction, recordType RecordType, idColumn, id string, extra map[string]any, values map[string]decodedValue) error {
+func updateRecord(transaction *DatabaseTransaction, recordType RecordType, idColumn, id string, extra map[string]any, values map[string]decodedValue) error {
 	assignments := []string{}
 	arguments := []any{}
 	for name, value := range extra {
@@ -138,7 +138,7 @@ func updateRecord(transaction *databaseTransaction, recordType RecordType, idCol
 	}
 	arguments = append(arguments, id)
 	_, err := transaction.Exec(`UPDATE `+recordType.Table+` SET `+strings.Join(assignments, ", ")+` WHERE `+idColumn+` = ?`, arguments...)
-	if err != nil && isUniqueViolation(err) {
+	if err != nil && IsUniqueViolation(err) {
 		return fmt.Errorf("%w: %v", ErrConflict, err)
 	}
 	return err
@@ -151,14 +151,14 @@ func (s *Store) CreatePossession(ctx context.Context, fields map[string]json.Raw
 	if actor == "" {
 		return nil, fmt.Errorf("%w: say who is writing (the actor)", ErrInvalid)
 	}
-	s.writeMutex.Lock()
-	defer s.writeMutex.Unlock()
-	transaction, err := s.db.BeginTx(ctx, nil)
+	s.WriteMutex.Lock()
+	defer s.WriteMutex.Unlock()
+	transaction, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer transaction.Rollback()
-	id, err := s.createPossessionInTransaction(ctx, transaction, fields, actor)
+	id, err := s.CreatePossessionInTransaction(ctx, transaction, fields, actor)
 	if err != nil {
 		return nil, err
 	}
@@ -168,7 +168,7 @@ func (s *Store) CreatePossession(ctx context.Context, fields map[string]json.Raw
 	return s.GetPossession(id, false)
 }
 
-func (s *Store) createPossessionInTransaction(ctx context.Context, transaction *databaseTransaction, fields map[string]json.RawMessage, actor string) (string, error) {
+func (s *Store) CreatePossessionInTransaction(ctx context.Context, transaction *DatabaseTransaction, fields map[string]json.RawMessage, actor string) (string, error) {
 	own, kind, kindFields, photos, err := splitPossessionFields(fields)
 	if err != nil {
 		return "", err
@@ -186,11 +186,11 @@ func (s *Store) createPossessionInTransaction(ctx context.Context, transaction *
 	if err := s.checkValues(ctx, transaction, values); err != nil {
 		return "", err
 	}
-	id, sequence, err := nextID(transaction, possessionType.Table, possessionType.Prefix)
+	id, sequence, err := NextID(transaction, possessionType.Table, possessionType.Prefix)
 	if err != nil {
 		return "", err
 	}
-	now := s.unixNow()
+	now := s.UnixNow()
 	if err := insertRecord(transaction, possessionType, id, sequence, map[string]any{"created_by": actor, "created_at": now, "updated_at": now}, values); err != nil {
 		return "", err
 	}
@@ -201,7 +201,7 @@ func (s *Store) createPossessionInTransaction(ctx context.Context, transaction *
 	}
 	for _, photo := range photos {
 		photo.LinkedBy = actor
-		if err := s.linkPhotoInTransaction(ctx, transaction, id, photo, now); err != nil {
+		if err := s.LinkPhotoInTransaction(ctx, transaction, id, photo, now); err != nil {
 			return "", err
 		}
 	}
@@ -231,7 +231,7 @@ func checkPrice(values map[string]decodedValue, existing map[string]any) error {
 	return nil
 }
 
-func (s *Store) insertKind(ctx context.Context, transaction *databaseTransaction, kind RecordType, possessionID string, kindFields map[string]json.RawMessage) error {
+func (s *Store) insertKind(ctx context.Context, transaction *DatabaseTransaction, kind RecordType, possessionID string, kindFields map[string]json.RawMessage) error {
 	values, err := kind.decodeFields(kindFields, true)
 	if err != nil {
 		return err
@@ -239,14 +239,14 @@ func (s *Store) insertKind(ctx context.Context, transaction *databaseTransaction
 	if err := s.checkValues(ctx, transaction, values); err != nil {
 		return err
 	}
-	kindID, sequence, err := nextID(transaction, kind.Table, kind.Prefix)
+	kindID, sequence, err := NextID(transaction, kind.Table, kind.Prefix)
 	if err != nil {
 		return err
 	}
 	return insertRecord(transaction, kind, kindID, sequence, map[string]any{"possession_id": possessionID}, values)
 }
 
-func (s *Store) linkPhotoInTransaction(ctx context.Context, transaction *databaseTransaction, possessionID string, link PhotoLink, now int64) error {
+func (s *Store) LinkPhotoInTransaction(ctx context.Context, transaction *DatabaseTransaction, possessionID string, link PhotoLink, now int64) error {
 	if err := link.validate(); err != nil {
 		return err
 	}
@@ -285,17 +285,17 @@ func boolToInteger(value bool) int {
 
 // LinkPhoto adds a photo to a possession, or changes its box or cover flag.
 func (s *Store) LinkPhoto(ctx context.Context, possessionID string, link PhotoLink) (map[string]any, error) {
-	s.writeMutex.Lock()
-	defer s.writeMutex.Unlock()
-	transaction, err := s.db.BeginTx(ctx, nil)
+	s.WriteMutex.Lock()
+	defer s.WriteMutex.Unlock()
+	transaction, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer transaction.Rollback()
-	if err := requireLivePossession(transaction, possessionID); err != nil {
+	if err := RequireLivePossession(transaction, possessionID); err != nil {
 		return nil, err
 	}
-	if err := s.linkPhotoInTransaction(ctx, transaction, possessionID, link, s.unixNow()); err != nil {
+	if err := s.LinkPhotoInTransaction(ctx, transaction, possessionID, link, s.UnixNow()); err != nil {
 		return nil, err
 	}
 	if err := transaction.Commit(); err != nil {
@@ -307,9 +307,9 @@ func (s *Store) LinkPhoto(ctx context.Context, possessionID string, link PhotoLi
 // UnlinkPhoto removes a photo from a possession. The photo itself stays in
 // photo-store. When the cover goes, the earliest linked photo left becomes it.
 func (s *Store) UnlinkPhoto(ctx context.Context, possessionID, photoID string) (map[string]any, error) {
-	s.writeMutex.Lock()
-	defer s.writeMutex.Unlock()
-	transaction, err := s.db.BeginTx(ctx, nil)
+	s.WriteMutex.Lock()
+	defer s.WriteMutex.Unlock()
+	transaction, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -331,7 +331,7 @@ func (s *Store) UnlinkPhoto(ctx context.Context, possessionID, photoID string) (
 	return s.GetPossession(possessionID, false)
 }
 
-func requireLivePossession(q querier, id string) error {
+func RequireLivePossession(q Querier, id string) error {
 	var deletedAt int64
 	err := q.QueryRow(`SELECT deleted_at FROM possessions WHERE id = ?`, id).Scan(&deletedAt)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && deletedAt != 0) {
@@ -343,10 +343,10 @@ func requireLivePossession(q querier, id string) error {
 // GetPossession answers a possession with its kind, photos and, for a
 // garment, the outfits it is in.
 func (s *Store) GetPossession(id string, includeDeleted bool) (map[string]any, error) {
-	return possessionView(s.db, id, includeDeleted)
+	return PossessionView(s.DB, id, includeDeleted)
 }
 
-func possessionView(q querier, id string, includeDeleted bool) (map[string]any, error) {
+func PossessionView(q Querier, id string, includeDeleted bool) (map[string]any, error) {
 	columns := possessionType.readColumns()
 	row := q.QueryRow(`SELECT `+strings.Join(columnNames(columns), ", ")+` FROM possessions WHERE id = ?`, id)
 	view, err := scanRow(row, columns)
@@ -373,7 +373,7 @@ func possessionView(q querier, id string, includeDeleted bool) (map[string]any, 
 		view["kind"] = kind.Name
 		view[kind.Name] = record
 		if kind.Name == "computer" {
-			partIDs, err := stringColumn(q, `SELECT computer_parts.id FROM computer_parts JOIN possessions ON possessions.id = computer_parts.possession_id
+			partIDs, err := StringColumn(q, `SELECT computer_parts.id FROM computer_parts JOIN possessions ON possessions.id = computer_parts.possession_id
 				WHERE computer_parts.installed_in_computer_id = ? AND possessions.deleted_at = 0 ORDER BY computer_parts.seq`, record["id"])
 			if err != nil {
 				return nil, err
@@ -388,13 +388,13 @@ func possessionView(q querier, id string, includeDeleted bool) (map[string]any, 
 			view["odometer_readings"] = readings
 		}
 	}
-	outfitIDs, err := stringColumn(q, `SELECT outfit_possessions.outfit_id FROM outfit_possessions JOIN outfits ON outfits.id = outfit_possessions.outfit_id
+	outfitIDs, err := StringColumn(q, `SELECT outfit_possessions.outfit_id FROM outfit_possessions JOIN outfits ON outfits.id = outfit_possessions.outfit_id
 		WHERE outfit_possessions.possession_id = ? AND outfits.deleted_at = 0 ORDER BY outfits.seq`, id)
 	if err != nil {
 		return nil, err
 	}
 	view["outfit_ids"] = outfitIDs
-	photos, err := possessionPhotos(q, id)
+	photos, err := PossessionPhotos(q, id)
 	if err != nil {
 		return nil, err
 	}
@@ -434,7 +434,7 @@ func derefString(value any) string {
 	return ""
 }
 
-func stringColumn(q querier, query string, arguments ...any) ([]string, error) {
+func StringColumn(q Querier, query string, arguments ...any) ([]string, error) {
 	rows, err := q.Query(query, arguments...)
 	if err != nil {
 		return nil, err
@@ -451,7 +451,7 @@ func stringColumn(q querier, query string, arguments ...any) ([]string, error) {
 	return values, rows.Err()
 }
 
-func possessionPhotos(q querier, possessionID string) ([]PhotoLink, error) {
+func PossessionPhotos(q Querier, possessionID string) ([]PhotoLink, error) {
 	rows, err := q.Query(`SELECT photo_id, box_left, box_top, box_right, box_bottom, is_cover, sighting_id, linked_by, linked_at
 		FROM possession_photos WHERE possession_id = ? ORDER BY is_cover DESC, linked_at, photo_id`, possessionID)
 	if err != nil {
@@ -538,13 +538,13 @@ func (s *Store) ListPossessions(filter PossessionFilter) ([]map[string]any, erro
 	}
 	query += ` ORDER BY seq DESC LIMIT ? OFFSET ?`
 	arguments = append(arguments, limit, filter.Offset)
-	ids, err := stringColumn(s.db, query, arguments...)
+	ids, err := StringColumn(s.DB, query, arguments...)
 	if err != nil {
 		return nil, err
 	}
 	views := make([]map[string]any, 0, len(ids))
 	for _, id := range ids {
-		view, err := possessionView(s.db, id, true)
+		view, err := PossessionView(s.DB, id, true)
 		if err != nil {
 			return nil, err
 		}
@@ -566,14 +566,14 @@ func (s *Store) PatchPossession(ctx context.Context, id string, fields map[strin
 	if photos != nil {
 		return nil, fmt.Errorf("%w: change photos with POST and DELETE /possessions/{id}/photos", ErrInvalid)
 	}
-	s.writeMutex.Lock()
-	defer s.writeMutex.Unlock()
-	transaction, err := s.db.BeginTx(ctx, nil)
+	s.WriteMutex.Lock()
+	defer s.WriteMutex.Unlock()
+	transaction, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer transaction.Rollback()
-	if err := s.patchPossessionInTransaction(ctx, transaction, id, own, kind, kindFields, actor); err != nil {
+	if err := s.PatchPossessionInTransaction(ctx, transaction, id, own, kind, kindFields, actor); err != nil {
 		return nil, err
 	}
 	if err := transaction.Commit(); err != nil {
@@ -582,10 +582,10 @@ func (s *Store) PatchPossession(ctx context.Context, id string, fields map[strin
 	return s.GetPossession(id, false)
 }
 
-// patchPossessionInTransaction changes a possession's own fields and its
+// PatchPossessionInTransaction changes a possession's own fields and its
 // kind's fields, saving a revision of each row it changes.
-func (s *Store) patchPossessionInTransaction(ctx context.Context, transaction *databaseTransaction, id string, own map[string]json.RawMessage, kind *RecordType, kindFields map[string]json.RawMessage, actor string) error {
-	existing, err := possessionView(transaction, id, false)
+func (s *Store) PatchPossessionInTransaction(ctx context.Context, transaction *DatabaseTransaction, id string, own map[string]json.RawMessage, kind *RecordType, kindFields map[string]json.RawMessage, actor string) error {
+	existing, err := PossessionView(transaction, id, false)
 	if err != nil {
 		return err
 	}
@@ -599,8 +599,8 @@ func (s *Store) patchPossessionInTransaction(ctx context.Context, transaction *d
 	if err := s.checkValues(ctx, transaction, values); err != nil {
 		return err
 	}
-	now := s.unixNow()
-	if err := saveRevision(transaction, "possessions", "id", id, actor, now); err != nil {
+	now := s.UnixNow()
+	if err := SaveRevision(transaction, "possessions", "id", id, actor, now); err != nil {
 		return err
 	}
 	if err := updateRecord(transaction, possessionType, "id", id, map[string]any{"updated_at": now}, values); err != nil {
@@ -621,7 +621,7 @@ func (s *Store) patchPossessionInTransaction(ctx context.Context, transaction *d
 			if err := s.checkValues(ctx, transaction, kindValues); err != nil {
 				return err
 			}
-			if err := saveRevision(transaction, kind.Table, "possession_id", id, actor, now); err != nil {
+			if err := SaveRevision(transaction, kind.Table, "possession_id", id, actor, now); err != nil {
 				return err
 			}
 			if err := updateRecord(transaction, *kind, "possession_id", id, nil, kindValues); err != nil {
@@ -651,18 +651,18 @@ func (s *Store) setPossessionDeleted(id, actor string, deleted bool) error {
 	if actor == "" {
 		return fmt.Errorf("%w: say who is writing (the actor)", ErrInvalid)
 	}
-	s.writeMutex.Lock()
-	defer s.writeMutex.Unlock()
-	transaction, err := s.db.Begin()
+	s.WriteMutex.Lock()
+	defer s.WriteMutex.Unlock()
+	transaction, err := s.DB.Begin()
 	if err != nil {
 		return err
 	}
 	defer transaction.Rollback()
-	if _, err := possessionView(transaction, id, true); err != nil {
+	if _, err := PossessionView(transaction, id, true); err != nil {
 		return err
 	}
-	now := s.unixNow()
-	if err := saveRevision(transaction, "possessions", "id", id, actor, now); err != nil {
+	now := s.UnixNow()
+	if err := SaveRevision(transaction, "possessions", "id", id, actor, now); err != nil {
 		return err
 	}
 	deletedAt := int64(0)
@@ -678,7 +678,7 @@ func (s *Store) setPossessionDeleted(id, actor string, deleted bool) error {
 // PossessionIDForKindRecord finds the possession a kind record extends.
 func (s *Store) PossessionIDForKindRecord(kind RecordType, kindID string) (string, error) {
 	var possessionID string
-	err := s.db.QueryRow(`SELECT possession_id FROM `+kind.Table+` WHERE id = ?`, kindID).Scan(&possessionID)
+	err := s.DB.QueryRow(`SELECT possession_id FROM `+kind.Table+` WHERE id = ?`, kindID).Scan(&possessionID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", fmt.Errorf("%w: no %s %s", ErrNotFound, kind.Name, kindID)
 	}
@@ -688,7 +688,7 @@ func (s *Store) PossessionIDForKindRecord(kind RecordType, kindID string) (strin
 // ComputerForHarnessMachine finds the computer tied to a harness-store machine.
 func (s *Store) ComputerForHarnessMachine(machineID string) (map[string]any, error) {
 	var possessionID string
-	err := s.db.QueryRow(`SELECT possession_id FROM computers WHERE harness_machine_id = ?`, machineID).Scan(&possessionID)
+	err := s.DB.QueryRow(`SELECT possession_id FROM computers WHERE harness_machine_id = ?`, machineID).Scan(&possessionID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("%w: no computer is tied to harness machine %s", ErrNotFound, machineID)
 	}
@@ -705,7 +705,7 @@ type OdometerReading struct {
 	Source string `json:"source"`
 }
 
-func odometerReadings(q querier, vehicleID string) ([]OdometerReading, error) {
+func odometerReadings(q Querier, vehicleID string) ([]OdometerReading, error) {
 	rows, err := q.Query(`SELECT read_at, miles, source FROM vehicle_odometer_readings WHERE vehicle_id = ? ORDER BY read_at`, vehicleID)
 	if err != nil {
 		return nil, err
@@ -727,16 +727,16 @@ func (s *Store) AddOdometerReading(vehicleID string, reading OdometerReading) er
 	if reading.ReadAt <= 0 || reading.Miles < 0 || reading.Source == "" {
 		return fmt.Errorf("%w: a reading needs read_at, miles of 0 or more, and its source", ErrInvalid)
 	}
-	s.writeMutex.Lock()
-	defer s.writeMutex.Unlock()
+	s.WriteMutex.Lock()
+	defer s.WriteMutex.Unlock()
 	var found int
-	if err := s.db.QueryRow(`SELECT 1 FROM vehicles WHERE id = ?`, vehicleID).Scan(&found); errors.Is(err, sql.ErrNoRows) {
+	if err := s.DB.QueryRow(`SELECT 1 FROM vehicles WHERE id = ?`, vehicleID).Scan(&found); errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("%w: no vehicle %s", ErrNotFound, vehicleID)
 	} else if err != nil {
 		return err
 	}
-	_, err := s.db.Exec(`INSERT INTO vehicle_odometer_readings (vehicle_id, read_at, miles, source) VALUES (?, ?, ?, ?)`, vehicleID, reading.ReadAt, reading.Miles, reading.Source)
-	if err != nil && isUniqueViolation(err) {
+	_, err := s.DB.Exec(`INSERT INTO vehicle_odometer_readings (vehicle_id, read_at, miles, source) VALUES (?, ?, ?, ?)`, vehicleID, reading.ReadAt, reading.Miles, reading.Source)
+	if err != nil && IsUniqueViolation(err) {
 		return fmt.Errorf("%w: %s already has a reading at %d", ErrConflict, vehicleID, reading.ReadAt)
 	}
 	return err

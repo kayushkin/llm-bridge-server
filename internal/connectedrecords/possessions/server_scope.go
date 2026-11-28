@@ -38,20 +38,20 @@ func requestScope(r *http.Request) (ownership.Scope, *http.Request, *ownership.R
 	return ownership.OwnedBy(owner), r.WithContext(ownership.ContextWithCaller(r.Context(), ownership.Caller{PrincipalID: owner})), nil
 }
 
-// handlerOn answers a function that registers a route on mux whose handler
+// HandlerOn answers a function that registers a route on mux whose handler
 // build makes from narrow's answer for each request's scope: a server whose
 // stores reach that scope's records only.
-func handlerOn[Narrowed any](mux *http.ServeMux, narrow func(ctx context.Context, scope ownership.Scope) (Narrowed, error)) func(pattern string, build func(Narrowed) http.HandlerFunc) {
+func HandlerOn[Narrowed any](mux *http.ServeMux, narrow func(ctx context.Context, scope ownership.Scope) (Narrowed, error)) func(pattern string, build func(Narrowed) http.HandlerFunc) {
 	return func(pattern string, build func(Narrowed) http.HandlerFunc) {
 		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 			scope, served, refusal := requestScope(r)
 			if refusal != nil {
-				writeJSON(w, refusal.Status, map[string]string{"error": refusal.Message})
+				WriteJSON(w, refusal.Status, map[string]string{"error": refusal.Message})
 				return
 			}
 			narrowed, err := narrow(served.Context(), scope)
 			if err != nil {
-				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+				WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 				return
 			}
 			build(narrowed)(w, served)

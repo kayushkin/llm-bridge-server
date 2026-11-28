@@ -79,15 +79,15 @@ func (s *Store) KeepOriginal(ctx context.Context, sum, extension string, content
 	if err != nil {
 		return Original{}, false, err
 	}
-	s.writeMutex.Lock()
-	_, err = s.db.ExecContext(ctx, `INSERT INTO originals (sha256, extension, media_type, file_id, byte_count, added_by, added_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		sum, extension, mediaType, fileID, len(content), actor, s.unixNow())
-	s.writeMutex.Unlock()
+	s.WriteMutex.Lock()
+	_, err = s.DB.ExecContext(ctx, `INSERT INTO originals (sha256, extension, media_type, file_id, byte_count, added_by, added_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		sum, extension, mediaType, fileID, len(content), actor, s.UnixNow())
+	s.WriteMutex.Unlock()
 	if err != nil {
 		if destroyErr := s.originals.Destroy(ctx, fileID); destroyErr != nil {
 			err = errors.Join(err, fmt.Errorf("destroying the file kept for it: %w", destroyErr))
 		}
-		if isUniqueViolation(err) {
+		if IsUniqueViolation(err) {
 			return Original{}, false, fmt.Errorf("%w: original %s was kept by another request at the same time", ErrConflict, sum)
 		}
 		return Original{}, false, err
@@ -98,7 +98,7 @@ func (s *Store) KeepOriginal(ctx context.Context, sum, extension string, content
 
 func (s *Store) original(sum string) (Original, error) {
 	var original Original
-	err := s.db.QueryRow(`SELECT owner_principal_id, sha256, extension, media_type, file_id, byte_count, added_by, added_at FROM originals WHERE sha256 = ?`, sum).
+	err := s.DB.QueryRow(`SELECT owner_principal_id, sha256, extension, media_type, file_id, byte_count, added_by, added_at FROM originals WHERE sha256 = ?`, sum).
 		Scan(&original.OwnerPrincipalID, &original.Sha256, &original.Extension, &original.MediaType, &original.FileID, &original.ByteCount, &original.AddedBy, &original.AddedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Original{}, fmt.Errorf("%w: no original %s", ErrNotFound, sum)

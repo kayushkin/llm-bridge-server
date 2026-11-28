@@ -1,4 +1,4 @@
-package possessions
+package possessions_test
 
 import (
 	"bytes"
@@ -13,15 +13,19 @@ import (
 	"testing"
 
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessions"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessions/outfits"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessions/possessionstest"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessions/review"
 )
 
 const otherOwner = "principal_000002"
 
-func twoOwners(t *testing.T) (*Store, *Store, *Store) {
+func twoOwners(t *testing.T) (*possessions.Store, *possessions.Store, *possessions.Store) {
 	t.Helper()
-	root, _ := newTestRoot(t, fakeReferences{known: map[string]bool{"photo_000001": true, "photo_000002": true, "m_test_machine": true, "place_000001": true}})
+	root, _ := possessionstest.NewTestRoot(t, possessionstest.FakeReferences{Known: map[string]bool{"photo_000001": true, "photo_000002": true, "m_test_machine": true, "place_000001": true}})
 	ctx := context.Background()
-	first, err := root.NarrowedToOwner(ctx, testOwner)
+	first, err := root.NarrowedToOwner(ctx, possessionstest.TestOwner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,70 +36,16 @@ func twoOwners(t *testing.T) (*Store, *Store, *Store) {
 	return root, first, second
 }
 
-func TestAnotherOwnersRecordsAreOutOfReach(t *testing.T) {
-	root, first, second := twoOwners(t)
-	ctx := context.Background()
-	shirt, err := first.CreatePossession(ctx, fields(t, `{"name":"shirt","garment":{"category":"top","garment_type":"t_shirt"},
-		"photos":[{"photo_id":"photo_000001"}]}`), testOwner)
-	if err != nil {
-		t.Fatal(err)
-	}
-	shirtID := shirt["id"].(string)
-	if shirt["owner_principal_id"] != testOwner {
-		t.Fatalf("owner = %v", shirt["owner_principal_id"])
-	}
-	if _, err := second.GetPossession(shirtID, true); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("another owner's possession read = %v, want not found", err)
-	}
-	if _, err := second.PatchPossession(ctx, shirtID, fields(t, `{"spot":"closet"}`), otherOwner); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("another owner's possession changed = %v, want not found", err)
-	}
-	if _, err := second.CreateOutfit(ctx, OutfitInput{PossessionIDs: []string{shirtID}}, otherOwner); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("an outfit of another owner's shirt = %v, want invalid", err)
-	}
-	listed, err := second.ListPossessions(PossessionFilter{})
-	if err != nil || len(listed) != 0 {
-		t.Fatalf("another owner lists %d possessions (%v), want none", len(listed), err)
-	}
-	theirs, err := second.CreatePossession(ctx, fields(t, `{"name":"watch","watch":{"movement":"quartz"}}`), otherOwner)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if theirs["id"] == shirtID || theirs["id"] != "possession_000002" {
-		t.Fatalf("the second owner's possession is %v: ids are numbered across owners", theirs["id"])
-	}
-	// One owner closing a group closes nothing of the other's.
-	closed := true
-	if _, err := first.ChangeWearableGroup(ctx, "watch", WearableGroupChange{Closed: &closed, Actor: testOwner}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := second.ChangeWearableGroup(ctx, "watch", WearableGroupChange{Closed: &closed, Actor: otherOwner}); err != nil {
-		t.Fatalf("a second owner's group of the same name: %v", err)
-	}
-
-	every, err := root.Narrowed(ctx, ownership.EveryOwner())
-	if err != nil {
-		t.Fatal(err)
-	}
-	all, err := every.ListPossessions(PossessionFilter{})
-	if err != nil || len(all) != 2 {
-		t.Fatalf("every owner's possessions = %d (%v), want 2", len(all), err)
-	}
-	if _, err := every.CreatePossession(ctx, fields(t, `{"name":"lamp"}`), testOwner); err == nil {
-		t.Fatal("a store reading every owner's records must write none")
-	}
-}
-
 func TestTheRoutesNarrowEachCallerToItsOwnRecords(t *testing.T) {
 	root, _, _ := twoOwners(t)
 	mux := http.NewServeMux()
-	(&Server{Store: root, Photos: fakePhotos{}, LocalMachine: func(context.Context) (string, error) { return "laptop", nil }}).RegisterHandlers(mux)
+	(&possessions.Server{Store: root, Photos: possessionstest.FakePhotos{}, LocalMachine: func(context.Context) (string, error) { return "laptop", nil }}).RegisterHandlers(mux)
 	call := func(caller ownership.Caller, method, path, body string) *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
-		asCaller(caller, mux).ServeHTTP(recorder, httptest.NewRequest(method, path, strings.NewReader(body)))
+		possessionstest.AsCaller(caller, mux).ServeHTTP(recorder, httptest.NewRequest(method, path, strings.NewReader(body)))
 		return recorder
 	}
-	owner := ownership.Caller{PrincipalID: testOwner}
+	owner := ownership.Caller{PrincipalID: possessionstest.TestOwner}
 	other := ownership.Caller{PrincipalID: otherOwner}
 	administrator := ownership.Caller{PrincipalID: "principal_000003", SeesEveryOwner: true}
 	service := ownership.Caller{SeesEveryOwner: true}
@@ -152,12 +102,12 @@ func TestTheRoutesNarrowEachCallerToItsOwnRecords(t *testing.T) {
 
 	// An original is kept for the owner the request acts for, and read by
 	// that owner only.
-	content := testJPEG()
+	content := possessionstest.JPEG()
 	sum := sha256.Sum256(content)
 	hash := hex.EncodeToString(sum[:])
 	put := func(caller ownership.Caller, path string, body []byte) *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
-		asCaller(caller, mux).ServeHTTP(recorder, httptest.NewRequest("PUT", path, bytes.NewReader(body)))
+		possessionstest.AsCaller(caller, mux).ServeHTTP(recorder, httptest.NewRequest("PUT", path, bytes.NewReader(body)))
 		return recorder
 	}
 	kept := put(owner, "/originals/"+hash+"?extension=.jpg&added_by=principal_000001", content)
@@ -171,10 +121,64 @@ func TestTheRoutesNarrowEachCallerToItsOwnRecords(t *testing.T) {
 		t.Errorf("bytes whose sha256 is not the path's = %d, want 400", wrong.Code)
 	}
 	ctx := context.Background()
-	if read, held, err := root.OriginalBytes(ctx, testOwner, hash); err != nil || !held || !bytes.Equal(read, content) {
+	if read, held, err := root.OriginalBytes(ctx, possessionstest.TestOwner, hash); err != nil || !held || !bytes.Equal(read, content) {
 		t.Fatalf("the owner's original = %d bytes, %v, %v", len(read), held, err)
 	}
 	if _, held, err := root.OriginalBytes(ctx, otherOwner, hash); err != nil || held {
 		t.Fatalf("another owner holds the original: %v %v", held, err)
+	}
+}
+
+func TestAnotherOwnersRecordsAreOutOfReach(t *testing.T) {
+	root, first, second := twoOwners(t)
+	ctx := context.Background()
+	shirt, err := first.CreatePossession(ctx, possessionstest.Fields(t, `{"name":"shirt","garment":{"category":"top","garment_type":"t_shirt"},
+		"photos":[{"photo_id":"photo_000001"}]}`), possessionstest.TestOwner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shirtID := shirt["id"].(string)
+	if shirt["owner_principal_id"] != possessionstest.TestOwner {
+		t.Fatalf("owner = %v", shirt["owner_principal_id"])
+	}
+	if _, err := second.GetPossession(shirtID, true); !errors.Is(err, possessions.ErrNotFound) {
+		t.Fatalf("another owner's possession read = %v, want not found", err)
+	}
+	if _, err := second.PatchPossession(ctx, shirtID, possessionstest.Fields(t, `{"spot":"closet"}`), otherOwner); !errors.Is(err, possessions.ErrNotFound) {
+		t.Fatalf("another owner's possession changed = %v, want not found", err)
+	}
+	if _, err := (&outfits.Store{Store: review.NewStore(second)}).CreateOutfit(ctx, outfits.OutfitInput{PossessionIDs: []string{shirtID}}, otherOwner); !errors.Is(err, possessions.ErrInvalid) {
+		t.Fatalf("an outfit of another owner's shirt = %v, want invalid", err)
+	}
+	listed, err := second.ListPossessions(possessions.PossessionFilter{})
+	if err != nil || len(listed) != 0 {
+		t.Fatalf("another owner lists %d possessions (%v), want none", len(listed), err)
+	}
+	theirs, err := second.CreatePossession(ctx, possessionstest.Fields(t, `{"name":"watch","watch":{"movement":"quartz"}}`), otherOwner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if theirs["id"] == shirtID || theirs["id"] != "possession_000002" {
+		t.Fatalf("the second owner's possession is %v: ids are numbered across owners", theirs["id"])
+	}
+	// One owner closing a group closes nothing of the other's.
+	closed := true
+	if _, err := first.ChangeWearableGroup(ctx, "watch", possessions.WearableGroupChange{Closed: &closed, Actor: possessionstest.TestOwner}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := second.ChangeWearableGroup(ctx, "watch", possessions.WearableGroupChange{Closed: &closed, Actor: otherOwner}); err != nil {
+		t.Fatalf("a second owner's group of the same name: %v", err)
+	}
+
+	every, err := root.Narrowed(ctx, ownership.EveryOwner())
+	if err != nil {
+		t.Fatal(err)
+	}
+	all, err := every.ListPossessions(possessions.PossessionFilter{})
+	if err != nil || len(all) != 2 {
+		t.Fatalf("every owner's possessions = %d (%v), want 2", len(all), err)
+	}
+	if _, err := every.CreatePossession(ctx, possessionstest.Fields(t, `{"name":"lamp"}`), possessionstest.TestOwner); err == nil {
+		t.Fatal("a store reading every owner's records must write none")
 	}
 }

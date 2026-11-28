@@ -103,7 +103,7 @@ func (source PhotoStoreSource) WearerFace(ctx context.Context, photoID, personID
 	}
 	for _, face := range faces {
 		if face.ID == faceID {
-			return face.Box.clamped(), nil
+			return face.Box.Clamped(), nil
 		}
 	}
 	return Box{}, fmt.Errorf("photo-store links %s to %s, but the photo has no such face", faceID, photoID)
@@ -125,10 +125,10 @@ func (source PhotoStoreSource) WhyACopy(ctx context.Context, photoID string) (st
 	if err != nil {
 		return "", err
 	}
-	return whyACopy(photo.SourcePath, photo.Tags), nil
+	return WhyACopy(photo.SourcePath, photo.Tags), nil
 }
 
-func whyACopy(sourcePath string, tags []string) string {
+func WhyACopy(sourcePath string, tags []string) string {
 	name := sourcePath[strings.LastIndexAny(sourcePath, `/\`)+1:]
 	if strings.HasPrefix(strings.ToLower(name), "screenshot") {
 		return "a screenshot (" + name + "), not a photo of its own day"
@@ -322,22 +322,22 @@ const (
 	otherPieceLongestSide = 768
 )
 
-// smallPieceGroup says whether pieces of a group are small enough to cut
+// SmallPieceGroup says whether pieces of a group are small enough to cut
 // with room and scale up.
-func smallPieceGroup(group string) bool {
+func SmallPieceGroup(group string) bool {
 	return group == "watch" || group == "eyewear" || strings.HasPrefix(group, "jewelry:")
 }
 
-// detailCrop cuts a box out of a full-size picture for identifying the
+// DetailCrop cuts a box out of a full-size picture for identifying the
 // piece in it.
-func detailCrop(picture image.Image, box Box, small bool) ([]byte, error) {
+func DetailCrop(picture image.Image, box Box, small bool) ([]byte, error) {
 	bounds := picture.Bounds()
 	margin := 0.08
 	if small {
 		margin = 0.3
 	}
 	marginX, marginY := (box.Right-box.Left)*margin, (box.Bottom-box.Top)*margin
-	padded := Box{box.Left - marginX, box.Top - marginY, box.Right + marginX, box.Bottom + marginY}.clamped()
+	padded := Box{box.Left - marginX, box.Top - marginY, box.Right + marginX, box.Bottom + marginY}.Clamped()
 	region := image.Rect(
 		bounds.Min.X+int(padded.Left*float64(bounds.Dx())), bounds.Min.Y+int(padded.Top*float64(bounds.Dy())),
 		bounds.Min.X+int(padded.Right*float64(bounds.Dx())), bounds.Min.Y+int(padded.Bottom*float64(bounds.Dy())))
@@ -420,12 +420,12 @@ type Box struct {
 	Bottom float64 `json:"bottom"`
 }
 
-func (box Box) valid() bool {
+func (box Box) Valid() bool {
 	return box.Left >= 0 && box.Top >= 0 && box.Right <= 1 && box.Bottom <= 1 && box.Left < box.Right && box.Top < box.Bottom
 }
 
-// clamped pulls a box a model gave into the photo.
-func (box Box) clamped() Box {
+// Clamped pulls a box a model gave into the photo.
+func (box Box) Clamped() Box {
 	clamp := func(value float64) float64 { return min(max(value, 0), 1) }
 	box = Box{clamp(box.Left), clamp(box.Top), clamp(box.Right), clamp(box.Bottom)}
 	if box.Left > box.Right {
@@ -437,24 +437,24 @@ func (box Box) clamped() Box {
 	return box
 }
 
-func (box Box) area() float64 { return max(box.Right-box.Left, 0) * max(box.Bottom-box.Top, 0) }
+func (box Box) Area() float64 { return max(box.Right-box.Left, 0) * max(box.Bottom-box.Top, 0) }
 
-// overlap is the intersection over union of two boxes, 0 to 1.
-func (box Box) overlap(other Box) float64 {
+// Overlap is the intersection over union of two boxes, 0 to 1.
+func (box Box) Overlap(other Box) float64 {
 	intersection := Box{max(box.Left, other.Left), max(box.Top, other.Top), min(box.Right, other.Right), min(box.Bottom, other.Bottom)}
 	if intersection.Left >= intersection.Right || intersection.Top >= intersection.Bottom {
 		return 0
 	}
-	union := box.area() + other.area() - intersection.area()
+	union := box.Area() + other.Area() - intersection.Area()
 	if union <= 0 {
 		return 0
 	}
-	return intersection.area() / union
+	return intersection.Area() / union
 }
 
-// cropJPEG cuts a box, with a margin of a tenth of its size on each side,
+// CropJPEG cuts a box, with a margin of a tenth of its size on each side,
 // out of a JPEG.
-func cropJPEG(photo []byte, box Box) ([]byte, error) {
+func CropJPEG(photo []byte, box Box) ([]byte, error) {
 	decoded, _, err := image.Decode(bytes.NewReader(photo))
 	if err != nil {
 		return nil, fmt.Errorf("decode: %w", err)
@@ -462,7 +462,7 @@ func cropJPEG(photo []byte, box Box) ([]byte, error) {
 	bounds := decoded.Bounds()
 	marginX := (box.Right - box.Left) * 0.1
 	marginY := (box.Bottom - box.Top) * 0.1
-	padded := Box{box.Left - marginX, box.Top - marginY, box.Right + marginX, box.Bottom + marginY}.clamped()
+	padded := Box{box.Left - marginX, box.Top - marginY, box.Right + marginX, box.Bottom + marginY}.Clamped()
 	region := image.Rect(
 		bounds.Min.X+int(padded.Left*float64(bounds.Dx())), bounds.Min.Y+int(padded.Top*float64(bounds.Dy())),
 		bounds.Min.X+int(padded.Right*float64(bounds.Dx())), bounds.Min.Y+int(padded.Bottom*float64(bounds.Dy())))
@@ -481,13 +481,13 @@ func cropJPEG(photo []byte, box Box) ([]byte, error) {
 // PossessionImage cuts a possession out of its cover photo, read from
 // photos; with no box it is the whole thumbnail.
 func (s *Store) PossessionImage(ctx context.Context, photos PhotoSource, possessionID string) ([]byte, error) {
-	links, err := possessionPhotos(s.db, possessionID)
+	links, err := PossessionPhotos(s.DB, possessionID)
 	if err != nil {
 		return nil, err
 	}
-	if err := requireLivePossession(s.db, possessionID); err != nil {
+	if err := RequireLivePossession(s.DB, possessionID); err != nil {
 		var deletedAt int64
-		if s.db.QueryRow(`SELECT deleted_at FROM possessions WHERE id = ?`, possessionID).Scan(&deletedAt) != nil {
+		if s.DB.QueryRow(`SELECT deleted_at FROM possessions WHERE id = ?`, possessionID).Scan(&deletedAt) != nil {
 			return nil, err
 		}
 	}
@@ -502,7 +502,7 @@ func (s *Store) PossessionImage(ctx context.Context, photos PhotoSource, possess
 		if photo.BoxLeft == nil {
 			return thumbnail, nil
 		}
-		return cropJPEG(thumbnail, Box{*photo.BoxLeft, *photo.BoxTop, *photo.BoxRight, *photo.BoxBottom})
+		return CropJPEG(thumbnail, Box{*photo.BoxLeft, *photo.BoxTop, *photo.BoxRight, *photo.BoxBottom})
 	}
 	return nil, fmt.Errorf("%w: %s has no photo", ErrNotFound, possessionID)
 }

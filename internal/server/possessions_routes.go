@@ -42,6 +42,8 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessions"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessions/outfits"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessions/review"
 	"github.com/kayushkin/llm-bridge-server/internal/filestorage/files"
 )
 
@@ -51,7 +53,7 @@ const possessionsMountPrefix = "/possessions"
 // possessionStores is possession-store as this server serves it.
 type possessionStores struct {
 	store    *possessions.Store
-	reviewer *possessions.Reviewer
+	reviewer *review.Reviewer
 	handler  http.Handler
 	patterns []string
 }
@@ -109,8 +111,8 @@ func (s *Server) EnablePossessions(module PossessionsModule) error {
 		return err
 	}
 	store.UseBudgetStore(budget)
-	reviewer := &possessions.Reviewer{
-		Store:  store,
+	reviewer := &review.Reviewer{
+		Store:  review.NewStore(store),
 		Models: possessions.OneShotModelCaller{RunRole: s.oneShotRouter.RunRole, ListPrice: s.possessionModelPrice},
 		Photos: possessions.PhotoStoreSource{
 			PhotoStore:  photos,
@@ -122,31 +124,36 @@ func (s *Server) EnablePossessions(module PossessionsModule) error {
 		Articles:         possessions.ArticleStore{URL: strings.TrimRight(module.ArticleStoreURL, "/"), HTTPClient: &http.Client{Timeout: time.Minute}},
 		Budget:           budget,
 		Mail:             possessionMail{server: s},
-		OwnerLocation:    module.OwnerLocation,
+	}
+	outfitReviewer := outfits.NewReviewer(reviewer, outfits.ReviewerSettings{
+		OwnerLocation: module.OwnerLocation,
 		ReadCoverWearersInBackgroundFor: func(owner string) bool {
 			return slices.Contains(module.ReviewOwners, owner)
 		},
 		CoverImagesDirectory: module.CoverCacheDirectory,
-	}
-	mux, patterns, referenceReads := mountPossessions(reviewer, s.possessionLocalMachine)
+	})
+	mux, patterns, referenceReads := mountPossessions(outfitReviewer, s.possessionLocalMachine)
 	s.referenceReadable.possessionsAt.Store(referenceReads)
 	s.possessions.Store(&possessionStores{store: store, reviewer: reviewer, handler: mux, patterns: patterns})
 	return nil
 }
 
 // mountPossessions puts every route of possession-store on one mux — the
-// records', the photo review's and the outfits' — and answers the mux, their
-// patterns, and the readers of its records by reference. localMachine names
-// this server's machine for the originals it keeps.
-func mountPossessions(reviewer *possessions.Reviewer, localMachine func(context.Context) (string, error)) (*http.ServeMux, []string, *possessionReferenceReads) {
+// records' (package possessions), the photo review's (review) and the
+// outfits' (outfits) — and answers the mux, their patterns, and the readers
+// of its records by reference. outfitReviewer works through the photo
+// review's reviewer, which works through the records' store; localMachine
+// names this server's machine for the originals it keeps.
+func mountPossessions(outfitReviewer *outfits.Reviewer, localMachine func(context.Context) (string, error)) (*http.ServeMux, []string, *possessionReferenceReads) {
 	mux := http.NewServeMux()
-	records := &possessions.Server{Store: reviewer.Store, Photos: reviewer.Photos, LocalMachine: localMachine}
-	outfits := &possessions.OutfitServer{Reviewer: reviewer}
+	photoReviewer := outfitReviewer.Reviewer
+	records := &possessions.Server{Store: photoReviewer.Store.Store, Photos: photoReviewer.Photos, LocalMachine: localMachine}
+	outfitServer := &outfits.Server{Reviewer: outfitReviewer}
 	var patterns []string
 	patterns = append(patterns, records.RegisterHandlers(mux)...)
-	patterns = append(patterns, (&possessions.ReviewServer{Reviewer: reviewer}).RegisterHandlers(mux)...)
-	patterns = append(patterns, outfits.RegisterHandlers(mux)...)
-	return mux, patterns, &possessionReferenceReads{records: records, outfits: outfits}
+	patterns = append(patterns, (&review.Server{Reviewer: photoReviewer}).RegisterHandlers(mux)...)
+	patterns = append(patterns, outfitServer.RegisterHandlers(mux)...)
+	return mux, patterns, &possessionReferenceReads{records: records, outfits: outfitServer}
 }
 
 // possessionReferenceReads reads possession-store's records by the route a
@@ -154,12 +161,12 @@ func mountPossessions(reviewer *possessions.Reviewer, localMachine func(context.
 // possessions and each kind's records from the records' server.
 type possessionReferenceReads struct {
 	records *possessions.Server
-	outfits *possessions.OutfitServer
+	outfits *outfits.Server
 }
 
 // RecordInScope reads the record GET /<route>/{id} answers, in scope.
 func (reads *possessionReferenceReads) RecordInScope(ctx context.Context, scope ownership.Scope, route, id string) (any, error) {
-	if route == possessions.OutfitsRoute {
+	if route == outfits.OutfitsRoute {
 		return reads.outfits.OutfitInScope(ctx, scope, id)
 	}
 	return reads.records.RecordInScope(ctx, scope, route, id)
@@ -167,7 +174,7 @@ func (reads *possessionReferenceReads) RecordInScope(ctx context.Context, scope 
 
 // ImageInScope is the JPEG GET /<route>/{id}/image answers, in scope.
 func (reads *possessionReferenceReads) ImageInScope(ctx context.Context, scope ownership.Scope, route, id string) ([]byte, error) {
-	if route == possessions.OutfitsRoute {
+	if route == outfits.OutfitsRoute {
 		return reads.outfits.OutfitImageInScope(ctx, scope, id)
 	}
 	return reads.records.ImageInScope(ctx, scope, route, id)

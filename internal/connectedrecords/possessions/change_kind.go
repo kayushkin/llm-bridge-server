@@ -24,18 +24,18 @@ func (s *Store) ChangeKind(ctx context.Context, possessionID, kindName string, k
 		}
 		kind = &found
 	}
-	s.writeMutex.Lock()
-	defer s.writeMutex.Unlock()
-	transaction, err := s.db.BeginTx(ctx, nil)
+	s.WriteMutex.Lock()
+	defer s.WriteMutex.Unlock()
+	transaction, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer transaction.Rollback()
-	existing, err := possessionView(transaction, possessionID, false)
+	existing, err := PossessionView(transaction, possessionID, false)
 	if err != nil {
 		return nil, err
 	}
-	now := s.unixNow()
+	now := s.UnixNow()
 	if currentName := existing["kind"].(string); currentName != "" {
 		if currentName == kindName {
 			return nil, fmt.Errorf("%w: %s is already a %s; PATCH changes its fields", ErrConflict, possessionID, kindName)
@@ -47,7 +47,7 @@ func (s *Store) ChangeKind(ctx context.Context, possessionID, kindName string, k
 				return nil, fmt.Errorf("%w: %s has parts installed (%s); move them first", ErrConflict, possessionID, strings.Join(parts, ", "))
 			}
 		}
-		if err := saveRevision(transaction, current.Table, "id", currentID, actor, now); err != nil {
+		if err := SaveRevision(transaction, current.Table, "id", currentID, actor, now); err != nil {
 			return nil, err
 		}
 		if _, err := transaction.Exec(`DELETE FROM `+current.Table+` WHERE id = ?`, currentID); err != nil {
@@ -60,7 +60,7 @@ func (s *Store) ChangeKind(ctx context.Context, possessionID, kindName string, k
 		}
 	}
 	if !slices.Contains(WearableKinds, kindName) {
-		inOutfits, err := stringColumn(transaction, `SELECT outfit_id FROM outfit_possessions WHERE possession_id = ?`, possessionID)
+		inOutfits, err := StringColumn(transaction, `SELECT outfit_id FROM outfit_possessions WHERE possession_id = ?`, possessionID)
 		if err != nil {
 			return nil, err
 		}

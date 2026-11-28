@@ -242,7 +242,7 @@ func KindByName(name string) (RecordType, bool) {
 	return RecordType{}, false
 }
 
-func (recordType RecordType) column(name string) (Column, bool) {
+func (recordType RecordType) Column(name string) (Column, bool) {
 	for _, column := range recordType.Columns {
 		if column.Name == name {
 			return column, true
@@ -264,11 +264,11 @@ type decodedValue struct {
 func (recordType RecordType) decodeFields(fields map[string]json.RawMessage, creating bool) (map[string]decodedValue, error) {
 	values := map[string]decodedValue{}
 	for name, raw := range fields {
-		column, known := recordType.column(name)
+		column, known := recordType.Column(name)
 		if !known {
 			return nil, fmt.Errorf("%w: %s has no field %q", ErrInvalid, recordType.Name, name)
 		}
-		value, err := column.decode(raw)
+		value, err := column.Decode(raw)
 		if err != nil {
 			return nil, fmt.Errorf("%w: %s.%s: %v", ErrInvalid, recordType.Name, name, err)
 		}
@@ -289,7 +289,7 @@ func (recordType RecordType) decodeFields(fields map[string]json.RawMessage, cre
 	return values, nil
 }
 
-func (column Column) decode(raw json.RawMessage) (any, error) {
+func (column Column) Decode(raw json.RawMessage) (any, error) {
 	isNull := strings.TrimSpace(string(raw)) == "null"
 	if isNull {
 		if column.Nullable {

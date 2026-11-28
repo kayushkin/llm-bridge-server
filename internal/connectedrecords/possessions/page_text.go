@@ -32,8 +32,8 @@ func pageText(page string) string {
 	return strings.Join(lines, "\n")
 }
 
-// clip keeps the first limit bytes of text, cut at a line, and says so.
-func clip(text string, limit int) string {
+// Clip keeps the first limit bytes of text, cut at a line, and says so.
+func Clip(text string, limit int) string {
 	if len(text) <= limit {
 		return text
 	}

@@ -17,6 +17,8 @@ import (
 
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/ownership"
 	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessions"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessions/outfits"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessions/review"
 	"github.com/kayushkin/llm-bridge-server/internal/filestorage/files"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage"
 	"github.com/kayushkin/llm-bridge-server/postgresstorage/postgrestest"
@@ -129,9 +131,9 @@ func TestAnImportedPossessionStoreAnswersAsTheStandaloneOne(t *testing.T) {
 	t.Logf("imported in %s: %s", time.Since(started).Round(time.Millisecond), counts.Summary())
 
 	plain := &http.Client{Timeout: time.Minute}
-	reviewer := &possessions.Reviewer{Store: root, CoverImagesDirectory: t.TempDir(),
+	reviewer := &review.Reviewer{Store: review.NewStore(root),
 		Photos: possessions.PhotoStoreSource{PhotoStore: possessions.PhotoStoreOverHTTP{URL: *livePhotoStoreURL, HTTPClient: plain}, Originals: root, LongestSide: 2048}}
-	mux, _, _ := mountPossessions(reviewer, nil)
+	mux, _, _ := mountPossessions(outfits.NewReviewer(reviewer, outfits.ReviewerSettings{CoverImagesDirectory: t.TempDir()}), nil)
 	caller := ownership.Caller{PrincipalID: *possessionImportOwner}
 
 	source, err := sql.Open("sqlite", "file:"+*standalonePossessionStoreCopy+"?mode=ro")

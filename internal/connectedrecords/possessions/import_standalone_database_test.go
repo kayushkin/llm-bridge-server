@@ -1,4 +1,4 @@
-package possessions
+package possessions_test
 
 import (
 	"bytes"
@@ -13,6 +13,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessions"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessions/outfits"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessions/possessionstest"
+	"github.com/kayushkin/llm-bridge-server/internal/connectedrecords/possessions/review"
 	_ "modernc.org/sqlite"
 )
 
@@ -46,8 +50,10 @@ func standaloneFile(t *testing.T) string {
 	return path
 }
 
-// carryingOriginals is memoryOriginals that carries files too.
-type carryingOriginals struct{ *memoryOriginals }
+// carryingOriginals is possessionstest.MemoryOriginals that carries files too.
+type carryingOriginals struct {
+	*possessionstest.MemoryOriginals
+}
 
 func (originals carryingOriginals) KeepCopyOf(ctx context.Context, owner, sum, mediaType, path string) (string, error) {
 	content, err := os.ReadFile(path)
@@ -57,51 +63,9 @@ func (originals carryingOriginals) KeepCopyOf(ctx context.Context, owner, sum, m
 	return originals.Keep(ctx, owner, sum, mediaType, content)
 }
 
-func TestAStandaloneFileIsImportedWholeWithItsIdsAndOriginals(t *testing.T) {
-	root, memory := newTestRoot(t, fakeReferences{})
-	root.originals = carryingOriginals{memory}
-	ctx := context.Background()
-	originalsDirectory := t.TempDir()
-	content := testJPEG()
-	sum := sha256.Sum256(content)
-	hash := hex.EncodeToString(sum[:])
-	if err := os.WriteFile(filepath.Join(originalsDirectory, hash+".jpg"), content, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	counts, err := ImportStandaloneDatabase(ctx, root, standaloneFile(t), originalsDirectory, testOwner)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if counts.Rows["possessions"] != 2 || counts.Rows["garments"] != 1 || counts.Rows["revisions"] != 1 || counts.Originals != 1 {
-		t.Fatalf("counts = %s", counts.Summary())
-	}
-	store, err := root.NarrowedToOwner(ctx, testOwner)
-	if err != nil {
-		t.Fatal(err)
-	}
-	shirt, err := store.GetPossession("possession_000007", false)
-	if err != nil || shirt["kind"] != "garment" || shirt["cover_photo_id"] != "photo_000009" || shirt["owner_principal_id"] != testOwner {
-		t.Fatalf("shirt = %v %v", shirt, err)
-	}
-	outfit, err := store.GetOutfit("outfit_000002", false)
-	if err != nil || !outfit.Favorite || len(outfit.Tags) != 1 || outfit.PossessionIDs[0] != "possession_000007" {
-		t.Fatalf("outfit = %+v %v", outfit, err)
-	}
-	if read, held, err := root.OriginalBytes(ctx, testOwner, hash); err != nil || !held || !bytes.Equal(read, content) {
-		t.Fatalf("original: %d bytes %v %v", len(read), held, err)
-	}
-	created, err := store.CreatePossession(ctx, fields(t, `{"name":"hat"}`), testOwner)
-	if err != nil || created["id"] != "possession_000008" {
-		t.Fatalf("the next possession = %v %v, want possession_000008", created["id"], err)
-	}
-	if _, err := ImportStandaloneDatabase(ctx, root, standaloneFile(t), originalsDirectory, otherOwner); err == nil || !strings.Contains(err.Error(), "already holds") {
-		t.Fatalf("a second import = %v, want a refusal of a module that holds rows", err)
-	}
-}
-
 func TestAnImportThatFailsLeavesNothing(t *testing.T) {
-	root, memory := newTestRoot(t, fakeReferences{})
-	root.originals = carryingOriginals{memory}
+	root, memory := possessionstest.NewTestRoot(t, possessionstest.FakeReferences{})
+	root.SetOriginalsForTest(carryingOriginals{memory})
 	ctx := context.Background()
 	path := standaloneFile(t)
 	db, err := sql.Open("sqlite", path)
@@ -114,22 +78,64 @@ func TestAnImportThatFailsLeavesNothing(t *testing.T) {
 	}
 	db.Close()
 	originalsDirectory := t.TempDir()
-	content := testJPEG()
+	content := possessionstest.JPEG()
 	sum := sha256.Sum256(content)
 	if err := os.WriteFile(filepath.Join(originalsDirectory, hex.EncodeToString(sum[:])+".jpg"), content, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ImportStandaloneDatabase(ctx, root, path, originalsDirectory, testOwner); err == nil {
+	if _, err := possessions.ImportStandaloneDatabase(ctx, root, path, originalsDirectory, possessionstest.TestOwner); err == nil {
 		t.Fatal("an import with a dangling reference must fail")
 	}
-	if len(memory.files) != 0 {
-		t.Fatalf("a failed import left %d carried files", len(memory.files))
+	if memory.Kept() != 0 {
+		t.Fatalf("a failed import left %d carried files", memory.Kept())
 	}
-	store, err := root.NarrowedToOwner(ctx, testOwner)
+	store, err := root.NarrowedToOwner(ctx, possessionstest.TestOwner)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.GetPossession("possession_000007", true); !errors.Is(err, ErrNotFound) {
+	if _, err := store.GetPossession("possession_000007", true); !errors.Is(err, possessions.ErrNotFound) {
 		t.Fatalf("a failed import left rows: %v", err)
+	}
+}
+
+func TestAStandaloneFileIsImportedWholeWithItsIdsAndOriginals(t *testing.T) {
+	root, memory := possessionstest.NewTestRoot(t, possessionstest.FakeReferences{})
+	root.SetOriginalsForTest(carryingOriginals{memory})
+	ctx := context.Background()
+	originalsDirectory := t.TempDir()
+	content := possessionstest.JPEG()
+	sum := sha256.Sum256(content)
+	hash := hex.EncodeToString(sum[:])
+	if err := os.WriteFile(filepath.Join(originalsDirectory, hash+".jpg"), content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	counts, err := possessions.ImportStandaloneDatabase(ctx, root, standaloneFile(t), originalsDirectory, possessionstest.TestOwner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts.Rows["possessions"] != 2 || counts.Rows["garments"] != 1 || counts.Rows["revisions"] != 1 || counts.Originals != 1 {
+		t.Fatalf("counts = %s", counts.Summary())
+	}
+	store, err := root.NarrowedToOwner(ctx, possessionstest.TestOwner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shirt, err := store.GetPossession("possession_000007", false)
+	if err != nil || shirt["kind"] != "garment" || shirt["cover_photo_id"] != "photo_000009" || shirt["owner_principal_id"] != possessionstest.TestOwner {
+		t.Fatalf("shirt = %v %v", shirt, err)
+	}
+	outfit, err := (&outfits.Store{Store: review.NewStore(store)}).GetOutfit("outfit_000002", false)
+	if err != nil || !outfit.Favorite || len(outfit.Tags) != 1 || outfit.PossessionIDs[0] != "possession_000007" {
+		t.Fatalf("outfit = %+v %v", outfit, err)
+	}
+	if read, held, err := root.OriginalBytes(ctx, possessionstest.TestOwner, hash); err != nil || !held || !bytes.Equal(read, content) {
+		t.Fatalf("original: %d bytes %v %v", len(read), held, err)
+	}
+	created, err := store.CreatePossession(ctx, possessionstest.Fields(t, `{"name":"hat"}`), possessionstest.TestOwner)
+	if err != nil || created["id"] != "possession_000008" {
+		t.Fatalf("the next possession = %v %v, want possession_000008", created["id"], err)
+	}
+	if _, err := possessions.ImportStandaloneDatabase(ctx, root, standaloneFile(t), originalsDirectory, otherOwner); err == nil || !strings.Contains(err.Error(), "already holds") {
+		t.Fatalf("a second import = %v, want a refusal of a module that holds rows", err)
 	}
 }

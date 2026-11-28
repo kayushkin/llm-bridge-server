@@ -29,7 +29,7 @@ type possessionMergeMoves struct {
 	// OutfitMemberships are the duplicate's places in outfits. AddedToKept
 	// says the kept possession was not already in that outfit and took the
 	// place; otherwise the duplicate's place was only removed.
-	OutfitMemberships  []outfitMembership `json:"outfit_memberships"`
+	OutfitMemberships  []OutfitMembership `json:"outfit_memberships"`
 	PhotosInserted     []string           `json:"photos_inserted"` // photo ids linked to the kept possession by the merge
 	CoverSetPhotoID    string             `json:"cover_set_photo_id,omitempty"`
 	SightingsRepointed []string           `json:"sightings_repointed"`
@@ -41,7 +41,7 @@ type movedKindRecord struct {
 	ID    string `json:"id"`
 }
 
-type outfitMembership struct {
+type OutfitMembership struct {
 	OutfitID     string `json:"outfit_id"`
 	PossessionID string `json:"possession_id,omitempty"`
 	Position     int    `json:"position"`
@@ -74,14 +74,14 @@ func (s *Store) MergePossession(ctx context.Context, duplicateID, keptID, actor,
 	if actor == "" {
 		return nil, fmt.Errorf("%w: actor is required", ErrInvalid)
 	}
-	s.writeMutex.Lock()
-	defer s.writeMutex.Unlock()
-	transaction, err := s.db.BeginTx(ctx, nil)
+	s.WriteMutex.Lock()
+	defer s.WriteMutex.Unlock()
+	transaction, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer transaction.Rollback()
-	mergeID, err := s.mergePossessionInTransaction(transaction, duplicateID, keptID, actor, reason, s.unixNow())
+	mergeID, err := s.MergePossessionInTransaction(transaction, duplicateID, keptID, actor, reason, s.UnixNow())
 	if err != nil {
 		return nil, err
 	}
@@ -96,15 +96,15 @@ func (s *Store) MergePossession(ctx context.Context, duplicateID, keptID, actor,
 	return kept, nil
 }
 
-func (s *Store) mergePossessionInTransaction(transaction *databaseTransaction, duplicateID, keptID, actor, reason string, now int64) (string, error) {
+func (s *Store) MergePossessionInTransaction(transaction *DatabaseTransaction, duplicateID, keptID, actor, reason string, now int64) (string, error) {
 	if duplicateID == keptID {
 		return "", fmt.Errorf("%w: a possession cannot be merged into itself", ErrInvalid)
 	}
-	duplicate, err := possessionView(transaction, duplicateID, false)
+	duplicate, err := PossessionView(transaction, duplicateID, false)
 	if err != nil {
 		return "", err
 	}
-	kept, err := possessionView(transaction, keptID, false)
+	kept, err := PossessionView(transaction, keptID, false)
 	if err != nil {
 		return "", err
 	}
@@ -113,12 +113,12 @@ func (s *Store) mergePossessionInTransaction(transaction *databaseTransaction, d
 		return "", fmt.Errorf("%w: %s is a %s and %s a %s; give them one kind before merging", ErrConflict, duplicateID, duplicateKind, keptID, keptKind)
 	}
 	for _, id := range []string{duplicateID, keptID} {
-		if err := saveRevision(transaction, "possessions", "id", id, actor, now); err != nil {
+		if err := SaveRevision(transaction, "possessions", "id", id, actor, now); err != nil {
 			return "", err
 		}
 	}
 	moves := possessionMergeMoves{FilledFields: map[string]any{}, InstalledPartsMoved: []string{}, OdometerReadingsInserted: []int64{},
-		OutfitMemberships: []outfitMembership{}, PhotosInserted: []string{}, SightingsRepointed: []string{}, SlotsRepointed: []string{}}
+		OutfitMemberships: []OutfitMembership{}, PhotosInserted: []string{}, SightingsRepointed: []string{}, SlotsRepointed: []string{}}
 
 	// Blank fields of the kept possession take the duplicate's values.
 	fill := map[string]json.RawMessage{}
@@ -161,12 +161,12 @@ func (s *Store) mergePossessionInTransaction(transaction *databaseTransaction, d
 			keptKindRecord := kept[keptKind].(map[string]any)
 			keptKindID := keptKindRecord["id"].(string)
 			moves.DuplicateKindRecordID, moves.KeptKindRecordID = duplicateKindID, keptKindID
-			if err := saveRevision(transaction, kind.Table, "id", duplicateKindID, actor, now); err != nil {
+			if err := SaveRevision(transaction, kind.Table, "id", duplicateKindID, actor, now); err != nil {
 				return "", err
 			}
 			switch duplicateKind {
 			case "computer":
-				parts, err := stringColumn(transaction, `SELECT id FROM computer_parts WHERE installed_in_computer_id = ? ORDER BY seq`, duplicateKindID)
+				parts, err := StringColumn(transaction, `SELECT id FROM computer_parts WHERE installed_in_computer_id = ? ORDER BY seq`, duplicateKindID)
 				if err != nil {
 					return "", err
 				}
@@ -204,7 +204,7 @@ func (s *Store) mergePossessionInTransaction(transaction *databaseTransaction, d
 		return "", err
 	}
 	for rows.Next() {
-		var membership outfitMembership
+		var membership OutfitMembership
 		if err := rows.Scan(&membership.OutfitID, &membership.Position, &membership.AddedToKept); err != nil {
 			rows.Close()
 			return "", err
@@ -223,7 +223,7 @@ func (s *Store) mergePossessionInTransaction(transaction *databaseTransaction, d
 	}
 
 	// Photos and sightings.
-	if moves.PhotosInserted, err = stringColumn(transaction, `SELECT photo_id FROM possession_photos WHERE possession_id = ? AND photo_id NOT IN (SELECT photo_id FROM possession_photos WHERE possession_id = ?) ORDER BY photo_id`, duplicateID, keptID); err != nil {
+	if moves.PhotosInserted, err = StringColumn(transaction, `SELECT photo_id FROM possession_photos WHERE possession_id = ? AND photo_id NOT IN (SELECT photo_id FROM possession_photos WHERE possession_id = ?) ORDER BY photo_id`, duplicateID, keptID); err != nil {
 		return "", err
 	}
 	if _, err := transaction.Exec(`INSERT INTO possession_photos (possession_id, photo_id, box_left, box_top, box_right, box_bottom, is_cover, sighting_id, linked_by, linked_at)
@@ -231,17 +231,17 @@ func (s *Store) mergePossessionInTransaction(transaction *databaseTransaction, d
 		return "", err
 	}
 	if kept["cover_photo_id"] == nil {
-		if moves.CoverSetPhotoID, err = chooseCover(transaction, keptID); err != nil {
+		if moves.CoverSetPhotoID, err = ChooseCover(transaction, keptID); err != nil {
 			return "", err
 		}
 	}
-	if moves.SightingsRepointed, err = stringColumn(transaction, `SELECT id FROM sightings WHERE possession_id = ? ORDER BY seq`, duplicateID); err != nil {
+	if moves.SightingsRepointed, err = StringColumn(transaction, `SELECT id FROM sightings WHERE possession_id = ? ORDER BY seq`, duplicateID); err != nil {
 		return "", err
 	}
 	if _, err := transaction.Exec(`UPDATE sightings SET possession_id = ? WHERE possession_id = ?`, keptID, duplicateID); err != nil {
 		return "", err
 	}
-	if moves.SlotsRepointed, err = stringColumn(transaction, `SELECT id FROM outfit_slots WHERE possession_id = ? ORDER BY seq`, duplicateID); err != nil {
+	if moves.SlotsRepointed, err = StringColumn(transaction, `SELECT id FROM outfit_slots WHERE possession_id = ? ORDER BY seq`, duplicateID); err != nil {
 		return "", err
 	}
 	if _, err := transaction.Exec(`UPDATE outfit_slots SET possession_id = ?, updated_at = ? WHERE possession_id = ?`, keptID, now, duplicateID); err != nil {
@@ -250,7 +250,7 @@ func (s *Store) mergePossessionInTransaction(transaction *databaseTransaction, d
 	if _, err := transaction.Exec(`UPDATE possessions SET merged_into_id = ?, deleted_at = ?, updated_at = ? WHERE id = ?`, keptID, now, now, duplicateID); err != nil {
 		return "", err
 	}
-	mergeID, sequence, err := nextID(transaction, "possession_merges", "possession_merge")
+	mergeID, sequence, err := NextID(transaction, "possession_merges", "possession_merge")
 	if err != nil {
 		return "", err
 	}
@@ -258,7 +258,7 @@ func (s *Store) mergePossessionInTransaction(transaction *databaseTransaction, d
 	if err != nil {
 		return "", err
 	}
-	order, err := nextMergeOrder(transaction)
+	order, err := NextMergeOrder(transaction)
 	if err != nil {
 		return "", err
 	}
@@ -269,9 +269,9 @@ func (s *Store) mergePossessionInTransaction(transaction *databaseTransaction, d
 	return mergeID, nil
 }
 
-// chooseCover makes the earliest linked photo the cover when a possession
+// ChooseCover makes the earliest linked photo the cover when a possession
 // has none, and answers its id ("" when it already had one or has no photo).
-func chooseCover(transaction *databaseTransaction, possessionID string) (string, error) {
+func ChooseCover(transaction *DatabaseTransaction, possessionID string) (string, error) {
 	var hasCover int
 	if err := transaction.QueryRow(`SELECT COUNT(*) FROM possession_photos WHERE possession_id = ? AND is_cover = 1`, possessionID).Scan(&hasCover); err != nil {
 		return "", err
@@ -291,7 +291,7 @@ func chooseCover(transaction *databaseTransaction, possessionID string) (string,
 	return photoID, err
 }
 
-func int64Column(q querier, query string, arguments ...any) ([]int64, error) {
+func int64Column(q Querier, query string, arguments ...any) ([]int64, error) {
 	rows, err := q.Query(query, arguments...)
 	if err != nil {
 		return nil, err
@@ -308,7 +308,7 @@ func int64Column(q querier, query string, arguments ...any) ([]int64, error) {
 	return values, rows.Err()
 }
 
-func possessionMergeByID(q querier, id string) (PossessionMerge, error) {
+func possessionMergeByID(q Querier, id string) (PossessionMerge, error) {
 	var merge PossessionMerge
 	var moved string
 	err := q.QueryRow(`SELECT id, duplicate_possession_id, kept_possession_id, merged_by, reason, moved, merged_at, undone_by, undone_at FROM possession_merges WHERE id = ?`, id).Scan(
@@ -327,7 +327,7 @@ func possessionMergeByID(q querier, id string) (PossessionMerge, error) {
 
 // GetPossessionMerge answers one merge.
 func (s *Store) GetPossessionMerge(id string) (PossessionMerge, error) {
-	return possessionMergeByID(s.db, id)
+	return possessionMergeByID(s.DB, id)
 }
 
 // ListPossessionMerges answers merges, newest first; possessionID narrows
@@ -336,14 +336,14 @@ func (s *Store) ListPossessionMerges(possessionID string, limit, offset int) ([]
 	if limit <= 0 {
 		limit = 100
 	}
-	ids, err := stringColumn(s.db, `SELECT id FROM possession_merges WHERE ? = '' OR duplicate_possession_id = ? OR kept_possession_id = ? ORDER BY seq DESC LIMIT ? OFFSET ?`,
+	ids, err := StringColumn(s.DB, `SELECT id FROM possession_merges WHERE ? = '' OR duplicate_possession_id = ? OR kept_possession_id = ? ORDER BY seq DESC LIMIT ? OFFSET ?`,
 		possessionID, possessionID, possessionID, limit, offset)
 	if err != nil {
 		return nil, err
 	}
 	merges := make([]PossessionMerge, 0, len(ids))
 	for _, id := range ids {
-		merge, err := possessionMergeByID(s.db, id)
+		merge, err := possessionMergeByID(s.DB, id)
 		if err != nil {
 			return nil, err
 		}
@@ -360,23 +360,23 @@ func (s *Store) UndoPossessionMerge(ctx context.Context, mergeID, actor string) 
 	if actor == "" {
 		return PossessionMerge{}, fmt.Errorf("%w: actor is required", ErrInvalid)
 	}
-	s.writeMutex.Lock()
-	defer s.writeMutex.Unlock()
-	transaction, err := s.db.BeginTx(ctx, nil)
+	s.WriteMutex.Lock()
+	defer s.WriteMutex.Unlock()
+	transaction, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return PossessionMerge{}, err
 	}
 	defer transaction.Rollback()
-	if err := s.undoPossessionMergeInTransaction(transaction, mergeID, actor, s.unixNow()); err != nil {
+	if err := s.undoPossessionMergeInTransaction(transaction, mergeID, actor, s.UnixNow()); err != nil {
 		return PossessionMerge{}, err
 	}
 	if err := transaction.Commit(); err != nil {
 		return PossessionMerge{}, err
 	}
-	return possessionMergeByID(s.db, mergeID)
+	return possessionMergeByID(s.DB, mergeID)
 }
 
-func (s *Store) undoPossessionMergeInTransaction(transaction *databaseTransaction, mergeID, actor string, now int64) error {
+func (s *Store) undoPossessionMergeInTransaction(transaction *DatabaseTransaction, mergeID, actor string, now int64) error {
 	merge, err := possessionMergeByID(transaction, mergeID)
 	if err != nil {
 		return err
@@ -385,11 +385,11 @@ func (s *Store) undoPossessionMergeInTransaction(transaction *databaseTransactio
 		return fmt.Errorf("%w: %s was undone already", ErrConflict, mergeID)
 	}
 	duplicateID, keptID, moves := merge.DuplicatePossessionID, merge.KeptPossessionID, merge.Moved
-	order, err := mergeOrderOf(transaction, "possession_merges", mergeID)
+	order, err := MergeOrderOf(transaction, "possession_merges", mergeID)
 	if err != nil {
 		return err
 	}
-	later, err := stringColumn(transaction, `SELECT id FROM possession_merges WHERE merge_order > ? AND undone_at = 0
+	later, err := StringColumn(transaction, `SELECT id FROM possession_merges WHERE merge_order > ? AND undone_at = 0
 		AND (duplicate_possession_id IN (?, ?) OR kept_possession_id IN (?, ?)) ORDER BY merge_order DESC`, order, duplicateID, keptID, duplicateID, keptID)
 	if err != nil {
 		return err
@@ -398,7 +398,7 @@ func (s *Store) undoPossessionMergeInTransaction(transaction *databaseTransactio
 	for _, membership := range moves.OutfitMemberships {
 		outfitIDs = append(outfitIDs, membership.OutfitID)
 	}
-	laterOutfitMerges, err := outfitMergesTouchingAfter(transaction, order, outfitIDs)
+	laterOutfitMerges, err := OutfitMergesTouchingAfter(transaction, order, outfitIDs)
 	if err != nil {
 		return err
 	}
@@ -407,7 +407,7 @@ func (s *Store) undoPossessionMergeInTransaction(transaction *databaseTransactio
 		return fmt.Errorf("%w: undo %s first; it changed the same records later", ErrConflict, strings.Join(later, ", "))
 	}
 	for _, id := range []string{duplicateID, keptID} {
-		if err := saveRevision(transaction, "possessions", "id", id, actor, now); err != nil {
+		if err := SaveRevision(transaction, "possessions", "id", id, actor, now); err != nil {
 			return err
 		}
 	}
@@ -415,7 +415,7 @@ func (s *Store) undoPossessionMergeInTransaction(transaction *databaseTransactio
 		return err
 	}
 	for name, previous := range moves.FilledFields {
-		if _, known := possessionType.column(name); !known {
+		if _, known := possessionType.Column(name); !known {
 			return fmt.Errorf("%s filled %q, which is not a possession column", mergeID, name)
 		}
 		if _, err := transaction.Exec(`UPDATE possessions SET `+name+` = ?, updated_at = ? WHERE id = ?`, previous, now, keptID); err != nil {
@@ -467,7 +467,7 @@ func (s *Store) undoPossessionMergeInTransaction(transaction *databaseTransactio
 			return err
 		}
 	}
-	if _, err := chooseCover(transaction, keptID); err != nil {
+	if _, err := ChooseCover(transaction, keptID); err != nil {
 		return err
 	}
 	for _, sightingID := range moves.SightingsRepointed {
@@ -484,15 +484,15 @@ func (s *Store) undoPossessionMergeInTransaction(transaction *databaseTransactio
 	return err
 }
 
-// nextMergeOrder is one more than the latest merge of either kind, so undo
+// NextMergeOrder is one more than the latest merge of either kind, so undo
 // can tell which merge came after which.
-func nextMergeOrder(transaction *databaseTransaction) (int64, error) {
+func NextMergeOrder(transaction *DatabaseTransaction) (int64, error) {
 	var latest int64
 	err := transaction.QueryRow(`SELECT GREATEST(COALESCE((SELECT MAX(merge_order) FROM possession_merges), 0), COALESCE((SELECT MAX(merge_order) FROM outfit_merges), 0))`).Scan(&latest)
 	return latest + 1, err
 }
 
-func mergeOrderOf(q querier, table, id string) (int64, error) {
+func MergeOrderOf(q Querier, table, id string) (int64, error) {
 	var order int64
 	err := q.QueryRow(`SELECT merge_order FROM `+table+` WHERE id = ?`, id).Scan(&order)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -501,12 +501,12 @@ func mergeOrderOf(q querier, table, id string) (int64, error) {
 	return order, err
 }
 
-// outfitMergesTouchingAfter answers outfit merges, not undone, made after
+// OutfitMergesTouchingAfter answers outfit merges, not undone, made after
 // the merge of this order, that combined any of these outfits.
-func outfitMergesTouchingAfter(q querier, order int64, outfitIDs []string) ([]string, error) {
+func OutfitMergesTouchingAfter(q Querier, order int64, outfitIDs []string) ([]string, error) {
 	found := []string{}
 	for _, outfitID := range outfitIDs {
-		ids, err := stringColumn(q, `SELECT id FROM outfit_merges WHERE undone_at = 0 AND merge_order > ? AND (duplicate_outfit_id = ? OR kept_outfit_id = ?)`, order, outfitID, outfitID)
+		ids, err := StringColumn(q, `SELECT id FROM outfit_merges WHERE undone_at = 0 AND merge_order > ? AND (duplicate_outfit_id = ? OR kept_outfit_id = ?)`, order, outfitID, outfitID)
 		if err != nil {
 			return nil, err
 		}

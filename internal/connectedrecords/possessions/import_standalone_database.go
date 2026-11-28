@@ -170,7 +170,7 @@ func ImportStandaloneDatabase(ctx context.Context, root *Store, sqlitePath, orig
 	}
 	allTables := append(append([]string{}, importedTables...), "originals")
 	tables := []standalonesqlite.Table{}
-	err = postgresstorage.InTransaction(ctx, every.db.pool, func(tx *sql.Tx) error {
+	err = postgresstorage.InTransaction(ctx, every.DB.pool, func(tx *sql.Tx) error {
 		if err := standalonesqlite.RefuseRowsInModule(ctx, tx, ModuleSchema, allTables...); err != nil {
 			return err
 		}
@@ -217,7 +217,7 @@ func ImportStandaloneDatabase(ctx context.Context, root *Store, sqlitePath, orig
 	}
 
 	counts := ImportCounts{Rows: map[string]int64{}}
-	err = postgresstorage.InTransaction(ctx, owned.db.pool, func(tx *sql.Tx) error {
+	err = postgresstorage.InTransaction(ctx, owned.DB.pool, func(tx *sql.Tx) error {
 		// Rows point at one another in both directions (a possession merged
 		// into a later one), so the keys are checked once every row is in.
 		if _, err := tx.ExecContext(ctx, "SET CONSTRAINTS ALL DEFERRED"); err != nil {

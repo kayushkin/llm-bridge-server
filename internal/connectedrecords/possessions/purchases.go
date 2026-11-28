@@ -54,21 +54,21 @@ func (s *Store) CreatePurchase(ctx context.Context, purchase Purchase) (Purchase
 	if len(purchase.Lines) == 0 {
 		return Purchase{}, fmt.Errorf("%w: a purchase needs at least one line", ErrInvalid)
 	}
-	s.writeMutex.Lock()
-	defer s.writeMutex.Unlock()
-	transaction, err := s.db.BeginTx(ctx, nil)
+	s.WriteMutex.Lock()
+	defer s.WriteMutex.Unlock()
+	transaction, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return Purchase{}, err
 	}
 	defer transaction.Rollback()
-	id, sequence, err := nextID(transaction, "purchases", "possession_purchase")
+	id, sequence, err := NextID(transaction, "purchases", "possession_purchase")
 	if err != nil {
 		return Purchase{}, err
 	}
-	now := s.unixNow()
+	now := s.UnixNow()
 	if _, err := transaction.Exec(`INSERT INTO purchases (id, seq, seller, marketplace, order_reference, ordered_at, total_cents, currency, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, sequence, purchase.Seller, purchase.Marketplace, purchase.OrderReference, purchase.OrderedAt, purchase.TotalCents, purchase.Currency, purchase.Source, now); err != nil {
-		if isUniqueViolation(err) {
+		if IsUniqueViolation(err) {
 			return Purchase{}, fmt.Errorf("%w: %s order %s is already recorded", ErrConflict, purchase.Marketplace, purchase.OrderReference)
 		}
 		return Purchase{}, err
@@ -86,7 +86,7 @@ func (s *Store) CreatePurchase(ctx context.Context, purchase Purchase) (Purchase
 		if !slices.Contains(PurchaseLineDispositions, line.Disposition) {
 			return Purchase{}, fmt.Errorf("%w: line %d: disposition must be one of %s", ErrInvalid, index+1, strings.Join(PurchaseLineDispositions, ", "))
 		}
-		lineID, lineSequence, err := nextID(transaction, "purchase_lines", "purchase_line")
+		lineID, lineSequence, err := NextID(transaction, "purchase_lines", "purchase_line")
 		if err != nil {
 			return Purchase{}, err
 		}
@@ -105,7 +105,7 @@ func (s *Store) CreatePurchase(ctx context.Context, purchase Purchase) (Purchase
 func (s *Store) GetPurchase(id string) (Purchase, error) {
 	var purchase Purchase
 	var total sql.NullInt64
-	err := s.db.QueryRow(`SELECT id, seller, marketplace, order_reference, ordered_at, total_cents, currency, source, created_at FROM purchases WHERE id = ? AND deleted_at = 0`, id).Scan(
+	err := s.DB.QueryRow(`SELECT id, seller, marketplace, order_reference, ordered_at, total_cents, currency, source, created_at FROM purchases WHERE id = ? AND deleted_at = 0`, id).Scan(
 		&purchase.ID, &purchase.Seller, &purchase.Marketplace, &purchase.OrderReference, &purchase.OrderedAt, &total, &purchase.Currency, &purchase.Source, &purchase.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Purchase{}, fmt.Errorf("%w: no purchase %s", ErrNotFound, id)
@@ -116,7 +116,7 @@ func (s *Store) GetPurchase(id string) (Purchase, error) {
 	if total.Valid {
 		purchase.TotalCents = &total.Int64
 	}
-	rows, err := s.db.Query(`SELECT id, line_number, title, quantity, unit_price_cents, product_reference, disposition FROM purchase_lines WHERE purchase_id = ? ORDER BY line_number`, id)
+	rows, err := s.DB.Query(`SELECT id, line_number, title, quantity, unit_price_cents, product_reference, disposition FROM purchase_lines WHERE purchase_id = ? ORDER BY line_number`, id)
 	if err != nil {
 		return Purchase{}, err
 	}
@@ -137,7 +137,7 @@ func (s *Store) GetPurchase(id string) (Purchase, error) {
 		return Purchase{}, err
 	}
 	for index := range purchase.Lines {
-		if purchase.Lines[index].PossessionIDs, err = stringColumn(s.db, `SELECT id FROM possessions WHERE purchase_line_id = ? AND deleted_at = 0 ORDER BY seq`, purchase.Lines[index].ID); err != nil {
+		if purchase.Lines[index].PossessionIDs, err = StringColumn(s.DB, `SELECT id FROM possessions WHERE purchase_line_id = ? AND deleted_at = 0 ORDER BY seq`, purchase.Lines[index].ID); err != nil {
 			return Purchase{}, err
 		}
 	}
@@ -156,7 +156,7 @@ func (s *Store) ListPurchases(marketplace string, limit, offset int) ([]Purchase
 		limit = 100
 	}
 	arguments = append(arguments, limit, offset)
-	ids, err := stringColumn(s.db, `SELECT id FROM purchases WHERE `+strings.Join(conditions, " AND ")+` ORDER BY ordered_at DESC, seq DESC LIMIT ? OFFSET ?`, arguments...)
+	ids, err := StringColumn(s.DB, `SELECT id FROM purchases WHERE `+strings.Join(conditions, " AND ")+` ORDER BY ordered_at DESC, seq DESC LIMIT ? OFFSET ?`, arguments...)
 	if err != nil {
 		return nil, err
 	}
@@ -176,14 +176,14 @@ func (s *Store) SetPurchaseLineDisposition(lineID, disposition, actor string) er
 	if !slices.Contains(PurchaseLineDispositions, disposition) {
 		return fmt.Errorf("%w: disposition must be one of %s", ErrInvalid, strings.Join(PurchaseLineDispositions, ", "))
 	}
-	s.writeMutex.Lock()
-	defer s.writeMutex.Unlock()
-	transaction, err := s.db.Begin()
+	s.WriteMutex.Lock()
+	defer s.WriteMutex.Unlock()
+	transaction, err := s.DB.Begin()
 	if err != nil {
 		return err
 	}
 	defer transaction.Rollback()
-	if err := saveRevision(transaction, "purchase_lines", "id", lineID, actor, s.unixNow()); err != nil {
+	if err := SaveRevision(transaction, "purchase_lines", "id", lineID, actor, s.UnixNow()); err != nil {
 		return err
 	}
 	if _, err := transaction.Exec(`UPDATE purchase_lines SET disposition = ? WHERE id = ?`, disposition, lineID); err != nil {
@@ -201,9 +201,9 @@ func (s *Store) DeletePurchase(ctx context.Context, id, actor, reason string) ([
 	if actor == "" || reason == "" {
 		return nil, fmt.Errorf("%w: actor and reason are required", ErrInvalid)
 	}
-	s.writeMutex.Lock()
-	defer s.writeMutex.Unlock()
-	transaction, err := s.db.BeginTx(ctx, nil)
+	s.WriteMutex.Lock()
+	defer s.WriteMutex.Unlock()
+	transaction, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -214,18 +214,18 @@ func (s *Store) DeletePurchase(ctx context.Context, id, actor, reason string) ([
 	} else if err != nil {
 		return nil, err
 	}
-	holders, err := stringColumn(transaction, `SELECT id FROM possessions WHERE deleted_at = 0 AND purchase_line_id IN (SELECT id FROM purchase_lines WHERE purchase_id = ?)`, id)
+	holders, err := StringColumn(transaction, `SELECT id FROM possessions WHERE deleted_at = 0 AND purchase_line_id IN (SELECT id FROM purchase_lines WHERE purchase_id = ?)`, id)
 	if err != nil {
 		return nil, err
 	}
 	if len(holders) > 0 {
 		return nil, fmt.Errorf("%w: %s came from it; point them elsewhere first", ErrConflict, strings.Join(holders, ", "))
 	}
-	lineIDs, err := stringColumn(transaction, `SELECT id FROM purchase_lines WHERE purchase_id = ?`, id)
+	lineIDs, err := StringColumn(transaction, `SELECT id FROM purchase_lines WHERE purchase_id = ?`, id)
 	if err != nil {
 		return nil, err
 	}
-	now := s.unixNow()
+	now := s.UnixNow()
 	withdrawn := []string{}
 	// Written as a Resolution with only its action and explanation set
 	// would be, since the question is read back as one.
@@ -234,12 +234,12 @@ func (s *Store) DeletePurchase(ctx context.Context, id, actor, reason string) ([
 		Explanation string `json:"explanation,omitempty"`
 	}{Action: "withdrawn", Explanation: reason})
 	for _, lineID := range lineIDs {
-		questions, err := stringColumn(transaction, `SELECT id FROM owner_questions WHERE answered_at = 0 AND strpos(choices, ?) > 0`, jsonField("purchase_line_id", lineID))
+		questions, err := StringColumn(transaction, `SELECT id FROM owner_questions WHERE answered_at = 0 AND strpos(choices, ?) > 0`, JSONField("purchase_line_id", lineID))
 		if err != nil {
 			return nil, err
 		}
 		for _, questionID := range questions {
-			if err := saveRevision(transaction, "owner_questions", "id", questionID, actor, now); err != nil {
+			if err := SaveRevision(transaction, "owner_questions", "id", questionID, actor, now); err != nil {
 				return nil, err
 			}
 			if _, err := transaction.Exec(`UPDATE owner_questions SET answer_text = ?, resolution = ?, answered_by = ?, answered_at = ? WHERE id = ?`,
@@ -249,7 +249,7 @@ func (s *Store) DeletePurchase(ctx context.Context, id, actor, reason string) ([
 			withdrawn = append(withdrawn, questionID)
 		}
 	}
-	if err := saveRevision(transaction, "purchases", "id", id, actor, now); err != nil {
+	if err := SaveRevision(transaction, "purchases", "id", id, actor, now); err != nil {
 		return nil, err
 	}
 	if _, err := transaction.Exec(`UPDATE purchases SET deleted_at = ? WHERE id = ?`, now, id); err != nil {
