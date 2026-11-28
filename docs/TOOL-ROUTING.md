@@ -248,7 +248,7 @@ Phase 1 — catalog as data:
 
 Phase 2 — wire into session start:
 - `internal/harness/manifests.go` calls `toolrouting.Route` to get the tool set.
-- `internal/server/tool_provision.go` renders the CLAUDE.md/MCP/settings outputs from the routed tool set.
+- `internal/sessions/tool_provision.go` renders the CLAUDE.md/MCP/settings outputs from the routed tool set.
 
 Phase 3 — verification:
 - Conformance test per harness: spawn it, ask it to use each capability, assert it routed to the expected tool (native vs. CLI).
