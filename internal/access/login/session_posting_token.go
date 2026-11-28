@@ -1,4 +1,4 @@
-package server
+package login
 
 // A session posting token lets a session's agent post into its own session —
 // share a file, or offer an action for a person to confirm — and do nothing
@@ -46,10 +46,10 @@ import (
 // Names of the variables every local harness child receives for posting into
 // its session.
 const (
-	sessionPostingTokenEnvironmentVariable = "LLM_BRIDGE_SESSION_POSTING_TOKEN"
-	sessionFilesURLEnvironmentVariable     = "LLM_BRIDGE_SESSION_FILES_URL"
-	sessionActionsURLEnvironmentVariable   = "LLM_BRIDGE_SESSION_ACTIONS_URL"
-	sessionImagesURLEnvironmentVariable    = "LLM_BRIDGE_SESSION_IMAGES_URL"
+	SessionPostingTokenEnvironmentVariable = "LLM_BRIDGE_SESSION_POSTING_TOKEN"
+	SessionFilesURLEnvironmentVariable     = "LLM_BRIDGE_SESSION_FILES_URL"
+	SessionActionsURLEnvironmentVariable   = "LLM_BRIDGE_SESSION_ACTIONS_URL"
+	SessionImagesURLEnvironmentVariable    = "LLM_BRIDGE_SESSION_IMAGES_URL"
 )
 
 // v2 tokens also carry the spawn they were minted for (session_posting_spawns
@@ -58,29 +58,29 @@ const sessionPostingTokenPrefix = "llm-bridge-session-posting-token-v2"
 
 const sessionPostingTokenSignatureDomain = "llm-bridge-server session posting token v2\x00"
 
-// encodeSessionPostingToken signs a token naming sessionID and the spawn it
+// EncodeSessionPostingToken signs a token naming sessionID and the spawn it
 // was minted for.
 //
 // Shape: <prefix>.<base64url session id>.<base64url spawn key>.<signature>.
 // The session id is base64url-encoded because a caller-minted session id may
 // contain dots.
-func (codec *harnessChildTokenSigner) encodeSessionPostingToken(sessionID, spawnKey string) string {
+func (codec *HarnessChildTokenSigner) EncodeSessionPostingToken(sessionID, spawnKey string) string {
 	signedPortion := sessionPostingTokenPrefix + "." + base64.RawURLEncoding.EncodeToString([]byte(sessionID)) +
 		"." + base64.RawURLEncoding.EncodeToString([]byte(spawnKey))
 	return signedPortion + "." + codec.sessionPostingTokenSignature(signedPortion)
 }
 
-func (codec *harnessChildTokenSigner) sessionPostingTokenSignature(signedPortion string) string {
-	mac := hmac.New(sha256.New, codec.signingKey)
+func (codec *HarnessChildTokenSigner) sessionPostingTokenSignature(signedPortion string) string {
+	mac := hmac.New(sha256.New, codec.SigningKey)
 	mac.Write([]byte(sessionPostingTokenSignatureDomain))
 	mac.Write([]byte(signedPortion))
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
-// decodeSessionPostingToken verifies a token's signature and returns the
+// DecodeSessionPostingToken verifies a token's signature and returns the
 // session and spawn it names. It does not say the spawn is still the
-// session's: verifiedPostingSession does.
-func (codec *harnessChildTokenSigner) decodeSessionPostingToken(token string) (sessionID, spawnKey string, err error) {
+// session's: VerifiedPostingSession does.
+func (codec *HarnessChildTokenSigner) DecodeSessionPostingToken(token string) (sessionID, spawnKey string, err error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 4 || parts[0] != sessionPostingTokenPrefix {
 		return "", "", errors.New("not a session posting token")
@@ -100,21 +100,21 @@ func (codec *harnessChildTokenSigner) decodeSessionPostingToken(token string) (s
 	return string(sessionBytes), string(spawnBytes), nil
 }
 
-// verifiedPostingSession verifies a session posting token and returns the
+// VerifiedPostingSession verifies a session posting token and returns the
 // session it belongs to, refusing one minted for an earlier spawn of that
 // session: each spawn records a new spawn key, so a token copied out of a
 // transcript dies when the session is next spawned.
-func (s *Server) verifiedPostingSession(token string) (*store.Session, *requestcaller.CredentialError) {
-	sessionID, spawnKey, err := s.harnessChildTokenSigner.decodeSessionPostingToken(strings.TrimSpace(token))
+func (s *Service) VerifiedPostingSession(token string) (*store.Session, *requestcaller.CredentialError) {
+	sessionID, spawnKey, err := s.HarnessChildTokenSigner().DecodeSessionPostingToken(strings.TrimSpace(token))
 	if err != nil {
 		return nil, requestcaller.NewCredentialError(http.StatusUnauthorized, "invalid_session_posting_token", err.Error())
 	}
-	session, err := s.store.GetSession(sessionID)
+	session, err := s.Store.GetSession(sessionID)
 	if err != nil {
 		return nil, requestcaller.NewCredentialError(http.StatusUnauthorized, "invalid_session_posting_token", fmt.Sprintf(
 			"the session posting token names session %s, which this server does not have", sessionID))
 	}
-	currentSpawnKey, recorded, err := s.store.SessionPostingSpawnKey(sessionID)
+	currentSpawnKey, recorded, err := s.Store.SessionPostingSpawnKey(sessionID)
 	if err != nil {
 		return nil, requestcaller.NewCredentialError(http.StatusInternalServerError, "session_posting_spawn_unreadable", err.Error())
 	}
@@ -125,8 +125,8 @@ func (s *Server) verifiedPostingSession(token string) (*store.Session, *requestc
 	return session, nil
 }
 
-// newSessionPostingSpawnKey draws the random value one spawn's token carries.
-func newSessionPostingSpawnKey() (string, error) {
+// NewSessionPostingSpawnKey draws the random value one spawn's token carries.
+func NewSessionPostingSpawnKey() (string, error) {
 	key := make([]byte, 24)
 	if _, err := rand.Read(key); err != nil {
 		return "", err
@@ -134,13 +134,13 @@ func newSessionPostingSpawnKey() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(key), nil
 }
 
-// sessionPostingEnvironmentForInstance is sessionPostingEnvironment for a spawn
+// SessionPostingEnvironmentForInstance is SessionPostingEnvironment for a spawn
 // on inst. A local child receives environment variables directly and a runner
 // child through RunnerSpawn.Env; the ssh transport has no way to deliver them,
 // and StartOnInstance refuses a session that carries any there. Posting is an
 // extra, so on ssh the session starts without it and the log says so. The
 // addresses are this server's, which a runner reaches through its tunnel.
-func (s *Server) sessionPostingEnvironmentForInstance(session *store.Session, inst *msg.Instance) []string {
+func (s *Service) SessionPostingEnvironmentForInstance(session *store.Session, inst *msg.Instance) []string {
 	if inst.Machine == nil || inst.Machine.Transport == msg.TransportSSH {
 		transport := msg.Transport("unknown")
 		if inst.Machine != nil {
@@ -149,25 +149,25 @@ func (s *Server) sessionPostingEnvironmentForInstance(session *store.Session, in
 		log.Printf("[session-posting] %s: instance %s uses the %s transport, which cannot deliver environment variables; the agent cannot share files or offer actions", session.SessionID, inst.ID, transport)
 		return nil
 	}
-	return s.sessionPostingEnvironment(session)
+	return s.SessionPostingEnvironment(session)
 }
 
-// sessionPostingEnvironment returns the variables that let a session's agent
+// SessionPostingEnvironment returns the variables that let a session's agent
 // post into it. Nothing when this server's own address is unknown, and no
 // files address when file-store is not wired: posting is an extra, and a spawn
 // must not fail for want of it.
-func (s *Server) sessionPostingEnvironment(session *store.Session) []string {
+func (s *Service) SessionPostingEnvironment(session *store.Session) []string {
 	gatewayURL := s.gatewayURLForSessionAgents()
 	if gatewayURL == "" {
 		log.Printf("[session-posting] %s: neither LLMBRIDGE_PUBLIC_URL nor LLMBRIDGE_LISTEN_ADDR gives this server's address; the agent cannot share files or offer actions", session.SessionID)
 		return nil
 	}
-	spawnKey, err := newSessionPostingSpawnKey()
+	spawnKey, err := NewSessionPostingSpawnKey()
 	if err != nil {
 		log.Printf("[session-posting] %s: draw a spawn key: %v; the agent cannot share files or offer actions", session.SessionID, err)
 		return nil
 	}
-	if err := s.store.RecordSessionPostingSpawn(session.SessionID, spawnKey); err != nil {
+	if err := s.Store.RecordSessionPostingSpawn(session.SessionID, spawnKey); err != nil {
 		log.Printf("[session-posting] %s: %v; the agent cannot share files or offer actions", session.SessionID, err)
 		return nil
 	}
@@ -180,13 +180,13 @@ func (s *Server) sessionPostingEnvironment(session *store.Session) []string {
 // there as they do in the agent's own shell, and the agent's token stays
 // valid. Nothing, with the reason logged, when the session has never been
 // spawned or this server's address is unknown.
-func (s *Server) SessionPostingEnvironmentOfCurrentSpawn(session *store.Session) []string {
+func (s *Service) SessionPostingEnvironmentOfCurrentSpawn(session *store.Session) []string {
 	gatewayURL := s.gatewayURLForSessionAgents()
 	if gatewayURL == "" {
 		log.Printf("[session-posting] %s: neither LLMBRIDGE_PUBLIC_URL nor LLMBRIDGE_LISTEN_ADDR gives this server's address; a button's command cannot post into the session", session.SessionID)
 		return nil
 	}
-	spawnKey, recorded, err := s.store.SessionPostingSpawnKey(session.SessionID)
+	spawnKey, recorded, err := s.Store.SessionPostingSpawnKey(session.SessionID)
 	if err != nil {
 		log.Printf("[session-posting] %s: read the spawn key: %v; a button's command cannot post into the session", session.SessionID, err)
 		return nil
@@ -198,16 +198,16 @@ func (s *Server) SessionPostingEnvironmentOfCurrentSpawn(session *store.Session)
 	return s.sessionPostingEnvironmentForSpawn(session, gatewayURL, spawnKey)
 }
 
-func (s *Server) sessionPostingEnvironmentForSpawn(session *store.Session, gatewayURL, spawnKey string) []string {
+func (s *Service) sessionPostingEnvironmentForSpawn(session *store.Session, gatewayURL, spawnKey string) []string {
 	sessionURL := fmt.Sprintf("%s/sessions/%s", gatewayURL, url.PathEscape(session.SessionID))
 	environment := []string{
-		sessionPostingTokenEnvironmentVariable + "=" + s.harnessChildTokenSigner.encodeSessionPostingToken(session.SessionID, spawnKey),
-		sessionActionsURLEnvironmentVariable + "=" + sessionURL + "/actions",
+		SessionPostingTokenEnvironmentVariable + "=" + s.HarnessChildTokenSigner().EncodeSessionPostingToken(session.SessionID, spawnKey),
+		SessionActionsURLEnvironmentVariable + "=" + sessionURL + "/actions",
 	}
-	if s.fileStore != nil {
+	if s.FileStore() != nil {
 		environment = append(environment,
-			sessionFilesURLEnvironmentVariable+"="+sessionURL+"/files",
-			sessionImagesURLEnvironmentVariable+"="+sessionURL+"/images")
+			SessionFilesURLEnvironmentVariable+"="+sessionURL+"/files",
+			SessionImagesURLEnvironmentVariable+"="+sessionURL+"/images")
 	}
 	return environment
 }

@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/login"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access/accesstokens"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
@@ -171,7 +173,7 @@ func TestUnlinkingRevokesTheLoginSessionsOfThatBindingOnly(t *testing.T) {
 		}
 	}
 	whoBound := httptest.NewRequest("GET", "/auth/principal", nil)
-	whoBound.AddCookie(&http.Cookie{Name: loginSessionCookieName, Value: "bound-token"})
+	whoBound.AddCookie(&http.Cookie{Name: login.LoginSessionCookieName, Value: "bound-token"})
 	if answer := serve(gated.server, whoBound); answer.Code != http.StatusUnauthorized || !strings.Contains(answer.Body.String(), "login_session_revoked") {
 		t.Fatalf("the unlinked identity's cookie = %d %s, want 401 login_session_revoked", answer.Code, answer.Body.String())
 	}

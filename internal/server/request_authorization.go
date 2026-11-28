@@ -43,6 +43,8 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/login"
+
 	"github.com/kayushkin/llm-bridge-server/internal/peers"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
@@ -997,7 +999,7 @@ func (s *Server) authorizeAndServe(w http.ResponseWriter, r *http.Request) {
 	// posting token.
 	_, hasAuthorization := r.Header["Authorization"]
 	presentedBearer := bearerTokenOf(r)
-	presentsPostingToken := hasAuthorization && !isSessionAgentToken(presentedBearer) && !isServicePrincipalToken(presentedBearer)
+	presentsPostingToken := hasAuthorization && !login.IsSessionAgentToken(presentedBearer) && !login.IsServicePrincipalToken(presentedBearer)
 	if presentsPostingToken && rule.class == routeSessionOwnerOrItsAgentPostsIntoSession {
 		caller, credentialError := s.postingAgentOfRequest(r, pattern, rule)
 		if credentialError != nil {
@@ -1207,11 +1209,11 @@ func (s *Server) principalOfRequest(r *http.Request, rule routeAccessRule) (stri
 		token := bearerTokenOf(r)
 		// A service's own token is accepted on every route, as the principal
 		// it was issued for (service_principal_tokens.go).
-		if isServicePrincipalToken(token) {
-			principalID, credentialError := s.principalOfServicePrincipalToken(r.Context(), r, token)
+		if login.IsServicePrincipalToken(token) {
+			principalID, credentialError := s.login.PrincipalOfServicePrincipalToken(r.Context(), r, token)
 			return principalID, "", "", credentialError
 		}
-		if rule.class != routePrincipalOrSessionAgentThroughStoreProxy && !isSessionAgentToken(token) {
+		if rule.class != routePrincipalOrSessionAgentThroughStoreProxy && !login.IsSessionAgentToken(token) {
 			return "", "", "", requestcaller.NewCredentialError(http.StatusUnauthorized, "authorization_header_not_accepted", fmt.Sprintf(
 				"an Authorization header is accepted on %s/, %s/, %s/ and %s/ as a session agent token, and elsewhere only as an administrator's session agent token; this route takes the login cookie or %s",
 				issuesMountPrefix, grantsMountPrefix, mailMountPrefix, referencesMountPrefix, requestcaller.ServiceTokenHeader))
@@ -1220,17 +1222,17 @@ func (s *Server) principalOfRequest(r *http.Request, rule routeAccessRule) (stri
 			return "", "", "", requestcaller.NewCredentialError(http.StatusUnauthorized, "invalid_session_agent_token",
 				"the Authorization header must be \"Bearer <session agent token>\"")
 		}
-		claims, err := s.sessionAgentTokenClaimsOfLiveSession(token)
+		claims, err := s.login.SessionAgentTokenClaimsOfLiveSession(token)
 		if err != nil {
 			return "", "", "", requestcaller.NewCredentialError(http.StatusUnauthorized, "invalid_session_agent_token", err.Error())
 		}
 		return claims.PrincipalID, "", claims.SessionID, nil
 	}
-	session, refusal := s.liveLoginSessionOfRequest(r)
+	session, refusal := s.login.LiveLoginSessionOfRequest(r)
 	if refusal != nil {
 		return "", "", "", refusal
 	}
-	if refusal := csrfRefusalOf(r, session); refusal != nil {
+	if refusal := login.CsrfRefusalOf(r, session); refusal != nil {
 		return "", "", "", refusal
 	}
 	return session.PrincipalID, session.ID, "", nil
@@ -1245,7 +1247,7 @@ func (s *Server) postingAgentOfRequest(r *http.Request, pattern string, rule rou
 		return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "invalid_session_posting_token",
 			"the Authorization header must be \"Bearer <session posting token>\"")
 	}
-	tokenSession, credentialError := s.verifiedPostingSession(token)
+	tokenSession, credentialError := s.login.VerifiedPostingSession(token)
 	if credentialError != nil {
 		return requestcaller.Caller{}, credentialError
 	}

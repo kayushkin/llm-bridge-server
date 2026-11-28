@@ -1,4 +1,4 @@
-package server
+package login
 
 // Session agent tokens: how an agent's tool calls act as the session's
 // principal.
@@ -42,8 +42,8 @@ import (
 
 // Names of the variables a principal's harness child receives.
 const (
-	gatewayURLEnvironmentVariable     = "LLM_BRIDGE_GATEWAY_URL"
-	principalTokenEnvironmentVariable = "LLM_BRIDGE_PRINCIPAL_TOKEN"
+	GatewayURLEnvironmentVariable     = "LLM_BRIDGE_GATEWAY_URL"
+	PrincipalTokenEnvironmentVariable = "LLM_BRIDGE_PRINCIPAL_TOKEN"
 )
 
 // sessionAgentTokenPrefix starts every session agent token, so a token is
@@ -60,144 +60,144 @@ const sessionAgentTokenSignatureDomain = "llm-bridge-server session agent token 
 // than this without being respawned loses gateway access until it is.
 const sessionAgentTokenLifetime = 24 * time.Hour
 
-// sessionStatesThatEndSessionAgentTokens are the terminal session states: a
+// SessionStatesThatEndSessionAgentTokens are the terminal session states: a
 // session in one of them has no running agent that should still act.
-var sessionStatesThatEndSessionAgentTokens = []msg.SessionState{
+var SessionStatesThatEndSessionAgentTokens = []msg.SessionState{
 	msg.SessionCompleted,
 	msg.SessionError,
 	msg.SessionAborted,
 	msg.SessionDisconnected,
 }
 
-// harnessChildTokenSigner signs and verifies the two tokens a harness child
+// HarnessChildTokenSigner signs and verifies the two tokens a harness child
 // is given: the session agent token (this file) and the session posting token
 // (session_posting_token.go), each under its own domain separator, with the
 // key in LLMBRIDGE_DEMO_LOGIN_SIGNING_KEY. Until 2026-10-19 it also signed the
 // login cookie and was named for it.
-type harnessChildTokenSigner struct {
-	signingKey []byte
-	now        func() time.Time
+type HarnessChildTokenSigner struct {
+	SigningKey []byte
+	Now        func() time.Time
 }
 
-// sessionAgentTokenClaims is what a verified token says.
-type sessionAgentTokenClaims struct {
+// SessionAgentTokenClaims is what a verified token says.
+type SessionAgentTokenClaims struct {
 	PrincipalID string
 	SessionID   string
 	ExpiresAt   time.Time
 }
 
-// encodeSessionAgentToken signs claims with the demo login signing key.
+// EncodeSessionAgentToken signs claims with the demo login signing key.
 //
 // Shape: <prefix>.<principal id>.<base64url session id>.<expiry seconds>.<signature>.
 // The session id is base64url-encoded because a caller-minted session id may
 // contain dots.
-func (codec *harnessChildTokenSigner) encodeSessionAgentToken(claims sessionAgentTokenClaims) string {
+func (codec *HarnessChildTokenSigner) EncodeSessionAgentToken(claims SessionAgentTokenClaims) string {
 	signedPortion := sessionAgentTokenPrefix + "." + claims.PrincipalID + "." +
 		base64.RawURLEncoding.EncodeToString([]byte(claims.SessionID)) + "." +
 		strconv.FormatInt(claims.ExpiresAt.Unix(), 10)
 	return signedPortion + "." + codec.sessionAgentTokenSignature(signedPortion)
 }
 
-func (codec *harnessChildTokenSigner) sessionAgentTokenSignature(signedPortion string) string {
-	mac := hmac.New(sha256.New, codec.signingKey)
+func (codec *HarnessChildTokenSigner) sessionAgentTokenSignature(signedPortion string) string {
+	mac := hmac.New(sha256.New, codec.SigningKey)
 	mac.Write([]byte(sessionAgentTokenSignatureDomain))
 	mac.Write([]byte(signedPortion))
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
-// decodeSessionAgentToken verifies a token's shape, signature and expiry.
-// It does not look at the session; sessionAgentTokenClaimsOfLiveSession does.
-func (codec *harnessChildTokenSigner) decodeSessionAgentToken(token string) (sessionAgentTokenClaims, error) {
+// DecodeSessionAgentToken verifies a token's shape, signature and expiry.
+// It does not look at the session; SessionAgentTokenClaimsOfLiveSession does.
+func (codec *HarnessChildTokenSigner) DecodeSessionAgentToken(token string) (SessionAgentTokenClaims, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 5 || parts[0] != sessionAgentTokenPrefix {
-		return sessionAgentTokenClaims{}, errors.New("not a session agent token")
+		return SessionAgentTokenClaims{}, errors.New("not a session agent token")
 	}
 	signedPortion := strings.Join(parts[:4], ".")
 	if !hmac.Equal([]byte(parts[4]), []byte(codec.sessionAgentTokenSignature(signedPortion))) {
-		return sessionAgentTokenClaims{}, errors.New("session agent token signature does not verify")
+		return SessionAgentTokenClaims{}, errors.New("session agent token signature does not verify")
 	}
-	if !isWellFormedPrincipalID(parts[1]) {
-		return sessionAgentTokenClaims{}, errors.New("session agent token names a malformed principal id")
+	if !IsWellFormedPrincipalID(parts[1]) {
+		return SessionAgentTokenClaims{}, errors.New("session agent token names a malformed principal id")
 	}
 	sessionID, err := base64.RawURLEncoding.DecodeString(parts[2])
 	if err != nil || len(sessionID) == 0 {
-		return sessionAgentTokenClaims{}, errors.New("session agent token names a malformed session id")
+		return SessionAgentTokenClaims{}, errors.New("session agent token names a malformed session id")
 	}
 	expirySeconds, err := strconv.ParseInt(parts[3], 10, 64)
 	if err != nil {
-		return sessionAgentTokenClaims{}, errors.New("session agent token expiry is not a number")
+		return SessionAgentTokenClaims{}, errors.New("session agent token expiry is not a number")
 	}
 	expiresAt := time.Unix(expirySeconds, 0).UTC()
-	if !codec.now().Before(expiresAt) {
-		return sessionAgentTokenClaims{}, errors.New("session agent token has expired")
+	if !codec.Now().Before(expiresAt) {
+		return SessionAgentTokenClaims{}, errors.New("session agent token has expired")
 	}
-	return sessionAgentTokenClaims{PrincipalID: parts[1], SessionID: string(sessionID), ExpiresAt: expiresAt}, nil
+	return SessionAgentTokenClaims{PrincipalID: parts[1], SessionID: string(sessionID), ExpiresAt: expiresAt}, nil
 }
 
-// isSessionAgentToken reports whether a bearer token is shaped as a session
+// IsSessionAgentToken reports whether a bearer token is shaped as a session
 // agent token rather than a session posting token. It verifies nothing: it
 // only picks which verifier the token goes to.
-func isSessionAgentToken(token string) bool {
+func IsSessionAgentToken(token string) bool {
 	return strings.HasPrefix(token, sessionAgentTokenPrefix+".")
 }
 
-// sessionAgentTokenClaimsOfLiveSession verifies a presented token and the
+// SessionAgentTokenClaimsOfLiveSession verifies a presented token and the
 // session it names, and returns its claims: the principal the request acts as
 // and the session whose agent holds the token.
-func (s *Server) sessionAgentTokenClaimsOfLiveSession(token string) (sessionAgentTokenClaims, error) {
-	claims, err := s.harnessChildTokenSigner.decodeSessionAgentToken(token)
+func (s *Service) SessionAgentTokenClaimsOfLiveSession(token string) (SessionAgentTokenClaims, error) {
+	claims, err := s.HarnessChildTokenSigner().DecodeSessionAgentToken(token)
 	if err != nil {
-		return sessionAgentTokenClaims{}, err
+		return SessionAgentTokenClaims{}, err
 	}
-	session, err := s.store.GetSession(claims.SessionID)
+	session, err := s.Store.GetSession(claims.SessionID)
 	if err != nil {
-		return sessionAgentTokenClaims{}, fmt.Errorf("session agent token names session %s, which does not exist", claims.SessionID)
+		return SessionAgentTokenClaims{}, fmt.Errorf("session agent token names session %s, which does not exist", claims.SessionID)
 	}
 	if session.PrincipalID != claims.PrincipalID {
-		return sessionAgentTokenClaims{}, fmt.Errorf("session agent token names principal %s, and session %s is not started as that principal", claims.PrincipalID, claims.SessionID)
+		return SessionAgentTokenClaims{}, fmt.Errorf("session agent token names principal %s, and session %s is not started as that principal", claims.PrincipalID, claims.SessionID)
 	}
-	for _, terminalState := range sessionStatesThatEndSessionAgentTokens {
+	for _, terminalState := range SessionStatesThatEndSessionAgentTokens {
 		if msg.SessionState(session.State) == terminalState {
-			return sessionAgentTokenClaims{}, fmt.Errorf("session %s has ended (state %s), and its session agent token ended with it", claims.SessionID, session.State)
+			return SessionAgentTokenClaims{}, fmt.Errorf("session %s has ended (state %s), and its session agent token ended with it", claims.SessionID, session.State)
 		}
 	}
 	return claims, nil
 }
 
-// sessionAgentEnvironment returns the variables a session's harness child
+// SessionAgentEnvironment returns the variables a session's harness child
 // receives so its tool calls can act as the session's principal: none unless
 // the session is started as a principal. A gateway
 // URL that cannot be determined is an error — a child given a token and no
 // place to send it would fail at its first tool call instead of at spawn.
-func (s *Server) sessionAgentEnvironment(session *store.Session) ([]string, error) {
+func (s *Service) SessionAgentEnvironment(session *store.Session) ([]string, error) {
 	if session.PrincipalID == "" {
 		return nil, nil
 	}
 	gatewayURL := s.gatewayURLForSessionAgents()
 	if gatewayURL == "" {
 		return nil, fmt.Errorf("session %s acts for %s and needs %s, and neither LLMBRIDGE_PUBLIC_URL nor LLMBRIDGE_LISTEN_ADDR gives this server's address",
-			session.SessionID, session.PrincipalID, gatewayURLEnvironmentVariable)
+			session.SessionID, session.PrincipalID, GatewayURLEnvironmentVariable)
 	}
-	token := s.harnessChildTokenSigner.encodeSessionAgentToken(sessionAgentTokenClaims{
+	token := s.HarnessChildTokenSigner().EncodeSessionAgentToken(SessionAgentTokenClaims{
 		PrincipalID: session.PrincipalID,
 		SessionID:   session.SessionID,
-		ExpiresAt:   s.harnessChildTokenSigner.now().Add(sessionAgentTokenLifetime).UTC().Truncate(time.Second),
+		ExpiresAt:   s.HarnessChildTokenSigner().Now().Add(sessionAgentTokenLifetime).UTC().Truncate(time.Second),
 	})
 	return []string{
-		gatewayURLEnvironmentVariable + "=" + gatewayURL,
-		principalTokenEnvironmentVariable + "=" + token,
+		GatewayURLEnvironmentVariable + "=" + gatewayURL,
+		PrincipalTokenEnvironmentVariable + "=" + token,
 	}, nil
 }
 
 // gatewayURLForSessionAgents is the base URL a harness child reaches this
 // server at: LLMBRIDGE_PUBLIC_URL when set, otherwise the address it listens
 // on, the same one the permission prehook URLs are built from.
-func (s *Server) gatewayURLForSessionAgents() string {
-	if s.cfg.PublicURL != "" {
-		return strings.TrimRight(s.cfg.PublicURL, "/")
+func (s *Service) gatewayURLForSessionAgents() string {
+	if s.Cfg.PublicURL != "" {
+		return strings.TrimRight(s.Cfg.PublicURL, "/")
 	}
-	if s.cfg.ListenAddr == "" {
+	if s.Cfg.ListenAddr == "" {
 		return ""
 	}
-	return httproutes.PublicBaseURL(s.cfg.ListenAddr)
+	return httproutes.PublicBaseURL(s.Cfg.ListenAddr)
 }

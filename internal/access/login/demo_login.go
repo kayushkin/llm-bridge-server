@@ -1,4 +1,4 @@
-package server
+package login
 
 // Demo login and the identity-carrying store proxies.
 //
@@ -37,9 +37,9 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 )
 
-// isWellFormedPrincipalID accepts principal-store's id shape (principal_000001):
+// IsWellFormedPrincipalID accepts principal-store's id shape (principal_000001):
 // the principal_ prefix followed by letters, digits and underscores only.
-func isWellFormedPrincipalID(principalID string) bool {
+func IsWellFormedPrincipalID(principalID string) bool {
 	const prefix = "principal_"
 	if !strings.HasPrefix(principalID, prefix) || len(principalID) == len(prefix) {
 		return false
@@ -58,10 +58,10 @@ type demoLoginRequest struct {
 	PrincipalID string `json:"principal_id"`
 }
 
-// handleDemoLogin signs the caller in as a human, active principal that
+// HandleDemoLogin signs the caller in as a human, active principal that
 // principal-store has, unless demo login is switched off.
-func (s *Server) handleDemoLogin(w http.ResponseWriter, r *http.Request) {
-	if !s.cfg.DemoLoginEnabled {
+func (s *Service) HandleDemoLogin(w http.ResponseWriter, r *http.Request) {
+	if !s.Cfg.DemoLoginEnabled {
 		httpjson.WriteJSONError(w, http.StatusNotFound, "demo_login_disabled",
 			"demo login is switched off on this server (LLMBRIDGE_DEMO_LOGIN_ENABLED=false); sign in with GET /auth/entra/start")
 		return
@@ -73,12 +73,12 @@ func (s *Server) handleDemoLogin(w http.ResponseWriter, r *http.Request) {
 		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_request", fmt.Sprintf("body must be {\"principal_id\":\"principal_000001\"}: %v", err))
 		return
 	}
-	if !isWellFormedPrincipalID(request.PrincipalID) {
+	if !IsWellFormedPrincipalID(request.PrincipalID) {
 		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_principal_id", fmt.Sprintf(
 			"principal_id %q is not a principal-store id (principal_000001); a name or email is not accepted, because neither is unique", request.PrincipalID))
 		return
 	}
-	principal, err := s.principalStore.Get(r.Context(), request.PrincipalID, false)
+	principal, err := s.PrincipalStore().Get(r.Context(), request.PrincipalID, false)
 	if err != nil {
 		if errors.Is(err, principals.ErrNotFound) {
 			httpjson.WriteJSONError(w, http.StatusBadRequest, "unknown_principal", fmt.Sprintf(
@@ -118,10 +118,10 @@ func requestArrivedOverHTTPS(r *http.Request) bool {
 	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
-// removeCookieFromRequestHeader rewrites the Cookie header without the named
+// RemoveCookieFromRequestHeader rewrites the Cookie header without the named
 // cookie, keeping every other cookie as sent. The login cookie is this
 // gateway's credential and kanban-store has no use for it.
-func removeCookieFromRequestHeader(header http.Header, cookieName string) {
+func RemoveCookieFromRequestHeader(header http.Header, cookieName string) {
 	cookieLines := header.Values("Cookie")
 	if len(cookieLines) == 0 {
 		return

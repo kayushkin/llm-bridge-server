@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/login"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access/accesstokens"
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
@@ -206,12 +208,12 @@ func (harness *entraTestHarness) start(t *testing.T, returnTo string) startedSig
 	query := location.Query()
 	started.state, started.nonce, started.codeChallenge = query.Get("state"), query.Get("nonce"), query.Get("code_challenge")
 	for _, cookie := range response.Result().Cookies() {
-		if cookie.Name == entraBrowserBindingCookieName {
+		if cookie.Name == login.EntraBrowserBindingCookieName {
 			started.browserBinding = cookie
 		}
 	}
 	if started.browserBinding == nil {
-		t.Fatalf("start set no %s cookie", entraBrowserBindingCookieName)
+		t.Fatalf("start set no %s cookie", login.EntraBrowserBindingCookieName)
 	}
 	return started
 }
@@ -256,7 +258,7 @@ func (harness *entraTestHarness) onlyAttempt(t *testing.T) store.LoginAttempt {
 
 func loginCookieOrNil(recorder *httptest.ResponseRecorder) *http.Cookie {
 	for _, cookie := range recorder.Result().Cookies() {
-		if cookie.Name == loginSessionCookieName && cookie.Value != "" {
+		if cookie.Name == login.LoginSessionCookieName && cookie.Value != "" {
 			return cookie
 		}
 	}
@@ -276,7 +278,7 @@ func TestEntraSignInStartsWithPKCEAndAHashedState(t *testing.T) {
 	}
 	attempt := harness.onlyAttempt(t)
 	if attempt.StateHash != accesstokens.SHA256Hex(started.state) || attempt.NonceHash != accesstokens.SHA256Hex(started.nonce) || attempt.ReturnTo != "/chat" ||
-		attempt.Outcome != "" || attempt.ExpiresAt.Sub(attempt.CreatedAt) != loginAttemptLifetime {
+		attempt.Outcome != "" || attempt.ExpiresAt.Sub(attempt.CreatedAt) != login.LoginAttemptLifetime {
 		t.Fatalf("attempt %+v", attempt)
 	}
 	if strings.Contains(attempt.StateHash, started.state) || attempt.CodeVerifier == "" {
@@ -333,17 +335,17 @@ func TestEntraSignInRefusesATokenThatDoesNotVerify(t *testing.T) {
 		key     func(harness *entraTestHarness) *rsa.PrivateKey
 		outcome string
 	}{
-		"wrong tenant":   {func(c map[string]any) { c["tid"] = testEntraOtherTenantID }, nil, loginOutcomeTenantMismatch},
-		"wrong audience": {func(c map[string]any) { c["aud"] = "someone-elses-app" }, nil, loginOutcomeIDTokenInvalid},
+		"wrong tenant":   {func(c map[string]any) { c["tid"] = testEntraOtherTenantID }, nil, login.LoginOutcomeTenantMismatch},
+		"wrong audience": {func(c map[string]any) { c["aud"] = "someone-elses-app" }, nil, login.LoginOutcomeIDTokenInvalid},
 		"wrong issuer": {func(c map[string]any) {
 			c["iss"] = "https://login.microsoftonline.com/" + testEntraOtherTenantID + "/v2.0"
-		}, nil, loginOutcomeIDTokenInvalid},
-		"bad signature":   {nil, func(*entraTestHarness) *rsa.PrivateKey { return otherKey }, loginOutcomeIDTokenInvalid},
-		"nonce mismatch":  {func(c map[string]any) { c["nonce"] = "a-nonce-from-another-sign-in" }, nil, loginOutcomeNonceMismatch},
-		"expired":         {func(c map[string]any) { c["exp"] = time.Now().Add(-time.Minute).Unix() }, nil, loginOutcomeIDTokenExpired},
-		"issued later":    {func(c map[string]any) { c["iat"] = time.Now().Add(time.Hour).Unix() }, nil, loginOutcomeIDTokenTimeInvalid},
-		"no object id":    {func(c map[string]any) { delete(c, "oid") }, nil, loginOutcomeObjectIDMissing},
-		"object id a sub": {func(c map[string]any) { c["oid"] = "pairwise-subject-not-to-be-used" }, nil, loginOutcomeObjectIDMissing},
+		}, nil, login.LoginOutcomeIDTokenInvalid},
+		"bad signature":   {nil, func(*entraTestHarness) *rsa.PrivateKey { return otherKey }, login.LoginOutcomeIDTokenInvalid},
+		"nonce mismatch":  {func(c map[string]any) { c["nonce"] = "a-nonce-from-another-sign-in" }, nil, login.LoginOutcomeNonceMismatch},
+		"expired":         {func(c map[string]any) { c["exp"] = time.Now().Add(-time.Minute).Unix() }, nil, login.LoginOutcomeIDTokenExpired},
+		"issued later":    {func(c map[string]any) { c["iat"] = time.Now().Add(time.Hour).Unix() }, nil, login.LoginOutcomeIDTokenTimeInvalid},
+		"no object id":    {func(c map[string]any) { delete(c, "oid") }, nil, login.LoginOutcomeObjectIDMissing},
+		"object id a sub": {func(c map[string]any) { c["oid"] = "pairwise-subject-not-to-be-used" }, nil, login.LoginOutcomeObjectIDMissing},
 	} {
 		t.Run(name, func(t *testing.T) {
 			harness := newEntraTestHarness(t)
@@ -388,7 +390,7 @@ func TestEntraSignInOfAnUnprovisionedIdentityIsRecordedForAnAdministrator(t *tes
 		t.Fatalf("an unprovisioned identity got a login cookie")
 	}
 	attempt := harness.onlyAttempt(t)
-	if attempt.Outcome != loginOutcomeIdentityNotProvisioned || attempt.TenantID != testEntraTenantID || attempt.Subject != testEntraObjectIDUnbound ||
+	if attempt.Outcome != login.LoginOutcomeIdentityNotProvisioned || attempt.TenantID != testEntraTenantID || attempt.Subject != testEntraObjectIDUnbound ||
 		attempt.PreferredUsername != "one@contoso.example" || attempt.DisplayName != "Some One" || attempt.PrincipalID != "" {
 		t.Fatalf("attempt %+v", attempt)
 	}
@@ -429,7 +431,7 @@ func TestEntraSignInOfADisabledPrincipalIsRefused(t *testing.T) {
 	if response.Code != http.StatusFound || response.Header().Get("Location") != "/chat?login_error=principal_disabled" || loginCookieOrNil(response) != nil {
 		t.Fatalf("callback = %d Location %q cookies %v", response.Code, response.Header().Get("Location"), response.Result().Cookies())
 	}
-	if attempt := harness.onlyAttempt(t); attempt.Outcome != loginOutcomePrincipalDisabled || attempt.PrincipalID != disabledTestPrincipalID ||
+	if attempt := harness.onlyAttempt(t); attempt.Outcome != login.LoginOutcomePrincipalDisabled || attempt.PrincipalID != disabledTestPrincipalID ||
 		attempt.IdentityBindingID != "identity_binding_000002" {
 		t.Fatalf("attempt %+v", attempt)
 	}
@@ -451,9 +453,9 @@ func TestEntraSignInRefusesAReturnToOffThisSite(t *testing.T) {
 func TestEntraCallbackFromAnotherBrowserIsRefused(t *testing.T) {
 	harness := newEntraTestHarness(t)
 	started := harness.start(t, "/chat")
-	started.browserBinding = &http.Cookie{Name: entraBrowserBindingCookieName, Value: "a-victims-browser-has-a-different-value"}
+	started.browserBinding = &http.Cookie{Name: login.EntraBrowserBindingCookieName, Value: "a-victims-browser-has-a-different-value"}
 	response := harness.callback(t, started, harness.standardClaims(started, testEntraObjectIDOfFirst), harness.provider.signingKey)
-	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), loginOutcomeBrowserBindingMismatch) || loginCookieOrNil(response) != nil {
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), login.LoginOutcomeBrowserBindingMismatch) || loginCookieOrNil(response) != nil {
 		t.Fatalf("callback from another browser = %d %s", response.Code, response.Body.String())
 	}
 	if harness.provider.redemptions != 0 {
@@ -487,7 +489,7 @@ func TestReturnToWithLoginErrorKeepsQueryAndFragment(t *testing.T) {
 		"/chat#part":    "/chat?login_error=x#part",
 		"/chat?a=1#p?q": "/chat?a=1&login_error=x#p?q",
 	} {
-		if got := returnToWithLoginError(returnTo, "x"); got != want {
+		if got := login.ReturnToWithLoginError(returnTo, "x"); got != want {
 			t.Errorf("returnToWithLoginError(%q) = %q, want %q", returnTo, got, want)
 		}
 	}

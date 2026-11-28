@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/login"
+
 	"github.com/kayushkin/llm-bridge-server/internal/config"
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 	"github.com/kayushkin/llm-bridge/msg"
@@ -17,16 +19,16 @@ import (
 
 func (gated *gatedTestServer) sessionAgentTokenFor(t *testing.T, session *store.Session) string {
 	t.Helper()
-	environment, err := gated.server.sessionAgentEnvironment(session)
+	environment, err := gated.server.login.SessionAgentEnvironment(session)
 	if err != nil {
 		t.Fatalf("sessionAgentEnvironment: %v", err)
 	}
 	for _, entry := range environment {
-		if value, found := strings.CutPrefix(entry, principalTokenEnvironmentVariable+"="); found {
+		if value, found := strings.CutPrefix(entry, login.PrincipalTokenEnvironmentVariable+"="); found {
 			return value
 		}
 	}
-	t.Fatalf("no %s in %v", principalTokenEnvironmentVariable, environment)
+	t.Fatalf("no %s in %v", login.PrincipalTokenEnvironmentVariable, environment)
 	return ""
 }
 
@@ -119,22 +121,22 @@ func TestSessionAgentTokensAndLoginCookiesAreNotInterchangeable(t *testing.T) {
 		t.Errorf("login cookie value as a bearer token = %d, want 401", response.Code)
 	}
 	tokenAsCookie := httptest.NewRequest("GET", "/sessions", nil)
-	tokenAsCookie.AddCookie(&http.Cookie{Name: loginSessionCookieName, Value: token})
+	tokenAsCookie.AddCookie(&http.Cookie{Name: login.LoginSessionCookieName, Value: token})
 	if response := serve(gated.server, tokenAsCookie); response.Code != http.StatusUnauthorized {
 		t.Errorf("session agent token as the login cookie = %d, want 401", response.Code)
 	}
 
 	// A session posting token is signed with the same key under another
 	// domain separator, and is not a session agent token.
-	if _, err := codec.decodeSessionAgentToken(codec.encodeSessionPostingToken(session.SessionID, "spawn_1")); err == nil {
+	if _, err := codec.DecodeSessionAgentToken(codec.EncodeSessionPostingToken(session.SessionID, "spawn_1")); err == nil {
 		t.Errorf("a session posting token verified as a session agent token")
 	}
 
-	expired := codec.encodeSessionAgentToken(sessionAgentTokenClaims{PrincipalID: firstTestPrincipalID, SessionID: session.SessionID, ExpiresAt: time.Now().Add(-time.Minute)})
+	expired := codec.EncodeSessionAgentToken(login.SessionAgentTokenClaims{PrincipalID: firstTestPrincipalID, SessionID: session.SessionID, ExpiresAt: time.Now().Add(-time.Minute)})
 	if response := gated.requestWithBearer(t, expired, "GET", "/issues/boards"); response.Code != http.StatusUnauthorized {
 		t.Errorf("expired token = %d, want 401", response.Code)
 	}
-	otherPrincipal := codec.encodeSessionAgentToken(sessionAgentTokenClaims{PrincipalID: secondTestPrincipalID, SessionID: session.SessionID, ExpiresAt: time.Now().Add(time.Hour)})
+	otherPrincipal := codec.EncodeSessionAgentToken(login.SessionAgentTokenClaims{PrincipalID: secondTestPrincipalID, SessionID: session.SessionID, ExpiresAt: time.Now().Add(time.Hour)})
 	if response := gated.requestWithBearer(t, otherPrincipal, "GET", "/issues/boards"); response.Code != http.StatusUnauthorized {
 		t.Errorf("token naming a principal the session is not started as = %d, want 401", response.Code)
 	}
@@ -193,9 +195,9 @@ func TestASpawnedPrincipalSessionReceivesTheGatewayAndTokenButNotTheSigningKey(t
 	for _, entry := range environment {
 		name, value, _ := strings.Cut(entry, "=")
 		switch name {
-		case gatewayURLEnvironmentVariable:
+		case login.GatewayURLEnvironmentVariable:
 			gatewayURL = value
-		case principalTokenEnvironmentVariable:
+		case login.PrincipalTokenEnvironmentVariable:
 			token = value
 		}
 		for _, secretName := range config.SecretEnvironmentVariableNames() {
@@ -205,7 +207,7 @@ func TestASpawnedPrincipalSessionReceivesTheGatewayAndTokenButNotTheSigningKey(t
 		}
 	}
 	if gatewayURL != gatedTestServerPublicURL {
-		t.Errorf("%s = %q, want %q", gatewayURLEnvironmentVariable, gatewayURL, gatedTestServerPublicURL)
+		t.Errorf("%s = %q, want %q", login.GatewayURLEnvironmentVariable, gatewayURL, gatedTestServerPublicURL)
 	}
 	if proxied := gated.requestWithBearer(t, token, "GET", "/issues/boards"); proxied.Code != http.StatusOK {
 		t.Errorf("the token the child received does not work on /issues/: %d %s", proxied.Code, proxied.Body.String())

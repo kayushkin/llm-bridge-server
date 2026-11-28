@@ -23,6 +23,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/login"
+
 	"github.com/kayushkin/llm-bridge-server/internal/httproutes"
 
 	"github.com/kayushkin/llm-bridge-server/internal/tasktracking/issues/issuereads"
@@ -174,7 +176,7 @@ func (s *Server) serveKanbanStore(w http.ResponseWriter, r *http.Request, mountP
 			}
 		}
 	}
-	removeCookieFromRequestHeader(served.Header, loginSessionCookieName)
+	login.RemoveCookieFromRequestHeader(served.Header, login.LoginSessionCookieName)
 	handlers.handler.ServeHTTP(w, served)
 }
 

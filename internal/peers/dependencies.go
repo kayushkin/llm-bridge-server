@@ -34,13 +34,13 @@ type Dependencies struct {
 	Settings                 *servicesettings.Registry
 	Store                    *store.Store
 	Server                   Host
+	SessionStarters          SessionStarters
 }
 
 // Host is the server itself as a connected server reaches it: its mux,
 // its name, and whether a caller may still drive a session it started.
 type Host interface {
 	ServeHTTP(w http.ResponseWriter, r *http.Request)
-	CallerStartedSessionIDAndMayDriveIt(ctx context.Context, caller requestcaller.Caller, sessionID string) (bool, error)
 	ThisServerName() string
 }
 
@@ -68,4 +68,9 @@ type Service struct {
 	proxyCalls PeerProxyCalls
 	// selfUpdates serializes finishing an approved notice's update.
 	selfUpdates sync.Mutex
+}
+
+// SessionStarters says whether a caller started a session as another principal and may still drive it.
+type SessionStarters interface {
+	CallerStartedSessionIDAndMayDriveIt(ctx context.Context, caller requestcaller.Caller, sessionID string) (bool, error)
 }

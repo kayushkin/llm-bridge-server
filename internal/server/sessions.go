@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/login"
+
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/messagesender"
 
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/harnessconfig"
@@ -300,14 +302,14 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 			allowed := false
 			if caller.Peer == nil && caller.DelegatingAgentOfSessionID == "" {
 				var err error
-				if allowed, err = s.mayStartSessionsAs(r.Context(), grantcheck.SubjectOfCaller(caller), req.PrincipalID); err != nil {
+				if allowed, err = s.login.MayStartSessionsAs(r.Context(), grantcheck.SubjectOfCaller(caller), req.PrincipalID); err != nil {
 					httpjson.WriteJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
 					return
 				}
 			}
 			if !allowed {
 				httpjson.WriteJSONError(w, http.StatusForbidden, "principal_mismatch", fmt.Sprintf(
-					"principal_id %q is not the logged-in principal %s, which holds no %s grant on it; a session can only be created as yourself (omit principal_id)", req.PrincipalID, callerPrincipalID, startSessionsAsRelation))
+					"principal_id %q is not the logged-in principal %s, which holds no %s grant on it; a session can only be created as yourself (omit principal_id)", req.PrincipalID, callerPrincipalID, login.StartSessionsAsRelation))
 				return
 			}
 			startedAsAnotherPrincipalBy = callerPrincipalID
@@ -503,11 +505,11 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// The agent the session runs as. Optional; when given it must be an agent
 	// agent-store has, by id or slug, whatever the principal's grants say.
 	if req.AgentID != "" {
-		if err := s.checkAgentExists(req.AgentID); err != nil {
+		if err := s.login.CheckAgentExists(req.AgentID); err != nil {
 			switch {
-			case errors.Is(err, errUnknownAgent):
+			case errors.Is(err, login.ErrUnknownAgent):
 				httpjson.WriteJSONError(w, http.StatusBadRequest, "unknown_agent", err.Error())
-			case errors.Is(err, errAgentStoreNotConfigured):
+			case errors.Is(err, login.ErrAgentStoreNotConfigured):
 				httpjson.WriteJSONError(w, http.StatusServiceUnavailable, "agent_store_not_configured", err.Error())
 			default:
 				httpjson.WriteJSONError(w, http.StatusInternalServerError, "agent_store_unavailable", fmt.Sprintf(
@@ -556,7 +558,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		}
 		if scope, restricted := requestcaller.SessionScopeRestrictingRequest(r); restricted && !scope.Reaches(s.store, parent) {
 			caller, _ := requestcaller.FromRequest(r)
-			drives, err := s.callerStartedSessionAndMayDriveIt(r.Context(), caller, parent)
+			drives, err := s.login.CallerStartedSessionAndMayDriveIt(r.Context(), caller, parent)
 			if err != nil {
 				httpjson.WriteJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
 				return

@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/login"
+
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/sessionfiles"
 
 	"github.com/kayushkin/llm-bridge-server/internal/config"
@@ -199,12 +201,12 @@ func TestAnAgentSharesIntoItsOwnSessionAndNoOther(t *testing.T) {
 	newSessionForSignals(t, st, "br_neighbor", msg.SessionTypeInteractive)
 
 	environment := map[string]string{}
-	for _, variable := range srv.sessionPostingEnvironment(session) {
+	for _, variable := range srv.login.SessionPostingEnvironment(session) {
 		name, value, _ := strings.Cut(variable, "=")
 		environment[name] = value
 	}
-	token := environment[sessionPostingTokenEnvironmentVariable]
-	if token == "" || environment[sessionFilesURLEnvironmentVariable] != "http://127.0.0.1:8160/sessions/br_agent/files" {
+	token := environment[login.SessionPostingTokenEnvironmentVariable]
+	if token == "" || environment[login.SessionFilesURLEnvironmentVariable] != "http://127.0.0.1:8160/sessions/br_agent/files" {
 		t.Fatalf("child environment = %v", environment)
 	}
 
@@ -321,19 +323,19 @@ func TestAStatedSourcePathMustBeAPlainAbsolutePath(t *testing.T) {
 func TestASessionPostingTokenIsNoOtherKindOfCredential(t *testing.T) {
 	srv, _ := testServer(t)
 	codec := srv.harnessChildTokenSigner
-	token := codec.encodeSessionPostingToken("br_1", "spawn_1")
-	if sessionID, spawnKey, err := codec.decodeSessionPostingToken(token); err != nil || sessionID != "br_1" || spawnKey != "spawn_1" {
+	token := codec.EncodeSessionPostingToken("br_1", "spawn_1")
+	if sessionID, spawnKey, err := codec.DecodeSessionPostingToken(token); err != nil || sessionID != "br_1" || spawnKey != "spawn_1" {
 		t.Fatalf("round trip: %q %q, %v", sessionID, spawnKey, err)
 	}
-	if _, err := codec.decodeSessionAgentToken(token); err == nil {
+	if _, err := codec.DecodeSessionAgentToken(token); err == nil {
 		t.Error("a session posting token verified as a session agent token")
 	}
-	agentToken := codec.encodeSessionAgentToken(sessionAgentTokenClaims{PrincipalID: "principal_000001", SessionID: "br_1", ExpiresAt: time.Now().Add(time.Hour)})
-	if _, _, err := codec.decodeSessionPostingToken(agentToken); err == nil {
+	agentToken := codec.EncodeSessionAgentToken(login.SessionAgentTokenClaims{PrincipalID: "principal_000001", SessionID: "br_1", ExpiresAt: time.Now().Add(time.Hour)})
+	if _, _, err := codec.DecodeSessionPostingToken(agentToken); err == nil {
 		t.Error("a session agent token verified as a session posting token")
 	}
 	forged := strings.TrimSuffix(token, token[len(token)-4:]) + "AAAA"
-	if _, _, err := codec.decodeSessionPostingToken(forged); err == nil {
+	if _, _, err := codec.DecodeSessionPostingToken(forged); err == nil {
 		t.Error("a token with a changed signature verified")
 	}
 }

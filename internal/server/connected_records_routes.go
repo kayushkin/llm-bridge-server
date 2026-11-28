@@ -26,6 +26,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/login"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
 
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
@@ -164,7 +166,7 @@ func (s *Server) connectedRecordsRoute(mountPrefix, storeName, offCode string, h
 				}
 			}
 		}
-		removeCookieFromRequestHeader(served.Header, loginSessionCookieName)
+		login.RemoveCookieFromRequestHeader(served.Header, login.LoginSessionCookieName)
 		http.StripPrefix(mountPrefix, handlerOf(stores)).ServeHTTP(w, served)
 	}
 }

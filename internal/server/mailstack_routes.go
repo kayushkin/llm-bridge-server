@@ -23,6 +23,8 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/login"
+
 	"github.com/kayushkin/llm-bridge-server/internal/httproutes"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
@@ -97,7 +99,7 @@ func (s *Server) serveMailstack(w http.ResponseWriter, r *http.Request, caller *
 			}
 		}
 	}
-	removeCookieFromRequestHeader(served.Header, loginSessionCookieName)
+	login.RemoveCookieFromRequestHeader(served.Header, login.LoginSessionCookieName)
 	mailServer.Handler().ServeHTTP(w, served)
 }
 

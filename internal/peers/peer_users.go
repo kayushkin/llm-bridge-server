@@ -77,7 +77,7 @@ func (s *Service) SessionReachedByCaller(ctx context.Context, caller requestcall
 	}
 	// A service that started this session as another principal drives it
 	// while it holds can_start_sessions_as on that one.
-	drives, err := s.Server.CallerStartedSessionIDAndMayDriveIt(ctx, caller, sessionID)
+	drives, err := s.SessionStarters.CallerStartedSessionIDAndMayDriveIt(ctx, caller, sessionID)
 	if err != nil || drives {
 		return drives, err
 	}

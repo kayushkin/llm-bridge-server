@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/login"
+
 	"github.com/kayushkin/llm-bridge-server/internal/sessionactions"
 
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelrouting"
@@ -108,12 +110,12 @@ func repoWithDeployScript(t *testing.T, script string) string {
 
 func postingTokenOf(t *testing.T, srv *Server, session *store.Session) string {
 	t.Helper()
-	for _, variable := range srv.sessionPostingEnvironment(session) {
-		if name, value, _ := strings.Cut(variable, "="); name == sessionPostingTokenEnvironmentVariable {
+	for _, variable := range srv.login.SessionPostingEnvironment(session) {
+		if name, value, _ := strings.Cut(variable, "="); name == login.SessionPostingTokenEnvironmentVariable {
 			return value
 		}
 	}
-	t.Fatalf("no %s in the child environment", sessionPostingTokenEnvironmentVariable)
+	t.Fatalf("no %s in the child environment", login.SessionPostingTokenEnvironmentVariable)
 	return ""
 }
 
@@ -359,14 +361,14 @@ func TestTheChildEnvironmentCarriesTheActionsAddressWithoutFileStore(t *testing.
 	srv, st, _ := testServerForSessionActions(t)
 	session := newSessionForSignals(t, st, "br_buttons", msg.SessionTypeInteractive)
 	environment := map[string]string{}
-	for _, variable := range srv.sessionPostingEnvironment(session) {
+	for _, variable := range srv.login.SessionPostingEnvironment(session) {
 		name, value, _ := strings.Cut(variable, "=")
 		environment[name] = value
 	}
-	if environment[sessionActionsURLEnvironmentVariable] != "http://127.0.0.1:8160/sessions/br_buttons/actions" || environment[sessionPostingTokenEnvironmentVariable] == "" {
+	if environment[login.SessionActionsURLEnvironmentVariable] != "http://127.0.0.1:8160/sessions/br_buttons/actions" || environment[login.SessionPostingTokenEnvironmentVariable] == "" {
 		t.Errorf("environment = %v", environment)
 	}
-	if _, has := environment[sessionFilesURLEnvironmentVariable]; has {
+	if _, has := environment[login.SessionFilesURLEnvironmentVariable]; has {
 		t.Errorf("a files address with no file-store: %v", environment)
 	}
 }
@@ -664,7 +666,7 @@ func TestARunCommandCarriesThePostingVariablesOfTheCurrentSpawn(t *testing.T) {
 	session := newSessionForSignals(t, st, "br_buttons", msg.SessionTypeInteractive)
 	withFakeSessionActionModels(srv, "approve")
 	agentEnvironment := map[string]string{}
-	for _, variable := range srv.sessionPostingEnvironment(session) {
+	for _, variable := range srv.login.SessionPostingEnvironment(session) {
 		name, value, _ := strings.Cut(variable, "=")
 		agentEnvironment[name] = value
 	}
@@ -688,10 +690,10 @@ func TestARunCommandCarriesThePostingVariablesOfTheCurrentSpawn(t *testing.T) {
 	if actionsURL != "http://127.0.0.1:8160/sessions/br_buttons/actions" {
 		t.Errorf("actions address in the command = %q (output %q)", actionsURL, finished.Output)
 	}
-	if posting, refusal := srv.verifiedPostingSession(buttonToken); refusal != nil || posting.SessionID != "br_buttons" {
+	if posting, refusal := srv.login.VerifiedPostingSession(buttonToken); refusal != nil || posting.SessionID != "br_buttons" {
 		t.Errorf("the command's token does not verify for br_buttons: %+v", refusal)
 	}
-	if _, refusal := srv.verifiedPostingSession(agentEnvironment[sessionPostingTokenEnvironmentVariable]); refusal != nil {
+	if _, refusal := srv.login.VerifiedPostingSession(agentEnvironment[login.SessionPostingTokenEnvironmentVariable]); refusal != nil {
 		t.Errorf("pressing the button cut off the agent's own token: %+v", refusal)
 	}
 }

@@ -1,8 +1,12 @@
 package server
 
 import (
+	"time"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access/grantcheck"
 	"github.com/kayushkin/llm-bridge-server/internal/access/grants"
+	"github.com/kayushkin/llm-bridge-server/internal/access/login"
+	"github.com/kayushkin/llm-bridge-server/internal/agents"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelcredentials"
 	"github.com/kayushkin/llm-bridge-server/internal/agents/models/modelrouting"
@@ -55,6 +59,23 @@ func (s *Server) composeServices() {
 		AuthClient: func() *authstoreclient.Client { return s.authClient },
 		ModelStore: func() *models.Store { return s.modelStore },
 	}}
+	s.login = &login.Service{Dependencies: login.Dependencies{
+		AgentStore:              func() *agents.Store { return s.agentStore },
+		Cfg:                     s.cfg,
+		EntraSignIn:             func() *login.EntraSignIn { return s.entraSignIn },
+		FileStore:               func() sessionfiles.SessionFileStore { return s.fileStore },
+		GrantChecker:            s.grantChecker,
+		HarnessChildTokenSigner: func() *login.HarnessChildTokenSigner { return s.harnessChildTokenSigner },
+		LoginClock:              func() func() time.Time { return s.loginClock },
+		PrincipalLookupCache: func() login.PrincipalLookupCache {
+			if s.principalLookupCache == nil {
+				return nil
+			}
+			return s.principalLookupCache
+		},
+		PrincipalStore: func() login.PrincipalStore { return s.principalStore },
+		Store:          s.store,
+	}}
 	s.sessionActions = &sessionactions.Service{Dependencies: sessionactions.Dependencies{
 		Harness:                s.harness,
 		HarnessStore:           func() *machines.Store { return s.harnessStore },
@@ -66,6 +87,7 @@ func (s *Server) composeServices() {
 		Settings:               s.settings,
 		Store:                  s.store,
 		Sessions:               s,
+		PostingEnvironments:    s.login,
 	}}
 	s.signals = &signals.Service{Dependencies: signals.Dependencies{
 		Harness:          s.harness,
@@ -95,11 +117,12 @@ func (s *Server) composeServices() {
 			}
 			return s.principalLookupCache
 		},
-		PrincipalStore: func() peers.PrincipalStore { return s.principalStore },
-		SessionActions: s.sessionActions,
-		Settings:       s.settings,
-		Store:          s.store,
-		Server:         s,
+		PrincipalStore:  func() peers.PrincipalStore { return s.principalStore },
+		SessionActions:  s.sessionActions,
+		Settings:        s.settings,
+		Store:           s.store,
+		Server:          s,
+		SessionStarters: s.login,
 	}}
 	s.operationRoutes = &operationroutes.Service{Dependencies: operationroutes.Dependencies{
 		GrantChecker:   s.grantChecker,

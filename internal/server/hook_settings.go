@@ -89,11 +89,11 @@ func (s *Server) StartOnInstance(ctx context.Context, sess *store.Session, inst 
 	if err := s.machineRoutes.InjectComputerUse(sess, inst, s.harness.RunnerComputerUse); err != nil {
 		return nil, fmt.Errorf("computer use: %w", err)
 	}
-	sessionEnvironment, err := s.sessionAgentEnvironment(sess)
+	sessionEnvironment, err := s.login.SessionAgentEnvironment(sess)
 	if err != nil {
 		return nil, err
 	}
-	sessionEnvironment = append(sessionEnvironment, s.sessionPostingEnvironmentForInstance(sess, inst)...)
+	sessionEnvironment = append(sessionEnvironment, s.login.SessionPostingEnvironmentForInstance(sess, inst)...)
 	sessionEnvironment = append(sessionEnvironment, s.permissionGateEnvironment(sess)...)
 	return s.harness.StartOnInstance(ctx, sess, inst, credID, sessionEnvironment)
 }

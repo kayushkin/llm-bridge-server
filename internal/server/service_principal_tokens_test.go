@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/login"
+
 	"github.com/kayushkin/llm-bridge-server/internal/peers"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
@@ -37,11 +39,11 @@ func newServicePrincipalTestServer(t *testing.T) *peerTestServer {
 
 // issueServicePrincipalToken issues a token for the service as the test
 // administrator and returns it.
-func issueServicePrincipalToken(t *testing.T, server *peerTestServer) issuedServicePrincipalToken {
+func issueServicePrincipalToken(t *testing.T, server *peerTestServer) login.IssuedServicePrincipalToken {
 	t.Helper()
 	answer := server.requestAsAdministrator(t, "POST", "/service-principal-tokens", map[string]string{"principal_id": testServicePrincipalID, "description": "orchestratord on this host"})
-	issued := decodeAnswer[issuedServicePrincipalToken](t, answer, http.StatusCreated, "issue a service principal token")
-	if !strings.HasPrefix(issued.Token, servicePrincipalTokenPrefix+".") || issued.Record.CreatedBy != administratorTestPrincipalID || issued.Record.PrincipalID != testServicePrincipalID {
+	issued := decodeAnswer[login.IssuedServicePrincipalToken](t, answer, http.StatusCreated, "issue a service principal token")
+	if !strings.HasPrefix(issued.Token, login.ServicePrincipalTokenPrefix+".") || issued.Record.CreatedBy != administratorTestPrincipalID || issued.Record.PrincipalID != testServicePrincipalID {
 		t.Fatalf("issued = %+v", issued)
 	}
 	return issued
@@ -110,7 +112,7 @@ func TestAServicePrincipalTokenActsAsItsPrincipalHeldToItsGrants(t *testing.T) {
 	public.Header.Set("Authorization", "Bearer "+issued.Token)
 	public.Header.Set("X-Forwarded-For", "203.0.113.9")
 	expectRefusal(t, serve(server.server, public), http.StatusForbidden, "service_principal_token_not_public", "a token through the public proxy")
-	expectRefusal(t, requestWithServicePrincipalToken(t, server, servicePrincipalTokenPrefix+".made-up", "GET", "/sessions", nil), http.StatusUnauthorized, "invalid_service_principal_token", "a made-up token")
+	expectRefusal(t, requestWithServicePrincipalToken(t, server, login.ServicePrincipalTokenPrefix+".made-up", "GET", "/sessions", nil), http.StatusUnauthorized, "invalid_service_principal_token", "a made-up token")
 
 	revoked := server.requestAsAdministrator(t, "POST", "/service-principal-tokens/"+issued.Record.ID+"/revoke", map[string]string{"reason": "test over"})
 	if record := decodeAnswer[store.ServicePrincipalToken](t, revoked, http.StatusOK, "revoke"); record.RevokedBy != administratorTestPrincipalID || record.RevokeReason != "test over" {
@@ -132,7 +134,7 @@ func TestAServiceStartsAndDrivesSessionsAsAPrincipalItHoldsAGrantOn(t *testing.T
 
 	expectRefusal(t, requestWithServicePrincipalToken(t, server, issued.Token, "POST", "/sessions", request), http.StatusForbidden, "principal_mismatch", "starting as a person with no grant")
 
-	server.grants.setEffective(testServicePrincipalID, startSessionsAsRelation, "principal", testPersonPrincipalID)
+	server.grants.setEffective(testServicePrincipalID, login.StartSessionsAsRelation, "principal", testPersonPrincipalID)
 	home := decodeAnswer[store.Session](t, requestWithServicePrincipalToken(t, server, issued.Token, "POST", "/sessions", request), http.StatusCreated, "start a session as the person")
 	if home.PrincipalID != testPersonPrincipalID {
 		t.Fatalf("the session runs as the person, not the service: %+v", home)
@@ -158,7 +160,7 @@ func TestAServiceStartsAndDrivesSessionsAsAPrincipalItHoldsAGrantOn(t *testing.T
 	expectRefusal(t, requestWithServicePrincipalToken(t, server, issued.Token, "POST", "/sessions/br_person_chat/rename", map[string]string{"display_name": "x"}),
 		http.StatusNotFound, "", "a session of the person's the service did not start")
 
-	server.grants.setEffective(testServicePrincipalID, startSessionsAsRelation, "principal")
+	server.grants.setEffective(testServicePrincipalID, login.StartSessionsAsRelation, "principal")
 	expectRefusal(t, requestWithServicePrincipalToken(t, server, issued.Token, "POST", "/sessions/"+home.SessionID+"/rename", map[string]string{"display_name": "x"}),
 		http.StatusNotFound, "", "the starter once the grant is revoked")
 }
@@ -174,7 +176,7 @@ func TestAnAdministratorRecordsTheStarterOfAnOlderSession(t *testing.T) {
 	}
 	body := map[string]string{"principal_id": testServicePrincipalID}
 	expectRefusal(t, server.requestAsAdministrator(t, "PUT", "/sessions/br_older_home/starter", body), http.StatusConflict, "not_granted", "a starter with no grant")
-	server.grants.setEffective(testServicePrincipalID, startSessionsAsRelation, "principal", testPersonPrincipalID)
+	server.grants.setEffective(testServicePrincipalID, login.StartSessionsAsRelation, "principal", testPersonPrincipalID)
 	expectRefusal(t, requestWithServicePrincipalToken(t, server, issued.Token, "PUT", "/sessions/br_older_home/starter", body), http.StatusForbidden, "operator_route", "the service records itself")
 	recorded := decodeAnswer[store.SessionStarter](t, server.requestAsAdministrator(t, "PUT", "/sessions/br_older_home/starter", body), http.StatusOK, "record the starter")
 	if !recorded.Backfilled || recorded.RecordedBy != administratorTestPrincipalID || recorded.PrincipalID != testServicePrincipalID {

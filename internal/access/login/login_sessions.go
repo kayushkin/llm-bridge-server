@@ -1,4 +1,4 @@
-package server
+package login
 
 // Login sessions: what the login cookie stands for.
 //
@@ -38,22 +38,22 @@ import (
 	"github.com/kayushkin/llm-bridge-server/internal/store"
 )
 
-// loginSessionCookieName is the cookie that carries a login session's token.
+// LoginSessionCookieName is the cookie that carries a login session's token.
 // The name predates server-side sessions; a cookie from before them is simply
 // not found and its holder signs in again.
-const loginSessionCookieName = "llm_bridge_principal_session"
+const LoginSessionCookieName = "llm_bridge_principal_session"
 
-// loginSessionLifetime is how long a login lasts before its holder must sign
+// LoginSessionLifetime is how long a login lasts before its holder must sign
 // in again. There is no refresh.
-const loginSessionLifetime = 12 * time.Hour
+const LoginSessionLifetime = 12 * time.Hour
 
 // loginSessionLastSeenResolution is how stale last_seen_at may get before a
 // request rewrites it. One page load is dozens of requests, and each would
 // otherwise be a database write.
 const loginSessionLastSeenResolution = time.Minute
 
-// csrfTokenHeader carries a login session's CSRF token on an unsafe request.
-const csrfTokenHeader = "X-CSRF-Token"
+// CsrfTokenHeader carries a login session's CSRF token on an unsafe request.
+const CsrfTokenHeader = "X-CSRF-Token"
 
 // loginSessionRandomBytes is the size of a login session token and of a CSRF
 // token before encoding.
@@ -63,7 +63,7 @@ const loginSessionRandomBytes = 32
 // with the token its cookie must carry. The caller has already decided the
 // principal may sign in, and sets the cookie with setLoginSessionCookie once
 // anything else it must record about the sign-in is recorded.
-func (s *Server) recordLoginSession(r *http.Request, principalID string, method store.LoginSessionMethod, identityBindingID string) (store.LoginSession, string, error) {
+func (s *Service) recordLoginSession(r *http.Request, principalID string, method store.LoginSessionMethod, identityBindingID string) (store.LoginSession, string, error) {
 	token, err := accesstokens.RandomURLSafe(loginSessionRandomBytes)
 	if err != nil {
 		return store.LoginSession{}, "", fmt.Errorf("make a login session token: %w", err)
@@ -72,7 +72,7 @@ func (s *Server) recordLoginSession(r *http.Request, principalID string, method 
 	if err != nil {
 		return store.LoginSession{}, "", fmt.Errorf("make a CSRF token: %w", err)
 	}
-	now := s.loginClock().UTC().Truncate(time.Second)
+	now := s.LoginClock()().UTC().Truncate(time.Second)
 	session := store.LoginSession{
 		TokenHash:         accesstokens.SHA256Hex(token),
 		CSRFToken:         csrfToken,
@@ -80,12 +80,12 @@ func (s *Server) recordLoginSession(r *http.Request, principalID string, method 
 		Method:            method,
 		IdentityBindingID: identityBindingID,
 		CreatedAt:         now,
-		ExpiresAt:         now.Add(loginSessionLifetime),
+		ExpiresAt:         now.Add(LoginSessionLifetime),
 		LastSeenAt:        now,
 		UserAgent:         r.UserAgent(),
 		RemoteAddress:     r.RemoteAddr,
 	}
-	if err := s.store.InsertLoginSession(&session); err != nil {
+	if err := s.Store.InsertLoginSession(&session); err != nil {
 		return store.LoginSession{}, "", err
 	}
 	return session, token, nil
@@ -94,11 +94,11 @@ func (s *Server) recordLoginSession(r *http.Request, principalID string, method 
 // setLoginSessionCookie hands the browser a login session's token.
 func setLoginSessionCookie(w http.ResponseWriter, r *http.Request, session store.LoginSession, token string) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     loginSessionCookieName,
+		Name:     LoginSessionCookieName,
 		Value:    token,
 		Path:     "/",
 		Expires:  session.ExpiresAt,
-		MaxAge:   int(loginSessionLifetime / time.Second),
+		MaxAge:   int(LoginSessionLifetime / time.Second),
 		HttpOnly: true,
 		Secure:   requestArrivedOverHTTPS(r),
 		SameSite: http.SameSiteLaxMode,
@@ -108,7 +108,7 @@ func setLoginSessionCookie(w http.ResponseWriter, r *http.Request, session store
 // clearLoginSessionCookie tells the browser to drop the login cookie.
 func clearLoginSessionCookie(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     loginSessionCookieName,
+		Name:     LoginSessionCookieName,
 		Value:    "",
 		Path:     "/",
 		Expires:  time.Unix(0, 0),
@@ -119,16 +119,16 @@ func clearLoginSessionCookie(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// liveLoginSessionOfRequest finds the login session the request's cookie
+// LiveLoginSessionOfRequest finds the login session the request's cookie
 // names and refuses one that is unknown, revoked or expired, each with its own
 // code so a page can tell "sign in again" from "you were signed out".
-func (s *Server) liveLoginSessionOfRequest(r *http.Request) (store.LoginSession, *requestcaller.CredentialError) {
-	cookie, err := r.Cookie(loginSessionCookieName)
+func (s *Service) LiveLoginSessionOfRequest(r *http.Request) (store.LoginSession, *requestcaller.CredentialError) {
+	cookie, err := r.Cookie(LoginSessionCookieName)
 	if err != nil || cookie.Value == "" {
 		return store.LoginSession{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "not_logged_in", fmt.Sprintf(
-			"no %s cookie: sign in with GET /auth/entra/start or POST /auth/demo-login", loginSessionCookieName))
+			"no %s cookie: sign in with GET /auth/entra/start or POST /auth/demo-login", LoginSessionCookieName))
 	}
-	session, err := s.store.GetLoginSessionByTokenHash(accesstokens.SHA256Hex(cookie.Value))
+	session, err := s.Store.GetLoginSessionByTokenHash(accesstokens.SHA256Hex(cookie.Value))
 	if errors.Is(err, store.ErrLoginSessionNotFound) {
 		return store.LoginSession{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "login_session_unknown",
 			"the login cookie names no login session this server issued; sign in again")
@@ -137,7 +137,7 @@ func (s *Server) liveLoginSessionOfRequest(r *http.Request) (store.LoginSession,
 		return store.LoginSession{}, requestcaller.NewCredentialError(http.StatusInternalServerError, "login_session_lookup_failed", fmt.Sprintf(
 			"could not read the login session: %v", err))
 	}
-	now := s.loginClock().UTC()
+	now := s.LoginClock()().UTC()
 	if session.RevokedAt != nil {
 		return store.LoginSession{}, requestcaller.NewCredentialError(http.StatusUnauthorized, "login_session_revoked", fmt.Sprintf(
 			"login session %s was revoked at %s (%s); sign in again", session.ID, session.RevokedAt.Format(time.RFC3339), session.RevokeReason))
@@ -149,7 +149,7 @@ func (s *Server) liveLoginSessionOfRequest(r *http.Request) (store.LoginSession,
 	if now.Sub(session.LastSeenAt) >= loginSessionLastSeenResolution {
 		// last_seen_at is a record for the person reviewing their sessions,
 		// not a check, so a failed write is logged and the request goes on.
-		if err := s.store.TouchLoginSession(session.ID, now.Truncate(time.Second)); err != nil {
+		if err := s.Store.TouchLoginSession(session.ID, now.Truncate(time.Second)); err != nil {
 			log.Printf("[login] ERROR: could not record that login session %s was seen: %v", session.ID, err)
 		}
 	}
@@ -162,28 +162,28 @@ func requestMethodIsSafe(method string) bool {
 	return method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions
 }
 
-// csrfRefusalOf checks the CSRF token of a request authenticated by session's
+// CsrfRefusalOf checks the CSRF token of a request authenticated by session's
 // cookie. It returns nil for a safe method or a matching token.
-func csrfRefusalOf(r *http.Request, session store.LoginSession) *requestcaller.CredentialError {
+func CsrfRefusalOf(r *http.Request, session store.LoginSession) *requestcaller.CredentialError {
 	if requestMethodIsSafe(r.Method) {
 		return nil
 	}
-	presented := r.Header.Values(csrfTokenHeader)
+	presented := r.Header.Values(CsrfTokenHeader)
 	if len(presented) == 0 || presented[0] == "" {
 		return requestcaller.NewCredentialError(http.StatusForbidden, "csrf_token_missing", fmt.Sprintf(
 			"a %s authenticated by the login cookie must carry the session's CSRF token in %s; the login response and GET /auth/principal give it",
-			r.Method, csrfTokenHeader))
+			r.Method, CsrfTokenHeader))
 	}
 	if len(presented) != 1 || subtle.ConstantTimeCompare([]byte(presented[0]), []byte(session.CSRFToken)) != 1 {
 		return requestcaller.NewCredentialError(http.StatusForbidden, "csrf_token_mismatch", fmt.Sprintf(
-			"%s does not match this login session's CSRF token", csrfTokenHeader))
+			"%s does not match this login session's CSRF token", CsrfTokenHeader))
 	}
 	return nil
 }
 
-// loggedInPrincipalResponse is what the sign-in routes and GET /auth/principal
+// LoggedInPrincipalResponse is what the sign-in routes and GET /auth/principal
 // answer: who, until when, and the CSRF token the page must send back.
-type loggedInPrincipalResponse struct {
+type LoggedInPrincipalResponse struct {
 	PrincipalID    string                   `json:"principal_id"`
 	ExpiresAt      time.Time                `json:"expires_at"`
 	LoginSessionID string                   `json:"login_session_id"`
@@ -191,8 +191,8 @@ type loggedInPrincipalResponse struct {
 	CSRFToken      string                   `json:"csrf_token"`
 }
 
-func loggedInPrincipalResponseOf(session store.LoginSession) loggedInPrincipalResponse {
-	return loggedInPrincipalResponse{
+func loggedInPrincipalResponseOf(session store.LoginSession) LoggedInPrincipalResponse {
+	return LoggedInPrincipalResponse{
 		PrincipalID:    session.PrincipalID,
 		ExpiresAt:      session.ExpiresAt,
 		LoginSessionID: session.ID,
@@ -201,10 +201,10 @@ func loggedInPrincipalResponseOf(session store.LoginSession) loggedInPrincipalRe
 	}
 }
 
-// handleGetLoggedInPrincipal answers who the cookie says the caller is, and
+// HandleGetLoggedInPrincipal answers who the cookie says the caller is, and
 // the CSRF token a page that reloaded needs.
-func (s *Server) handleGetLoggedInPrincipal(w http.ResponseWriter, r *http.Request) {
-	session, refusal := s.liveLoginSessionOfRequest(r)
+func (s *Service) HandleGetLoggedInPrincipal(w http.ResponseWriter, r *http.Request) {
+	session, refusal := s.LiveLoginSessionOfRequest(r)
 	if refusal != nil {
 		refusal.Write(w)
 		return
@@ -212,20 +212,20 @@ func (s *Server) handleGetLoggedInPrincipal(w http.ResponseWriter, r *http.Reque
 	httpjson.WriteJSON(w, loggedInPrincipalResponseOf(session))
 }
 
-// handleLogout revokes the caller's login session on the server and clears
+// HandleLogout revokes the caller's login session on the server and clears
 // the cookie. A cookie that names no live session has nothing to revoke, and
 // the cookie is cleared all the same. A live one needs its CSRF token: logout
 // changes state, and a page on another site must not be able to end someone's
 // session.
-func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	session, refusal := s.liveLoginSessionOfRequest(r)
+func (s *Service) HandleLogout(w http.ResponseWriter, r *http.Request) {
+	session, refusal := s.LiveLoginSessionOfRequest(r)
 	switch {
 	case refusal == nil:
-		if csrfRefusal := csrfRefusalOf(r, session); csrfRefusal != nil {
+		if csrfRefusal := CsrfRefusalOf(r, session); csrfRefusal != nil {
 			csrfRefusal.Write(w)
 			return
 		}
-		if _, err := s.store.RevokeLoginSession(session.ID, session.PrincipalID, "logout", s.loginClock()); err != nil &&
+		if _, err := s.Store.RevokeLoginSession(session.ID, session.PrincipalID, "logout", s.LoginClock()()); err != nil &&
 			!errors.Is(err, store.ErrLoginSessionAlreadyRevoked) {
 			httpjson.WriteJSONError(w, http.StatusInternalServerError, "logout_failed", fmt.Sprintf(
 				"could not revoke login session %s, so it is still live: %v", session.ID, err))
@@ -243,32 +243,32 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// loginSessionView is a login session as a list shows it: the row without
+// LoginSessionView is a login session as a list shows it: the row without
 // its hashes or CSRF token, its state, and whether it is the one the request
 // came in on.
-type loginSessionView struct {
+type LoginSessionView struct {
 	store.LoginSession
 	// State is live, expired or revoked.
 	State   string `json:"state"`
 	Current bool   `json:"current"`
 }
 
-func (s *Server) loginSessionViewOf(session store.LoginSession, currentLoginSessionID string) loginSessionView {
+func (s *Service) loginSessionViewOf(session store.LoginSession, currentLoginSessionID string) LoginSessionView {
 	state := "live"
 	switch {
 	case session.RevokedAt != nil:
 		state = "revoked"
-	case !s.loginClock().Before(session.ExpiresAt):
+	case !s.LoginClock()().Before(session.ExpiresAt):
 		state = "expired"
 	}
-	return loginSessionView{LoginSession: session, State: state, Current: session.ID == currentLoginSessionID}
+	return LoginSessionView{LoginSession: session, State: state, Current: session.ID == currentLoginSessionID}
 }
 
-// handleListLoginSessions lists the caller's own login sessions, newest
+// HandleListLoginSessions lists the caller's own login sessions, newest
 // first. An administrator, or the service token, may name another principal
 // with ?principal_id=; the service token acting as itself must, since it is
 // nobody.
-func (s *Server) handleListLoginSessions(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleListLoginSessions(w http.ResponseWriter, r *http.Request) {
 	caller, callerIsPrincipal := requestcaller.FromRequest(r)
 	mayReadAnyone := !callerIsPrincipal || caller.IsAdministrator
 	principalID := r.URL.Query().Get("principal_id")
@@ -284,12 +284,12 @@ func (s *Server) handleListLoginSessions(w http.ResponseWriter, r *http.Request)
 			"only an administrator may list another principal's login sessions; %s is not one", caller.PrincipalID))
 		return
 	}
-	sessions, err := s.store.ListLoginSessionsOfPrincipal(principalID)
+	sessions, err := s.Store.ListLoginSessionsOfPrincipal(principalID)
 	if err != nil {
 		httpjson.WriteJSONError(w, http.StatusInternalServerError, "login_sessions_unreadable", err.Error())
 		return
 	}
-	views := make([]loginSessionView, 0, len(sessions))
+	views := make([]LoginSessionView, 0, len(sessions))
 	for _, session := range sessions {
 		views = append(views, s.loginSessionViewOf(session, caller.LoginSessionID))
 	}
@@ -300,12 +300,12 @@ type revokeLoginSessionRequest struct {
 	Reason string `json:"reason"`
 }
 
-// handleRevokeLoginSession ends one login session: the caller's own, or
+// HandleRevokeLoginSession ends one login session: the caller's own, or
 // anyone's for an administrator. Someone else's session answers 404 to a
 // principal who is not an administrator, the same as a missing one. The
 // revocation is stamped with who did it, so the service token must act as a
 // principal to revoke anything.
-func (s *Server) handleRevokeLoginSession(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleRevokeLoginSession(w http.ResponseWriter, r *http.Request) {
 	caller, callerIsPrincipal := requestcaller.FromRequest(r)
 	if !callerIsPrincipal {
 		httpjson.WriteJSONError(w, http.StatusForbidden, "revoke_requires_a_principal", fmt.Sprintf(
@@ -324,7 +324,7 @@ func (s *Server) handleRevokeLoginSession(w http.ResponseWriter, r *http.Request
 		return
 	}
 	loginSessionID := r.PathValue("id")
-	session, err := s.store.GetLoginSession(loginSessionID)
+	session, err := s.Store.GetLoginSession(loginSessionID)
 	if errors.Is(err, store.ErrLoginSessionNotFound) || (err == nil && session.PrincipalID != caller.PrincipalID && !caller.IsAdministrator) {
 		httpjson.WriteJSONError(w, http.StatusNotFound, "login_session_not_found", fmt.Sprintf("no login session %s", loginSessionID))
 		return
@@ -333,7 +333,7 @@ func (s *Server) handleRevokeLoginSession(w http.ResponseWriter, r *http.Request
 		httpjson.WriteJSONError(w, http.StatusInternalServerError, "login_session_unreadable", err.Error())
 		return
 	}
-	revoked, err := s.store.RevokeLoginSession(session.ID, caller.PrincipalID, request.Reason, s.loginClock())
+	revoked, err := s.Store.RevokeLoginSession(session.ID, caller.PrincipalID, request.Reason, s.LoginClock()())
 	if errors.Is(err, store.ErrLoginSessionAlreadyRevoked) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)

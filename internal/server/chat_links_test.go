@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/login"
+
 	"github.com/kayushkin/llm-bridge-server/internal/chatlinks"
 
 	"github.com/kayushkin/llm-bridge-server/internal/store"
@@ -504,11 +506,11 @@ func TestASessionsAgentChatLinksItsOwnSessionAndNoOther(t *testing.T) {
 	session, _ := c.st.GetSession("br_linked")
 	newSessionForSignals(t, c.st, "br_other", msg.SessionTypeInteractive)
 	environment := map[string]string{}
-	for _, variable := range c.srv.sessionPostingEnvironment(session) {
+	for _, variable := range c.srv.login.SessionPostingEnvironment(session) {
 		name, value, _ := strings.Cut(variable, "=")
 		environment[name] = value
 	}
-	token := environment[sessionPostingTokenEnvironmentVariable]
+	token := environment[login.SessionPostingTokenEnvironmentVariable]
 	body := `{"account_id":"message_account_000002","platform":"discord","conversation_id":"dm-1","person_display_name":"Carol"}`
 	withToken := func(method, path, body string) *httptest.ResponseRecorder {
 		request := httptest.NewRequest(method, path, strings.NewReader(body))

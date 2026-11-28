@@ -30,6 +30,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/login"
+
 	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
 
 	"github.com/kayushkin/llm-bridge-server/internal/httpjson"
@@ -47,7 +49,7 @@ func (s *Server) serveDelegatingAgent(w http.ResponseWriter, r *http.Request, pa
 			"the Authorization header must be \"Bearer <session posting token>\"")
 		return
 	}
-	agentSession, credentialError := s.verifiedPostingSession(token)
+	agentSession, credentialError := s.login.VerifiedPostingSession(token)
 	if credentialError != nil {
 		credentialError.Write(w)
 		return
@@ -59,7 +61,7 @@ func (s *Server) serveDelegatingAgent(w http.ResponseWriter, r *http.Request, pa
 	// it runs: its shell holds the session's token (runShellForSessionAction),
 	// and a chat session sits in completed between turns, which is when
 	// buttons are pressed.
-	if slices.Contains(sessionStatesThatEndSessionAgentTokens, msg.SessionState(agentSession.State)) {
+	if slices.Contains(login.SessionStatesThatEndSessionAgentTokens, msg.SessionState(agentSession.State)) {
 		buttonRunning, err := s.store.SessionHasRunningCommandAction(agentSessionID)
 		if err != nil {
 			httpjson.WriteJSONError(w, http.StatusInternalServerError, "session_actions_unreadable", fmt.Sprintf(

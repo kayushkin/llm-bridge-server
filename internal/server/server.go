@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/login"
+
 	"github.com/kayushkin/llm-bridge-server/internal/peers"
 
 	"github.com/kayushkin/llm-bridge-server/internal/sessions/signals"
@@ -236,16 +238,16 @@ type Server struct {
 	// the list and then a schema does not walk /proc twice. See services.go.
 	serviceInventoryMu sync.Mutex
 	serviceInventory   *serviceinventory.Inventory
-	// harnessChildTokenSigner signs and verifies the session agent tokens
+	// HarnessChildTokenSigner signs and verifies the session agent tokens
 	// and session posting tokens. Always present: New refuses to build a
 	// server without a signing key. See session_agent_token.go.
-	harnessChildTokenSigner *harnessChildTokenSigner
+	harnessChildTokenSigner *login.HarnessChildTokenSigner
 	// loginClock is what login sessions and login attempts read the time
 	// from: time.Now, except in a test that lets one expire.
 	loginClock func() time.Time
-	// entraSignIn is Entra ID sign-in, nil when the Entra settings are unset.
+	// EntraSignIn is Entra ID sign-in, nil when the Entra settings are unset.
 	// See entra_sign_in.go.
-	entraSignIn *entraSignIn
+	entraSignIn *login.EntraSignIn
 	// principalLookupCache holds principal-store's answer about a caller —
 	// active or disabled, administrator or not — for a few seconds. See
 	// request_principal_lookup.go.
@@ -284,6 +286,7 @@ type Server struct {
 	sessionActions   *sessionactions.Service
 	signals          *signals.Service
 	peers            *peers.Service
+	login            *login.Service
 	sessionFiles     *sessionfiles.Service
 }
 
@@ -373,9 +376,9 @@ func New(st *store.Store, as *agents.Store, ms *memories.Store, hs *machines.Sto
 	if err := cfg.ValidateRequestAuthorizationCredentials(); err != nil {
 		panic(fmt.Sprintf("request authorization: %v", err))
 	}
-	srv.harnessChildTokenSigner = &harnessChildTokenSigner{
-		signingKey: []byte(cfg.DemoLoginSigningKey),
-		now:        time.Now,
+	srv.harnessChildTokenSigner = &login.HarnessChildTokenSigner{
+		SigningKey: []byte(cfg.DemoLoginSigningKey),
+		Now:        time.Now,
 	}
 	srv.loginClock = time.Now
 	// A half-configured Entra sign-in is refused here as main refuses it, so
@@ -384,7 +387,7 @@ func New(st *store.Store, as *agents.Store, ms *memories.Store, hs *machines.Sto
 		panic(fmt.Sprintf("entra sign-in: %v", err))
 	}
 	if cfg.EntraSignInEnabled() {
-		srv.entraSignIn = newEntraSignIn(cfg)
+		srv.entraSignIn = login.NewEntraSignIn(cfg)
 	}
 	srv.principalLookupCache = newPrincipalLookupCache(srv)
 	srv.sessionActionModels = sessionActionModelsInThisServer{Service: srv.oneShot, server: srv}

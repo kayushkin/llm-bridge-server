@@ -111,7 +111,7 @@ func (s *Service) runShellForSessionAction(session *store.Session, action store.
 		"LLM_BRIDGE_SESSION_ID="+session.SessionID,
 		fmt.Sprintf("AI_AGENT=chat button %s confirmed by %s", action.ActionID, describePrincipalForLog(action.RunByPrincipalID)),
 	)
-	command.Env = append(command.Env, s.Sessions.SessionPostingEnvironmentOfCurrentSpawn(session)...)
+	command.Env = append(command.Env, s.PostingEnvironments.SessionPostingEnvironmentOfCurrentSpawn(session)...)
 	command.Env = append(command.Env, inputEnvironment...)
 	output, err := command.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {

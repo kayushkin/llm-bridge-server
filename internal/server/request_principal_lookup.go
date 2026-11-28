@@ -21,6 +21,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kayushkin/llm-bridge-server/internal/access/login"
+
 	"github.com/kayushkin/llm-bridge-server/internal/peers"
 
 	"github.com/kayushkin/llm-bridge-server/internal/access/requestcaller"
@@ -114,7 +116,7 @@ func (s *Server) callerActingAsPrincipal(ctx context.Context, principalID string
 // host, so it may say which of its logged-in users a request is for — but the
 // principal is still checked here, not taken on trust.
 func (s *Server) callerAssertedByInternalService(ctx context.Context, principalID string) (requestcaller.Caller, *requestcaller.CredentialError) {
-	if !isWellFormedPrincipalID(principalID) {
+	if !login.IsWellFormedPrincipalID(principalID) {
 		return requestcaller.Caller{}, requestcaller.NewCredentialError(http.StatusBadRequest, "invalid_principal_id", fmt.Sprintf(
 			"%s: %q is not a principal-store id (principal_000001); a name or an email is not accepted, because neither is unique", requestcaller.PrincipalIdentityHeader, principalID))
 	}

@@ -31,6 +31,7 @@ type Dependencies struct {
 	Settings               *servicesettings.Registry
 	Store                  *store.Store
 	Sessions               Host
+	PostingEnvironments    PostingEnvironments
 }
 
 // Host is the sessions, callers and scheduler jobs a session action reaches.
@@ -38,7 +39,6 @@ type Host interface {
 	SendMessageFromThisServer(ctx context.Context, sessionID string, req msg.SendMessageRequest, senderPrincipalID string) sendanswer.Answer
 	CallerForPrincipalID(ctx context.Context, principalID string, subjectDescription string) (requestcaller.Caller, *requestcaller.CredentialError)
 	SchedulerJobsInProcess() SchedulerJobs
-	SessionPostingEnvironmentOfCurrentSpawn(session *store.Session) []string
 	StopSession(bridgeID string) error
 }
 
@@ -50,4 +50,9 @@ type RepoRegistryForDeploys interface {
 // Service offers, lists and runs session actions (the chat's buttons).
 type Service struct {
 	Dependencies
+}
+
+// PostingEnvironments is the environment a session's current spawn gives its agent to post into the session.
+type PostingEnvironments interface {
+	SessionPostingEnvironmentOfCurrentSpawn(session *store.Session) []string
 }

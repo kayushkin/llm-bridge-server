@@ -1,4 +1,4 @@
-package server
+package login
 
 // Service principal tokens: how a program on this host calls this server as a
 // principal of its own (principal-store's kind service), held to the route
@@ -16,7 +16,7 @@ package server
 // A service may also start sessions that run as another principal, when it
 // holds can_start_sessions_as on that principal (handleCreateSession). The
 // session's starter is recorded in session_starters, and the starter may drive
-// it while the grant stands (callerStartedSessionAndMayDriveIt). PUT
+// it while the grant stands (CallerStartedSessionAndMayDriveIt). PUT
 // /sessions/{id}/starter records one for a session created before starters
 // were recorded.
 
@@ -45,17 +45,17 @@ import (
 	"github.com/kayushkin/llm-bridge/msg"
 )
 
-// servicePrincipalTokenPrefix starts every service principal token, so a
+// ServicePrincipalTokenPrefix starts every service principal token, so a
 // bearer is told apart from a session agent token and a posting token before
 // anything is looked up.
-const servicePrincipalTokenPrefix = "llm-bridge-service-principal-token-v1"
+const ServicePrincipalTokenPrefix = "llm-bridge-service-principal-token-v1"
 
-// startSessionsAsRelation is grant-store's relation for starting sessions that
+// StartSessionsAsRelation is grant-store's relation for starting sessions that
 // run as another principal. Holding none allows nothing, whatever the kind.
-const startSessionsAsRelation = "can_start_sessions_as"
+const StartSessionsAsRelation = "can_start_sessions_as"
 
-func isServicePrincipalToken(token string) bool {
-	return strings.HasPrefix(token, servicePrincipalTokenPrefix+".")
+func IsServicePrincipalToken(token string) bool {
+	return strings.HasPrefix(token, ServicePrincipalTokenPrefix+".")
 }
 
 func hashOfServicePrincipalToken(token string) string {
@@ -68,17 +68,17 @@ func mintServicePrincipalToken() (string, error) {
 	if _, err := rand.Read(random); err != nil {
 		return "", fmt.Errorf("read random bytes for a service principal token: %w", err)
 	}
-	return servicePrincipalTokenPrefix + "." + base64.RawURLEncoding.EncodeToString(random), nil
+	return ServicePrincipalTokenPrefix + "." + base64.RawURLEncoding.EncodeToString(random), nil
 }
 
-// principalOfServicePrincipalToken verifies a presented token and returns the
+// PrincipalOfServicePrincipalToken verifies a presented token and returns the
 // principal it acts as.
-func (s *Server) principalOfServicePrincipalToken(ctx context.Context, r *http.Request, token string) (string, *requestcaller.CredentialError) {
+func (s *Service) PrincipalOfServicePrincipalToken(ctx context.Context, r *http.Request, token string) (string, *requestcaller.CredentialError) {
 	if requestcaller.RequestCameThroughPublicProxy(r) {
 		return "", requestcaller.NewCredentialError(http.StatusForbidden, "service_principal_token_not_public",
 			"a service principal token is accepted only from this host, never through the public proxy")
 	}
-	record, err := s.store.ServicePrincipalTokenByHash(hashOfServicePrincipalToken(token))
+	record, err := s.Store.ServicePrincipalTokenByHash(hashOfServicePrincipalToken(token))
 	if errors.Is(err, store.ErrServicePrincipalTokenNotFound) {
 		return "", requestcaller.NewCredentialError(http.StatusUnauthorized, "invalid_service_principal_token",
 			"no service principal token matches the one presented")
@@ -94,7 +94,7 @@ func (s *Server) principalOfServicePrincipalToken(ctx context.Context, r *http.R
 	if credentialError != nil {
 		return "", credentialError
 	}
-	if err := s.store.TouchServicePrincipalToken(record.ID, time.Now()); err != nil {
+	if err := s.Store.TouchServicePrincipalToken(record.ID, time.Now()); err != nil {
 		log.Printf("[service-principal-token] ERROR record use of %s: %v", record.ID, err)
 	}
 	return principal.ID, nil
@@ -102,8 +102,8 @@ func (s *Server) principalOfServicePrincipalToken(ctx context.Context, r *http.R
 
 // principalThatHoldsServicePrincipalTokens reads a principal and refuses one
 // whose kind principal-store says may not hold a service principal token.
-func (s *Server) principalThatHoldsServicePrincipalTokens(ctx context.Context, principalID string) (principals.Principal, *requestcaller.CredentialError) {
-	principal, err := s.principalLookupCache.LookUp(ctx, principalID)
+func (s *Service) principalThatHoldsServicePrincipalTokens(ctx context.Context, principalID string) (principals.Principal, *requestcaller.CredentialError) {
+	principal, err := s.PrincipalLookupCache().LookUp(ctx, principalID)
 	if errors.Is(err, principals.ErrNotFound) {
 		return principals.Principal{}, requestcaller.NewCredentialError(http.StatusBadRequest, "unknown_principal", fmt.Sprintf(
 			"principal %s is not in principal-store", principalID))
@@ -140,16 +140,16 @@ func decodeStrictJSONBody(w http.ResponseWriter, r *http.Request, target any) bo
 	return true
 }
 
-// issuedServicePrincipalToken is the answer to POST /service-principal-tokens:
+// IssuedServicePrincipalToken is the answer to POST /service-principal-tokens:
 // the token, shown this once, and its record.
-type issuedServicePrincipalToken struct {
+type IssuedServicePrincipalToken struct {
 	Token  string                      `json:"token"`
 	Record store.ServicePrincipalToken `json:"record"`
 }
 
-// handleIssueServicePrincipalToken: POST /service-principal-tokens
+// HandleIssueServicePrincipalToken: POST /service-principal-tokens
 // {"principal_id","description"}.
-func (s *Server) handleIssueServicePrincipalToken(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleIssueServicePrincipalToken(w http.ResponseWriter, r *http.Request) {
 	administratorID, ok := administratorMakingServicePrincipalChange(w, r)
 	if !ok {
 		return
@@ -182,19 +182,19 @@ func (s *Server) handleIssueServicePrincipalToken(w http.ResponseWriter, r *http
 		return
 	}
 	record := store.ServicePrincipalToken{PrincipalID: principal.ID, Description: request.Description, CreatedBy: administratorID}
-	if err := s.store.InsertServicePrincipalToken(&record, hashOfServicePrincipalToken(token)); err != nil {
+	if err := s.Store.InsertServicePrincipalToken(&record, hashOfServicePrincipalToken(token)); err != nil {
 		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
 	log.Printf("[service-principal-token] %s issued %s for %s (%s)", administratorID, record.ID, record.PrincipalID, record.Description)
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusCreated)
-	httpjson.WriteJSON(w, issuedServicePrincipalToken{Token: token, Record: record})
+	httpjson.WriteJSON(w, IssuedServicePrincipalToken{Token: token, Record: record})
 }
 
-// handleListServicePrincipalTokens: GET /service-principal-tokens.
-func (s *Server) handleListServicePrincipalTokens(w http.ResponseWriter, r *http.Request) {
-	tokens, err := s.store.ListServicePrincipalTokens()
+// HandleListServicePrincipalTokens: GET /service-principal-tokens.
+func (s *Service) HandleListServicePrincipalTokens(w http.ResponseWriter, r *http.Request) {
+	tokens, err := s.Store.ListServicePrincipalTokens()
 	if err != nil {
 		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
@@ -202,9 +202,9 @@ func (s *Server) handleListServicePrincipalTokens(w http.ResponseWriter, r *http
 	httpjson.WriteJSON(w, tokens)
 }
 
-// handleRevokeServicePrincipalToken: POST /service-principal-tokens/{id}/revoke
+// HandleRevokeServicePrincipalToken: POST /service-principal-tokens/{id}/revoke
 // {"reason"}.
-func (s *Server) handleRevokeServicePrincipalToken(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleRevokeServicePrincipalToken(w http.ResponseWriter, r *http.Request) {
 	administratorID, ok := administratorMakingServicePrincipalChange(w, r)
 	if !ok {
 		return
@@ -219,7 +219,7 @@ func (s *Server) handleRevokeServicePrincipalToken(w http.ResponseWriter, r *htt
 		httpjson.WriteJSONError(w, http.StatusBadRequest, "invalid_request", "reason is required: it says why the token stopped working")
 		return
 	}
-	record, err := s.store.RevokeServicePrincipalToken(r.PathValue("id"), administratorID, strings.TrimSpace(request.Reason))
+	record, err := s.Store.RevokeServicePrincipalToken(r.PathValue("id"), administratorID, strings.TrimSpace(request.Reason))
 	switch {
 	case errors.Is(err, store.ErrServicePrincipalTokenNotFound):
 		httpjson.WriteJSONError(w, http.StatusNotFound, "service_principal_token_not_found", "no service principal token has id "+r.PathValue("id"))
@@ -235,47 +235,47 @@ func (s *Server) handleRevokeServicePrincipalToken(w http.ResponseWriter, r *htt
 	httpjson.WriteJSON(w, record)
 }
 
-// mayStartSessionsAs reports whether the subject holds can_start_sessions_as
+// MayStartSessionsAs reports whether the subject holds can_start_sessions_as
 // on principalID. Holding none allows nothing, whatever the kind.
-func (s *Server) mayStartSessionsAs(ctx context.Context, subject grantcheck.Subject, principalID string) (bool, error) {
-	granted, err := s.grantChecker.GrantedResourcesOf(ctx, subject, startSessionsAsRelation, "principal")
+func (s *Service) MayStartSessionsAs(ctx context.Context, subject grantcheck.Subject, principalID string) (bool, error) {
+	granted, err := s.GrantChecker.GrantedResourcesOf(ctx, subject, StartSessionsAsRelation, "principal")
 	if err != nil {
 		return false, err
 	}
 	return granted.RequiresAGrantAndNames(principalID), nil
 }
 
-// callerStartedSessionAndMayDriveIt reports whether the caller started this
+// CallerStartedSessionAndMayDriveIt reports whether the caller started this
 // session as its principal and still holds can_start_sessions_as on it.
-func (s *Server) callerStartedSessionAndMayDriveIt(ctx context.Context, caller requestcaller.Caller, session *store.Session) (bool, error) {
+func (s *Service) CallerStartedSessionAndMayDriveIt(ctx context.Context, caller requestcaller.Caller, session *store.Session) (bool, error) {
 	if session == nil || caller.PrincipalID == "" || session.PrincipalID == "" || caller.Peer != nil {
 		return false, nil
 	}
-	starter, found, err := s.store.SessionStarterOf(session.SessionID)
+	starter, found, err := s.Store.SessionStarterOf(session.SessionID)
 	if err != nil {
 		return false, fmt.Errorf("read who started session %s: %w", session.SessionID, err)
 	}
 	if !found || starter.PrincipalID != caller.PrincipalID {
 		return false, nil
 	}
-	return s.mayStartSessionsAs(ctx, grantcheck.SubjectOfCaller(caller), session.PrincipalID)
+	return s.MayStartSessionsAs(ctx, grantcheck.SubjectOfCaller(caller), session.PrincipalID)
 }
 
-// CallerStartedSessionIDAndMayDriveIt is callerStartedSessionAndMayDriveIt
+// CallerStartedSessionIDAndMayDriveIt is CallerStartedSessionAndMayDriveIt
 // for a session id; a session this server does not have is false.
-func (s *Server) CallerStartedSessionIDAndMayDriveIt(ctx context.Context, caller requestcaller.Caller, sessionID string) (bool, error) {
-	session, err := s.store.GetSession(sessionID)
+func (s *Service) CallerStartedSessionIDAndMayDriveIt(ctx context.Context, caller requestcaller.Caller, sessionID string) (bool, error) {
+	session, err := s.Store.GetSession(sessionID)
 	if err != nil {
 		return false, nil
 	}
-	return s.callerStartedSessionAndMayDriveIt(ctx, caller, session)
+	return s.CallerStartedSessionAndMayDriveIt(ctx, caller, session)
 }
 
-// handleRecordSessionStarter: PUT /sessions/{id}/starter {"principal_id"}, for
+// HandleRecordSessionStarter: PUT /sessions/{id}/starter {"principal_id"}, for
 // a session created before starters were recorded. The starter must hold
 // can_start_sessions_as on the session's principal now, or the record would
 // give it nothing.
-func (s *Server) handleRecordSessionStarter(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleRecordSessionStarter(w http.ResponseWriter, r *http.Request) {
 	administratorID, ok := administratorMakingServicePrincipalChange(w, r)
 	if !ok {
 		return
@@ -286,7 +286,7 @@ func (s *Server) handleRecordSessionStarter(w http.ResponseWriter, r *http.Reque
 	if !decodeStrictJSONBody(w, r, &request) {
 		return
 	}
-	session, err := s.store.GetSession(r.PathValue("id"))
+	session, err := s.Store.GetSession(r.PathValue("id"))
 	if err != nil {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
@@ -296,7 +296,7 @@ func (s *Server) handleRecordSessionStarter(w http.ResponseWriter, r *http.Reque
 			"a starter is another principal than the one session %s runs as (%q); principal_id %q is not one", session.SessionID, session.PrincipalID, request.PrincipalID))
 		return
 	}
-	if existing, found, err := s.store.SessionStarterOf(session.SessionID); err != nil {
+	if existing, found, err := s.Store.SessionStarterOf(session.SessionID); err != nil {
 		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	} else if found {
@@ -304,22 +304,22 @@ func (s *Server) handleRecordSessionStarter(w http.ResponseWriter, r *http.Reque
 			"session %s's starter is already recorded as %s", session.SessionID, existing.PrincipalID))
 		return
 	}
-	allowed, err := s.mayStartSessionsAs(r.Context(), grantcheck.Subject{PrincipalID: request.PrincipalID}, session.PrincipalID)
+	allowed, err := s.MayStartSessionsAs(r.Context(), grantcheck.Subject{PrincipalID: request.PrincipalID}, session.PrincipalID)
 	if err != nil {
 		httpjson.WriteJSONError(w, http.StatusBadGateway, "grant_store_unavailable", err.Error())
 		return
 	}
 	if !allowed {
 		httpjson.WriteJSONError(w, http.StatusConflict, "not_granted", fmt.Sprintf(
-			"%s holds no %s grant on %s, so recording it as session %s's starter would let it do nothing", request.PrincipalID, startSessionsAsRelation, session.PrincipalID, session.SessionID))
+			"%s holds no %s grant on %s, so recording it as session %s's starter would let it do nothing", request.PrincipalID, StartSessionsAsRelation, session.PrincipalID, session.SessionID))
 		return
 	}
 	starter := store.SessionStarter{SessionID: session.SessionID, PrincipalID: request.PrincipalID, RecordedBy: administratorID, Backfilled: true}
-	if err := s.store.RecordSessionStarter(starter); err != nil {
+	if err := s.Store.RecordSessionStarter(starter); err != nil {
 		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
 	}
-	recorded, _, err := s.store.SessionStarterOf(session.SessionID)
+	recorded, _, err := s.Store.SessionStarterOf(session.SessionID)
 	if err != nil {
 		httpjson.WriteJSONError(w, http.StatusInternalServerError, "store_failed", err.Error())
 		return
@@ -328,9 +328,9 @@ func (s *Server) handleRecordSessionStarter(w http.ResponseWriter, r *http.Reque
 	httpjson.WriteJSON(w, recorded)
 }
 
-// handleSelf: GET /self. Who the request acts as, so a service learns its own
+// HandleSelf: GET /self. Who the request acts as, so a service learns its own
 // principal id from its token rather than from a setting beside it.
-func (s *Server) handleSelf(w http.ResponseWriter, r *http.Request) {
+func (s *Service) HandleSelf(w http.ResponseWriter, r *http.Request) {
 	caller, ok := requestcaller.FromRequest(r)
 	if !ok || caller.PrincipalID == "" {
 		httpjson.WriteJSON(w, msg.CallerSelf{InternalService: true})

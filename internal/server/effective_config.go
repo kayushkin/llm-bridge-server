@@ -641,7 +641,7 @@ func (s *Server) handleDryRunEffectiveConfig(w http.ResponseWriter, r *http.Requ
 	// The references POST /sessions checks before it creates anything, with
 	// the same reads, so a preflight refuses what create would refuse.
 	if subject.AgentID != "" {
-		if err := s.checkAgentExists(subject.AgentID); err != nil {
+		if err := s.login.CheckAgentExists(subject.AgentID); err != nil {
 			answer.Warnings = append(answer.Warnings, fmt.Sprintf("POST /sessions would refuse this session: %v", err))
 		}
 	}
